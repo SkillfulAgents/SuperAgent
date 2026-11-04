@@ -26,6 +26,7 @@ import {
   syncConnectedAccountAgents,
 } from '@shared/lib/services/connection-sync-service'
 import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import type { BaseAccountProvider } from '@shared/lib/account-providers/base-account-provider'
 
 const connectedAccountsRouter = new Hono()
@@ -226,6 +227,9 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     })
   } catch (error: any) {
     console.error('Failed to initiate connection:', error)
+
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
 
     // Detect "no managed credentials" error from Composio and return a friendly message
     const slug = typeof error.details?.error === 'object' ? error.details.error.slug : undefined

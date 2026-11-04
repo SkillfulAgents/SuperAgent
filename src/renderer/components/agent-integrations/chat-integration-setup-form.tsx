@@ -12,6 +12,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { SessionTimeoutSelect } from './integration-settings-controls'
+import { DEFAULT_SESSION_TIMEOUT_HOURS } from '@shared/lib/agent-integrations/public'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 import {
   useCreateAgentIntegration,
@@ -20,10 +21,13 @@ import {
 } from '@renderer/hooks/use-agent-integrations'
 import { Loader2, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
-import { slackAppManifest } from '@shared/lib/chat-integrations/slack-manifest'
+import { slackAppManifest, type SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
+import { useAgent } from '@renderer/hooks/use-agents'
+import { SlackAppIconStep } from './slack-app-appearance'
+import { slackAppIdentity } from './slack-app-identity'
 
-function generateSlackManifest(botName: string): string {
-  return JSON.stringify(slackAppManifest(botName), null, 2)
+function generateSlackManifest(app: SlackAppIdentity): string {
+  return JSON.stringify(slackAppManifest(app), null, 2)
 }
 
 const IMESSAGE_SETUP_NUMBER_DISPLAY = '+1 (205) 396-7934'
@@ -116,15 +120,15 @@ export interface ChatSetupBehaviorValue {
 }
 
 export const DEFAULT_CHAT_SETUP_BEHAVIOR: ChatSetupBehaviorValue = {
-  showToolCalls: false, sessionTimeout: null, onlyMentioned: true, answerInThread: false, newSessionPerThread: false,
+  showToolCalls: false, sessionTimeout: DEFAULT_SESSION_TIMEOUT_HOURS, onlyMentioned: true, answerInThread: true, newSessionPerThread: true,
 }
 
 /** Slack's channel behavior, as its stored config spells it. */
 export function slackBehaviorConfig(value: ChatSetupBehaviorValue): Record<string, boolean> {
   return {
     ...(value.onlyMentioned ? { onlyMentioned: true } : {}),
-    ...(value.answerInThread ? { answerInThread: true } : {}),
-    ...(value.answerInThread && value.newSessionPerThread ? { newSessionPerThread: true } : {}),
+    answerInThread: value.answerInThread,
+    newSessionPerThread: value.answerInThread && value.newSessionPerThread,
   }
 }
 
@@ -168,7 +172,8 @@ export function ChatSetupBehavior({ provider, value, onChange }: {
           </div>
           <div className="flex items-center justify-between gap-2">
             <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
-              Reply in thread
+              Reply in thread (recommended)
+              <span className="block text-muted-foreground">Without it, the agent answers a top-level message at the top of the channel, in one conversation shared by the whole channel.</span>
             </Label>
             <Switch
               id="setup-answer-thread"
@@ -179,7 +184,8 @@ export function ChatSetupBehavior({ provider, value, onChange }: {
           {value.answerInThread && (
             <div className="flex items-center justify-between gap-2">
               <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
-                New session per thread
+                Separate conversation per thread (recommended)
+                <span className="block text-muted-foreground">Without it, every thread shares one conversation, and a reply can land in another request&apos;s thread.</span>
               </Label>
               <Switch
                 id="setup-session-per-thread"
@@ -216,6 +222,8 @@ export function ChatIntegrationSetupForm({
   const [slackSetupMode, setSlackSetupMode] = useState<'manifest' | 'manual'>('manifest')
   const [manifestCopied, setManifestCopied] = useState(false)
   const [manifestPreview, setManifestPreview] = useState(false)
+  const { data: agent } = useAgent(provider === 'slack' ? agentSlug : null)
+  const slackApp = slackAppIdentity(agent, integrationName)
 
   const info = PROVIDER_INFO[provider]
 
@@ -295,7 +303,7 @@ export function ChatIntegrationSetupForm({
                     size="sm"
                     className="h-7 px-2 text-xs"
                     onClick={async () => {
-                      await navigator.clipboard.writeText(generateSlackManifest(integrationName.trim() || 'Gamut Bot'))
+                      await navigator.clipboard.writeText(generateSlackManifest(slackApp))
                       setManifestCopied(true)
                       setTimeout(() => setManifestCopied(false), 2000)
                     }}
@@ -313,10 +321,11 @@ export function ChatIntegrationSetupForm({
                 </div>
                 {manifestPreview && (
                   <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
-                    {generateSlackManifest(integrationName.trim() || 'Gamut Bot')}
+                    {generateSlackManifest(slackApp)}
                   </pre>
                 )}
               </li>
+              {agent?.avatar && <li className="text-sm font-normal text-foreground"><SlackAppIconStep agent={agent} /></li>}
               <li className="text-sm font-normal text-foreground">In Basic Information section → Scroll to App-Level Tokens → Click Generate Tokens and Scopes</li>
               <li className="text-sm font-normal text-foreground">Name your token → Click Add Scope → Select connections:write → Click Generate</li>
               <li className="text-sm font-normal text-foreground">Copy the token → Paste in the App-Level Token field in the setup form</li>
@@ -340,6 +349,7 @@ export function ChatIntegrationSetupForm({
               {info.steps.map((step, i) => (
                 <li key={i} className="text-sm font-normal text-foreground">{step}</li>
               ))}
+              {agent?.avatar && <li className="text-sm font-normal text-foreground"><SlackAppIconStep agent={agent} withColor /></li>}
             </ol>
             <p className="pt-4 text-xs text-muted-foreground">
               <button
@@ -411,7 +421,7 @@ export function ChatIntegrationSetupForm({
       <IntegrationSetupField
         id="setup-integration-name" label="Integration name"
         value={integrationName} onChange={e => setIntegrationName(e.target.value)}
-        placeholder={`My ${info.label} integration`}
+        placeholder={agent?.name || `My ${info.label} integration`}
       />
 
       {info.fields.map(field => (

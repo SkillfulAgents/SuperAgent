@@ -60,7 +60,9 @@ export function chatProviderSetup(provider: ChatProvider, schema: ZodType): Inte
  * signing secret.
  */
 function prepareSlack(input: Record<string, unknown>) {
-  const { webhooks, ...config } = slackSetupInputSchema.parse(input)
+  const { webhooks, ...given } = slackSetupInputSchema.parse(input)
+  // A new installation threads with a conversation per thread unless setup says otherwise.
+  const config = { answerInThread: true, newSessionPerThread: true, ...given }
   if (!webhooks) return { config: inputSchema.parse(slackConfigSchema.parse(config)) }
   // The endpoint is added to it before it's stored.
   const parsed = slackConfigFieldsSchema.parse(config)

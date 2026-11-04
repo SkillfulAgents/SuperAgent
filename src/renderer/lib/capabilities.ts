@@ -88,6 +88,15 @@ export function offersComputerUseSettings(): boolean {
 }
 
 /**
+ * Whether the dispatch launcher offers its computer-use toggle: it screenshots
+ * this computer and lets the agent use its apps, so the agents must run on
+ * this computer, and that computer must run computer use.
+ */
+export function offersLauncherComputerUse(): boolean {
+  return canUseHostFeatures() && computerUseSupported()
+}
+
+/**
  * Whether this window hands the server a dropped folder by its path alone, to
  * mount it or copy it in. That needs the desktop app driving its own machine,
  * outside the sandbox, which reads a folder only through the bookmark of a
@@ -124,6 +133,15 @@ export function keepsMacAwake(): boolean {
 export function addsToDock(): boolean {
   const client = clientFacts()
   return client.shell === 'electron' && client.os === 'darwin' && !runsInAppSandbox(client)
+}
+
+/**
+ * Whether this window can screenshot part of itself: the desktop app's own
+ * page capture. A dashboard comment carries what the person saw only here; a
+ * browser cannot read a frame's pixels without a screen-share prompt.
+ */
+export function capturesOwnWindow(): boolean {
+  return !!window.electronAPI?.captureRegion
 }
 
 /** Whether the attachment menus list recently used files, which Spotlight finds. */

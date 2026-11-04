@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { isRetryableRequestError } from '@renderer/lib/http-error'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -8,6 +9,7 @@ import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/a
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
 import { usePreparedTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
+import { agentQuery } from './query-options'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -121,14 +123,12 @@ export function useListedAgents() {
 }
 
 export function useAgent(slug: string | null) {
-  return useQuery<ApiAgent>({
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${slug}`)
-      if (!res.ok) throw new Error('Failed to fetch agent')
-      return res.json()
-    },
-    queryKey: ['agents', slug],
+  return useQuery({
+    ...agentQuery(slug ?? ''),
     enabled: !!slug,
+    // A loader may join this request. Retry transport, timeout, rate-limit and
+    // server errors, but finish definitive client errors (including 401) now.
+    retry: (failureCount, error) => isRetryableRequestError(error) && failureCount < 3,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
     refetchInterval: 60000,
   })

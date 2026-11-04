@@ -48,6 +48,7 @@ import { getPlatformProxyBaseUrl } from '../platform-auth/config'
 import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
 import { runsInAppSandbox } from '../facts/capabilities'
 import { getServerFacts } from '../facts/server-facts'
+import { dockerStoppedInspectSchema } from './container-stop-schema'
 
 /**
  * The integration families whose providers this host can run, by the same
@@ -301,6 +302,8 @@ const HEALTH_PROBE_TIMEOUT_MS = 2000
 // Max wait for the container to accept a pre-resume (warmSession). It answers
 // before resuming anything, so only a struggling container takes this long.
 const WARM_SESSION_TIMEOUT_MS = 5000
+// Max wait for the container to drop a session. Its dispose gives the CLI 5 s to exit.
+const DELETE_SESSION_TIMEOUT_MS = 10000
 
 // Reads stderr only: an exec error's message repeats the command line, flags included.
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
@@ -658,6 +661,25 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
     } catch {
       return { status: 'stopped', port: null }
+    }
+  }
+
+  async isDefinitelyStopped(): Promise<boolean> {
+    const runner = this.getRunnerShellCommand()
+    const name = this.getContainerName()
+    try {
+      const { stdout } = await execWithPath(`${runner} inspect ${shellEscape(name)}`, { timeoutMs: 5000 })
+      const raw: unknown = JSON.parse(stdout)
+      return dockerStoppedInspectSchema.safeParse(Array.isArray(raw) ? raw[0] : raw).success
+    } catch {
+      // A missing container and a failed runtime both fail inspect. Only a
+      // successful inventory that omits it establishes absence.
+      try {
+        const { stdout } = await execWithPath(`${runner} ps -a --format '{{.Names}}'`, { timeoutMs: 5000 })
+        return !stdout.split(/\r?\n/).some((line) => line.trim() === name)
+      } catch {
+        return false
+      }
     }
   }
 
@@ -1381,6 +1403,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
           speed: options.speed,
+          ...(options.preloadToolsets?.length ? { preloadToolsets: options.preloadToolsets } : {}),
           capabilityPolicies,
           globalInstructions,
           prewarmDefaults: options.prewarmDefaults && warmRuntime ? {
@@ -1507,8 +1530,24 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   async deleteSession(sessionId: string): Promise<boolean> {
     this.closeTrackedWebSocket(sessionId)
 
-    const response = await this.fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
+    const response = await this.fetch(`/sessions/${sessionId}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(DELETE_SESSION_TIMEOUT_MS),
+    })
+    if (response.status === 404) {
+      return z.object({ error: z.literal('Session not found') }).safeParse(await response.json().catch(() => null)).success
+    }
+    return response.ok
+  }
 
+  async releaseSession(sessionId: string): Promise<boolean> {
+    this.closeTrackedWebSocket(sessionId)
+    // A distinct endpoint: an old container must not ignore a preserve flag
+    // on DELETE and irreversibly forget a session whose files we keep.
+    const response = await this.fetch(`/sessions/${sessionId}/release`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(DELETE_SESSION_TIMEOUT_MS),
+    })
     return response.ok
   }
 

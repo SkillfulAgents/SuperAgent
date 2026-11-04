@@ -638,12 +638,13 @@ const browserEvalTool = tool(
     const data = result.data as Record<string, unknown>
     const output = data.output ? String(data.output) : ''
     let text = output || '(no output)'
-    // A statement body runs inside an async IIFE, and the CLI prints `null`
-    // for a body that completes without `return` (undefined → JSON null).
+    // A statement body runs inside an async IIFE, and the CLI prints
+    // `undefined` for a body that completes without `return` (0.41.1+; it
+    // printed `null` before, which a body that returned null also printed).
     // The note is only informative in that case; on any other output it was
     // a 100% false positive in the mined sessions (theme 4).
-    if (data.wrapped && (output === '' || output === 'null')) {
-      text += '\n(note: a statement body that does not `return` also yields null — add `return` if you expected a value back)'
+    if (data.wrapped && (output === '' || output === 'undefined')) {
+      text += '\n(note: a statement body that does not `return` yields undefined — add `return` if you expected a value back)'
     }
     text += getTabWarning()
     return {

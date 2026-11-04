@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryObserver } from '@tanstack/react-query'
+import { onlineManager, QueryClient, QueryObserver } from '@tanstack/react-query'
 import { describe, it, expect, vi } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
@@ -201,6 +201,398 @@ describe('optimistic notification reads', () => {
     await Promise.all([refetch, firstLoad])
     expect(agent(client).notificationPreview).toBeUndefined()
     expect(client.getQueryData(['sessions', 'other'])).toEqual([{ id: 'other-session' }])
+    // No observer needs this metadata now, but cancellation must not mark the
+    // old value fresh: the next observer should fetch it again.
+    expect(client.getQueryState(['agents'])?.isInvalidated).toBe(true)
+  })
+
+  it.each(['confirmed', 'legacy', 'failed'] as const)('recovers interrupted list and both slug aliases after a %s read', async (mode) => {
+    const { client } = seed()
+    const old = { ...agent(client), name: 'Untitled' }
+    const renamed = { ...old, name: 'Renamed', displaySlug: 'renamed-a' }
+    const keys = [['agents'], ['agents', 'a'], ['agents', 'agent-a']]
+    const stale = deferred()
+    const recovery = deferred()
+    const post = deferred()
+    let fetches = 0
+    const unsubscribes = keys.map(key => {
+      client.setQueryData(key, key.length === 1 ? [old] : old)
+      const observer = new QueryObserver(client, {
+        queryKey: key, staleTime: Infinity,
+        queryFn: async () => {
+          const interrupted = ++fetches <= keys.length
+          await (interrupted ? stale.promise : recovery.promise)
+          const value = { ...renamed, notificationPreview: interrupted || mode === 'failed' ? 'n1' : undefined }
+          return key.length === 1 ? [value] : value
+        },
+      })
+      return observer.subscribe(() => {})
+    })
+    const names = () => keys.map(key => {
+      const value = client.getQueryData<ApiAgent | ApiAgent[]>(key)!
+      return (Array.isArray(value) ? value[0] : value).name
+    })
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'] })
+      expect(fetches).toBe(3)
+      vi.mocked(apiFetch).mockReturnValueOnce(post.promise).mockResolvedValueOnce(response(state()))
+      let settled = false
+      const operation = readNotifications(client, { kind: 'session', sessionId: 's1' })
+        .then(value => ({ value }), error => ({ error }))
+        .finally(() => { settled = true })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      const queued = readNotifications(client, { kind: 'notification', id: 'n1' })
+      if (mode === 'failed') post.reject(new Error('offline'))
+      else post.resolve(response(mode === 'confirmed' ? state() : undefined))
+      await waitFor(() => expect(fetches).toBe(6))
+      expect(settled).toBe(false)
+      expect(apiFetch).toHaveBeenCalledTimes(1)
+
+      // The canceled GET can finish late with a renamed agent and an old
+      // unread projection. Only the new post-write refetch may publish it.
+      stale.resolve(response())
+      await refetch
+      expect(names()).toEqual(['Untitled', 'Untitled', 'Untitled'])
+      recovery.resolve(response())
+      const result = await operation
+      if (mode === 'failed') expect(result).toMatchObject({ error: new Error('offline') })
+      else expect(result).toHaveProperty('value.success', true)
+      await queued
+      expect(names()).toEqual(['Renamed', 'Renamed', 'Renamed'])
+      expect(agent(client).notificationPreview).toBeUndefined()
+      expect(fetches).toBe(6) // The legacy broad refresh does not recover twice.
+      expect(apiFetch).toHaveBeenCalledTimes(2)
+    } finally {
+      unsubscribes.forEach(unsubscribe => unsubscribe())
+      client.clear()
+    }
+  })
+
+  it('does not restart interrupted metadata queries in a replacement workspace', async () => {
+    const { client } = seed()
+    const old = agent(client)
+    const stale = deferred()
+    const post = deferred()
+    const fetchAgents = vi.fn(async () => { await stale.promise; return [old] })
+    const observer = new QueryObserver(client, { queryKey: ['agents'], queryFn: fetchAgents, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'], exact: true })
+      vi.mocked(apiFetch).mockReturnValueOnce(post.promise)
+      const operation = readNotifications(client, { kind: 'all' })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      client.clear()
+      client.setQueryData(['agents'], [{ slug: 'other-workspace', name: 'Other' }])
+      post.resolve(response(state()))
+      await operation
+      stale.resolve(response())
+      await refetch
+      expect(fetchAgents).toHaveBeenCalledTimes(1)
+      expect(client.getQueryData(['agents'])).toEqual([{ slug: 'other-workspace', name: 'Other' }])
+      expect(client.getQueryState(['agents'])?.isInvalidated).toBe(false)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
+  })
+
+  it('preserves the original POST error if interrupted metadata recovery also fails', async () => {
+    const { client } = seed()
+    const old = agent(client)
+    const stale = deferred()
+    const fetchAgents = vi.fn()
+      .mockImplementationOnce(async () => { await stale.promise; return [old] })
+      .mockRejectedValueOnce(new Error('metadata offline'))
+    const observer = new QueryObserver(client, { queryKey: ['agents'], queryFn: fetchAgents, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'], exact: true })
+      vi.mocked(apiFetch).mockRejectedValueOnce(new Error('read offline'))
+      await expect(readNotifications(client, { kind: 'all' })).rejects.toThrow('read offline')
+      expect(fetchAgents).toHaveBeenCalledTimes(2)
+      expect(client.getQueryState(['agents'])?.error).toMatchObject({ message: 'metadata offline' })
+      stale.resolve(response())
+      await refetch
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
+  })
+
+  it.each(['confirmed', 'failed'] as const)('preserves invalidated inactive metadata through a %s notification read', async (mode) => {
+    const { client } = seed()
+    const key = ['agents', 'agent-a']
+    const old = { ...agent(client), name: 'Untitled' }
+    const updatedAt = Date.now() - 60_000
+    client.setQueryData(key, old, { updatedAt })
+    await client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' })
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all' }).catch(error => error)
+    let unsubscribe: (() => void) | undefined
+    try {
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: true, dataUpdatedAt: updatedAt })
+      if (mode === 'failed') pending.reject(new Error('read offline'))
+      else pending.resolve(response(state()))
+      await operation
+      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: true, dataUpdatedAt: updatedAt })
+
+      // No fetch was in flight to be captured by interrupted-query recovery.
+      // The next observer must still obtain an unrelated pending rename.
+      const fetchAgent = vi.fn().mockResolvedValue({ ...old, name: 'Renamed' })
+      const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchAgent, staleTime: Infinity })
+      unsubscribe = observer.subscribe(() => {})
+      await waitFor(() => expect(client.getQueryData(key)).toMatchObject({ name: 'Renamed' }))
+      expect(fetchAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      pending.resolve(response(state()))
+      await operation
+      unsubscribe?.()
+      client.clear()
+    }
+  })
+
+  it.each(['confirmed', 'failed'] as const)('does not rewrite an unchanged cache entry during a %s read', async (mode) => {
+    const { client } = seed()
+    const key = ['agents', 'unrelated']
+    const unchanged = { slug: 'unrelated', name: 'Unrelated' }
+    client.setQueryData(key, unchanged, { updatedAt: 123 })
+    await client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' })
+    const before = client.getQueryState(key)
+    if (mode === 'failed') vi.mocked(apiFetch).mockRejectedValueOnce(new Error('read offline'))
+    else vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+    await readNotifications(client, { kind: 'session', sessionId: 's1' }).catch(() => undefined)
+    expect(client.getQueryData(key)).toBe(unchanged)
+    expect(client.getQueryState(key)).toEqual(before)
+    client.clear()
+  })
+
+  it.each([
+    ['retries', 'confirmed'], ['never settles', 'confirmed'],
+    ['retries', 'legacy'], ['never settles', 'legacy'],
+    ['retries', 'failed'], ['never settles', 'failed'],
+    ['pauses offline', 'confirmed'], ['pauses offline', 'legacy'], ['pauses offline', 'failed'],
+  ] as const)('bounds recovery that %s after a %s read so the next write can proceed', async (mode, postResult) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wasOnline = onlineManager.isOnline()
+    const { client } = seed()
+    const stale = deferred()
+    const recovery = deferred()
+    const old = { ...agent(client), name: 'Untitled' }
+    const fetchAgent = vi.fn()
+      .mockImplementationOnce(async () => { await stale.promise; return [old] })
+      .mockImplementation(async () => {
+        if (mode !== 'never settles') throw new Error('metadata offline')
+        await recovery.promise
+        return [old]
+      })
+    const observer = new QueryObserver(client, {
+      queryKey: ['agents'], queryFn: fetchAgent, staleTime: Infinity, retry: 3,
+      retryDelay: mode === 'pauses offline' ? 10 : 1000,
+    })
+    const unsubscribe = observer.subscribe(() => {})
+    let one: Promise<unknown> | undefined
+    let two: Promise<unknown> | undefined
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'], exact: true })
+      vi.mocked(apiFetch).mockImplementation(async () => response(state()))
+      if (postResult === 'failed') vi.mocked(apiFetch).mockRejectedValueOnce(new Error('read offline'))
+      else vi.mocked(apiFetch).mockResolvedValueOnce(response(postResult === 'legacy' ? undefined : state()))
+      let completed = 0
+      one = readNotifications(client, { kind: 'session', sessionId: 's1' })
+        .then(value => ({ value }), error => ({ error }))
+        .finally(() => { completed++ })
+      two = readNotifications(client, { kind: 'notification', id: 'n1' }).then(() => { completed++ })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(apiFetch).toHaveBeenCalledTimes(1)
+      expect(fetchAgent).toHaveBeenCalledTimes(2)
+      if (mode === 'pauses offline') {
+        onlineManager.setOnline(false)
+        await vi.advanceTimersByTimeAsync(50)
+        expect(client.getQueryState(['agents'])?.fetchStatus).toBe('paused')
+      }
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(apiFetch).toHaveBeenCalledTimes(2)
+      expect(completed).toBe(2)
+      if (postResult === 'failed') expect(await one).toMatchObject({ error: new Error('read offline') })
+      else expect(await one).toHaveProperty('value.success', true)
+      expect(client.getQueryState(['agents'])).toMatchObject({ isInvalidated: true, fetchStatus: 'idle' })
+      expect(agent(client).notificationPreview).toBeUndefined()
+
+      // A response from the cancelled recovery cannot reintroduce old unread
+      // state after the subsequent POST; cancelled retries must also stop.
+      const fetches = fetchAgent.mock.calls.length
+      stale.resolve(response())
+      recovery.resolve(response())
+      await refetch
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(fetchAgent).toHaveBeenCalledTimes(fetches)
+      expect(agent(client).notificationPreview).toBeUndefined()
+    } finally {
+      unsubscribe()
+      client.clear()
+      stale.resolve(response())
+      recovery.resolve(response())
+      await Promise.allSettled([one, two])
+      onlineManager.setOnline(wasOnline)
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not cancel a newer fetch or stale a completed/replaced query at the recovery deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { client } = seed()
+    const old = { ...agent(client), name: 'Untitled' }
+    const keys = [['agents'], ['agents', 'a'], ['agents', 'agent-a']]
+    const stale = deferred()
+    const recoveries = keys.map(() => deferred())
+    const newer = deferred()
+    const fetches = keys.map((key, index) => vi.fn()
+      .mockImplementationOnce(async () => { await stale.promise; return key.length === 1 ? [old] : old })
+      .mockImplementationOnce(async () => {
+        await recoveries[index].promise
+        const renamed = { ...old, name: 'Recovered', notificationPreview: undefined }
+        return key.length === 1 ? [renamed] : renamed
+      })
+      .mockImplementation(async () => {
+        await newer.promise
+        return { ...old, name: 'Newer event', notificationPreview: 'new' }
+      }))
+    const unsubscribes = keys.map((key, index) => {
+      client.setQueryData(key, key.length === 1 ? [old] : old)
+      return new QueryObserver(client, { queryKey: key, queryFn: fetches[index], staleTime: Infinity }).subscribe(() => {})
+    })
+    let operation: Promise<unknown> | undefined
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'] })
+      vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+      operation = readNotifications(client, { kind: 'all' })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetches.map(fetch => fetch.mock.calls.length)).toEqual([2, 2, 2])
+
+      recoveries[0].resolve(response())
+      await vi.advanceTimersByTimeAsync(0)
+      expect(agent(client).name).toBe('Recovered')
+      const completed = client.getQueryState(keys[0])
+      const latest = client.invalidateQueries({ queryKey: keys[1], exact: true })
+      expect(fetches[1]).toHaveBeenCalledTimes(3)
+      client.removeQueries({ queryKey: keys[2], exact: true })
+      client.setQueryData(keys[2], { ...old, name: 'Replacement' })
+      const replacement = client.getQueryState(keys[2])
+
+      await vi.advanceTimersByTimeAsync(1500)
+      await operation
+      expect(client.getQueryState(keys[0])).toEqual(completed)
+      expect(client.getQueryState(keys[1])?.fetchStatus).toBe('fetching')
+      expect(client.getQueryState(keys[2])).toEqual(replacement)
+      newer.resolve(response())
+      await latest
+      stale.resolve(response())
+      recoveries.forEach(recovery => recovery.resolve(response()))
+      await refetch
+      await vi.advanceTimersByTimeAsync(0)
+      expect(client.getQueryData(keys[1])).toMatchObject({ name: 'Newer event', notificationPreview: 'new' })
+      expect(client.getQueryData(keys[2])).toMatchObject({ name: 'Replacement' })
+    } finally {
+      unsubscribes.forEach(unsubscribe => unsubscribe())
+      client.clear()
+      stale.resolve(response())
+      recoveries.forEach(recovery => recovery.resolve(response()))
+      newer.resolve(response())
+      await operation
+      vi.useRealTimers()
+    }
+  })
+
+  it('preserves invalidation when a later read cancels a fetch patched by confirmation', async () => {
+    const { client } = seed()
+    const key = ['agents', 'agent-a']
+    const first = deferred()
+    const second = deferred()
+    const stale = deferred()
+    const old = { ...agent(client), name: 'Untitled' }
+    const fetchAgent = vi.fn()
+      .mockImplementationOnce(async () => { await stale.promise; return old })
+      .mockResolvedValue({ ...old, name: 'Renamed', notificationPreview: undefined })
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchAgent, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    vi.mocked(apiFetch).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    let one: Promise<unknown> | undefined
+    let two: Promise<unknown> | undefined
+    try {
+      one = readNotifications(client, { kind: 'notification', id: 'n1' })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      const refetch = client.invalidateQueries({ queryKey: key, exact: true })
+      first.resolve(response(state('n2')))
+      await one
+      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: true, fetchStatus: 'fetching' })
+      expect(client.getQueryData(key)).toMatchObject({ notificationPreview: 'n2' })
+
+      two = readNotifications(client, { kind: 'notification', id: 'unrelated' })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2))
+      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: true, fetchStatus: 'idle' })
+      expect(client.getQueryData(key)).toMatchObject({ notificationPreview: 'n2' })
+      second.resolve(response(state('n2')))
+      await two
+      expect(client.getQueryData(key)).toMatchObject({ name: 'Renamed' })
+      stale.resolve(response())
+      await refetch
+    } finally {
+      first.resolve(response(state()))
+      second.resolve(response(state()))
+      stale.resolve(response())
+      await Promise.allSettled([one, two])
+      unsubscribe()
+      client.clear()
+    }
+  })
+
+  it('does not dispatch the POST if the workspace changes while cancellation settles', async () => {
+    const { client } = seed()
+    const cancelled = deferred()
+    const cancelQueries = client.cancelQueries.bind(client)
+    const cancel = vi.spyOn(client, 'cancelQueries').mockImplementationOnce(async filters => {
+      await cancelQueries(filters)
+      await cancelled.promise
+    })
+    const operation = readNotifications(client, { kind: 'all' })
+    const rejected = expect(operation).rejects.toThrow('Workspace changed')
+    await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1))
+    client.clear()
+    client.setQueryData(['agents'], [{ slug: 'other-workspace' }])
+    cancelled.resolve(response())
+    await rejected
+    expect(apiFetch).not.toHaveBeenCalled()
+    expect(client.getQueryData(['agents'])).toEqual([{ slug: 'other-workspace' }])
+  })
+
+  it('does not invalidate a recreated query with the same key during recovery', async () => {
+    const { client } = seed()
+    const stale = deferred()
+    const post = deferred()
+    const key = ['agents', 'agent-a']
+    const fetchAgent = vi.fn(async () => { await stale.promise; return agent(client) })
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchAgent, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const refetch = client.invalidateQueries({ queryKey: key, exact: true })
+      vi.mocked(apiFetch).mockReturnValueOnce(post.promise)
+      const operation = readNotifications(client, { kind: 'all' })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      client.removeQueries({ queryKey: key, exact: true })
+      client.setQueryData(key, { ...agent(client), name: 'Replacement' })
+      post.resolve(response(state()))
+      await operation
+      stale.resolve(response())
+      await refetch
+      expect(fetchAgent).toHaveBeenCalledTimes(1)
+      expect(client.getQueryData(key)).toMatchObject({ name: 'Replacement' })
+      expect(client.getQueryState(key)?.isInvalidated).toBe(false)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
   })
 
   it('clears the matching session preview and confirms remaining unread sessions', async () => {

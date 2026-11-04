@@ -40,6 +40,10 @@ const { app, user } = vi.hoisted(() => {
       updateSettings: record('record'),
       invalidate: record('refresh agents'),
       session: vi.fn(async () => { calls.push('session') }),
+      skillsets: [] as Array<{ id: string }>,
+      skillsetsFailed: false,
+      rereadSkillsets: vi.fn(),
+      addSkillset: vi.fn(async () => {}),
     },
     user: { isAuthMode: false, isAdmin: false },
   }
@@ -56,6 +60,10 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useDeleteAgent: () => ({ mutateAsync: app.deleteAgent }),
   useStartAgent: () => ({ mutate: app.startAgent }),
   useUpdateAgent: () => ({ mutateAsync: app.updateAgent }),
+}))
+vi.mock('@renderer/hooks/use-skillsets', () => ({
+  useSkillsets: () => ({ data: app.skillsets, isError: app.skillsetsFailed, refetch: app.rereadSkillsets }),
+  useAddSkillset: () => ({ mutateAsync: app.addSkillset }),
 }))
 vi.mock('@renderer/hooks/use-mounts', () => ({
   useAgentMounts: (slug: string) => ({
@@ -114,6 +122,7 @@ import { TeamBrainPage } from './team-brain-page'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { getTeamBrainState, resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_INITIAL_STATE } from '@renderer/lib/team-brain/team-brain-schema'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 
 const agent = (slug: string) => ({ slug, displaySlug: slug, name: slug[0].toUpperCase() + slug.slice(1), status: 'stopped', avatar: null })
 
@@ -125,6 +134,8 @@ beforeEach(() => {
   app.upkeepFails = false
   app.health = 'ok'
   app.pollFailed = false
+  app.skillsets = [{ id: DEFAULT_PUBLIC_SKILLSET.id }]
+  app.skillsetsFailed = false
   Object.assign(user, { isAuthMode: false, isAdmin: false })
 })
 afterEach(() => {
@@ -165,6 +176,54 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
   })
 
+  it('names a missing Gamut Public Skillset before any drive set-up, and adds it as new workspaces have it', async () => {
+    const clicker = userEvent.setup()
+    app.skillsets = [{ id: 'github-com-acme-skills' }]
+    app.addSkillset.mockImplementationOnce(async () => {
+      app.calls.push('add skillset')
+      app.skillsets = [...app.skillsets, { id: DEFAULT_PUBLIC_SKILLSET.id }]
+    })
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    expect(screen.getByTestId('team-brain-next')).toBeDisabled()
+
+    await clicker.click(within(screen.getByTestId('team-brain-public-skillset-missing')).getByRole('button'))
+    expect(app.addSkillset).toHaveBeenCalledWith({ url: DEFAULT_PUBLIC_SKILLSET.url, provider: DEFAULT_PUBLIC_SKILLSET.provider })
+    await waitFor(() => expect(screen.queryByTestId('team-brain-public-skillset-missing')).toBeNull())
+    expect(screen.getByTestId('team-brain-next')).toBeEnabled()
+  })
+
+  it('keeps the notice and reads both lists again when the add fails, since another admin may have added it', async () => {
+    const clicker = userEvent.setup()
+    app.skillsets = [{ id: 'github-com-acme-skills' }]
+    app.addSkillset.mockRejectedValueOnce(new Error('Failed to download skillset: 403 Forbidden'))
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    const notice = screen.getByTestId('team-brain-public-skillset-missing')
+    await clicker.click(within(notice).getByRole('button'))
+
+    expect(await within(notice).findByText('Failed to download skillset: 403 Forbidden')).toBeInTheDocument()
+    expect(app.invalidate).toHaveBeenCalledWith({ queryKey: ['skillsets'] })
+    expect(app.invalidate).toHaveBeenCalledWith({ queryKey: ['discoverable-agents'] })
+    expect(screen.getByTestId('team-brain-next')).toBeDisabled()
+  })
+
+  it('holds the first step while the skillset list cannot be read, even with an older copy in hand', async () => {
+    const clicker = userEvent.setup()
+    app.skillsetsFailed = true
+    app.skillsets = [{ id: 'github-com-acme-skills' }]
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    expect(screen.getByText('Couldn’t read this workspace’s skillsets.')).toBeInTheDocument()
+    expect(screen.queryByTestId('team-brain-public-skillset-missing')).toBeNull()
+    expect(screen.getByTestId('team-brain-next')).toBeDisabled()
+    await clicker.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(app.rereadSkillsets).toHaveBeenCalled()
+  })
+
   it('prepares on the saved drive, and launches in order: instructions, record, upkeep, agent list, the chosen agents, then the session', async () => {
     const clicker = userEvent.setup()
     // The record marks the agent once the agent list refreshes.
@@ -177,9 +236,10 @@ describe('TeamBrainPage', () => {
     await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
     expect(app.calls).toEqual(['install', 'mount team-brain', 'warm-start'])
 
-    // Every agent off, then planner off, weekly.
+    // Every agent off, then writer on, weekly.
     await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
-    await clicker.click(screen.getByTestId('team-brain-agent-planner'))
+    expect(screen.getByTestId('team-brain-agent-planner')).not.toBeChecked()
+    await clicker.click(screen.getByTestId('team-brain-agent-writer'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-schedule-weekly'))
     await clicker.click(screen.getByTestId('team-brain-next'))

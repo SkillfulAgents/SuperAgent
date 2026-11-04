@@ -16,7 +16,7 @@ const CATALOG: ModelDefinition[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
-  // Speeds are catalog-declared per model: Opus 4.8 offers fast mode.
+  // Speeds are catalog-declared per model; this fixture's Opus offers fast mode.
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, supportedSpeeds: ['normal', 'fast'] },
 ]
 

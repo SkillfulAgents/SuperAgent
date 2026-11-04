@@ -8,6 +8,7 @@ import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 import { background } from '@shared/lib/background'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -123,6 +124,11 @@ export function clearIndicator(managed: ManagedConnector): void {
   managed.indicatorShown = false
   background(managed.connector.stopWorking(managed.chatId).catch(() => {}), { name: 'chat-delivery.stop-working' })
 }
+
+/** A streamed reply is edited at most once per this interval. */
+export const STREAM_UPDATE_MS = 1000
+/** Chats notify with a message's first post only, so it waits until it reads as text. */
+export const STREAM_FIRST_POST_CHARS = 80
 
 /** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
 export const INDICATOR_TICK_MS = 1000
@@ -272,7 +278,8 @@ export async function processSSEEvent(
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()
-      if (now - managed.streamingState.lastUpdateTime >= 1000) {
+      const { currentMessageId, accumulatedText, lastUpdateTime } = managed.streamingState
+      if (now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)) {
         try {
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
@@ -474,6 +481,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     accumulatedText: '',
     lastUpdateTime: 0,
   }
+  if (finalText.trim() === NO_REPLY_TOKEN) return
 
   try {
     if (messageId) {

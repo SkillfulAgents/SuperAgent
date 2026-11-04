@@ -77,11 +77,18 @@ function appDatabaseDriver(): DatabaseDriver {
 export interface OpenDatabaseOptions {
   /** Defaults to better-sqlite3 at `getDatabasePath()`. */
   driver?: DatabaseDriver
+  /**
+   * False opens the database as it is, for a host whose processes start often and that brings the
+   * schema and data up to date once beforehand (one `openDatabase()` with migrations, when it
+   * deploys). Default true.
+   */
+  migrate?: boolean
 }
 
 /**
  * Open the database, bring its schema up to date from the bundled
- * migrations, run the data migrations, and publish the handle for `getDb()`.
+ * migrations, run the data migrations (unless `migrate: false`), and publish
+ * the handle for `getDb()`.
  * A second call while open returns the same handle. A failure is reported as
  * fatal and rethrown: nothing can run without the database.
  */
@@ -111,11 +118,17 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
     throw err
   }
 
+  if (options.migrate !== false) await migrate(handle, driver.name, dbPath)
+  opened = handle
+  return handle.db
+}
+
+async function migrate(handle: OpenedDatabase, driverName: string, dbPath: string | undefined): Promise<void> {
   try {
     await migrateFromBundle(handle.db)
   } catch (err) {
     captureException(err, {
-      tags: { component: 'database', operation: 'migrate', driver: driver.name },
+      tags: { component: 'database', operation: 'migrate', driver: driverName },
       extra: { dbPath, migrations: migrationBundle.length },
       level: 'fatal',
     })
@@ -132,16 +145,13 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
     }
   } catch (err) {
     captureException(err, {
-      tags: { component: 'database', operation: 'data-migrate', driver: driver.name },
+      tags: { component: 'database', operation: 'data-migrate', driver: driverName },
       extra: { dbPath },
       level: 'fatal',
     })
     await handle.close()
     throw err
   }
-
-  opened = handle
-  return handle.db
 }
 
 /** Close the database and forget it; `getDb()` throws again until the next `openDatabase()`. */
