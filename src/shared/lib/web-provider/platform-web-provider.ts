@@ -1,8 +1,8 @@
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import type { ApiKeySettings, ApiKeyStatus } from '../config/settings'
 import { NonRetryableError } from '../utils/retry'
-import { BaseWebProvider } from './base-web-provider'
+import { BaseWebProvider, type WebProviderSettings } from './base-web-provider'
 import {
   buildExaContentsBody,
   buildExaSearchBody,
@@ -44,8 +44,18 @@ export class PlatformWebProvider extends BaseWebProvider {
     return { isConfigured: false, source: 'none' }
   }
 
+  override apiKeyStatusFrom(settings: WebProviderSettings): ApiKeyStatus {
+    if (platformAccessTokenFrom(settings)) return { isConfigured: true, source: 'settings' }
+    if (process.env[this.envVarName]) return { isConfigured: true, source: 'env' }
+    return { isConfigured: false, source: 'none' }
+  }
+
   override async getEffectiveApiKey(): Promise<string | undefined> {
     return (await getPlatformAccessToken()) ?? process.env[this.envVarName] ?? undefined
+  }
+
+  override effectiveApiKeyFrom(settings: WebProviderSettings): string | undefined {
+    return platformAccessTokenFrom(settings) ?? process.env[this.envVarName] ?? undefined
   }
 
   private async requireToken(surface: 'search' | 'fetch'): Promise<string> {

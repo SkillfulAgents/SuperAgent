@@ -1,4 +1,4 @@
-import { getSettings } from '../config/settings'
+import { getSettings, type AppSettings } from '../config/settings'
 import type { BaseWebProvider } from './base-web-provider'
 import { ExaWebProvider } from './exa-web-provider'
 import { ParallelWebProvider } from './parallel-web-provider'
@@ -31,15 +31,25 @@ export function findWebProvider(id: string): BaseWebProvider | null {
  * Unset → Platform if Gamut login, else native. Exa is never auto-selected.
  */
 export async function resolveEffectiveWebVendor(): Promise<WebProviderId> {
-  const stored = (await getSettings()).webProvider
+  return resolveEffectiveWebVendorFrom(await getSettings())
+}
+
+/** {@link resolveEffectiveWebVendor} from settings the caller already read. */
+export function resolveEffectiveWebVendorFrom(settings: Pick<AppSettings, 'webProvider' | 'apiKeys' | 'platformAuth'>): WebProviderId {
+  const stored = settings.webProvider
   if (stored === 'native') return 'native'
   if (stored && isVendorId(stored)) return stored
-  if ((await WEB_PROVIDERS.platform.getApiKeyStatus()).isConfigured) return 'platform'
+  if (WEB_PROVIDERS.platform.apiKeyStatusFrom(settings).isConfigured) return 'platform'
   return 'native'
 }
 
 /** Active host provider, or null when effective vendor is native. */
 export async function getActiveWebProvider(): Promise<BaseWebProvider | null> {
-  const id = await resolveEffectiveWebVendor()
+  return activeWebProviderFrom(await getSettings())
+}
+
+/** {@link getActiveWebProvider} from settings the caller already read. */
+export function activeWebProviderFrom(settings: Pick<AppSettings, 'webProvider' | 'apiKeys' | 'platformAuth'>): BaseWebProvider | null {
+  const id = resolveEffectiveWebVendorFrom(settings)
   return isVendorId(id) ? WEB_PROVIDERS[id] : null
 }
