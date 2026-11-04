@@ -135,6 +135,9 @@ export async function removeIntegrationWebhooks(record: AgentIntegrationRecord, 
   return true
 }
 
+/** The relay consumer an integration's connection receives through. */
+export const integrationRelayConsumerId = (integrationId: string) => `integration:${integrationId}`
+
 /** Every result but `retry` acknowledges the event to the relay. */
 export function relayAcceptResult(result: IntegrationInputResult): RelayAcceptResult {
   return result === 'rejected' ? 'discard' : result
@@ -165,7 +168,7 @@ export class IntegrationRelays {
     } else {
       const created: Registration = { handle: null as unknown as RelayConsumerHandle, accept }
       created.handle = this.relay().register({
-        id: `integration:${integrationId}`,
+        id: integrationRelayConsumerId(integrationId),
         scope: binding.scope,
         endpointIds: [binding.endpointId],
         // Whichever connection is attached; none while it reconnects.

@@ -6,18 +6,24 @@ import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
-import { background } from '@shared/lib/background'
+import { getJobManager, type Job } from './job-manager'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { inArray } from 'drizzle-orm'
 
 class SessionAutoDeleteMonitor {
-  private intervalId: NodeJS.Timeout | null = null
-  private startupTimeoutId: NodeJS.Timeout | null = null
   private isRunning = false
   private isProcessing = false
   private pollIntervalMs = 4 * 60 * 60 * 1000 // Every 4 hours
   private startupDelayMs = 30_000 // 30 seconds after startup
+  private readonly job: Job = {
+    id: 'session-auto-delete',
+    intervalMs: this.pollIntervalMs,
+    startDelayMs: this.startupDelayMs,
+    run: () => this.cleanupAllAgents().catch((error) => {
+      console.error('[SessionAutoDeleteMonitor] Error in cleanup cycle:', error)
+    }),
+  }
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -28,18 +34,7 @@ class SessionAutoDeleteMonitor {
     this.isRunning = true
     console.log('[SessionAutoDeleteMonitor] Starting monitor...')
 
-    this.startupTimeoutId = setTimeout(() => {
-      this.startupTimeoutId = null
-      background(this.cleanupAllAgents().catch((error) => {
-        console.error('[SessionAutoDeleteMonitor] Error in initial cleanup:', error)
-      }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
-
-      this.intervalId = setInterval(() => {
-        background(this.cleanupAllAgents().catch((error) => {
-          console.error('[SessionAutoDeleteMonitor] Error in cleanup cycle:', error)
-        }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
-      }, this.pollIntervalMs)
-    }, this.startupDelayMs)
+    getJobManager().register(this.job)
 
     console.log(
       `[SessionAutoDeleteMonitor] Monitor started, first run in ${this.startupDelayMs / 1000}s, then every ${this.pollIntervalMs / 3_600_000}h`
@@ -47,14 +42,7 @@ class SessionAutoDeleteMonitor {
   }
 
   stop(): void {
-    if (this.startupTimeoutId) {
-      clearTimeout(this.startupTimeoutId)
-      this.startupTimeoutId = null
-    }
-    if (this.intervalId) {
-      clearInterval(this.intervalId)
-      this.intervalId = null
-    }
+    getJobManager().unregister(this.job.id)
     this.isRunning = false
     console.log('[SessionAutoDeleteMonitor] Monitor stopped')
   }

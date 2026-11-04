@@ -4,11 +4,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // SUP-224 — Task scheduler startup must not wedge when the initial overdue scan
 // fails.
 //
-// The scheduler now installs its periodic poll loop UNCONDITIONALLY (before the
-// immediate catch-up scan), so a transient failure in that scan (e.g. a SQLite
-// hiccup in getDueTasks) can't prevent polling. start() does NOT reject on such
-// a failure — it reports to Sentry and lets the poll loop retry on the next
-// tick, so isActive() stays true and the scheduler self-heals.
+// start() only registers the scheduler's job; the job's first run is the
+// catch-up scan, and every later run polls. A failed scan is reported to Sentry
+// and retried on the next poll, so isActive() stays true and the scheduler
+// self-heals.
 //
 // Only the scheduled-task-service boundary and the error-reporting sink need
 // mocking; when scans return []/throw, executeTask is never reached, so the
@@ -50,44 +49,39 @@ describe('TaskScheduler startup resilience (SUP-224)', () => {
     vi.useRealTimers()
   })
 
-  it('does not wedge when the initial overdue scan fails — stays active and self-heals on the next poll', async () => {
+  it('does not wedge when the catch-up scan fails — stays active and self-heals on the next poll', async () => {
     vi.useFakeTimers()
-    // The immediate catch-up scan throws once (transient); later poll scans succeed.
+    // The catch-up scan throws once (transient); later poll scans succeed.
     mockGetDueTasks
       .mockRejectedValueOnce(new Error('transient SQLite error'))
       .mockResolvedValue([])
 
-    // start() must NOT reject — a failed catch-up scan is non-fatal now.
     await expect(taskScheduler.start()).resolves.toBeUndefined()
+    await vi.advanceTimersByTimeAsync(0)
 
-    // The bug was isActive() going false (or, pre-#231, wedged true with no
-    // interval). Now the poll loop is installed regardless, so it stays active.
     expect(taskScheduler.isActive()).toBe(true)
-
-    // The failure was reported to Sentry, tagged as the initial scan.
     expect(mockCaptureException).toHaveBeenCalledTimes(1)
     expect(mockCaptureException.mock.calls[0][1]).toMatchObject({
-      tags: { component: 'task-scheduler', phase: 'initial-scan' },
+      tags: { component: 'task-scheduler', phase: 'poll' },
     })
 
     // The poll loop is real: advancing one interval re-scans (the self-heal).
-    const callsAfterStart = mockGetDueTasks.mock.calls.length
+    const callsAfterScan = mockGetDueTasks.mock.calls.length
     await vi.advanceTimersByTimeAsync(POLL_MS)
-    expect(mockGetDueTasks.mock.calls.length).toBeGreaterThan(callsAfterStart)
+    expect(mockGetDueTasks.mock.calls.length).toBeGreaterThan(callsAfterScan)
   })
 
   it('reports a failed poll cycle to Sentry and keeps polling', async () => {
     vi.useFakeTimers()
     mockGetDueTasks
-      .mockResolvedValueOnce([]) // immediate catch-up scan succeeds
-      .mockRejectedValueOnce(new Error('poll-cycle SQLite error')) // first poll tick fails
+      .mockResolvedValueOnce([]) // catch-up scan succeeds
+      .mockRejectedValueOnce(new Error('poll-cycle SQLite error')) // first poll fails
       .mockResolvedValue([]) // recovers
 
     await taskScheduler.start()
-    expect(taskScheduler.isActive()).toBe(true)
-    expect(mockCaptureException).not.toHaveBeenCalled() // clean startup reports nothing
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockCaptureException).not.toHaveBeenCalled() // clean catch-up reports nothing
 
-    // Fire the failing poll tick.
     await vi.advanceTimersByTimeAsync(POLL_MS)
     expect(mockCaptureException).toHaveBeenCalledWith(
       expect.anything(),
@@ -100,25 +94,23 @@ describe('TaskScheduler startup resilience (SUP-224)', () => {
     expect(mockGetDueTasks.mock.calls.length).toBeGreaterThan(calls)
   })
 
-  it('installs the polling loop and stays active on a clean startup', async () => {
+  it('scans at once, then polls, and ignores a second start()', async () => {
     vi.useFakeTimers()
     mockGetDueTasks.mockResolvedValue([])
 
     await taskScheduler.start()
     expect(taskScheduler.isActive()).toBe(true)
-
-    // start() runs one immediate scan; the interval should add more over time.
-    const callsAfterStart = mockGetDueTasks.mock.calls.length
-    expect(callsAfterStart).toBeGreaterThan(0)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mockGetDueTasks).toHaveBeenCalledTimes(1)
 
     await vi.advanceTimersByTimeAsync(POLL_MS)
-    expect(mockGetDueTasks.mock.calls.length).toBeGreaterThan(callsAfterStart)
+    expect(mockGetDueTasks).toHaveBeenCalledTimes(2)
 
-    // A redundant start() while active is a no-op and must not reset state or
-    // install a second interval.
+    // A redundant start() while active is a no-op and must not add a second job.
     await taskScheduler.start()
-    expect(taskScheduler.isActive()).toBe(true)
-    expect(mockCaptureException).not.toHaveBeenCalled() // the clean path never reports
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    expect(mockGetDueTasks).toHaveBeenCalledTimes(3)
+    expect(mockCaptureException).not.toHaveBeenCalled()
 
     taskScheduler.stop()
     expect(taskScheduler.isActive()).toBe(false)
