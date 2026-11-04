@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature: Agent successfully opened a browser, navigated to example.com, retrieved the page title \"Example Domain\", and returned the correct response.",
+  "steps": [
+    "1. Navigated to http://localhost:47891 - App loaded successfully with Gamut interface showing sidebar with agents and main chat area.",
+    "2. Found and clicked on \"QA-20261104-232637-f3py\" agent in sidebar - Agent page opened successfully, showing the chat interface and configuration panels.",
+    "3. Clicked on chat input field - Input field became focused and active, ready for message entry.",
+    "4. Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message appeared correctly in the input field.",
+    "5. Clicked Send button - Message was sent successfully, agent status changed from \"idle\" to \"working\", and a new session was created titled \"Check Example.com Page Title\".",
+    "6. Waited for agent response - Agent completed work in 5 seconds (well within 3-minute timeout), using 3 tool calls and 160,436 tokens.",
+    "7. Verified response content - Agent returned response: \"The page title is 'Example Domain'. The page at https://example.com loaded normally, and I've closed the browser.\" Response explicitly mentions \"Example Domain\" as required."
+  ],
+  "bugs": [],
+  "durationMs": 78953,
+  "sessionId": "4443c97c-92fa-410d-a771-c18549b31b6a",
+  "cost": {
+    "inputTokens": 410,
+    "outputTokens": 11715,
+    "cacheCreationTokens": 95195,
+    "cacheReadTokens": 1281382,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.306117
+  }
+}
