@@ -3,7 +3,7 @@ import { apiJson } from '@renderer/lib/api'
 import type { ApiAgent } from '@shared/lib/types/api'
 
 /**
- * Shared TanStack Query options consumed by route LOADERS.
+ * Shared TanStack Query options consumed by route loaders and data hooks.
  *
  * The query keys MUST match the existing data hooks so the loader's prefetch and
  * the component's `useQuery` resolve to the SAME cache entry — the loader warms
@@ -16,9 +16,8 @@ import type { ApiAgent } from '@shared/lib/types/api'
  * currently unused by any loader; a future session loader must resolve the slug
  * the same way (via the cached agents list) to land on `useSession`'s entry.
  *
- * Both the loader's `apiJson` and useAgent's queryFn throw `HttpError`, so a
- * 403/404 maps to `notFound()` even when the loader joins an observer's fetch.
- * Both queryFns hit the same endpoint and shape, so they coexist on one key.
+ * `useAgent` uses this same queryFn, so a 403/404 maps to `notFound()` even
+ * when the loader joins the hook's already-running request.
  */
 export const agentQuery = (slug: string) =>
   queryOptions({
@@ -27,7 +26,7 @@ export const agentQuery = (slug: string) =>
     // Loader fetch: a 403/404 is definitive (don't retry → the route resolves to
     // notFound immediately); a transient 5xx surfaces on the errorComponent,
     // which offers a manual retry. The component's own useAgent observer keeps
-    // transient retries for background refetches, but never retries 403/404.
+    // transient retries for background refetches, but not definitive 4xx errors.
     retry: false,
   })
 

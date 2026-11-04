@@ -15,7 +15,7 @@ import { agentQuery } from './query-options'
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('an agent loader joining its mounted component query', () => {
-  it.each([403, 404, 503])('retains HTTP %s when the component starts the shared request first', async (status) => {
+  it.each([400, 401, 403, 404, 408, 429, 503])('retains HTTP %s when the component starts the shared request first', async (status) => {
     let respond!: (response: Response) => void
     const pending = new Promise<Response>(resolve => { respond = resolve })
     const fetch = vi.fn(() => pending)
@@ -39,7 +39,7 @@ describe('an agent loader joining its mounted component query', () => {
       expect((result.current.error as HttpError).status).toBe(status)
       // Access decisions finish immediately; transient failures retain the
       // component's three retries even when a loader joins the same request.
-      expect(fetch).toHaveBeenCalledTimes(status === 503 ? 4 : 1)
+      expect(fetch).toHaveBeenCalledTimes([408, 429, 503].includes(status) ? 4 : 1)
     } finally {
       unmount()
       client.clear()

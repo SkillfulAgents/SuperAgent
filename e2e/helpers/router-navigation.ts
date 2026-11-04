@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { createResponseGuard } from './response-guard'
 
 export interface RouterNavigationContext {
   page: Page
@@ -195,7 +196,7 @@ export async function checkLazySessionDraftHistory(context: RouterNavigationCont
 }
 
 /** Entering a session must not discard a simultaneous agent metadata refresh. */
-export async function checkRenameDuringSessionRead(context: RouterNavigationContext) {
+export async function checkRenameDuringSessionRead(context: RouterNavigationContext, recovery: 'healthy' | 'stalled' = 'healthy') {
   const { page, request, apiBaseUrl, navigate } = context
   const agent = await createAgent(context, 'Router rename before')
   const firstMessage = 'Persisted rename recovery validation message'
@@ -212,70 +213,109 @@ export async function checkRenameDuringSessionRead(context: RouterNavigationCont
     }),
     initialRead.then(response => expect(response.ok()).toBe(true)),
   ])
+  const nextMessage = 'Persisted second session while metadata recovery is stalled'
+  let nextSession: z.infer<typeof sessionSchema> | undefined
+  if (recovery === 'stalled') {
+    const nextCreated = await request.post(`${apiBaseUrl}/api/agents/${agent.slug}/sessions`, { data: { message: nextMessage } })
+    expect(nextCreated.ok()).toBe(true)
+    const createdSession = sessionSchema.parse(await nextCreated.json())
+    nextSession = createdSession
+    const initialNextRead = page.waitForResponse(response => parseUrl(response.url()).pathname === `/api/notifications/read-by-session/${createdSession.id}` && response.request().method() === 'POST')
+    await Promise.all([
+      navigate(`/agents/${agent.displaySlug}/sessions/${nextSession.id}`).then(async () => {
+        await sessionPage.waitForResponse()
+        await expect(sessionPage.getStopButton()).toBeHidden()
+      }),
+      initialNextRead.then(response => expect(response.ok()).toBe(true)),
+    ])
+  }
   await page.getByTestId('agent-breadcrumb').click()
   await expectAgentHome(page, agent)
   await new AgentPage(page).expandAgent(agent.name)
 
   const renamedName = `Router rename after ${randomUUID()}`
   const metadataEndpoint = new RegExp(`/api/agents(?:/(?:${agent.slug}|${agent.displaySlug}))?$`)
-  const readEndpoint = new RegExp(`${readPath}$`)
+  const sessionIds = [session.id, ...(nextSession ? [nextSession.id] : [])]
+  const readEndpoint = new RegExp(`/api/notifications/read-by-session/(?:${sessionIds.join('|')})$`)
   const release = deferred()
-  let readCompleted = false
+  const readCompleted = new Set<string>()
+  let firstReadReturned = false
   const heldPaths = new Set<string>()
   let holding = true
   let held = 0
   let delivered = 0
   let recoveryReads = 0
-  const metadataHandler = async (route: Route) => {
+  const responses = createResponseGuard()
+  const metadataHandler = (route: Route) => {
     if (route.request().method() !== 'GET') return route.continue()
-    const response = await route.fetch()
-    const body = await response.json()
-    const containsRename = Array.isArray(body)
-      ? z.array(agentSchema).parse(body).some(row => row.slug === agent.slug && row.name === renamedName)
-      : agentSchema.parse(body).name === renamedName
-    if (containsRename && holding) {
-      held++
-      heldPaths.add(parseUrl(route.request().url()).pathname)
-      await release.promise
-      try { await route.fulfill({ response }) } finally { delivered++ }
-    } else {
-      if (containsRename) recoveryReads++
-      await route.fulfill({ response })
-    }
+    const startedAfterRead = firstReadReturned
+    return responses.intercept(async (route, response) => {
+      const body = await response.json()
+      const containsRename = Array.isArray(body)
+        ? z.array(agentSchema).parse(body).some(row => row.slug === agent.slug && row.name === renamedName)
+        : agentSchema.parse(body).name === renamedName
+      if (containsRename && startedAfterRead) recoveryReads++
+      if (containsRename && holding) {
+        held++
+        heldPaths.add(parseUrl(route.request().url()).pathname)
+        await release.promise
+        try { await route.fulfill({ response }) } finally { delivered++ }
+      } else {
+        await route.fulfill({ response })
+      }
+    })(route)
   }
-  const readHandler = async (route: Route) => {
-    const response = await route.fetch()
-    expect(response.ok()).toBe(true)
-    // Only the interrupted generation is held. Recovery GETs triggered by the
-    // real POST's confirmation must be free to return the authoritative name.
-    holding = false
+  const readHandler = responses.intercept(async (route, response) => {
+    // The healthy case releases recovery GETs after the real POST. The stalled
+    // case holds those too, to prove they cannot block the next session's read.
+    if (recovery === 'healthy') holding = false
+    if (parseUrl(route.request().url()).pathname === readPath) firstReadReturned = true
     await route.fulfill({ response })
-    readCompleted = true
-  }
+    readCompleted.add(parseUrl(route.request().url()).pathname)
+  })
   await page.route(metadataEndpoint, metadataHandler)
   await page.route(readEndpoint, readHandler)
   try {
-    const renameResponse = page.waitForResponse(response => parseUrl(response.url()).pathname === `/api/agents/${agent.slug}` && response.request().method() === 'PUT')
-    await page.getByTestId('agent-name').click()
-    await page.getByTestId('agent-name-input').fill(renamedName)
-    await page.getByTestId('agent-name-save').click()
-    const renamed = await renameResponse
-    expect(renamed.ok()).toBe(true)
-    expect(agentSchema.parse(await renamed.json()).name).toBe(renamedName)
-    await expect.poll(() => heldPaths.has('/api/agents') && heldPaths.has(`/api/agents/${agent.displaySlug}`)).toBe(true)
-    await expect(page.getByTestId('agent-breadcrumb')).toHaveText(agent.name)
+    await responses.run(async () => {
+      const renameResponse = page.waitForResponse(response => parseUrl(response.url()).pathname === `/api/agents/${agent.slug}` && response.request().method() === 'PUT')
+      await page.getByTestId('agent-name').click()
+      await page.getByTestId('agent-name-input').fill(renamedName)
+      await page.getByTestId('agent-name-save').click()
+      const renamed = await renameResponse
+      expect(renamed.ok()).toBe(true)
+      expect(agentSchema.parse(await renamed.json()).name).toBe(renamedName)
+      await expect.poll(() => heldPaths.has('/api/agents') && heldPaths.has(`/api/agents/${agent.displaySlug}`)).toBe(true)
+      await expect(page.getByTestId('agent-breadcrumb')).toHaveText(agent.name)
 
-    await page.getByTestId(`session-item-${session.id}`).click()
-    await sessionPage.expectUserMessage(firstMessage)
-    await expect.poll(() => readCompleted).toBe(true)
-    release.resolve()
-    await expect.poll(() => delivered).toBe(held)
-    await expect(page.getByTestId('agent-breadcrumb')).toHaveText(renamedName)
-    await expect(new AgentPage(page).getAgentItem(renamedName)).toBeVisible()
-    expect(recoveryReads).toBeGreaterThan(0)
-    await expectAgentRoute(page, agent, `/sessions/${session.id}`)
-    await page.getByTestId('agent-breadcrumb').click()
-    await expectAgentHome(page, { ...agent, name: renamedName })
+      await page.getByTestId(`session-item-${session.id}`).click()
+      await sessionPage.expectUserMessage(firstMessage)
+      await expect.poll(() => readCompleted.has(readPath)).toBe(true)
+      if (nextSession) {
+        const nextReadPath = `/api/notifications/read-by-session/${nextSession.id}`
+        await expect.poll(() => recoveryReads).toBeGreaterThan(0)
+        expect(delivered).toBe(0)
+        await page.getByTestId(`session-item-${nextSession.id}`).click()
+        await sessionPage.expectUserMessage(nextMessage)
+        await expect.poll(() => readCompleted.has(nextReadPath), {
+          timeout: 5000,
+          message: 'A stalled metadata recovery must not block the next session read',
+        }).toBe(true)
+        expect(delivered).toBe(0)
+        holding = false
+      }
+      release.resolve()
+      await expect.poll(() => delivered).toBe(held)
+      if (nextSession) {
+        await page.reload()
+        await sessionPage.expectUserMessage(nextMessage)
+      }
+      await expect(page.getByTestId('agent-breadcrumb')).toHaveText(renamedName)
+      await expect(new AgentPage(page).getAgentItem(renamedName)).toBeVisible()
+      expect(recoveryReads).toBeGreaterThan(0)
+      await expectAgentRoute(page, agent, `/sessions/${nextSession?.id ?? session.id}`)
+      await page.getByTestId('agent-breadcrumb').click()
+      await expectAgentHome(page, { ...agent, name: renamedName })
+    })
   } finally {
     holding = false
     release.resolve()
@@ -430,6 +470,7 @@ export const routerNavigationScenarios = [
   ['a late failed loader cannot replace the next agent', (context: RouterNavigationContext) => checkSupersededAgentLoader(context, 'error')],
   ['lazy route revisits and back/forward preserve independent composer drafts', checkLazySessionDraftHistory],
   ['session notification reads recover an interrupted agent rename', checkRenameDuringSessionRead],
+  ['stalled metadata recovery cannot block the next session notification read', (context: RouterNavigationContext) => checkRenameDuringSessionRead(context, 'stalled')],
   ['deep links retain search across redirects, reload and history, and 404s recover', checkDeepLinksSearchAndNotFound],
   ['AppLink modifiers and ordinary history navigation use the intended window', checkAppLinkModifiers],
 ] as const

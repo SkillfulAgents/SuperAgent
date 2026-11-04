@@ -57,6 +57,7 @@ import type { UserContextValue } from '@renderer/context/user-context'
  */
 
 const userStub = {
+  authGeneration: {},
   user: null,
   isAuthenticated: false,
   isAdmin: false,

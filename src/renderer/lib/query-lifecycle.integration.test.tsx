@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
 vi.mock('./api', async () => ({
   HttpError: (await import('./http-error')).HttpError,
   apiFetch: state.apiFetch,
+  apiJson: async (path: string) => (await state.apiFetch(path)).json(),
   clearRedirectStash: vi.fn(),
   markDeliberateSignOut: vi.fn(),
   clearDeliberateSignOut: vi.fn(),
