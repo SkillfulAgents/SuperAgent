@@ -25,7 +25,6 @@ import {
   getIntegration,
   updateIntegrationStatus,
   getIntegrationSession,
-  getIntegrationSessionBySessionId,
   createIntegrationSession,
   updateIntegrationSessionName,
   archiveIntegrationSession,
@@ -35,7 +34,6 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from './store'
-import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -154,7 +152,6 @@ export class AgentIntegrationManager {
   private isRunning = false
   private authorizationUnsubscribe?: () => void
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
-  private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
   // Integrations with a rebuild in flight. Reconcile passes (5-min tick, resume,
@@ -254,8 +251,6 @@ export class AgentIntegrationManager {
       }), { name: 'integration-manager.health-check' })
     }, HEALTH_CHECK_INTERVAL_MS)
 
-    this.subscribeGlobalNotifications()
-
     // Positive start signal: startup.ts only logs start() FAILURES, so without
     // this a dead manager is indistinguishable from a healthy idle one.
     console.log(`[AgentIntegrationManager] Started (${integrations.length} startup integration(s))`)
@@ -269,8 +264,6 @@ export class AgentIntegrationManager {
       clearInterval(this.healthCheckInterval)
       this.healthCheckInterval = null
     }
-    this.globalNotificationUnsubscribe?.()
-    this.globalNotificationUnsubscribe = null
 
     // Clean up all chat session SSE subscriptions
     for (const [, session] of this.chatSessions) {
@@ -1495,81 +1488,6 @@ export class AgentIntegrationManager {
     background(agentRegistry.get(agentSlug).container.start().catch(() => {
       // Best-effort — if it fails, the normal message flow will handle the error
     }), { name: 'integration-manager.pre-warm-container' })
-  }
-
-  // ── Global notification handling (proxy review requests) ─────────
-
-  /**
-   * Review requests may be agent-scoped without a session SSE stream. This
-   * subscription routes their Allow/Deny cards; resolutions use the session stream.
-   * Idempotent so a harness that drives integrations without start() can arm
-   * it without risking a double-send.
-   */
-  private subscribeGlobalNotifications(): void {
-    if (this.globalNotificationUnsubscribe) return
-    this.globalNotificationUnsubscribe = globalFeed.subscribe((event) => {
-      background(this.handleGlobalNotification(event).catch((err) => {
-        console.error('[AgentIntegrationManager] Error handling global notification:', err)
-        reportError(err, 'global-notification')
-      }), { name: 'integration-manager.global-notification' })
-    })
-  }
-
-  private async handleGlobalNotification(event: unknown): Promise<void> {
-    const data = event as Record<string, unknown>
-    // Review cards use this global wire because their scope may omit a session.
-    // Resolutions with a session scope already arrive on that session's stream;
-    // forwarding them here as well would deliver each resolution twice.
-    if (data.type !== 'user_request_created') return
-    const parsed = integrationRequestEventSchema.safeParse(event)
-    if (!parsed.success || parsed.data.type !== 'user_request_created') return
-    const request = parsed.data.request
-    if (request.scope.sessionId) return
-
-    // Non-review kinds return null here and are left to the session stream —
-    // they arrive on BOTH wires, so rendering them here too would double-send.
-    const isReview = request.kind === 'proxy_review' || request.kind === 'x_agent_review'
-    const agentSlug = request.scope.agentSlug
-    if (!isReview || !agentSlug) return
-
-    // A proxied call carries no session of its own, so the scope has none to
-    // route by; the agent's active session is the same fallback the review
-    // notification uses, and it is what gives the card's link a live session
-    // to open rather than the agent home.
-    const sessionId =
-      request.scope.sessionId ?? (await agentRegistry.get(agentSlug).live()).activeSessionIds[0]
-
-    // If we know the sessionId, send only to the chat session that owns it
-    if (sessionId) {
-      try {
-        const chatSession = await getIntegrationSessionBySessionId(agentSlug, sessionId)
-        if (chatSession) {
-          const key = `${chatSession.integrationId}:${chatSession.externalId}`
-          const managed = this.chatSessions.get(key)
-          if (managed && (managed.connector.definition.family === 'chat' || request.scope.sessionId === managed.sessionId)) {
-            await this.deliver(managed.integration.id, managed.chatId, { type: 'request-opened', request }, sessionId)
-            return
-          }
-        }
-      } catch (err) {
-        console.error('[AgentIntegrationManager] Error routing approval to session:', err)
-        reportError(err, 'route-approval', { agentSlug, sessionId })
-      }
-    }
-
-    // Fallback: no sessionId match — send to first active session for this agent
-    for (const [, conn] of this.connections) {
-      if (conn.integration.agentSlug !== agentSlug || conn.connector.definition.family !== 'chat') continue
-      for (const [key, session] of this.chatSessions) {
-        if (!key.startsWith(`${conn.integration.id}:`)) continue
-        try {
-          await this.deliver(session.integration.id, session.chatId, { type: 'request-opened', request })
-        } catch (err) {
-          console.error('[AgentIntegrationManager] Failed to send approval card:', err)
-        }
-        return // Only send to first match
-      }
-    }
   }
 
   // ── SSE event handling ────────────────────────────────────────────

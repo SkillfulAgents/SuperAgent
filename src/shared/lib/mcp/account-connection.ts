@@ -77,6 +77,7 @@ class AccountMcpConnection implements McpConnection {
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
         scopeDescriptions: policy.scopeDescriptions,
         ...(reviewOutcomes.length > 0 ? { ruleOutcomes: reviewOutcomes } : {}),
+        callerSessionId: call.callerSessionId,
       }, raise), {
         signal: call.signal,
         // When an "always" decision on another card changes the policy, this
@@ -122,9 +123,9 @@ class AccountMcpConnection implements McpConnection {
     this.row = { ...this.row, status: 'auth_required' }
   }
 
-  async recoverAuthorization(signal: AbortSignal): Promise<McpRecoveryResult> {
+  async recoverAuthorization(signal: AbortSignal, callerSessionId?: string): Promise<McpRecoveryResult> {
     const wait = await awaitReauth(agentRegistry.get(this.agentSlug).inputs.mcpReauth, {
-      mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType,
+      mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType, callerSessionId,
     }, signal)
     if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementMcpId: wait.replacementId }
     if (wait.outcome === 'dismissed') return { ok: false, reason: 'dismissed', dismissReason: wait.reason }
