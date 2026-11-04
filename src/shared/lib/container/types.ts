@@ -55,6 +55,7 @@ export const CONTAINER_RUNNER_IDS = [
   'wsl2',
   'kubernetes',
   'lambda-microvm',
+  'cloudflare-container',
 ] as const
 export type ContainerRunner = (typeof CONTAINER_RUNNER_IDS)[number]
 
