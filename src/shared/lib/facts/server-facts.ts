@@ -49,7 +49,7 @@ function mockRunDistribution(): ServerDistribution | null {
 
 /** The facts of the server this process is: a desktop install's API, or a web deployment. */
 export function getServerFacts(): ServerFacts {
-  return { os: currentOs(), distribution: mockRunDistribution() ?? desktopDistribution() ?? 'deployment' }
+  return { os: currentOs(), distribution: mockRunDistribution() ?? desktopDistribution() ?? 'deployment', notificationsSocket: true }
 }
 
 /**

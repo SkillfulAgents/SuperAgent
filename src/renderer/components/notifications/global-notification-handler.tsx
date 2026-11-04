@@ -58,7 +58,8 @@ import type { RuntimeReadiness } from '@shared/lib/container/types'
 import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
-import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+import { reconnectDelayMs } from '@renderer/lib/stream-liveness'
+import { readsNotificationsOverSocket } from '@renderer/lib/capabilities'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
 // refetched wholesale after the stream comes back from a fatal close.
@@ -132,8 +133,7 @@ export function GlobalNotificationHandler() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
   const wasDeadRef = useRef(false)
-  const hasConnectedRef = useRef(false)
-  const streamRef = useRef<EventSource | null>(null)
+  const streamRef = useRef<WebSocket | EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
   useEffect(() => {
@@ -262,12 +262,17 @@ export function GlobalNotificationHandler() {
 
   useEffect(() => {
     const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}/api/notifications/stream`
-    const es = new EventSource(url)
+    const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
+    const wsUrl = `${wsProtocol}://${wsHost}/api/notifications/socket`
+    // A cloud workspace on an older version has no socket; every server still serves the SSE route.
+    const es: WebSocket | EventSource = readsNotificationsOverSocket()
+      ? new WebSocket(wsUrl)
+      : new EventSource(`${baseUrl}/api/notifications/stream`)
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
 
-    es.onmessage = (event) => {
+    es.onmessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
 
@@ -704,8 +709,6 @@ export function GlobalNotificationHandler() {
     // Agents and roles cover the window before the first connect. Rosters are
     // already loading on mount; only refresh them after a gap.
     es.onopen = () => {
-      const isReconnect = hasConnectedRef.current || wasDeadRef.current
-      hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
       if (wasDeadRef.current) {
         // The dead window can be arbitrarily long, and every family this
@@ -716,22 +719,19 @@ export function GlobalNotificationHandler() {
       }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-      if (isReconnect) {
-        queryClient.invalidateQueries({ queryKey: ['agent-members'] })
-        queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
-        // A drive announces only a change to its status pill, so one missed in the gap is never sent again.
-        queryClient.invalidateQueries({ queryKey: ['mounts'] })
-        queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
-      }
     }
 
-    es.onerror = () => {
-      // Network errors reconnect in the browser. Fatal close is the watcher.
-    }
+    // Keeps proxies from closing an idle socket; the server answers `pong`. The SSE route pings by itself.
+    const keepAlive = es instanceof WebSocket
+      ? setInterval(() => {
+          if (es.readyState === WebSocket.OPEN) es.send('ping')
+        }, 30_000)
+      : undefined
 
-    const disposeLiveness = watchStreamLiveness(es, () => {
+    // Events sent while the stream was down are lost, so every close is an outage.
+    const onDead = () => {
       if (streamRef.current !== es) return
-      es.close()
+      clearInterval(keepAlive)
       wasDeadRef.current = true
       const delay = reconnectDelayMs(reconnectAttemptRef.current)
       reconnectAttemptRef.current += 1
@@ -740,15 +740,29 @@ export function GlobalNotificationHandler() {
         if (streamRef.current !== es) return
         setReconnectKey((k) => k + 1)
       }, delay)
-    })
+    }
+    if (es instanceof WebSocket) {
+      es.onclose = onDead
+    } else {
+      const source = es
+      source.onerror = () => {
+        // The browser reopens an SSE stream after a network error by itself, but what it missed is gone.
+        if (source.readyState === EventSource.CLOSED) onDead()
+        else wasDeadRef.current = true
+      }
+    }
 
     return () => {
-      disposeLiveness()
+      clearInterval(keepAlive)
       confirmations.flush()
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
       if (streamRef.current === es) streamRef.current = null
-      es.close()
+      es.onmessage = null
+      // Closing before the handshake ends leaves the socket half-open in some
+      // WebSocket wrappers (Playwright's routing mock among them); close it once open.
+      if (es instanceof WebSocket && es.readyState === WebSocket.CONNECTING) es.onopen = () => es.close()
+      else es.close()
     }
   }, [queryClient, navigate, reconnectKey])
 

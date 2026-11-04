@@ -53,6 +53,8 @@ export type ServerDistribution = z.infer<typeof serverDistributionSchema>
 export const serverFactsSchema = z.object({
   os: osSchema,
   distribution: serverDistributionSchema,
+  /** Serves the global notifications over a WebSocket (`/api/notifications/socket`). Older servers only have the SSE route. */
+  notificationsSocket: z.boolean().optional(),
 })
 export type ServerFacts = z.infer<typeof serverFactsSchema>
 

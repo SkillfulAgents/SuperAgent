@@ -106,7 +106,7 @@ vi.mock('../../main/host-browser/profile-maintenance', () => ({
   startBrowserProfileCleanup: vi.fn(),
   stopBrowserProfileCleanup: vi.fn(),
 }))
-vi.mock('../../main/browser-stream-proxy', () => ({ setupBrowserStreamProxy: vi.fn() }))
+vi.mock('../../main/agent-socket', () => ({ setupAgentSockets: vi.fn() }))
 vi.mock('../../main/cloud-stream-proxy', () => ({ setupCloudStreamProxy: vi.fn() }))
 vi.mock('./proxy/review-manager', () => ({ reviewManager: { rejectAll: vi.fn() } }))
 vi.mock('./proxy/account-reauth-manager', () => ({ accountReauthManager: { rejectAll: vi.fn() } }))

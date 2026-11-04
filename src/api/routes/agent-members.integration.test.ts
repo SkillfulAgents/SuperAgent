@@ -15,6 +15,14 @@ let sqlite: Database.Database
 let authModule: typeof import('@shared/lib/auth')
 let service: typeof import('@shared/lib/services/agent-members-service')
 let events: typeof import('@shared/lib/services/collaboration-events')
+let feed: typeof import('@shared/lib/notifications/global-feed')
+
+/** The membership hints the feed carries to one user. */
+function subscribeHints(userId: string, onHint: (event: CollaborationEvent) => void): () => void {
+  return feed.globalFeed.subscribe(({ recipientUserId, ...event }) => {
+    if (recipientUserId === userId && events.isCollaborationEvent(event)) onHint(event as CollaborationEvent)
+  })
+}
 let app: Hono
 const agentSlug = '0123456789'
 const secondAgent = '9876543210'
@@ -39,6 +47,7 @@ beforeAll(async () => {
   authModule = await import('@shared/lib/auth')
   service = await import('@shared/lib/services/agent-members-service')
   events = await import('@shared/lib/services/collaboration-events')
+  feed = await import('@shared/lib/notifications/global-feed')
   const { Authenticated, ResolveAgent, AgentAdmin } = await import('../middleware/auth')
   const { default: members, agentMembersBatch } = await import('./agent-members')
   app = new Hono()
@@ -163,7 +172,7 @@ describe('authorized agent roster', () => {
   it('reads updated profiles on the next roster request without broadcasting changes', async () => {
     const { setAvatar } = await import('@shared/lib/services/profile-avatar-service')
     const received: CollaborationEvent[] = []
-    const stops = Object.values(people).map(person => events.subscribeCollaborationEvents(person.id, event => { received.push(event) }))
+    const stops = Object.values(people).map(person => subscribeHints(person.id, event => { received.push(event) }))
     const image = new PNG({ width: 4, height: 4 })
     image.data.fill(160)
     try {
@@ -187,7 +196,7 @@ describe('authorized agent roster', () => {
     const { agentAcl } = await import('@shared/lib/db/schema')
     db.db.insert(agentAcl).values({ id: randomUUID(), userId: people.admin.id, agentSlug, role: 'viewer', createdAt: new Date() }).run()
     const received: CollaborationEvent[] = []
-    const stop = events.subscribeCollaborationEvents(people.admin.id, (event) => { received.push(event) })
+    const stop = subscribeHints(people.admin.id, (event) => { received.push(event) })
     try {
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.admin.id)
       await service.notifyAgentMembersChanged(agentSlug, people.admin.id)
@@ -203,7 +212,7 @@ describe('authorized agent roster', () => {
 
   it('scopes membership hints and delivers revocation after removing access', async () => {
     const received = Object.fromEntries(Object.keys(people).map((name) => [name, [] as CollaborationEvent[]]))
-    const stops = Object.keys(people).map((name) => events.subscribeCollaborationEvents(people[name].id, (event) => { received[name].push(event) }))
+    const stops = Object.keys(people).map((name) => subscribeHints(people[name].id, (event) => { received[name].push(event) }))
     try {
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.viewer.id)
       await service.notifyAgentMembersChanged(agentSlug, people.viewer.id)
