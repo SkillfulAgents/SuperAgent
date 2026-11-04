@@ -11,7 +11,7 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
  * Each (installation ID, family-resolved external ID) owns one active session.
  */
 
-import { onIntegrationAuthorizationLost, type IntegrationAuthorizationLost } from './lifecycle'
+import { IntegrationAuthorizationWatch, type IntegrationAuthorizationEvent } from './authorization-events'
 import { containerPendingInputsSchema, integrationRequestEventSchema } from './runtime-schema'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
@@ -152,7 +152,8 @@ export class AgentIntegrationManager {
   // Per-chat session: one streaming context per (integrationId, externalId)
   private chatSessions: Map<string, ManagedSession> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
-  private authorizationUnsubscribe?: () => void
+  // Authorization hints for each integration from its first connect attempt until it is removed or the manager stops.
+  private authorization?: IntegrationAuthorizationWatch
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
@@ -225,9 +226,9 @@ export class AgentIntegrationManager {
   async start(): Promise<void> {
     if (this.isRunning) return
     this.isRunning = true
-    this.authorizationUnsubscribe = onIntegrationAuthorizationLost(change => {
-      background(this.authorizationLost(change).catch(error => reportError(error, 'authorization-lost', { integrationId: change.integrationId })), { name: 'integration-manager.authorization-lost' })
-    })
+    this.authorization = new IntegrationAuthorizationWatch(change =>
+      // Only a loss tears down, and only once the row still says so.
+      change.type === 'authorization_lost' ? this.authorizationLost(change).catch(error => reportError(error, 'authorization-lost', { integrationId: change.integrationId })) : Promise.resolve())
 
     await this.deliveries.start()
     const integrations = await listStartupIntegrations()
@@ -263,8 +264,8 @@ export class AgentIntegrationManager {
 
   stop(): void {
     this.deliveries.stop()
-    this.authorizationUnsubscribe?.()
-    this.authorizationUnsubscribe = undefined
+    this.authorization?.close()
+    this.authorization = undefined
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval)
       this.healthCheckInterval = null
@@ -294,7 +295,7 @@ export class AgentIntegrationManager {
     this.isRunning = false
   }
 
-  private async authorizationLost(change: IntegrationAuthorizationLost): Promise<void> {
+  private async authorizationLost(change: IntegrationAuthorizationEvent): Promise<void> {
     const generation = this.generationOf(change.integrationId)
     const row = await getIntegration(change.integrationId)
     if (!this.isRunning || !row || !['disconnected', 'paused'].includes(row.status) || this.generationOf(row.id) !== generation) return
@@ -412,6 +413,7 @@ export class AgentIntegrationManager {
     // integration from here on — any in-flight background rebuild or connect
     // for the same id must cancel itself rather than resurrect it.
     this.bumpGeneration(id)
+    this.authorization?.release(id)
     await this.deliveries.cancel(id)
     await this.teardownConnection(id)
   }
@@ -590,6 +592,7 @@ export class AgentIntegrationManager {
     const id = integration.id
     const generation = expectedGeneration ?? this.bumpGeneration(id)
     if (this.generationOf(id) !== generation || this.pausedIds.has(id)) return false
+    this.authorization?.watch(id)
 
     if (this.connections.has(id)) {
       await this.teardownConnection(id)

@@ -8,6 +8,8 @@ import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
 import { captureException } from '../error-reporting'
 import { updateAgentIntegrationStatus } from '../services/agent-integration-service'
+import { backgroundSettled } from '../background'
+import { publishIntegrationAuthorization } from './authorization-events'
 import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
 
 const state = vi.hoisted(() => ({
@@ -15,7 +17,6 @@ const state = vi.hoisted(() => ({
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
   global: undefined as ((event: GlobalFeedEvent) => void) | undefined, stop: vi.fn<(sessionId: string, options: StopSessionOptions) => Promise<StopSessionResult>>(),
-  authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
   syncMcp: vi.fn(async () => true),
   answer: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   markActive: vi.fn(), markIdle: vi.fn(), attach: vi.fn(), open: vi.fn((_sessionId?: string) => [] as unknown[]),
@@ -31,7 +32,6 @@ const state = vi.hoisted(() => ({
   deliveries: [] as Array<{ sessionId: string; content: string; uuid?: string; echo?: object }>,
 }))
 vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ recordIntegrationMessage: state.recordMessage }))
-vi.mock('./lifecycle', () => ({ onIntegrationAuthorizationLost: (callback: typeof state.authorizationLost) => { state.authorizationLost = callback; return () => { state.authorizationLost = undefined } } }))
 vi.mock('@shared/lib/services/connection-sync-service', () => ({ syncRemoteMcpAgents: state.syncMcp }))
 vi.mock('@shared/lib/services/agent-integration-service', () => ({
   listStartupAgentIntegrations: () => state.rows,
@@ -1085,7 +1085,7 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
   await manager.start()
   state.syncMcp.mockClear(); vi.mocked(captureException).mockClear()
   state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
-  state.authorizationLost?.({ integrationId: 'installation-a' })
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
   await vi.waitFor(() => expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a']))
   expect(captureException).not.toHaveBeenCalled()
@@ -1093,9 +1093,58 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
 it('does not tear down replacement authorization on a late revocation notification', async () => {
   await manager.start()
   state.rows[0].config = '{"replacement":true}'
-  state.authorizationLost?.({ integrationId: 'installation-a' })
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await backgroundSettled()
   expect(adapter.connected).toBe(true)
+})
+it('lets neither a repeated nor a late loss hint tear down the authorization that replaced the revoked one', async () => {
+  await manager.start()
+  state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
+  const loss = { type: 'authorization_lost', integrationId: 'installation-a' } as const
+  await publishIntegrationAuthorization(loss)
+  await backgroundSettled()
+  expect(adapter.connected).toBe(false)
+  // Re-authorized: new credentials, active again, connected by the owner.
+  state.rows[0].status = 'active'; state.rows[0].config = '{"replacement":true}'
+  await manager.addIntegration('installation-a')
+  expect(adapter.connected).toBe(true)
+  // The same hint again, and once more after other work: the row says active.
+  await publishIntegrationAuthorization(loss)
+  await publishIntegrationAuthorization(loss)
+  await backgroundSettled()
+  expect(adapter.connected).toBe(true)
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})
+it('stops hearing an integration once it is removed, and hears it again once it is connected', async () => {
+  (adapter.definition.capabilities as string[]).push('mcp')
+  await manager.start()
+  await manager.removeIntegration('installation-a')
+  state.syncMcp.mockClear()
+  state.rows[0].status = 'disconnected'
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await backgroundSettled()
+  expect(state.syncMcp).not.toHaveBeenCalled()
+
+  state.rows[0].status = 'active'
+  await manager.addIntegration('installation-a')
+  state.syncMcp.mockClear()
+  state.rows[0].status = 'disconnected'
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await backgroundSettled()
+  expect(adapter.connected).toBe(false)
+  expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+})
+it('hears nothing once stopped, and again once started', async () => {
+  const heard = vi.spyOn(manager as unknown as { authorizationLost: (change: unknown) => Promise<void> }, 'authorizationLost')
+  await manager.start()
+  manager.stop()
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await backgroundSettled()
+  expect(heard).not.toHaveBeenCalled()
+  await manager.start()
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await backgroundSettled()
+  expect(heard).toHaveBeenCalledOnce()
 })
 
 
@@ -1156,6 +1205,6 @@ it('tears down revoked authorization even if an unrelated config write followed 
   await manager.start()
   state.rows[0].status = 'disconnected'
   state.rows[0].config = '{"revoked":true,"transportHealth":"offline"}'
-  state.authorizationLost?.({ integrationId: 'installation-a' })
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
 })

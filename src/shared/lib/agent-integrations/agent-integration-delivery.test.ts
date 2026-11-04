@@ -12,6 +12,7 @@ import type { AgentIntegrationRecord } from './types'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../services/agent-integration-session-service'
 import { requireIntegrationReconnect } from './lifecycle'
+import { appState } from '../app-state'
 import { deliveryStore } from './delivery-store'
 import { DeliveryError } from '../agent-actor/delivery-errors'
 import { IntegrationRelays, relayAcceptResult } from './relay-transport'
@@ -227,7 +228,7 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.create).toHaveBeenCalledOnce()
     expect(runtime.send).not.toHaveBeenCalled()
   })
-  it.each(['pause', 'authorization', 'reset', 'cancel'] as const)('%s during preparation prevents spending and does not resume the old input', async action => {
+  it.each(['pause', 'authorization', 'authorization without its hint', 'reset', 'cancel'] as const)('%s during preparation prevents spending and does not resume the old input', async action => {
     await start()
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
@@ -235,7 +236,9 @@ describe('shared manager durability with real integration storage', () => {
     await adapter.input()
     await vi.waitFor(() => expect(prepare).toHaveBeenCalled())
     if (action === 'pause') await manager.pauseIntegration('integration')
-    if (action === 'authorization') await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: {}, message: 'Reconnect' })
+    // The owner never hears of it: the write alone must stop the input.
+    if (action === 'authorization without its hint') vi.spyOn(appState(), 'publish').mockResolvedValue(undefined)
+    if (action.startsWith('authorization')) await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: {}, message: 'Reconnect' })
     if (action === 'reset') {
       // Clearing by mapping ID also covers sessions not currently observed by a connector.
       await database.insert((await import('../db/schema')).chatIntegrationSessions).values({ id: 'mapping', integrationId: 'integration', externalChatId: 'conversation', sessionId: 'old', createdAt: new Date(), updatedAt: new Date() }).run()
