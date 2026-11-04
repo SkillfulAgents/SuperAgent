@@ -1,40 +1,23 @@
-import fs from 'fs'
-import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
-import { getDataDir } from '../config/data-dir'
+import { hostFiles } from '../host-state/host-files'
+import { defineHostFileCreator } from '../host-state/host-file-creators'
 
 const TENANT_ID_FILE = 'tenant-id'
 
-let cachedTenantId: string | null = null
+defineHostFileCreator(TENANT_ID_FILE, () => uuidv4())
 
 /**
  * Get the persistent tenant ID for this installation.
- * Generated once on first access and stored in the data directory.
+ * Generated once on first access and stored with the host files.
  */
 export function getTenantId(): string {
-  if (cachedTenantId) return cachedTenantId
-
-  const filePath = path.join(getDataDir(), TENANT_ID_FILE)
-
+  let id = ''
   try {
-    if (fs.existsSync(filePath)) {
-      const id = fs.readFileSync(filePath, 'utf-8').trim()
-      if (id) {
-        cachedTenantId = id
-        return id
-      }
-    }
+    id = hostFiles().getOrCreate(TENANT_ID_FILE).trim()
   } catch {
-    // Fall through to generate new ID
+    // An unreadable file gets a new id below.
   }
-
-  // Generate and persist a new tenant ID
-  const newId = uuidv4()
-  const dataDir = getDataDir()
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true })
-  }
-  fs.writeFileSync(filePath, newId, 'utf-8')
-  cachedTenantId = newId
-  return newId
+  if (id) return id
+  // An empty file (a write cut short) or an unreadable one: replace it with a new id.
+  return hostFiles().write(TENANT_ID_FILE, () => uuidv4()).trim()
 }
