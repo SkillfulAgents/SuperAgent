@@ -150,7 +150,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 # The npm package ships the CLI for every platform (~100MB); its postinstall
 # links agent-browser straight to this machine's binary, so the others are
 # dead weight. Pruned only when the link is that direct one.
-RUN npm install -g agent-browser@0.39.1 && \
+RUN npm install -g agent-browser@0.41.2 && \
     keep="$(readlink -f "$(command -v agent-browser)")" && \
     case "$keep" in \
       */agent-browser-linux-*) \
@@ -324,6 +324,13 @@ ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=0
 # included. Off until the harness supports it (SUP-1265 §9); execBrowser also
 # strips any announcement that gets through.
 ENV AGENT_BROWSER_NO_WEBMCP=1
+# agent-browser 0.41.2+ checks the browser's version against Chrome's release
+# feed: a Browser.getVersion call after every command, plus a fetch of
+# chromereleases.googleblog.com on the first one. A browser behind stable gets
+# a warning ("run `agent-browser install`") on stderr, which reaches the agent
+# whenever that command fails. The Chromium here is pinned with the image
+# (Playwright, above) and a host or Browserbase browser is not ours to update.
+ENV AGENT_BROWSER_NO_VERSION_CHECK=1
 ENV DISABLE_AUTOUPDATER=1
 # Keep bun's package cache on the persistent workspace mount. The default
 # ($HOME/.bun/install/cache) lives in the container's writable layer, which is
