@@ -108,6 +108,7 @@ const mockComposioFetch = vi.fn()
 vi.mock('@shared/lib/composio/client', () => ({
   composioFetch: (...args: unknown[]) => mockComposioFetch(...args),
   getOrCreateAuthConfig: async () => ({ id: 'ac_shopify' }),
+  resolveComposioAuth: async () => ({ localApiKey: null, platformToken: 'plat', userId: null }),
 }))
 
 /** The Shopify grant Composio reports: `subdomain` is the store it authorized. */

@@ -231,10 +231,12 @@ describe('IdleAlarm', () => {
     const longer = fakeContainer()
     longer.mark()
     await settle()
+    expect(longer.timeoutMs).toHaveBeenCalledTimes(1)
     // Changed elsewhere, with nothing here re-arming: the alarm fires on the
     // old deadline, reads the new timeout, and waits out the remainder.
     longer.state.timeoutMs = 2 * TIMEOUT
     await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(longer.timeoutMs).toHaveBeenCalledTimes(2)
     expect(longer.sleep).not.toHaveBeenCalled()
     expect(longer.alarm.isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(TIMEOUT)
@@ -250,23 +252,80 @@ describe('IdleAlarm', () => {
     expect(disabled.alarm.isArmed()).toBe(false)
   })
 
-  it('a slow timeout read never re-arms over a newer schedule', async () => {
+  it('a burst of marks shares one timeout read, which arms from the latest mark when it lands', async () => {
+    const { sleep, timeoutMs, alarm, mark } = fakeContainer()
+    let landRead!: (ms: number) => void
+    timeoutMs.mockImplementationOnce(() => new Promise<number>((resolve) => { landRead = resolve }))
+    mark()
+    await vi.advanceTimersByTimeAsync(5 * MINUTE)
+    // Session writes while the read is out: none starts another read.
+    for (let i = 0; i < 5; i++) mark()
+    expect(timeoutMs).toHaveBeenCalledTimes(1)
+
+    landRead(TIMEOUT)
+    await settle()
+    expect(alarm.isArmed()).toBe(true)
+    // Counted from the latest mark (at +5m), not the first.
+    await vi.advanceTimersByTimeAsync(TIMEOUT)
+    expect(sleep).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sleep).toHaveBeenCalledTimes(1)
+
+    // Once it landed, the next mark reads again.
+    timeoutMs.mockClear()
+    mark()
+    expect(timeoutMs).toHaveBeenCalledTimes(1)
+  })
+
+  it('a re-arm with a timeout read after a change wins over a read started before it', async () => {
     const { state, sleep, timeoutMs, alarm, mark } = fakeContainer()
     let landSlowRead!: (ms: number) => void
     timeoutMs.mockImplementationOnce(() => new Promise<number>((resolve) => { landSlowRead = resolve }))
     mark()
-    // A newer schedule reads a shorter timeout and arms first.
+    // The setting changes to 5 minutes; the host re-arms with what it read after the change.
     state.timeoutMs = 5 * MINUTE
-    alarm.schedule()
-    await settle()
+    alarm.rearm(5 * MINUTE)
     expect(alarm.isArmed()).toBe(true)
 
-    // The older read lands late with the old timeout: it is dropped.
+    // The read from before the change lands late with the old timeout: it arms nothing.
     landSlowRead(TIMEOUT)
+    await settle()
+    // A mark after the re-arm reads afresh instead of joining the detached read.
+    timeoutMs.mockClear()
+    mark()
+    expect(timeoutMs).toHaveBeenCalledTimes(1)
     await settle()
     await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
     expect(sleep).toHaveBeenCalledTimes(1)
     expect(sleep).toHaveBeenCalledWith(5 * MINUTE)
+  })
+
+  it('a re-arm to zero disarms, and ensureArmed arms only what is not armed', async () => {
+    const { timeoutMs, alarm, mark } = fakeContainer()
+    mark()
+    await settle()
+    expect(alarm.isArmed()).toBe(true)
+    alarm.rearm(0)
+    expect(alarm.isArmed()).toBe(false)
+
+    // Nothing armed: a sweep's timeout arms it without a read.
+    timeoutMs.mockClear()
+    alarm.ensureArmed(TIMEOUT)
+    expect(alarm.isArmed()).toBe(true)
+    expect(timeoutMs).not.toHaveBeenCalled()
+
+    // Armed: nothing to do, and nothing read.
+    alarm.ensureArmed()
+    alarm.ensureArmed(TIMEOUT)
+    await settle()
+    expect(timeoutMs).not.toHaveBeenCalled()
+
+    // Nothing armed and no timeout given: it reads for itself.
+    alarm.cancel()
+    alarm.ensureArmed()
+    await settle()
+    expect(timeoutMs).toHaveBeenCalledTimes(1)
+    expect(alarm.isArmed()).toBe(true)
   })
 
   it('a mark made while a fire reads the timeout decides instead of the fire', async () => {

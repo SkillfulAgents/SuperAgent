@@ -75,6 +75,7 @@ import {
   closeAllDashboardWindows,
   installCloudDashboardAuth,
   installPopupHandler,
+  mayBeWorkspaceRequest,
   shouldSignWorkspaceRequest,
 } from './dashboard-window'
 import { safeOpenExternal } from './safe-open-external'
@@ -336,6 +337,43 @@ describe('signing the app\'s own workspace requests', () => {
     expect(out.statusLine).toBeUndefined()
   })
 
+  it('reads the workspace once per request that could go to it, and never for the app\'s own traffic', async () => {
+    const read = vi.fn(async () => workspace.current)
+    installCloudDashboardAuth(fakeSession as never, () => MAIN_ID, read, () => [LOCAL])
+
+    const own = [
+      paneFile({ url: `${LOCAL}/api/agents`, frame: frames(APP) }),
+      paneFile({ url: `ws://localhost:3838/api/notifications/stream`, frame: frames(APP), resourceType: 'webSocket' }),
+      paneFile({ url: 'file:///app/index.html', frame: frames(APP), resourceType: 'mainFrame' }),
+      paneFile({ url: 'data:image/png;base64,AAAA', frame: frames(APP), resourceType: 'image' }),
+    ]
+    for (const details of own) {
+      expect((await run('send', details)).requestHeaders).toEqual({})
+    }
+    expect(read).not.toHaveBeenCalled()
+
+    expect((await run('send', paneFile())).requestHeaders).toEqual({ Authorization: 'Bearer tok-1' })
+    expect((await run('send', paneFile({ url: 'https://fonts.example.com/a.woff2' }))).requestHeaders).toEqual({})
+    // Each of those two could have been a workspace request: one read each, none kept between them.
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+})
+
+describe('which requests could go to a workspace at all', () => {
+  it.each([
+    [`${CLOUD}/api/agents`, true],
+    ['wss://acme.ongamut.so/api/agents/a/artifacts/d/', true],
+    ['http://localhost:4000/api/agents', true],
+    [`${LOCAL}/api/agents`, false],
+    ['ws://localhost:3838/api/notifications/stream', false],
+    ['file:///app/index.html', false],
+    ['devtools://devtools/bundled/inspector.html', false],
+    ['data:text/plain,hi', false],
+    ['not a url', false],
+  ])('%s → %s', (url, expected) => {
+    expect(mayBeWorkspaceRequest(url, [LOCAL])).toBe(expected)
+  })
 })
 
 describe('a cloud popout', () => {

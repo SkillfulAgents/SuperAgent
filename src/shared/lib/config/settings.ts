@@ -861,7 +861,11 @@ export async function getEffectiveAnthropicApiKey(): Promise<string | undefined>
  * Get the status of the Composio API key configuration.
  */
 export async function getComposioApiKeyStatus(): Promise<ApiKeyStatus> {
-  const settings = await getSettings()
+  return composioApiKeyStatusFrom(await getSettings())
+}
+
+/** {@link getComposioApiKeyStatus} from settings already read. */
+export function composioApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
   if (settings.apiKeys?.composioApiKey) {
     return { isConfigured: true, source: 'settings' }
   }
@@ -876,7 +880,11 @@ export async function getComposioApiKeyStatus(): Promise<ApiKeyStatus> {
  * Saved settings take precedence over environment variable.
  */
 export async function getEffectiveComposioApiKey(): Promise<string | undefined> {
-  const settings = await getSettings()
+  return effectiveComposioApiKeyFrom(await getSettings())
+}
+
+/** {@link getEffectiveComposioApiKey} from settings already read. */
+export function effectiveComposioApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.composioApiKey) {
     return settings.apiKeys.composioApiKey
   }
@@ -888,7 +896,11 @@ export async function getEffectiveComposioApiKey(): Promise<string | undefined> 
  * Saved settings take precedence over environment variable.
  */
 export async function getComposioUserId(): Promise<string | undefined> {
-  const settings = await getSettings()
+  return composioUserIdFrom(await getSettings())
+}
+
+/** {@link getComposioUserId} from settings already read. */
+export function composioUserIdFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.composioUserId) {
     return settings.apiKeys.composioUserId
   }
@@ -896,7 +908,11 @@ export async function getComposioUserId(): Promise<string | undefined> {
 }
 
 export async function getNangoApiKeyStatus(): Promise<ApiKeyStatus> {
-  const settings = await getSettings()
+  return nangoApiKeyStatusFrom(await getSettings())
+}
+
+/** {@link getNangoApiKeyStatus} from settings already read. */
+export function nangoApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
   if (settings.apiKeys?.nangoSecretKey) {
     return { isConfigured: true, source: 'settings' }
   }
@@ -907,7 +923,11 @@ export async function getNangoApiKeyStatus(): Promise<ApiKeyStatus> {
 }
 
 export async function getNangoSecretKey(): Promise<string | undefined> {
-  const settings = await getSettings()
+  return nangoSecretKeyFrom(await getSettings())
+}
+
+/** {@link getNangoSecretKey} from settings already read. */
+export function nangoSecretKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.nangoSecretKey) {
     return settings.apiKeys.nangoSecretKey
   }
@@ -915,7 +935,11 @@ export async function getNangoSecretKey(): Promise<string | undefined> {
 }
 
 export async function getAccountProviderUserId(): Promise<string | undefined> {
-  const settings = await getSettings()
+  return accountProviderUserIdFrom(await getSettings())
+}
+
+/** {@link getAccountProviderUserId} from settings already read. */
+export function accountProviderUserIdFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.accountProviderUserId) {
     return settings.apiKeys.accountProviderUserId
   }
@@ -935,7 +959,11 @@ export async function getDefaultAccountProviderType(): Promise<AccountProviderTy
  * Get the status of the Browserbase API key configuration.
  */
 export async function getBrowserbaseApiKeyStatus(): Promise<ApiKeyStatus> {
-  const settings = await getSettings()
+  return browserbaseApiKeyStatusFrom(await getSettings())
+}
+
+/** {@link getBrowserbaseApiKeyStatus} from settings already read. */
+export function browserbaseApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
   if (settings.apiKeys?.browserbaseApiKey) {
     return { isConfigured: true, source: 'settings' }
   }
@@ -950,7 +978,11 @@ export async function getBrowserbaseApiKeyStatus(): Promise<ApiKeyStatus> {
  * Saved settings take precedence over environment variable.
  */
 export async function getEffectiveBrowserbaseApiKey(): Promise<string | undefined> {
-  const settings = await getSettings()
+  return effectiveBrowserbaseApiKeyFrom(await getSettings())
+}
+
+/** {@link getEffectiveBrowserbaseApiKey} from settings already read. */
+export function effectiveBrowserbaseApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.browserbaseApiKey) {
     return settings.apiKeys.browserbaseApiKey
   }
@@ -962,7 +994,11 @@ export async function getEffectiveBrowserbaseApiKey(): Promise<string | undefine
  * Saved settings take precedence over environment variable.
  */
 export async function getEffectiveBrowserbaseProjectId(): Promise<string | undefined> {
-  const settings = await getSettings()
+  return effectiveBrowserbaseProjectIdFrom(await getSettings())
+}
+
+/** {@link getEffectiveBrowserbaseProjectId} from settings already read. */
+export function effectiveBrowserbaseProjectIdFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.browserbaseProjectId) {
     return settings.apiKeys.browserbaseProjectId
   }

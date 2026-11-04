@@ -4,7 +4,7 @@ import https from 'https'
 import { z } from 'zod'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
-import { getSettings } from '@shared/lib/config/settings'
+import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { isRunningInKubernetes } from './runtime-env'
 
@@ -117,7 +117,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/services/${this.serviceName()}`)
     await createResource(`/api/v1/namespaces/${kube.namespace}/services`, buildAgentServiceManifest(kube, this.serviceName(), this.podName(), ownerRef))
-    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, await buildAgentPodManifest(kube, this.podName(), this.config, await this.buildAgentEnv(options?.envVars, options?.agentName), ownerRef))
+    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, await buildAgentPodManifest(kube, this.podName(), this.config, await this.buildAgentEnv(options?.envVars, options?.agentName, options?.settings), ownerRef, options?.settings))
 
     await waitForPodReady(kube.namespace, this.podName(), 300_000)
 
@@ -284,8 +284,10 @@ export async function buildAgentPodManifest(
   config: ContainerConfig,
   envVars: Record<string, string>,
   ownerRef?: OwnerReference | null,
+  /** The settings the start read; read here when absent. */
+  startSettings?: Pick<AppSettings, 'container'>,
 ): Promise<KubeResource> {
-  const settings = await getSettings()
+  const settings = startSettings ?? await getSettings()
   const image = process.env.K8S_AGENT_IMAGE || settings.container.agentImage
   // envVars is already the final agent env (built by the client via buildAgentEnv);
   // this builder only serializes it into pod env entries.

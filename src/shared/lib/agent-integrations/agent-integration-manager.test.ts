@@ -100,7 +100,7 @@ vi.mock('@shared/lib/agent-actor', async () => {
 })
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
+  getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }), effectiveModelsFrom: () => ({ agentModel: 'test-model' }) }))
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('@shared/lib/notifications/global-feed', () => ({ globalFeed: { subscribe: (listener: (event: GlobalFeedEvent) => void) => { state.global = listener; return () => { state.global = undefined } } } }))

@@ -58,8 +58,8 @@ export class PlatformWebProvider extends BaseWebProvider {
     return platformAccessTokenFrom(settings) ?? process.env[this.envVarName] ?? undefined
   }
 
-  private async requireToken(surface: 'search' | 'fetch'): Promise<string> {
-    const token = await this.getEffectiveApiKey()
+  private async requireToken(surface: 'search' | 'fetch', settings?: WebProviderSettings): Promise<string> {
+    const token = await this.apiKeyFor(settings)
     if (!token) {
       throw new Error(
         `Platform web ${surface} is unavailable: you are not signed into Gamut. Sign in, or pick a different provider under the Web provider setting in Settings.`,
@@ -76,8 +76,8 @@ export class PlatformWebProvider extends BaseWebProvider {
     })
   }
 
-  async search(query: string, opts: WebSearchOptions): Promise<WebSearchResponse> {
-    const token = await this.requireToken('search')
+  async search(query: string, opts: WebSearchOptions, settings?: WebProviderSettings): Promise<WebSearchResponse> {
+    const token = await this.requireToken('search', settings)
     const body = buildExaSearchBody(query, opts, this.clampNumResults(opts.numResults))
     try {
       return mapExaSearchResponse(await this.postToProxy('/v1/exa/search', token, body))
@@ -86,8 +86,8 @@ export class PlatformWebProvider extends BaseWebProvider {
     }
   }
 
-  async fetch(url: string, opts: WebFetchOptions): Promise<WebFetchResult> {
-    const token = await this.requireToken('fetch')
+  async fetch(url: string, opts: WebFetchOptions, settings?: WebProviderSettings): Promise<WebFetchResult> {
+    const token = await this.requireToken('fetch', settings)
     const body = buildExaContentsBody(url, this.clampMaxChars(opts.maxChars))
     try {
       const json = await this.postToProxy('/v1/exa/contents', token, body)

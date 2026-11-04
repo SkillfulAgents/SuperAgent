@@ -9,7 +9,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...a: unknown[]) => mockValidateProxyToken(...a),
 }))
 vi.mock('@shared/lib/web-provider', () => ({
-  getActiveWebProvider: () => mockGetActiveWebProvider(),
+  activeWebProviderFrom: () => mockGetActiveWebProvider(),
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
@@ -108,7 +108,20 @@ describe('POST /api/web-fetch/fetch', () => {
     const json = await res.json()
     expect(json.result.url).toBe('https://a.com')
     expect(json.result.content).toBe('body')
-    expect(fetchFn).toHaveBeenCalledWith('https://a.com', expect.objectContaining({ maxChars: 5000 }))
+    expect(fetchFn).toHaveBeenCalledWith('https://a.com', expect.objectContaining({ maxChars: 5000 }), {})
+  })
+
+  it('reads settings once: the vendor, its credential and both site checks come from one read', async () => {
+    const stored = { webBlockedSites: ['evil.com'] }
+    mockGetSettings.mockReturnValue(stored)
+    const fetchFn = vi.fn().mockResolvedValue(doc({ url: 'https://evil.com/landing' }))
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+
+    const res = await fetchReq({ url: 'https://a.com' })
+
+    expect(res.status).toBe(403)
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    expect(fetchFn).toHaveBeenCalledWith('https://a.com', expect.anything(), stored)
   })
 
   it('rejects a target URL blocked by the allowed-sites policy BEFORE dispatch', async () => {

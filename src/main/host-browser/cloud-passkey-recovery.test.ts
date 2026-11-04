@@ -1,16 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const h = vi.hoisted(() => ({ watch: vi.fn(), stop: vi.fn(), credentials: { apiKey: 'test-key' as string | undefined, token: 'test-token' as string | null } }))
+const h = vi.hoisted(() => ({
+  watch: vi.fn(),
+  stop: vi.fn(),
+  credentials: { apiKey: 'test-key' as string | undefined, token: 'test-token' as string | null },
+  /** Settings reads (Browserbase's account, stealth options), and platform token reads made without one. */
+  reads: { settings: 0, token: 0 },
+}))
 vi.mock('./google-passkey-recovery', () => ({
   GooglePasskeyRecovery: class { watch = h.watch; stop = h.stop },
 }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: async () => ({ app: {} }),
+  getSettings: async () => {
+    h.reads.settings++
+    return { app: {} }
+  },
   getEffectiveBrowserbaseApiKey: async () => h.credentials.apiKey,
-  getEffectiveBrowserbaseProjectId: async () => 'test-project',
+  effectiveBrowserbaseApiKeyFrom: () => h.credentials.apiKey,
+  effectiveBrowserbaseProjectIdFrom: () => 'test-project',
 }))
 vi.mock('@shared/lib/config/data-dir', () => ({ getDataDir: () => '/test-data' }))
-vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: async () => h.credentials.token }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAccessToken: async () => {
+    h.reads.token++
+    return h.credentials.token
+  },
+  platformAccessTokenFrom: () => h.credentials.token,
+}))
 vi.mock('@shared/lib/platform-auth/config', () => ({ getPlatformProxyBaseUrl: () => 'https://platform.test' }))
 vi.mock('./context-map-store', () => ({ getOrCreateMapping: async () => 'test-context' }))
 
@@ -72,6 +88,59 @@ for (const Provider of [BrowserbaseProvider, PlatformBrowserProvider]) {
     })
   })
 }
+
+describe('settings reads', () => {
+  const launched = async (provider: BrowserbaseProvider | PlatformBrowserProvider, instances: number) => {
+    for (let i = 0; i < instances; i++) await provider.launch(`instance-${i}`)
+    h.reads.settings = 0
+    h.reads.token = 0
+  }
+  const released = () => vi.mocked(fetch).mock.calls.filter(([, init]) => String(init?.body ?? '').includes('REQUEST_RELEASE')).length
+
+  it('Browserbase stops every session with one read of its account', async () => {
+    for (const instances of [1, 5]) {
+      const provider = new BrowserbaseProvider()
+      await launched(provider, instances)
+      vi.mocked(fetch).mockClear()
+      await provider.stopAll()
+      expect(h.reads.settings).toBe(1)
+      expect(released()).toBe(instances)
+    }
+  })
+
+  it('Platform stops every session with one token read', async () => {
+    for (const instances of [1, 5]) {
+      const provider = new PlatformBrowserProvider()
+      await launched(provider, instances)
+      vi.mocked(fetch).mockClear()
+      await provider.stopAll()
+      expect(h.reads.token).toBe(1)
+      expect(released()).toBe(instances)
+    }
+  })
+
+  it('a launch reads settings once for the account and its options', async () => {
+    h.reads.settings = 0
+    await new BrowserbaseProvider().launch('instance')
+    expect(h.reads.settings).toBe(1)
+    h.reads.settings = 0
+    h.reads.token = 0
+    await new PlatformBrowserProvider().launch('instance')
+    expect(h.reads.settings + h.reads.token).toBe(1)
+  })
+
+  it('a later stop reads afresh', async () => {
+    const provider = new BrowserbaseProvider()
+    await launched(provider, 2)
+    await provider.stop('instance-0')
+    h.credentials.apiKey = undefined
+    vi.mocked(fetch).mockClear()
+    await provider.stop('instance-1')
+    expect(h.reads.settings).toBe(2)
+    // Without a key now, nothing is released.
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled()
+  })
+})
 
 describe('detect', () => {
   it('reports each provider available when its credential is configured', async () => {

@@ -11,7 +11,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({
+  activeLlmProviderFrom: () => ({
     getContainerEnvVars: () => ({ ANTHROPIC_API_KEY: 'test-key' }),
   }),
 }))

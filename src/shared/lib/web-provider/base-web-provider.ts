@@ -44,14 +44,17 @@ export abstract class BaseWebProvider {
   protected abstract readonly settingsKeyField: keyof ApiKeySettings | undefined
   protected abstract readonly envVarName: string | undefined
 
-  /** Run a ranked web search and return normalized hits. Throws on a whole-request failure. */
-  search?(query: string, opts: WebSearchOptions): Promise<WebSearchResponse>
+  /**
+   * Run a ranked web search and return normalized hits. Throws on a whole-request failure.
+   * `settings`: what the caller's request already read, for the credential; read now when absent.
+   */
+  search?(query: string, opts: WebSearchOptions, settings?: WebProviderSettings): Promise<WebSearchResponse>
 
   /**
    * Fetch a single URL's full content and return one normalized document. Throws on a whole-request
-   * failure (mirrors search's error model).
+   * failure (mirrors search's error model). `settings` as for search.
    */
-  fetch?(url: string, opts: WebFetchOptions): Promise<WebFetchResult>
+  fetch?(url: string, opts: WebFetchOptions, settings?: WebProviderSettings): Promise<WebFetchResult>
 
   /** Check whether an API key is configured and its source. */
   async getApiKeyStatus(): Promise<ApiKeyStatus> {
@@ -79,6 +82,11 @@ export abstract class BaseWebProvider {
     const fromSettings = this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined
     if (fromSettings) return fromSettings
     return this.envVarName ? process.env[this.envVarName] : undefined
+  }
+
+  /** The effective key from `settings` when the caller read them, else read now. */
+  protected async apiKeyFor(settings?: WebProviderSettings): Promise<string | undefined> {
+    return settings ? this.effectiveApiKeyFrom(settings) : this.getEffectiveApiKey()
   }
 
   /** Validate an API key. */

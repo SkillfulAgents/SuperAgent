@@ -17,8 +17,15 @@ vi.mock('@shared/lib/proxy/allowed-hosts', () => ({
 
 const mockMakeApiCall = vi.fn()
 const mockGetConnection = vi.fn()
+/** Each settings read hands back a distinct snapshot, so a test can tell which read a call used. */
+let settingsReads = 0
+const mockGetSettings = vi.fn(async () => ({ read: ++settingsReads }))
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => mockGetSettings(),
+}))
 const mockAccountProvider = {
   name: 'composio',
+  credentialsFrom: (settings: { read: number }) => ({ provider: 'composio', read: settings.read }),
   makeApiCall: (...args: unknown[]) => mockMakeApiCall(...args),
   getConnection: (...args: unknown[]) => mockGetConnection(...args),
 }
@@ -71,9 +78,15 @@ vi.mock('drizzle-orm', () => ({
 // No proxy rules exist in these tests; the rule paths have their own suite.
 vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
 
+/** The attribution each call ran under, and what the owner's attribution was built from. */
+const attributedCalls: unknown[] = []
+const mockFromResourceCreator = vi.fn((_owner: unknown, settings: { read: number }) => ({ owner: true, read: settings.read }))
 vi.mock('@shared/lib/platform-attribution', () => ({
-  attribution: { fromResourceCreator: () => null },
-  runWithAttribution: <T,>(_auth: unknown, fn: () => T): T => fn(),
+  attribution: { fromResourceCreator: (owner: unknown, settings: { read: number }) => mockFromResourceCreator(owner, settings) },
+  runWithAttribution: <T,>(auth: unknown, fn: () => T): T => {
+    attributedCalls.push(auth)
+    return fn()
+  },
 }))
 
 // Mock policy enforcement
@@ -135,6 +148,8 @@ describe('proxy route', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    settingsReads = 0
+    attributedCalls.length = 0
     app = createApp()
 
     // Default: DB insert for audit log succeeds
@@ -1092,6 +1107,44 @@ describe('proxy route', () => {
       expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
         providerConnectionId: 'comp-new',
       }))
+    })
+  })
+
+  describe('settings reads', () => {
+    const request = () => makeRequest(
+      '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+      { headers: { Authorization: 'Bearer synth_valid' } },
+    )
+
+    it('reads settings once for the status check and the forward, both under the owner built from that read', async () => {
+      setupSuccessPath()
+
+      expect((await request()).status).toBe(200)
+
+      expect(mockGetSettings).toHaveBeenCalledTimes(1)
+      expect(mockFromResourceCreator).toHaveBeenCalledTimes(1)
+      expect(mockGetConnection.mock.calls[0][2]).toEqual({ provider: 'composio', read: 1 })
+      expect(mockMakeApiCall.mock.calls[0][0].credentials).toEqual({ provider: 'composio', read: 1 })
+      expect(attributedCalls).toEqual([{ owner: true, read: 1 }, { owner: true, read: 1 }])
+    })
+
+    it('reads again on the next request', async () => {
+      setupSuccessPath()
+      await request()
+      await request()
+      expect(mockGetSettings).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[1][0].credentials).toEqual({ provider: 'composio', read: 2 })
+    })
+
+    it('reads again after waiting for re-authentication, and forwards with that read', async () => {
+      setupSuccessPath()
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
+
+      expect((await request()).status).toBe(200)
+
+      expect(mockGetSettings).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[0][0].credentials).toEqual({ provider: 'composio', read: 2 })
+      expect(attributedCalls.at(-1)).toEqual({ owner: true, read: 2 })
     })
   })
 })

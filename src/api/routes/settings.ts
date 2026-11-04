@@ -1,9 +1,8 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
-import { listConnections } from '@shared/lib/llm-provider/connections'
+import { listConnectionsWithSelection } from '@shared/lib/llm-provider/connections'
 import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
 import os from 'os'
 import path from 'path'
@@ -11,7 +10,7 @@ import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { getLlmProvider, getAllProviderInfo, GenericLlmProvider } from '@shared/lib/llm-provider'
+import { getLlmProvider, allProviderInfoFrom, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -27,15 +26,12 @@ import {
   getSettings,
   updateSettings,
   mutateSettings,
-  getBrowserbaseApiKeyStatus,
-  getComposioApiKeyStatus,
-  getNangoApiKeyStatus,
-  getComposioUserId,
-  getAccountProviderUserId,
-  getVoiceSettings,
-  getEffectiveModels,
-  getEffectiveAgentLimits,
-  getCustomEnvVars,
+  browserbaseApiKeyStatusFrom,
+  composioApiKeyStatusFrom,
+  nangoApiKeyStatusFrom,
+  composioUserIdFrom,
+  accountProviderUserIdFrom,
+  effectiveModelsFrom,
   getGlobalInstructions,
   type AppSettings,
   type GlobalSettingsResponse,
@@ -56,7 +52,7 @@ import { getVoiceProvider } from '@shared/lib/voice'
 import {
   findWebProvider,
   getWebProvider,
-  resolveEffectiveWebVendor,
+  resolveEffectiveWebVendorFrom,
 } from '@shared/lib/web-provider'
 import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
@@ -152,23 +148,24 @@ settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
 // authenticated user may use — choosing a model is not an admin action, only
 // editing provider config/catalog is. Serve the picker-safe subset above the
 // admin gate; it carries no secrets (provider ids/names, an isConfigured
-// boolean, catalogs, and default selections).
+// boolean, catalogs, and default selections). One settings read answers it,
+// however many connections and providers there are.
 settings.get('/models', Authenticated(), async (c) => {
   try {
     const appSettings = await getSettings()
-    const connections = await listConnections({ userId: getCurrentUserId(c), admin: false })
-    const defaultSelection = await resolveGlobalSelection()
+    const { connections, defaultSelection } = await listConnectionsWithSelection({ userId: getCurrentUserId(c), admin: false }, appSettings)
     const root = connections.find(connection => connection.id === defaultSelection?.llmProviderId)
     const response: ModelPickerSettingsResponse = {
       enableToolSearch: appSettings.enableToolSearch ?? true,
       modelPricing: appSettings.modelPricing ?? {},
       connections,
-      defaultSelection: defaultSelection ? { llmProviderId: defaultSelection.llmProviderId, model: defaultSelection.model } : undefined,
+      defaultSelection: defaultSelection ?? undefined,
       legacyLlmProviderId: appSettings.llmLegacyProviderId,
       llmProvider: root?.provider ?? appSettings.llmProvider ?? 'anthropic',
-      llmProviderStatus: (await getAllProviderInfo()).map(p => root?.provider === p.id ? { ...p, catalog: root.catalog } : p),
-      models: { ...(await getEffectiveModels()), ...(defaultSelection ? { agentModel: defaultSelection.model } : {}) },
-      webProvider: await resolveEffectiveWebVendor(),
+      // Each provider's effective catalog is built once; the default connection's replaces its provider's.
+      llmProviderStatus: allProviderInfoFrom(appSettings).map(p => root?.provider === p.id ? { ...p, catalog: root.catalog } : p),
+      models: { ...effectiveModelsFrom(appSettings), ...(defaultSelection ? { agentModel: defaultSelection.model } : {}) },
+      webProvider: resolveEffectiveWebVendorFrom(appSettings),
     }
     return c.json(response)
   } catch (error) {
@@ -321,12 +318,15 @@ settings.post('/model-icons', async (c) => {
 })
 
 /** The generic provider's saved endpoint — displayed (not secret) in Settings. */
-async function getGenericBaseUrl(): Promise<string | undefined> {
+async function genericBaseUrlFrom(appSettings: AppSettings): Promise<string | undefined> {
   const provider = getLlmProvider('generic')
-  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl() : undefined
+  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl(appSettings) : undefined
 }
 
-/** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
+/**
+ * Build the GlobalSettingsResponse shared by GET and PUT handlers, entirely
+ * from `appSettings`: it reads no settings itself.
+ */
 async function buildSettingsResponse(
   appSettings: AppSettings,
   hasRunningAgents: boolean,
@@ -340,35 +340,35 @@ async function buildSettingsResponse(
     hasRunningAgents,
     runnerAvailability,
     llmProvider: appSettings.llmProvider ?? 'anthropic',
-    llmProviderStatus: await getAllProviderInfo(),
+    llmProviderStatus: allProviderInfoFrom(appSettings),
     modelCatalog: appSettings.modelCatalog ?? {},
     modelPricing: appSettings.modelPricing ?? {},
-    webProvider: await resolveEffectiveWebVendor(),
+    webProvider: resolveEffectiveWebVendorFrom(appSettings),
     webProviderIsDefault: appSettings.webProvider == null,
     apiKeyStatus: {
-      anthropic: await getLlmProvider('anthropic').getApiKeyStatus(),
-      openrouter: await getLlmProvider('openrouter').getApiKeyStatus(),
-      bedrock: await getLlmProvider('bedrock').getApiKeyStatus(),
-      platform: await getLlmProvider('platform').getApiKeyStatus(),
-      generic: await getLlmProvider('generic').getApiKeyStatus(),
-      browserbase: await getBrowserbaseApiKeyStatus(),
-      composio: await getComposioApiKeyStatus(),
-      nango: await getNangoApiKeyStatus(),
-      deepgram: await getVoiceProvider('deepgram').getApiKeyStatus(),
-      openai: await getVoiceProvider('openai').getApiKeyStatus(),
-      exa: await getWebProvider('exa').getApiKeyStatus(),
+      anthropic: getLlmProvider('anthropic').apiKeyStatusFrom(appSettings),
+      openrouter: getLlmProvider('openrouter').apiKeyStatusFrom(appSettings),
+      bedrock: getLlmProvider('bedrock').apiKeyStatusFrom(appSettings),
+      platform: getLlmProvider('platform').apiKeyStatusFrom(appSettings),
+      generic: getLlmProvider('generic').apiKeyStatusFrom(appSettings),
+      browserbase: browserbaseApiKeyStatusFrom(appSettings),
+      composio: composioApiKeyStatusFrom(appSettings),
+      nango: nangoApiKeyStatusFrom(appSettings),
+      deepgram: getVoiceProvider('deepgram').apiKeyStatusFrom(appSettings),
+      openai: getVoiceProvider('openai').apiKeyStatusFrom(appSettings),
+      exa: getWebProvider('exa').apiKeyStatusFrom(appSettings),
     },
-    models: await getEffectiveModels(),
-    agentLimits: await getEffectiveAgentLimits(),
-    customEnvVars: await getCustomEnvVars(),
-    composioUserId: await getComposioUserId(),
-    genericBaseUrl: await getGenericBaseUrl(),
-    accountProviderUserId: await getAccountProviderUserId(),
+    models: effectiveModelsFrom(appSettings),
+    agentLimits: appSettings.agentLimits ?? {},
+    customEnvVars: appSettings.customEnvVars ?? {},
+    composioUserId: composioUserIdFrom(appSettings),
+    genericBaseUrl: await genericBaseUrlFrom(appSettings),
+    accountProviderUserId: accountProviderUserIdFrom(appSettings),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: await detectAllProviders() },
     runtimeReadiness: containerHost.getReadiness(),
     auth: appSettings.auth,
-    voice: await getVoiceSettings(),
+    voice: appSettings.voice ?? {},
     tenantId: await getTenantId(),
     computerUse: appSettings.computerUse,
     shareAnalytics: appSettings.shareAnalytics !== false,
@@ -493,6 +493,9 @@ settings.put(
       }
 
       // Side effects follow the committed write, comparing what it replaced with what it wrote.
+      // The provider sync can write the settings again (the app default); it
+      // returns the settings as they then stand.
+      let syncedSettings: AppSettings | undefined
       const syncProviders = body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined
       if (syncProviders) {
         const active = newSettings.llmProvider ?? 'anthropic'
@@ -504,7 +507,7 @@ settings.put(
         }
         if (body.llmProvider || body.models) touched.add(active)
         if (body.modelCatalog) for (const provider of Object.keys(body.modelCatalog)) touched.add(provider as LlmProviderId)
-        await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
+        syncedSettings = await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
           catalog: !!body.modelCatalog,
           models: (['agentModel', 'summarizerModel', 'browserModel', 'dashboardBuilderModel'] as const).filter(key => !!body.llmProvider || Object.hasOwn(body.models ?? {}, key)),
           selectDefault: !!body.llmProvider })
@@ -560,8 +563,9 @@ settings.put(
       // heals a grant that failed, and giving it twice adds no one twice. Last, so a failed grant still leaves the write
       // audited and its other effects done.
       if (body.teamBrain) await addAgentUsers(body.teamBrain.agentSlug)
-      // The provider sync can write the settings again (the app default), so answer with what is stored now.
-      const responseSettings = syncProviders ? await getSettings() : newSettings
+      // Answer with the settings as committed: the sync's when it ran (it may
+      // have written the app default), else this write's. No read after it.
+      const responseSettings = syncedSettings ?? newSettings
       return c.json(await buildSettingsResponse(responseSettings, hasRunningAgents, runnerAvailability))
     } catch (error) {
       console.error('Failed to update settings:', error)

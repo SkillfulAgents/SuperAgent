@@ -88,6 +88,20 @@ function isWorkspaceSite(origin: string, workspaceOrigin: string): boolean {
 }
 
 /**
+ * Whether a request could go to a cloud workspace at all, judged from its URL
+ * alone before the workspace is read: only http(s) and ws(s) requests can, and
+ * none to the app's own pages or to an origin in `localOrigins` (its local API).
+ */
+export function mayBeWorkspaceRequest(url: string, localOrigins: readonly string[]): boolean {
+  if (!URL.canParse(url)) return false
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- checked by canParse above
+  const { protocol, origin } = new URL(url)
+  if (protocol !== 'http:' && protocol !== 'https:' && protocol !== 'ws:' && protocol !== 'wss:') return false
+  const pageOrigin = origin.replace(/^ws/, 'http')
+  return pageOrigin !== RENDERER_ORIGIN && !localOrigins.includes(pageOrigin)
+}
+
+/**
  * Cloud dashboards load at the workspace's own address, as in a browser, and
  * main signs them in place of the browser's login cookie, so the page never
  * holds the token. Local dashboards share this session and must not be signed.
@@ -138,14 +152,18 @@ type Workspace = { deploymentUrl: string; token: string }
 /**
  * `currentWorkspace` answers only while the app is driving a cloud workspace,
  * and is read per request, so a switch to local or a disconnect stops signing
- * with nothing to reset. Each signed request remembers the token it carried, so
- * its response is cleaned and its 401 retried once even if the record changed
- * in between. A request whose workspace cannot be read is sent unsigned.
+ * with nothing to reset. It is read only for a request that could go to a
+ * workspace ({@link mayBeWorkspaceRequest}; `localOrigins` names the app's own
+ * API), so the app's own traffic never waits on it. Each signed request
+ * remembers the token it carried, so its response is cleaned and its 401
+ * retried once even if the record changed in between. A request whose
+ * workspace cannot be read is sent unsigned.
  */
 export function installCloudDashboardAuth(
   target: Session,
   mainWebContentsId: () => number | null,
   currentWorkspace: () => Promise<Workspace | null>,
+  localOrigins: () => readonly string[] = () => [],
 ): void {
   // Per request in flight: the token this hop carried (null when it was not
   // signed) and whether it was retried.
@@ -181,7 +199,7 @@ export function installCloudDashboardAuth(
   target.webRequest.onBeforeSendHeaders((details, callback) => {
     const window = windowOf(details.webContentsId)
     // The frames are read now, not after the workspace: one can be disposed in between.
-    const request = window && workspaceRequestOf(details)
+    const request = window && mayBeWorkspaceRequest(details.url, localOrigins()) ? workspaceRequestOf(details) : null
     if (!request) {
       callback(sign(details, window, null, null))
       return

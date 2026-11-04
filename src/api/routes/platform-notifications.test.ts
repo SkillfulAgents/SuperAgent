@@ -12,11 +12,13 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 
 let mockToken: string | null = 'pk_test'
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => mockToken,
+  platformAccessTokenFrom: () => mockToken,
 }))
 
+/** Settings reads, counted: a request reads once. */
+const mockGetSettings = vi.fn(() => ({ platformAuth: { memberId: 'sub_member_1' } }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ platformAuth: { memberId: 'sub_member_1' } }),
+  getSettings: () => mockGetSettings(),
 }))
 
 const mockListNotifications = vi.fn()
@@ -85,6 +87,7 @@ describe('GET /api/platform-notifications', () => {
     expect(mockListNotifications).toHaveBeenCalledWith(
       { status: 'unread', limit: 20, offset: 15 },
       'sub_member_1',
+      'pk_test',
     )
   })
 
@@ -114,12 +117,14 @@ describe('GET /api/platform-notifications', () => {
     expect(mockListNotifications).toHaveBeenLastCalledWith(
       { status: undefined, limit: undefined, offset: undefined },
       'sub_member_1',
+      'pk_test',
     )
 
     await app.request('/api/platform-notifications?limit=500&offset=-3')
     expect(mockListNotifications).toHaveBeenLastCalledWith(
       { status: undefined, limit: 100, offset: 0 },
       'sub_member_1',
+      'pk_test',
     )
   })
 })
@@ -133,6 +138,7 @@ describe('GET /api/platform-notifications/unread-count', () => {
     expect(mockListNotifications).toHaveBeenCalledWith(
       { status: 'unread', limit: 1 },
       'sub_member_1',
+      'pk_test',
     )
   })
 
@@ -158,7 +164,7 @@ describe('POST /api/platform-notifications/read', () => {
     const res = await postRead({ ids: [NTF_1, NTF_2] })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true, updated: 2 })
-    expect(mockMarkRead).toHaveBeenCalledWith([NTF_1, NTF_2], 'sub_member_1')
+    expect(mockMarkRead).toHaveBeenCalledWith([NTF_1, NTF_2], 'sub_member_1', 'pk_test')
   })
 
   it('rejects missing, empty, or non-array ids with 400', async () => {
@@ -202,8 +208,9 @@ describe('POST /api/platform-notifications/read-all', () => {
     expect(mockListNotifications).toHaveBeenCalledWith(
       { status: 'unread', limit: 100 },
       'sub_member_1',
+      'pk_test',
     )
-    expect(mockMarkRead).toHaveBeenCalledWith([NTF_1, NTF_2], 'sub_member_1')
+    expect(mockMarkRead).toHaveBeenCalledWith([NTF_1, NTF_2], 'sub_member_1', 'pk_test')
   })
 
   it('skips the ack call when nothing is unread', async () => {
@@ -219,5 +226,29 @@ describe('POST /api/platform-notifications/read-all', () => {
     const res = await postReadAll()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true, updated: 0 })
+  })
+})
+
+describe('settings reads', () => {
+  it('reads the connection once per request, however many platform calls it makes', async () => {
+    mockListNotifications.mockResolvedValue({
+      notifications: [{ ...LIST_RESPONSE.notifications[0] }, { ...LIST_RESPONSE.notifications[0], id: NTF_2 }],
+      total: 2,
+      unread_count: 2,
+    })
+    mockMarkRead.mockResolvedValue(2)
+
+    await makeApp().request('/api/platform-notifications/read-all', { method: 'POST' })
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    await makeApp().request('/api/platform-notifications/unread-count')
+    expect(mockGetSettings).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads the connection afresh on the next request', async () => {
+    mockListNotifications.mockResolvedValue(LIST_RESPONSE)
+    await makeApp().request('/api/platform-notifications/unread-count')
+    mockToken = 'pk_rotated'
+    await makeApp().request('/api/platform-notifications/unread-count')
+    expect(mockListNotifications).toHaveBeenLastCalledWith({ status: 'unread', limit: 1 }, 'sub_member_1', 'pk_rotated')
   })
 })

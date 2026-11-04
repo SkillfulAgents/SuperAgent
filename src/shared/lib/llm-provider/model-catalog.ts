@@ -3,6 +3,7 @@ import { normalizeCatalog, mergeCatalog } from './catalog-merge'
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import {
   isFamilyAlias,
+  type ModelCatalogSettings,
   type ModelDefinition,
 } from './model-catalog-schema'
 import { getLlmProvider } from './index'
@@ -113,8 +114,21 @@ export function resolveModelForProviderFrom(
   purpose: ModelPurpose,
   settings: CatalogSettings,
 ): string {
-  const catalog = effectiveCatalogFrom(providerId, settings)
+  return resolveModelInCatalog(selection, providerId, purpose, effectiveCatalogFrom(providerId, settings), settings.modelCatalog)
+}
 
+/**
+ * {@link resolveModelForProviderFrom} against the provider's effective catalog
+ * the caller already built from the same settings ({@link effectiveCatalogFrom}),
+ * so resolving several selections builds it once.
+ */
+export function resolveModelInCatalog(
+  selection: string,
+  providerId: LlmProviderId,
+  purpose: ModelPurpose,
+  catalog: readonly ModelDefinition[],
+  modelCatalog: ModelCatalogSettings | undefined,
+): string {
   // exact concrete id (pin/passthrough), else bare family alias → its isLatest id
   const resolveExactOrAlias = (s: string): string | undefined => {
     if (catalog.some(model => model.id === s)) return s
@@ -129,6 +143,6 @@ export function resolveModelForProviderFrom(
   if (hasVersionSegment(selection)) return selection
 
   // 4. Fall back to the provider default (a bare alias), alias-resolved to a concrete id.
-  const fallback = getLlmProvider(providerId).getDefaultModel(purpose, settings.modelCatalog)
+  const fallback = getLlmProvider(providerId).getDefaultModel(purpose, modelCatalog)
   return resolveExactOrAlias(fallback) ?? fallback
 }

@@ -9,7 +9,11 @@ import { PlatformEmailAgentIntegration } from './platform-email-agent-integratio
 import { emailConfigSchema, emailMessageSchema, parseEmailConfig } from './config-schema'
 
 let handle: TestDatabase, testDb: AppDatabase
-const transport = vi.hoisted(() => ({ json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn() }))
+// The gateway client; one operation's client (a poll, a history read) is the same mock.
+const transport = vi.hoisted(() => {
+  const client = { json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn(), forOperation: () => client }
+  return client
+})
 vi.mock('../db', () => ({ get db() { return testDb } }))
 vi.mock('./live', () => ({ watchEmail: transport.watch }))
 vi.mock('./gateway-client', async importOriginal => ({ ...await importOriginal<typeof import('./gateway-client')>(), clientFor: () => transport }))

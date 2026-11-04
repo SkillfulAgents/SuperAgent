@@ -20,7 +20,6 @@ import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
-import type Anthropic from '@anthropic-ai/sdk'
 import { createHash, randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
@@ -275,18 +274,19 @@ import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
-import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider, getLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
+import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { stopInstanceOnAllProviders } from '../../main/host-browser'
@@ -1232,10 +1232,10 @@ agents.post('/generate-name', zValidator('json', generateNameBodySchema), async 
     const { prompt } = c.req.valid('json')
     const truncatedPrompt = prompt.trim().substring(0, 10_000)
 
-    const anthropic = await getLlmClient()
+    const { client: anthropic, model: summarizerModel } = await getConfiguredLlmClientAndModel()
     const raw = (
       await createSummarizerText(anthropic, {
-        model: await getSummarizerModel(),
+        model: summarizerModel,
         messages: [
           {
             role: 'user',
@@ -1325,17 +1325,6 @@ async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
   }
 }
 
-// Create LLM client using the active provider
-async function getLlmClient(): Promise<Anthropic> {
-  return await getConfiguredLlmClient()
-}
-
-// Model used for generating session names (lightweight task).
-// Resolve here because this is a host-direct SDK call (no container chokepoint).
-async function getSummarizerModel(): Promise<string> {
-  return resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
-}
-
 /**
  * Name a session opened by a system notice (voice mode started from the
  * agent home) from the first message a person sends to it. The notice must
@@ -1365,9 +1354,9 @@ async function generateAndUpdateSessionNameAsync(
   const skipProviderNaming = process.env.E2E_MOCK === 'true'
   if (!skipProviderNaming) {
     try {
-      const anthropic = await getLlmClient()
+      const { client: anthropic, model: summarizerModel } = await getConfiguredLlmClientAndModel()
       sessionName = await createSummarizerText(anthropic, {
-        model: await getSummarizerModel(),
+        model: summarizerModel,
         messages: [
           {
             role: 'user',
@@ -2066,7 +2055,9 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 // just the displayed binding, never unrelated personal accounts.
 agents.get('/:id/llm-connections', AgentRead(), async c => {
   const slug = getAgentId(c)
-  const prefs = await readAgentPreferences(slug)
+  // One read for the listing: the agent's default and the connections' state both come from it.
+  const settings = await getSettings()
+  const prefs = await readAgentPreferences(slug, settings)
   let currentId = prefs.defaultLlmProviderId ?? undefined
   const reference = c.req.query('llmProviderId')
   if (reference && reference !== currentId) {
@@ -2076,7 +2067,7 @@ agents.get('/:id/llm-connections', AgentRead(), async c => {
       if (attached) { currentId = reference; break }
     }
   }
-  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, currentId) })
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, currentId, settings) })
 })
 
 agents.get('/:id/sessions/:sessionId/llm-connections', AgentUser(), async c => {
@@ -2085,8 +2076,10 @@ agents.get('/:id/sessions/:sessionId/llm-connections', AgentUser(), async c => {
   const sessionId = c.req.param('sessionId')
   if (!await actor.sessions.isKnown(sessionId)) return c.json({ error: 'Session not found' }, 404)
   const metadata = await actor.sessions.metadata(sessionId)
-  const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug), await getEffectiveModels())
-  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.llmProviderId ?? undefined) })
+  // One read for the listing: the session's effective binding and the connections' state come from it.
+  const settings = await getSettings()
+  const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug, settings), effectiveModelsFrom(settings), settings)
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.llmProviderId ?? undefined, settings) })
 })
 
 // POST /api/agents/:id/sessions - Create a new session with initial message
@@ -2148,9 +2141,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(slug)
 
-    const agentLimits = await getEffectiveAgentLimits()
-    const customEnvVars = await getCustomEnvVars()
-    const maxBrowserTabs = (await getSettings()).app?.maxBrowserTabs
+    // One read of the settings for this session's start: limits, custom env,
+    // tab limit, models and the runtime below all come from it.
+    const launch = await resolveSessionDefaults(await getSettings(), slug)
+    const { agentLimits, customEnvVars, maxBrowserTabs, models } = launch
 
     // Server-generated uuid for the initial message (never client-supplied —
     // it keys the messageAuthor attribution row). Returned in the response so
@@ -2158,11 +2152,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const initialMessageUuid = randomUUID()
 
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
-    const agentPrefs = await readAgentPreferences(slug)
-    const models = await getEffectiveModels()
-    await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, agentPrefs.defaultLlmProviderId)
-    const resolved = await resolveConnectionRuntimeInherit(runtimeOptions, agentPrefs, models)
-    const prewarm = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
+    await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, launch.agentPrefs.defaultLlmProviderId)
+    const resolved = await launch.resolve(runtimeOptions)
+    const prewarm = await launch.resolve({})
 
     // Runtime choices are SESSION state once the first turn starts, including
     // inherited defaults. Persist the effective values, not merely explicit
@@ -2210,7 +2202,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         maxThinkingTokens: agentLimits.maxThinkingTokens,
         maxTurns: agentLimits.maxTurns,
         maxBudgetUsd: agentLimits.maxBudgetUsd,
-        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+        customEnvVars,
         maxBrowserTabs,
         effort: resolved.effort,
         speed: resolved.speed,
@@ -2300,14 +2292,16 @@ const messagesListQuerySchema = z
 // changes apply to history retroactively.
 async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
   if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
+  // One read for the page, however many errors it holds; the next page reads again.
+  const settings = await getSettings()
   const runtimeProvider = (await agentRegistry.get(agentSlug).sessions.live(sessionId)).runtime?.provider
   let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
   const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
   if (!provider) {
     // Resolve the saved account even if its selected model has since retired.
-    const id = (await storedSelection(metadata?.model, metadata?.llmProviderId))?.llmProviderId
+    const id = (await storedSelection(metadata?.model, metadata?.llmProviderId, settings))?.llmProviderId
     const connection = id ? await getConnection(id) : null
-    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection())?.provider ?? await getActiveLlmProvider()
+    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection(undefined, settings))?.provider ?? activeLlmProviderFrom(settings)
   }
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
@@ -2315,7 +2309,7 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
     // An error keeps the copy of the provider that produced it.
     const recorded = metadata?.errorProviders?.[item.id]
     item.errorPresentation =
-      (await (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError)) ?? undefined
+      (await (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError, settings)) ?? undefined
   }
 }
 
@@ -2939,9 +2933,11 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
 
     const live = await actor.sessions.live(sessionId)
     let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
-    if ((await getSettings()).llmDefault) {
+    // One read for the session's display defaults; the next view reads again.
+    const settings = await getSettings()
+    if (settings.llmDefault) {
       try {
-        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug), await getEffectiveModels())
+        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug, settings), effectiveModelsFrom(settings), settings)
       } catch (error) {
         // History remains readable during provider/configuration outages.
         // A new turn still resolves and validates its runtime before sending.

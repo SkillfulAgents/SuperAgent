@@ -72,6 +72,11 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-20250514',
     agentEffort: 'low',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+    agentEffort: 'low',
+  }),
   getSettings: () => ({}),
 }))
 
@@ -194,7 +199,8 @@ describe('chat integration model and effort resolution', () => {
   it('falls back to the agent default over the global default', async () => {
     mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
     const args = await startSession()
-    expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent')
+    // With the settings the start read once, not a read of its own.
+    expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent', expect.objectContaining({}))
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')
     expect(args.speed).toBe('slow')

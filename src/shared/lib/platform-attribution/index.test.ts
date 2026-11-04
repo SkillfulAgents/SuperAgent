@@ -8,6 +8,9 @@ const orderByCalls: unknown[][] = []
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: async () => mockGetPlatformAccessToken(),
   getStoredPlatformMemberId: async () => mockGetStoredPlatformMemberId(),
+  // From settings the caller read: the stored connection's token and member.
+  platformAccessTokenFrom: (settings: { platformAuth?: { token?: string } }) => settings.platformAuth?.token ?? null,
+  storedPlatformMemberIdFrom: (settings: { platformAuth?: { memberId?: string } }) => settings.platformAuth?.memberId ?? null,
 }))
 
 const mockGetAgentOwnerUserId = vi.fn((_slug: string): string | null => null)
@@ -51,6 +54,7 @@ import {
   runWithAttribution,
   runWithRequestUser,
 } from './index'
+import { forgetRequestScopedAttribution } from './request-context'
 
 function buildOrgToken(orgId: string): string {
   const header = Buffer.from('{"alg":"none"}').toString('base64url')
@@ -155,6 +159,90 @@ describe('attribution.current', () => {
 
   it('returns null when neither scope is active', async () => {
     expect((await attribution.current())).toBeNull()
+  })
+})
+
+describe('attribution.current within one request', () => {
+  /** One resolution = one member lookup + one token read. */
+  const resolutions = () => mockDbAll.mock.calls.length
+
+  it('resolves once for every platform call in the request, concurrent ones sharing the resolution in flight', async () => {
+    await runWithRequestUser('user_1', async () => {
+      const concurrent = await Promise.all(Array.from({ length: 5 }, () => attribution.current()))
+      const later = await attribution.current()
+      expect(new Set([...concurrent, later]).size).toBe(1)
+    })
+    expect(resolutions()).toBe(1)
+    expect(mockGetPlatformAccessToken).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves afresh in the next request', async () => {
+    await runWithRequestUser('user_1', async () => {
+      await attribution.current()
+    })
+    mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
+    await runWithRequestUser('user_1', async () => {
+      expect((await attribution.current())?.bearerToken()).toBe(ACCESS_KEY)
+    })
+    expect(resolutions()).toBe(2)
+  })
+
+  it('work the request left running resolves afresh once the request is over', async () => {
+    let release!: () => void
+    let lingering!: Promise<string | undefined>
+    await runWithRequestUser('user_1', async () => {
+      await attribution.current()
+      // A continuation registered in the request (a listener, fire-and-forget
+      // work): it runs later, still in the request's scope.
+      const later = new Promise<void>((resolve) => { release = resolve })
+      lingering = later.then(async () => (await attribution.current())?.bearerToken())
+    })
+    // The connection changes after the request ended; the leftover work must not use the request's memo.
+    mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
+    release()
+    expect(await lingering).toBe(ACCESS_KEY)
+    expect(resolutions()).toBe(2)
+  })
+
+  it('resolves afresh after the request saves or removes the platform connection', async () => {
+    await runWithRequestUser('user_1', async () => {
+      expect((await attribution.current())?.bearerToken()).toBe(`${ORG_TOKEN}::sub_user_123`)
+      mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
+      // What savePlatformAuth and the revoke path do once their write lands.
+      forgetRequestScopedAttribution()
+      expect((await attribution.current())?.bearerToken()).toBe(ACCESS_KEY)
+    })
+    expect(resolutions()).toBe(2)
+  })
+
+  it('does not keep a failed resolution', async () => {
+    mockDbAll.mockImplementationOnce(() => { throw new Error('database is locked') })
+    await runWithRequestUser('user_1', async () => {
+      await expect(attribution.current()).rejects.toThrow('database is locked')
+      expect((await attribution.current())?.getKey()).toBe('member:sub_user_123')
+    })
+  })
+
+  it('keeps an inner request scope separate from the outer one', async () => {
+    await runWithRequestUser('user_outer', async () => {
+      await attribution.current()
+      await runWithRequestUser('user_inner', async () => {
+        await attribution.current()
+      })
+      await attribution.current()
+    })
+    expect(resolutions()).toBe(2)
+  })
+})
+
+describe('attribution builders given the settings their operation read', () => {
+  it('builds from those settings without reading the connection again', async () => {
+    const settings = { platformAuth: { token: ACCESS_KEY } } as never
+    const auth = await attribution.fromUserId('user_alice', settings)
+    expect(auth?.bearerToken()).toBe(ACCESS_KEY)
+    expect(await attribution.requiresActingMember(settings)).toBe(false)
+    expect(mockGetPlatformAccessToken).not.toHaveBeenCalled()
+    expect(mockGetStoredPlatformMemberId).not.toHaveBeenCalled()
   })
 })
 

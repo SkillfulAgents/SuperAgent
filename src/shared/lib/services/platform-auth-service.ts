@@ -13,7 +13,7 @@ import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
-import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
+import { forgetRequestScopedAttribution, runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
 import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 import { isPrivateHost, tryParseUrl } from '@shared/lib/utils/url-safety'
 import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
@@ -264,6 +264,8 @@ async function writeRecord(record: PlatformAuthRecord | null): Promise<void> {
   await mutateSettings((settings) => {
     settings.platformAuth = record ?? undefined
   })
+  // A platform call later in this request acts under the new connection.
+  forgetRequestScopedAttribution()
 }
 
 /**
@@ -595,6 +597,8 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
       draft.cloudWorkspace = undefined
     }
   })
+  // A platform call later in this request acts under the new connection.
+  forgetRequestScopedAttribution()
   const existing = recordFrom(before)
   const orgChanged = existing?.orgId !== newOrgId
   const { ensureManagedPlatformConnection } = await import('@shared/lib/llm-provider/connection-settings')
@@ -652,7 +656,15 @@ export function platformAccessTokenFrom(
  * server-side and do not use this.
  */
 export async function getStoredPlatformMemberId(): Promise<string | null> {
-  return (await readRecord())?.memberId ?? null
+  return storedPlatformMemberIdFrom(await getSettings())
+}
+
+/** {@link getStoredPlatformMemberId} from settings already read. */
+export function storedPlatformMemberIdFrom(
+  settings: Pick<AppSettings, 'platformAuth'>,
+  options: ReadOptions = {},
+): string | null {
+  return recordFrom(settings, options)?.memberId ?? null
 }
 
 /**

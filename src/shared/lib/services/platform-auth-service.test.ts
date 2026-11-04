@@ -75,6 +75,7 @@ import {
   verifyPlatformOrgAccessTokenSigned,
 } from './platform-auth-service'
 import { _setOidcJwksResolverForTest } from '@shared/lib/auth/oidc-jwt'
+import { requestScopedAttribution, runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
 import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
 import {
   readCloudWorkspaceRecord,
@@ -944,6 +945,27 @@ describe('platform-auth-service', () => {
       getAgentsDir(), 'agent-c', 'workspace', '.claude', 'skills', 'stale-skill',
     )
     expect(fs.existsSync(skillDir)).toBe(false)
+  })
+
+  describe('the attribution a request resolved', () => {
+    it('is dropped when the request saves or removes the platform connection', async () => {
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x' })
+      const resolve = vi.fn(async () => null)
+
+      await runWithRequestUser('local', async () => {
+        await requestScopedAttribution(resolve)
+        await requestScopedAttribution(resolve)
+        expect(resolve).toHaveBeenCalledTimes(1)
+
+        await savePlatformAuth('local', { token: 'plat_second_token_1111111111111111', orgId: 'org_x' })
+        await requestScopedAttribution(resolve)
+        expect(resolve).toHaveBeenCalledTimes(2)
+
+        await revokePlatformToken({ clearLocal: true })
+        await requestScopedAttribution(resolve)
+        expect(resolve).toHaveBeenCalledTimes(3)
+      })
+    })
   })
 
   describe('stale agents on token change', () => {

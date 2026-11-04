@@ -1,5 +1,6 @@
+import { getSettings } from '../../config/settings'
 import { attribution } from '../../platform-attribution'
-import { getPlatformAccessToken } from '../../services/platform-auth-service'
+import { getPlatformAccessToken, platformAccessTokenFrom } from '../../services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '../../platform-auth/config'
 import { IntegrationPolicyError } from '../../agent-integrations/errors'
 import type { AgentIntegrationRecord } from '../../agent-integrations/types'
@@ -35,11 +36,15 @@ export async function resolveRecallTransport(): Promise<RecallTransport | null> 
     kind: 'platform',
     baseUrl: `${proxy}/v1/recall`,
     async authorization(owner) {
+      // One settings read for the member, the token and whether a member is required.
+      const settings = await getSettings()
       // An agent that set up its own meetings has no creator; bill the agent's owner.
-      const auth = owner.createdByUserId ? await attribution.fromUserId(owner.createdByUserId) : await attribution.forAgent(owner.agentSlug)
+      const auth = owner.createdByUserId
+        ? await attribution.fromUserId(owner.createdByUserId, settings)
+        : await attribution.forAgent(owner.agentSlug, settings)
       if (auth) return `Bearer ${auth.bearerToken()}`
       // Single-user installations have no user row or ambient request while polling.
-      if (!(await attribution.requiresActingMember())) return `Bearer ${(await getPlatformAccessToken())!}`
+      if (!(await attribution.requiresActingMember(settings))) return `Bearer ${platformAccessTokenFrom(settings)!}`
       throw new IntegrationPolicyError('A Platform member identity is required to run meeting bots.')
     },
   }

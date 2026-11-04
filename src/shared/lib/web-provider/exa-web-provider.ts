@@ -1,5 +1,5 @@
 import type { ApiKeySettings } from '../config/settings'
-import { BaseWebProvider } from './base-web-provider'
+import { BaseWebProvider, type WebProviderSettings } from './base-web-provider'
 import { ExaContentsResponseSchema } from './exa-contents-response-schema'
 import { ExaSearchResponseSchema } from './exa-response-schema'
 import type {
@@ -101,8 +101,8 @@ export class ExaWebProvider extends BaseWebProvider {
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'
   protected readonly envVarName = 'EXA_API_KEY'
 
-  async search(query: string, opts: WebSearchOptions): Promise<WebSearchResponse> {
-    const apiKey = await this.getEffectiveApiKey()
+  async search(query: string, opts: WebSearchOptions, settings?: WebProviderSettings): Promise<WebSearchResponse> {
+    const apiKey = await this.apiKeyFor(settings)
     if (!apiKey) throw new Error('Exa API key not configured')
 
     const json = await this.fetchJson(EXA_SEARCH_URL, {
@@ -113,8 +113,8 @@ export class ExaWebProvider extends BaseWebProvider {
     return mapExaSearchResponse(json)
   }
 
-  async fetch(url: string, opts: WebFetchOptions): Promise<WebFetchResult> {
-    const apiKey = await this.getEffectiveApiKey()
+  async fetch(url: string, opts: WebFetchOptions, settings?: WebProviderSettings): Promise<WebFetchResult> {
+    const apiKey = await this.apiKeyFor(settings)
     if (!apiKey) throw new Error('Exa API key not configured')
 
     const json = await this.fetchJson(EXA_CONTENTS_URL, {

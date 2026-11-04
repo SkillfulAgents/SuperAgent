@@ -28,7 +28,24 @@ read again. Never keep settings, or anything built from them, in module state
 across operations: another process may change them, and nothing tells this one.
 A long-lived object built from settings (the Better Auth instance, a container
 runtime's client, the account providers) re-checks the settings it was built
-from when it is used, and rebuilds when they changed.
+from when it is used, and rebuilds when they changed. Two deliberate
+exceptions, because a running container cannot change them: a runtime keeps
+the client of a container that is starting, running or stopping (a runner
+change applies at the next start), and a client keeps the host token it read
+(insert-if-absent, so it never changes for an agent).
+
+Most helpers that read settings have a pure `…From(settings)` variant or an
+optional `settings` parameter (`effectiveModelsFrom`, `activeLlmProviderFrom`,
+`provider.apiKeyStatusFrom`, `resolveSelectionHierarchyFrom`,
+`sessionConnectionRuntime(selected, agent, settings)`, `platformAccessTokenFrom`,
+`activeWebProviderFrom`, `composioAuthFrom`, `resolveSessionDefaults`,
+`getConfiguredLlmClientAndModel`, …): an operation reads once and passes the
+value down. A batch (a listing, a sweep, a page fetch, a fan-out) must not read
+once per item; tests count reads with the in-memory store (`store.calls.read`)
+and assert the count does not grow with the batch. Within one request, the
+platform attribution is resolved once and shared
+(`platform-attribution/request-context.ts`); work the request leaves running
+after it ends resolves afresh, and a platform-auth write in the request drops it.
 
 Invalid stored settings read as the defaults (reported, never written back).
 A database error is not invalid data: it propagates.

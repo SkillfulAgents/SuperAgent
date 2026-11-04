@@ -8,7 +8,6 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import {
   getPlatformAccessToken,
   getPlatformAuthStatus,
-  platformAuthStatusFrom,
 } from '@shared/lib/services/platform-auth-service'
 import type {
   InstalledAgentMetadata,
@@ -32,7 +31,7 @@ import {
   type SkillsetProviderRef,
   type SkillsetRemoteDescriptor,
   type SkillsetSourceInfo,
-  type SkillsetAuthSettings,
+  type SkillsetAuthContext,
 } from './base-skillset-provider'
 
 type PlatformProviderData = {
@@ -421,11 +420,11 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     }
   }
 
-  override buildSkillsetConfig(remote: SkillsetRemoteDescriptor, settings: SkillsetAuthSettings): SkillsetConfig {
-    const auth = platformAuthStatusFrom(settings, { report: false })
+  override buildSkillsetConfig(remote: SkillsetRemoteDescriptor, context: SkillsetAuthContext): SkillsetConfig {
+    const auth = context.platform
     const trustedOrgId = auth.source === 'settings' ? auth.orgId : null
     return {
-      ...super.buildSkillsetConfig(remote, settings),
+      ...super.buildSkillsetConfig(remote, context),
       providerData: {
         repoId: remote.repoId,
         ...(trustedOrgId ? { orgId: trustedOrgId } : {}),
@@ -437,10 +436,10 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   override updateSkillsetConfig(
     existing: SkillsetConfig,
     remote: SkillsetRemoteDescriptor,
-    settings: SkillsetAuthSettings,
+    context: SkillsetAuthContext,
   ): boolean {
-    let changed = super.updateSkillsetConfig(existing, remote, settings)
-    const auth = platformAuthStatusFrom(settings, { report: false })
+    let changed = super.updateSkillsetConfig(existing, remote, context)
+    const auth = context.platform
     const trustedOrgId = auth.source === 'settings' ? auth.orgId : null
     const current = this.getPlatformData(existing)
     const nextFields: PlatformProviderData = {
@@ -464,9 +463,9 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     return changed
   }
 
-  override isConfigValid(config: SkillsetConfig, settings: SkillsetAuthSettings): boolean {
+  override isConfigValid(config: SkillsetConfig, context: SkillsetAuthContext): boolean {
     if (config.provider !== 'platform') return true
-    const auth = platformAuthStatusFrom(settings, { report: false })
+    const auth = context.platform
     const currentOrgId = auth.source === 'settings' ? auth.orgId ?? null : null
     const configOrgId = this.getPlatformData(config).orgId ?? null
     // If the user isn't signed in, no platform configs are valid.
@@ -477,10 +476,10 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
 
   override isInstalledValid(
     meta: Pick<InstalledSkillMetadata | InstalledAgentMetadata, 'provider' | 'providerData'>,
-    settings: SkillsetAuthSettings,
+    context: SkillsetAuthContext,
   ): boolean {
     if (meta.provider !== 'platform') return true
-    const auth = platformAuthStatusFrom(settings, { report: false })
+    const auth = context.platform
     const currentOrgId = auth.source === 'settings' ? auth.orgId ?? null : null
     const metaOrgId = this.getPlatformData(meta).orgId ?? null
     if (!auth.connected) return false

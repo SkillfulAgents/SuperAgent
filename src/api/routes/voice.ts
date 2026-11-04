@@ -5,7 +5,8 @@ import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middleware/auth'
-import { getVoiceSettings, getAgentCapabilitySettings, type VoiceProvider } from '@shared/lib/config/settings'
+import { getSettings, type AppSettings, type VoiceProvider } from '@shared/lib/config/settings'
+import { DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import { getVoiceProvider } from '@shared/lib/voice'
 import { liveMappingSchema, voiceHistorySchema, type LiveAgentContext } from '@shared/lib/voice/live-types'
 import { resolveLiveConversationSetting } from '@shared/lib/agent-integrations/live-setting'
@@ -23,13 +24,14 @@ voice.use('*', Authenticated())
 // Also carries the provider's read-aloud voices and the deployment's default
 // among them: the settings endpoint is admin-only, and members need both to
 // fill their voice picker and label "Workspace Default".
+// Every handler below reads the settings once and answers from that read.
 voice.get('/configured', async (c) => {
-  const voiceSettings = await getVoiceSettings()
+  const settings = await getSettings()
+  const voiceSettings = settings.voice ?? {}
   const provider = voiceSettings.sttProvider
   if (!provider) return c.json({ configured: false, supportsTts: false, voices: [] })
   const sttProvider = getVoiceProvider(provider)
-  const status = await sttProvider.getApiKeyStatus()
-  const configured = status.isConfigured
+  const configured = sttProvider.apiKeyStatusFrom(settings).isConfigured
   const supportsTts = configured && sttProvider.supportsTts()
   // Live sessions (meetings) speak with the provider's Live voices, a different list from read-aloud.
   const live = configured ? sttProvider.getLiveConversation() : null
@@ -47,14 +49,14 @@ voice.get('/configured', async (c) => {
 // Resolve capability through the configured provider; transport and mapping
 // behavior stay in its implementation.
 voice.use('/live/*', limitJsonBody(VOICE_LIVE_BODY_MAX_BYTES))
-async function requireConfiguredProvider(c: Context<LimitedJsonBodyEnv>, provider?: VoiceProvider) {
-  const selected = provider ?? (await getVoiceSettings()).sttProvider
+function requireConfiguredProvider(c: Context<LimitedJsonBodyEnv>, settings: AppSettings, provider?: VoiceProvider) {
+  const selected = provider ?? settings.voice?.sttProvider
   if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
   return getVoiceProvider(selected)
 }
 
-async function requireLiveConversation(c: Context<LimitedJsonBodyEnv>, operation: string) {
-  const provider = await requireConfiguredProvider(c)
+function requireLiveConversation(c: Context<LimitedJsonBodyEnv>, settings: AppSettings, operation: string) {
+  const provider = requireConfiguredProvider(c, settings)
   if (provider instanceof Response) return provider
   const conversation = provider.getLiveConversation()
   if (!conversation) return c.json({
@@ -76,7 +78,8 @@ const pendingLiveStarts = new Map<string, number>()
 // meeting); it never carries instructions of its own.
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema, sessionId: z.string().min(1).max(200).optional() })
 async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
-  const ready = await requireLiveConversation(c, 'Live session creation')
+  const settings = await getSettings()
+  const ready = requireLiveConversation(c, settings, 'Live session creation')
   if (ready instanceof Response) return ready
   const { provider, conversation } = ready
   const parsed = liveSessionSchema.safeParse(c.get('limitedJsonBody'))
@@ -99,15 +102,15 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
         name: agent.frontmatter.name,
         description: agent.frontmatter.description,
         instructions: agent.instructions,
-        capabilityPolicies: await getAgentCapabilitySettings(),
+        capabilityPolicies: settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
         // A session an integration owns (a meeting) changes when the model may speak.
         setting: parsed.data.sessionId ? await resolveLiveConversationSetting(getAgentId(c), parsed.data.sessionId) : undefined,
       }
     }
-    const apiKey = await provider.getEffectiveApiKey()
-    const answer = agentContext
-      ? await conversation.createLiveSession(parsed.data.sdp, parsed.data.history, agentContext)
-      : await conversation.createLiveSession(parsed.data.sdp, parsed.data.history)
+    // The key the session is created with is the one that closes it, even
+    // after the configured provider or its key changes.
+    const apiKey = provider.effectiveApiKeyFrom(settings)
+    const answer = await conversation.createLiveSession(parsed.data.sdp, parsed.data.history, agentContext, { settings, apiKey })
     const registered = liveSessions.add(owner, () => conversation.closeLiveSession(answer.session.id, apiKey))
     if (c.req.raw.signal.aborted) {
       await liveSessions.release(registered.handle, owner)
@@ -131,12 +134,14 @@ voice.delete('/live/session/:handle', async (c) => {
   return c.json({ closed: result === 'closed', closing: result === 'closing' }, result === 'closed' ? 200 : 202)
 })
 voice.post('/live/map', async (c) => {
-  const ready = await requireLiveConversation(c, 'Live conversation mapping')
+  // Per utterance: the provider and the summarizer it maps with, from one read.
+  const settings = await getSettings()
+  const ready = requireLiveConversation(c, settings, 'Live conversation mapping')
   if (ready instanceof Response) return ready
   const parsed = liveMappingSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live mapping request.' }, 400)
   try {
-    return c.json(await ready.conversation.mapLiveConversation(parsed.data, c.req.raw.signal))
+    return c.json(await ready.conversation.mapLiveConversation(parsed.data, c.req.raw.signal, settings))
   } catch (error) {
     // The renderer only sees the generic line; the reason belongs in the host log.
     console.error('[voice] Live mapping failed:', error)
@@ -152,12 +157,12 @@ voice.get('/token', async (c) => {
       return c.json({ error: `Invalid voice provider: ${providerParam}` }, 400)
     }
 
-    const voiceSettings = await getVoiceSettings()
-    provider = (providerParam as VoiceProvider) || voiceSettings.sttProvider
+    const settings = await getSettings()
+    provider = (providerParam as VoiceProvider) || settings.voice?.sttProvider
 
-    const configured = await requireConfiguredProvider(c, provider)
+    const configured = requireConfiguredProvider(c, settings, provider)
     if (configured instanceof Response) return configured
-    const result = await configured.getEphemeralToken()
+    const result = await configured.getEphemeralToken(settings)
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to get STT credentials'
@@ -173,13 +178,14 @@ voice.get('/token', async (c) => {
 
 // Keep the old response shape for cached/remote renderers, using the same setup path.
 async function initializeTts(c: Context<LimitedJsonBodyEnv>, legacy = false) {
-  const provider = await requireConfiguredProvider(c)
+  const settings = await getSettings()
+  const provider = requireConfiguredProvider(c, settings)
   if (provider instanceof Response) return provider
   try {
-    const connection = await provider.getTtsConnection()
+    const connection = await provider.getTtsConnection(settings)
     const own = (await getUserSettings(getCurrentUserId(c))).voice
     const preferences = { provider: provider.id,
-      voice: provider.resolveTtsVoice(own?.ttsVoice, (await getVoiceSettings()).ttsVoice),
+      voice: provider.resolveTtsVoice(own?.ttsVoice, settings.voice?.ttsVoice),
       speed: resolveTtsSpeed(own?.ttsSpeed),
     }
     if (!legacy) return c.json({ ...preferences, connection })
@@ -197,7 +203,8 @@ voice.get('/tts-token', (c) => initializeTts(c, true))
 voice.post('/tts', limitJsonBody(32 * 1024), async (c) => {
   const parsed = ttsSynthesisSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid speech synthesis request.' }, 400)
-  const provider = await requireConfiguredProvider(c)
+  const settings = await getSettings()
+  const provider = requireConfiguredProvider(c, settings)
   if (provider instanceof Response) return provider
   // An already-open reader must not silently synthesize against a different account/provider.
   if (parsed.data.provider !== provider.id) return c.json({ error: 'Voice provider changed. Restart read-aloud.' }, 409)
@@ -206,7 +213,7 @@ voice.post('/tts', limitJsonBody(32 * 1024), async (c) => {
   if (!provider.hasTtsVoice(parsed.data.voice)) return c.json({ error: 'Invalid voice for the configured provider.' }, 400)
   try {
     const { text, voice: selectedVoice, speed } = parsed.data
-    const audio = await synthesis.synthesizeSpeech({ text, voice: selectedVoice, speed }, c.req.raw.signal)
+    const audio = await synthesis.synthesizeSpeech({ text, voice: selectedVoice, speed }, c.req.raw.signal, settings)
     return new Response(audio, { headers: { 'Content-Type': 'audio/pcm', 'Cache-Control': 'no-store' } })
   } catch (error) {
     return ttsError(c, error, 'Speech synthesis failed. Check your voice provider access and try again.')

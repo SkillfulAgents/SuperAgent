@@ -7,7 +7,8 @@ vi.mock('../platform-attribution', () => ({ attribution: {
   current: async () => null,
   fromUserId: async () => mocks.orgScoped && mocks.member ? { bearerToken: () => 'org-runtime::member' } : null,
 } }))
-vi.mock('../services/platform-auth-service', () => ({ getPlatformAccessToken: () => !mocks.connected ? null : mocks.orgScoped ? 'org-runtime' : 'plat_sa_member' }))
+vi.mock('../services/platform-auth-service', () => ({ platformAccessTokenFrom: () => !mocks.connected ? null : mocks.orgScoped ? 'org-runtime' : 'plat_sa_member' }))
+vi.mock('../config/settings', () => ({ getSettings: async () => ({}) }))
 vi.mock('../auth', () => ({ getAuth: () => ({ api: { getAccessToken: mocks.getAccessToken } }) }))
 
 beforeEach(() => {

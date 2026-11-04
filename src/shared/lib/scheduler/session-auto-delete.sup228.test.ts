@@ -61,7 +61,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({
-  readAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
+  readStoredAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({

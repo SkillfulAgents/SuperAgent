@@ -85,7 +85,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     }
     return response
   }
-  async createClient(): Promise<Anthropic> {
+  async createClientFrom(): Promise<Anthropic> {
     return new Anthropic({ authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
   }
   private async allowance(accessToken: string) {

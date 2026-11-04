@@ -202,6 +202,7 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 // Settings + secrets (only used by invoke for new sessions)
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: async () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
+  effectiveModelsFrom: () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
   getEffectiveAgentLimits: async () => ({}),
   getCustomEnvVars: async () => ({}),
   getSettings: async () => ({ app: {} }),
@@ -1730,7 +1731,8 @@ describe('/invoke model and effort resolution', () => {
     })
     const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello' })
     expect(res.status).toBe(200)
-    expect(mockReadAgentPreferences).toHaveBeenCalledWith(TARGET_SLUG)
+    // With the settings the start read once, not a read of its own.
+    expect(mockReadAgentPreferences).toHaveBeenCalledWith(TARGET_SLUG, expect.objectContaining({}))
     const args = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')

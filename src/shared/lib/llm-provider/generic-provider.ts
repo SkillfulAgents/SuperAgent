@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
 import { translatedMessagesFetch } from './translated-messages-fetch'
-import { BaseLlmProvider, type ModelPurpose, type ProviderSettings } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ModelPurpose, type ProviderSettings } from './base-llm-provider'
 import type { ModelCatalogSettings, ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
 import type { ApiKeyStatus } from '../config/settings'
@@ -123,9 +123,12 @@ export class GenericLlmProvider extends BaseLlmProvider {
     return { isConfigured: false, source: 'none' }
   }
 
-  /** User-supplied endpoint, from settings (preferred) or GENERIC_BASE_URL env. */
-  async getEffectiveBaseUrl(): Promise<string | undefined> {
-    return this.effectiveBaseUrlFrom(await this.ambientSettings())
+  /**
+   * User-supplied endpoint, from settings (preferred) or GENERIC_BASE_URL env.
+   * `settings`: the global settings already read, if any.
+   */
+  async getEffectiveBaseUrl(settings?: ProviderSettings): Promise<string | undefined> {
+    return this.effectiveBaseUrlFrom(await this.ambientSettings(settings))
   }
 
   /** {@link getEffectiveBaseUrl} from global settings already read. */
@@ -136,8 +139,8 @@ export class GenericLlmProvider extends BaseLlmProvider {
     return fromEnv || undefined
   }
 
-  async createClient(): Promise<Anthropic> {
-    const settings = await this.ambientSettings()
+  async createClientFrom(given?: ProviderSettings): Promise<Anthropic> {
+    const settings = await this.ambientSettings(given)
     const baseURL = this.effectiveBaseUrlFrom(settings)
     if (!baseURL) throw new Error('Generic provider base URL not configured')
     const apiKey = this.effectiveApiKeyFrom(settings)
@@ -169,11 +172,11 @@ export class GenericLlmProvider extends BaseLlmProvider {
     return getCatalogDefaultModels(this.id, modelCatalog).agentModel
   }
 
-  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
+  async getContainerEnvVars(_agent?: AgentIdentity, given?: ProviderSettings): Promise<Record<string, string | undefined>> {
     // A loopback endpoint (e.g. ollama on the host) isn't reachable as
     // localhost from inside the agent container; rewrite to the host gateway
     // (same translation the platform provider applies).
-    const settings = await this.ambientSettings()
+    const settings = await this.ambientSettings(given)
     const containerUrl = rewriteLoopbackForContainer(this.effectiveBaseUrlFrom(settings))
     return {
       ANTHROPIC_API_KEY: '',

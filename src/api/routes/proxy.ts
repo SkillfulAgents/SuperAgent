@@ -13,6 +13,7 @@ import { awaitReauth } from '@shared/lib/proxy/reauth-request'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
+import { getSettings } from '@shared/lib/config/settings'
 import { writeProxyAuditEntry, type ProxyAuditEntry } from '@shared/lib/proxy/audit'
 import { hasDotSegment } from '@shared/lib/proxy/rules/patterns'
 import { buildApiRuleInput } from '@shared/lib/proxy/rules/input'
@@ -440,15 +441,29 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   const queryString = new URL(c.req.url).search
   const targetUrl = `https://${targetHost}/${target.encodedPath}${queryString}`
 
-  // 5. Verify remote connection status before forwarding
-  let provider = getAccountProviderByName(account.providerName)
+  // 5-6 take the provider's credentials and the platform connection from one
+  // settings read: the status check and the forward both use them, under the
+  // account owner's attribution built from the same read. A wait for
+  // re-authentication (it can last minutes) takes them again.
+  const takeCallContext = async () => {
+    const settings = await getSettings()
+    const provider = getAccountProviderByName(account.providerName)
+    return {
+      provider,
+      credentials: provider.credentialsFrom(settings),
+      owner: await attribution.fromResourceCreator(account.userId, settings),
+    }
+  }
+  let call = await takeCallContext()
 
-  let remoteConnection: Awaited<ReturnType<typeof provider.getConnection>> | null = null
+  // 5. Verify remote connection status before forwarding
+  let remoteConnection: Awaited<ReturnType<typeof call.provider.getConnection>> | null = null
   try {
-    remoteConnection = await provider.getConnection(
+    remoteConnection = await runWithAttribution(call.owner, () => call.provider.getConnection(
       account.providerConnectionId,
       account.toolkitSlug,
-    )
+      call.credentials,
+    ))
   } catch (statusCheckErr) {
     console.warn('[proxy] Remote status check failed, proceeding with request:', statusCheckErr)
   }
@@ -468,21 +483,22 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       return reauthFailureResponse(reauthResult, newStatus, (errorMessage, statusCode) =>
         audit({ statusCode, errorMessage }))
     }
-    provider = getAccountProviderByName(account.providerName)
+    call = await takeCallContext()
   }
 
   // 6. Forward via account provider (handles token retrieval/proxy internally)
   const requestBody = await readBody()
 
   const forwardRequest = async () => runWithAttribution(
-      await attribution.fromResourceCreator(account.userId),
-      () => provider.makeApiCall({
+      call.owner,
+      () => call.provider.makeApiCall({
         providerConnectionId: account.providerConnectionId,
         toolkitSlug: account.toolkitSlug,
         targetUrl,
         method,
         headers: c.req.raw.headers,
         body: requestBody,
+        credentials: call.credentials,
       }),
     )
 
@@ -507,7 +523,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         return reauthFailureResponse(reauthResult, 'expired', (errorMessage, statusCode) =>
           audit({ statusCode, errorMessage }))
       }
-      provider = getAccountProviderByName(account.providerName)
+      call = await takeCallContext()
       try {
         response = await forwardRequest()
       } catch (retryError) {

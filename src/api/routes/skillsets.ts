@@ -17,6 +17,7 @@ import {
   HOST_GIT_UNAVAILABLE,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import { skillsetAuthContextFrom } from '@shared/lib/skillset-provider/base-skillset-provider'
 import { runsHostGit } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import type {
@@ -73,16 +74,21 @@ function tokenPreview(token: string): string {
   return `••••${token.slice(-4)}`
 }
 
-function createCredential(token: string, existing?: SkillsetCredential): SkillsetCredential {
+function createCredential(token: string): SkillsetCredential {
   const now = new Date().toISOString()
   return {
-    id: existing?.id ?? `skillcred_${crypto.randomUUID()}`,
+    id: `skillcred_${crypto.randomUUID()}`,
     type: 'token',
     token,
     tokenPreview: tokenPreview(token),
-    createdAt: existing?.createdAt ?? now,
+    createdAt: now,
     updatedAt: now,
   }
+}
+
+/** `fresh` replacing `existing`: the credential keeps its opaque id and creation time. */
+function rotateCredential(fresh: SkillsetCredential, existing?: SkillsetCredential): SkillsetCredential {
+  return existing ? { ...fresh, id: existing.id, createdAt: existing.createdAt } : fresh
 }
 
 function getCredentialId(config: Pick<SkillsetConfig, 'providerData'>): string | undefined {
@@ -141,6 +147,7 @@ function configToApiResponse(
 // GET /api/skillsets - List configured skillsets
 skillsets.get('/', async (c) => {
   try {
+    // One read for the list and every response's credential preview.
     const settings = await getSettings()
     const configs = settings.skillsets || []
     const result: ApiSkillsetConfig[] = []
@@ -281,10 +288,12 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
     if (body.token === undefined) return c.json({ error: 'Token is required (use null to remove it)' }, 400)
 
     const previousCredentialId = getCredentialId(config)
+    // The response is built from the settings the write committed.
+    let saved: AppSettings
     if (body.token === null || body.token === '') {
-      await mutateSettings((s) => {
+      saved = await mutateSettings((s) => {
         const target = (s.skillsets ?? []).find((item) => item.id === id)
-        if (!target) return
+        if (!target) return false
         const providerData = { ...target.providerData }
         delete providerData.credentialId
         target.providerData = Object.keys(providerData).length ? providerData : undefined
@@ -299,14 +308,13 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
       if (!token) return c.json({ error: 'Token cannot be empty (use null to remove it)' }, 400)
       const provider = await resolveProvider(config.url, config.provider, true)
       const index = await validateSkillsetUrl(config.url, provider, transientCredential(token))
-      const existingCredential = previousCredentialId
-        ? (await getSettings()).skillsetCredentials?.[previousCredentialId]
-        : undefined
-      const credential = createCredential(token, existingCredential)
+      const fresh = createCredential(token)
 
-      await mutateSettings((s) => {
+      saved = await mutateSettings((s) => {
         const target = (s.skillsets ?? []).find((item) => item.id === id)
-        if (!target) return
+        if (!target) return false
+        // The credential replaced is the one in this attempt's own settings.
+        const credential = rotateCredential(fresh, previousCredentialId ? s.skillsetCredentials?.[previousCredentialId] : undefined)
         target.provider = provider
         target.providerData = { ...target.providerData, credentialId: credential.id }
         target.name = index.skillset_name
@@ -315,11 +323,10 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
       })
     }
 
-    const after = await getSettings()
-    const updated = (after.skillsets || []).find((item) => item.id === id)
+    const updated = (saved.skillsets || []).find((item) => item.id === id)
     if (!updated) return c.json({ error: 'Skillset not found' }, 404)
     const index = await getSkillsetIndex(toSkillsetRef(updated))
-    return c.json(configToApiResponse(updated, after, index?.skills.length ?? 0, index?.agents?.length ?? 0))
+    return c.json(configToApiResponse(updated, saved, index?.skills.length ?? 0, index?.agents?.length ?? 0))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to update repository token'
     return c.json({ error: message }, 400)
@@ -409,6 +416,9 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
     let added: SkillsetConfig[] = []
     const finalSettings = await mutateSettings((s) => {
       added = []
+      // The auth state every config is built under: once per attempt, from
+      // this attempt's own settings.
+      const auth = skillsetAuthContextFrom(s)
       // Copy into a fresh array — never push() into whatever `s.skillsets` points
       // at. Defense-in-depth: even if a future change handed back a shared
       // default reference, this can't mutate it in place.
@@ -418,11 +428,11 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
 
         const existingConfig = current.find((x) => x.id === skillsetId)
         if (existingConfig) {
-          provider.updateSkillsetConfig(existingConfig, remote, s)
+          provider.updateSkillsetConfig(existingConfig, remote, auth)
           continue
         }
 
-        const config = provider.buildSkillsetConfig(remote, s)
+        const config = provider.buildSkillsetConfig(remote, auth)
         current.push(config)
         added.push(config)
       }

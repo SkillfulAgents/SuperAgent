@@ -1,10 +1,16 @@
 import { VoiceProviderError } from './provider-error'
-import { getSettings, type ApiKeySettings, type ApiKeyStatus, type VoiceProvider } from '../config/settings'
+import { getSettings, type ApiKeySettings, type ApiKeyStatus, type AppSettings, type VoiceProvider } from '../config/settings'
 import type { TtsConnection, TtsSynthesisProvider } from './tts-types'
 import type { LiveConversationProvider } from './live-types'
 import type { VoiceConversationEngine } from './conversation-types'
 import type { TtsVoiceInfo } from './tts-preferences'
 import type { SttProtocol, VoiceTokenResponse } from './stt-protocol'
+
+/**
+ * The global settings a voice provider reads its key from. Methods that take
+ * them use the settings the request already read, and read them when absent.
+ */
+export type VoiceProviderSettings = Pick<AppSettings, 'apiKeys' | 'platformAuth'>
 
 export abstract class BaseVoiceProvider {
   abstract readonly id: VoiceProvider
@@ -16,8 +22,12 @@ export abstract class BaseVoiceProvider {
   protected abstract readonly envVarName: string
 
   /** Check whether an API key is configured and its source. */
-  async getApiKeyStatus(): Promise<ApiKeyStatus> {
-    const settings = await getSettings()
+  async getApiKeyStatus(settings?: VoiceProviderSettings): Promise<ApiKeyStatus> {
+    return this.apiKeyStatusFrom(settings ?? await getSettings())
+  }
+
+  /** {@link getApiKeyStatus} from settings already read. */
+  apiKeyStatusFrom(settings: VoiceProviderSettings): ApiKeyStatus {
     if (settings.apiKeys?.[this.settingsKeyField]) {
       return { isConfigured: true, source: 'settings' }
     }
@@ -28,8 +38,12 @@ export abstract class BaseVoiceProvider {
   }
 
   /** Get the effective API key (settings take precedence over env var). */
-  async getEffectiveApiKey(): Promise<string | undefined> {
-    const settings = await getSettings()
+  async getEffectiveApiKey(settings?: VoiceProviderSettings): Promise<string | undefined> {
+    return this.effectiveApiKeyFrom(settings ?? await getSettings())
+  }
+
+  /** {@link getEffectiveApiKey} from settings already read. */
+  effectiveApiKeyFrom(settings: VoiceProviderSettings): string | undefined {
     const fromSettings = settings.apiKeys?.[this.settingsKeyField]
     if (fromSettings) return fromSettings
     return process.env[this.envVarName]
@@ -51,8 +65,8 @@ export abstract class BaseVoiceProvider {
   abstract mintEphemeralToken(apiKey: string): Promise<string>
 
   /** Convenience: resolve the effective key and mint an ephemeral token. */
-  async getEphemeralToken(): Promise<VoiceTokenResponse> {
-    const apiKey = await this.getEffectiveApiKey()
+  async getEphemeralToken(settings?: VoiceProviderSettings): Promise<VoiceTokenResponse> {
+    const apiKey = await this.getEffectiveApiKey(settings)
     if (!apiKey) {
       throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }
@@ -85,11 +99,13 @@ export abstract class BaseVoiceProvider {
     return null
   }
 
-  async getTtsConnection(): Promise<TtsConnection> {
+  /** `settings`: those the request already read; read here when absent. */
+  async getTtsConnection(given?: VoiceProviderSettings): Promise<TtsConnection> {
     if (!this.supportsTts()) throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
-    if (!(await this.getApiKeyStatus()).isConfigured) throw new VoiceProviderError(this.missingCredentialMessage(), 400)
+    const settings = given ?? await getSettings()
+    if (!this.apiKeyStatusFrom(settings).isConfigured) throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     if (this.getTtsSynthesis()) return { transport: 'http' }
-    const { token } = await this.getTtsToken()
+    const { token } = await this.getTtsToken(settings)
     return { transport: 'websocket', token }
   }
 
@@ -123,11 +139,11 @@ export abstract class BaseVoiceProvider {
   }
 
   /** Convenience: resolve the effective key and mint a text-to-speech token. */
-  async getTtsToken(): Promise<{ provider: VoiceProvider; token: string }> {
+  async getTtsToken(settings?: VoiceProviderSettings): Promise<{ provider: VoiceProvider; token: string }> {
     if (!this.supportsTts()) {
       throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
     }
-    const apiKey = await this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey(settings)
     if (!apiKey) {
       throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }

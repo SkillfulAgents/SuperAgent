@@ -1,7 +1,10 @@
 import * as llmProviders from '@shared/lib/llm-provider'
 import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
-vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(async () => []) }))
-vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
+import { listConnectionsWithSelection } from '@shared/lib/llm-provider/connections'
+vi.mock('@shared/lib/llm-provider/connections', () => ({
+  listConnectionsWithSelection: vi.fn(async () => ({ connections: [], defaultSelection: null, summarizerSelection: null })),
+}))
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => undefined) }))
 const { addAgentUsers } = vi.hoisted(() => ({ addAgentUsers: vi.fn(async () => {}) }))
 vi.mock('@shared/lib/services/agent-members-service', () => ({ addAgentUsers }))
 const { isPublicVolume } = vi.hoisted(() => ({ isPublicVolume: vi.fn(async (_id: string) => true) }))
@@ -84,6 +87,13 @@ vi.mock('@shared/lib/config/settings', () => ({
   getComposioUserId: (...args: unknown[]) => mockGetComposioUserId(...args),
   getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
+  // The response is built from the settings the request read.
+  composioApiKeyStatusFrom: (...args: unknown[]) => mockGetComposioApiKeyStatus(...args),
+  composioUserIdFrom: (...args: unknown[]) => mockGetComposioUserId(...args),
+  effectiveModelsFrom: (...args: unknown[]) => mockGetEffectiveModels(...args),
+  browserbaseApiKeyStatusFrom: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
+  nangoApiKeyStatusFrom: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
+  accountProviderUserIdFrom: (...args: unknown[]) => mockGetAccountProviderUserId(...args),
   getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
   getGlobalInstructions: () => mockGetSettings().globalInstructions ?? '',
@@ -156,6 +166,7 @@ const mockVoiceValidateKey = vi.fn()
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
     getApiKeyStatus: () => mockVoiceGetApiKeyStatus(id),
+    apiKeyStatusFrom: () => mockVoiceGetApiKeyStatus(id),
     validateKey: (...args: unknown[]) => mockVoiceValidateKey(id, ...args),
   }),
 }))
@@ -2447,5 +2458,58 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       expect(mockGetSettings().container.containerRunner).toBe('podman')
     })
+  })
+})
+
+// SUP-1507: each request reads the settings once and builds its answer from that read.
+describe('settings reads per request', () => {
+  let app: ReturnType<typeof createApp>
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupDefaults()
+    app = createApp()
+  })
+
+  function putSettings(body: Record<string, unknown>) {
+    return app.request('http://localhost/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('answers GET / from one settings read', async () => {
+    const res = await app.request('http://localhost/api/settings')
+    expect(res.status).toBe(200)
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    // The Platform key status comes from that read's stored connection.
+    expect((await res.json()).apiKeyStatus.platform).toEqual({ isConfigured: true, source: 'settings' })
+  })
+
+  it('answers the model picker from one settings read, which the connection listing reuses', async () => {
+    vi.mocked(listConnectionsWithSelection).mockResolvedValueOnce({
+      connections: [], defaultSelection: { llmProviderId: 'legacy-anthropic', model: 'opus' }, summarizerSelection: null,
+    })
+    const res = await app.request('http://localhost/api/settings/models')
+    expect(res.status).toBe(200)
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    expect(listConnectionsWithSelection).toHaveBeenCalledWith(expect.anything(), mockGetSettings.mock.results[0]?.value)
+    const body = await res.json()
+    expect(body.defaultSelection).toEqual({ llmProviderId: 'legacy-anthropic', model: 'opus' })
+    expect(body.models.agentModel).toBe('opus')
+  })
+
+  it('answers a PUT that syncs providers with the settings the sync left, without reading them again', async () => {
+    // A field only the sync's settings carry shows which settings the answer came from.
+    const synced = { ...defaultSettings(), llmProvider: 'openrouter', customEnvVars: { FROM_SYNC: 'yes' } }
+    vi.mocked(syncProviderSettings).mockResolvedValueOnce(synced as never)
+    const res = await putSettings({ llmProvider: 'openrouter' })
+    expect(res.status).toBe(200)
+    expect(syncProviderSettings).toHaveBeenCalledOnce()
+    // One read: the compare-and-set write's own.
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    const body = await res.json()
+    expect(body.llmProvider).toBe('openrouter')
+    expect(body.customEnvVars).toEqual({ FROM_SYNC: 'yes' })
   })
 })
