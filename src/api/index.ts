@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { windowLimiter } from '@shared/lib/host-state/counters'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
@@ -112,10 +113,8 @@ if (!isAuthMode()) {
   })
 }
 
-// Simple rate limiter for auth endpoints
-const authAttempts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT_MAX = 100
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000 // 15 minutes
+// Simple rate limiter for auth endpoints: 100 attempts per 15 minutes per address
+const authAttempts = windowLimiter('auth-attempts', 100, 15 * 60 * 1000)
 
 if (isAuthMode()) {
   app.use('/api/auth/*', async (c, next) => {
@@ -123,25 +122,9 @@ if (isAuthMode()) {
     if (c.req.method !== 'POST') return next()
 
     const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-    const now = Date.now()
-    const entry = authAttempts.get(ip)
-
-    if (entry && now < entry.resetAt) {
-      if (entry.count >= RATE_LIMIT_MAX) {
-        return c.json({ error: 'Too many attempts. Please try again later.' }, 429)
-      }
-      entry.count++
-    } else {
-      authAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW })
+    if (!(await authAttempts.hit(ip))) {
+      return c.json({ error: 'Too many attempts. Please try again later.' }, 429)
     }
-
-    // Clean up old entries periodically
-    if (authAttempts.size > 1000) {
-      for (const [key, val] of authAttempts) {
-        if (now >= val.resetAt) authAttempts.delete(key)
-      }
-    }
-
     return next()
   })
 }
