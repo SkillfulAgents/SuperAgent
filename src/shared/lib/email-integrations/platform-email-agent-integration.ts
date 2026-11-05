@@ -8,6 +8,8 @@ import { background } from '../background'
 import { createHash } from 'node:crypto'
 import { platformConnected } from './policy'
 import { watchEmail } from './live'
+import { emailMailboxWake, type EmailMailboxWake } from './wake'
+import { appState } from '../app-state'
 import { z } from 'zod'
 import { EmailAgentIntegration, emailDefinition } from './email-agent-integration'
 import { parseEmailConfig, emailConfigSchema, emailMessageSchema, type EmailSend } from './config-schema'
@@ -24,7 +26,8 @@ import type { AgentIntegrationRecord } from '../agent-integrations/types'
  * The cursor poll is the source of truth: it runs on connect, every 30s and on
  * each wake-up. Wake-ups come through the webhook relay when the host has one
  * as this connection starts, and then no stream is opened; otherwise they come
- * from the member's shared SSE stream (live.ts). See webhooks.ts.
+ * from the member's shared SSE stream (live.ts), which sends them on the
+ * mailbox's wake channel (wake.ts). See webhooks.ts.
  */
 export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   static override isAvailable() { return platformConnected() }
@@ -44,6 +47,8 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   private pending?: Promise<void>
   private uploads = new Map<string, string>()
   private unwatch?: () => void
+  /** Ends this connection's wake subscription, also while it is being set up. */
+  private wakes?: AbortController
   constructor(record: AgentIntegrationRecord, private readonly relays: EmailRelays = emailRelays) { super(record); this.config = parseEmailConfig(record.config); this.client = clientFor(record) }
   private get base() { return `/mailboxes/${encodeURIComponent(this.config.mailboxId)}` }
   async connect() {
@@ -57,12 +62,23 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     // stream otherwise, or if webhooks can't be set up right now.
     const webhook = this.host.relay ? await this.registerWebhook() : null
     if (generation !== this.generation) return
+    // Subscribed before the first poll, so a wake sent while it runs is not missed.
+    const wakes = new AbortController()
+    this.wakes?.abort()
+    this.wakes = wakes
+    await appState().subscribe([emailMailboxWake.channel(this.config.mailboxId)], wake => this.woken(wake, generation), { signal: wakes.signal })
+    if (generation !== this.generation) { wakes.abort(); return }
     this.stopped = false
     this.connected = mailbox.domain?.status === 'ready'
     this.mode = webhook ? 'webhooks' : 'stream'
     if (webhook) this.relayAttachment = this.relays.attach(webhook, this.config.mailboxId, cursor => this.catchUp(cursor))
-    else this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId, () => { background(this.pollNow(), { name: 'platform-email.poll' }) })
+    else this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId)
     this.schedule(0)
+  }
+  /** Polls on a wake; one for an event polls until the stored cursor reaches it, so a repeated or late one finds it there. */
+  private woken(wake: EmailMailboxWake, generation: number) {
+    if (this.stopped || generation !== this.generation) return
+    background(wake.cursor === undefined ? this.pollNow() : this.catchUp(wake.cursor), { name: 'platform-email.wake' })
   }
   /** Registers the relay endpoint as this mailbox's gateway webhook. Null leaves this connection to the stream. */
   private async registerWebhook(): Promise<EmailWebhook | null> {
@@ -95,7 +111,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     this.timer = setTimeout(() => { background(this.pollNow(), { name: 'platform-email.poll' }) }, ms)
     this.timer.unref?.()
   }
-  /** A relayed pointer: polls until the stored cursor reaches it, at most twice (a running poll may predate it). */
+  /** A relayed pointer or a wake: polls until the stored cursor reaches it, at most twice (a running poll may predate it). */
   private async catchUp(cursor: number): Promise<number> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const reached = await this.storedCursor()
@@ -145,6 +161,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     this.generation++
     this.stopped = true; this.connected = false; this.mode = null
     this.unwatch?.(); this.unwatch = undefined
+    this.wakes?.abort(); this.wakes = undefined
     this.relayAttachment?.detach(); this.relayAttachment = undefined
     clearTimeout(this.timer); await this.pending
   }

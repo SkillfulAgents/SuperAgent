@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import { closeAppState } from '@shared/lib/app-state'
 import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 
 // ---------------------------------------------------------------------------
@@ -143,6 +144,52 @@ describe('LLM proxy endpoint', () => {
   })
 
   describe('POST /api/llm/v1/messages', () => {
+    describe('rate limit', () => {
+      const T0 = Date.parse('2026-11-04T12:00:00Z')
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(T0)
+        mockCreate.mockResolvedValue({ content: [] })
+      })
+
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      const call = (app: ReturnType<typeof createApp>, client = '203.0.113.7') =>
+        app.fetch(new Request('http://localhost/api/llm/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-forwarded-for': client },
+          body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+        }))
+
+      it('admits 100 calls per client in a minute and refuses the rest of the window', async () => {
+        const app = createApp()
+        const results = await Promise.all(Array.from({ length: 120 }, () => call(app)))
+        expect(results.filter((res) => res.status === 200)).toHaveLength(100)
+        const refused = results.filter((res) => res.status === 429)
+        expect(refused).toHaveLength(20)
+        expect(await refused[0].json()).toEqual({ error: 'Too many LLM requests. Please slow down.' })
+        expect(mockCreate).toHaveBeenCalledTimes(100)
+
+        // Another client has its own window; this one's opens again a minute after its first call.
+        expect((await call(app, '198.51.100.2')).status).toBe(200)
+        vi.setSystemTime(T0 + 60_000 - 1)
+        expect((await call(app)).status).toBe(429)
+        vi.setSystemTime(T0 + 60_000)
+        expect((await call(app)).status).toBe(200)
+      })
+
+      it('fails the call when the counter cannot be reached', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+        await closeAppState()
+        expect((await call(createApp())).status).toBe(500)
+        expect(mockCreate).not.toHaveBeenCalled()
+        consoleError.mockRestore()
+      })
+    })
+
     it('forwards request to SDK and returns response', async () => {
       const mockResponse = {
         id: 'msg_123',

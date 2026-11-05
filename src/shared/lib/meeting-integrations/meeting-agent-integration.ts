@@ -26,7 +26,7 @@ import {
   createMeeting, getMeeting, listMeetings, listOpenMeetings, mintParticipantToken, setMeetingBot,
   setMeetingSession, toPublicMeeting, transitionMeeting, type MeetingRecord,
 } from './store'
-import { isMeetingBot, meetingRoster } from './roster'
+import { meetingRoster } from './roster'
 import { meetingTranscriptPath, meetingTranscripts } from './transcript'
 
 export { MEETING_RECORDING_RETENTION_HOURS }
@@ -292,22 +292,6 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
   }
 
   /**
-   * A callback from the bot host about the room (someone joined, left, started
-   * talking). The route has already checked the meeting's token. Returns
-   * whether the body was a participant event at all.
-   */
-  async receiveBotEvent(meetingId: string, body: unknown): Promise<boolean> {
-    const event = this.bots.parseEvent(body)
-    if (!event) return false
-    const meeting = await getMeeting(meetingId)
-    if (!meeting || isTerminalMeetingStatus(meeting.status)) return true
-    meetingRoster.apply(meeting.id, event, meeting.botName)
-    // Room speech is named after whoever last started talking. The bot's own lines arrive already named, so the bot starting to talk changes nothing.
-    if (event.kind === 'speech_on' && !isMeetingBot(event.participant, meeting.botName)) meetingTranscripts.speakerStarted(meeting, event.participant.name)
-    return true
-  }
-
-  /**
    * The call's speech as the bot's voice engine transcribed it, for the
    * meeting's transcript file: what the room said ('user') and what the bot
    * said aloud ('assistant'), which goes under the bot's meeting name. The
@@ -396,7 +380,8 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     if (changed.status === 'in_call' && changed.botId) await this.disclose(changed)
     if (!isTerminalMeetingStatus(changed.status)) return
     this.untrack(meetingId)
-    meetingRoster.clear(meetingId)
+    // The roster is a view; a failure to end it must not keep the agent from hearing the call ended.
+    await meetingRoster.clear(meetingId).catch(error => captureException(error, { tags: { component: 'meeting-integration', operation: 'clear-roster' }, extra: { meetingId } }))
     this.writtenReplies.delete(meetingId)
     // The last lines are on disk before the agent is told to write its summary.
     await meetingTranscripts.close(meetingId)
