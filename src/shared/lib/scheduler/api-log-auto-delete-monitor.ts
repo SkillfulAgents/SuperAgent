@@ -6,14 +6,20 @@ import { pruneExpiredApiLogsForAgent } from '@shared/lib/services/api-log-auto-d
 import { db } from '@shared/lib/db'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 
-class ApiLogAutoDeleteMonitor {
-  private intervalId: NodeJS.Timeout | null = null
-  private startupTimeoutId: NodeJS.Timeout | null = null
+class ApiLogAutoDeleteMonitor implements Service {
+  readonly id = 'api-log-auto-delete'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private pollIntervalMs = 4 * 60 * 60 * 1000
   private startupDelayMs = 30_000
+  private readonly cleanupTask = new PassTask('api-logs.auto-delete', () => this.cleanupAllAgents().catch((error) => {
+    console.error('[ApiLogAutoDeleteMonitor] Error in cleanup cycle:', error)
+    captureException(error, { tags: { area: 'api-log-auto-delete', op: 'cleanup-cycle' } })
+  }))
+  readonly tasks = [this.cleanupTask]
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -24,20 +30,10 @@ class ApiLogAutoDeleteMonitor {
     this.isRunning = true
     console.log('[ApiLogAutoDeleteMonitor] Starting monitor...')
 
-    this.startupTimeoutId = setTimeout(() => {
-      this.startupTimeoutId = null
-      background(this.cleanupAllAgents().catch((error) => {
-        console.error('[ApiLogAutoDeleteMonitor] Error in initial cleanup:', error)
-        captureException(error, { tags: { area: 'api-log-auto-delete', op: 'initial-cleanup' } })
-      }), { name: 'api-log-auto-delete-monitor.cleanup-all-agents' })
-
-      this.intervalId = setInterval(() => {
-        background(this.cleanupAllAgents().catch((error) => {
-          console.error('[ApiLogAutoDeleteMonitor] Error in cleanup cycle:', error)
-          captureException(error, { tags: { area: 'api-log-auto-delete', op: 'cleanup-cycle' } })
-        }), { name: 'api-log-auto-delete-monitor.cleanup-all-agents' })
-      }, this.pollIntervalMs)
-    }, this.startupDelayMs)
+    await taskManager().ensureEvery(this.cleanupTask.type, this.cleanupTask.spec, {
+      intervalMs: this.pollIntervalMs,
+      initialDelayMs: this.startupDelayMs,
+    })
 
     console.log(
       `[ApiLogAutoDeleteMonitor] Monitor started, first run in ${this.startupDelayMs / 1000}s, then every ${this.pollIntervalMs / 3_600_000}h`,
@@ -45,14 +41,7 @@ class ApiLogAutoDeleteMonitor {
   }
 
   stop(): void {
-    if (this.startupTimeoutId) {
-      clearTimeout(this.startupTimeoutId)
-      this.startupTimeoutId = null
-    }
-    if (this.intervalId) {
-      clearInterval(this.intervalId)
-      this.intervalId = null
-    }
+    background(taskManager().cancel(this.cleanupTask.type), { name: 'api-log-auto-delete-monitor.cancel-cleanup' })
     this.isRunning = false
     console.log('[ApiLogAutoDeleteMonitor] Monitor stopped')
   }

@@ -5,6 +5,7 @@
  * Handles both one-time ('at') and recurring ('cron') tasks.
  */
 
+import type { Service } from '@shared/lib/background-work'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { AgentActor } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
@@ -46,7 +47,10 @@ async function isRunBusy(actor: AgentActor, sessionId: string): Promise<boolean>
   return live.isActive && !live.isAwaitingInput
 }
 
-class TaskScheduler {
+class TaskScheduler implements Service {
+  readonly id = 'task-scheduler'
+  readonly phase = 'background' as const
+  readonly startupIo = true
   private intervalId: NodeJS.Timeout | null = null
   private isRunning = false
   private pollIntervalMs = 60000 // Check every minute

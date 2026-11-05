@@ -24,6 +24,9 @@ const initializeLocalAppState = vi.fn(async () => {
 const initializeBackgroundWork = vi.fn(async (_manager: object) => {
   calls.push('initializeBackgroundWork')
 })
+const registerBackgroundWork = vi.fn(() => {
+  calls.push('registerBackgroundWork')
+})
 const bindServerWithRetry = vi.fn(async () => {
   calls.push('bind')
   return { server: { close: vi.fn() }, port: 47891 }
@@ -44,6 +47,7 @@ vi.mock('@shared/lib/background-work', () => ({ initializeBackgroundWork }))
 vi.mock('@shared/lib/server-bind', () => ({ bindServerWithRetry }))
 vi.mock('@shared/lib/startup', () => ({
   afterBindInitialize,
+  registerBackgroundWork,
   setupServerHandlers: vi.fn(),
   shutdownServices: vi.fn(),
 }))
@@ -87,6 +91,7 @@ describe('web server boot order', () => {
       'attachErrorReportingIdentity',
       'initializeLocalAppState',
       'initializeBackgroundWork',
+      'registerBackgroundWork',
       'bind',
       'afterBindInitialize',
     ])
@@ -101,7 +106,7 @@ describe('web server boot order', () => {
   it('skips error reporting outside production, as afterBindInitialize does', async () => {
     process.env.NODE_ENV = 'test'
     await boot()
-    expect(calls).toEqual(['openDatabase', 'attachErrorReportingIdentity', 'initializeLocalAppState', 'initializeBackgroundWork', 'bind', 'afterBindInitialize'])
+    expect(calls).toEqual(['openDatabase', 'attachErrorReportingIdentity', 'initializeLocalAppState', 'initializeBackgroundWork', 'registerBackgroundWork', 'bind', 'afterBindInitialize'])
   })
 
   it('flushes error reporting before exiting when the database fails to open', async () => {
