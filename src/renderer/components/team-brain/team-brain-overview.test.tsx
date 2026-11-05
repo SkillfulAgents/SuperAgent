@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { DraftsProvider } from '@renderer/context/drafts-context'
 import userEvent from '@testing-library/user-event'
+
+/** The app keeps every composer's draft above its pages. */
+const render = (ui: Parameters<typeof renderUi>[0]) => renderUi(ui, { wrapper: DraftsProvider })
 
 const { app, openExternalUrl, screenSize } = vi.hoisted(() => ({
   openExternalUrl: vi.fn(),
@@ -81,7 +85,7 @@ vi.mock('@renderer/hooks/use-team-brain-syncs', () => ({
       data: [
         {
           id: '_brain/syncs/2026-10-23 0300.md', at: new Date(Date.now() - 7_200_000).toISOString(), session: 's-1', sources: ['slack', 'notion'], added: 3, updated: 9,
-          highlights: [{ title: 'Acme’s renewal moves to Q1', body: 'Acme asked to **move** it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date, from [the thread](https://slack.com/x). [Call](javascript:alert(1))' }],
+          highlights: [{ title: 'Acme’s renewal moves to Q1', line: 10, body: 'Acme asked to **move** it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date, from [the thread](https://slack.com/x). [Call](javascript:alert(1))' }],
           changes: '- Cycle 14 closed.\n  - Four bugs left open.',
           needsYou: { blocked: '- Reconnect Slack. #sales was not read this run.', toDecide: '' },
         },

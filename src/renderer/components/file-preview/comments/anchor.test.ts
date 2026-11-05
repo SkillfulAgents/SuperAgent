@@ -180,6 +180,11 @@ describe('text comments', () => {
     expect(locateAnchor(surface, { kind: 'text', quote: 'Intro' }, false)).toEqual([])
   })
 
+  it('takes no whole-file comment from a viewer that turns the kind off', () => {
+    const { surface } = file([['1-1', 'Intro']])
+    expect(resolveAnchor({ ...surface, file: null }, { on: 'elsewhere' })).toBeNull()
+  })
+
   it('caps a long quote and escapes its quotes, like a cell value', () => {
     expect(describeAnchor({ kind: 'text', quote: 'x'.repeat(250), lines: { start: 1, end: 1 } })).toBe(`Line 1: > "${'x'.repeat(200)}…"`)
     expect(describeAnchor({ kind: 'text', quote: 'say "hi"' })).toBe('> "say \\"hi\\""')

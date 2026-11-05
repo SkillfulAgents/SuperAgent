@@ -68,6 +68,9 @@ export interface FileComment {
   anchor: CommentAnchor
 }
 
+/** What a comment says and where it points, without the file it is kept under. */
+export type FileCommentContent = Pick<FileComment, 'anchor' | 'text'>
+
 interface FilePreviewContextType {
   openTabs: PreviewTab[]
   activeTabIndex: number
