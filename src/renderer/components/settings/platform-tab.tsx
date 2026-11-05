@@ -50,7 +50,7 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
   )
 }
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 function seatPercentRemaining(seat: NonNullable<ParsedPlatformBillingInfo['seat']>): number {
@@ -478,7 +478,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, o
   const [showKeyInput, setShowKeyInput] = useState(false)
 
   return (
-    <div className="rounded-xl border border-dashed bg-background px-6 py-10">
+    <div className="rounded-card border border-dashed bg-background px-6 py-10">
       <div className="flex flex-col items-center text-center gap-3">
         <div className="rounded-full bg-muted p-3">
           <BadgeX className="h-5 w-5 text-muted-foreground" />

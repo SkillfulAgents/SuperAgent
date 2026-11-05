@@ -74,7 +74,7 @@ function TriggerButton({
         'inline-flex h-[34px] max-w-[200px] items-center gap-1.5 px-2 text-xs font-medium',
         glass
           ? 'rounded-full hover:bg-[rgb(120_120_128/0.16)] dark:hover:bg-white/[0.12]'
-          : 'rounded-md hover:bg-accent',
+          : 'rounded-control hover:bg-accent',
         active && (glass ? 'bg-[rgb(120_120_128/0.16)] dark:bg-white/[0.12]' : 'bg-accent'),
       )}
     >

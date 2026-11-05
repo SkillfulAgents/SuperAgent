@@ -39,7 +39,7 @@ function RowChrome({ isRead, mention = false }: { isRead: boolean; mention?: boo
     <>
       <span
         aria-hidden
-        className="absolute inset-y-0 -left-6 -right-2 rounded-md group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring transition-colors"
+        className="absolute inset-y-0 -left-6 -right-2 rounded-item group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring transition-colors"
       />
       {/* Unread dot — sits in the bled gutter, left of the aligned content. A mention is an @. */}
       {!isRead && mention ? (
@@ -317,7 +317,7 @@ export function NotificationsView() {
           Loading notifications...
         </div>
       ) : pageItems.length === 0 ? (
-        <div className="rounded-xl border border-dashed p-12 text-center text-sm text-muted-foreground">
+        <div className="rounded-card border border-dashed p-12 text-center text-sm text-muted-foreground">
           <Bell className="h-8 w-8 mx-auto mb-3 opacity-20" />
           No notifications yet.
         </div>

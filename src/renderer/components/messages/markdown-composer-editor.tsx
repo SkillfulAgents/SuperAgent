@@ -897,7 +897,7 @@ export function MarkdownComposerEditor({
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
-    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
+    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-item bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
     className
   )
   const hostRef = useRef<HTMLDivElement | null>(null)

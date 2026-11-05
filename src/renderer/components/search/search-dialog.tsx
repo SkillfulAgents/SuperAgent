@@ -235,7 +235,7 @@ export function SearchDialog() {
                       onClick={() => handleSelect({ kind: 'agent', agent: g.agent })}
                       onMouseEnter={() => setActiveIndex(agentIdx)}
                       className={cn(
-                        'w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm rounded-sm',
+                        'w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm rounded-item',
                         activeIndex === agentIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                       )}
                     >
@@ -281,7 +281,7 @@ export function SearchDialog() {
                           onClick={() => handleSelect({ kind: 'dashboard', agent: g.agent, dashboard: d })}
                           onMouseEnter={() => setActiveIndex(dashboardIdx)}
                           className={cn(
-                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-sm',
+                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-item',
                             activeIndex === dashboardIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                           )}
                         >
@@ -307,7 +307,7 @@ export function SearchDialog() {
                           onClick={() => handleSelect({ kind: 'session', agent: g.agent, session: s })}
                           onMouseEnter={() => setActiveIndex(sessionIdx)}
                           className={cn(
-                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-sm',
+                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-item',
                             activeIndex === sessionIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                           )}
                         >

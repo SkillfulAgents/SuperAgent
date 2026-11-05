@@ -194,7 +194,7 @@ export function ScopePolicyFilterControls({
                 setFilterMenuOpen(false)
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted',
+                'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted',
                 decisionFilter === value && 'bg-muted',
               )}
             >
@@ -480,7 +480,7 @@ export function ScopePolicyEditorBody({
   return (
     <div className="flex flex-col gap-3 min-h-0 flex-1">
       {fetchError && (
-        <div className="mx-3 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-md px-2 py-1.5">
+        <div className="mx-3 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-item px-2 py-1.5">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           {fetchError}
         </div>
@@ -665,7 +665,7 @@ export function ScopePolicySection({
         <h3 className="text-xs font-normal text-muted-foreground shrink-0">{title}</h3>
         {hasScopes && <ScopePolicyFilterControls filters={filters} className="flex-1" />}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-background py-2">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border bg-background py-2">
         <ScopePolicyEditorBody
           accountId={accountId}
           toolkit={toolkit}

@@ -110,7 +110,7 @@ export function TimezonePicker({ value, onValueChange, disabled, className }: Ti
                 setSearch('')
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent hover:text-accent-foreground',
+                'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm cursor-pointer hover:bg-accent hover:text-accent-foreground',
                 value === tz.value && 'bg-accent'
               )}
             >
