@@ -1,7 +1,7 @@
 import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
 import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection-credentials'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
-import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
+import { startOAuthLogin, pollOAuthLogin, cancelOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
 import { isOAuthProvider, OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -53,6 +53,10 @@ routes.post('/oauth/:provider/start', async c => {
   if (input.userId === null ? !actor.admin : input.userId !== actor.userId) throw new Error('Cannot manage this connection')
   c.header('Cache-Control', 'no-store')
   return c.json(await startOAuthLogin(actor, input.userId, input.id, providerId, { region: input.region }))
+})
+routes.delete('/oauth/:id', async c => {
+  c.header('Cache-Control', 'no-store')
+  return c.json({ cancelled: await cancelOAuthLogin(c.req.param('id'), viewer(c)) })
 })
 routes.post('/oauth/:id/poll', async c => {
   c.header('Cache-Control', 'no-store')
