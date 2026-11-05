@@ -143,6 +143,8 @@ vi.mock('@shared/lib/db/schema', () => ({
 import { getWebhookRelay, type RelayEvent } from '@shared/lib/webhook-relay'
 import type { FakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 import { triggerManager } from './trigger-manager'
+import { setJobManager } from './job-manager'
+import { createFakeJobManager } from './testing/fake-job-manager'
 
 const relay = getWebhookRelay() as FakeWebhookRelay
 
@@ -282,6 +284,27 @@ describe('TriggerManager', () => {
       await vi.advanceTimersByTimeAsync(5 * 60_000)
 
       expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc', 'whep_new'])
+    })
+
+    it('without timers, sets no re-sync timer and picks up changes on the next run of its job', async () => {
+      vi.useFakeTimers()
+      const jobs = createFakeJobManager()
+      setJobManager(jobs)
+      try {
+        await triggerManager.start({ timers: false })
+        expect(vi.getTimerCount()).toBe(0)
+        expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc'])
+
+        mockGetSubscribedIds.mockReturnValue(['ti_abc', 'whep_new'])
+        await jobs.jobs.get('webhook-triggers')!.run()
+
+        expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc', 'whep_new'])
+        expect(vi.getTimerCount()).toBe(0)
+        triggerManager.stop()
+        expect(jobs.jobs.size).toBe(0)
+      } finally {
+        setJobManager(null)
+      }
     })
 
     it('leaves no re-sync timer behind once stopped', async () => {

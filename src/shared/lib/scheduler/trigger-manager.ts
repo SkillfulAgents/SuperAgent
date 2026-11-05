@@ -27,6 +27,8 @@ import {
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { RELAY_PASS_INTERVAL_MS } from '@shared/lib/webhook-relay/types'
+import { getJobManager, type Job } from './job-manager'
 import {
   getWebhookRelay,
   LOCAL_RELAY_SCOPE,
@@ -117,13 +119,25 @@ class TriggerManager {
   private syncQueue: Promise<void> = Promise.resolve()
   private resyncTimer: NodeJS.Timeout | null = null
   private failedSyncs = 0
+  /** False when a job on the JobManager re-syncs instead of this manager's own timer. */
+  private timers = true
+  private readonly syncJob: Job = {
+    id: 'webhook-triggers',
+    intervalMs: RELAY_PASS_INTERVAL_MS,
+    // start() runs the first sync itself.
+    startDelayMs: RELAY_PASS_INTERVAL_MS,
+    // A failed sync is logged where it settles.
+    run: () => this.syncRegistrations().catch(() => {}),
+  }
 
-  async start(): Promise<void> {
+  async start(options: { timers?: boolean } = {}): Promise<void> {
     if (this.isRunning) {
       console.log('[TriggerManager] Already running')
       return
     }
     this.isRunning = true
+    this.timers = options.timers ?? true
+    if (!this.timers) getJobManager().register(this.syncJob)
     console.log('[TriggerManager] Starting...')
     try {
       await this.syncRegistrations()
@@ -137,6 +151,7 @@ class TriggerManager {
 
   stop(): void {
     this.isRunning = false
+    getJobManager().unregister(this.syncJob.id)
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
     this.resyncTimer = null
     this.failedSyncs = 0
@@ -170,7 +185,7 @@ class TriggerManager {
   private scheduleResync(delayMs: number): void {
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
     this.resyncTimer = null
-    if (!this.isRunning) return
+    if (!this.isRunning || !this.timers) return
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null
       // A failure schedules its own retry.

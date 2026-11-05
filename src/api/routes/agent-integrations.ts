@@ -484,7 +484,7 @@ agentIntegrationsRouter.post('/:integrationId/test', IntegrationAgentRole('user'
     }
 
     // Test by attempting to connect and immediately disconnect
-    const isConnected = agentIntegrationManager.isIntegrationConnected(integration.id)
+    const isConnected = agentIntegrationManager.isIntegrationConnected(integration.id, integration)
     return c.json({ connected: isConnected, provider: integration.provider })
   } catch (error) {
     console.error('Failed to test agent integration:', error)
@@ -501,7 +501,7 @@ agentIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('view
       return c.json({ error: 'Agent integration not found' }, 404)
     }
 
-    const connected = agentIntegrationManager.isIntegrationConnected(integration.id)
+    const connected = agentIntegrationManager.isIntegrationConnected(integration.id, integration)
     return c.json({
       status: publicIntegrationStatus(integration),
       connected,

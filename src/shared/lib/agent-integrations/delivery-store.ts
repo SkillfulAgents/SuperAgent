@@ -84,15 +84,20 @@ export const deliveryStore = {
         sql`exists (select 1 from ${chatIntegrationSessions} where ${chatIntegrationSessions.id} = ${rowId}
           and ${chatIntegrationSessions.integrationId} = ${rows.integrationId} and ${chatIntegrationSessions.externalChatId} = ${rows.externalId})`)).run()
   },
-  async recover() {
+  /** `agentSlug`: a host that runs each agent in its own process recovers only that agent's deliveries. */
+  async recover(agentSlug?: string) {
     // Only host startup resets preparation leases. A possibly accepted send is
     // left as 'sending' for reconciliation, never returned to the dispatch queue.
+    // Another agent's process may hold its leases right now, so its rows stay as they are.
+    const mine = agentSlug === undefined
+      ? undefined
+      : sql`exists (select 1 from ${chatIntegrations} where ${chatIntegrations.id} = ${rows.integrationId} and ${chatIntegrations.agentSlug} = ${agentSlug})`
     await batch([
-      db.update(rows).set({ state: 'pending', owner: null }).where(eq(rows.state, 'preparing')),
-      db.update(rows).set({ noticeState: 'pending', owner: null }).where(eq(rows.noticeState, 'sending')),
-      db.update(rows).set({ owner: null }).where(eq(rows.state, 'sending')),
+      db.update(rows).set({ state: 'pending', owner: null }).where(and(eq(rows.state, 'preparing'), mine)),
+      db.update(rows).set({ noticeState: 'pending', owner: null }).where(and(eq(rows.noticeState, 'sending'), mine)),
+      db.update(rows).set({ owner: null }).where(and(eq(rows.state, 'sending'), mine)),
       db.update(rows).set({ state: 'cancelled', noticeState: 'none', owner: null, envelope: null, updatedAt: new Date() })
-        .where(and(sql`not (${runnable()})`, or(inArray(rows.state, unfinished), inArray(rows.noticeState, ['pending', 'sending'])))),
+        .where(and(sql`not (${runnable()})`, or(inArray(rows.state, unfinished), inArray(rows.noticeState, ['pending', 'sending'])), mine)),
     ])
     await this.prune()
   },
