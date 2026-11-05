@@ -167,7 +167,7 @@ A user may hold four Live voice sessions at once, counting the ones a provider i
 - Removal takes only that entry, and only once it was created (`active` or `closing`), never a `pending` one. It accepts `active` for an activation whose answer was lost: the session is hung up, and its entry may still count. A removal that AppState refuses is retried until it works or the deadline passes.
 - Entries are kept five minutes past `expiresAt`, then dropped by the next write; the record expires with its last entry. The deadline hangup checks the record first, and skips a session another process has already hung up and removed. It skips only while the entry would still be kept: a timer delayed past that (a machine asleep) cannot tell, so it hangs up.
 
-Hangup retries (1 s, 5 s, 30 s), removal retries and the deadline hangup run on timers in the process that created the session, or that was asked to close it. If that process goes away, its sessions stop counting at their deadlines and nobody hangs them up. A durable owner that recovers provider cleanup is a follow-up.
+Hangup retries (1 s, 5 s, 30 s), removal retries and the deadline hangup run on one `voice.hangup` wakeup per session, on the TaskManager of the process that created the session, or that was asked to close it. The local manager keeps that wakeup in memory, so if that process goes away, its sessions stop counting at their deadlines and nobody hangs them up. A durable owner that recovers provider cleanup is a follow-up, on a backend that survives the process.
 
 ## LLM device sign-in
 

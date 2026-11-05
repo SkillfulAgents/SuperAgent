@@ -5,11 +5,16 @@
  *
  * Which sessions a user holds, and which of them count toward the limit, is
  * AppState's (`live-session-admission.ts`), so a release can reach any
- * process. The timers here are this process's own, for the sessions it created
- * or was asked to close: when a process goes away, its retries and deadline
- * hangups go with it, and its sessions only stop counting at their deadlines.
+ * process. Each session this process created or was asked to close has one
+ * wakeup on the TaskManager, for its deadline or its next retry. With the local
+ * manager that wakeup is in this process's memory: when the process goes away,
+ * its retries and deadline hangups go with it, and its sessions only stop
+ * counting at their deadlines.
  */
+import { z } from 'zod'
 import { background } from '../background'
+import { Task, taskManager, type TaskManager, type TaskResult } from '../background-work'
+import { getRequestUserId, runWithOptionalUser } from '../platform-attribution/request-context'
 import {
   activateLiveSession,
   cancelLiveSessionReservation,
@@ -80,19 +85,59 @@ interface LocalSession {
    * False only when its reservation was known to be gone before activation.
    */
   recorded: boolean
+  /**
+   * Who the request that brought it here acted as. A hangup at a later wakeup
+   * goes out as the same user, whose attribution a platform-billed provider needs.
+   */
+  actingUserId?: string
   attempts: number
-  timer?: ReturnType<typeof setTimeout>
-  retry?: ReturnType<typeof setTimeout>
+  /** When the next hangup retry is due, while any are left. */
+  retryAt?: number
+  /** Hung up, or given up on: only its entry is left to remove. `at` is Infinity while a removal is in flight. */
+  removal?: { failures: number; at: number }
   pending?: Promise<boolean>
 }
 
+const hangUpCallPayloadSchema = z.object({ callId: z.string() })
+type HangUpCallPayload = z.infer<typeof hangUpCallPayloadSchema>
+
+const HANG_UP_TASK_TYPE = 'voice.hangup'
+
+function hangUpJobId(callId: string): string {
+  return `hangup:${callId}`
+}
+
+/**
+ * A session's wakeup came due. The registry sets the next one as the session's
+ * state changes, on this path and on a release's alike, so the task only says
+ * which session to look at.
+ */
+class HangUpCallTask extends Task<HangUpCallPayload> {
+  readonly type = HANG_UP_TASK_TYPE
+  readonly payloadSchema = hangUpCallPayloadSchema
+
+  constructor(private readonly due: (callId: string) => Promise<void>) {
+    super()
+  }
+
+  async execute({ callId }: HangUpCallPayload): Promise<TaskResult<HangUpCallPayload>> {
+    await this.due(callId)
+    return { kind: 'done' }
+  }
+}
+
 export class LiveSessionRegistry {
-  // Process-local: timers and in-flight hangups, keyed by handle.
+  // Process-local: what is due for each session and its in-flight hangup, keyed by handle.
   private readonly sessions = new Map<string, LocalSession>()
   // Releases in flight, so concurrent releases of one session hang it up once.
   private readonly releases = new Map<string, Promise<LiveSessionRelease>>()
+  /** For the app's task catalog: this registry's sessions wake through it. */
+  readonly hangUpTask = new HangUpCallTask((callId) => this.wake(callId))
 
-  constructor(private readonly hangup: LiveSessionHangup) {}
+  constructor(
+    private readonly hangup: LiveSessionHangup,
+    private readonly tasks: () => TaskManager = taskManager,
+  ) {}
 
   /** Admits a start for `owner`, or null when four sessions are already pending or active. */
   async reserve(owner: string, provider: VoiceProvider): Promise<LiveSessionReservation | null> {
@@ -181,13 +226,47 @@ export class LiveSessionRegistry {
 
   /** Keeps a session here, with its deadline hangup. */
   private track(handle: string, fields: Pick<LocalSession, 'owner' | 'provider' | 'providerSessionId' | 'expiresAt' | 'recorded'>): LocalSession {
-    const session: LocalSession = { ...fields, attempts: 0 }
-    session.timer = setTimeout(() => background(this.expire(handle, session), { name: 'live-session-registry.close-session' }), Math.max(0, session.expiresAt - Date.now()))
-    session.timer.unref()
+    const session: LocalSession = { ...fields, actingUserId: getRequestUserId(), attempts: 0 }
     const replaced = this.sessions.get(handle)
     if (replaced) this.drop(handle, replaced)
     this.sessions.set(handle, session)
+    this.arm(handle, session)
     return session
+  }
+
+  /**
+   * Sets the session's one wakeup for what is next due: a removal retry once it
+   * is hung up, otherwise its next hangup retry or its deadline, whichever is
+   * first. Calling this again moves the wakeup.
+   */
+  private arm(handle: string, session: LocalSession): void {
+    if (this.sessions.get(handle) !== session) return
+    const at = session.removal?.at ?? Math.min(session.retryAt ?? Infinity, session.expiresAt)
+    if (at === Infinity) {
+      background(this.tasks().cancel(hangUpJobId(handle)), { name: 'live-session-registry.cancel-wakeup' })
+      return
+    }
+    background(this.tasks().at(at, hangUpJobId(handle), { taskType: HANG_UP_TASK_TYPE, payload: { callId: handle } }), { name: 'live-session-registry.set-wakeup' })
+  }
+
+  /** A session's wakeup came due: whatever is due for it now, as whoever brought it here. */
+  private async wake(handle: string): Promise<void> {
+    const session = this.sessions.get(handle)
+    if (!session) return
+    await runWithOptionalUser(session.actingUserId, async () => {
+      const now = Date.now()
+      if (session.removal) {
+        // Past the deadline, the entry no longer counts.
+        if (now >= session.expiresAt || await this.removeEntry(handle, session, session.removal.failures)) this.drop(handle, session)
+      } else if (now >= session.expiresAt) {
+        await this.expire(handle, session)
+      } else if (session.retryAt !== undefined && now >= session.retryAt) {
+        await this.attempt(handle, session)
+      } else {
+        // An attempt took over this retry while the wakeup came due.
+        this.arm(handle, session)
+      }
+    })
   }
 
   /**
@@ -217,7 +296,7 @@ export class LiveSessionRegistry {
 
   private attempt(handle: string, session: LocalSession, final = false): Promise<boolean> {
     if (session.pending) return session.pending
-    clearTimeout(session.retry)
+    session.retryAt = undefined
     const pending = (async () => this.hangup(session.provider, session.providerSessionId))().then(async () => {
       await this.forget(handle, session)
       return true
@@ -227,11 +306,9 @@ export class LiveSessionRegistry {
         console.warn('Live session cleanup failed at expiry')
       } else {
         const delay = RETRY_DELAYS_MS[session.attempts++]
-        if (delay !== undefined) {
-          session.retry = setTimeout(() => { background(this.attempt(handle, session), { name: 'live-session-registry.close-session' }) }, delay)
-          session.retry.unref()
-        }
-        // After bounded retries, the deadline timer makes a final attempt.
+        // After bounded retries, the wakeup at the deadline makes a final attempt.
+        session.retryAt = delay === undefined ? undefined : Date.now() + delay
+        this.arm(handle, session)
       }
       return false
     }).finally(() => { session.pending = undefined })
@@ -246,9 +323,12 @@ export class LiveSessionRegistry {
    * lost), until it works or the deadline ends the entry's count anyway.
    */
   private async forget(handle: string, session: LocalSession): Promise<void> {
-    clearTimeout(session.timer)
-    clearTimeout(session.retry)
-    if (session.recorded && !await this.removeEntry(handle, session, 0)) return
+    session.retryAt = undefined
+    if (session.recorded) {
+      session.removal = { failures: 0, at: Infinity }
+      this.arm(handle, session)
+      if (!await this.removeEntry(handle, session, 0)) return
+    }
     this.drop(handle, session)
   }
 
@@ -261,17 +341,14 @@ export class LiveSessionRegistry {
       if (failures === 0) console.warn('[voice] Could not remove a hung-up Live session from AppState; retrying:', error)
     }
     const delay = REMOVAL_RETRY_DELAYS_MS[Math.min(failures, REMOVAL_RETRY_DELAYS_MS.length - 1)]
-    session.retry = setTimeout(() => background(async () => {
-      // Past the deadline, the entry no longer counts.
-      if (Date.now() >= session.expiresAt || await this.removeEntry(handle, session, failures + 1)) this.drop(handle, session)
-    }, { name: 'live-session-registry.remove-entry' }), delay)
-    session.retry.unref()
+    session.removal = { failures: failures + 1, at: Date.now() + delay }
+    this.arm(handle, session)
     return false
   }
 
   private drop(handle: string, session: LocalSession): void {
-    clearTimeout(session.timer)
-    clearTimeout(session.retry)
-    if (this.sessions.get(handle) === session) this.sessions.delete(handle)
+    if (this.sessions.get(handle) !== session) return
+    this.sessions.delete(handle)
+    background(this.tasks().cancel(hangUpJobId(handle)), { name: 'live-session-registry.cancel-wakeup' })
   }
 }

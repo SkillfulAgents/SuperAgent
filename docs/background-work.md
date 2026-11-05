@@ -157,3 +157,9 @@ What the 60-second poll used to give, kept on purpose:
 Not kept: the spacing of a chain. A one-off or session wake that schedules the next one with a short wait fired no sooner than the next poll, and now fires at its time, so the chain runs as fast as its turns. It has no identity to limit, as a recurring schedule does.
 
 A task finishes once its run has started: nothing waits for the session to end. The overdue catch-up runs right after the scheduler's startup slot rather than holding it, one at a time.
+
+## Voice hangups
+
+A Live session has one `voice.hangup` wakeup, `hangup:{handle}`, a task on its own with no service around it (`src/shared/lib/voice/live-session-registry.ts`). It is set for whatever is next due: the deadline, the next hangup retry (1 s, 5 s, 30 s), or the next try at removing the entry once the session is hung up. A release makes its first attempt inside the request, since the response says whether it closed, and moves the wakeup forward if that fails.
+
+The call and its retry state stay in the registry, in the process's memory. So does the user the hangup goes out as: the scope of the request that brought the session here, which a platform-billed provider needs for attribution. This moves the timers behind the abstraction and nothing more. Cleanup does not survive the process, and ends when dispatch stops at the start of shutdown; AppState expiry is still not provider termination; [SUP-1535](https://linear.app/datawizz/issue/SUP-1535)'s durable owner needs a backend that outlives it.
