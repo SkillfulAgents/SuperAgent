@@ -1,3 +1,6 @@
+import { VoiceTranscriptRelay } from '@renderer/lib/voice/services/transcript-relay'
+import { voiceTranscriptNotice } from '@shared/lib/voice/voice-mode-messages'
+import { apiFetch } from '@renderer/lib/api'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMessageStream } from './use-message-stream'
 import { useInterruptSession } from './use-messages'
@@ -6,7 +9,7 @@ import { toAgentSnapshot } from '@renderer/lib/voice/conversation/agent-snapshot
 import { VoiceAgentCoordinator } from '@renderer/lib/voice/conversation/coordinator'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
-import type { VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
+import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
 import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot, VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 export interface UseVoiceModeArgs {
@@ -18,8 +21,9 @@ export interface UseVoiceModeArgs {
   paused?: boolean
   inputRequests?: readonly VoiceInputRequest[]
   history?: VoiceHistory
-  /** Each piece of the conversation's speech the engine transcribes, heard and said aloud, in order (Live only). */
-  onSpeech?(piece: VoiceTranscriptEntry): void
+  /** The app supplies its voice-style notice; meetings use the transcript-only default. */
+  onStarted?(transcriptPath?: string): Promise<void>
+
 }
 export interface VoiceModeResult extends VoiceConversationSnapshot {
   engine: VoiceConversationEngine | null
@@ -58,6 +62,10 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   const interrupt = useInterruptSession()
   const latest = useRef({ args, stream, interrupt })
   latest.current = { args, stream, interrupt }
+  const activation = useRef<{
+    sessionId: string; agentSlug: string; transcript: VoiceConversationAdapter['capabilities']['transcript'];
+    relay: VoiceTranscriptRelay | null; notice: Promise<void> | null;
+  } | null>(null)
   const adapter = useRef<VoiceConversationAdapter | null>(null)
   const coordinator = useRef<VoiceAgentCoordinator | null>(null)
   // Unlike the adapter, the home-page handoff belongs to the session. Keep its
@@ -67,7 +75,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
   const [agent, setAgent] = useState(IDLE_AGENT)
   const [providerError, setProviderError] = useState<string | null>(null)
   const [agentIssue, setAgentIssue] = useState<string | null>(null)
-  const [capabilities, setCapabilities] = useState<VoiceConversationAdapter['capabilities']>({ speechSpeed: false, spokenTranscript: false })
+  const [capabilities, setCapabilities] = useState<VoiceConversationAdapter['capabilities']>({ speechSpeed: false, spokenTranscript: false, transcript: 'agent-session' })
   const [micMuted, setMicMutedState] = useState(false)
   const micMutedRef = useRef(false)
   const [outputMuted, setOutputMutedState] = useState(false)
@@ -78,7 +86,8 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     setAgent(IDLE_AGENT)
     setProviderError(null)
     setAgentIssue(null)
-    if (!active || !engine || !sessionId) return
+    if (!active || !sessionId) { activation.current = null; return }
+    if (!engine) return
     if (initialHandoff.current?.sessionId !== sessionId || initialHandoff.current.agentSlug !== agentSlug) {
       initialHandoff.current = { sessionId, agentSlug, pending: latest.current.args.startWithAgentTurn ?? false }
     }
@@ -107,11 +116,28 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
           ? previous : next)
       },
       onError: (message) => { if (!disposed) setProviderError(message) },
-      onSpeech: (piece) => { if (!disposed) latest.current.args.onSpeech?.(piece) },
+      onSpeech: (piece) => { if (!disposed) run.relay?.append(piece) },
     })
+    if (!activation.current || activation.current.sessionId !== sessionId || activation.current.agentSlug !== agentSlug
+      || activation.current.transcript !== conversation.capabilities.transcript) {
+      activation.current = {
+        sessionId, agentSlug, transcript: conversation.capabilities.transcript,
+        relay: conversation.capabilities.transcript === 'separate' ? new VoiceTranscriptRelay(agentSlug, sessionId) : null,
+        notice: null,
+      }
+    }
+    const run = activation.current
+    const detachTranscript = run.relay?.attach(message => { if (!disposed) setProviderError(message) })
     const turns = new VoiceAgentCoordinator({
       snapshot: getAgentSnapshot,
-      send: (text) => latest.current.args.send(text),
+      send: async (text) => {
+        if (run.relay) {
+          try { await run.relay.flush() }
+          catch { if (!disposed) setProviderError('Could not save the voice transcript. Please try again.'); return false }
+        }
+        if (disposed) return false
+        return latest.current.args.send(text)
+      },
       interrupt: async (signal) => { await latest.current.interrupt.mutateAsync({ sessionId, agentSlug, signal }) },
       onEvent: (event) => conversation.acceptAgentEvent(event),
       onState: (state) => {
@@ -130,13 +156,33 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
     conversation.setOutputMuted(outputMutedRef.current)
     turns.setPaused(latest.current.args.paused ?? false)
     turns.start(handoff.pending)
-    void conversation.start().catch((error: unknown) => {
+    const start = async () => {
+      if (run.relay || latest.current.args.onStarted) {
+        const transcript = await run.relay?.start()
+        if (disposed) return
+        run.notice ??= (async () => {
+          if (latest.current.args.onStarted) await latest.current.args.onStarted(transcript?.path)
+          else if (transcript) {
+            const response = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}/messages`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: voiceTranscriptNotice(transcript.path), shouldQuery: false }),
+            })
+            if (!response.ok) throw new Error('Could not tell the agent where the voice transcript is saved.')
+          }
+        })().catch(error => { run.notice = null; throw error })
+        await run.notice
+        if (disposed) return
+      }
+      await conversation.start()
+    }
+    void start().catch((error: unknown) => {
       if (!disposed) setProviderError(error instanceof Error ? error.message : 'Could not start voice mode.')
     })
     return () => {
       disposed = true
       turns.close()
       conversation.close()
+      detachTranscript?.()
       if (adapter.current === conversation) adapter.current = null
       if (coordinator.current === turns) coordinator.current = null
     }

@@ -1,3 +1,4 @@
+import voiceTranscripts from './routes/voice-transcripts'
 import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
@@ -266,6 +267,7 @@ if (isAuthMode()) {
   // Platform "Open Cloud Agents" link can target a stable deployment path.
   app.route('/auth', platformSsoStart)
 }
+app.route('/api/voice/agents/:id/sessions/:sessionId/transcripts', voiceTranscripts)
 app.route('/api/voice', voiceRouter)
 // Legacy prefix: the polyfill is cached for an hour in browsers and fetches
 // its token from the prefix it was built with, and third-party dashboards

@@ -27,7 +27,6 @@ import {
   setMeetingSession, toPublicMeeting, transitionMeeting, type MeetingRecord,
 } from './store'
 import { meetingRoster } from './roster'
-import { meetingTranscriptPath, meetingTranscripts } from './transcript'
 import { meetingScreenshotsDir, meetingScreenshots } from './screenshots'
 
 export { MEETING_RECORDING_RETENTION_HOURS }
@@ -115,9 +114,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     const agent = await agentCatalog.get(context.integration.agentSlug)
     return {
       text: meetingJoinBrief(meeting, agent?.name ?? meeting.botName),
-      systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode, {
-        transcript: meetingTranscriptPath(meeting.id), screenshots: meetingScreenshotsDir(meeting.id),
-      }),
+      systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode, meetingScreenshotsDir(meeting.id)),
     }
   }
 
@@ -375,8 +372,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     await meetingRoster.clear(meetingId).catch(error => captureException(error, { tags: { component: 'meeting-integration', operation: 'clear-roster' }, extra: { meetingId } }))
     meetingScreenshots.close(meetingId)
     this.writtenReplies.delete(meetingId)
-    // The last lines are on disk before the agent is told to write its summary.
-    await meetingTranscripts.close(meetingId)
+    // The shared voice endpoint persists each accepted speech batch before acknowledging it.
     await this.notifyEnded(meetingId, changed.status === 'failed' ? `could not join: ${detail ?? 'unknown error'}` : detail)
   }
 

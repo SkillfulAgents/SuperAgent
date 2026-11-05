@@ -7,7 +7,6 @@ import { DEFAULT_MEETING_MODE, meetingRosterSchema, type MeetingMode, type Meeti
 import { useMessages, useSendMessage } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { MeetingBrowserCard } from './meeting-browser-card'
-import { useMeetingSpeechRelay } from './use-meeting-speech-relay'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { describeWorkspaceFile, type WorkspaceFile } from '@renderer/lib/workspace-file'
 import { deliverFileDef } from '@shared/lib/tools/deliver-file/definition'
@@ -110,14 +109,11 @@ function Participant({ agentSlug, agentAvatar, sessionId, meeting, token }: Part
       : [],
   )), [messages])
   const image = useMemo(() => latestDeliveredImage(messages ?? [], agentSlug), [messages, agentSlug])
-  // The call's speech, heard and said aloud, goes to the host for the meeting's transcript file, in every mode.
-  const relaySpeech = useMeetingSpeechRelay(meeting.id, token)
   const voice = useVoiceMode({
     sessionId,
     agentSlug,
     active: true,
     history,
-    onSpeech: relaySpeech,
     send: async (text) => {
       try { await send.mutateAsync({ sessionId, agentSlug, content: text }); setSendError(null); return true }
       catch (error) { setSendError(error instanceof Error ? error.message : 'Could not reach the agent'); return false }
