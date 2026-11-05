@@ -929,8 +929,6 @@ export function HomePage() {
   // Arrange mode stages its layout locally. Done persists the staged map once;
   // Cancel drops it and restores the last saved geometry.
   const [isArranging, setIsArranging] = useState(false)
-  // The board's laid-out width, which the header above it matches (WidgetBoard's onWidthChange).
-  const [boardWidth, setBoardWidth] = useState<number>()
   const [arrangeLayout, setArrangeLayout] = useState<Record<string, GridRect> | null>(null)
   const [arrangeTarget, setArrangeTarget] = useState<'desktop' | 'mobile' | null>(null)
   const displayedLayout = arrangeLayout ?? savedLayout
@@ -1308,9 +1306,7 @@ export function HomePage() {
                 Kept while loading so resolving to a populated board doesn't
                 shift the layout. */}
             {(hasAgents || agentsLoading) && (
-            // As wide as the board below it (which can be narrower than the page, when its cards leave a column
-            // empty), centred over it.
-            <div className="mx-auto mb-4 flex max-w-full items-center justify-between" style={{ width: hasAgents && widgetItems.length > 0 && !agentsLoading ? boardWidth : undefined }}>
+            <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-medium">Your Agents</h2>
               {isArranging ? (
                 <div className="flex items-center gap-2">
@@ -1359,7 +1355,6 @@ export function HomePage() {
             ) : hasAgents ? (
               <WidgetBoard
                 items={widgetItems}
-                onWidthChange={setBoardWidth}
                 onCommit={handleBoardCommit}
                 arranging={isArranging}
                 dragEnabled={!isMobile || isArranging}
