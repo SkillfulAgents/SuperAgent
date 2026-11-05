@@ -18,6 +18,7 @@ import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { PassTask, taskManager } from '@shared/lib/background-work'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import {
@@ -38,13 +39,14 @@ const JWT_REFRESH_INTERVAL_MS = 50 * 60 * 1000
 class PlatformNotificationsManager {
   private isRunning = false
   private realtimeClient: SupabaseRealtimeClient | null = null
-  private refreshInterval: NodeJS.Timeout | null = null
   private lastNotifiedAt: string | null = null
   // Bumped by every stop() and start(): an async connect that resumes after
   // its generation passed must not touch the current one's client/interval
   // (e.g. a quick platform disconnect→reconnect while the config mint is in
   // flight would otherwise resubscribe with the stale identity's JWT).
   private generation = 0
+  private readonly refreshTask = new PassTask('platform-notifications.refresh', () => this.refreshOrReconnect())
+  readonly tasks = [this.refreshTask]
 
   async start(): Promise<void> {
     if (this.isRunning) return
@@ -67,12 +69,10 @@ class PlatformNotificationsManager {
       console.error('[PlatformNotifications] Initial connect failed:', error)
     }
 
-    // The refresh interval retries a failed initial connect, so it installs
+    // The refresh pass retries a failed initial connect, so it is scheduled
     // even when connect() threw — but never for a superseded generation.
     if (generation !== this.generation || !this.isRunning) return
-    this.refreshInterval = setInterval(() => {
-      background(this.refreshOrReconnect(), { name: 'platform-notifications-manager.refresh-or-reconnect' })
-    }, JWT_REFRESH_INTERVAL_MS)
+    await taskManager().ensureEvery(this.refreshTask.type, this.refreshTask.spec, { intervalMs: JWT_REFRESH_INTERVAL_MS })
   }
 
   stop(): void {
@@ -86,10 +86,7 @@ class PlatformNotificationsManager {
       this.realtimeClient.disconnect()
       this.realtimeClient = null
     }
-    if (this.refreshInterval) {
-      clearInterval(this.refreshInterval)
-      this.refreshInterval = null
-    }
+    background(taskManager().cancel(this.refreshTask.type), { name: 'platform-notifications-manager.cancel-refresh' })
     // The in-memory watermark re-seeds from settings on the next start; the
     // persisted value survives disconnect/reconnect (and process restarts).
     // Seen markers live in AppState and expire on their own.

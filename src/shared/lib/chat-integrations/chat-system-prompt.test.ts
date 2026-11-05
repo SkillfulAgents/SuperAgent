@@ -138,6 +138,9 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { buildSlackSystemPrompt } from './slack-connector'
 import {
   buildTelegramSystemPrompt,

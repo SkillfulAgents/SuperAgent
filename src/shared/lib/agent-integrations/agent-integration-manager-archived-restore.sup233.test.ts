@@ -79,6 +79,9 @@ vi.mock('../chat-integrations/telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import {
   createAgentIntegrationSession,
