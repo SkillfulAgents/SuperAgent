@@ -133,6 +133,7 @@ export function QuickDispatch() {
     agentSlug,
     draftKey: 'quick-dispatch',
     computerUse,
+    surface: 'quick_dispatch',
     // Re-adopt defaults when the selected agent changes, then lock them while typing.
     waitForAgentDefaults: true,
     onSessionCreated: ({ agentSlug: dispatchedSlug, session }) => {

@@ -116,6 +116,8 @@ export function useCreateSession(options: {
       origin?: 'user' | 'onboarding' | 'todo'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
+      // Analytics-only: the UI that started the session when it is not the agent's composer.
+      surface?: 'quick_dispatch' | 'dashboard_comment'
     }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
@@ -140,10 +142,15 @@ export function useCreateSession(options: {
       const origin = variables.origin ?? 'user'
       // Onboarding and todo auto-sends are neither typed nor spoken, so they stay unstamped.
       const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
-      track('session_created', { origin, ...(inputMode ? { input_mode: inputMode } : {}) })
+      const stamp = {
+        origin,
+        ...(variables.surface ? { surface: variables.surface } : {}),
+        ...(variables.computerUse ? { computer_use: true } : {}),
+      }
+      track('session_created', { ...stamp, ...(inputMode ? { input_mode: inputMode } : {}) })
       // A voice-started session's first message is the entry marker, not something the person said.
       track('message_sent', {
-        origin,
+        ...stamp,
         session_id: created.id,
         credential_source: created.credentialSource ?? 'unknown',
         ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
