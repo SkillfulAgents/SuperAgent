@@ -2,8 +2,9 @@
  * Meeting participant endpoints.
  *
  * The meeting bot's browser loads `/meeting/:meetingId?token=…` and asks here
- * which agent session to join, then follows the room's roster. The bot host
- * posts in-call events to the same token-gated path. The one-time token minted
+ * which agent session to join, then follows the room's roster and posts the
+ * call's speech for the meeting's transcript. The bot host posts in-call
+ * events to the same token-gated path. The one-time token minted
  * at join time is the credential for all of it: the page runs in a browser
  * nobody is signed into, and the host has no app identity. The bootstrap also
  * hands the page a cookie (see participant-credential.ts) that lets it use the

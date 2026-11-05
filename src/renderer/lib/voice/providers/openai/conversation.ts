@@ -5,7 +5,7 @@ import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceC
 
 /** Adapts Live media/mapping to the same agent-event contract as the chained engine. */
 export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
-  readonly capabilities = { speechSpeed: false, spokenTranscript: true }
+  readonly capabilities = { speechSpeed: false, spokenTranscript: true, transcript: 'separate' as const }
   readonly turnPolicy = { retainPausedReplies: true }
   private conversation: OpenAILiveConversation
   private state: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
@@ -28,6 +28,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
       onSpeaking: (value) => { this.assistantSpeaking = value; this.publish() },
       onInputSpeaking: (value) => { this.userSpeaking = value; this.publish() },
       onError: (message) => { if (!this.closed) this.events.onError(message) },
+      onSpeech: (piece) => { if (!this.closed) this.events.onSpeech?.(piece) },
       onRequest: async (request) => {
         if (this.closed || this.paused) return false
         if (request.action !== 'message' && request.action !== 'cancel') return false

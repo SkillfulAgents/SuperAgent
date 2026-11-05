@@ -14,6 +14,7 @@ export interface LiveBridgeEvents {
   onRequest: (request: LiveRequest) => Promise<boolean>
   onUtterance: (text: string) => void
   onInputTranscript?: (delta: string) => void
+  onOutputTranscript?: (delta: string) => void
   onTranscript?: (entries: VoiceTranscriptEntry[]) => void
   onError: (message: string) => void
 }
@@ -81,6 +82,8 @@ export class OpenAILiveBridge {
         this.userRevision++
         this.requestAbort?.abort()
         this.scheduleRequest()
+      } else {
+        this.events.onOutputTranscript?.(event.delta)
       }
     } else if (event.type === 'session.delegation.created') {
       const delegation = event.delegation as { id?: string; target?: string } | undefined

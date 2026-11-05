@@ -51,6 +51,13 @@ export interface VoiceConversationEvents {
   onCommand(command: VoiceAgentCommand): Promise<VoiceCommandResult>
   onSnapshot(snapshot: VoiceConversationSnapshot): void
   onError(message: string | null): void
+  /**
+   * Each piece of the conversation's speech as the engine transcribes it, in
+   * order: what it heard ('user') and what it said aloud ('assistant'), but
+   * nothing it says while its voice is muted. Engines that keep no running
+   * transcript never call it. Adapters declaring a separate transcript must emit it.
+   */
+  onSpeech?(piece: VoiceTranscriptEntry): void
 }
 export interface VoiceConversationContext {
   agentSlug: string
@@ -76,7 +83,12 @@ export interface VoiceTurnPolicy {
 
 /** No agent API calls or stream subscriptions belong in implementations. */
 export interface VoiceConversationAdapter {
-  readonly capabilities: { speechSpeed: boolean; spokenTranscript: boolean }
+  readonly capabilities: {
+    speechSpeed: boolean
+    spokenTranscript: boolean
+    /** Whether speech has its own conversation history, including exchanges never sent to the agent. */
+    transcript: 'agent-session' | 'separate'
+  }
   /** Omitted: the coordinator's strict defaults apply. */
   readonly turnPolicy?: Partial<VoiceTurnPolicy>
   readonly analyser: AnalyserNode | null

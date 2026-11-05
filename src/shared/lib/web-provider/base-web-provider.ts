@@ -1,4 +1,7 @@
-import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
+import { getSettings, type ApiKeySettings, type ApiKeyStatus, type AppSettings } from '../config/settings'
+
+/** The settings a web provider's credentials come from. */
+export type WebProviderSettings = Pick<AppSettings, 'apiKeys' | 'platformAuth'>
 import { NonRetryableError, withRetry } from '../utils/retry'
 import type {
   WebFetchOptions,
@@ -41,18 +44,25 @@ export abstract class BaseWebProvider {
   protected abstract readonly settingsKeyField: keyof ApiKeySettings | undefined
   protected abstract readonly envVarName: string | undefined
 
-  /** Run a ranked web search and return normalized hits. Throws on a whole-request failure. */
-  search?(query: string, opts: WebSearchOptions): Promise<WebSearchResponse>
+  /**
+   * Run a ranked web search and return normalized hits. Throws on a whole-request failure.
+   * `settings`: what the caller's request already read, for the credential; read now when absent.
+   */
+  search?(query: string, opts: WebSearchOptions, settings?: WebProviderSettings): Promise<WebSearchResponse>
 
   /**
    * Fetch a single URL's full content and return one normalized document. Throws on a whole-request
-   * failure (mirrors search's error model).
+   * failure (mirrors search's error model). `settings` as for search.
    */
-  fetch?(url: string, opts: WebFetchOptions): Promise<WebFetchResult>
+  fetch?(url: string, opts: WebFetchOptions, settings?: WebProviderSettings): Promise<WebFetchResult>
 
   /** Check whether an API key is configured and its source. */
   async getApiKeyStatus(): Promise<ApiKeyStatus> {
-    const settings = await getSettings()
+    return this.apiKeyStatusFrom(await getSettings())
+  }
+
+  /** {@link getApiKeyStatus} from settings the caller already read. */
+  apiKeyStatusFrom(settings: WebProviderSettings): ApiKeyStatus {
     if (this.settingsKeyField && settings.apiKeys?.[this.settingsKeyField]) {
       return { isConfigured: true, source: 'settings' }
     }
@@ -64,10 +74,19 @@ export abstract class BaseWebProvider {
 
   /** Get the effective API key (settings take precedence over env var). */
   async getEffectiveApiKey(): Promise<string | undefined> {
-    const settings = await getSettings()
+    return this.effectiveApiKeyFrom(await getSettings())
+  }
+
+  /** {@link getEffectiveApiKey} from settings the caller already read. */
+  effectiveApiKeyFrom(settings: WebProviderSettings): string | undefined {
     const fromSettings = this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined
     if (fromSettings) return fromSettings
     return this.envVarName ? process.env[this.envVarName] : undefined
+  }
+
+  /** The effective key from `settings` when the caller read them, else read now. */
+  protected async apiKeyFor(settings?: WebProviderSettings): Promise<string | undefined> {
+    return settings ? this.effectiveApiKeyFrom(settings) : this.getEffectiveApiKey()
   }
 
   /** Validate an API key. */

@@ -1,4 +1,3 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
@@ -41,9 +40,9 @@ import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { captureException } from '@shared/lib/error-reporting'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import {
@@ -957,12 +956,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
       }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
-      const agentLimits = await getEffectiveAgentLimits()
-      const customEnvVars = await getCustomEnvVars()
-      const maxBrowserTabs = (await getSettings()).app?.maxBrowserTabs
-      const targetPrefs = await readAgentPreferences(targetSlug)
-      const models = await getEffectiveModels()
-      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
+      // One read of the settings for this invocation's session start.
+      const { agentLimits, customEnvVars, maxBrowserTabs, models, resolve } = await resolveSessionDefaults(await getSettings(), targetSlug)
+      const resolved = await resolve({})
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -1011,7 +1007,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           maxThinkingTokens: agentLimits.maxThinkingTokens,
           maxTurns: agentLimits.maxTurns,
           maxBudgetUsd: agentLimits.maxBudgetUsd,
-          customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+          customEnvVars,
           maxBrowserTabs,
           metadata: { isAutomated: true },
         },

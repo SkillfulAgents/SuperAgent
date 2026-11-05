@@ -10,7 +10,7 @@ import type { ContainerRunner } from './types'
 // ============================================================================
 
 /** Every client the runtime built, with the runner it was built for. */
-const built: Array<{ runner: ContainerRunner; client: { stop: ReturnType<typeof vi.fn>; fetch: ReturnType<typeof vi.fn> } }> = []
+const built: Array<{ runner: ContainerRunner; client: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; fetch: ReturnType<typeof vi.fn> } }> = []
 
 vi.mock('./client-factory', () => ({
   createContainerClient: (_config: unknown, runner: ContainerRunner) => {
@@ -97,7 +97,7 @@ vi.mock('./health-monitor', () => ({
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: async () => false,
+  isPlatformComposioActive: async () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
@@ -117,8 +117,10 @@ const SLUG = 'agent-runner'
 // The client follows the configured runner
 //
 // The runner is a setting another process can change (the settings route of
-// another server, or the readiness check's auto-switch here). A runtime reads
-// it on every use and replaces a client built for another runner.
+// another server, or the readiness check's auto-switch here). A runtime whose
+// container is not running reads it on every use and replaces a client built
+// for another runner; a running container keeps the client that started it,
+// so a change applies at its next start.
 // ============================================================================
 
 describe('ContainerRuntime client for the configured runner', () => {
@@ -189,6 +191,66 @@ describe('ContainerRuntime client for the configured runner', () => {
     await runtime.ensureRunning()
     expect(built.map((b) => b.runner)).toEqual(['docker', 'podman'])
     expect((built[1].client as unknown as { start: ReturnType<typeof vi.fn> }).start).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the client of a running container without reading the runner: a change applies at the next start', async () => {
+    const runtime = containerHost.runtime(SLUG)
+    const client = await runtime.ensureRunning()
+    readSettings.mockClear()
+
+    // Container requests (dashboard assets, input resolves, socket upgrades) reach it through getClient.
+    for (let i = 0; i < 5; i++) expect(await runtime.getClient()).toBe(client)
+    await runtime.ensureRunning()
+    expect(readSettings).not.toHaveBeenCalled()
+
+    // Changed elsewhere while it runs: the running container keeps its client.
+    storedRunner = 'podman'
+    expect(await runtime.getClient()).toBe(client)
+    expect(built.map((b) => b.runner)).toEqual(['docker'])
+
+    // Stopped, the next use reads the runner and builds for the new one.
+    await runtime.stopContainer()
+    expect(await runtime.getClient()).not.toBe(client)
+    expect(built.map((b) => b.runner)).toEqual(['docker', 'podman'])
+  })
+
+  it('a start reads the settings once for itself, besides the runner and the idle alarm', async () => {
+    const runtime = containerHost.runtime(SLUG)
+    readSettings.mockClear()
+    await runtime.ensureRunning()
+    // The runner (the container is not running yet), the start's own read,
+    // which the client's start reuses, and the alarm the start arms.
+    expect(readSettings).toHaveBeenCalledTimes(3)
+    expect(built[0].client.start).toHaveBeenCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({ container: expect.objectContaining({ containerRunner: 'docker' }) }),
+    }))
+  })
+
+  it('a status sweep reads the settings once, however many agents it syncs', async () => {
+    const readsFor = async (count: number) => {
+      const slugs = Array.from({ length: count }, (_, i) => `sweep-${count}-${i}`)
+      await containerHost.initializeAgents(slugs)
+      // Some running, some not: a running one keeps its client, a stopped one too.
+      await containerHost.runtime(slugs[0]).ensureRunning()
+      readSettings.mockClear()
+      await containerHost.syncAllStatuses()
+      const reads = readSettings.mock.calls.length
+      for (const slug of slugs) containerHost.dropRuntime(slug)
+      return reads
+    }
+    const one = await readsFor(1)
+    expect(one).toBe(1)
+    expect(await readsFor(6)).toBe(one)
+  })
+
+  it('initializes every agent from one read of the runner', async () => {
+    readSettings.mockClear()
+    const slugs = ['init-a', 'init-b', 'init-c', 'init-d']
+    await containerHost.initializeAgents(slugs)
+    // One for the clients, shared with the sync that follows.
+    expect(readSettings).toHaveBeenCalledTimes(1)
+    expect(built.map((b) => b.runner)).toEqual(['docker', 'docker', 'docker', 'docker'])
+    for (const slug of slugs) containerHost.dropRuntime(slug)
   })
 
   it('a stop goes through the client that started the container, even after the runner changed', async () => {

@@ -27,7 +27,8 @@ vi.mock('../middleware/auth', () => ({
   AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
   getAgentId: (c: Context) => c.get('agentId'),
 }))
-vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.selected }), getAgentCapabilitySettings: () => ({}) }))
+// The route reads the settings once per request: the selected provider and the capability policies.
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => ({ voice: { sttProvider: mocks.selected }, agentCapabilities: {} }) }))
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
     id,

@@ -4,17 +4,38 @@ import { and, desc, eq } from 'drizzle-orm'
 
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
-import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import type { AppSettings } from '@shared/lib/config/settings'
+import {
+  getPlatformAccessToken,
+  getStoredPlatformMemberId,
+  platformAccessTokenFrom,
+  storedPlatformMemberIdFrom,
+} from '@shared/lib/services/platform-auth-service'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 
-import { getRequestUserId, runOutsideRequestUser } from './request-context'
+import { requestScopedAttribution, runOutsideRequestUser } from './request-context'
 
 // Re-export so existing consumers keep importing from here.
 export { decodeOrgIdFromToken }
 export { runWithOptionalUser, runWithRequestUser } from './request-context'
 
 const PLATFORM_PROVIDER_ID = 'platform'
+
+/**
+ * Settings an operation already read, for building attributions from that one
+ * read (the platform connection lives in them). Without them, each builder
+ * reads the connection itself.
+ */
+export type AttributionSettings = Pick<AppSettings, 'platformAuth'>
+
+async function platformToken(settings?: AttributionSettings): Promise<string | null> {
+  return settings ? platformAccessTokenFrom(settings) : getPlatformAccessToken()
+}
+
+async function storedMemberId(settings?: AttributionSettings): Promise<string | null> {
+  return settings ? storedPlatformMemberIdFrom(settings) : getStoredPlatformMemberId()
+}
 
 async function getPlatformAccountIdForUserId(userId: string): Promise<string | null> {
   const rows = await db
@@ -32,8 +53,8 @@ async function getPlatformAccountIdForUserId(userId: string): Promise<string | n
 // member id persisted with a settings-stored connection (single-connection
 // case). Opaque `plat_sa_` access keys are not org-scoped, so memberId is
 // unused for them — this only matters if an org-scoped token lives in settings.
-async function resolveMemberIdForUserId(userId: string): Promise<string | null> {
-  return (await getPlatformAccountIdForUserId(userId)) ?? (await getStoredPlatformMemberId())
+async function resolveMemberIdForUserId(userId: string, settings?: AttributionSettings): Promise<string | null> {
+  return (await getPlatformAccountIdForUserId(userId)) ?? (await storedMemberId(settings))
 }
 
 // Org JWTs carry the acting member as `<token>::<memberId>` (proxy splits
@@ -73,8 +94,8 @@ class PlatformAttribution implements Attribution {
   }
 }
 
-async function buildAttribution(memberId: string | null): Promise<Attribution | null> {
-  const token = await getPlatformAccessToken()
+async function buildAttribution(memberId: string | null, settings?: AttributionSettings): Promise<Attribution | null> {
+  const token = await platformToken(settings)
   if (!token) return null
   const orgScoped = decodeOrgIdFromToken(token) !== null
   if (orgScoped && !memberId) return null
@@ -104,30 +125,34 @@ export function runOutsideAttribution<T>(fn: () => T): T {
   return attributionContext.exit(() => runOutsideRequestUser(fn))
 }
 
-async function fromCurrentRequest(): Promise<Attribution | null> {
-  const userId = getRequestUserId()
-  return userId ? await buildAttribution(await resolveMemberIdForUserId(userId)) : null
+// The request user's attribution, resolved once per request scope: every
+// platform call in one request (the fetch interceptor runs per call) shares it,
+// and the next request resolves again (see requestScopedAttribution).
+function fromCurrentRequest(): Promise<Attribution | null> {
+  return requestScopedAttribution(async (userId) => buildAttribution(await resolveMemberIdForUserId(userId)))
 }
 
 // True when the active platform token is an org JWT, so every proxy call must
 // carry a per-request acting member. Opaque access keys and an unconfigured
 // token return false.
-async function requiresActingMember(): Promise<boolean> {
-  const token = await getPlatformAccessToken()
+async function requiresActingMember(settings?: AttributionSettings): Promise<boolean> {
+  const token = await platformToken(settings)
   return token !== null && decodeOrgIdFromToken(token) !== null
 }
 
+// The builders below take the settings the caller's operation already read,
+// when it has them; without them they read the connection themselves.
 export const attribution = {
   fromCurrentRequest,
-  async fromUserId(userId: string): Promise<Attribution | null> {
-    return buildAttribution(await resolveMemberIdForUserId(userId))
+  async fromUserId(userId: string, settings?: AttributionSettings): Promise<Attribution | null> {
+    return buildAttribution(await resolveMemberIdForUserId(userId, settings), settings)
   },
-  async fromResourceCreator(ownerUserId: string | null): Promise<Attribution | null> {
-    return ownerUserId ? await buildAttribution(await getPlatformAccountIdForUserId(ownerUserId)) : null
+  async fromResourceCreator(ownerUserId: string | null, settings?: AttributionSettings): Promise<Attribution | null> {
+    return ownerUserId ? await buildAttribution(await getPlatformAccountIdForUserId(ownerUserId), settings) : null
   },
   // For callers that already hold a member id (e.g. the recorded minting member).
-  async fromMemberId(memberId: string): Promise<Attribution | null> {
-    return buildAttribution(memberId)
+  async fromMemberId(memberId: string, settings?: AttributionSettings): Promise<Attribution | null> {
+    return buildAttribution(memberId, settings)
   },
   async current(): Promise<Attribution | null> {
     return attributionContext.getStore()?.auth ?? (await fromCurrentRequest())
@@ -135,12 +160,13 @@ export const attribution = {
   // Container cold start: ambient scope, else the agent owner, else the stored
   // member. Same fallback chain as trigger minting (SUP-765); null only when
   // nothing resolves, so callers never bake a bare org token by accident (SUP-805).
-  async forAgent(agentSlug: string): Promise<Attribution | null> {
+  async forAgent(agentSlug: string, settings?: AttributionSettings): Promise<Attribution | null> {
     const ambient = attributionContext.getStore()?.auth ?? (await fromCurrentRequest())
     if (ambient) return ambient
     const ownerUserId = await getAgentOwnerUserId(agentSlug)
     return buildAttribution(
-      ownerUserId ? await resolveMemberIdForUserId(ownerUserId) : await getStoredPlatformMemberId(),
+      ownerUserId ? await resolveMemberIdForUserId(ownerUserId, settings) : await storedMemberId(settings),
+      settings,
     )
   },
   requiresActingMember,

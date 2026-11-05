@@ -48,6 +48,7 @@ export {
   hasVersionSegment,
   resolveModelForProvider,
   resolveModelForProviderFrom,
+  resolveModelInCatalog,
 } from './model-catalog'
 export type { CatalogSettings } from './model-catalog'
 

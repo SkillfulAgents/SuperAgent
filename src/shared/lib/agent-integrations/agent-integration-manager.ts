@@ -2,7 +2,6 @@ import { auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { IntegrationDeliveryQueue, DeliveryCancelled, PermanentDeliveryError, type DeliveryAttempt } from './delivery-queue'
 import { parseDeliveryEnvelope } from './delivery-schema'
 import type { DeliveryRecord } from './delivery-store'
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { syncRemoteMcpAgents } from '../services/connection-sync-service'
 /**
  * Application-wide integration lifecycle, serialized input, and actor sessions.
@@ -1319,9 +1318,9 @@ export class AgentIntegrationManager {
     attempt: DeliveryAttempt,
     check: () => void,
   ): Promise<void> {
-    const { getEffectiveModels } = await import('@shared/lib/config/settings')
+    const { getSettings } = await import('@shared/lib/config/settings')
     const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
-    const { readAgentPreferences } = await import('@shared/lib/services/agent-preferences-service')
+    const { resolveSessionDefaults } = await import('@shared/lib/services/session-defaults')
 
     const connector = this.connections.get(integration.id)?.connector
     if (!connector) throw new DeliveryCancelled()
@@ -1333,15 +1332,10 @@ export class AgentIntegrationManager {
     // semantics) — owned by each connector class, not the manager.
     const previous = continuesFrom ? continuationPrompt(continuesFrom) : null
     const systemPrompt = [input.systemPrompt, previous].filter(Boolean).join('\n\n') || undefined
+    // One read of the settings for this session's start.
     // Model/effort/speed preference order: integration override > agent default > global default.
-    const models = await getEffectiveModels()
-    const agentPrefs = await readAgentPreferences(integration.agentSlug)
-    const resolved = await resolveConnectionRuntimeInherit(
-      { model: integration.model,
-      llmProviderId: integration.llmProviderId, effort: integration.effort, speed: integration.speed },
-      agentPrefs,
-      models,
-    )
+    const { models, resolve } = await resolveSessionDefaults(await getSettings(), integration.agentSlug)
+    const resolved = await resolve({ model: integration.model, llmProviderId: integration.llmProviderId, effort: integration.effort, speed: integration.speed })
 
     check()
     const containerSession = await attempt.handoff(undefined, () => actor.sessions.create({

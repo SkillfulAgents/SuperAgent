@@ -19,7 +19,10 @@
 
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
-import type { SkillsetAuthSettings } from '@shared/lib/skillset-provider/base-skillset-provider'
+import {
+  skillsetAuthContextFrom,
+  type SkillsetAuthContext,
+} from '@shared/lib/skillset-provider/base-skillset-provider'
 import {
   agentCatalog,
   agentRegistry,
@@ -54,10 +57,12 @@ export async function reconcileSkillsetConfigsForCurrentAuth(): Promise<{ remove
   let failures: unknown[] = []
   await mutateSettings((settings) => {
     failures = []
+    // Once per attempt, from this attempt's own settings.
+    const auth = skillsetAuthContextFrom(settings)
     const before = settings.skillsets ?? []
     const kept = before.filter((c) => {
       try {
-        return getSkillsetProvider(c.provider).isConfigValid(c, settings)
+        return getSkillsetProvider(c.provider).isConfigValid(c, auth)
       } catch (error) {
         failures.push(error)
         // Fail-open: if the provider check throws, keep the config so we don't
@@ -75,12 +80,12 @@ export async function reconcileSkillsetConfigsForCurrentAuth(): Promise<{ remove
   return { removed }
 }
 
-function providerCheckInstalled(meta: unknown, settings: SkillsetAuthSettings): boolean {
+function providerCheckInstalled(meta: unknown, auth: SkillsetAuthContext): boolean {
   if (!meta || typeof meta !== 'object') return true
   const m = meta as Partial<Pick<InstalledSkillMetadata | InstalledAgentMetadata,
     'provider' | 'providerData'>>
   try {
-    return getSkillsetProvider(m.provider).isInstalledValid(m, settings)
+    return getSkillsetProvider(m.provider).isInstalledValid(m, auth)
   } catch (error) {
     captureException(error, { tags: { area: 'skillset-reconcile', op: 'isInstalledValid' } })
     return true
@@ -94,27 +99,45 @@ function providerCheckInstalled(meta: unknown, settings: SkillsetAuthSettings): 
  * be read, like a provider check that throws.
  */
 async function installedStillValid(meta: unknown): Promise<boolean> {
-  let settings: SkillsetAuthSettings
+  const auth = await readSkillsetAuthScreen()
+  return auth ? providerCheckInstalled(meta, auth) : true
+}
+
+/**
+ * The auth state now, for screening many installed records with one settings
+ * read (a listing, a sweep); undefined when the settings cannot be read, which
+ * leaves each record to its own check. A screen only clears records: deleting
+ * one still rests on a fresh read (see the prune helpers).
+ */
+export async function readSkillsetAuthScreen(): Promise<SkillsetAuthContext | undefined> {
   try {
-    settings = await getSettings()
+    return skillsetAuthContextFrom(await getSettings())
   } catch (error) {
     captureException(error, { tags: { area: 'skillset-reconcile', op: 'read-settings' } })
-    return true
+    return undefined
   }
-  return providerCheckInstalled(meta, settings)
+}
+
+/** Whether `screen` already clears the record, so no read is needed to keep it. */
+function clearedBy(meta: unknown, screen: SkillsetAuthContext | undefined): boolean {
+  return screen !== undefined && providerCheckInstalled(meta, screen)
 }
 
 /**
  * Lazy-cleanup helper for skill metadata readers. Given a parsed metadata
  * object and the skill directory's workspace path, delete the directory if
  * the provider says the record is no longer valid. Returns true if a cleanup
- * happened.
+ * happened. `screen`: the caller's {@link readSkillsetAuthScreen} when it
+ * checks many records; a record it clears is kept without another read, and
+ * any other is checked against settings read now before it is deleted.
  */
 export async function pruneInstalledSkillIfInvalid(
   meta: unknown,
   files: FileOps,
   skillDir: string,
+  screen?: SkillsetAuthContext,
 ): Promise<boolean> {
+  if (clearedBy(meta, screen)) return false
   if (await installedStillValid(meta)) return false
   try {
     await files.delete(skillDir, { recursive: true })
@@ -126,13 +149,15 @@ export async function pruneInstalledSkillIfInvalid(
 
 /**
  * Lazy-cleanup helper for agent-template metadata readers: `metaPath` is the
- * metadata file's workspace path.
+ * metadata file's workspace path; `screen` as for {@link pruneInstalledSkillIfInvalid}.
  */
 export async function pruneInstalledTemplateIfInvalid(
   meta: unknown,
   files: FileOps,
   metaPath: string,
+  screen?: SkillsetAuthContext,
 ): Promise<boolean> {
+  if (clearedBy(meta, screen)) return false
   if (await installedStillValid(meta)) return false
   try {
     await files.delete(metaPath)
@@ -190,13 +215,8 @@ export async function reconcileInstalledForCurrentAuth(): Promise<{ skillsRemove
   // One read screens every record; the prune helpers read again before each
   // deletion, so a record is only removed if it is still invalid then (the
   // org may have switched back while the sweep was running).
-  let screen: SkillsetAuthSettings
-  try {
-    screen = await getSettings()
-  } catch (error) {
-    captureException(error, { tags: { area: 'skillset-reconcile', op: 'read-settings' } })
-    return { skillsRemoved, templatesRemoved }
-  }
+  const screen = await readSkillsetAuthScreen()
+  if (!screen) return { skillsRemoved, templatesRemoved }
 
   for (const agentSlug of agents) {
     const files = agentRegistry.get(agentSlug).files
