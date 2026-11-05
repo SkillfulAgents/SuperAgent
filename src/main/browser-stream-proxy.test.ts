@@ -110,7 +110,6 @@ describe('browser stream proxy', () => {
 
   it('forwards input from a client with the user role', async () => {
     const client = await connect()
-    await vi.waitFor(() => expect(upstream.clients.size).toBeGreaterThan(0))
     await vi.waitFor(() => {
       client.send(mouse)
       expect(received).toContain(mouse)
@@ -128,22 +127,10 @@ describe('browser stream proxy', () => {
     client.send(JSON.stringify({ type: 'navigate', action: 'reload' }))
     client.send(Buffer.from(viewport(901)), { binary: true })
     client.send('not json')
-    client.send(viewport(902))
-    await vi.waitFor(() => expect(received).toContain(viewport(902)))
-    expect(new Set(received)).toEqual(new Set([viewport(900), viewport(902)]))
-  })
-
-  it('does not parse or forward an oversized message from a view-only client', async () => {
-    canInput = false
-    const client = await connect()
-    await vi.waitFor(() => {
-      client.send(viewport(900))
-      expect(received).toContain(viewport(900))
-    })
     client.send(JSON.stringify({ type: 'viewport', width: 901, padding: 'x'.repeat(1024) }))
     client.send(viewport(902))
     await vi.waitFor(() => expect(received).toContain(viewport(902)))
-    expect(received.some((message) => message.includes('padding'))).toBe(false)
+    expect(new Set(received)).toEqual(new Set([viewport(900), viewport(902)]))
   })
 
   it.each([

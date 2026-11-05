@@ -97,6 +97,17 @@ function baseOpts(canvasRef: RefObject<HTMLCanvasElement | null>) {
   }
 }
 
+async function openSocket(canvasRef: RefObject<HTMLCanvasElement | null> = createRef()) {
+  const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+  await settle()
+  const ws = FakeWebSocket.instances[0]
+  act(() => {
+    ws.completeHandshake()
+  })
+  await settle()
+  return { hook, ws }
+}
+
 describe('useBrowserStream reconnect', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -285,18 +296,6 @@ describe('useBrowserStream history', () => {
     vi.unstubAllGlobals()
   })
 
-  async function openSocket() {
-    const canvasRef = createRef<HTMLCanvasElement | null>()
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    const ws = FakeWebSocket.instances[0]
-    act(() => {
-      ws.completeHandshake()
-    })
-    await settle()
-    return { hook, ws }
-  }
-
   it('starts with nowhere to go and no address', async () => {
     const { hook } = await openSocket()
     expect(hook.result.current.canGoBack).toBe(false)
@@ -434,11 +433,7 @@ describe('useBrowserStream frame painting', () => {
     const canvas = document.createElement('canvas')
     const drawImage = vi.fn()
     canvas.getContext = (() => ({ drawImage })) as unknown as typeof canvas.getContext
-    const canvasRef = { current: canvas }
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    const ws = FakeWebSocket.instances[0]
-    act(() => ws.completeHandshake())
+    const { ws } = await openSocket({ current: canvas })
 
     for (let frame = 0; frame < 2; frame++) {
       act(() => {
@@ -457,7 +452,24 @@ describe('useBrowserStream frame painting', () => {
     expect(drawImage).toHaveBeenCalledTimes(1)
     expect(drawImage).toHaveBeenCalledWith(newer, 0, 0)
     expect(older.close).toHaveBeenCalled()
-    hook.unmount()
+  })
+
+  it('takes the aspect ratio from the page, not the rounded frame', async () => {
+    vi.stubGlobal('createImageBitmap', async () => ({ width: 641, height: 361, close: vi.fn() }))
+    const canvas = document.createElement('canvas')
+    canvas.getContext = (() => ({ drawImage: vi.fn() })) as unknown as typeof canvas.getContext
+    const { hook, ws } = await openSocket({ current: canvas })
+
+    act(() => ws.emit({ type: 'metadata', deviceWidth: 1280, deviceHeight: 720 }))
+    expect(hook.result.current.aspectRatio).toBe('1280 / 720')
+
+    act(() => {
+      ws.onmessage?.({ data: new Blob(['jpeg']) })
+      vi.advanceTimersByTime(1)
+    })
+    await settle()
+    expect(canvas.width).toBe(641)
+    expect(hook.result.current.aspectRatio).toBe('1280 / 720')
   })
 })
 
@@ -465,7 +477,6 @@ describe('useBrowserStream viewport width', () => {
   let observed: Array<{ target: Element; options?: ResizeObserverOptions; fire: (entry: object) => void }>
 
   beforeEach(() => {
-    vi.clearAllMocks()
     FakeWebSocket.instances = []
     observed = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
@@ -495,19 +506,13 @@ describe('useBrowserStream viewport width', () => {
     observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: devicePixels }], contentRect: { width: devicePixels / 2 } })
 
   it('puts the canvas width in device pixels on the stream URL', async () => {
-    const canvasRef = canvasOfCssWidth(420.5)
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    expect(new URL(FakeWebSocket.instances[0].url).search).toBe('?width=841')
-    hook.unmount()
+    const { ws } = await openSocket(canvasOfCssWidth(420.5))
+    expect(new URL(ws.url).search).toBe('?width=841')
   })
 
   it('reports the exact width on each change, leaving debouncing to the container', async () => {
     const canvasRef = canvasOfCssWidth(420.5)
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    const ws = FakeWebSocket.instances[0]
-    act(() => ws.completeHandshake())
+    const { ws } = await openSocket(canvasRef)
     expect(observed[0].target).toBe(canvasRef.current)
     expect(observed[0].options).toEqual({ box: 'device-pixel-content-box' })
 
@@ -515,27 +520,17 @@ describe('useBrowserStream viewport width', () => {
     act(() => resize(841))
     act(() => resize(1200))
     expect(ws.sent).toEqual([{ type: 'viewport', width: 841 }, { type: 'viewport', width: 1200 }])
-    hook.unmount()
   })
 
   it('ignores a hidden canvas', async () => {
-    const canvasRef = canvasOfCssWidth(420.5)
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    const ws = FakeWebSocket.instances[0]
-    act(() => ws.completeHandshake())
-
+    const { ws } = await openSocket(canvasOfCssWidth(420.5))
     act(() => resize(0))
     expect(ws.sent).toEqual([])
-    hook.unmount()
   })
 
   it('leaves the width off the URL while the canvas has none', async () => {
-    const canvasRef = canvasOfCssWidth(0)
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    expect(new URL(FakeWebSocket.instances[0].url).search).toBe('')
-    hook.unmount()
+    const { ws } = await openSocket(canvasOfCssWidth(0))
+    expect(new URL(ws.url).search).toBe('')
   })
 
   it('without device-pixel-content-box, re-measures whenever the pixel ratio changes', async () => {
@@ -557,11 +552,7 @@ describe('useBrowserStream viewport width', () => {
       }
       disconnect() {}
     })
-    const canvasRef = canvasOfCssWidth(420.5)
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    const ws = FakeWebSocket.instances[0]
-    act(() => ws.completeHandshake())
+    const { hook, ws } = await openSocket(canvasOfCssWidth(420.5))
     expect(queries.map((entry) => entry.query)).toEqual(['(resolution: 2dppx)'])
     expect(ws.sent).toEqual([{ type: 'viewport', width: 841 }])
 

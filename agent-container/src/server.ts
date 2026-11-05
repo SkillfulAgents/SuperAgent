@@ -50,7 +50,7 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
-import { clampViewerWidth, screencastSize, viewerWidthMoved } from './screencast-size';
+import { clampViewerWidth, screencastSize } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { CdpConnection } from './login-cdp';
 import type { LoginFillDeps, PageActivity } from './login-fill';
@@ -2999,19 +2999,10 @@ let cdpScreencast: {
 /** Canvas width in device pixels each viewer last reported. */
 const viewerWidths = new WeakMap<WebSocket, number>();
 const VIEWER_WIDTH_DEBOUNCE_MS = 200;
-let viewerWidthTimer: ReturnType<typeof setTimeout> | undefined;
-
-/** Applied once reports settle: a dragged panel sends many, and each restart makes Chrome encode a frame. */
-function reportViewerWidth(ws: WebSocket, value: unknown): void {
-  const width = clampViewerWidth(value);
-  if (width === undefined) return;
-  clearTimeout(viewerWidthTimer);
-  viewerWidthTimer = setTimeout(() => setViewerWidth(ws, width), VIEWER_WIDTH_DEBOUNCE_MS);
-}
 
 /** CDP can't resize a running screencast, so a new viewer width restarts it. */
 function setViewerWidth(ws: WebSocket, width: number): void {
-  if (!viewerWidthMoved(viewerWidths.get(ws), width)) return;
+  if (width === viewerWidths.get(ws)) return;
   viewerWidths.set(ws, width);
   const state = cdpScreencast;
   // Not started yet (e.g. a remote session still attaching): startScreencast reads the width.
@@ -3835,6 +3826,7 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 
   // Start tab list polling for this connection (replaces any previous viewer's timer)
   const tabPoll = startTabPolling(() => broadcastTabList());
+  let viewerWidthTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Forward input events and handle tab control messages from client
   // Protocol: see src/renderer/components/browser/browser-preview.tsx
@@ -3842,7 +3834,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     try {
       const data = JSON.parse(rawData.toString());
       if (data.type === 'viewport') {
-        reportViewerWidth(ws, data.width);
+        // Applied once reports settle: a dragged panel sends many, and each restart makes Chrome encode a frame.
+        const width = clampViewerWidth(data.width);
+        if (width !== undefined) {
+          clearTimeout(viewerWidthTimer);
+          viewerWidthTimer = setTimeout(() => setViewerWidth(ws, width), VIEWER_WIDTH_DEBOUNCE_MS);
+        }
         return;
       }
       if (!cdpScreencast) return;
@@ -3969,11 +3966,13 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 
   ws.on('close', () => {
     stopTabPolling(tabPoll);
+    clearTimeout(viewerWidthTimer);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
   ws.on('error', () => {
     stopTabPolling(tabPoll);
+    clearTimeout(viewerWidthTimer);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }

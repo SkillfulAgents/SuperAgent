@@ -137,8 +137,6 @@ export function useBrowserStream({
           if (needsResize) {
             canvas.width = bitmap.width
             canvas.height = bitmap.height
-            const newRatio = `${bitmap.width} / ${bitmap.height}`
-            setAspectRatio(prev => prev === newRatio ? prev : newRatio)
           }
           ctx.drawImage(bitmap, 0, 0)
           bitmap.close()
@@ -179,6 +177,14 @@ export function useBrowserStream({
     // state, so the close that follows needs no status check and no retry.
     let browserGone = false
 
+    // The aspect ratio comes from the page, not the frame: a scaled frame's rounding changes with its
+    // width, and a full-screen card's width follows this ratio, so that would feed back into the width.
+    const setPageSize = (deviceWidth: number | undefined, deviceHeight: number | undefined) => {
+      metadataRef.current = { deviceWidth: deviceWidth || 1280, deviceHeight: deviceHeight || 720 }
+      const ratio = `${metadataRef.current.deviceWidth} / ${metadataRef.current.deviceHeight}`
+      setAspectRatio(prev => prev === ratio ? prev : ratio)
+    }
+
     ws.onopen = () => {
       failedReconnectsRef.current = 0
       dispatchView({ type: 'reset' })
@@ -199,12 +205,8 @@ export function useBrowserStream({
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null
         if (!data) return
 
-        // Metadata updates are cheap (ref only, no re-render)
         if (data.type === 'metadata') {
-          metadataRef.current = {
-            deviceWidth: data.deviceWidth || 1280,
-            deviceHeight: data.deviceHeight || 720,
-          }
+          setPageSize(data.deviceWidth, data.deviceHeight)
           return
         }
 
@@ -226,12 +228,7 @@ export function useBrowserStream({
             if (blob) renderFrame(blob)
           }
 
-          if (data.metadata) {
-            metadataRef.current = {
-              deviceWidth: data.metadata.deviceWidth || 1280,
-              deviceHeight: data.metadata.deviceHeight || 720,
-            }
-          }
+          if (data.metadata) setPageSize(data.metadata.deviceWidth, data.metadata.deviceHeight)
         } else if (data.type === 'tab_list') {
           setTabs(prev => {
             if (prev.length === data.tabs.length && prev.every((t: BrowserTabInfo, i: number) =>
@@ -366,7 +363,7 @@ export function useBrowserStream({
   )
 
   // Tell the container when the canvas width changes, so it never streams wider frames than shown.
-  // It debounces these and ignores small moves, because any client can send them.
+  // It debounces these, because any client can send them.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!connected || !canvas || typeof ResizeObserver === 'undefined') return
