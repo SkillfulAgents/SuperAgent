@@ -19,6 +19,7 @@ import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type U
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
+import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import { createHash, randomUUID } from 'crypto'
 import { z } from 'zod'
@@ -151,11 +152,16 @@ import { forkSession, type ForkSessionOpts } from '@shared/lib/services/session-
 import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
+  UploadConflictError,
   UploadTooLargeError,
   cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
   storeUploadChunk,
+  type StoreChunkResult,
+  type UploadResponse,
 } from '@shared/lib/utils/chunked-upload'
+import { MAX_UPLOAD_CHUNKS, uploadIdSchema } from '@shared/lib/utils/chunked-upload-schema'
+import { isAppStateInitialized } from '@shared/lib/app-state'
 import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary, resolveMountPath } from '@shared/lib/services/mount-service'
 import { isMountPath } from '@shared/lib/utils/workspace-path'
 import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
@@ -1009,15 +1015,44 @@ agents.post('/import-template', async (c) => {
 
     return await processImport(c, zipBuffer, formData)
   } catch (error) {
-    if (error instanceof UploadTooLargeError) {
-      return c.json({ error: error.message }, 413)
-    }
-    const message = error instanceof Error ? error.message : 'Failed to import template'
-    console.error('Failed to import template:', error)
-    captureException(error, { tags: { component: 'agents', operation: 'import-template' } })
-    return c.json({ error: message }, 500)
+    return respondWith(c, importFailure(error))
   }
 })
+
+function importFailure(error: unknown): UploadResponse {
+  const known = chunkRefusal(error)
+  if (known) return known
+  const message = error instanceof Error ? error.message : 'Failed to import template'
+  console.error('Failed to import template:', error)
+  captureException(error, { tags: { component: 'agents', operation: 'import-template' } })
+  return { status: 500, body: { error: message } }
+}
+
+/** The answer for an upload the coordinator refused, whichever route it came through. */
+function chunkRefusal(error: unknown): UploadResponse | null {
+  if (error instanceof UploadTooLargeError) return { status: 413, body: { error: error.message } }
+  if (error instanceof UploadConflictError) return { status: 409, body: { error: error.message } }
+  return null
+}
+
+function respondWith(c: Context, response: UploadResponse) {
+  return c.json(response.body as object, response.status as ContentfulStatusCode)
+}
+
+// How long a client should wait before retrying a chunk of an upload another
+// request is still finishing.
+const UPLOAD_FINALIZING_RETRY_AFTER_SECONDS = 5
+
+// What a stored chunk answers, shared by import-template and upload-file. A
+// retry of a chunk after the upload ended gets the answer the upload ended with.
+function respondToStoredChunk(c: Context, chunkIndex: number, result: StoreChunkResult) {
+  if (result.status === 'received') return c.json({ status: 'chunk_received', chunkIndex })
+  if (result.status === 'finalizing') {
+    c.header('Retry-After', String(UPLOAD_FINALIZING_RETRY_AFTER_SECONDS))
+    return c.json({ error: 'This upload is still being processed. Try again shortly.' }, 409)
+  }
+  return respondWith(c, result.response)
+}
 
 type ParsedChunkFields =
   | { ok: true; uploadId: string; chunkIndex: number; totalChunks: number }
@@ -1033,14 +1068,14 @@ function parseChunkFields(formData: FormData): ParsedChunkFields {
   if (!uploadId || chunkIndexStr === null || totalChunksStr === null) {
     return { ok: false, error: 'Missing chunked upload fields: uploadId, chunkIndex, totalChunks' }
   }
-  // uploadId becomes a directory name — UUID only, prevents path traversal
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uploadId)) {
+  // uploadId becomes part of a path — UUID only, prevents path traversal
+  if (!uploadIdSchema.safeParse(uploadId).success) {
     return { ok: false, error: 'Invalid uploadId format' }
   }
 
   const chunkIndex = parseInt(chunkIndexStr, 10)
   const totalChunks = parseInt(totalChunksStr, 10)
-  if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks || totalChunks > 200) {
+  if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks || totalChunks > MAX_UPLOAD_CHUNKS) {
     return { ok: false, error: 'Invalid chunkIndex or totalChunks' }
   }
 
@@ -1051,43 +1086,33 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   const parsed = parseChunkFields(formData)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
 
-  const result = await storeUploadChunk(
-    parsed.uploadId,
-    parsed.chunkIndex,
-    parsed.totalChunks,
-    Buffer.from(await chunk.arrayBuffer()),
-    MAX_COMPRESSED_SIZE,
-  )
-
-  if (result.status === 'received') {
-    return c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex })
-  }
-
-  try {
-    const size = (await fs.promises.stat(result.filePath)).size
-    if (size > MAX_COMPRESSED_SIZE) {
-      return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
-    }
-    // The assembled upload is already on disk — import straight from the file
-    // instead of pinning the whole (up to 500MB) ZIP in memory.
-    return await processImport(c, { filePath: result.filePath }, formData)
-  } finally {
+  const result = await storeUploadChunk({
+    ownerId: getCurrentUserId(c),
+    uploadId: parsed.uploadId,
+    target: 'template-import',
+    chunkIndex: parsed.chunkIndex,
+    totalChunks: parsed.totalChunks,
+    chunk: Buffer.from(await chunk.arrayBuffer()),
+    maxTotalBytes: MAX_COMPRESSED_SIZE,
+  }, async ({ filePath, size }) => {
     try {
-      await fs.promises.unlink(result.filePath)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-        console.warn('[agents] failed to unlink assembled import upload:', err)
-        captureException(err, {
-          tags: { component: 'agents', operation: 'unlink-assembled-import' },
-          extra: { filePath: result.filePath },
-        })
+      if (size > MAX_COMPRESSED_SIZE) {
+        return { status: 413, body: { error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) } }
       }
+      // The assembled upload is already on disk — import straight from the file
+      // instead of pinning the whole (up to 500MB) ZIP in memory.
+      const imported = await processImport(c, { filePath }, formData)
+      return { status: imported.status, body: await imported.json() }
+    } catch (error) {
+      return importFailure(error)
     }
-  }
+  })
+
+  return respondToStoredChunk(c, parsed.chunkIndex, result)
 }
 
 async function processImport(c: Context, zip: TemplateZipSource, formData: FormData) {
-  // File sources are size-checked by the caller via stat before reaching here.
+  // File sources are size-checked by the caller before reaching here.
   if (Buffer.isBuffer(zip) && zip.length > MAX_COMPRESSED_SIZE) {
     return c.json({ error: formatUploadTooLargeMessage(zip.length, MAX_COMPRESSED_SIZE) }, 413)
   }
@@ -6460,50 +6485,41 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
 }
 
 // Shared by both upload-file routes. When a `chunk` field is present, persist it
-// and only write the final file once every chunk has arrived. Returns
-// `{ pending }` (a Response to return immediately — either a 400/413 or the interim
-// `chunk_received` ack) or `{ uploadResult }` once the file is fully assembled.
-type ChunkedFileUploadOutcome = {
-  pending: Response | null
-  uploadResult?: Awaited<ReturnType<typeof writeUploadedFileFromPath>>
-}
-
-async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: FormData, chunk: File): Promise<ChunkedFileUploadOutcome> {
+// and only write the final file once every chunk has arrived.
+async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: FormData, chunk: File) {
   const parsed = parseChunkFields(formData)
-  if (!parsed.ok) return { pending: c.json({ error: parsed.error }, 400) }
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400)
 
   const filename = (formData.get('filename') as string | null) || 'upload'
   const relativePath = formData.get('relativePath') as string | null
 
-  const result = await storeUploadChunk(
-    parsed.uploadId,
-    parsed.chunkIndex,
-    parsed.totalChunks,
-    Buffer.from(await chunk.arrayBuffer()),
-    MAX_UPLOAD_TOTAL_SIZE,
-  )
-
-  if (result.status === 'received') {
-    return { pending: c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex }) }
-  }
-
-  try {
-    const uploadResult = await writeUploadedFileFromPath(agentSlug, filename, result.filePath, relativePath || undefined)
-    return { pending: null, uploadResult }
-  } finally {
+  const result = await storeUploadChunk({
+    ownerId: getCurrentUserId(c),
+    uploadId: parsed.uploadId,
+    target: `agent:${agentSlug}`,
+    chunkIndex: parsed.chunkIndex,
+    totalChunks: parsed.totalChunks,
+    chunk: Buffer.from(await chunk.arrayBuffer()),
+    maxTotalBytes: MAX_UPLOAD_TOTAL_SIZE,
+  }, async ({ filePath }) => {
     try {
-      await fs.promises.unlink(result.filePath)
-    } catch (err) {
-      // The assembled file is read, not moved; ENOENT means it is already gone.
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-        console.warn('[agents] failed to unlink assembled file upload:', err)
-        captureException(err, {
-          tags: { component: 'agents', operation: 'unlink-assembled-upload' },
-          extra: { filePath: result.filePath, agentSlug },
-        })
-      }
+      const uploaded = await writeUploadedFileFromPath(agentSlug, filename, filePath, relativePath || undefined)
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${uploaded.filename}`, action: 'uploaded' })
+      return { status: 200, body: uploaded }
+    } catch (error) {
+      return uploadFileFailure(c, error)
     }
-  }
+  })
+
+  return respondToStoredChunk(c, parsed.chunkIndex, result)
+}
+
+function uploadFileFailure(c: Context, error: unknown): UploadResponse {
+  const known = chunkRefusal(error)
+  if (known) return known
+  console.error('Failed to upload file:', error)
+  captureException(error, { tags: { component: 'agents', operation: 'upload-file' }, extra: { agentSlug: getAgentId(c) } })
+  return { status: 500, body: { error: 'Failed to upload file' } }
 }
 
 // Shared handler for both agent-level and session-level upload-file routes.
@@ -6517,13 +6533,7 @@ async function respondUploadFile(c: Context) {
     const formData = await c.req.formData()
 
     const chunk = formData.get('chunk') as File | null
-    if (chunk) {
-      const outcome = await handleChunkedFileUpload(c, agentSlug, formData, chunk)
-      if (outcome.pending) return outcome.pending
-      const result = outcome.uploadResult!
-      await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
-      return c.json(result)
-    }
+    if (chunk) return await handleChunkedFileUpload(c, agentSlug, formData, chunk)
 
     const file = formData.get('file') as File | null
     const relativePath = formData.get('relativePath') as string | null
@@ -6535,12 +6545,7 @@ async function respondUploadFile(c: Context) {
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
     return c.json(result)
   } catch (error) {
-    if (error instanceof UploadTooLargeError) {
-      return c.json({ error: error.message }, 413)
-    }
-    console.error('Failed to upload file:', error)
-    captureException(error, { tags: { component: 'agents', operation: 'upload-file' }, extra: { agentSlug: getAgentId(c) } })
-    return c.json({ error: 'Failed to upload file' }, 500)
+    return respondWith(c, uploadFileFailure(c, error))
   }
 }
 
@@ -7903,8 +7908,15 @@ async function cleanupStaleUploads() {
   }
 }
 
-// Run cleanup on startup and every 30 minutes
-background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' })
+// Run cleanup on startup and every 30 minutes. The routes load before the entry
+// point initializes AppState, and the sweep needs it to tell a live upload's
+// bytes from an abandoned one's, so the startup run waits for it.
+const startupUploadCleanup = setInterval(() => {
+  if (!isAppStateInitialized()) return
+  clearInterval(startupUploadCleanup)
+  background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' })
+}, 1000)
+startupUploadCleanup.unref()
 setInterval(() => background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' }), 30 * 60 * 1000).unref()
 
 // =============================================================================

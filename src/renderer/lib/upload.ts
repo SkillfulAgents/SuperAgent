@@ -183,8 +183,15 @@ export async function uploadFileChunked<T>({ url, file, fields = {}, onProgress,
     await checkResponse(res, url)
 
     if (i === totalChunks - 1) {
+      const body = res.json()
+      // The server acknowledges a last chunk this way only when it no longer
+      // holds earlier ones (it restarted, or the upload sat idle for an hour).
+      // This client sends in order, so nothing else is still on its way.
+      if (uploadId !== null && (body as { status?: unknown } | null)?.status === 'chunk_received') {
+        throw new Error('The upload was interrupted. Please try again.')
+      }
       onProgress?.({ phase: 'processing', percent: 100 })
-      return res.json() as T
+      return body as T
     }
   }
 
