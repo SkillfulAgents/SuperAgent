@@ -44,7 +44,7 @@ import { getPlatformContainerToken } from '../platform-attribution/container-tok
 
 const provider = new PlatformLlmProvider()
 
-beforeEach(() => {
+beforeEach(async () => {
   currentAttribution.mockReset().mockReturnValue(null)
   forAgentAttribution.mockReset().mockReturnValue(null)
   requiresActingMember.mockReset().mockReturnValue(false)
@@ -53,7 +53,7 @@ beforeEach(() => {
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
   fetchActingAccount.mockReset()
   getSettings.mockClear()
-  platformPlanCache.clear()
+  await platformPlanCache.clear()
 })
 
 // SUP-1507: given the settings its operation read, the provider reads none itself.
@@ -145,7 +145,7 @@ describe('getModelAvailability', () => {
     fetchActingAccount.mockResolvedValue(account('member_a', {}))
     expect(await provider.getModelAvailability(catalog)).toBeNull()
     fetchActingAccount.mockRejectedValue(new Error('offline'))
-    platformPlanCache.clear()
+    await platformPlanCache.clear()
     expect(await provider.getModelAvailability(catalog)).toBeNull()
   })
 
@@ -161,10 +161,10 @@ describe('getModelAvailability', () => {
     actAs('member_a')
     fetchActingAccount.mockResolvedValue(account('member_a', PRO_30))
     await provider.getModelAvailability(catalog)
-    provider.noteTurnError(429, 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}')
+    await provider.noteTurnError(429, 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}')
     await provider.getModelAvailability(catalog)
     expect(fetchActingAccount).toHaveBeenCalledTimes(1)
-    provider.noteTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"no","model":"claude-fable-5-1"}}')
+    await provider.noteTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"no","model":"claude-fable-5-1"}}')
     await provider.getModelAvailability(catalog)
     expect(fetchActingAccount).toHaveBeenCalledTimes(2)
   })
