@@ -74,10 +74,10 @@ export function ConversationDetail({
           </span>
         </div>
 
-        <div className="mt-3 rounded-xl border bg-muted/30 p-4">
+        <div className="mt-3 rounded-card border bg-muted/30 p-4">
           {row.firstMessagePreview ? (
             <div className="flex justify-end">
-              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-zinc-100 px-4 py-2 text-sm dark:bg-zinc-800/70">
+              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-card bg-zinc-100 px-4 py-2 text-sm dark:bg-zinc-800/70">
                 {row.firstMessagePreview}
               </div>
             </div>
@@ -135,7 +135,7 @@ export function ConversationDetail({
       </div>
 
       {blank ? (
-        <div className="mt-3 flex min-h-[180px] items-center justify-center rounded-xl border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
+        <div className="mt-3 flex min-h-[180px] items-center justify-center rounded-card border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
           No messages yet. The next message from {row.title} on {providerName} starts a new conversation.
         </div>
       ) : (
@@ -147,7 +147,7 @@ export function ConversationDetail({
                 chat". The opacity wash only works in light mode (it lightens content
                 toward the page); in dark mode it muddies contrast and hides bubbles,
                 so we drop it there and lean on the muted panel instead. */}
-            <div className={`reader-scrollbar mt-3 overflow-hidden rounded-xl border bg-muted/30 ${CONVERSATION_PANEL_SCROLL}`}>
+            <div className={`reader-scrollbar mt-3 overflow-hidden rounded-card border bg-muted/30 ${CONVERSATION_PANEL_SCROLL}`}>
               <div className="cursor-default opacity-75 dark:opacity-100">
                 <SessionThread
                   sessionId={openWindowId as string}

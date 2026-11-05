@@ -7,15 +7,15 @@ const llm = vi.hoisted(() => ({
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ agentModel: 'opus', summarizerModel: 'haiku' }),
+  getEffectiveModels: async () => ({ agentModel: 'opus', summarizerModel: 'haiku' }),
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({
+  getActiveLlmProvider: async () => ({
     supportsDirectApi: llm.direct,
-    getApiKeyStatus: () => ({ isConfigured: true }),
-    createClient: () => ({ messages: { create: llm.create } }),
+    getApiKeyStatus: async () => ({ isConfigured: true }),
+    createClient: async () => ({ messages: { create: llm.create } }),
   }),
-  resolveActiveProviderModel: (model: string) => `model-${model}`,
+  resolveActiveProviderModel: async (model: string) => `model-${model}`,
 }))
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
   getConfiguredLlmClient: async () => ({ helper: true }),

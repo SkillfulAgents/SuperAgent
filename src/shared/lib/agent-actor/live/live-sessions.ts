@@ -53,8 +53,8 @@ import { OrderedSends } from '../ordered-sends'
 
 /** The agent's container runtime, as its sessions need it. */
 export interface SessionsRuntime extends SessionRuntime {
-  /** The agent's current container client. */
-  client(): ContainerClient
+  /** The agent's current container client (for the runner configured now, read from the settings). */
+  client(): Promise<ContainerClient>
 }
 
 export interface LiveSessionsDeps {
@@ -136,6 +136,11 @@ export class LiveSessions {
 
   isActive(sessionId: string): boolean {
     return this.states.get(sessionId)?.isActive ?? false
+  }
+
+  /** The host holds the session's live state, whether or not its turn runs. */
+  has(sessionId: string): boolean {
+    return this.states.has(sessionId)
   }
 
   isAwaitingInput(sessionId: string): boolean {
@@ -426,7 +431,7 @@ export class LiveSessions {
     this.subscriptions.get(sessionId)?.()
     this.subscriptions.delete(sessionId)
     const prior = this.states.get(sessionId)
-    prior?.dispose()
+    prior?.dispose({ replaced: true })
     const state = this.create(sessionId, prior)
     this.resolveStreamPolicy(sessionId, state, metadata)
     this.clients.set(sessionId, client)
@@ -577,12 +582,14 @@ export class LiveSessions {
   }
 
   /**
-   * The container stopped. Every session's stream goes; a session mid-turn
-   * ends (see `LiveSession.markInactive`); a recovering one is left to its
-   * recovery, or settled with it when the stop ends the recovery too.
+   * The container stopped. Every session's stream goes, and the host runs
+   * its calls were waiting on (see `LiveSession.abandonHostRuns`); a session
+   * mid-turn ends (see `LiveSession.markInactive`); a recovering one is left
+   * to its recovery, or settled with it when the stop ends the recovery too.
    */
   markAllInactive(options?: { settleRecovering?: boolean }): void {
     for (const [sessionId, state] of [...this.states]) {
+      state.abandonHostRuns()
       if (state.isRecovering) {
         if (options?.settleRecovering) this.settleRecovering([sessionId])
         else this.detach(sessionId)
@@ -779,7 +786,9 @@ export class LiveSessions {
    * best-effort cancel must never block the message.
    */
   async cancelAwaitingInput(sessionId: string): Promise<void> {
-    if (!this.isAwaitingInput(sessionId)) return
+    // An idle session waits only on a call parked on its own card, held by a
+    // background script: there is no turn to stop, and the message starts one.
+    if (!this.isActive(sessionId) || !this.isAwaitingInput(sessionId)) return
     // Taken before the stop: the stop's idle clears the stream store, and
     // computer-use approvals survive that boundary on purpose. Recovered
     // stubs are included: their container-side pending may well be live.
@@ -811,8 +820,9 @@ export class LiveSessions {
    * untracked cannot be settled by a turn stop, so that one stops everything.
    */
   private async interruptContainer(sessionId: string): Promise<{ processKept: boolean }> {
+    const client = await this.deps.runtime.client()
     const scope = this.hasOnlyUntrackedBackgroundWork(sessionId) ? 'all' : 'turn'
-    const response = await this.deps.runtime.client().fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+    const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),
@@ -879,9 +889,10 @@ export class LiveSessions {
     if (!request.blocking || request.autoApproved) return
     const agentSlug = this.deps.slug
     if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
-      // Agent-scoped: attributed to the first active session, the awaiting
-      // projection's heuristic. With none (a dashboard-triggered review) the
-      // dashboard panel is the surface.
+      // A review scoped to the session whose call it holds notifies that
+      // session; an agent-scoped one is attributed to the first active
+      // session. With none (a dashboard-triggered review) the dashboard
+      // panel is the surface.
       const sessionId = request.scope.sessionId ?? this.activeIds()[0]
       if (!sessionId) return
       const payload = request.payload as { displayText?: unknown }
@@ -895,8 +906,9 @@ export class LiveSessions {
       })
       return
     }
-    // Agent-scoped reviews and re-auth requests have no session to notify
-    // for; their in-app cards are the prompt.
+    // Agent-scoped requests have no session to notify for, and re-auth cards
+    // are no notification category even when scoped to the calling session;
+    // their in-app cards are the prompt.
     const sessionId = request.scope.sessionId
     if (!sessionId) return
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return

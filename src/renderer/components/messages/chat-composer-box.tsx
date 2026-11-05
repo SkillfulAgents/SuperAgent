@@ -17,7 +17,7 @@ const EMPTY_POTENTIAL_SECRETS: PotentialSecret[] = []
 
 /** The composer box: the frame the text editor and its action row sit in. Voice mode draws its own contents in the same frame. */
 export const COMPOSER_BOX_CLASS =
-  'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
+  'group relative mx-auto w-full rounded-dialog border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
 
 /** The action row under the editor. When even the left group's icons do not fit, the right group wraps to its own line. */
 export const COMPOSER_ACTIONS_ROW_CLASS = 'mt-1 flex min-w-0 flex-wrap items-center gap-2'

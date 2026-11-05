@@ -77,7 +77,7 @@ class AccountSyncService {
     this.isProcessing = true
 
     try {
-      const providers = getRegisteredProviders()
+      const providers = await getRegisteredProviders()
       for (const provider of providers) {
         try {
           await this.syncProvider(provider)
@@ -93,7 +93,7 @@ class AccountSyncService {
   private async syncProvider(provider: BaseAccountProvider): Promise<void> {
     // Org-scoped tokens need per-member attribution; local/opaque-key has one
     // implicit member, so a single global pass suffices.
-    if (!attribution.requiresActingMember()) {
+    if (!(await attribution.requiresActingMember())) {
       await this.syncProviderForOwner(provider, null)
       return
     }
@@ -123,7 +123,7 @@ class AccountSyncService {
     provider: BaseAccountProvider,
     ownerUserId: string | null,
   ): Promise<void> {
-    const userId = getAccountProviderUserId()
+    const userId = await getAccountProviderUserId()
 
     let remoteConnections: ProviderConnectionListItem[]
     try {

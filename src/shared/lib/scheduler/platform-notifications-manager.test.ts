@@ -179,6 +179,14 @@ describe('PlatformNotificationsManager', () => {
     expect(mockGetRealtimeConfig).not.toHaveBeenCalled()
   })
 
+  it('stays stopped when stop() lands while start() is still reading the token', async () => {
+    const started = platformNotificationsManager.start()
+    platformNotificationsManager.stop()
+    await started
+    expect(platformNotificationsManager.isActive()).toBe(false)
+    expect(mockGetRealtimeConfig).not.toHaveBeenCalled()
+  })
+
   it('subscribes with the platform-minted config and seeds the watermark', async () => {
     const onEvent = await startWithDefaults()
     expect(platformNotificationsManager.isActive()).toBe(true)
@@ -254,6 +262,7 @@ describe('PlatformNotificationsManager', () => {
       () => new Promise((resolve) => (resolveMint = resolve)),
     )
     const firstStart = platformNotificationsManager.start()
+    await vi.waitFor(() => expect(mockGetRealtimeConfig).toHaveBeenCalledTimes(1))
 
     // ...meanwhile the platform disconnects and reconnects (new identity).
     platformNotificationsManager.stop()

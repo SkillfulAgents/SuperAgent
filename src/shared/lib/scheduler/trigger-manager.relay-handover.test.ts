@@ -104,7 +104,7 @@ beforeEach(() => {
       acked.push(...ids)
     },
     endpoints: {} as never,
-    getToken: () => 'opaque_key',
+    getToken: async () => 'opaque_key',
     requiresMemberScope: () => false,
     createRealtime: () => {
       throw new Error('no realtime in this test')

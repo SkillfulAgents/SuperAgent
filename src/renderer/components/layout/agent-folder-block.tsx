@@ -51,11 +51,11 @@ export const SECTION_ICON_CLASS = 'h-3.5 w-3.5 text-muted-foreground'
  * buttons on the row rather than the row.
  */
 const HEADER_ACTION_CLASS =
-  'absolute top-4 z-10 -translate-y-1/2 rounded p-0.5 text-sidebar-foreground/80 transition-opacity hover:bg-black/10 hover:text-sidebar-foreground dark:hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring'
+  'absolute top-4 z-10 -translate-y-1/2 rounded-icon p-0.5 text-sidebar-foreground/80 transition-opacity hover:bg-black/10 hover:text-sidebar-foreground dark:hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring'
 
 /** The ✓ and ✕ beside the name input: plain icons with the header buttons' fill. */
 const NAME_ACTION_CLASS =
-  'shrink-0 rounded p-0.5 text-sidebar-foreground/60 outline-none hover:bg-black/10 hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring dark:hover:bg-white/15'
+  'shrink-0 rounded-icon p-0.5 text-sidebar-foreground/60 outline-none hover:bg-black/10 hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring dark:hover:bg-white/15'
 
 /**
  * Inline rename for a folder. Mirrors the dashboard rename in `app-sidebar.tsx`
@@ -142,7 +142,7 @@ function FolderNameInput({
         placeholder="Section name"
         aria-label="Section name"
         data-testid="folder-name-input"
-        className="h-6 min-w-0 flex-1 rounded border border-black/10 bg-transparent px-1.5 text-xs text-sidebar-foreground outline-none placeholder:text-sidebar-foreground/35 focus:border-black/20 dark:border-white/15 dark:focus:border-white/25"
+        className="h-6 min-w-0 flex-1 rounded-control border border-black/10 bg-transparent px-1.5 text-xs text-sidebar-foreground outline-none placeholder:text-sidebar-foreground/35 focus:border-black/20 dark:border-white/15 dark:focus:border-white/25"
       />
       <button
         type="button"
@@ -400,7 +400,7 @@ export function AgentFolderBlock({
         // The input REPLACES the header rather than sitting inside it: a form
         // control nested in a <button> is invalid markup, and clicking it would
         // land on the button and toggle the folder shut mid-edit.
-        <div className="flex h-8 items-center gap-1 rounded-md px-2">
+        <div className="flex h-8 items-center gap-1 rounded-item px-2">
           <FolderNameInput
             currentName={folder.name}
             startEmpty={renameStartsEmpty}
@@ -488,7 +488,7 @@ export function AgentFolderBlock({
           data-container-id={containerIdForFolder(folder.id)}
           // No indent: rows sit at the same offset as before folders existed,
           // the way they always did under the old "Your Agents" label.
-          className={cn(isBodyOver && activeDragType === 'agent' && 'rounded-md bg-sidebar-accent/40')}
+          className={cn(isBodyOver && activeDragType === 'agent' && 'rounded-item bg-sidebar-accent/40')}
         >
           <ul className="flex w-full min-w-0 flex-col gap-2.5">{children}</ul>
           {agentCount === 0 && (
@@ -565,7 +565,7 @@ export const agentDropAnimation: DropAnimation = {
 export function AgentDragOverlayRow({ label, isFolder }: { label: string; isFolder: boolean }) {
   return (
     <div
-      className="flex items-center gap-1.5 rounded-md border border-sidebar-border bg-sidebar px-2 py-1.5 text-[13px] shadow-lg"
+      className="flex items-center gap-1.5 rounded-item border border-sidebar-border bg-sidebar px-2 py-1.5 text-[13px] shadow-lg"
       data-testid="agent-drag-overlay"
     >
       {isFolder && <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}

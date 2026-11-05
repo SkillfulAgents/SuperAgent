@@ -154,7 +154,7 @@ function RetentionRow({
                   onClick={() => onChange(option.value)}
                   data-testid={`${testId}-option-${option.value}`}
                   className={cn(
-                    'flex items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground',
+                    'flex items-center justify-between gap-2 rounded-item px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground',
                     isSelected ? 'text-foreground' : 'text-muted-foreground'
                   )}
                 >
@@ -171,7 +171,7 @@ function RetentionRow({
             disabled={!isOverride}
             onClick={() => onChange(null)}
             data-testid={`${testId}-app-default`}
-            className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
+            className="flex min-w-0 items-center gap-1.5 rounded-item px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
           >
             <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">Reset to Global Default ({appDefaultLabel})</span>

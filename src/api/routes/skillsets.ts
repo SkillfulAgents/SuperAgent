@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import {
   getSettings,
   mutateSettings,
+  type AppSettings,
 } from '@shared/lib/config/settings'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import {
@@ -108,11 +109,17 @@ const skillsets = new Hono()
 
 skillsets.use('*', Authenticated())
 
-function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCount: number = 0, error?: string): ApiSkillsetConfig {
+function configToApiResponse(
+  config: SkillsetConfig,
+  settings: Pick<AppSettings, 'skillsetCredentials'>,
+  skillCount: number,
+  agentCount: number = 0,
+  error?: string,
+): ApiSkillsetConfig {
   const provider = getSkillsetProvider(config.provider)
   const display = provider.getDisplayInfo()
   const credentialId = getCredentialId(config)
-  const credential = credentialId ? getSettings().skillsetCredentials?.[credentialId] : undefined
+  const credential = credentialId ? settings.skillsetCredentials?.[credentialId] : undefined
   return {
     id: config.id,
     url: config.url,
@@ -134,7 +141,8 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
 // GET /api/skillsets - List configured skillsets
 skillsets.get('/', async (c) => {
   try {
-    const configs = getSettings().skillsets || []
+    const settings = await getSettings()
+    const configs = settings.skillsets || []
     const result: ApiSkillsetConfig[] = []
 
     for (const config of configs) {
@@ -148,7 +156,7 @@ skillsets.get('/', async (c) => {
           error = err instanceof Error ? err.message : 'Failed to fetch skillset'
         }
       }
-      result.push(configToApiResponse(config, index?.skills.length ?? 0, index?.agents?.length ?? 0, error))
+      result.push(configToApiResponse(config, settings, index?.skills.length ?? 0, index?.agents?.length ?? 0, error))
     }
 
     return c.json(result)
@@ -190,7 +198,7 @@ skillsets.post('/', IsAdmin(), async (c) => {
     const skillsetId = urlToSkillsetId(trimmedUrl)
 
     // Check for duplicates
-    const settings = getSettings()
+    const settings = await getSettings()
     const existing = settings.skillsets || []
     if (existing.some((s) => s.id === skillsetId)) {
       return c.json({ error: 'This skillset is already configured' }, 409)
@@ -214,14 +222,14 @@ skillsets.post('/', IsAdmin(), async (c) => {
 
     // Upsert by id against a FRESH read inside the serialized mutation so a
     // concurrent add of a different skillset isn't lost.
-    mutateSettings((s) => {
+    const saved = await mutateSettings((s) => {
       s.skillsets = [...(s.skillsets ?? []).filter((x) => x.id !== config.id), config]
       if (credential) {
         s.skillsetCredentials = { ...s.skillsetCredentials, [credential.id]: credential }
       }
     })
 
-    return c.json(configToApiResponse(config, index.skills.length, index.agents?.length ?? 0), 201)
+    return c.json(configToApiResponse(config, saved, index.skills.length, index.agents?.length ?? 0), 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to add skillset'
     return c.json({ error: message }, 500)
@@ -232,7 +240,7 @@ skillsets.post('/', IsAdmin(), async (c) => {
 skillsets.delete('/:id', IsAdmin(), async (c) => {
   try {
     const id = c.req.param('id')
-    const settings = getSettings()
+    const settings = await getSettings()
     const existing = settings.skillsets || []
     const removed = existing.find((s) => s.id === id)
 
@@ -242,7 +250,7 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
 
     // Remove from settings — filter against a FRESH read inside the serialized
     // mutation so a concurrent change to another skillset isn't lost.
-    mutateSettings((s) => {
+    await mutateSettings((s) => {
       const current = (s.skillsets ?? []).find((x) => x.id === id)
       s.skillsets = (s.skillsets ?? []).filter((x) => x.id !== id)
       const credentialId = current ? getCredentialId(current) : undefined
@@ -268,13 +276,13 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
   try {
     const id = c.req.param('id')
     const body = await c.req.json<{ token?: string | null }>()
-    const config = (getSettings().skillsets || []).find((item) => item.id === id)
+    const config = ((await getSettings()).skillsets || []).find((item) => item.id === id)
     if (!config) return c.json({ error: 'Skillset not found' }, 404)
     if (body.token === undefined) return c.json({ error: 'Token is required (use null to remove it)' }, 400)
 
     const previousCredentialId = getCredentialId(config)
     if (body.token === null || body.token === '') {
-      mutateSettings((s) => {
+      await mutateSettings((s) => {
         const target = (s.skillsets ?? []).find((item) => item.id === id)
         if (!target) return
         const providerData = { ...target.providerData }
@@ -292,11 +300,11 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
       const provider = await resolveProvider(config.url, config.provider, true)
       const index = await validateSkillsetUrl(config.url, provider, transientCredential(token))
       const existingCredential = previousCredentialId
-        ? getSettings().skillsetCredentials?.[previousCredentialId]
+        ? (await getSettings()).skillsetCredentials?.[previousCredentialId]
         : undefined
       const credential = createCredential(token, existingCredential)
 
-      mutateSettings((s) => {
+      await mutateSettings((s) => {
         const target = (s.skillsets ?? []).find((item) => item.id === id)
         if (!target) return
         target.provider = provider
@@ -307,10 +315,11 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
       })
     }
 
-    const updated = (getSettings().skillsets || []).find((item) => item.id === id)
+    const after = await getSettings()
+    const updated = (after.skillsets || []).find((item) => item.id === id)
     if (!updated) return c.json({ error: 'Skillset not found' }, 404)
     const index = await getSkillsetIndex(toSkillsetRef(updated))
-    return c.json(configToApiResponse(updated, index?.skills.length ?? 0, index?.agents?.length ?? 0))
+    return c.json(configToApiResponse(updated, after, index?.skills.length ?? 0, index?.agents?.length ?? 0))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to update repository token'
     return c.json({ error: message }, 400)
@@ -321,7 +330,7 @@ skillsets.patch('/:id/credential', IsAdmin(), async (c) => {
 skillsets.post('/:id/refresh', IsAdmin(), async (c) => {
   try {
     const id = c.req.param('id')
-    const settings = getSettings()
+    const settings = await getSettings()
     const config = (settings.skillsets || []).find((s) => s.id === id)
 
     if (!config) {
@@ -340,7 +349,7 @@ skillsets.post('/:id/refresh', IsAdmin(), async (c) => {
 skillsets.get('/:id/skills', async (c) => {
   try {
     const id = c.req.param('id')
-    const settings = getSettings()
+    const settings = await getSettings()
     const config = (settings.skillsets || []).find((s) => s.id === id)
     const index = config ? await getSkillsetIndex(toSkillsetRef(config)) : null
 
@@ -359,7 +368,7 @@ skillsets.get('/:id/skills', async (c) => {
 skillsets.get('/:id/agents', async (c) => {
   try {
     const id = c.req.param('id')
-    const settings = getSettings()
+    const settings = await getSettings()
     const config = (settings.skillsets || []).find((s) => s.id === id)
     const index = config ? await getSkillsetIndex(toSkillsetRef(config)) : null
 
@@ -395,8 +404,11 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
 
     // Build the new skillset list against a FRESH read inside the serialized
     // mutation so concurrent changes to unrelated skillsets aren't lost.
-    const added: SkillsetConfig[] = []
-    const finalSettings = mutateSettings((s) => {
+    // The mutator may run more than once, so `added` is rebuilt on each run
+    // and holds what the committed attempt added.
+    let added: SkillsetConfig[] = []
+    const finalSettings = await mutateSettings((s) => {
+      added = []
       // Copy into a fresh array — never push() into whatever `s.skillsets` points
       // at. Defense-in-depth: even if a future change handed back a shared
       // default reference, this can't mutate it in place.
@@ -406,11 +418,11 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
 
         const existingConfig = current.find((x) => x.id === skillsetId)
         if (existingConfig) {
-          provider.updateSkillsetConfig(existingConfig, remote)
+          provider.updateSkillsetConfig(existingConfig, remote, s)
           continue
         }
 
-        const config = provider.buildSkillsetConfig(remote)
+        const config = provider.buildSkillsetConfig(remote, s)
         current.push(config)
         added.push(config)
       }

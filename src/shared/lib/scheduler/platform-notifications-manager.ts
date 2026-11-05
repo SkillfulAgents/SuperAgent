@@ -49,13 +49,16 @@ class PlatformNotificationsManager {
   async start(): Promise<void> {
     if (this.isRunning) return
     if (isAuthMode()) return
-    if (!getPlatformProxyBaseUrl() || !getPlatformAccessToken()) {
+    // Claimed before the token read: a stop() or another start() while it is
+    // in flight supersedes this start.
+    const generation = ++this.generation
+    if (!getPlatformProxyBaseUrl() || !(await getPlatformAccessToken())) {
       console.log('[PlatformNotifications] Platform not connected, skipping')
       return
     }
+    if (generation !== this.generation || this.isRunning) return
 
     this.isRunning = true
-    const generation = ++this.generation
     console.log('[PlatformNotifications] Starting...')
 
     try {
@@ -73,9 +76,11 @@ class PlatformNotificationsManager {
   }
 
   stop(): void {
+    // Bumped even when not running, so a start() still reading the token
+    // does not go on to subscribe after this stop.
+    this.generation++
     if (!this.isRunning) return
     this.isRunning = false
-    this.generation++
 
     if (this.realtimeClient) {
       this.realtimeClient.disconnect()
@@ -102,12 +107,12 @@ class PlatformNotificationsManager {
 
   // Org JWTs need the acting member appended to the bearer; opaque personal
   // keys ignore it, so a placeholder is fine when no member is recorded.
-  private getMemberId(): string {
-    return getSettings().platformAuth?.memberId ?? 'local'
+  private async getMemberId(): Promise<string> {
+    return (await getSettings()).platformAuth?.memberId ?? 'local'
   }
 
   private async connect(generation: number): Promise<void> {
-    const memberId = this.getMemberId()
+    const memberId = await this.getMemberId()
     const config = await getNotificationsRealtimeConfig(memberId)
     if (generation !== this.generation) return
     if (!config) {
@@ -143,7 +148,7 @@ class PlatformNotificationsManager {
   private async seedWatermark(memberId: string): Promise<void> {
     if (this.lastNotifiedAt) return
 
-    const persisted = getSettings().platformNotifications?.lastNotifiedAt
+    const persisted = (await getSettings()).platformNotifications?.lastNotifiedAt
     if (persisted) {
       this.lastNotifiedAt = persisted
       return
@@ -158,14 +163,18 @@ class PlatformNotificationsManager {
       console.error('[PlatformNotifications] Watermark seed failed:', error)
       this.lastNotifiedAt = new Date().toISOString()
     }
-    this.persistWatermark()
+    await this.persistWatermark()
   }
 
-  private persistWatermark(): void {
+  private async persistWatermark(): Promise<void> {
     const lastNotifiedAt = this.lastNotifiedAt
     if (!lastNotifiedAt) return
     try {
-      mutateSettings((settings) => {
+      // Concurrent inserts persist concurrently: keep the newer watermark, so
+      // a write that lost the race and retries cannot move it backwards.
+      await mutateSettings((settings) => {
+        const stored = settings.platformNotifications?.lastNotifiedAt
+        if (stored && stored >= lastNotifiedAt) return false
         settings.platformNotifications = { ...settings.platformNotifications, lastNotifiedAt }
       })
     } catch (error) {
@@ -199,7 +208,7 @@ class PlatformNotificationsManager {
       this.lastNotifiedAt && this.lastNotifiedAt > record.created_at
         ? this.lastNotifiedAt
         : record.created_at
-    this.persistWatermark()
+    await this.persistWatermark()
     if (!(await claimPlatformNotificationBroadcast(memberId, record.id))) return
 
     if (!(await this.isPlatformNotificationEnabled())) return
@@ -244,7 +253,7 @@ class PlatformNotificationsManager {
         await this.connect(generation)
         return
       }
-      const config = await getNotificationsRealtimeConfig(this.getMemberId())
+      const config = await getNotificationsRealtimeConfig(await this.getMemberId())
       if (config?.jwt && this.realtimeClient) {
         await this.realtimeClient.updateToken(config.jwt)
       }

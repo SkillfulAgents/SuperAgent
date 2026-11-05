@@ -31,6 +31,7 @@ import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-command
 import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider } from '@shared/lib/llm-provider'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -173,6 +174,12 @@ const CONNECTION_LOST_ERROR =
   'The agent stopped unexpectedly because the connection to its runtime was lost. ' +
   'The container may have crashed or run out of memory.'
 
+/** A failed turn's error being presented: the frames waiting behind it, and the attachment that will handle them. */
+interface PendingError {
+  readonly held: StreamMessage[]
+  owner: LiveSession
+}
+
 export class LiveSession {
   // ---- The turn --------------------------------------------------------------
   /** From an accepted message until the session settles. */
@@ -224,6 +231,15 @@ export class LiveSession {
   /** The process the container evicted while we were attached: a one-shot release. */
   private evictedProcessInstance: string | undefined = undefined
   private settleAfterStopTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * A failed turn's error still being presented (an asynchronous read).
+   * Frames arriving meanwhile wait in it and are handled, in order, once its
+   * `session_error` is out, so nothing after the error can overtake it. The
+   * session's, not this attachment's: carried across a reattach, so the new
+   * attachment's frames wait too, and `owner` is the attachment that handles
+   * them.
+   */
+  private pendingError: PendingError | null
 
   // ---- Automation stream policy ------------------------------------------------
   /** An unpromoted automation: its stream is released once the session settles. */
@@ -276,6 +292,8 @@ export class LiveSession {
     this.promotedToInteractive = prior?.promotedToInteractive ?? false
     this.slashCommands = prior?.slashCommands ?? []
     this.settledInputRequests = prior?.settledInputRequests ?? new Map()
+    this.pendingError = prior?.pendingError ?? null
+    if (this.pendingError) this.pendingError.owner = this
     this.response = TurnResponse.carriedOver(prior?.response, this.isActive)
 
     const emit = (event: SessionEvent) => this.ctx.emit(event)
@@ -445,7 +463,7 @@ export class LiveSession {
     this.ctx.emit({ type: 'session_active', isActive: true, queuedMidTurn: wasActive })
     this.publish({ type: 'session_active', isActive: true })
     // The boundary settled the last turn's parked requests, so this picks up
-    // only waits that survive a new message: an agent-scoped review.
+    // only waits that survive a new message: a review or re-auth card.
     this.syncAwaiting()
   }
 
@@ -587,6 +605,10 @@ export class LiveSession {
       this.background.forgetAll()
       this.ctx.workflows.stopAll()
     }
+    // A host script or computer-use command of the stopped turn whose grant
+    // check is still in flight registers and runs nothing when it lands; a
+    // subagent the stop spared keeps its own.
+    this.toolCalls.dropHostRunChecks((parent) => !this.subagents.isSparedFrame(parent))
 
     if (this.isActive) {
       // Only the turn ended. The renderer resets its streaming state off this
@@ -615,6 +637,7 @@ export class LiveSession {
    */
   markInactive(): void {
     const diedMidTurn = this.isActive && !this.isInterrupted
+    this.abandonHostRuns()
     this.stream.stop()
     this.isAwaitingInput = false
     this.subagents.clear()
@@ -634,6 +657,17 @@ export class LiveSession {
     const error = { error: CONNECTION_LOST_ERROR, apiErrorCode: null, terminalReason: 'connection_lost', isActive: false }
     this.ctx.emit({ type: 'session_error', ...error, turnOutcome })
     this.publish({ type: 'session_error', ...error })
+  }
+
+  /**
+   * The runtime that made this session's calls is gone, and the calls with
+   * it: a host script or computer-use command whose grant check is still in
+   * flight runs nothing when the check lands, and an auto-run that has not
+   * reached the machine yet does not start. A recovery that resumes the
+   * conversation runs in a new process, which makes its own calls.
+   */
+  abandonHostRuns(): void {
+    this.toolCalls.dropHostRunChecks()
   }
 
   /** Recovery claims this session: it was mid-turn when the runtime died. */
@@ -713,6 +747,10 @@ export class LiveSession {
     this.settleTurnBoundaryRequests('ended')
     this.ctx.emit({ type: 'session_idle', isActive: false, outcome, ...(turnOutcome && { turnOutcome }) })
     this.publish({ type: 'session_idle', isActive: false })
+    // A call parked on this session's own card outlives the turn: keep the
+    // session awaiting, which also keeps an automation's stream from being
+    // released (and the card dropped) under it.
+    this.syncAwaiting()
     this.ctx.releaseTransportIfIdle()
   }
 
@@ -769,11 +807,16 @@ export class LiveSession {
     }
   }
 
-  /** The attachment is being dropped: nothing it scheduled may fire. */
-  dispose(): void {
+  /**
+   * The attachment is being dropped: nothing it scheduled may fire.
+   * `replaced`: a reattach carries the session on, so the host runs being
+   * checked for it go on too.
+   */
+  dispose(options: { replaced?: boolean } = {}): void {
     this.cancelSettleAfterStop()
     // The session is gone: a sign-in the host is still deciding raises no card.
     this.toolCalls.dropLoginDecisions()
+    if (!options.replaced) this.toolCalls.dropHostRunChecks()
   }
 
   // ===========================================================================
@@ -782,12 +825,15 @@ export class LiveSession {
 
   /**
    * Recompute whether the session waits on the user, from the request store,
-   * and tell the global feed on the edges. An inactive session never waits:
-   * its parked requests died with its turn, even when a stale entry or an
-   * agent-scoped review is still open.
+   * and tell the global feed on the edges. An inactive session waits only on
+   * a call parked on its own card, which a background script can hold past
+   * the turn; its other requests died with the turn, and an agent-scoped
+   * review is still open in every session.
    */
   syncAwaiting(): void {
-    const awaiting = this.isActive && this.ctx.requests.isSessionAwaiting(this.ctx.sessionId)
+    const awaiting =
+      (this.isActive && this.ctx.requests.isSessionAwaiting(this.ctx.sessionId)) ||
+      this.ctx.requests.hasParkedCall(this.ctx.sessionId)
     if (awaiting === this.isAwaitingInput) return
     this.isAwaitingInput = awaiting
     if (!awaiting) {
@@ -871,8 +917,10 @@ export class LiveSession {
    * it, and fail the container's pending input so a late click lands nowhere.
    */
   private invalidateSubagentRequests(parentToolId: string): void {
-    // Nor does a sign-in it asked for that the host is still deciding.
+    // Nor does a sign-in it asked for that the host is still deciding, or a
+    // host run whose grant check is in flight.
     this.toolCalls.dropLoginDecisions(parentToolId)
+    this.toolCalls.dropHostRunChecks((parent) => parent === parentToolId)
     const orphaned = this.ctx.requests.resolveRequestsByParent(parentToolId, 'invalidated')
     if (orphaned.length === 0) return
     for (const request of orphaned) {
@@ -902,6 +950,14 @@ export class LiveSession {
   /** One frame from the container's stream. */
   frame(message: StreamMessage): void {
     if (this.ctx.capture) background(this.ctx.capture.recordInput(this.ctx.sessionId, message), { name: 'live-session.capture-input' })
+    if (this.pendingError) {
+      this.pendingError.held.push(message)
+      return
+    }
+    this.handleFrame(message)
+  }
+
+  private handleFrame(message: StreamMessage): void {
     const content = message.content
 
     // After a stop, the stopped turn's own content still in the pipe is
@@ -1309,8 +1365,16 @@ export class LiveSession {
       return
     }
     if (isError) {
-      this.turnFailed(classification)
-      // A fatal error (OOM, say) stops the container.
+      // The error goes out once its provider presentation is known (an
+      // asynchronous read). Frames arriving meanwhile wait, so they still
+      // follow the error.
+      const pending: PendingError = { held: [], owner: this }
+      this.pendingError = pending
+      background(this.turnFailed(classification, pending).finally(() => pending.owner.replayFramesAfterError(pending)), {
+        name: 'live-session.turn-failed',
+      })
+      // A fatal error (OOM, say) stops the container, decided with the frame:
+      // deferred past the read, it could stop a container a newer turn runs in.
       if (content.fatal) {
         console.log(`[LiveSession] Fatal error for agent ${this.ctx.agentSlug}, requesting container stop`)
         this.ctx.runtime.stopAfterFatalError()
@@ -1351,27 +1415,62 @@ export class LiveSession {
     })
   }
 
-  private turnFailed(classification: ReturnType<typeof classifyResult>): void {
+  /**
+   * Handle the frames held back while an error was presented; one of them may
+   * hold the rest back again. A session that went away has no one to handle them.
+   */
+  private replayFramesAfterError(pending: PendingError): void {
+    if (this.pendingError !== pending) return
+    this.pendingError = null
+    if (!this.ctx.isCurrent()) return
+    const { held } = pending
+    for (let i = 0; i < held.length; i++) {
+      if (this.pendingError) {
+        // Another failed turn among them: the rest wait for its error.
+        ;(this.pendingError as PendingError).held.push(...held.slice(i))
+        return
+      }
+      this.handleFrame(held[i])
+    }
+  }
+
+  private async turnFailed(classification: ReturnType<typeof classifyResult>, pending: PendingError): Promise<void> {
     const errorMessage = classification.errorText || 'An error occurred during execution'
     const apiErrorCode = this.lastApiErrorCode || null
     const { terminalReason, apiErrorStatus } = classification
-    // The provider owns the copy for its own upstream errors (severity, icon,
-    // message, link), so the UI never re-derives provider-specific copy.
-    const runtimeProvider = this.ctx.modelRuntime()?.provider
-    const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : getActiveLlmProvider()
-    turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
-    const errorPresentation = turnProvider.presentationForTurnError(apiErrorStatus ?? undefined, errorMessage, apiErrorCode)
     console.error(
       `[LiveSession] Session ${this.ctx.sessionId} error:`,
       errorMessage,
       apiErrorCode ? `(${apiErrorCode})` : '',
       terminalReason ? `[${terminalReason}]` : '',
     )
-    const error = { error: errorMessage, apiErrorCode, errorPresentation, terminalReason, apiErrorStatus, isActive: false }
+    // Recorded with the frame, before anything is awaited: what the session's
+    // next frames decide (its settling, its notification) reads the outcome.
     this.trackResponse('agent_response_failed', { terminal_reason: terminalReason, api_error_status: apiErrorStatus })
     const turnOutcome = this.response.recordOutcome('failed', errorMessage)
-    this.ctx.emit({ type: 'session_error', ...error, turnOutcome })
-    this.publish({ type: 'session_error', ...error })
+    const activityAtError = this.activityGeneration
+    // The provider owns the copy for its own upstream errors (severity, icon,
+    // message, link), so the UI never re-derives provider-specific copy. The
+    // active provider and the presentation are reads; a failed one leaves the
+    // error without a presentation rather than unreported.
+    const runtimeProvider = this.ctx.modelRuntime()?.provider
+    let errorPresentation: ProviderErrorPresentation | null = null
+    try {
+      const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : await getActiveLlmProvider()
+      turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
+      errorPresentation = await turnProvider.presentationForTurnError(apiErrorStatus ?? undefined, errorMessage, apiErrorCode)
+    } catch (error) {
+      console.error(`[LiveSession] Could not present the error of session ${this.ctx.sessionId}:`, error)
+    }
+    // The read was an await. The error belongs to the turn it ended: when the
+    // session went away, or a message has started a newer turn since, it is
+    // not news to anyone, and `isActive: false` would end that turn in every
+    // client. Sent through the attachment the session has now.
+    const owner = pending.owner
+    if (!owner.ctx.isCurrent() || owner.activityGeneration !== activityAtError) return
+    const error = { error: errorMessage, apiErrorCode, errorPresentation, terminalReason, apiErrorStatus, isActive: false }
+    owner.ctx.emit({ type: 'session_error', ...error, turnOutcome })
+    owner.publish({ type: 'session_error', ...error })
   }
 
   /**
@@ -1577,3 +1676,4 @@ export class LiveSession {
     this.releaseStreamWhenIdle = false
   }
 }
+

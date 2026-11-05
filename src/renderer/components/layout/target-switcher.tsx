@@ -58,7 +58,7 @@ export function TargetSwitcher() {
     // `app-no-drag`: this lives in the window's drag region, where a plain
     // button would move the window instead of being pressed.
     <div
-      className="app-no-drag flex shrink-0 items-center gap-0.5 rounded-md bg-muted/60 p-0.5"
+      className="app-no-drag flex shrink-0 items-center gap-0.5 rounded-item bg-muted/60 p-0.5"
       role="group"
       aria-label="Where agents run"
       data-testid="target-switcher"
@@ -109,7 +109,7 @@ export function TargetSwitcher() {
                     // tall: the extra width is aim room on the axis the cursor
                     // actually approaches from, and it leaves the row's 48px
                     // height alone.
-                    'flex h-6 w-8 items-center justify-center rounded transition-colors',
+                    'flex h-6 w-8 items-center justify-center rounded-control transition-colors',
                     active
                       ? 'bg-background text-foreground shadow-sm cursor-default'
                       : 'text-muted-foreground hover:text-foreground',

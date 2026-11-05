@@ -3,15 +3,17 @@
  *
  * The harness runs as plain Node (no vite aliases), so it cannot import
  * `@shared/...`. Everything here is a deliberate, minimal re-read of on-disk
- * state the app owns: settings.json and the SQLite file. Nothing is written
+ * state the app owns: the SQLite file (and settings.json, for an install that
+ * has not imported it into the database yet). Nothing is written
  * back to a source data dir — see seed.mjs for the isolated copy the harness
  * actually boots against.
  */
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { readInstallSettings } from '../../lib/install-settings.mjs'
 
 export const DEFAULT_SOURCE_DATA_DIR = path.join(
   os.homedir(),
@@ -50,13 +52,16 @@ export function exec(dataDir, sql) {
   execFileSync('sqlite3', [path.join(dataDir, 'superagent.db'), sql], { encoding: 'utf8' })
 }
 
+/** The install's settings: its database row, or settings.json before the first boot imported it. */
 export function readSettings(dataDir) {
-  const file = path.join(dataDir, 'settings.json')
+  let settings
   try {
-    return JSON.parse(readFileSync(file, 'utf8'))
+    settings = readInstallSettings(dataDir)
   } catch (err) {
-    throw new Error(`Could not read ${file}: ${err.message}`)
+    throw new Error(`Could not read the settings of ${dataDir}: ${err.message}`)
   }
+  if (!settings) throw new Error(`No settings in ${dataDir}`)
+  return settings
 }
 
 /**

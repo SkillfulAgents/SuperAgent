@@ -288,7 +288,7 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
                 key={user.id}
                 data-testid={`user-row-${user.email}`}
                 className={cn(
-                  'grid grid-cols-[1fr_1fr_100px_80px_80px] gap-2 items-center px-2 py-1.5 rounded text-sm',
+                  'grid grid-cols-[1fr_1fr_100px_80px_80px] gap-2 items-center px-2 py-1.5 rounded-item text-sm',
                   user.banned && 'opacity-60',
                   isRowLoading && 'opacity-50 pointer-events-none'
                 )}

@@ -102,7 +102,7 @@ export class ExaWebProvider extends BaseWebProvider {
   protected readonly envVarName = 'EXA_API_KEY'
 
   async search(query: string, opts: WebSearchOptions): Promise<WebSearchResponse> {
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Exa API key not configured')
 
     const json = await this.fetchJson(EXA_SEARCH_URL, {
@@ -114,7 +114,7 @@ export class ExaWebProvider extends BaseWebProvider {
   }
 
   async fetch(url: string, opts: WebFetchOptions): Promise<WebFetchResult> {
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Exa API key not configured')
 
     const json = await this.fetchJson(EXA_CONTENTS_URL, {

@@ -175,7 +175,11 @@ export class ContainerHost {
     return false
   }
 
-  /** The auto-sleep timeout changed: every runtime re-arms its idle alarm against the new value. */
+  /**
+   * The auto-sleep timeout changed: every runtime re-arms its idle alarm
+   * against the new value. Returns before the alarms are armed; each reads
+   * the timeout fresh (see `IdleAlarm.schedule`).
+   */
   rearmIdleAlarms(): void {
     for (const runtime of this.runtimes.values()) runtime.idleAlarm.schedule()
   }
@@ -222,7 +226,7 @@ export class ContainerHost {
 
     // Create clients for all agents (this registers them for sync)
     for (const slug of agentSlugs) {
-      this.runtime(slug).getClient()
+      await this.runtime(slug).getClient()
     }
 
     // Sync all statuses
@@ -491,12 +495,12 @@ export class ContainerHost {
       return
     }
 
-    let settings = getSettings()
+    const settings = await getSettings()
     const image = settings.container.agentImage
 
     // Step 1: Check configured runner availability
     // We check the *configured* runner specifically (not a fallback) because
-    // createContainerClient() always uses the configured runner.
+    // a runtime's getClient() always builds for the configured runner.
     let configuredRunner = settings.container.containerRunner as ContainerRunner
 
     this.setReadiness({
@@ -591,12 +595,17 @@ export class ContainerHost {
         const alternativeRunner = allAvailability.find((r) => r.available && r.runner !== configuredRunner)
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
+          const unavailableRunner = configuredRunner
           configuredRunner = alternativeRunner.runner as ContainerRunner
-          // Serialized fresh-read + atomic write; re-bind the local
-          // snapshot to the persisted result so later reads see fresh state.
-          settings = mutateSettings((s) => {
+          // Switch only away from the runner found unavailable: one the user
+          // picked during the availability check above stands. Each runtime's
+          // getClient() reads the runner and replaces a client built for
+          // another one once its container is no longer running.
+          const switched = await mutateSettings((s) => {
+            if (s.container.containerRunner !== unavailableRunner) return false
             s.container.containerRunner = configuredRunner
           })
+          configuredRunner = switched.container.containerRunner as ContainerRunner
         } else {
           const displayName = getRunnerDisplayName(configuredRunner)
           const detail = !runnerStatus?.installed

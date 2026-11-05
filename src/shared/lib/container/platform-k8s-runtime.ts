@@ -117,7 +117,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/services/${this.serviceName()}`)
     await createResource(`/api/v1/namespaces/${kube.namespace}/services`, buildAgentServiceManifest(kube, this.serviceName(), this.podName(), ownerRef))
-    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, await this.buildAgentEnv(options?.envVars, options?.agentName), ownerRef))
+    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, await buildAgentPodManifest(kube, this.podName(), this.config, await this.buildAgentEnv(options?.envVars, options?.agentName), ownerRef))
 
     await waitForPodReady(kube.namespace, this.podName(), 300_000)
 
@@ -289,14 +289,14 @@ export function buildAgentServiceManifest(kube: KubeConfig, serviceName: string,
   }
 }
 
-export function buildAgentPodManifest(
+export async function buildAgentPodManifest(
   kube: KubeConfig,
   podName: string,
   config: ContainerConfig,
   envVars: Record<string, string>,
   ownerRef?: OwnerReference | null,
-): KubeResource {
-  const settings = getSettings()
+): Promise<KubeResource> {
+  const settings = await getSettings()
   const image = process.env.K8S_AGENT_IMAGE || settings.container.agentImage
   // envVars is already the final agent env (built by the client via buildAgentEnv);
   // this builder only serializes it into pod env entries.

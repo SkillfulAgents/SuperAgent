@@ -53,7 +53,7 @@ export function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps)
         </p>
       </div>
 
-      <div className={`rounded-lg border p-3 transition-colors ${isComposioConfigured ? 'border-green-500 bg-green-50' : 'border-primary'}`}>
+      <div className={`rounded-card border p-3 transition-colors ${isComposioConfigured ? 'border-green-500 bg-green-50' : 'border-primary'}`}>
         <div className="flex items-center gap-2">
           {isComposioConfigured && <CircleCheckBig className="h-4 w-4 text-green-600" />}
           <span className={`font-medium text-sm ${isComposioConfigured ? 'text-green-700 dark:text-green-400' : ''}`}>
@@ -99,7 +99,7 @@ export function ComposioStep({ onCanProceedChange, saveRef }: ComposioStepProps)
                 </button>
 
                 {showInstructions && (
-                  <div className="mt-2 p-2.5 rounded-md border bg-muted/30">
+                  <div className="mt-2 p-2.5 rounded-card border bg-muted/30">
                     <ol className="list-decimal list-inside space-y-1 text-xs text-muted-foreground">
                       <li>Go to the{' '}
                         <a

@@ -45,7 +45,7 @@ function deferredTab(content: ReactNode): ReactNode {
       fallback={(
         <div className="space-y-3 py-2" role="status" aria-label="Loading settings section">
           <div className="h-5 w-40 animate-pulse rounded bg-muted" />
-          <div className="h-20 w-full animate-pulse rounded bg-muted/70" />
+          <div className="h-20 w-full animate-pulse rounded-card bg-muted/70" />
         </div>
       )}
     >

@@ -248,7 +248,7 @@ export function BrowserCredentialPicker({
 
   if (filled) {
     return (
-      <div className="mt-3 rounded-md border border-green-500/30 bg-green-500/5 p-3 text-xs" data-testid="credential-picker-filled">
+      <div className="mt-3 rounded-card border border-green-500/30 bg-green-500/5 p-3 text-xs" data-testid="credential-picker-filled">
         <div className="flex items-center gap-2 font-medium text-foreground">
           <KeyRound className="h-3.5 w-3.5 text-green-600" />
           Credentials filled
@@ -260,7 +260,7 @@ export function BrowserCredentialPicker({
 
   if (manualCredential) {
     return (
-      <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs" data-testid="credential-picker-manual">
+      <div className="mt-3 rounded-card border border-amber-500/30 bg-amber-500/5 p-3 text-xs" data-testid="credential-picker-manual">
         <div className="flex items-center gap-2 font-medium text-foreground">
           <KeyRound className="h-3.5 w-3.5 text-amber-600" />
           Copy saved login
@@ -272,7 +272,7 @@ export function BrowserCredentialPicker({
           <div>
             <p className="mb-1 text-2xs font-medium text-muted-foreground">Username</p>
             <div className="flex items-center gap-1.5">
-              <code className="min-w-0 flex-1 select-all truncate rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground">
+              <code className="min-w-0 flex-1 select-all truncate rounded-item border border-border bg-background px-2 py-1.5 text-xs text-foreground">
                 {manualCredential.username || '(empty)'}
               </code>
               <Button
@@ -292,7 +292,7 @@ export function BrowserCredentialPicker({
             <p className="mb-1 text-2xs font-medium text-muted-foreground">Password</p>
             <div className="flex items-center gap-1.5">
               <code
-                className="min-w-0 flex-1 select-all truncate rounded border border-border bg-background px-2 py-1.5 text-xs text-foreground"
+                className="min-w-0 flex-1 select-all truncate rounded-item border border-border bg-background px-2 py-1.5 text-xs text-foreground"
                 aria-hidden="true"
               >
                 {passwordRevealed ? manualCredential.password : '••••••••••••'}
@@ -346,7 +346,7 @@ export function BrowserCredentialPicker({
 
   if (data?.status === 'unconfigured') {
     return (
-      <div className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
+      <div className="mt-3 rounded-card border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
         <div className="flex items-center gap-2 font-medium text-foreground">
           <KeyRound className="h-3.5 w-3.5" />
           Password manager
@@ -371,7 +371,7 @@ export function BrowserCredentialPicker({
 
   if (data?.status === 'locked') {
     return (
-      <div className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
+      <div className="mt-3 rounded-card border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
         <div className="flex items-center gap-2 font-medium text-foreground">
           <KeyRound className="h-3.5 w-3.5" />
           {data.providerLabel}
@@ -434,7 +434,7 @@ export function BrowserCredentialPicker({
 
   if (data?.status === 'unavailable') {
     return (
-      <div className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
+      <div className="mt-3 rounded-card border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
         <div className="flex items-center gap-2 font-medium text-foreground">
           <KeyRound className="h-3.5 w-3.5" />
           {data.providerLabel}
@@ -456,7 +456,7 @@ export function BrowserCredentialPicker({
 
   if (data?.status === 'error') {
     return (
-      <div className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
+      <div className="mt-3 rounded-card border border-border bg-muted/30 p-3 text-xs" data-testid="credential-picker-status">
         <div className="flex items-center gap-2 font-medium text-foreground">
           <KeyRound className="h-3.5 w-3.5" />
           {data.providerLabel}
@@ -490,7 +490,7 @@ export function BrowserCredentialPicker({
   }
 
   return (
-    <div className="mt-3 rounded-md border border-border bg-muted/30 p-3" data-testid="credential-picker">
+    <div className="mt-3 rounded-card border border-border bg-muted/30 p-3" data-testid="credential-picker">
       <div className="flex items-center gap-2 text-xs font-medium text-foreground">
         <KeyRound className="h-3.5 w-3.5" />
         Fill from {data.providerLabel}
@@ -500,7 +500,7 @@ export function BrowserCredentialPicker({
           <button
             key={suggestion.id}
             type="button"
-            className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-2.5 py-2 text-left hover:bg-muted disabled:opacity-50"
+            className="flex w-full items-center gap-3 rounded-item border border-border bg-background px-2.5 py-2 text-left hover:bg-muted disabled:opacity-50"
             onClick={() => fill(suggestion.id)}
             disabled={disabled || fillingId !== null}
             data-testid={`credential-suggestion-${suggestion.id}`}

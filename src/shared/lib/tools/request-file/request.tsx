@@ -149,7 +149,7 @@ export function FileRequestItem({
         {/* Drop zone / file picker */}
         <div
           className={cn(
-            'group relative border rounded-md p-4 text-center cursor-pointer transition-colors',
+            'group relative border rounded-card p-4 text-center cursor-pointer transition-colors',
             isDragOver
               ? 'border-blue-400 dark:border-blue-500 bg-blue-100 dark:bg-blue-900'
               : selectedFile

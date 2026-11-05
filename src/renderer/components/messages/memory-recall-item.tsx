@@ -37,7 +37,7 @@ export function MemoryRecallItem({ recall }: MemoryRecallItemProps) {
       </div>
 
       {expanded && (
-        <div className="mt-1.5 mx-4 px-3 py-2 bg-muted/30 rounded-md border text-xs text-muted-foreground">
+        <div className="mt-1.5 mx-4 px-3 py-2 bg-muted/30 rounded-card border text-xs text-muted-foreground">
           {recall.memoryPaths.map((p) => (
             <div key={p} className="truncate" title={p}>
               {displayPath(p)}

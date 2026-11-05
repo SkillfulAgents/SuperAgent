@@ -176,7 +176,7 @@ async function startRepairSession(
       readAgentPreferences(agentSlug),
       readWidgetLogTail(agentSlug, widgetSlug),
     ])
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
     const resolved = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
 
     const session = await actor.sessions.start({

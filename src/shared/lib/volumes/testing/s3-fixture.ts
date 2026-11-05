@@ -32,7 +32,7 @@ export function s3Fixture() {
     objects.set(key, object)
     return object
   }
-  vi.spyOn(credentials, 'openS3Credentials').mockImplementation(() => {
+  vi.spyOn(credentials, 'openS3Credentials').mockImplementation(async () => {
     if (!active) throw new WorkspaceFileError('not-accessible')
     return config.credentials
   })

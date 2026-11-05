@@ -88,6 +88,7 @@ import {
 } from '@shared/lib/services/agent-integration-session-service'
 import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
 
+// Settings and host records are app records: a fresh in-memory store per test.
 describe('SUP-233 reconnect restore ignores archived sessions', () => {
   beforeEach(async () => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sup233-'))

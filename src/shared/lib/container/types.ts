@@ -282,8 +282,9 @@ export interface ContainerClient {
 
   // Headers proving the caller is the host — required by the container API,
   // which is also reachable from the agent's own Bash. Callers that dial the
-  // container directly (e.g. WebSocket upgrades) must attach these.
-  getHostAuthHeaders(): Record<string, string>
+  // container directly (e.g. WebSocket upgrades) must attach these. The
+  // token is a database record, read on every call.
+  getHostAuthHeaders(): Promise<Record<string, string>>
 
   getWebSocketBaseUrl(port: number): string
   getHostApiBaseUrl(): string | Promise<string>

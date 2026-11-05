@@ -205,10 +205,10 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 
 // Settings + secrets (only used by invoke for new sessions)
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => ({ app: {} }),
+  getEffectiveModels: async () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => ({ app: {} }),
 }))
 vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn(async () => []),
@@ -229,12 +229,16 @@ const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
 })
 // The caller's reviews, as its router answers the actor's review ops: the
 // queued decision is the request's outcome, under the arguments it was raised with.
-type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown }
+type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown; callerSessionId?: string }
+const xAgentReviewRequests: XAgentReviewRequest[] = []
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestXAgent: (callerSlug: string, request: XAgentReviewRequest) => mockRequestXAgentReview(
-      callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
-    ),
+    requestXAgent: (callerSlug: string, request: XAgentReviewRequest) => {
+      xAgentReviewRequests.push(request)
+      return mockRequestXAgentReview(
+        callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
+      )
+    },
     withdraw: vi.fn(),
     takeDenyReason: vi.fn(),
     getPendingReviewsForAgent: () => [],
@@ -375,6 +379,7 @@ beforeEach(async () => {
   // Reset state
   authModeEnabled = false
   reviewDecisions = []
+  xAgentReviewRequests.length = 0
   vi.clearAllMocks()
   mockIsSessionActive.mockReturnValue(false)
   mockIsSessionAwaitingInput.mockReturnValue(false)
@@ -640,6 +645,8 @@ describe('/invoke', () => {
       _callerSessionId: callerSessionId,
     })
     expect(res.status).toBe(200)
+    // The review shows in the calling session, so a chat on it gets the card.
+    expect(xAgentReviewRequests).toMatchObject([{ operation: 'invoke', callerSessionId }])
   })
 
   it('returns 404 when target agent does not exist', async () => {

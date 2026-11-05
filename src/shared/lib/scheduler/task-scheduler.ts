@@ -250,7 +250,7 @@ class TaskScheduler {
 
     // Create a new session with the scheduled prompt.
     // Model/effort/speed preference order: task override > agent default > global default.
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: task.model,

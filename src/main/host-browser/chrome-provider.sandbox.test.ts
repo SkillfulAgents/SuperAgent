@@ -15,16 +15,16 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-it('offers the installed Chrome and its profiles outside the sandbox', () => {
-  expect(new ChromeProvider().detect()).toMatchObject({ available: true, profiles: [{ id: 'Default' }] })
+it('offers the installed Chrome and its profiles outside the sandbox', async () => {
+  expect(await new ChromeProvider().detect()).toMatchObject({ available: true, profiles: [{ id: 'Default' }] })
 })
 
-it('is unavailable in the Mac App Store edition, and says so, without reading Chrome’s profiles', () => {
+it('is unavailable in the Mac App Store edition, and says so, without reading Chrome’s profiles', async () => {
   vi.stubEnv('E2E_MOCK', 'true')
   vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
   listChromeProfiles.mockClear()
 
-  expect(new ChromeProvider().detect()).toEqual({
+  expect(await new ChromeProvider().detect()).toEqual({
     id: 'chrome',
     name: 'Google Chrome',
     available: false,

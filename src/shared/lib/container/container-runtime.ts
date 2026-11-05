@@ -16,6 +16,7 @@ import type {
   ContainerClient,
   ContainerConfig,
   ContainerInfo,
+  ContainerRunner,
   HealthCheckResult,
   StopOptions,
 } from './types'
@@ -114,6 +115,15 @@ async function readUnmounted(client: ContainerClient, volumes: ContainerVolume[]
 export class ContainerRuntime {
   private volumesPresent: boolean | undefined
   private client: ContainerClient | null = null
+  /** The runner `client` was built for. */
+  private clientRunner: ContainerRunner | null = null
+  /**
+   * Orders getClient's runner reads: each takes the next number before it
+   * reads, and `clientDecidedBy` is the newest read that has landed. A read
+   * that started before it never replaces the client that read decided on.
+   */
+  private clientReads = 0
+  private clientDecidedBy = 0
   /** Cached container status - avoids repeated docker inspect calls */
   private cached: CachedContainerStatus | null = null
   /**
@@ -126,12 +136,13 @@ export class ContainerRuntime {
    * Puts the container to sleep once it has been idle for the auto-sleep
    * timeout. Armed from the marks above, cancelled when the container stops
    * or the runtime is dropped; the host re-arms it when the timeout changes.
+   * The timeout is read from the settings at every arm and every fire.
    */
   readonly idleAlarm = new IdleAlarm({
-    timeoutMs: () => (getSettings().app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
+    timeoutMs: async () => ((await getSettings()).app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
     lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
-    sleep: () => this.sleepIdle(),
+    sleep: (timeoutMs) => this.sleepIdle(timeoutMs),
   })
   /** Cached health warnings */
   private healthWarnings: HealthCheckResult[] = []
@@ -167,29 +178,56 @@ export class ContainerRuntime {
     private readonly host: RuntimeHost,
   ) {}
 
-  /** Get or create the container client. */
-  getClient(): ContainerClient {
-    if (!this.client) {
-      const config: ContainerConfig = {
-        agentId: this.slug,
-        onConnectionError: () => {
-          if (this.disposed) return
-          if (this.stopping) return
-          if (this.starting) return
-          // No pre-snapshot here: the orchestrator snapshots synchronously, and
-          // a join during an in-flight recovery queues a re-run that catches
-          // sessions that became active in between.
-          this.handleUnexpectedDeath()
-        },
-        // MicroVM dead-generation replace (and similar) must restart through the
-        // runtime so starts share the in-flight promise and rebuild env from the DB.
-        restartAgent: () => (this.disposed ? Promise.resolve() : this.restartAgent()),
-      }
-
-      this.client = createContainerClient(config)
+  /**
+   * The container client for the runner configured now. The runner is read
+   * from the settings on every call, so a change made anywhere (another
+   * process, or a write here that did not clear the runtimes) takes effect on
+   * the next use: a client built for another runner is replaced. A start in
+   * flight keeps the client it was handed, as it does after `resetClient`.
+   *
+   * Except while that client's container is up, coming up or going down:
+   * only that client can reach and stop it, so the runtime keeps it until
+   * the container is stopped, and the new runner applies from the next start.
+   */
+  async getClient(): Promise<ContainerClient> {
+    if (this.client && this.holdsContainer()) return this.client
+    const read = ++this.clientReads
+    const runner = (await getSettings()).container.containerRunner as ContainerRunner
+    // Reading was an await: the container may have started on the client meanwhile.
+    if (this.client && (runner === this.clientRunner || read < this.clientDecidedBy || this.holdsContainer())) {
+      this.clientDecidedBy = Math.max(this.clientDecidedBy, read)
+      return this.client
     }
-
+    if (this.client) {
+      console.log(`[ContainerRuntime] Container runner for ${this.slug} changed from ${this.clientRunner} to ${runner}; using a new client`)
+    }
+    this.client = createContainerClient(this.clientConfig(), runner)
+    this.clientRunner = runner
+    this.clientDecidedBy = read
     return this.client
+  }
+
+  /** The client's container is (or may be) running: starting, stopping, or last seen running. */
+  private holdsContainer(): boolean {
+    return this.starting !== null || this.stopping || this.cached?.status === 'running'
+  }
+
+  private clientConfig(): ContainerConfig {
+    return {
+      agentId: this.slug,
+      onConnectionError: () => {
+        if (this.disposed) return
+        if (this.stopping) return
+        if (this.starting) return
+        // No pre-snapshot here: the orchestrator snapshots synchronously, and
+        // a join during an in-flight recovery queues a re-run that catches
+        // sessions that became active in between.
+        this.handleUnexpectedDeath()
+      },
+      // MicroVM dead-generation replace (and similar) must restart through the
+      // runtime so starts share the in-flight promise and rebuild env from the DB.
+      restartAgent: () => (this.disposed ? Promise.resolve() : this.restartAgent()),
+    }
   }
 
   /** Whether a client has been created (the container has been touched). */
@@ -204,6 +242,7 @@ export class ContainerRuntime {
    */
   resetClient(): void {
     this.client = null
+    this.clientRunner = null
   }
 
   isStopping(): boolean {
@@ -299,6 +338,13 @@ export class ContainerRuntime {
       await this.starting
       return
     }
+    const client = await this.getClient()
+    // Reading the runner was an await: a stop or another start may have begun meanwhile.
+    this.assertNotStopping('restart')
+    if (this.starting) {
+      await this.starting
+      return
+    }
 
     this.markAsStopped()
     // Dead generation had live sessions; clear isActive before the new start
@@ -309,7 +355,6 @@ export class ContainerRuntime {
       agentSlug: this.slug,
       status: 'stopped',
     })
-    const client = this.getClient()
     await this.trackStart(this.doStartContainer(client))
   }
 
@@ -402,7 +447,10 @@ export class ContainerRuntime {
     let stopped = true
 
     try {
-      const client = this.getClient()
+      // The client that started the container is the one that can stop it,
+      // even if the runner setting has moved on since; only a runtime without
+      // one builds a client for the runner configured now.
+      const client = this.client ?? await this.getClient()
       if (this.volumesPresent !== false) await prepareVolumeStop(client, slug)
       // Stop the host browser before the container so it closes gracefully
       // instead of getting a "socket hang up" when the container dies
@@ -474,7 +522,7 @@ export class ContainerRuntime {
    */
   async syncAgentStatus(): Promise<ContainerInfo> {
     const slug = this.slug
-    const client = this.getClient()
+    const client = await this.getClient()
     const previousStatus = this.cached?.status
     const info = await client.getInfoFromRuntime()
 
@@ -565,7 +613,10 @@ export class ContainerRuntime {
     this.assertNotStopping('start')
     if (this.starting) return this.starting
 
-    const client = this.getClient()
+    const client = await this.getClient()
+    // Reading the runner was an await: a stop or another start may have begun meanwhile.
+    this.assertNotStopping('start')
+    if (this.starting) return this.starting
     const cached = this.cached
 
     // Treat the cached 'running' status as authoritative only while it's fresh.
@@ -620,7 +671,7 @@ export class ContainerRuntime {
     // Authenticates the HOST to the container API (the reverse direction of
     // PROXY_TOKEN, which the agent legitimately holds). The container server
     // strips this from its env before spawning the CLI.
-    envVars['SUPERAGENT_HOST_TOKEN'] = getOrCreateHostToken(slug)
+    envVars['SUPERAGENT_HOST_TOKEN'] = await getOrCreateHostToken(slug)
 
     // Fetch connected accounts for this agent
     const accountMappings = await db
@@ -646,8 +697,9 @@ export class ContainerRuntime {
       envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
     }
 
-    // Pass host browser env vars if a host browser provider is selected
-    const settings = getSettings()
+    // Pass host browser env vars if a host browser provider is selected.
+    // Read once for this start: the custom env vars below come from it too.
+    const settings = await getSettings()
     if (settings.app?.hostBrowserProvider) {
       envVars['AGENT_BROWSER_USE_HOST'] = '1'
       envVars['HOST_APP_URL'] = hostApiBaseUrl
@@ -687,13 +739,13 @@ export class ContainerRuntime {
     envVars['HOST_APP_SANDBOX'] = String(runsInAppSandbox(serverFacts))
 
     // Enable Composio webhook trigger tools when platform Composio is active
-    const platformComposio = isPlatformComposioActive()
+    const platformComposio = await isPlatformComposioActive()
     if (platformComposio) {
       envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
     }
     // Discovery and account requests must offer the same services as /api/providers.
     // Toolkit slugs contain no commas; an empty string explicitly offers none.
-    envVars['CONNECTED_ACCOUNT_TOOLKITS'] = getAllProviders(getDefaultAccountProvider().name)
+    envVars['CONNECTED_ACCOUNT_TOOLKITS'] = getAllProviders((await getDefaultAccountProvider()).name)
       .filter((provider) => !provider.unlisted && (!provider.platformOnly || platformComposio))
       .map((provider) => provider.slug)
       .join(',')
@@ -706,7 +758,7 @@ export class ContainerRuntime {
     envVars['WEBHOOK_RELAY_AVAILABLE'] = String(this.webhookRelayAtStart)
 
     // Platform services (media, enrichment, search) only need the token.
-    if (getPlatformAccessToken()) {
+    if (await getPlatformAccessToken()) {
       envVars['PLATFORM_AUTH_ACTIVE'] = 'true'
     }
 
@@ -853,9 +905,8 @@ export class ContainerRuntime {
   }
 
   /** What the idle alarm runs: stop without ever force-stopping the shared VM. */
-  private async sleepIdle(): Promise<void> {
-    const timeoutMinutes = getSettings().app?.autoSleepTimeoutMinutes ?? 30
-    console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMinutes}m, stopping...`)
+  private async sleepIdle(timeoutMs: number): Promise<void> {
+    console.log(`[ContainerRuntime] Agent ${this.slug} idle for >${timeoutMs / 60_000}m, stopping...`)
     await this.stopContainer({
       stopTimeoutMs: 60_000,
       killTimeoutMs: 30_000,
@@ -875,6 +926,7 @@ export class ContainerRuntime {
     this.disposed = true
     this.lifecycle++
     this.client = null
+    this.clientRunner = null
     this.cached = null
     this.activity.reset()
     this.idleAlarm.cancel()

@@ -1,4 +1,10 @@
-import { BrowserWindow, type Session, type WebContents } from 'electron'
+import {
+  BrowserWindow,
+  type BeforeSendResponse,
+  type OnBeforeSendHeadersListenerDetails,
+  type Session,
+  type WebContents,
+} from 'electron'
 import { isIP } from 'node:net'
 import { refreshCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { CREDENTIAL_RESPONSE_HEADERS } from '../api/routes/cloud-proxy'
@@ -127,21 +133,26 @@ const isSessionRejection = (headers: Record<string, string[]>) =>
 const withoutHeaders = <T>(headers: Record<string, T>, names: ReadonlySet<string>) =>
   Object.fromEntries(Object.entries(headers).filter(([name]) => !names.has(name.toLowerCase())))
 
+type Workspace = { deploymentUrl: string; token: string }
+
 /**
  * `currentWorkspace` answers only while the app is driving a cloud workspace,
  * and is read per request, so a switch to local or a disconnect stops signing
  * with nothing to reset. Each signed request remembers the token it carried, so
  * its response is cleaned and its 401 retried once even if the record changed
- * in between.
+ * in between. A request whose workspace cannot be read is sent unsigned.
  */
 export function installCloudDashboardAuth(
   target: Session,
   mainWebContentsId: () => number | null,
-  currentWorkspace: () => { deploymentUrl: string; token: string } | null,
+  currentWorkspace: () => Promise<Workspace | null>,
 ): void {
   // Per request in flight: the token this hop carried (null when it was not
   // signed) and whether it was retried.
   const signedRequests = new Map<number, { token: string | null; retried: boolean }>()
+  // Requests held while their workspace is read. One that ends meanwhile
+  // (cancelled, failed) is not remembered when the read lands.
+  const reading = new Set<number>()
   const isCloudPopout = (id: number) =>
     [...dashboardWindows.values()].some((entry) => entry.cloud && entry.webContentsId === id)
   const windowOf = (id: number | undefined): OwnedWindow =>
@@ -149,21 +160,45 @@ export function installCloudDashboardAuth(
       : id === mainWebContentsId() ? 'main'
         : isCloudPopout(id) ? 'cloud-popout' : null
 
-  target.webRequest.onBeforeSendHeaders((details, callback) => {
-    const window = windowOf(details.webContentsId)
-    const workspace = window ? currentWorkspace() : null
+  const sign = (
+    details: OnBeforeSendHeadersListenerDetails,
+    window: OwnedWindow,
+    request: WorkspaceRequest | null,
+    workspace: Workspace | null,
+  ): BeforeSendResponse => {
     const earlier = signedRequests.get(details.id)
     // A page's own Authorization never reaches the workspace, and ours never
     // follows a redirect away from it.
     const requestHeaders = withoutHeaders(details.requestHeaders, new Set(['authorization']))
-    const request = workspace && workspaceRequestOf(details)
     if (!workspace || !request || !shouldSignWorkspaceRequest(request, workspace.deploymentUrl, window)) {
       if (earlier) earlier.token = null
-      callback({ requestHeaders: earlier ? requestHeaders : details.requestHeaders })
-      return
+      return { requestHeaders: earlier ? requestHeaders : details.requestHeaders }
     }
     signedRequests.set(details.id, { token: workspace.token, retried: earlier?.retried ?? false })
-    callback({ requestHeaders: { ...requestHeaders, Authorization: `Bearer ${workspace.token}` } })
+    return { requestHeaders: { ...requestHeaders, Authorization: `Bearer ${workspace.token}` } }
+  }
+
+  target.webRequest.onBeforeSendHeaders((details, callback) => {
+    const window = windowOf(details.webContentsId)
+    // The frames are read now, not after the workspace: one can be disposed in between.
+    const request = window && workspaceRequestOf(details)
+    if (!request) {
+      callback(sign(details, window, null, null))
+      return
+    }
+    reading.add(details.id)
+    // Every path ends in exactly one callback: the request is held until it.
+    currentWorkspace()
+      .then((workspace) => sign(details, window, request, reading.delete(details.id) ? workspace : null))
+      .catch((error: unknown) => {
+        reading.delete(details.id)
+        console.error('Could not resolve the cloud workspace for a request; sending it unsigned:', error)
+        return sign(details, window, request, null)
+      })
+      .then(callback)
+      .catch((error: unknown) => {
+        console.error('Failed to release a request held for signing:', error)
+      })
   })
 
   target.webRequest.onHeadersReceived((details, callback) => {
@@ -187,7 +222,10 @@ export function installCloudDashboardAuth(
     })
   })
 
-  const forget = ({ id }: { id: number }) => signedRequests.delete(id)
+  const forget = ({ id }: { id: number }) => {
+    reading.delete(id)
+    signedRequests.delete(id)
+  }
   target.webRequest.onCompleted(forget)
   target.webRequest.onErrorOccurred(forget)
 }

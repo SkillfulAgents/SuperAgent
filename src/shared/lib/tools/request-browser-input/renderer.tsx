@@ -8,7 +8,7 @@ function RequirementsBlock({ requirements }: { requirements: string[] }) {
   return (
     <div>
       <FieldLabel>Requirements</FieldLabel>
-      <ul className="bg-background rounded p-2 text-xs list-disc list-inside space-y-0.5">
+      <ul className="bg-background rounded-item p-2 text-xs list-disc list-inside space-y-0.5">
         {requirements.map((req, i) => (
           <li key={i}>{req}</li>
         ))}

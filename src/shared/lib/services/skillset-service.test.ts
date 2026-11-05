@@ -697,7 +697,7 @@ Instructions here`
 
       // Mock platform env + batched queue endpoint reporting merged.
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 
@@ -751,7 +751,7 @@ Instructions here`
       await createSkillsetCache('platform--repo', index, { [meta.skillPath]: '# Test Skill\nOriginal' })
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 
@@ -1272,7 +1272,7 @@ Instructions here`
       await createSkillsetCache('platform--repo', index)
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
 
@@ -1298,7 +1298,7 @@ Instructions here`
       await createSkillsetCache('platform--repo', buildIndex())
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
 

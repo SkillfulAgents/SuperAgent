@@ -387,8 +387,8 @@ export async function processSSEEvent(
       const request = (data as { request?: PendingUserInputRequest }).request
       if (!request) break
       const card = requestCardFromRegistry(request)
-      // null = chat stays quiet: a review (agent-scoped, rendered off the
-      // global channel) or an auto-approved ask nobody has to decide.
+      // null = chat stays quiet: a review (its Allow/Deny card is sent by the
+      // connector's `deliver`) or an auto-approved ask nobody has to decide.
       if (!card) break
 
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the

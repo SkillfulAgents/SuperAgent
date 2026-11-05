@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { getAuth } from '@shared/lib/auth/index'
 import { getGenericOAuthProviderConfigs } from '@shared/lib/auth/provider-config'
+import { getAppBaseUrl } from '@shared/lib/auth/config'
 import { sanitizeReturnTo } from '@shared/lib/auth/safe-return-to'
 import { captureException } from '@shared/lib/error-reporting'
 import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
@@ -9,8 +10,8 @@ const PLATFORM_PROVIDER_ID = 'platform'
 const HANDOFF_PROMPT_MAX = 400
 const HANDOFF_MODEL_RE = /^[A-Za-z0-9._/-]{1,64}$/
 
-function resolvePlatformProviderId(): string | null {
-  const providers = getGenericOAuthProviderConfigs()
+async function resolvePlatformProviderId(): Promise<string | null> {
+  const providers = getGenericOAuthProviderConfigs(await getAppBaseUrl())
   // Fail closed: Platform contract requires the literal provider id.
   return providers.some((p) => p.providerId === PLATFORM_PROVIDER_ID)
     ? PLATFORM_PROVIDER_ID
@@ -61,13 +62,13 @@ platformSsoStart.get('/platform/start', async (c) => {
     c.req.query('model'),
     c.req.query('template_slug'),
   )
-  const providerId = resolvePlatformProviderId()
+  const providerId = await resolvePlatformProviderId()
   if (!providerId) {
     return c.redirect('/', 302)
   }
 
   try {
-    const auth = getAuth()
+    const auth = await getAuth()
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (session?.session) {
       // Reuse an acceptable existing deployment session; account-switch requires logout.

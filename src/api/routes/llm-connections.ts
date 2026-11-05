@@ -62,7 +62,7 @@ routes.get('/', async (c) => {
   const { connections, ...selection } = await listConnectionsWithSelection(viewer(c))
   return c.json({
     connections,
-    legacyLlmProviderId: getSettings().llmLegacyProviderId,
+    legacyLlmProviderId: (await getSettings()).llmLegacyProviderId,
     ...selection,
   })
 })
@@ -99,7 +99,7 @@ routes.post('/validate', async (c) => {
     provider: input.provider,
     config: JSON.stringify(config),
   })
-  if (provider instanceof BedrockLlmProvider && !provider.getEffectiveApiKey()) {
+  if (provider instanceof BedrockLlmProvider && !(await provider.getEffectiveApiKey())) {
     const env = await provider.getContainerEnvVars()
     return c.json(
       await provider.validateAwsCredentials(
@@ -110,7 +110,7 @@ routes.post('/validate', async (c) => {
     )
   }
   return c.json(
-    await provider.validateKey(provider.getEffectiveApiKey() ?? '', {
+    await provider.validateKey((await provider.getEffectiveApiKey()) ?? '', {
       baseUrl: config.apiKeys.genericBaseUrl,
     })
   )
@@ -137,7 +137,7 @@ routes.get('/:id/model-availability', async c => {
   // `fresh=1` re-reads the provider's source (after an upgrade, or a refusal).
   const fresh = c.req.query('fresh') === '1'
   return c.json(await runWithOptionalUser(actor.userId,
-    () => providerForConnection(row).getModelAvailability(connectionCatalog(row), { fresh })))
+    async () => providerForConnection(row).getModelAvailability(await connectionCatalog(row), { fresh })))
 })
 routes.get('/:id/models/search', async (c) => {
   const row = await getConnection(c.req.param('id'))

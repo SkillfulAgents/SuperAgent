@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { PNG } from 'pngjs'
 import { MAX_AGENT_MEMBERS_BATCH_SIZE, type CollaborationEvent } from '@shared/lib/agent-members-schema'
-import { persistedSettingsSchema } from '@shared/lib/config/settings-schema'
+import { mutateSettings } from '@shared/lib/config/settings'
 import { backgroundSettled } from '@shared/lib/background'
 
 let directory: string
@@ -37,13 +37,15 @@ beforeAll(async () => {
   for (const slug of [agentSlug, secondAgent, privateAgent, emptyAgent]) {
     fs.mkdirSync(path.join(directory, 'agents', slug), { recursive: true })
   }
-  fs.writeFileSync(path.join(directory, 'settings.json'), JSON.stringify(persistedSettingsSchema.parse({ auth: { signupMode: 'open', requireAdminApproval: false } })))
   vi.stubEnv('SUPERAGENT_DATA_DIR', directory)
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('AUTH_PROVIDERS_JSON', '[]')
   vi.stubEnv('BETTER_AUTH_SECRET', 'member-test-secret-0123456789abcdef0123456789abcdef')
   db = await import('@shared/lib/db')
   await db.openDatabase()
+  await mutateSettings((s) => {
+    s.auth = { signupMode: 'open', requireAdminApproval: false }
+  })
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(directory, 'superagent.db'))
   authModule = await import('@shared/lib/auth')
@@ -59,7 +61,7 @@ beforeAll(async () => {
   app.route('/api/agents/:id/members', members)
   app.get('/api/agents/:id/access', AgentAdmin(), (c) => c.json({ management: true }))
   for (const name of ['admin', 'owner', 'user', 'viewer', 'outsider']) {
-    const result = await authModule.getAuth().api.signUpEmail({ body: { name, email: `${name}@example.test`, password: 'MemberTesting123!' } })
+    const result = await (await authModule.getAuth()).api.signUpEmail({ body: { name, email: `${name}@example.test`, password: 'MemberTesting123!' } })
     people[name] = { id: result.user.id, token: result.token! }
   }
   const { agentAcl, agents } = await import('@shared/lib/db/schema')
@@ -178,7 +180,7 @@ describe('authorized agent roster', () => {
     const image = new PNG({ width: 4, height: 4 })
     image.data.fill(160)
     try {
-      await (await authModule.getAuth().$context).internalAdapter.updateUser(people.viewer.id, { name: 'Updated Viewer', image: 'https://example.test/new.png' })
+      await (await (await authModule.getAuth()).$context).internalAdapter.updateUser(people.viewer.id, { name: 'Updated Viewer', image: 'https://example.test/new.png' })
       const avatar = await setAvatar(people.viewer.id, PNG.sync.write(image))
       await backgroundSettled()
       expect(received).toEqual([])

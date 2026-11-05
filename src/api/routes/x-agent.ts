@@ -223,6 +223,7 @@ async function checkAgentPolicy(
   targetName: string,
   preview?: string,
   fileTransfer?: XAgentFileTransfer,
+  callerSessionId?: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
@@ -234,7 +235,7 @@ async function checkAgentPolicy(
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
     const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
-      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
     if (userDecision === 'deny') {
@@ -785,6 +786,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     target.name,
     prompt.slice(0, 200),
     attachments.length ? { kind: 'send', paths: attachments } : undefined,
+    // Shows the review in the calling session, so a chat can answer it.
+    _callerSessionId,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
@@ -954,10 +957,11 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
       }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
-      const agentLimits = getEffectiveAgentLimits()
-      const customEnvVars = getCustomEnvVars()
+      const agentLimits = await getEffectiveAgentLimits()
+      const customEnvVars = await getCustomEnvVars()
+      const maxBrowserTabs = (await getSettings()).app?.maxBrowserTabs
       const targetPrefs = await readAgentPreferences(targetSlug)
-      const models = getEffectiveModels()
+      const models = await getEffectiveModels()
       const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
@@ -1008,7 +1012,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           maxTurns: agentLimits.maxTurns,
           maxBudgetUsd: agentLimits.maxBudgetUsd,
           customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-          maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+          maxBrowserTabs,
           metadata: { isAutomated: true },
         },
           name: `Invoked by ${callerName}`,

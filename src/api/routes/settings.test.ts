@@ -15,8 +15,8 @@ import { Hono } from 'hono'
 
 const mockGetSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
+const interleavedWrites: Array<(settings: Record<string, unknown>) => void> = []
 const mockMutateSettings = vi.fn()
-const mockClearSettingsCache = vi.fn()
 const mockGetAnthropicApiKeyStatus = vi.fn()
 const mockGetComposioApiKeyStatus = vi.fn()
 const mockGetComposioUserId = vi.fn()
@@ -55,12 +55,30 @@ const mockIsAdminMiddleware = vi.hoisted(() =>
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
-  // The PUT route now reads currentSettings via the fail-closed strict loader
-  // map it to the same seeded settings the tests already provide.
   loadSettingsStrict: (...args: unknown[]) => mockGetSettings(...args),
-  updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
+  // The compare-and-set write: the update runs against the seeded settings,
+  // and what it writes is recorded as the one argument of mockUpdateSettings
+  // (which is not called when the update writes nothing).
+  // A queued `interleavedWrites` entry is another writer committing between an
+  // attempt's read and its write: that attempt loses, and the update runs again
+  // on what the other writer left.
+  updateSettings: async (update: (draft: unknown, before: unknown) => void | false) => {
+    for (;;) {
+      const before = structuredClone(mockGetSettings())
+      const draft = structuredClone(before)
+      if (update(draft, before) === false) return { before, after: before, written: false }
+      const other = interleavedWrites.shift()
+      if (other) {
+        const current = structuredClone(mockGetSettings())
+        other(current)
+        mockGetSettings.mockReturnValue(current)
+        continue
+      }
+      mockUpdateSettings(draft)
+      return { before, after: draft, written: true }
+    }
+  },
   mutateSettings: (...args: unknown[]) => mockMutateSettings(...args),
-  clearSettingsCache: (...args: unknown[]) => mockClearSettingsCache(...args),
   getAnthropicApiKeyStatus: (...args: unknown[]) => mockGetAnthropicApiKeyStatus(...args),
   getComposioApiKeyStatus: (...args: unknown[]) => mockGetComposioApiKeyStatus(...args),
   getComposioUserId: (...args: unknown[]) => mockGetComposioUserId(...args),
@@ -277,7 +295,10 @@ function defaultSettings() {
 }
 
 function setupDefaults() {
+  interleavedWrites.length = 0
   mockGetSettings.mockReturnValue(defaultSettings())
+  // A write is what the next read returns.
+  mockUpdateSettings.mockImplementation((next: unknown) => { mockGetSettings.mockReturnValue(next) })
   mockMutateSettings.mockImplementation((mutator: (s: ReturnType<typeof defaultSettings>) => void) => {
     const s = mockGetSettings()
     mutator(s)
@@ -365,6 +386,21 @@ describe('settings route', () => {
       expect(mockGetSettings().teamBrain).toEqual({ agentSlug: 'team-brain', volumeId: 'vol-1' })
       expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
       expect(addAgentUsers).toHaveBeenCalledTimes(2)
+    })
+
+    it('validates against the settings it replaces: a record another admin set up first wins the race', async () => {
+      interleavedWrites.push((s) => { s.teamBrain = { agentSlug: 'other-brain', volumeId: 'vol-2' } })
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(409)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+      expect(mockGetSettings().teamBrain).toEqual({ agentSlug: 'other-brain', volumeId: 'vol-2' })
+      expect(addAgentUsers).not.toHaveBeenCalled()
+    })
+
+    it('applies the patch to the settings it replaces, keeping what another writer changed', async () => {
+      interleavedWrites.push((s) => { s.shareErrorReports = false })
+      expect((await putSettings({ shareAnalytics: false })).status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+      expect(mockUpdateSettings.mock.calls[0][0]).toMatchObject({ shareAnalytics: false, shareErrorReports: false })
     })
 
     it('refuses a different record once one is set up, so a later set-up cannot replace the first', async () => {

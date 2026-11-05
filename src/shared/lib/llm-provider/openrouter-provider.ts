@@ -147,12 +147,12 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   // and searched `anthropic/*` slugs. A session that switches model mid-run
   // keeps its env; the CLI retries a refused request without deferred tools
   // (2.1.304+), so a wrong guess costs one request, not the turn.
-  override toolSearchEnv(model?: string): 'true' | 'false' {
+  override async toolSearchEnv(model?: string): Promise<'true' | 'false'> {
     return model && /^(anthropic\/|claude-)/.test(model) ? 'true' : 'false'
   }
 
-  createClient(): Anthropic {
-    const apiKey = this.getEffectiveApiKey()
+  async createClient(): Promise<Anthropic> {
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) throw new Error('OpenRouter API key not configured')
     // OpenRouter uses the Anthropic-compatible API with Bearer auth.
     return new Anthropic({
@@ -169,7 +169,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: OPENROUTER_BASE_URL,
-      ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
+      ANTHROPIC_AUTH_TOKEN: await this.getEffectiveApiKey(),
     }
   }
 
@@ -191,7 +191,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   }
 
   override async searchModels(query: string): Promise<ModelSearchResult[]> {
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) throw new Error('OpenRouter API key not configured')
 
     const params = new URLSearchParams()

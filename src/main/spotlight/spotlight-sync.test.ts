@@ -105,8 +105,8 @@ function setup(options: { cloud?: boolean; active?: ApiTarget } = {}) {
 
   const sync = new SpotlightSync({
     index,
-    baseUrl: (target) => bases[target],
-    activeTarget: () => state.active,
+    baseUrl: async (target) => bases[target],
+    activeTarget: async () => state.active,
     fetch: servers.fetch,
     now: () => now,
   })
@@ -142,6 +142,15 @@ describe('SpotlightSync', () => {
       { deleteDomains: ['cloud'], index: itemsForTarget('cloud', [research], new Map([['research', []]])) },
       { deleteDomains: ['workspace'], index: workspaceItems() },
     ])
+  })
+
+  it('changes nothing on a pass whose Superagents cannot be resolved', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { sync, applied, state } = setup()
+    Object.defineProperty(state, 'active', { get: () => { throw new Error('database is locked') } })
+    await sync.sync()
+
+    expect(applied).toEqual([])
   })
 
   it('sends nothing on a pass where nothing changed, and only the difference after a change', async () => {

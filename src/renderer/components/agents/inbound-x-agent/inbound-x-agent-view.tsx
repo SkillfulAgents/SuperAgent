@@ -250,7 +250,7 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
 
         <div className="order-1 lg:order-2">
           <div
-            className="overflow-hidden rounded-xl border bg-background"
+            className="overflow-hidden rounded-card border bg-background"
             data-testid="inbound-x-agent-callers-card"
           >
             <div className="px-4 py-4">

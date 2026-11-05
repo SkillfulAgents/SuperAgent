@@ -27,7 +27,7 @@ const CONTAINER_VALUE = '__container__'
 // Preset tiers for the max-tabs picker. No 1: popup/OAuth flows need a second tab.
 const MAX_TABS_OPTIONS = [5, 10, 20]
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 const HOST_DESCRIPTIONS: Record<string, ReactNode> = {
@@ -108,7 +108,7 @@ function HostCard({
 }: HostCardProps) {
   return (
     <div
-      className={`rounded-xl border bg-background transition-colors ${
+      className={`rounded-card border bg-background transition-colors ${
         selected ? 'border-primary' : disabled ? 'opacity-60' : 'hover:border-muted-foreground/40'
       }`}
       data-testid={`browser-host-card-${id === CONTAINER_VALUE ? 'container' : id}`}

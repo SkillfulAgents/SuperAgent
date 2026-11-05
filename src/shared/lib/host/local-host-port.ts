@@ -59,11 +59,6 @@ async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
     const { widgetRefreshService } = await import('@shared/lib/services/widget-refresh-service')
     widgetRefreshService.afterSessionSettled(event.agentSlug)
   }
-  // A review opened outside any session: a chat following the agent shows its card.
-  if (event.type === 'user_request_created') {
-    const { agentIntegrationManager } = await import('@shared/lib/agent-integrations/agent-integration-manager')
-    await agentIntegrationManager.handleRequestCreated(event)
-  }
 }
 
 export const localHostPort = createLocalHostPort({

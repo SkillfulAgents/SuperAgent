@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const h = vi.hoisted(() => ({ watch: vi.fn(), stop: vi.fn() }))
+const h = vi.hoisted(() => ({ watch: vi.fn(), stop: vi.fn(), credentials: { apiKey: 'test-key' as string | undefined, token: 'test-token' as string | null } }))
 vi.mock('./google-passkey-recovery', () => ({
   GooglePasskeyRecovery: class { watch = h.watch; stop = h.stop },
 }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ app: {} }),
-  getEffectiveBrowserbaseApiKey: () => 'test-key',
-  getEffectiveBrowserbaseProjectId: () => 'test-project',
+  getSettings: async () => ({ app: {} }),
+  getEffectiveBrowserbaseApiKey: async () => h.credentials.apiKey,
+  getEffectiveBrowserbaseProjectId: async () => 'test-project',
 }))
 vi.mock('@shared/lib/config/data-dir', () => ({ getDataDir: () => '/test-data' }))
-vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: () => 'test-token' }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: async () => h.credentials.token }))
 vi.mock('@shared/lib/platform-auth/config', () => ({ getPlatformProxyBaseUrl: () => 'https://platform.test' }))
 vi.mock('./context-map-store', () => ({ getOrCreateMapping: async () => 'test-context' }))
 
@@ -22,6 +22,7 @@ let sessionStatus = 'RUNNING'
 let created = 0
 beforeEach(() => {
   vi.clearAllMocks()
+  h.credentials = { apiKey: 'test-key', token: 'test-token' }
   available = true
   sessionStatus = 'RUNNING'
   created = 0
@@ -71,3 +72,20 @@ for (const Provider of [BrowserbaseProvider, PlatformBrowserProvider]) {
     })
   })
 }
+
+describe('detect', () => {
+  it('reports each provider available when its credential is configured', async () => {
+    expect(await new BrowserbaseProvider().detect()).toMatchObject({ available: true })
+    expect(await new PlatformBrowserProvider().detect()).toMatchObject({ available: true })
+  })
+
+  it('reports Browserbase unavailable without an API key', async () => {
+    h.credentials.apiKey = undefined
+    expect(await new BrowserbaseProvider().detect()).toMatchObject({ available: false, reason: 'API key not configured' })
+  })
+
+  it('reports Platform unavailable while signed out', async () => {
+    h.credentials.token = null
+    expect(await new PlatformBrowserProvider().detect()).toMatchObject({ available: false, reason: 'sign in required' })
+  })
+})
