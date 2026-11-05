@@ -1007,7 +1007,7 @@ describe('/invoke', () => {
       expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
-      { invokedByAgentSlug: CALLER_SLUG },
+      { invokedByAgentSlug: CALLER_SLUG, model: 'sonnet', effort: 'medium' },
     )
   })
 
