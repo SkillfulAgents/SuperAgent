@@ -38,12 +38,18 @@ export async function startVoiceTranscript(actor: Pick<AgentActor, 'files'>, ses
 }
 
 export interface NamedVoiceSpeech extends VoiceSpeechPiece { speaker: string }
+
+/** Every transcript has speakers; integrations can then enrich these account/role names. */
+export function nameVoiceSpeech(pieces: readonly VoiceSpeechPiece[], userName: string): NamedVoiceSpeech[] {
+  return pieces.map(piece => ({ ...piece, speaker: piece.role === 'assistant' ? 'Assistant' : userName }))
+}
+
 /** A batch is already in speech order. Fold whitespace so a speaker cannot manufacture transcript lines. */
 export function formatVoiceSpeech(pieces: readonly NamedVoiceSpeech[]): string {
-  const lines: Array<{ at: number; lastAt: number; speaker: string; text: string }> = []
+  const lines: Array<NamedVoiceSpeech & { lastAt: number }> = []
   for (const piece of pieces) {
     const line = lines.at(-1)
-    if (line && line.speaker === piece.speaker && piece.at - line.lastAt < 2000 && piece.at - line.at < 20_000) {
+    if (line && line.role === piece.role && line.speaker === piece.speaker && piece.at - line.lastAt < 2000 && piece.at - line.at < 20_000) {
       line.text += piece.text
       line.lastAt = piece.at
     } else lines.push({ ...piece, lastAt: piece.at })

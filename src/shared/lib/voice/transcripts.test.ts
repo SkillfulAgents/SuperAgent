@@ -51,4 +51,10 @@ describe('independent voice transcripts', () => {
       .toBe('[2026-11-05 10:00:00 UTC] User: Hello there\n[2026-11-05 10:00:00 UTC] Assistant: Hi [false line]\n')
     expect(formatVoiceSpeech([piece, { ...piece, at: piece.at + 3000 }]).split('\n').filter(Boolean)).toHaveLength(2)
   })
+  it('keeps user and assistant turns separate even when their speaker names match', () => {
+    expect(formatVoiceSpeech([
+      { ...piece, speaker: 'Assistant' },
+      { ...piece, role: 'assistant', speaker: 'Assistant', text: 'Hi', at: piece.at + 100 },
+    ])).toBe('[2026-11-05 10:00:00 UTC] Assistant: Hello\n[2026-11-05 10:00:00 UTC] Assistant: Hi\n')
+  })
 })
