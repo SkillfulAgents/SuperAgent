@@ -14,6 +14,7 @@ import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { MeetingAgentIntegration } from '@shared/lib/meeting-integrations/meeting-agent-integration'
+import { captureException } from '@shared/lib/error-reporting'
 import { isTerminalMeetingStatus } from '@shared/lib/meeting-integrations/schemas'
 import { verifyParticipantToken, type MeetingRecord } from '@shared/lib/meeting-integrations/store'
 
@@ -52,6 +53,17 @@ export function setupMeetingFramesSocket(server: ServerType): void {
 function receiveFrames(ws: WebSocket, meeting: MeetingRecord): void {
   const ping = setInterval(() => ws.ping(), PING_MS)
   ws.on('close', () => clearInterval(ping))
+  // Protocol errors (including maxPayload) are emitted on the WebSocket. With
+  // no listener they reach the process's fatal handler and stop the whole host.
+  ws.on('error', (error) => {
+    clearInterval(ping)
+    captureException(error, {
+      tags: { component: 'meeting-frames-socket', operation: 'receive' },
+      extra: { meetingId: meeting.id },
+      level: 'warning',
+    })
+    ws.terminate()
+  })
   ws.on('message', (data, isBinary) => {
     if (isBinary) return
     const connector = agentIntegrationManager.getConnector(meeting.integrationId)
