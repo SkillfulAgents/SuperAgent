@@ -115,3 +115,19 @@ Typed helpers over the strong operations, for limits that several consumers shar
 
 - **`defineFixedWindow({ name, limit, windowMs })`** (`fixed-window.ts`): at most `limit` hits per key in a window that opens at the key's first hit and closes `windowMs` later. `hit(key)` is one bounded `increment` on a `keep` namespace, so a refused hit is not counted, and no hit moves the window's end: a burst late in a window does not extend it. It resolves to `{ admitted, count, remaining, resetAt }`. The auth and LLM rate limits use it.
 - **`defineLockout({ name })`** (`lockout.ts`): failures per key, with no expiry, until a success clears them. `failed(key, policy)` counts one failure, and the failure that reaches `policy.threshold` locks the key for `policy.lockMs`, as does each one after it. `check(key, policy)` says whether the key is locked, and clears a lock that has run out. `succeeded(key, status)` clears the failures that the unlocked `check` saw, and keeps any failure counted since. Every write is conditional on the revision it was decided from, and a conflict is decided again from the current record. The account lockout uses it.
+
+## Helper: reducing one record
+
+- **`reduceRecord(key, reduce)`** (`reduce-record.ts`): the compare-and-set loop for a strong record that several writers change. `reduce` gets the stored value (null when absent) and returns `{ result }` to write nothing, `{ result, value, expiry? }` to write `value`, or `{ result, value: null }` to delete the record. The write is conditional on the revision the decision was made from. After a conflict, `reduce` decides again from the `current` the conflict returned, up to 64 times, then it throws. `reduce` can run more than once, so it must have no side effects: act on the result once `reduceRecord` resolves.
+
+## Voice session admission
+
+A user may hold four Live voice sessions at once, counting the ones a provider is still creating (`src/shared/lib/voice/live-session-admission.ts`). The ticket's `voice:owner:{userId}:sessions` is the strong namespace `voice:owner:sessions` with key part `userId`: one record per user, listing that user's sessions. Each transition goes through `reduceRecord`, so two processes cannot both admit a fifth session, and a late write cannot undo a newer one.
+
+- An entry has the reservation's id (the handle the client gets), a state, the creating provider's id, the provider's session id once it exists, and `expiresAt`. It holds no key: a hangup uses that provider's key as configured at the time.
+- `pending` counts until its two-minute lease runs out; the process creating the session renews it while the provider works. A start that fails, or whose request is cancelled, frees it at once.
+- `pending` becomes `active` only while that reservation is still pending and within its lease. Otherwise the session just created is hung up and nothing is recorded.
+- `active` counts until its deadline, an hour after creation. A release marks it `closing`, which stops counting, and the entry is removed once the hangup succeeds. Removal is conditional on the entry's id and state.
+- Entries are kept five minutes past `expiresAt`, then dropped by the next write; the record expires with its last entry. The deadline hangup checks the record first, and skips a session another process has already hung up and removed.
+
+Hangup retries (1 s, 5 s, 30 s) and the deadline hangup run on timers in the process that created the session, or that was asked to close it. If that process goes away, its sessions stop counting at their deadlines and nobody hangs them up. A durable owner that recovers provider cleanup is a follow-up.
