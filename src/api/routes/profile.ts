@@ -1,5 +1,3 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { Hono } from 'hono'
 import { eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
@@ -9,7 +7,7 @@ import { Authenticated } from '../middleware/auth'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { avatarFilenameSchema, MAX_AVATAR_BYTES } from '@shared/lib/user-profile-schema'
-import { avatarDirectory, InvalidAvatarError, setAvatar } from '@shared/lib/services/profile-avatar-service'
+import { InvalidAvatarError, readStoredAvatar, setAvatar } from '@shared/lib/services/profile-avatar-service'
 
 const profile = new Hono()
 profile.use('*', async (c, next) => isAuthMode() ? next() : c.notFound())
@@ -38,15 +36,11 @@ profile.get('/images/:filename', async (c) => {
   const activeAvatar = await db.select({ exists: sql`1` }).from(user)
     .where(eq(user.avatarOverride, `/api/profile/images/${filename.data}`)).limit(1).get()
   if (!activeAvatar) return c.notFound()
-  try {
-    const bytes = await fs.readFile(path.join(avatarDirectory(), filename.data))
-    c.header('Content-Type', 'image/png')
-    c.header('X-Content-Type-Options', 'nosniff')
-    c.header('Cache-Control', 'private, max-age=31536000, immutable')
-    return c.body(new Uint8Array(bytes))
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return c.notFound()
-    throw error
-  }
+  const bytes = await readStoredAvatar(filename.data)
+  if (!bytes) return c.notFound()
+  c.header('Content-Type', 'image/png')
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Cache-Control', 'private, max-age=31536000, immutable')
+  return c.body(new Uint8Array(bytes))
 })
 export default profile

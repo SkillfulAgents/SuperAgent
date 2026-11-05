@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import path from 'path'
 import { pipeline } from 'stream/promises'
 import { captureException } from '@shared/lib/error-reporting'
+import { blobStore, type BlobStore } from '@shared/lib/blob-store/blob-store'
 import { ensureDirectory, getTempUploadsDir, removeDirectory } from './file-storage'
 
 // Workspace chat/file uploads. Streaming assembly keeps RAM O(chunk); this caps disk.
@@ -27,6 +28,8 @@ export class UploadTooLargeError extends Error {
 export type StoreChunkResult =
   | { status: 'received' }
   | { status: 'assembled'; filePath: string }
+  /** Every chunk is in the deployment's blob store: `stream` reads them in order; `discard` deletes them. */
+  | { status: 'stored'; size: number; stream: ReadableStream<Uint8Array>; discard(): Promise<void> }
 
 function ignoreCleanupError(err: unknown, op: string, extra?: Record<string, unknown>): void {
   if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
@@ -65,6 +68,10 @@ export async function storeUploadChunk(
   chunk: Buffer,
   maxTotalBytes?: number,
 ): Promise<StoreChunkResult> {
+  // A deployment whose file system does not outlive the request keeps the chunks in its blob store.
+  const store = blobStore()
+  if (store) return storeChunkInBlobStore(store, uploadId, chunkIndex, totalChunks, chunk, maxTotalBytes)
+
   const uploadDir = path.join(getTempUploadsDir(), uploadId)
   await ensureDirectory(uploadDir)
 
@@ -119,6 +126,53 @@ export async function storeUploadChunk(
       ignoreCleanupError(err, 'remove-chunk-dir-after-assemble', { uploadId })
     }
   }
+}
+
+async function storeChunkInBlobStore(
+  store: BlobStore,
+  uploadId: string,
+  chunkIndex: number,
+  totalChunks: number,
+  chunk: Buffer,
+  maxTotalBytes: number | undefined,
+): Promise<StoreChunkResult> {
+  const prefix = `uploads/${uploadId}/`
+  const keys = Array.from({ length: totalChunks }, (_, i) => `${prefix}chunk-${i}`)
+  const discard = async () => {
+    await Promise.all((await store.list(prefix)).map(({ key }) => store.delete(key)))
+  }
+  const stored = (await store.list(prefix)).filter(({ key }) => key !== keys[chunkIndex])
+  const size = stored.reduce((total, { size }) => total + size, 0) + chunk.byteLength
+  if (maxTotalBytes !== undefined && size > maxTotalBytes) {
+    await discard()
+    throw new UploadTooLargeError(size, maxTotalBytes)
+  }
+  await store.put(keys[chunkIndex], chunk)
+  const present = new Set([...stored.map(({ key }) => key), keys[chunkIndex]])
+  if (!keys.every((key) => present.has(key))) return { status: 'received' }
+  return { status: 'stored', size, stream: concatenated(store, keys), discard }
+}
+
+/** The blobs under `keys`, one after another, read one at a time. */
+function concatenated(store: BlobStore, keys: string[]): ReadableStream<Uint8Array> {
+  let next = 0
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      for (;;) {
+        if (!reader) {
+          if (next === keys.length) return controller.close()
+          const stream = await store.stream(keys[next++])
+          if (!stream) throw new Error(`Upload chunk ${keys[next - 1]} is missing`)
+          reader = stream.getReader()
+        }
+        const { done, value } = await reader.read()
+        if (!done) return controller.enqueue(value)
+        reader = null
+      }
+    },
+    cancel: () => reader?.cancel(),
+  })
 }
 
 // Remove stale chunk dirs and orphaned `.assembled` files (crash between assemble and consume).

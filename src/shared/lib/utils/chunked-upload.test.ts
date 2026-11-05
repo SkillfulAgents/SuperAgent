@@ -9,6 +9,8 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from './chunked-upload'
+import { setBlobStore } from '@shared/lib/blob-store/blob-store'
+import { memoryBlobStore } from '@shared/lib/blob-store/testing/memory-blob-store'
 
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
@@ -84,6 +86,39 @@ describe('storeUploadChunk', () => {
       expect(await fs.promises.readFile(assembled.filePath, 'utf8')).toBe('bbbbcc')
       await fs.promises.unlink(assembled.filePath)
     }
+  })
+})
+
+describe('storeUploadChunk with a blob store', () => {
+  const uploadId = '6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b'
+
+  afterEach(() => setBlobStore(null))
+
+  it('keeps chunks in the store, then streams them in order once the last arrives', async () => {
+    const store = memoryBlobStore()
+    setBlobStore(store)
+
+    expect(await storeUploadChunk(uploadId, 1, 3, Buffer.from('second,'))).toEqual({ status: 'received' })
+    expect(await storeUploadChunk(uploadId, 0, 3, Buffer.from('first,'))).toEqual({ status: 'received' })
+    const result = await storeUploadChunk(uploadId, 2, 3, Buffer.from('third'))
+
+    if (result.status !== 'stored') throw new Error(`expected stored, got ${result.status}`)
+    expect(result.size).toBe(18)
+    expect(await new Response(result.stream).text()).toBe('first,second,third')
+    expect(fs.existsSync(path.join(tempUploadsDir, uploadId))).toBe(false)
+    await result.discard()
+    expect(store.keys()).toEqual([])
+  })
+
+  it('counts a re-sent chunk once, and drops every chunk when the upload grows past the limit', async () => {
+    const store = memoryBlobStore()
+    setBlobStore(store)
+
+    await storeUploadChunk(uploadId, 0, 3, Buffer.alloc(40), 100)
+    await storeUploadChunk(uploadId, 0, 3, Buffer.alloc(40), 100)
+    await storeUploadChunk(uploadId, 1, 3, Buffer.alloc(40), 100)
+    await expect(storeUploadChunk(uploadId, 2, 3, Buffer.alloc(40), 100)).rejects.toThrow(UploadTooLargeError)
+    expect(store.keys()).toEqual([])
   })
 })
 
