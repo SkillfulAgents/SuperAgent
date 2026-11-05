@@ -472,6 +472,15 @@ export interface SessionOps {
   attach(sessionId: string, options?: { metadata?: SessionMetadata | null; replayTerminal?: boolean }): Promise<void>
 
   /**
+   * Rebuild what this actor held in memory from its running container, after
+   * the actor itself restarted: sessions with a turn in flight or a parked ask
+   * are attached, the asks registered again (recovered), and user messages
+   * held for an interrupted recovery are sent. Nothing when the container is
+   * not running.
+   */
+  recover(): Promise<{ attached: string[]; requests: string[]; resent: string[] }>
+
+  /**
    * The session was opened by a notice, not by a person (voice mode started
    * from the agent home): it is named from the first message a person sends.
    * In memory: a restart leaves such a session with its placeholder name.

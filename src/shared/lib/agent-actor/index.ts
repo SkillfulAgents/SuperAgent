@@ -7,7 +7,7 @@ export {
   type StartErrorCode,
   type StartFailure,
 } from './delivery-errors'
-export { agentRegistry } from './registry'
+export { agentRegistry, configureAgentRegistry, type AgentRegistryDeployment } from './registry'
 export { containerHost, type ContainerHost } from './host'
 export { agentCatalog } from './agent-catalog'
 export { identityFromInstructions } from './agent-directories'

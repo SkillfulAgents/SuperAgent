@@ -273,10 +273,7 @@ describe('provide-connected-account handler', () => {
   })
 
   it('decline flow → calls container /inputs/{toolUseId}/reject with reason', async () => {
-    mockContainerFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
+    mockContainerFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true })))
 
     const res = await postJson({
       toolUseId: 'tu-decline-1',
@@ -297,10 +294,7 @@ describe('provide-connected-account handler', () => {
   })
 
   it('decline with custom declineReason', async () => {
-    mockContainerFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
+    mockContainerFetch.mockImplementation(async () => new Response(JSON.stringify({ success: true })))
 
     const res = await postJson({
       toolUseId: 'tu-decline-2',
@@ -376,16 +370,10 @@ describe('provide-connected-account handler', () => {
     ])
 
     // Container: env update
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
 
     // Container: resolve input
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
 
     const res = await postJson({
       toolUseId: 'tu-happy',
@@ -429,8 +417,8 @@ describe('provide-connected-account handler', () => {
     mockInnerJoinWhere.mockResolvedValue([
       { account: { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active' } },
     ])
-    mockContainerFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) })
-    mockContainerFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
 
     const res = await postJson({ toolUseId: 'tu-happy', toolkit: 'gmail', accountIds: ['acc-1'] })
 
@@ -453,14 +441,8 @@ describe('provide-connected-account handler', () => {
       { account: { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active' } },
     ])
 
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
 
     const res = await postJson({
       toolUseId: 'tu-dup',
@@ -489,10 +471,7 @@ describe('provide-connected-account handler', () => {
     ])
 
     // Container env update fails
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: 'container error' }),
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'container error' }), { status: 500 }))
 
     const res = await postJson({
       toolUseId: 'tu-env-fail',
@@ -520,16 +499,10 @@ describe('provide-connected-account handler', () => {
     ])
 
     // Env update succeeds
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
 
     // Resolve fails
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: 'resolve failed' }),
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'resolve failed' }), { status: 500 }))
 
     const res = await postJson({
       toolUseId: 'tu-resolve-fail',
@@ -557,14 +530,8 @@ describe('provide-connected-account handler', () => {
       { account: { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'expired@gmail.com', status: 'expired' } },
     ])
 
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ success: true }),
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
 
     const res = await postJson({
       toolUseId: 'tu-active-only',
