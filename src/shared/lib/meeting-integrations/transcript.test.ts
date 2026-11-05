@@ -33,10 +33,10 @@ describe('formatTranscriptLine', () => {
 
 describe('MeetingTranscriptStore', () => {
   it('names speech after whoever last started talking and writes each line once it is finished', async () => {
-    store.speakerStarted(meeting, 'Anna', at(0))
+    await store.speakerStarted(meeting, 'Anna', at(0))
     store.append(meeting, { text: 'We ship', at: at(400) })
     store.append(meeting, { text: ' on Friday.', at: at(800) })
-    store.speakerStarted(meeting, 'Bob', at(1500))
+    await store.speakerStarted(meeting, 'Bob', at(1500))
     store.append(meeting, { text: 'Great', at: at(1900) })
     store.append(meeting, { text: ', thanks.', at: at(2100) })
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS - 1)
@@ -50,16 +50,16 @@ describe('MeetingTranscriptStore', () => {
   })
 
   it('places speech by when it was heard, even when the change of speaker reaches the host after the words', async () => {
-    store.speakerStarted(meeting, 'Anna', at(0))
+    await store.speakerStarted(meeting, 'Anna', at(0))
     store.append(meeting, { text: 'Can you see my screen?', at: at(1000) })
     store.append(meeting, { text: 'Yes, I can.', at: at(2600) })
-    store.speakerStarted(meeting, 'Bob', at(2400))
+    await store.speakerStarted(meeting, 'Bob', at(2400))
     await store.close(meeting.id)
     expect(await lines()).toEqual(['[10:05:11] Anna: Can you see my screen?', '[10:05:12] Bob: Yes, I can.'])
   })
 
   it("puts the bot's own lines under its name, between the room's", async () => {
-    store.speakerStarted(meeting, 'Anna', at(0))
+    await store.speakerStarted(meeting, 'Anna', at(0))
     store.append(meeting, { text: "What's wrong in this chart?", at: at(500) })
     store.append(meeting, { text: 'The Q3 bar', at: at(2000), speaker: 'Ada (Gamut)' })
     store.append(meeting, { text: ' is missing.', at: at(2300), speaker: 'Ada (Gamut)' })
@@ -74,7 +74,7 @@ describe('MeetingTranscriptStore', () => {
 
   it('starts a new line after a pause, cuts a long talk into pieces, and leaves speech nobody was reported saying unnamed', async () => {
     store.append(meeting, { text: 'Hello?', at: at(0) })
-    store.speakerStarted(meeting, 'Mike', at(500))
+    await store.speakerStarted(meeting, 'Mike', at(500))
     store.append(meeting, { text: 'First point.', at: at(1000) })
     store.append(meeting, { text: 'Second point.', at: at(3500) })
     // Twelve words 1.9 s apart: no pause, but the line is cut once it is 20 s long.
@@ -89,17 +89,34 @@ describe('MeetingTranscriptStore', () => {
     ])
   })
 
+  it('keeps every line when two host processes write the same meeting, and names speech the same in both', async () => {
+    const other = new MeetingTranscriptStore(() => files)
+    // The host's callback reached this process; the page's speech reached both.
+    await store.speakerStarted(meeting, 'Anna', at(0))
+    store.append(meeting, { text: 'From the first process.', at: at(500) })
+    other.append(meeting, { text: 'From the second process.', at: at(5000) })
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const append = files.append.bind(files)
+    vi.spyOn(files, 'append').mockImplementation(async (...args) => { await held; return append(...args) })
+    const closing = Promise.all([store.close(meeting.id), other.close(meeting.id)])
+    await vi.advanceTimersByTimeAsync(0)
+    release()
+    await closing
+    expect((await lines()).sort()).toEqual(['[10:05:10] Anna: From the first process.', '[10:05:15] Anna: From the second process.'])
+  })
+
   it('keeps what an earlier host process wrote and appends after it', async () => {
     await files.putDoc(path, '[10:00:01] Mike: Before the restart.\n')
     const restarted = new MeetingTranscriptStore(() => files)
-    restarted.speakerStarted(meeting, 'Anna', at(0))
+    await restarted.speakerStarted(meeting, 'Anna', at(0))
     restarted.append(meeting, { text: 'After the restart.', at: at(500) })
     await restarted.close(meeting.id)
     expect(await read()).toBe('[10:00:01] Mike: Before the restart.\n[10:05:10] Anna: After the restart.\n')
   })
 
   it('writes everything heard at once when the meeting closes, then forgets the meeting', async () => {
-    store.speakerStarted(meeting, 'Mike', at(0))
+    await store.speakerStarted(meeting, 'Mike', at(0))
     store.append(meeting, { text: 'Thanks, everyone.', at: at(500) })
     await store.close(meeting.id)
     expect(await read()).toBe('[10:05:10] Mike: Thanks, everyone.\n')
@@ -110,14 +127,14 @@ describe('MeetingTranscriptStore', () => {
   })
 
   it('reports a failed write and keeps taking speech', async () => {
-    const putDoc = vi.spyOn(files, 'putDoc').mockRejectedValueOnce(new Error('disk full'))
-    store.speakerStarted(meeting, 'Mike', at(0))
+    const append = vi.spyOn(files, 'append').mockRejectedValueOnce(new Error('disk full'))
+    await store.speakerStarted(meeting, 'Mike', at(0))
     store.append(meeting, { text: 'Lost line.', at: at(0) })
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
     expect(captureException).toHaveBeenCalledTimes(1)
     store.append(meeting, { text: 'Kept line.', at: at(5000) })
     await store.close(meeting.id)
-    expect(putDoc).toHaveBeenCalledTimes(2)
+    expect(append).toHaveBeenCalledTimes(2)
     expect(await read()).toBe('[10:05:15] Mike: Kept line.\n')
   })
 })

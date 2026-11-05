@@ -63,4 +63,29 @@ describe('useMeetingSpeechRelay', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(sent()).toEqual([expect.objectContaining({ pieces: [{ at: T0, role: 'user', text: 'Bye.' }], keepalive: true })])
   })
+
+  it('sends what is left when the page is closed, which does not unmount it', async () => {
+    const { result } = renderHook(() => useMeetingSpeechRelay('m1', 't'))
+    result.current(heard('Bye.'))
+    window.dispatchEvent(new Event('pagehide'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent()).toEqual([expect.objectContaining({ pieces: [{ at: T0, role: 'user', text: 'Bye.' }], keepalive: true })])
+    // The last request carried it, so nothing is sent twice.
+    await vi.advanceTimersByTimeAsync(SPEECH_RELAY_INTERVAL_MS)
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends the words heard during a slow request when the page goes away before it answers', async () => {
+    let answer!: (response: Response) => void
+    mocks.apiFetch.mockImplementationOnce(() => new Promise<Response>(resolve => { answer = resolve }))
+    const { result, unmount } = renderHook(() => useMeetingSpeechRelay('m1', 't'))
+    result.current(heard('We ship'))
+    await vi.advanceTimersByTimeAsync(SPEECH_RELAY_INTERVAL_MS)
+    result.current(heard(' on Friday.'))
+    unmount()
+    await vi.advanceTimersByTimeAsync(0)
+    answer(new Response('{"accepted":true}'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent().map(request => [request.pieces.map(piece => piece.text), request.keepalive])).toEqual([[['We ship'], false], [[' on Friday.'], true]])
+  })
 })

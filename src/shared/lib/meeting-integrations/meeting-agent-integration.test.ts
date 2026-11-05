@@ -29,7 +29,7 @@ const { meetingEventPayloadSchema } = await import('./schemas')
 const { meetingRoster } = await import('./roster')
 const { MEETING_TRANSCRIPT_FLUSH_MS, meetingTranscriptPath } = await import('./transcript')
 const { backgroundSettled } = await import('../background')
-const { receiveMeetingBotEvent } = await import('./bot-events')
+const { receiveMeetingBotEvent, receiveMeetingSpeech } = await import('./bot-events')
 
 const record: AgentIntegrationRecord = {
   id: 'integration', agentSlug: 'agent', provider: 'recall', name: null, config: '{}', status: 'active', errorMessage: null,
@@ -326,11 +326,12 @@ describe('MeetingAgentIntegration', () => {
 
     host.status = { status: 'in_call' }
     await vi.advanceTimersByTimeAsync(0)
+    const speak = async (pieces: Parameters<typeof receiveMeetingSpeech>[1]) => receiveMeetingSpeech((await getMeeting(meeting.id))!, pieces)
     const speechOn = async (id: number, name: string) => receiveMeetingBotEvent((await getMeeting(meeting.id))!, { event: 'participant_events.speech_on', data: { data: { participant: { id, name } } } })
     expect(await speechOn(1, 'Mike')).toBe(true)
     // The bot (named after the agent) starting to talk does not take over what the room says.
     expect(await speechOn(9, 'Ada')).toBe(true)
-    await integration.receiveSpeech(meeting.id, [
+    await speak([
       { role: 'user', text: 'Our price is', at: Date.now() }, { role: 'user', text: ' $30 per seat.', at: Date.now() + 500 },
       // What the bot said aloud goes under its own meeting name.
       { role: 'assistant', text: 'Noted, $30 per seat.', at: Date.now() + 1000 },
@@ -343,13 +344,13 @@ describe('MeetingAgentIntegration', () => {
     integration.onEvent(event => { if (event.type === 'input' && meetingEventPayloadSchema.parse(event.payload).kind === 'ended') atEnd.push(workspace.getDoc(path)) })
     await vi.advanceTimersByTimeAsync(5000 - MEETING_TRANSCRIPT_FLUSH_MS - 100)
     await speechOn(2, 'Anna')
-    await integration.receiveSpeech(meeting.id, [{ role: 'user', text: 'Thanks, bye.', at: Date.now() }])
+    await speak([{ role: 'user', text: 'Thanks, bye.', at: Date.now() }])
     host.status = { status: 'ended', detail: 'call_ended_by_host' }
     await vi.advanceTimersByTimeAsync(100)
     expect(atEnd).toHaveLength(1)
     expect(new TextDecoder().decode((await atEnd[0])!)).toContain('Anna: Thanks, bye.')
     // Speech that arrives after the end is not written.
-    await integration.receiveSpeech(meeting.id, [{ role: 'user', text: 'Late.', at: Date.now() }])
+    await speak([{ role: 'user', text: 'Late.', at: Date.now() }])
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
     expect(await read()).not.toContain('Late.')
   })
