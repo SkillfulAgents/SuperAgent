@@ -188,7 +188,9 @@ webhook endpoints are), so provider setup can hand out its URL; a relay-only
 provider always gets one. If the installation is then not created, the endpoint
 is disabled. Deleting the installation disables it too, unless another
 installation stores the same endpoint (Email's mailboxes share one per relay
-scope).
+scope). An installation deleted while Email's endpoint was still being minted
+has its intent released the same way, best effort: anything minted under that
+intent's name is disabled, unless an installation uses it.
 
 `host.relay.attach()` goes through `integrationRelays`, which keeps one relay
 registration per integration across reconnects: nothing is claimed while no

@@ -122,6 +122,11 @@ export interface WebhookRelaySnapshot {
   lastError: string | null
 }
 
+/** A deadline for one endpoint request. Past it the request is cancelled, and may still have taken effect. */
+export interface RelayRequestOptions {
+  timeoutMs: number
+}
+
 export interface WebhookRelayService {
   readonly kind: 'platform' | 'unavailable'
   snapshot(): WebhookRelaySnapshot
@@ -133,10 +138,15 @@ export interface WebhookRelayService {
   // Endpoint provisioning. Each endpoint belongs to the scope that minted it,
   // and every call about it must use that scope. These reject with
   // WebhookRelayUnavailableError while the relay is unavailable.
-  createEndpoint(scope: RelayScope, spec: RelayEndpointSpec): Promise<RelayEndpoint>
+  createEndpoint(scope: RelayScope, spec: RelayEndpointSpec, request?: RelayRequestOptions): Promise<RelayEndpoint>
+  /**
+   * Every endpoint the scope can see, newest first, disabled ones included. The
+   * platform lists the whole org's, so match on something the caller minted.
+   */
+  listEndpoints(scope: RelayScope, request?: RelayRequestOptions): Promise<RelayEndpoint[]>
   updateEndpoint(scope: RelayScope, endpointId: string, changes: RelayEndpointChanges): Promise<RelayEndpoint>
   /** The URL stops accepting deliveries. */
-  disableEndpoint(scope: RelayScope, endpointId: string): Promise<void>
+  disableEndpoint(scope: RelayScope, endpointId: string, request?: RelayRequestOptions): Promise<void>
   listEndpointEvents(scope: RelayScope, endpointId: string, limit?: number): Promise<RelayEndpointEvents>
   /** Dry-runs a filter against recent deliveries without changing the endpoint. */
   testEndpointFilter(

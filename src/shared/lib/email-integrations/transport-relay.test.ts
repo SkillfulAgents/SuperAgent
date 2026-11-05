@@ -25,6 +25,7 @@ vi.mock('../webhook-relay', async (importOriginal) => ({
   getWebhookRelay: () => ({ createEndpoint: relayEndpoints.create, disableEndpoint: relayEndpoints.disable }),
 }))
 
+import { defineLease, digestKeyPart } from '../app-state'
 import { createAgentIntegration, getAgentIntegration } from '../services/agent-integration-service'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import type { IntegrationRelayHost } from '../agent-integrations/transport'
@@ -157,6 +158,25 @@ it('uses the stream when the relay cannot mint an endpoint', async () => {
   expect(relay.consumers.size).toBe(0)
   expect(connector.activeTransport()).toBe('direct')
   expect(reported).not.toHaveBeenCalled()
+})
+
+it('uses the stream, and mints nothing, when another process keeps the mint lease past the wait', async () => {
+  const leases = defineLease({ name: 'lease:email:webhook-mint', ttlMs: 30_000 })
+  const held = await leases.acquire(leases.key(digestKeyPart('sub_owner')))
+  let finish!: () => void
+  const holder = leases.hold(held!, () => new Promise<void>(resolve => { finish = resolve }))
+  connector = await connectorWith(offeredRelay)
+
+  const connecting = connector.connect()
+  await vi.advanceTimersByTimeAsync(61_000)
+  await connecting
+
+  expect(transport.watch).toHaveBeenCalledOnce()
+  expect(relayEndpoints.create).not.toHaveBeenCalled()
+  expect(connector.activeTransport()).toBe('direct')
+  expect(reported).not.toHaveBeenCalled()
+  finish()
+  await holder
 })
 
 it('uses the stream when the gateway refuses the webhook, and reports it', async () => {

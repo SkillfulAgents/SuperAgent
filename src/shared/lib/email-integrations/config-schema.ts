@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { integrationRelayConfigShape } from '../agent-integrations/transport'
+import { integrationRelayConfigShape, integrationRelayIntentSchema } from '../agent-integrations/transport'
 
 export const EMAIL_PROVIDER = 'platform-email' as const
 export const EMAIL_GATEWAY_URL = 'https://email-gateway.datawizz.workers.dev'
@@ -23,6 +23,13 @@ export const emailIntegrationConfigSchema = emailSetupSchema.safeExtend({
 })
 /** A Standard Webhooks secret the gateway accepts: `whsec_` and 24–64 base64-encoded bytes. */
 export const emailWebhookSecretSchema = z.string().regex(/^whsec_[A-Za-z0-9+/]{32,88}={0,2}$/)
+/**
+ * The endpoint being provisioned for a scope: its name, and the secret it is
+ * minted with, which the platform never gives back. Stored before the mint and
+ * cleared when the endpoint is attached (see webhooks.ts).
+ */
+export const emailRelayIntentSchema = integrationRelayIntentSchema.extend({ secret: emailWebhookSecretSchema })
+export type EmailRelayIntent = z.infer<typeof emailRelayIntentSchema>
 export const emailConfigSchema = emailIntegrationConfigSchema.safeExtend({
   eventCursor: z.number().int().nonnegative().default(0),
   platformOrgId: z.string().min(1),
@@ -31,6 +38,8 @@ export const emailConfigSchema = emailIntegrationConfigSchema.safeExtend({
   ...integrationRelayConfigShape,
   /** Signs those posts. Generated with the endpoint, shared with it, and never shown. */
   webhookSecret: emailWebhookSecretSchema.optional(),
+  /** Never shown, like the secret it carries. */
+  relayProvisioning: emailRelayIntentSchema.optional(),
 })
 export type EmailIntegrationConfig = z.infer<typeof emailIntegrationConfigSchema>
 export type EmailConfig = z.infer<typeof emailConfigSchema>

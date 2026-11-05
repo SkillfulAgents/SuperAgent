@@ -224,3 +224,31 @@ Around the token exchange:
 - A lost answer to the claim or the finish is settled by reading the record back. The claim's owner id is random per callback, so the holder can tell its own write from anyone else's.
 
 An authorization error response (`?error=…`) with a valid issuer ends a `pending` flow. It leaves a claimed or finished one alone. Nothing is published: the callback page carries the result to the client, and the route does its own follow-up after the database write. Logs name the step that failed, never the state, the code, the verifier, the client secret or a token. A failed write is logged by its driver cause, because drizzle's own message quotes the statement's parameters.
+
+## Email relay endpoint provisioning
+
+Mailboxes claimed under one relay scope share one endpoint, and any process may be the one to mint it (`src/shared/lib/email-integrations/webhooks.ts`). The ticket's `lease:email:webhook-mint:{scopeHash}` is the lease `lease:email:webhook-mint` with the key part `digestKeyPart(scope)`. The record holds the owner and nothing else. The endpoint and its secret stay in the integration's database row.
+
+**The lease only makes contenders wait.** The database decides, because the platform's `POST /v1/webhook-endpoints` has no idempotency key, and a lease cannot undo an external side effect once a holder has lapsed or died.
+
+- A connect takes the lease with `acquireWhenFree`, and re-reads the installation and the scope's shared endpoint once it holds it. While it waits, each poll re-reads the same two, so it can finish without the lease as soon as the holder attaches.
+- A connect whose wait runs out (60 s: one TTL for a dead holder to lapse, and time for a live one's list and mint) fails, and never mints without the lease. Its connection uses the stream, as it does whenever webhooks can't be set up, and its next connect tries again.
+- No event wakes waiters. The poll is at most a second apart, and waking sooner would not be worth a topic.
+
+**Timing.** The relay requests here have a 20 s deadline, passed per call (`RelayRequestOptions`). This is new: the platform's endpoint routes had none, and the Promise map this replaced had no TTL. The lease lasts 30 s, the deadline plus 10 s for its renewal's round trip. The holder calls `confirm({ minRemainingMs: 20_000 })` right before the mint, and judges that by its own clock, as every lease does. No time is stored in the database or compared between processes. A request past its deadline fails with `WebhookEndpointRequestTimeoutError`, which says the request may still have taken effect.
+
+**The intent.** `relayProvisioning` in the row's config holds `{ attemptId, scope, endpointName, secret }`. The attempt id is random and goes into the endpoint's name, `Email inboxes (<attemptId>)`, so a mint can be found again. The secret is the one the endpoint is minted with; the platform never gives it back. It stays in that column, like `webhookSecret`: never in a name, a lease, an event, a log or an error (a failed write is reported by its driver cause, since drizzle's own message quotes the parameters).
+
+- Writing the intent is one conditional statement, refused if the row has an endpoint or an intent by now, or the scope has an endpoint or another row's intent. So one attempt runs per scope, even when a lease lapses. A row with an endpoint and a leftover intent doesn't count.
+- A retry that finds an intent, on its own row or another mailbox's, lists the scope's endpoints and looks for that name among the active ones. If it finds one, it adopts it. If it finds none, it mints again with the same name and secret. If it can't list, it fails and mints nothing.
+- Attaching is one conditional statement on the intent's row: it sets `relay` and `webhookSecret` and clears the intent, only if `relay` is still null and the intent is still this attempt. The contender then re-reads, and a mailbox that recovered another's intent shares the endpoint from there.
+- A failed mint or attach, a lost answer or a dead process leaves the intent in place, and the next connect recovers. Nothing is disabled on those paths, since the endpoint may be the one to adopt, or the write may have landed.
+
+**What isn't used.** A refused attach disables its endpoint unless a row stores it. So do spares, when a lost mint landed beside a retry; they are disabled after the attach, once no one can adopt them. If a disable fails, the intent stays, or is put back if the winning attach cleared it. A row with an endpoint and an intent has its intent settled on its next connect: whatever is listed under that name and unused is disabled, then the intent is cleared. If the row holds another attempt's intent, or is gone, only the report remains.
+
+**Two cases clear the intent first,** because an attempt must not be able to attach what is being taken down. Both are best effort, and a failure is only reported.
+
+- Deleting an installation (`releaseIntegrationTransport`, which never blocks deletion). An attempt still running disables what it minted when its attach is refused.
+- An intent from a scope the installation has left, when its platform identity changed. The old scope may never answer again, so keeping the intent would stop the mailbox from getting an endpoint.
+
+**What remains.** A mint can land after a retry looked for it, once the retry has attached and cleared the intent. Nothing then leads to that endpoint except its name: it stays live and counts against the org's quota of 100. So does an endpoint left by a mint that was in flight when its installation was deleted, if its process died. Recovery runs only when a mailbox in the scope next connects, so an intent stays in place until one does. A periodic sweep of intents and of unattached `Email inboxes (<attemptId>)` endpoints belongs with the background job manager.

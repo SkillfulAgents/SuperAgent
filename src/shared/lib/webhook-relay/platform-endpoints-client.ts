@@ -19,6 +19,8 @@ import {
   type WebhookEndpointEvent,
   type WebhookFilterTestResult,
 } from '@shared/lib/services/webhook-endpoint-schema'
+import { WebhookEndpointRequestTimeoutError } from './errors'
+import type { RelayRequestOptions } from './types'
 
 export class WebhookEndpointsApiError extends Error {
   constructor(
@@ -43,47 +45,57 @@ async function endpointsFetch(
   endpoint: string,
   memberId: string,
   options: RequestInit = {},
+  request?: RelayRequestOptions,
 ): Promise<unknown> {
+  // No deadline unless the caller sets one. It covers reading the answer too.
+  const signal = request ? AbortSignal.timeout(request.timeoutMs) : undefined
   const baseUrl = getPlatformProxyBaseUrl()
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
   headers.set('Authorization', `Bearer ${await buildBearer(memberId)}`)
 
-  const response = await fetch(`${baseUrl}/v1/webhook-endpoints${endpoint}`, {
-    ...options,
-    headers,
-  })
+  try {
+    const response = await fetch(`${baseUrl}/v1/webhook-endpoints${endpoint}`, {
+      ...options,
+      headers,
+      ...(signal ? { signal } : {}),
+    })
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    // The proxy's error body could echo the submitted request (including the
-    // HMAC secret) and this message flows into logs, Sentry, and the agent
-    // transcript. Mask any `"secret":"…"` value, then cap the length so a
-    // full-body echo can't leak wholesale.
-    const masked = text.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
-    throw new WebhookEndpointsApiError(
-      `Webhook endpoints API error ${response.status}: ${masked.slice(0, 500)}`,
-      response.status,
-    )
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      // The proxy's error body could echo the submitted request (including the
+      // HMAC secret) and this message flows into logs, Sentry, and the agent
+      // transcript. Mask any `"secret":"…"` value, then cap the length so a
+      // full-body echo can't leak wholesale.
+      const masked = text.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
+      throw new WebhookEndpointsApiError(
+        `Webhook endpoints API error ${response.status}: ${masked.slice(0, 500)}`,
+        response.status,
+      )
+    }
+
+    // Disable responds with the updated row today, but a bodyless 204 must not
+    // read as failure — callers treat a throw here as "the endpoint is still
+    // live" and emit rollback/cleanup alarms.
+    if (response.status === 204) return null
+
+    return await response.json()
+  } catch (error) {
+    if (request && signal?.aborted) throw new WebhookEndpointRequestTimeoutError(request.timeoutMs)
+    throw error
   }
-
-  // Disable responds with the updated row today, but a bodyless 204 must not
-  // read as failure — callers treat a throw here as "the endpoint is still
-  // live" and emit rollback/cleanup alarms.
-  if (response.status === 204) return null
-
-  return response.json()
 }
 
 /** Mint a new public webhook endpoint; returns it including the public URL. */
 export async function createPlatformWebhookEndpoint(
   memberId: string,
   params: { name: string; verification?: VerificationProfile; filter_exp?: string },
+  request?: RelayRequestOptions,
 ): Promise<WebhookEndpoint> {
   const data = await endpointsFetch('', memberId, {
     method: 'POST',
     body: JSON.stringify(params),
-  })
+  }, request)
   const parsed = webhookEndpointSchema.safeParse(data)
   if (!parsed.success) {
     // The mint succeeded server-side (a public URL is now live) but the
@@ -93,7 +105,7 @@ export async function createPlatformWebhookEndpoint(
     // orphaned live with no local trigger row.
     const rawId = (data as { id?: unknown })?.id
     if (typeof rawId === 'string' && rawId) {
-      await disablePlatformWebhookEndpoint(memberId, rawId).catch((rollbackError) => {
+      await disablePlatformWebhookEndpoint(memberId, rawId, request).catch((rollbackError) => {
         captureException(rollbackError, {
           tags: { area: 'webhook-endpoints', op: 'create-parse-rollback' },
           extra: { memberId, rawEndpointId: rawId },
@@ -109,8 +121,8 @@ export async function createPlatformWebhookEndpoint(
   return parsed.data
 }
 
-export async function listPlatformWebhookEndpoints(memberId: string): Promise<WebhookEndpoint[]> {
-  const data = await endpointsFetch('', memberId, { method: 'GET' })
+export async function listPlatformWebhookEndpoints(memberId: string, request?: RelayRequestOptions): Promise<WebhookEndpoint[]> {
+  const data = await endpointsFetch('', memberId, { method: 'GET' }, request)
   return webhookEndpointListSchema.parse(data).endpoints
 }
 
@@ -187,6 +199,7 @@ export async function testPlatformWebhookFilter(
 export async function disablePlatformWebhookEndpoint(
   memberId: string,
   endpointId: string,
+  request?: RelayRequestOptions,
 ): Promise<void> {
-  await endpointsFetch(`/${encodeURIComponent(endpointId)}`, memberId, { method: 'DELETE' })
+  await endpointsFetch(`/${encodeURIComponent(endpointId)}`, memberId, { method: 'DELETE' }, request)
 }

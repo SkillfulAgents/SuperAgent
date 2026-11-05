@@ -39,6 +39,7 @@ import {
   type RelayEndpointEvents,
   type RelayEndpointSpec,
   type RelayEvent,
+  type RelayRequestOptions,
   type RelayScope,
   type WebhookRelayService,
   type WebhookRelaySnapshot,
@@ -72,13 +73,15 @@ export interface PlatformEndpointsApi {
   create(
     memberId: string,
     params: { name: string; verification?: VerificationProfile; filter_exp?: string },
+    request?: RelayRequestOptions,
   ): Promise<WebhookEndpoint>
+  list(memberId: string, request?: RelayRequestOptions): Promise<WebhookEndpoint[]>
   update(
     memberId: string,
     endpointId: string,
     params: { name?: string; verification?: VerificationProfile | null; filter_exp?: string | null },
   ): Promise<WebhookEndpoint>
-  disable(memberId: string, endpointId: string): Promise<void>
+  disable(memberId: string, endpointId: string, request?: RelayRequestOptions): Promise<void>
   listEvents(
     memberId: string,
     endpointId: string,
@@ -296,13 +299,19 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (unavailableReason) throw new WebhookRelayUnavailableError(unavailableReason)
   }
 
-  async createEndpoint(scope: RelayScope, spec: RelayEndpointSpec): Promise<RelayEndpoint> {
+  async createEndpoint(scope: RelayScope, spec: RelayEndpointSpec, request?: RelayRequestOptions): Promise<RelayEndpoint> {
     this.requireAvailable()
     return this.deps.endpoints.create(scope, {
       name: spec.name,
       ...(spec.verification ? { verification: spec.verification } : {}),
       ...(spec.filterExp ? { filter_exp: spec.filterExp } : {}),
-    })
+    }, request)
+  }
+
+  // Like disabling: finding out what is there just needs the platform.
+  async listEndpoints(scope: RelayScope, request?: RelayRequestOptions): Promise<RelayEndpoint[]> {
+    if (!(await this.deps.getToken())) throw new WebhookRelayUnavailableError('platform_disconnected')
+    return this.deps.endpoints.list(scope, request)
   }
 
   async updateEndpoint(scope: RelayScope, endpointId: string, changes: RelayEndpointChanges): Promise<RelayEndpoint> {
@@ -316,9 +325,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
 
   // Only minting needs a running relay (a URL nobody claims from is the
   // problem); taking one down just needs the platform.
-  async disableEndpoint(scope: RelayScope, endpointId: string): Promise<void> {
+  async disableEndpoint(scope: RelayScope, endpointId: string, request?: RelayRequestOptions): Promise<void> {
     if (!(await this.deps.getToken())) throw new WebhookRelayUnavailableError('platform_disconnected')
-    await this.deps.endpoints.disable(scope, endpointId)
+    await this.deps.endpoints.disable(scope, endpointId, request)
   }
 
   async listEndpointEvents(scope: RelayScope, endpointId: string, limit?: number): Promise<RelayEndpointEvents> {

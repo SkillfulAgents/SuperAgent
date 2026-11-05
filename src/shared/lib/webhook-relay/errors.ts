@@ -17,3 +17,15 @@ export class WebhookRelayUnavailableError extends Error {
     this.name = 'WebhookRelayUnavailableError'
   }
 }
+
+/**
+ * An endpoint request got no answer in time and was cancelled. That says nothing
+ * about whether it took effect: a mint may have created a live URL, so read the
+ * endpoints back before treating it as not there.
+ */
+export class WebhookEndpointRequestTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`The webhook endpoint request got no answer within ${timeoutMs} ms and may still have taken effect`)
+    this.name = 'WebhookEndpointRequestTimeoutError'
+  }
+}

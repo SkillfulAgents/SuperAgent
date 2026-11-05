@@ -187,6 +187,7 @@ beforeEach(() => {
   orgToken = false
   endpoints = {
     create: vi.fn(async () => ({ id: 'whep_new', url: 'https://relay.test/v1/hooks/whep_new' })),
+    list: vi.fn(async () => []),
     update: vi.fn(async () => ({ id: 'whep_new' })),
     disable: vi.fn(async () => {}),
     listEvents: vi.fn(async () => ({ filterExp: null, events: [] })),
@@ -1000,9 +1001,33 @@ describe('PlatformWebhookRelayService', () => {
       await relay.updateEndpoint('sub_a', 'whep_new', { filterExp: null })
       await relay.disableEndpoint('sub_a', 'whep_new')
 
-      expect(endpoints.create).toHaveBeenCalledWith('sub_a', { name: 'Deploys', filter_exp: 'body.ok' })
+      expect(endpoints.create).toHaveBeenCalledWith('sub_a', { name: 'Deploys', filter_exp: 'body.ok' }, undefined)
       expect(endpoints.update).toHaveBeenCalledWith('sub_a', 'whep_new', { filter_exp: null })
-      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_new')
+      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_new', undefined)
+    })
+
+    it('passes a deadline through to the platform only when the caller sets one', async () => {
+      startRelay()
+      await settle()
+      const request = { timeoutMs: 20_000 }
+
+      await relay.createEndpoint('sub_a', { name: 'Deploys' }, request)
+      await relay.listEndpoints('sub_a', request)
+      await relay.disableEndpoint('sub_a', 'whep_new', request)
+
+      expect(endpoints.create).toHaveBeenCalledWith('sub_a', { name: 'Deploys' }, request)
+      expect(endpoints.list).toHaveBeenCalledWith('sub_a', request)
+      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_new', request)
+    })
+
+    it('lists endpoints while stopped, as long as the platform is connected', async () => {
+      createRelay()
+
+      await relay.listEndpoints('sub_a')
+      expect(endpoints.list).toHaveBeenCalledWith('sub_a', undefined)
+
+      token = null
+      await expect(relay.listEndpoints('sub_a')).rejects.toMatchObject({ reason: 'platform_disconnected' })
     })
 
     it('rejects provisioning while the platform is disconnected', async () => {
@@ -1029,7 +1054,7 @@ describe('PlatformWebhookRelayService', () => {
       createRelay()
 
       await relay.disableEndpoint('sub_a', 'whep_old')
-      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_old')
+      expect(endpoints.disable).toHaveBeenCalledWith('sub_a', 'whep_old', undefined)
 
       token = null
       await expect(relay.disableEndpoint('sub_a', 'whep_old')).rejects.toMatchObject({ reason: 'platform_disconnected' })
@@ -1039,6 +1064,7 @@ describe('PlatformWebhookRelayService', () => {
       const none = new UnavailableWebhookRelayService('not_configured')
 
       await expect(none.createEndpoint()).rejects.toMatchObject({ reason: 'not_configured' })
+      await expect(none.listEndpoints()).rejects.toMatchObject({ reason: 'not_configured' })
     })
   })
 

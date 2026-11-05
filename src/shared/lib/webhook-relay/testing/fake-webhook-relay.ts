@@ -94,6 +94,7 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
       snapshot = AVAILABLE
     },
     createEndpoint: () => Promise.reject(new Error('createEndpoint is not faked')),
+    listEndpoints: () => Promise.reject(new Error('listEndpoints is not faked')),
     updateEndpoint: () => Promise.reject(new Error('updateEndpoint is not faked')),
     disableEndpoint: () => Promise.reject(new Error('disableEndpoint is not faked')),
     listEndpointEvents: () => Promise.reject(new Error('listEndpointEvents is not faked')),

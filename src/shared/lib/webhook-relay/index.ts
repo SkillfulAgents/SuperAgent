@@ -6,6 +6,7 @@ import { SupabaseRealtimeClient } from '@shared/lib/services/supabase-realtime-c
 import {
   createPlatformWebhookEndpoint,
   disablePlatformWebhookEndpoint,
+  listPlatformWebhookEndpoints,
   listPlatformWebhookEvents,
   testPlatformWebhookFilter,
   updatePlatformWebhookEndpoint,
@@ -17,7 +18,7 @@ import type { WebhookRelayService } from './types'
 import { UnavailableWebhookRelayService } from './unavailable-webhook-relay-service'
 
 export * from './types'
-export { WebhookRelayUnavailableError, describeWebhookRelayUnavailable } from './errors'
+export { WebhookEndpointRequestTimeoutError, WebhookRelayUnavailableError, describeWebhookRelayUnavailable } from './errors'
 export * from './status'
 
 // One relay per host. A build with a platform proxy always gets the platform
@@ -30,6 +31,7 @@ function createWebhookRelay(): WebhookRelayService {
     acknowledge: acknowledgePlatformRelayEvents,
     endpoints: {
       create: createPlatformWebhookEndpoint,
+      list: listPlatformWebhookEndpoints,
       update: updatePlatformWebhookEndpoint,
       disable: disablePlatformWebhookEndpoint,
       listEvents: listPlatformWebhookEvents,

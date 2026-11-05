@@ -44,6 +44,32 @@ export function readIntegrationRelay(config: string | Record<string, unknown>): 
   return integrationRelayConfigSchema.parse(raw).relay
 }
 
+/**
+ * A relay endpoint being provisioned, recorded before the mint: the platform's
+ * create has no idempotency key, so a mint whose answer was lost can only be
+ * found again by this random name. Only Email records these today, under
+ * `relayProvisioning`, next to what it needs to adopt the endpoint it finds.
+ */
+export const integrationRelayIntentSchema = z.object({
+  attemptId: z.string().regex(/^[0-9a-f]{16}$/),
+  scope: z.string().min(1),
+  endpointName: z.string().min(1).max(200),
+})
+export type IntegrationRelayIntent = z.infer<typeof integrationRelayIntentSchema>
+
+const integrationRelayIntentConfigSchema = z.object({ relayProvisioning: integrationRelayIntentSchema.optional() }).loose()
+
+/** The intent in any provider's config, whatever else it holds. */
+export function readIntegrationRelayIntent(config: string): IntegrationRelayIntent | undefined {
+  let raw: unknown
+  try {
+    raw = JSON.parse(config)
+  } catch {
+    return undefined
+  }
+  return integrationRelayIntentConfigSchema.safeParse(raw).data?.relayProvisioning
+}
+
 /** The transports a provider supports; `direct` unless it says otherwise. */
 export function supportedTransports(definition: { transports?: readonly IntegrationTransport[] }): readonly IntegrationTransport[] {
   return definition.transports ?? ['direct']

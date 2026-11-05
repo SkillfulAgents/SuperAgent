@@ -34,6 +34,10 @@ export class UnavailableWebhookRelayService implements WebhookRelayService {
     throw new WebhookRelayUnavailableError(this.reason)
   }
 
+  async listEndpoints(): Promise<RelayEndpoint[]> {
+    throw new WebhookRelayUnavailableError(this.reason)
+  }
+
   async updateEndpoint(): Promise<RelayEndpoint> {
     throw new WebhookRelayUnavailableError(this.reason)
   }

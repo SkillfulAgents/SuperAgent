@@ -17,7 +17,9 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.test',
 }))
 
+import { WebhookEndpointRequestTimeoutError } from './errors'
 import {
+  WebhookEndpointsApiError,
   createPlatformWebhookEndpoint,
   updatePlatformWebhookEndpoint,
   disablePlatformWebhookEndpoint,
@@ -236,6 +238,51 @@ describe('platform-endpoints-client', () => {
     expect(err).toBeInstanceOf(Error)
     expect((err as Error).message).toContain('"secret":"***"')
     expect((err as Error).message).not.toContain('whsec_leaky_value')
+  })
+
+  describe('deadlines', () => {
+    /** A platform that holds the request open until the caller cancels it. */
+    const unanswered = (_url: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+    })
+
+    it('sends no deadline unless the caller sets one', async () => {
+      await createPlatformWebhookEndpoint('sub_member_1', { name: 'n' })
+      expect(mockFetch.mock.calls[0]![1]!.signal).toBeUndefined()
+    })
+
+    it('reads a mint that got no answer as possibly landed, not as failed', async () => {
+      mockFetch.mockImplementation(unanswered)
+
+      const error = await createPlatformWebhookEndpoint('sub_member_1', { name: 'n' }, { timeoutMs: 5 }).catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(WebhookEndpointRequestTimeoutError)
+      expect((error as Error).message).toContain('may still have taken effect')
+      expect(mockFetch.mock.calls[0]![1]!.signal?.aborted).toBe(true)
+    })
+
+    it('applies the deadline while the answer is being read, too', async () => {
+      mockFetch.mockImplementation(async (_url: string, init?: RequestInit) => ({
+        ok: true,
+        status: 201,
+        json: () => unanswered('', init),
+      }))
+
+      await expect(createPlatformWebhookEndpoint('sub_member_1', { name: 'n' }, { timeoutMs: 5 })).rejects.toBeInstanceOf(WebhookEndpointRequestTimeoutError)
+    })
+
+    it('covers listing and disabling', async () => {
+      mockFetch.mockImplementation(unanswered)
+
+      await expect(listPlatformWebhookEndpoints('sub_member_1', { timeoutMs: 5 })).rejects.toBeInstanceOf(WebhookEndpointRequestTimeoutError)
+      await expect(disablePlatformWebhookEndpoint('sub_member_1', ENDPOINT.id, { timeoutMs: 5 })).rejects.toBeInstanceOf(WebhookEndpointRequestTimeoutError)
+    })
+
+    it('reports a failure that beat the deadline as that failure', async () => {
+      mockFetch.mockResolvedValue(new Response('nope', { status: 500 }))
+
+      await expect(createPlatformWebhookEndpoint('sub_member_1', { name: 'n' }, { timeoutMs: 5_000 })).rejects.toBeInstanceOf(WebhookEndpointsApiError)
+    })
   })
 
   it('treats a bodyless 204 as success', async () => {

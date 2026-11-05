@@ -1,5 +1,6 @@
-import { and, ne, sql } from 'drizzle-orm'
+import { and, eq, ne, sql } from 'drizzle-orm'
 import { db } from '../db'
+import { changesOf } from '../db/batch'
 import { chatIntegrations } from '../db/schema'
 import { captureException } from '../error-reporting'
 import { getStoredPlatformMemberId } from '../services/platform-auth-service'
@@ -10,6 +11,7 @@ import {
   getWebhookRelay,
   type RelayAcceptResult,
   type RelayConsumerHandle,
+  type RelayEndpoint,
   type RelayEvent,
   type WebhookRelayService,
 } from '../webhook-relay'
@@ -19,11 +21,13 @@ import { IntegrationSetupError } from './setup-types'
 import {
   integrationRelayBindingSchema,
   readIntegrationRelay,
+  readIntegrationRelayIntent,
   supportedTransports,
   type IntegrationRelayAccept,
   type IntegrationRelayAttachment,
   type IntegrationRelayBinding,
   type IntegrationRelayHost,
+  type IntegrationRelayIntent,
 } from './transport'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationInputResult } from './types'
 
@@ -47,9 +51,12 @@ export function integrationRelayName(providerName: string, agentSlug: string): s
  */
 export async function provisionIntegrationRelay(name: string, userId?: string, verification?: VerificationProfile): Promise<IntegrationRelayBinding> {
   const scope = await integrationRelayScope(userId)
+  return mintedRelay(scope, () => getWebhookRelay().createEndpoint(scope, { name: name.slice(0, 200), ...(verification ? { verification } : {}) }))
+}
+
+async function mintedRelay(scope: string, mint: () => Promise<RelayEndpoint>): Promise<IntegrationRelayBinding> {
   try {
-    const endpoint = await getWebhookRelay().createEndpoint(scope, { name: name.slice(0, 200), ...(verification ? { verification } : {}) })
-    return integrationRelayBindingSchema.parse({ endpointId: endpoint.id, url: endpoint.url, scope })
+    return relayBindingOf(await mint(), scope)
   } catch (error) {
     if (error instanceof WebhookRelayUnavailableError) throw new IntegrationSetupError(error.message)
     if (error instanceof WebhookEndpointsApiError && error.statusCode === 409) {
@@ -59,16 +66,107 @@ export async function provisionIntegrationRelay(name: string, userId?: string, v
   }
 }
 
+export function relayBindingOf(endpoint: RelayEndpoint, scope: string): IntegrationRelayBinding {
+  return integrationRelayBindingSchema.parse({ endpointId: endpoint.id, url: endpoint.url, scope })
+}
+
+/**
+ * The deadline on each request about an intent's endpoint. Chosen here: the
+ * platform's endpoint routes had none. Past it the request is cancelled, and it
+ * may still have taken effect. A lease held across these requests takes its TTL
+ * from this.
+ */
+export const RELAY_INTENT_REQUEST_TIMEOUT_MS = 20_000
+const INTENT_REQUEST = { timeoutMs: RELAY_INTENT_REQUEST_TIMEOUT_MS }
+
+/**
+ * Mints an intent's endpoint. Nothing here is awaited before the relay is
+ * called, so a lease holder can confirm its lease right before this. A failure,
+ * including a timeout, says nothing about whether the endpoint exists: the
+ * intent stays and the next attempt looks for it.
+ */
+export function mintIntentRelayEndpoint(intent: IntegrationRelayIntent, verification?: VerificationProfile): Promise<IntegrationRelayBinding> {
+  return mintedRelay(intent.scope, () => getWebhookRelay().createEndpoint(
+    intent.scope,
+    { name: intent.endpointName, ...(verification ? { verification } : {}) },
+    INTENT_REQUEST,
+  ))
+}
+
+/** The live endpoints minted for an intent, oldest first: usually none or one, more if a lost mint landed late. */
+export async function findIntentRelayEndpoints(intent: IntegrationRelayIntent): Promise<RelayEndpoint[]> {
+  try {
+    const endpoints = await getWebhookRelay().listEndpoints(intent.scope, INTENT_REQUEST)
+    return endpoints
+      .filter(endpoint => endpoint.name === intent.endpointName && endpoint.status === 'active')
+      .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? '') || a.id.localeCompare(b.id))
+  } catch (error) {
+    if (error instanceof WebhookRelayUnavailableError) throw new IntegrationSetupError(error.message)
+    throw error
+  }
+}
+
+/** Disables each endpoint no installation stores. Throws on the first that can't be disabled. */
+export async function disableUnusedRelayEndpoints(scope: string, endpointIds: readonly string[]): Promise<void> {
+  for (const endpointId of endpointIds) {
+    if (await relayEndpointInUse(endpointId)) continue
+    await getWebhookRelay().disableEndpoint(scope, endpointId, INTENT_REQUEST)
+  }
+}
+
+/** Disables whatever was minted for an intent and nothing uses. Throws if that can't be done or can't be told. */
+export async function disableIntentRelayEndpoints(intent: IntegrationRelayIntent): Promise<void> {
+  const endpoints = await findIntentRelayEndpoints(intent)
+  await disableUnusedRelayEndpoints(intent.scope, endpoints.map(endpoint => endpoint.id))
+}
+
+/** Forgets an intent, if the installation still has this one. Once it's gone, the attempt's attach is refused. */
+export async function clearIntegrationRelayIntent(integrationId: string, attemptId: string): Promise<boolean> {
+  const result = await db.update(chatIntegrations)
+    .set({ config: sql`json_remove(${chatIntegrations.config}, '$.relayProvisioning')`, updatedAt: new Date() })
+    .where(and(eq(chatIntegrations.id, integrationId), sql`json_extract(${chatIntegrations.config}, '$.relayProvisioning.attemptId') = ${attemptId}`))
+    .run()
+  return changesOf(result) > 0
+}
+
 /** The URL stops accepting deliveries. */
 export async function disableIntegrationRelay(binding: IntegrationRelayBinding): Promise<void> {
   await getWebhookRelay().disableEndpoint(binding.scope, binding.endpointId)
 }
 
-/** Another installation receives through this endpoint too (Email's mailboxes share one per scope). */
-async function endpointSharedWith(endpointId: string, integrationId: string): Promise<boolean> {
+/** An installation, other than `exceptIntegrationId`, receives through this endpoint (Email's mailboxes share one per scope). */
+async function relayEndpointInUse(endpointId: string, exceptIntegrationId?: string): Promise<boolean> {
   const other = await db.select({ id: chatIntegrations.id }).from(chatIntegrations)
-    .where(and(ne(chatIntegrations.id, integrationId), sql`json_extract(${chatIntegrations.config}, '$.relay.endpointId') = ${endpointId}`)).get()
+    .where(and(exceptIntegrationId ? ne(chatIntegrations.id, exceptIntegrationId) : undefined, sql`json_extract(${chatIntegrations.config}, '$.relay.endpointId') = ${endpointId}`)).get()
   return !!other
+}
+
+async function storedConfig(integrationId: string): Promise<string | undefined> {
+  const row = await db.select({ config: chatIntegrations.config }).from(chatIntegrations).where(eq(chatIntegrations.id, integrationId)).get()
+  return row?.config
+}
+
+/**
+ * An endpoint was being provisioned for an installation that is going away. The
+ * intent is forgotten first, so no attempt can attach its endpoint while it is
+ * being taken down; an attempt still running disables what it minted when its
+ * attach is refused. If the attach got there first, the endpoint is an ordinary
+ * one, for the caller to release. Never throws. If the platform can't be
+ * reached, the endpoint stays live under its attempt's name, and is reported.
+ */
+async function releaseRelayIntent(record: AgentIntegrationRecord): Promise<void> {
+  try {
+    const stored = await storedConfig(record.id)
+    const intent = readIntegrationRelayIntent(stored ?? record.config)
+    if (!intent) return
+    if (stored !== undefined && !(await clearIntegrationRelayIntent(record.id, intent.attemptId))) return
+    await disableIntentRelayEndpoints(intent)
+  } catch (error) {
+    captureException(error, {
+      tags: { component: 'agent-integration', operation: 'release-relay-intent' },
+      extra: { integrationId: record.id, provider: record.provider },
+    })
+  }
 }
 
 /**
@@ -79,15 +177,18 @@ async function endpointSharedWith(endpointId: string, integrationId: string): Pr
  */
 export async function releaseIntegrationTransport(record: AgentIntegrationRecord): Promise<void> {
   integrationRelays.remove(record.id)
+  await releaseRelayIntent(record)
   let relay: IntegrationRelayBinding | undefined
   try {
-    relay = readIntegrationRelay(record.config)
+    // The stored row too: an attempt may have attached since this record was read.
+    const stored = readIntegrationRelay(record.config) ? undefined : await storedConfig(record.id)
+    relay = readIntegrationRelay(stored ?? record.config)
   } catch {
     return
   }
   if (!relay) return
   try {
-    if (await endpointSharedWith(relay.endpointId, record.id)) return
+    if (await relayEndpointInUse(relay.endpointId, record.id)) return
     await disableIntegrationRelay(relay)
   } catch (error) {
     // The URL stays live but nothing claims its events; they expire on the platform.
