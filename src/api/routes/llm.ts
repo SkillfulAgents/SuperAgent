@@ -1,6 +1,8 @@
 import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
+import { rateLimitClient } from '../middleware/rate-limit'
+import { defineFixedWindow } from '@shared/lib/app-state/fixed-window'
 import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-provider/helpers'
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { resolveHelperSelection } from '@shared/lib/llm-provider/connections'
@@ -10,28 +12,8 @@ const llm = new Hono()
 
 llm.use('*', Authenticated())
 
-// Simple rate limiter: 100 requests per minute
-const requestCounts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT = 100
-const RATE_WINDOW = 60_000
-
-function checkRateLimit(key: string): boolean {
-  const now = Date.now()
-  const entry = requestCounts.get(key)
-  if (entry && now < entry.resetAt) {
-    if (entry.count >= RATE_LIMIT) return false
-    entry.count++
-  } else {
-    requestCounts.set(key, { count: 1, resetAt: now + RATE_WINDOW })
-  }
-  // Periodic cleanup
-  if (requestCounts.size > 100) {
-    for (const [k, v] of requestCounts) {
-      if (now >= v.resetAt) requestCounts.delete(k)
-    }
-  }
-  return true
-}
+/** Dashboard and helper LLM calls: 100 per client in a one-minute window. */
+const llmRequests = defineFixedWindow({ name: 'rate:llm', limit: 100, windowMs: 60_000 })
 
 /**
  * Resolve the dashboard-runtime default to the active provider's concrete wire
@@ -61,8 +43,9 @@ llm.get('/config', async (c) => {
 
 // POST /api/llm/v1/messages — matches the path the Anthropic SDK sends
 llm.post('/v1/messages', async (c) => {
-  const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-  if (!checkRateLimit(ip)) {
+  // An AppState failure is thrown: the call fails rather than going through uncounted.
+  const hit = await llmRequests.hit(llmRequests.key(rateLimitClient(c)))
+  if (!hit.admitted) {
     return c.json({ error: 'Too many LLM requests. Please slow down.' }, 429)
   }
 
