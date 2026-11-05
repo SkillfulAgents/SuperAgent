@@ -3,6 +3,8 @@ import { MessageInput } from '@renderer/components/messages/message-input'
 import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
 import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { SessionThread } from '@renderer/components/messages/session-thread'
+import { HomeHalftoneBackdrop } from '@renderer/components/agents/agent-home/home-halftone-backdrop'
+import { useAgent } from '@renderer/hooks/use-agents'
 import { PendingRequestStack } from '@shared/lib/tools/requests/pending-request-stack'
 import { renderPendingRequest, type RenderContext } from '@shared/lib/tools/requests/pending-request-renderer'
 import { PendingRequestErrorBoundary } from '@shared/lib/tools/requests/pending-request-error-boundary'
@@ -80,6 +82,8 @@ export function SessionChatColumn({
   const voiceInputRequests = useMemo(() => pendingRequestItems.map(describeVoiceInputRequest), [pendingRequestItems])
 
   const renderCtx: RenderContext | null = sessionId ? { sessionId, agentSlug, readOnly: isViewOnly } : null
+  // The agent's colour carries on into its sessions, behind the transcript and the composer's glass.
+  const { data: agent } = useAgent(agentSlug)
 
   const staleSession = useStaleSession({
     sessionId,
@@ -104,6 +108,8 @@ export function SessionChatColumn({
       suppressScrollToBottom={staleSession.popoverOpen}
       overlayFooter
       footerClassName="max-w-[740px] mx-auto w-full"
+      // Agent Home's background: the agent's card halftone, filling the view.
+      backdrop={agent ? <HomeHalftoneBackdrop agent={agent} /> : undefined}
       footer={
         <>
           {sessionId && renderCtx && pendingRequestCount > 0 && (
