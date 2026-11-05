@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
+import { StaleAgentsNotice } from './stale-agents-notice'
 import { VolumeDetailPage } from '@renderer/components/volumes/volume-detail-page'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { IntegrationList, IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
@@ -55,6 +56,7 @@ export function VolumesTab() {
 
   return (
     <div className="space-y-6" data-testid="volumes-settings">
+      <StaleAgentsNotice />
       {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
         : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>Back to {back.label ?? 'drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
         : <>

@@ -45,7 +45,7 @@ test('creates and attaches the Dropbox root from Add Drive', async ({ page, requ
     await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Dropbox')
     await page.getByRole('button', { name: 'Create and add' }).click()
     await expect(page.getByTestId('volume-settings-dialog')).not.toBeVisible()
-    await expect(page.getByText('Dropbox · /', { exact: true })).toBeVisible()
+    await expect(page.getByText('/mounts/Dropbox', { exact: true })).toBeVisible()
     expect(state.created).toEqual([{ type: 'dropbox', config: { accountId: 'dropbox-test', path: '' }, name: 'Dropbox', visibility: 'public' }])
     expect(state.mounts).toHaveLength(1)
     await page.getByTestId('add-mount-menu').click()

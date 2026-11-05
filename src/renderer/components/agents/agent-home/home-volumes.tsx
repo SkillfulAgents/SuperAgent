@@ -179,7 +179,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   // file manager only works when that machine is this one; against a cloud
   // workspace it either fails or, worse, opens a same-named folder of yours.
   const { hostPath } = mount
-  const subtitle = mount.name === mount.volumeName ? mount.sourceLabel ?? hostPath : mountPathOf(mount.name)
+  const agentPath = mountPathOf(mount.name)
   const canOpenInFileManager = canUseHostFeatures() && hostPath !== null
 
   const handleOpenInFinder = () => {
@@ -238,11 +238,9 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             {mount.global && <span className="inline-flex items-center text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">Global</span>}
           </>}
         </div>
-        {subtitle && (
-          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={subtitle}>
-            {subtitle}
-          </div>
-        )}
+        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={agentPath}>
+          {agentPath}
+        </div>
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
@@ -281,7 +279,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                   }}
                 >
                   <Copy className="h-3.5 w-3.5" />
-                  Copy path
+                  Copy folder path
                 </button>
               )}
               {definition?.canManage && (
