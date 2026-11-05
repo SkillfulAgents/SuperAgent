@@ -255,9 +255,13 @@ app.post('/sessions/:id/interrupt', async (c) => {
 
 app.post('/sessions/:id/fork', async (c) => {
   const sessionId = c.req.param('id');
+  // Optional `{ upToMessageId }`: copy up to and including that entry. No body
+  // (older hosts) copies the whole session.
+  const body = await c.req.json().catch(() => ({})) as { upToMessageId?: unknown };
+  const upToMessageId = typeof body.upToMessageId === 'string' && body.upToMessageId ? body.upToMessageId : undefined;
 
   try {
-    const id = await sessionManager.forkSession(sessionId);
+    const id = await sessionManager.forkSession(sessionId, { upToMessageId });
     if (!id) {
       return c.json({ error: 'Session not found' }, 404);
     }

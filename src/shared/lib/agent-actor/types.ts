@@ -30,6 +30,7 @@ import type {
   ContainerInfo,
   ContainerSession,
   CreateSessionOptions,
+  ForkSessionOptions,
   HealthCheckResult,
   HostPortProbeResult,
   InterruptSessionResult,
@@ -411,7 +412,7 @@ export interface SessionOps {
    */
   start(request: StartSessionRequest): Promise<ContainerSession>
   /** `client.forkSession` */
-  fork(sessionId: string): Promise<{ id: string } | null>
+  fork(sessionId: string, options?: ForkSessionOptions): Promise<{ id: string } | null>
   /** `client.deleteSession` — the container's copy, not the stored files. */
   deleteLive(sessionId: string): Promise<boolean>
   /** `client.warmSession` — resume the session's CLI ahead of its next message. Best-effort; never throws. */

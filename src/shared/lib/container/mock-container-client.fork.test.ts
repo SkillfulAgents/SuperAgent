@@ -43,6 +43,20 @@ describe('MockContainerClient.forkSession', () => {
     await expect(client.getSession(fork!.id)).resolves.not.toBeNull()
   })
 
+  it('copies up to and including upToMessageId, as the SDK does', async () => {
+    const client = new MockContainerClient({ agentId: 'agent-a' })
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    const src = await client.createSession({ initialMessage: 'hi' })
+    client.writeJsonlEntry(src.id, { type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'hi' }, timestamp: '2026-01-01T00:00:00.000Z' })
+    client.writeJsonlEntry(src.id, { type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }, timestamp: '2026-01-01T00:00:01.000Z' })
+    client.writeJsonlEntry(src.id, { type: 'user', uuid: 'u2', parentUuid: 'a1', message: { role: 'user', content: 'more' }, timestamp: '2026-01-01T00:00:02.000Z' })
+
+    const fork = await client.forkSession(src.id, { upToMessageId: 'a1' })
+
+    const lines = (await fs.promises.readFile(getSessionJsonlPath('agent-a', fork!.id), 'utf8')).trim().split('\n').map((l) => JSON.parse(l))
+    expect(lines.map((line) => line.forkedFrom.messageUuid)).toEqual(['u1', 'a1'])
+  })
+
   it('throws ContainerNotFoundError for an unknown source', async () => {
     const client = new MockContainerClient({ agentId: 'agent-a' })
     await expect(client.forkSession('nope')).rejects.toBeInstanceOf(ContainerNotFoundError)

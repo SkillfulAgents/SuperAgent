@@ -545,11 +545,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           )}
         </SenderAvatarGroup>
 
-        {/* Under a person's message: its thread, or reply-in-thread on hover */}
+        {/* Under a person's message: its thread, and reply-in-thread and fork on hover */}
         {isUser && !isIntegrationMessage && showMessageBubble && !bareUserRender && agentSlug && sessionId && (
           // Tucked up under the bubble: it belongs to the message above.
           <div className="-mt-1" style={avatarSender ? { marginRight: SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP } : undefined}>
-            <UserMessageActions message={message} agentSlug={agentSlug} sessionId={sessionId} />
+            <UserMessageActions message={message} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isSessionActive} />
           </div>
         )}
 

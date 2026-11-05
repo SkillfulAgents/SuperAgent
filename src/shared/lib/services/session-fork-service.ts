@@ -18,8 +18,14 @@ import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { SessionForkFailedError } from '@shared/lib/agent-runtime-errors/session-fork-failed/session-fork-failed-error'
+import { forkPointAfter } from './session-fork-point'
 
 export type ForkSessionOpts = {
+  /**
+   * Fork from this message: the copy holds it and the agent's whole reply to
+   * it, and nothing after. The whole session when absent.
+   */
+  fromMessageId?: string
   createdByUserId?: string
   createdByDeviceId?: string
   copyAttribution?: boolean
@@ -73,9 +79,16 @@ export async function forkSession(
     throw new SessionForkFailedError(404, 'Session not found')
   }
 
+  let upToMessageId: string | undefined
+  if (opts.fromMessageId) {
+    const point = forkPointAfter(await actor.messages.withCompact(sourceId), opts.fromMessageId)
+    if (!point) throw new SessionForkFailedError(404, 'Message not found')
+    upToMessageId = point
+  }
+
   let forked: { id: string } | null
   try {
-    forked = await actor.sessions.fork(sourceId)
+    forked = await actor.sessions.fork(sourceId, upToMessageId ? { upToMessageId } : undefined)
   } catch (error) {
     if (error instanceof ContainerConflictError) {
       throw new SessionForkFailedError(409, error.message)

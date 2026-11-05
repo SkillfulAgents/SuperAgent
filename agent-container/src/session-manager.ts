@@ -918,9 +918,10 @@ export class SessionManager extends EventEmitter {
    * Copy a session's transcript into a new session (Fork Session). Pure file
    * operation: the SDK writes `{newId}.jsonl` next to the source and we record
    * the new id so the first sendMessage resumes it through resumeSession. No
-   * process is started. Returns null for an unknown source.
+   * process is started. Returns null for an unknown source. With
+   * `upToMessageId` the copy stops at that entry, inclusive (fork from here).
    */
-  async forkSession(sourceId: string): Promise<string | null> {
+  async forkSession(sourceId: string, options: { upToMessageId?: string } = {}): Promise<string | null> {
     const source = this.persistence.getSession(sourceId);
     if (!source) return null;
 
@@ -943,7 +944,10 @@ export class SessionManager extends EventEmitter {
 
     let newId: string;
     try {
-      ({ sessionId: newId } = await sdkForkSession(source.claudeSessionId, { dir: source.workingDirectory }));
+      ({ sessionId: newId } = await sdkForkSession(source.claudeSessionId, {
+        dir: source.workingDirectory,
+        ...(options.upToMessageId ? { upToMessageId: options.upToMessageId } : {}),
+      }));
     } catch (error) {
       if (isSdkSessionNotFound(error)) return null;
       throw error;

@@ -3086,11 +3086,24 @@ agents.delete('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
 
 // POST /api/agents/:id/sessions/:sessionId/fork - Fork Session: copy the
 // conversation into a new session carrying the full prior context.
+// Body (optional): `{ fromMessageId }` forks from that message: the copy holds
+// it and the agent's reply to it, and nothing after. No body copies it all.
+const forkSessionBodySchema = z.object({ fromMessageId: z.string().min(1).max(200).optional() })
+
 agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const sourceId = c.req.param('sessionId')
+  const raw = await c.req.text().catch(() => '')
+  let parsedBody: unknown = {}
   try {
-    const opts: ForkSessionOpts = {}
+    parsedBody = raw.trim() ? JSON.parse(raw) : {}
+  } catch {
+    return c.json({ error: 'Invalid fork request' }, 400)
+  }
+  const body = forkSessionBodySchema.safeParse(parsedBody)
+  if (!body.success) return c.json({ error: 'Invalid fork request' }, 400)
+  try {
+    const opts: ForkSessionOpts = body.data.fromMessageId ? { fromMessageId: body.data.fromMessageId } : {}
     if (isAuthMode()) {
       opts.createdByUserId = getCurrentUserId(c)
       const deviceId = getRequestDeviceId(c)
