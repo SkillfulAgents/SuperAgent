@@ -577,12 +577,14 @@ export class LiveSessions {
   }
 
   /**
-   * The container stopped. Every session's stream goes; a session mid-turn
-   * ends (see `LiveSession.markInactive`); a recovering one is left to its
-   * recovery, or settled with it when the stop ends the recovery too.
+   * The container stopped. Every session's stream goes, and the host runs
+   * its calls were waiting on (see `LiveSession.abandonHostRuns`); a session
+   * mid-turn ends (see `LiveSession.markInactive`); a recovering one is left
+   * to its recovery, or settled with it when the stop ends the recovery too.
    */
   markAllInactive(options?: { settleRecovering?: boolean }): void {
     for (const [sessionId, state] of [...this.states]) {
+      state.abandonHostRuns()
       if (state.isRecovering) {
         if (options?.settleRecovering) this.settleRecovering([sessionId])
         else this.detach(sessionId)

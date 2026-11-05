@@ -55,6 +55,30 @@ const requestCards = (kind: string) =>
 const openStreamRequestIds = () =>
   userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'stream')
 
+/** The ways the agent's container goes away under a session; each takes the calls it was making with it. */
+const CONTAINER_STOPS: Array<[string, () => void]> = [
+  ['stopped mid-turn', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().markAllInactive()
+  }],
+  ['stopped while the session was idle', () => sessions().markAllInactive()],
+  ['stopped mid-recovery', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().claimMidTurnForRecovery()
+    sessions().markAllInactive()
+  }],
+  ['stopped, ending its recovery', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().claimMidTurnForRecovery()
+    sessions().markAllInactive({ settleRecovering: true })
+  }],
+  ['died and recovery gave up', () => {
+    sessions().markActive(SESSION_ID)
+    sessions().claimMidTurnForRecovery()
+    sessions().settleRecovering([SESSION_ID])
+  }],
+]
+
 /** The global feed from now on, as a subscriber that joined now would see it. */
 function collectGlobalEvents(): () => any[] {
   const start = live.host.sends.length
@@ -1669,6 +1693,51 @@ describe('Script run request detection', () => {
     expect(scripts()).toBe(ranBeforeStop)
   })
 
+  it.each(CONTAINER_STOPS)('runs nothing for a granted script whose grant check was in flight when the container %s', async (_how, stop) => {
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-container-stopped', {
+      script: 'rm -rf ~/scratch',
+      explanation: 'Clean up',
+      scriptType: 'shell',
+    })
+    stop()
+    landCheck('granted')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(live.host.calls.filter(([name]) => name === 'hostScript')).toEqual([])
+    expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-sr-container-stopped')).toBeNull()
+  })
+
+  it.each([0, 1, 2, 3, 4, 5, 6, 8, 12])('runs no script after the container stops %i microtasks after its grant check', async (ticks) => {
+    sessions().markActive(SESSION_ID)
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+    const scripts = () => live.host.calls.filter(([name]) => name === 'hostScript').length
+
+    await simulateToolUse('mcp__user-input__request_script_run', `tool-sr-container-handoff-${ticks}`, {
+      script: 'rm -rf ~/scratch',
+      explanation: 'Clean up',
+      scriptType: 'shell',
+    })
+    landCheck('granted')
+    for (let i = 0; i < ticks; i++) await Promise.resolve()
+    const ranBeforeStop = scripts()
+    sessions().markAllInactive()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(scripts()).toBe(ranBeforeStop)
+  })
+
   it('still runs a granted script whose grant check lands after a reattach of the stream', async () => {
     let landCheck!: (status: 'granted') => void
     vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
@@ -1875,6 +1944,30 @@ describe('Computer use request detection', () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
 
       expect(commands()).toBe(ranBeforeStop)
+    } finally {
+      if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+      else process.env.E2E_MOCK = originalE2eMock
+    }
+  })
+
+  it.each(CONTAINER_STOPS)('runs nothing for a granted command whose grant check was in flight when the container %s', async (_how, stop) => {
+    const originalE2eMock = process.env.E2E_MOCK
+    process.env.E2E_MOCK = 'true'
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('computerUse', 'clicked')
+    try {
+      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-container-stopped', { ref: '@b1' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      stop()
+      landCheck('granted')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(live.host.calls.filter(([name]) => name === 'computerUse')).toEqual([])
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-container-stopped')).toBeNull()
     } finally {
       if (originalE2eMock === undefined) delete process.env.E2E_MOCK
       else process.env.E2E_MOCK = originalE2eMock

@@ -121,8 +121,14 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
 
 export async function runScript(actor: HostRunActor, host: HostPort, run: ScriptRun, guard: HostRunGuard = {}): Promise<HostRunOutcome> {
   const { sessionId, toolUseId, script, scriptType, grantType } = run
+  // An "always" grant is a settings write. Saved before the claim, a Stop
+  // meanwhile cancels the request and the claim then finds nothing to run; a
+  // run that already held the claim would not see that. The in-memory grants
+  // wait for the claim: a once-grant left behind by a decision that ran
+  // nothing would approve the agent's next script.
+  if (grantType === 'always') await actor.inputs.computerUse.grant('use_host_shell', 'always')
   return withClaim(actor, toolUseId, async (request) => {
-    if (grantType) await actor.inputs.computerUse.grant('use_host_shell', grantType)
+    if (grantType && grantType !== 'always') await actor.inputs.computerUse.grant('use_host_shell', grantType)
     // Checked in the same step as the script starts: nothing in between.
     if (guard.stillWanted && !guard.stillWanted()) return { status: 'abandoned' }
     const result = await host.call('hostScript', { script, scriptType })

@@ -881,6 +881,7 @@ import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
+import { mutateSettings } from '@shared/lib/config/settings'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
@@ -11043,6 +11044,29 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
     expect(
       await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('granted')
+  })
+
+  it('"Allow always" runs no script when a Stop lands while the grant is being saved', async () => {
+    // The always-grant is a settings write; the Stop ends the turn meanwhile
+    // and cancels its parked requests.
+    vi.mocked(mutateSettings).mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      userInputRequestManager.clearSessionStreamRequests('test-agent', 'sess-1', 'cancelled')
+      // The partial settings the mocked module serves everywhere.
+      return mockRuntimeSettings() as never
+    })
+    parkScriptRun('tool-always-stopped')
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/run-script', {
+      toolUseId: 'tool-always-stopped',
+      script: 'echo ok',
+      scriptType: 'shell',
+      grantType: 'always',
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mutateSettings).toHaveBeenCalled()
   })
 })
 
