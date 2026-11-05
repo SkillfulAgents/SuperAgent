@@ -400,6 +400,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
           <RuntimeOptionsCard
             agentSlug={agentSlug}
             model={trigger.model ?? null}
+            llmProviderId={trigger.llmProviderId ?? null}
             effort={trigger.effort ?? null}
             speed={trigger.speed ?? null}
             disabled={!canCancel || !isActive}
