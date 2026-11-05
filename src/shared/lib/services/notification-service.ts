@@ -82,7 +82,7 @@ export async function getAgentAccessUserIds(agentSlug: string): Promise<string[]
 
 // Return the audience from the write itself, so deletion/retention and reads
 // notify exactly the affected agents and mention recipients after committing.
-const changeAudience = { agentSlug: notifications.agentSlug, recipientUserId: notifications.recipientUserId }
+const changeAudience = () => ({ agentSlug: notifications.agentSlug, recipientUserId: notifications.recipientUserId })
 function publishChanges(rows: Array<{ agentSlug: string; recipientUserId: string | null }>, sourceClientId?: string) {
   const audiences = new Map(rows.map(row => [JSON.stringify([row.agentSlug, row.recipientUserId]), row]))
   for (const { agentSlug, recipientUserId } of audiences.values()) {
@@ -367,7 +367,7 @@ export async function markAsRead(notificationId: string, sourceClientId?: string
       readAt: new Date(),
     })
     .where(eq(notifications.id, notificationId))
-    .returning(changeAudience)
+    .returning(changeAudience())
 
   publishChanges(result, sourceClientId)
   return result.length > 0
@@ -392,7 +392,7 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
       readAt: new Date(),
     })
     .where(and(...conditions))
-    .returning(changeAudience)
+    .returning(changeAudience())
 
   publishChanges(result, sourceClientId)
   return result.length
@@ -411,7 +411,7 @@ export async function markAllAsRead(userId?: string, types?: readonly Notificati
       readAt: new Date(),
     })
     .where(and(eq(notifications.isRead, false), visibleRows(userId), ofTypes(types)))
-    .returning(changeAudience)
+    .returning(changeAudience())
   publishChanges(result, sourceClientId)
   return result.length
 }
@@ -427,7 +427,7 @@ export async function deleteNotification(notificationId: string): Promise<boolea
   const result = await db
     .delete(notifications)
     .where(eq(notifications.id, notificationId))
-    .returning(changeAudience)
+    .returning(changeAudience())
 
   publishChanges(result)
   return result.length > 0
@@ -450,7 +450,7 @@ export async function deleteNotificationsBySessionIds(sessionIds: string[]): Pro
   const result = await db
     .delete(notifications)
     .where(inArray(notifications.sessionId, sessionIds))
-    .returning(changeAudience)
+    .returning(changeAudience())
 
   publishChanges(result)
   return result.length
@@ -480,7 +480,7 @@ export async function deleteOldNotifications(olderThanDays: number = 30): Promis
   const result = await db
     .delete(notifications)
     .where(lt(notifications.createdAt, cutoffDate))
-    .returning(changeAudience)
+    .returning(changeAudience())
 
   publishChanges(result)
   return result.length

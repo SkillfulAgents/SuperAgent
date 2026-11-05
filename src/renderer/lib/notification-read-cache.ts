@@ -126,11 +126,30 @@ function patchCache(client: QueryClient, query: Query, value: unknown) {
 
 /** Give metadata recovery a short turn in the write queue, never an unbounded one. */
 async function refreshQueries(client: QueryClient, queries: Set<Query>) {
-  // invalidateQueries does not restart an initial load with no data. That
-  // request may have captured the state before the write committed too.
-  await client.cancelQueries({ predicate: query => queries.has(query) && query.state.data === undefined })
-  const refreshing = client.invalidateQueries({ predicate: query => queries.has(query) })
-  const generations = new Map([...queries].filter(query => query.state.fetchStatus !== 'idle' && query.promise)
+  const cached = new Set<Query>()
+  for (const query of queries) {
+    if (query.state.data !== undefined) {
+      cached.add(query)
+      continue
+    }
+    // A route loader may be awaiting this initial request. Cancelling it would
+    // reject the loader, and cancelling its retries can strand a missing
+    // session in pending state. Let it settle, then refresh its pre-write data.
+    // Errors have no notification projection to repair; retain their result.
+    const initial = query.promise
+    if (query.state.fetchStatus !== 'idle' && initial) {
+      query.invalidate()
+      void initial.then(() => {
+        if (client.getQueryCache().get(query.queryHash) === query) {
+          // A newer fetch may already be repairing this projection. Join it
+          // rather than cancelling another caller's work.
+          void client.invalidateQueries({ predicate: current => current === query }, { cancelRefetch: false })
+        }
+      }, () => {})
+    }
+  }
+  const refreshing = client.invalidateQueries({ predicate: query => cached.has(query) })
+  const generations = new Map([...cached].filter(query => query.state.fetchStatus !== 'idle' && query.promise)
     .map(query => [query, query.promise]))
   let timer: ReturnType<typeof setTimeout> | undefined
   try {

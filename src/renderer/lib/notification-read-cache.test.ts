@@ -104,7 +104,7 @@ describe('optimistic notification reads', () => {
     } finally { unsubscribe(); client.clear() }
   })
 
-  it('restarts an unfinished initial count fetch after the read commits', async () => {
+  it('refreshes an initial count fetch that finishes after the read commits', async () => {
     const { client } = seed()
     const key = ['notifications', 'unread-count']
     client.removeQueries({ queryKey: key })
@@ -121,11 +121,49 @@ describe('optimistic notification reads', () => {
       await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
       pending.resolve(response(state()))
       await operation
+      expect(fetchCounts).toHaveBeenCalledTimes(1)
       oldCount.resolve(response())
-      await Promise.resolve()
+      await waitFor(() => expect(client.getQueryData(key)).toEqual({ count: 0 }))
       expect(fetchCounts).toHaveBeenCalledTimes(2)
-      expect(client.getQueryData(key)).toEqual({ count: 0 })
     } finally { oldCount.resolve(response()); unsubscribe(); client.clear() }
+  })
+
+  it('lets an in-flight route loader resolve and leaves its result stale for the mounted observer', async () => {
+    const { client } = seed()
+    const key = ['agents', 'new-route']
+    const initial = deferred()
+    const data = { slug: 'new-route', hasUnreadNotifications: true }
+    const loader = client.ensureQueryData({ queryKey: key, queryFn: async () => { await initial.promise; return data } })
+    vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+    try {
+      await readNotifications(client, { kind: 'notification', id: 'n1' })
+      initial.resolve(response())
+      await expect(loader).resolves.toEqual(data)
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+      const fetchAgent = vi.fn().mockResolvedValue({ ...data, hasUnreadNotifications: false })
+      const unsubscribe = new QueryObserver(client, { queryKey: key, queryFn: fetchAgent, staleTime: Infinity }).subscribe(() => {})
+      try {
+        await waitFor(() => expect(client.getQueryData(key)).toMatchObject({ hasUnreadNotifications: false }))
+      } finally { unsubscribe() }
+    } finally { initial.resolve(response()); client.clear() }
+  })
+
+  it('preserves an initial session error after retries outlast the recovery deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { client } = seed()
+    const key = ['session', 'missing', 'a']
+    const error = new Error('Session not found')
+    const fetchSession = vi.fn().mockRejectedValue(error)
+    const unsubscribe = new QueryObserver(client, {
+      queryKey: key, queryFn: fetchSession, retry: 2, retryDelay: 1000,
+    }).subscribe(() => {})
+    try {
+      vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+      await readNotifications(client, { kind: 'session', sessionId: 'missing' })
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(fetchSession).toHaveBeenCalledTimes(3)
+      expect(client.getQueryState(key)).toMatchObject({ status: 'error', error, fetchStatus: 'idle' })
+    } finally { unsubscribe(); client.clear(); vi.useRealTimers() }
   })
 
   it('reconciles a lost response when the server committed the read', async () => {
@@ -378,14 +416,14 @@ describe('optimistic notification reads', () => {
     const cached = { ...agent(client) }
     const refetch = client.fetchQuery({ queryKey: ['agents'], queryFn: async () => { await stale.promise; return [cached] } })
       .catch(() => undefined)
-    const firstLoad = client.fetchQuery({ queryKey: ['sessions', 'other'], queryFn: async () => { await initial.promise; return [{ id: 'other-session' }] } }).catch(() => undefined)
+    const firstLoad = client.fetchQuery({ queryKey: ['sessions', 'other'], queryFn: async () => { await initial.promise; return [{ id: 'other-session' }] } })
     vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
     await readNotifications(client, { kind: 'all' })
     stale.resolve(response())
     initial.resolve(response())
     await Promise.all([refetch, firstLoad])
     expect(agent(client).notificationPreview).toBeUndefined()
-    expect(client.getQueryData(['sessions', 'other'])).toBeUndefined()
+    expect(client.getQueryData(['sessions', 'other'])).toEqual([{ id: 'other-session' }])
     expect(client.getQueryState(['sessions', 'other'])?.isInvalidated).toBe(true)
     // No observer needs this metadata now, but cancellation must not mark the
     // old value fresh: the next observer should fetch it again.
