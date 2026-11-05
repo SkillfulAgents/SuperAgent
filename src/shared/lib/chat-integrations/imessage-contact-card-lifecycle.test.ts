@@ -33,6 +33,9 @@ vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
 import { getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 
 const INT = 'int-contact-card'
 const MINTED_ID = 'k7x9m2ab3c'

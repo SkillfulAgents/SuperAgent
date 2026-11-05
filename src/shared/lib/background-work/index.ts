@@ -3,8 +3,8 @@
  * implement. docs/background-work.md has the contract and how to add a Task or a
  * Service.
  */
-export { Task, TaskManager } from './task'
-export type { PeriodicOptions, RetryPolicy, TaskContext, TaskResult, TaskSpec } from './task'
+export { emptyPayloadSchema, PassTask, Task, TaskManager } from './task'
+export type { EmptyPayload, PeriodicOptions, RetryPolicy, TaskContext, TaskResult, TaskSpec } from './task'
 export { LocalTaskManager } from './local-task-manager'
 export type { LocalJobInfo, LocalTaskInfo, LocalTaskManagerOptions, TaskFailureContext } from './local-task-manager'
 export { ServiceHost } from './service-host'

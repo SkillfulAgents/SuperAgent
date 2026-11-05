@@ -23,7 +23,7 @@ import {
 } from './spotlight'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
-import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
+import { registerUpdateHandlers, initAutoUpdater, scheduleAutomaticUpdateChecks, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
@@ -1607,6 +1607,7 @@ async function startApp() {
   }
   // Then task dispatch: a request can schedule work as soon as the bind below lands.
   await prepareBackgroundWork()
+  scheduleAutomaticUpdateChecks()
 
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the

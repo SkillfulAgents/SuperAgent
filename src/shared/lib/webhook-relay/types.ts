@@ -8,6 +8,7 @@
  * consumers of their events; they never talk to a relay provider directly.
  */
 
+import type { Service } from '@shared/lib/background-work'
 import type {
   VerificationProfile,
   WebhookEndpoint,
@@ -124,6 +125,8 @@ export interface WebhookRelaySnapshot {
 
 export interface WebhookRelayService {
   readonly kind: 'platform' | 'unavailable'
+  /** The relay's scheduled work, for its service to register. */
+  readonly tasks?: Service['tasks']
   snapshot(): WebhookRelaySnapshot
   /** Called on availability/transport/error changes, not on every claim. */
   onChange(listener: (snapshot: WebhookRelaySnapshot) => void): () => void

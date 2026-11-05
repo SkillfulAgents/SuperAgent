@@ -115,6 +115,9 @@ vi.mock('@shared/lib/db/schema', () => ({
 import { getWebhookRelay, type RelayEvent } from '@shared/lib/webhook-relay'
 import type { FakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 import { triggerManager } from './trigger-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(triggerManager))
 
 const relay = getWebhookRelay() as FakeWebhookRelay
 

@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import path from 'path'
 import type { ApiTarget } from '@shared/lib/api-target'
+import { serviceHost } from '@shared/lib/background-work'
 import { loadSpotlightIndex } from './spotlight-bridge'
 import { SpotlightSync } from './spotlight-sync'
 import {
@@ -44,10 +45,16 @@ export function startSpotlight(options: {
     if (stopped) return
     if (index) {
       sync = new SpotlightSync({ index, baseUrl: options.baseUrl, activeTarget: options.activation.activeTarget })
-      sync.start()
+      // Registered here rather than with the other services: this is a desktop
+      // feature, it starts once the window and the API are up, and it runs
+      // whether or not the rest of the services came up.
+      serviceHost().register(sync)
+      return serviceHost().startService(sync.id)
     } else if (!app.isPackaged) {
       console.log('[Spotlight] Bridge not built; run `npm run build:spotlight-bridge` to index this app.')
     }
+  }).catch((error) => {
+    console.error('[Spotlight] Could not start indexing:', error)
   })
 
   if (pendingIdentifier) {
