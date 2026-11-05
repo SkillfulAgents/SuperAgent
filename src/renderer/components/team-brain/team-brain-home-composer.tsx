@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowUp, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
@@ -15,6 +15,9 @@ import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import type { ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
+import { registerSessionComposerFocus } from '@renderer/components/messages/composer-focus'
+import { agentHomeId } from '@renderer/context/drafts-context'
+import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
 
 /** The card's exit (its `duration-200` in attachment-preview.tsx), and a frame to land. A timer, as reduced motion plays none. */
 const CARD_EXIT_MS = 200 + 50
@@ -26,19 +29,26 @@ const CARD_EXIT_MS = 200 + 50
  * dictation as Agent Home, in the session composer's glass (it floats over
  * the tree); Agent Home's voice-mode and expand buttons are left out.
  */
-export function TeamBrainHomeComposer({ agent, reference, onDismissReference }: {
+export function TeamBrainHomeComposer({ agent, reference, onDismissReference, onFocusRequested }: {
   agent: ApiAgent
   /** What is in focus on the page: sent with the message unless ✕ sets it aside. */
   reference?: ReferenceAttachment | null
   onDismissReference?: () => void
+  /** Something outside asked it for the focus: the file drawer, handing it comments. */
+  onFocusRequested?: () => void
 }) {
   const navigate = useNavigate()
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
 
+  // The agent's home composer, as on its Agent Home: the page's file drawer submits comments here, and a stale
+  // session's "start fresh" hands over its attachments and options with its text.
+  const carryover = useNewSessionCarryover(agent.slug)
   const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
-    draftKey: `team-brain:${agent.slug}`,
+    draftKey: `session:${agentHomeId(agent.slug)}`,
+    initialAttachments: carryover?.attachments,
+    initialOptions: { initialModel: carryover?.model, initialEffort: carryover?.effort, initialSpeed: carryover?.speed },
     references: reference ? [reference] : undefined,
     submitDisabled: !isRuntimeReady,
     agentRuntimeErrorsShownInline: true,
@@ -46,6 +56,12 @@ export function TeamBrainHomeComposer({ agent, reference, onDismissReference }: 
       void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agent.displaySlug ?? agent.slug, sessionId: session.id } })
     },
   })
+
+  const textareaRef = useRef<HTMLDivElement>(null)
+  useEffect(() => registerSessionComposerFocus(agentHomeId(agent.slug), () => {
+    textareaRef.current?.focus()
+    onFocusRequested?.()
+  }), [agent.slug, onFocusRequested])
 
   // One card at a time: what is in focus, or for its exit's length once nothing is, the one that was.
   const [last, setLast] = useState(reference ?? null)
@@ -91,6 +107,7 @@ export function TeamBrainHomeComposer({ agent, reference, onDismissReference }: 
           disabled={isDisabled}
           rows={2}
           dataTestId="team-brain-message-input"
+          textareaRef={textareaRef}
           // The session's glass, more see-through: here the tree, not a thread, is behind it.
           className={cn(FLOATING_COMPOSER_CLASS, 'bg-background/70 supports-[backdrop-filter]:bg-background/45')}
           secureSecrets={{

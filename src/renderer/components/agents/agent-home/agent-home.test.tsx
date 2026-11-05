@@ -669,7 +669,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(capturedComposerOptions.draftKey).toBe('agent:test-agent')
+    expect(capturedComposerOptions.draftKey).toBe('session:agent-home:test-agent')
   })
 
   it('hydrates a carried composer and sends its model and effort on the new session', async () => {

@@ -117,21 +117,22 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUpdateUserSettings: () => ({ mutate: userSettings.save }),
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
-const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false } }))
-vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
+const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false, canUse: true } }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ ...user, canUseAgent: () => user.canUse }) }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
 vi.mock('./team-brain-home-composer', async () => {
   const { createPortal } = await import('react-dom')
   return {
     // With a menu of its own in a portal, as the composer's mention and model pickers are.
-    TeamBrainHomeComposer: ({ agent, reference, onDismissReference }: { agent: { slug: string }; reference?: { name: string } | null; onDismissReference?: () => void }) => (
+    TeamBrainHomeComposer: ({ agent, reference, onDismissReference, onFocusRequested }: { agent: { slug: string }; reference?: { name: string } | null; onDismissReference?: () => void; onFocusRequested?: () => void }) => (
       <div data-testid="team-brain-composer">
         {agent.slug}
         <textarea aria-label="Message" />
         <button type="button">Model</button>
         {createPortal(<button type="button">Mention</button>, document.body)}
         {reference && <button type="button" onClick={onDismissReference}>{reference.name}</button>}
+        <button type="button" data-testid="comments-in" onClick={onFocusRequested} />
       </div>
     ),
   }
@@ -142,13 +143,13 @@ vi.mock('@renderer/router/use-route-location', () => ({ useRouteLocation: () => 
 vi.mock('@renderer/components/tray/tray-manager', async () => {
   const { useFilePreview } = await import('@renderer/context/file-preview-context')
   return {
-    TrayManager: ({ narrowDrawer }: { narrowDrawer?: boolean }) => {
-      const { openTabs, isOpen, setActiveTab } = useFilePreview()
+    TrayManager: ({ narrowDrawer, sessionId }: { narrowDrawer?: boolean; sessionId: string }) => {
+      const { openTabs, isOpen, setActiveTab, commentsEnabled } = useFilePreview()
       return (
-        <ul data-testid="drawer-tabs" data-open={isOpen} data-narrow={narrowDrawer || undefined}>
+        <ul data-testid="drawer-tabs" data-open={isOpen} data-narrow={narrowDrawer || undefined} data-comments={commentsEnabled || undefined} data-drawer={sessionId}>
           {openTabs.map((tab, i) => (
             <li key={tab.displayName}>
-              <button type="button" onClick={() => setActiveTab(i)}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</button>
+              <button type="button" onClick={() => setActiveTab(i)}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.kind === 'file' ? `${tab.filePath} (${tab.agentSlug})` : tab.displayName}</button>
             </li>
           ))}
           <li><a href="#linked-page">Linked page</a></li>
@@ -169,6 +170,7 @@ const BRAIN: ApiAgent = {
 }
 
 beforeEach(() => {
+  user.canUse = true
   sessions.chats = []
   app.mount = 'ready'
   app.pollFailed = false
@@ -212,16 +214,16 @@ describe('TeamBrainOverview', () => {
     expect(within(radial).getByRole('img', { name: /radial tree of \d+ pages/ })).toBeInTheDocument()
     expect(within(radial).queryByTestId('team-brain-radial-node-/')).toBeNull()
     await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/customers/acme (team-brain)')
     // A page's name opens it as well as its dot.
     await userEvent.click(within(within(radial).getByTestId('team-brain-radial-node-customers/hooli')).getByText('Hooli'))
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Hooli.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/customers/hooli (team-brain)')
     // So does the line to it, which also picks the page out on hover.
     const line = within(radial).getByTestId('team-brain-radial-branch-customers/northwind')
     await userEvent.hover(line)
     expect(within(within(radial).getByTestId('team-brain-radial-node-customers/northwind')).getByText('Northwind')).toHaveClass('font-medium')
     await userEvent.click(line)
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Northwind.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/customers/northwind (team-brain)')
     await userEvent.unhover(line)
 
     // A folder clicked keeps its branch lit, turns round to three o'clock (on the ring, straight right of the middle) and zooms to its branch.
@@ -250,6 +252,26 @@ describe('TeamBrainOverview', () => {
       expect(zoom()).toBeCloseTo(fitted)
     }, { timeout: 3000 })
     width.mockRestore()
+  })
+
+  it('steps the drawer aside once its comments are handed to the composer, so Send is in reach', async () => {
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
+    const drawer = screen.getByTestId('drawer-tabs')
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    fireEvent.click(screen.getByTestId('comments-in'))
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+  })
+
+  it('takes comments on its pages only from someone who can send to its agent, into its Agent Home composer', () => {
+    const view = render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-comments', 'true')
+    // The drawer is the agent's Agent Home drawer, whose comments its composer reads (session:agent-home:<slug>).
+    expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-drawer', 'agent-home:team-brain')
+    view.unmount()
+    user.canUse = false
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('drawer-tabs')).not.toHaveAttribute('data-comments')
   })
 
   it('steps the drawer aside while the composer has focus, and back once the drawer is used', async () => {
@@ -281,7 +303,7 @@ describe('TeamBrainOverview', () => {
     // A press alone leaves it, so nothing moves under the pointer, and so does a click on one of its buttons.
     fireEvent.pointerDown(drawer)
     expect(drawer).toHaveAttribute('data-narrow', 'true')
-    await userEvent.click(within(drawer).getByRole('button', { name: 'Acme Corp.md (own source)' }))
+    await userEvent.click(within(drawer).getByRole('button', { name: '/mounts/Team Brain/customers/acme (team-brain)' }))
     expect(drawer).toHaveAttribute('data-narrow', 'true')
     await userEvent.click(within(drawer).getByRole('link', { name: 'Linked page' }))
     expect(drawer).toHaveAttribute('data-narrow', 'true')
@@ -342,9 +364,9 @@ describe('TeamBrainOverview', () => {
     await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
     await userEvent.click(screen.getByRole('button', { name: 'Hooli.md' }))
     expect(screen.queryByRole('button', { name: 'Hooli.md' })).toBeNull()
-    await userEvent.click(within(drawer).getByText('Acme Corp.md (own source)'))
+    await userEvent.click(within(drawer).getByText('/mounts/Team Brain/customers/acme (team-brain)'))
     expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
-    await userEvent.click(within(drawer).getByText('Hooli.md (own source)'))
+    await userEvent.click(within(drawer).getByText('/mounts/Team Brain/customers/hooli (team-brain)'))
     expect(screen.getByRole('button', { name: 'Hooli.md' })).toBeInTheDocument()
 
     // With a page open, choosing a folder puts the page away and the folder is the card.
@@ -423,7 +445,7 @@ describe('TeamBrainOverview', () => {
 
     // A page opened from the tree takes the panel's place; the settings button brings it back and hides it again.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('README.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/readme (team-brain)')
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     await userEvent.click(screen.getByTestId('team-brain-menu'))
@@ -449,7 +471,7 @@ describe('TeamBrainOverview', () => {
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
     await userEvent.click(screen.getByTestId('team-brain-sync-page-Customers/Acme Corp.md'))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/Customers/Acme Corp.md (team-brain)')
     await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
@@ -461,7 +483,7 @@ describe('TeamBrainOverview', () => {
     fireEvent.pointerUp(tree, { button: 0, pointerId: 1 })
     fireEvent.click(tree)
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Hooli.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/customers/hooli (team-brain)')
     // A press on the background, though, is a click off the drawer: the first steps it aside, the second puts it away.
     const pressBackground = () => {
       fireEvent.pointerDown(tree, { button: 0, pointerId: 1 })
@@ -616,7 +638,7 @@ describe('TeamBrainOverview', () => {
     expect(screen.getByTestId('team-brain-composer')).toHaveTextContent('team-brain')
     // A page in the drive opens in the file drawer, from its own text.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('README.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/readme (team-brain)')
     // Each sync is summed up like a changelog, newest first and marked Latest.
     const syncs = screen.getByTestId('team-brain-syncs')
     expect(within(syncs).getByRole('heading', { name: 'Sync summaries' })).toBeInTheDocument()
@@ -637,7 +659,7 @@ describe('TeamBrainOverview', () => {
     expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug/sessions/$sessionId', params: { slug: 'team-brain', sessionId: 's-1' } })
     // A page named in a summary opens from the drive in the drawer.
     await userEvent.click(within(latest).getByTestId('team-brain-sync-page-Customers/Acme Corp.md'))
-    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
+    expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('/mounts/Team Brain/Customers/Acme Corp.md (team-brain)')
 
     // The settings button opens the settings drawer, where turning off sits at the foot.
     await userEvent.click(screen.getByTestId('team-brain-menu'))
