@@ -1112,6 +1112,32 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(sessions().isActive(SESSION_ID)).toBe(false)
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     })
+
+    it('cancelAwaitingInput leaves an idle session alone when only its own parked card makes it wait', async () => {
+      client.emit({ type: 'result', subtype: 'success', num_turns: 1 })
+      expect(sessions().isActive(SESSION_ID)).toBe(false)
+      userInputRequestManager.register({
+        id: 'idle-own-review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
+      sessions().syncAwaiting()
+      expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
+      const globalEvents = globalFeedFromNow()
+
+      await sessions().cancelAwaitingInput(SESSION_ID)
+
+      const interruptUrls = live.runtime.containerFetch.mock.calls
+        .map((call) => call[0])
+        .filter((url): url is string => typeof url === 'string' && url.endsWith('/interrupt'))
+      expect(interruptUrls).toHaveLength(0)
+      expect(globalEvents().filter((e) => e.type === 'session_idle')).toHaveLength(0)
+      expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'idle-own-review-1')).not.toBeNull()
+    })
   })
 
   // ==========================================================================

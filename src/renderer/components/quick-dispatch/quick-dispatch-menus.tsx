@@ -80,7 +80,7 @@ export function AgentMenu({
               onClick={() => onSelect(agent.slug)}
               data-testid="quick-dispatch-agent-option"
               className={cn(
-                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent',
+                'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left text-sm hover:bg-accent',
                 agent.slug === selectedSlug && 'bg-accent',
               )}
             >
@@ -196,12 +196,12 @@ export function AttachMenu({
               type="button"
               disabled={loadingPath !== null}
               onClick={() => handleRecent(f.path)}
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"
+              className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"
             >
               {loadingPath === f.path ? (
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
               ) : f.thumbnail ? (
-                <img src={f.thumbnail} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" />
+                <img src={f.thumbnail} alt="" className="h-5 w-5 shrink-0 rounded-control object-cover" />
               ) : (
                 <FileTypeIcon filename={f.name} size="sm" className="text-muted-foreground" />
               )}
@@ -213,14 +213,14 @@ export function AttachMenu({
       <button
         type="button"
         onClick={() => fileRef.current?.click()}
-        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+        className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-accent"
       >
         <FileIcon className="h-4 w-4" /> Files
       </button>
       <button
         type="button"
         onClick={() => folderRef.current?.click()}
-        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+        className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-accent"
       >
         <FolderOpen className="h-4 w-4" /> Folder
       </button>

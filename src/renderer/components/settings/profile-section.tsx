@@ -16,7 +16,7 @@ import { cn } from '@shared/lib/utils'
 import { ProfilePhoto } from './profile-photo'
 
 // Shared with the Account tab's other sections so this card looks native there.
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 const VALUE_CLASS = 'text-xs text-muted-foreground truncate max-w-[260px]'
 const FIELD_CLASS = 'h-8 text-xs w-full md:w-[260px]'

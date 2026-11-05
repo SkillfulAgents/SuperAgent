@@ -232,7 +232,7 @@ export function XAgentReviewRequestItem({
   const invokeDetails = xAgent.operation === 'invoke' ? (
     <>
       {xAgent.preview && (
-        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+        <div className="mt-3 rounded-card border border-border bg-background px-3 py-2">
           <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <MessageSquare className="h-3 w-3" />
             <span>Message preview</span>
@@ -241,7 +241,7 @@ export function XAgentReviewRequestItem({
         </div>
       )}
       {!!attachments?.length && (
-        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+        <div className="mt-3 rounded-card border border-border bg-background px-3 py-2">
           <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <Paperclip className="h-3 w-3" />
             <span>{attachments.length} {attachments.length === 1 ? 'file' : 'files'} to share</span>
@@ -262,7 +262,7 @@ export function XAgentReviewRequestItem({
     </>
   ) : null
   const downloadDetails = xAgent.fileTransfer?.kind === 'download' ? (
-    <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground/85">
+    <div className="mt-3 rounded-item border border-border bg-background px-3 py-2 text-xs text-foreground/85">
       {xAgent.fileTransfer.filename}
     </div>
   ) : null
@@ -354,7 +354,7 @@ export function XAgentReviewRequestItem({
                         className="h-auto justify-start py-2 text-foreground hover:bg-muted"
                       >
                         <span className="flex flex-col items-start text-left">
-                          <span>Always allow reading <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
+                          <span>Always allow reading <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
                             Lets this agent read sessions and transcripts. File downloads require one-time approval.
                           </span>
@@ -388,7 +388,7 @@ export function XAgentReviewRequestItem({
                         className="h-auto justify-start py-2 text-foreground hover:bg-muted"
                       >
                         <span className="flex flex-col items-start text-left">
-                          <span>Always allow messaging <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
+                          <span>Always allow messaging <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
                             Send-only — sync responses are returned, but browsing history still prompts
                           </span>
@@ -418,7 +418,7 @@ export function XAgentReviewRequestItem({
                         className="h-auto justify-start py-2 text-foreground hover:bg-muted"
                       >
                         <span className="flex flex-col items-start text-left">
-                          <span>Always allow reading <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span> (this time only)</span>
+                          <span>Always allow reading <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span> (this time only)</span>
                           <span className="text-xs font-normal text-muted-foreground/80">
                             View-only access to history; future <code className="font-mono">invoke</code> calls still prompt
                           </span>

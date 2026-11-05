@@ -250,6 +250,14 @@ function remoteMcpViews(): RemoteMcpView[] {
   }));
 }
 
+/** Read by the host's MCP proxy to show a card in the calling session only. */
+const CALLER_SESSION_HEADER = 'x-superagent-session-id';
+
+/** The host's account proxy accepts `<agent base>/s/<session>/<account>/...`. */
+export function sessionProxyBaseUrl(agentBaseUrl: string, sessionId: string): string {
+  return `${agentBaseUrl.replace(/\/+$/, '')}/s/${encodeURIComponent(sessionId)}`;
+}
+
 /** Env vars the agent may read directly — the proxy's own vars are documented separately. */
 function agentEnvVars(availableEnvVars?: string[]): string[] {
   const proxyEnvVars = new Set(['PROXY_BASE_URL', 'PROXY_TOKEN', 'CONNECTED_ACCOUNTS']);
@@ -350,7 +358,8 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  drives: { nameJson: string; pathJson: string; readOnly: boolean }[];
+  drives: { nameJson: string; pathJson: string; readOnly: boolean; sourceJson?: string }[];
+  driveNotes: string[];
   mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
@@ -424,9 +433,10 @@ export function buildSystemPromptVars(
     hasEnvVars: envVars.length > 0,
     envVars,
     hasMounts: drives.length > 0,
-    // Names and paths render as JSON string literals. Both are user bytes, and
+    // Names, paths and sources render as JSON string literals. All are user bytes, and
     // a raw newline or `#` in them would read as prompt structure.
-    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly })),
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly, sourceJson: d.sourceLabel && JSON.stringify(d.sourceLabel) })),
+    driveNotes: [...new Set(drives.flatMap((d) => d.agentNote ?? []))],
     mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
@@ -888,7 +898,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       configs[sanitizedName] = {
         type: 'http',
         url: mcp.proxyUrl,
-        headers: proxyToken ? { 'Authorization': `Bearer ${proxyToken}` } : undefined,
+        headers: {
+          ...(proxyToken && { 'Authorization': `Bearer ${proxyToken}` }),
+          [CALLER_SESSION_HEADER]: this.claudeSessionId || this.sessionId,
+        },
         // The proxy parks tool calls while the user approves them, which can
         // take arbitrarily long. CLI 2.1.219 aborts HTTP MCP requests after
         // 60s by default (plus a 5-min idle watchdog); this per-server
@@ -1239,6 +1252,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         // in and reading it back as prior work (seen live). Pinned after the
         // customEnvVars spread so an agent-set value cannot mask it.
         GAMUT_SESSION_ID: this.claudeSessionId || this.sessionId,
+        // Names this session in every proxied call, so a re-auth or API review
+        // card the call raises shows in this session only. Pinned for the
+        // same reason as GAMUT_SESSION_ID.
+        ...(process.env.PROXY_BASE_URL && {
+          PROXY_BASE_URL: sessionProxyBaseUrl(process.env.PROXY_BASE_URL, this.claudeSessionId || this.sessionId),
+        }),
         // CLI 2.1.212+ moves MCP tool calls that run >2min to a background
         // task. Our blocking user-input tools (request_user_input et al.)
         // legitimately block far longer than that waiting on a human, and

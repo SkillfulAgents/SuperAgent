@@ -157,7 +157,7 @@ export function McpServerCard({
   const editChildren = (
     <>
       <div className="flex min-w-0 max-w-[344px] grow basis-40 items-center gap-2">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-control border border-border bg-white dark:bg-background">
           <McpSourceIcon slug={serverSlug} />
         </div>
         <Input
@@ -200,14 +200,14 @@ export function McpServerCard({
     // the single-card variant wraps the flex row in an inner div.
     if (onToggle) {
       return (
-        <div className="flex flex-wrap items-center gap-2 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+        <div className="flex flex-wrap items-center gap-2 rounded-card border border-border bg-white px-4 py-3 dark:bg-background">
           {editChildren}
         </div>
       )
     }
 
     return (
-      <div className="rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+      <div className="rounded-card border border-border bg-white px-4 py-3 dark:bg-background">
         <div className="flex flex-wrap items-center gap-2">
           {editChildren}
         </div>
@@ -234,7 +234,7 @@ export function McpServerCard({
       {rowReconnect}
       <div className="flex min-w-0 grow basis-40 items-center gap-2">
         {checkbox}
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-background">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-control border border-border bg-white dark:bg-background">
           <McpSourceIcon slug={serverSlug} />
         </div>
         <div className="min-w-0 flex-1">
@@ -276,7 +276,7 @@ export function McpServerCard({
           }
         }}
         className={cn(
-          'group flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-[12px] border pl-3 pr-4 py-3 text-left transition-colors',
+          'group flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-card border pl-3 pr-4 py-3 text-left transition-colors',
           selected
             ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
             : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
@@ -290,7 +290,7 @@ export function McpServerCard({
 
   // Static display variant (single selected server)
   return (
-    <div className="group rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
+    <div className="group rounded-card border border-border bg-white px-4 py-3 dark:bg-background">
       <div className="flex flex-wrap items-center gap-2">
         {displayContent}
       </div>

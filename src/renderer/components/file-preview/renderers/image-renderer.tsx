@@ -35,7 +35,7 @@ export function ImageRenderer({ url, filePath, agentSlug }: ImageRendererProps) 
           <img
             src={url}
             alt={filePath.split('/').pop() || 'Preview'}
-            className={`max-w-full max-h-[60vh] object-contain rounded ${enabled ? 'cursor-crosshair' : ''}`}
+            className={`max-w-full max-h-[60vh] object-contain rounded-card ${enabled ? 'cursor-crosshair' : ''}`}
             onLoad={() => setLoaded(true)}
             onError={() => setFailed(true)}
           />

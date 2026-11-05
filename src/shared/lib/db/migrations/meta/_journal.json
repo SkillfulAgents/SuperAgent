@@ -435,6 +435,13 @@
       "when": 1793208365492,
       "tag": "0061_user_ownership_fks",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "6",
+      "when": 1793838676102,
+      "tag": "0062_chat_integration_version",
+      "breakpoints": true
     }
   ]
 }

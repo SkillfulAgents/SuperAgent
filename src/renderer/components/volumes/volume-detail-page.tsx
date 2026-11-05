@@ -133,7 +133,7 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
   }
   return <section className="space-y-2">
     <h3 className="text-xs font-normal text-muted-foreground">Settings</h3>
-    <form className="rounded-xl border bg-background p-4 space-y-4" onSubmit={event => { event.preventDefault(); void submit() }}>
+    <form className="rounded-card border bg-background p-4 space-y-4" onSubmit={event => { event.preventDefault(); void submit() }}>
       <VolumeDetailsFields showName={false} value={{ name: volume.name, visibility }} onChange={next => { setVisibility(next.visibility); setSaved(false); setError(null) }} disabled={save.isPending} inUse={volume.attachmentCount > 0}>
         <div className="space-y-1"><p className="text-sm font-medium">Folder</p><p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p>{volume.pickFolderAgain && <ChooseFolderAgain volume={volume} />}</div>
       </VolumeDetailsFields>
@@ -158,7 +158,7 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelet
   return <div className="space-y-4 w-full max-w-6xl mx-auto" data-testid="volume-detail-page">
     <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground"><ChevronLeft className="h-3.5 w-3.5 mr-1" />{backLabel}</Button>
     <div className="flex items-center gap-3">
-      <div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center shrink-0"><VolumeIcon type={volume.type} className="h-5 w-5" /></div>
+      <div className="h-10 w-10 rounded-control bg-muted flex items-center justify-center shrink-0"><VolumeIcon type={volume.type} className="h-5 w-5" /></div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <InlineEditableTitle

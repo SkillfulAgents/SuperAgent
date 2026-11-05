@@ -220,10 +220,10 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
         <div
           key={attachment.id}
           className={cn(
-            'relative rounded-md border bg-background text-xs',
+            'relative border bg-background text-xs',
             imageChip
-              ? 'h-11 w-11 shrink-0 overflow-hidden'
-              : 'flex items-center gap-2 py-1.5 pl-2 pr-7',
+              ? 'h-11 w-11 shrink-0 rounded-control overflow-hidden'
+              : 'flex items-center rounded-card gap-2 py-1.5 pl-2 pr-7',
             attachment.error && 'border-destructive/50 bg-destructive/10',
             // A reference arrives and leaves on its own, so it animates both ways.
             attachment.type === 'reference' && (attachment.leaving

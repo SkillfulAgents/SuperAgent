@@ -23,7 +23,7 @@ export function StopSessionButton({ sessionId, agentSlug }: StopSessionButtonPro
       title="Stop session"
       data-testid="request-stop-session"
       className={cn(
-        'inline-flex h-5 w-5 items-center justify-center rounded text-foreground transition-colors',
+        'inline-flex h-5 w-5 items-center justify-center rounded-control text-foreground transition-colors',
         interrupt.isPending ? 'cursor-not-allowed opacity-40' : 'hover:bg-muted'
       )}
     >

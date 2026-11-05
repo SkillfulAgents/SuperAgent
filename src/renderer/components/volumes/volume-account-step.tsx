@@ -131,7 +131,7 @@ export function VolumeRemoteDetailsStep({ label, accountName, active, details, o
   children: ReactNode
 }) {
   return <form className="space-y-4" onSubmit={event => { event.preventDefault(); if (active && canSave) onSave() }}>
-    <p className="rounded-md bg-muted/50 px-3 py-2 text-sm" data-testid="selected-volume-account">{accountName ?? `${label} account`}</p>
+    <p className="rounded-item bg-muted/50 px-3 py-2 text-sm" data-testid="selected-volume-account">{accountName ?? `${label} account`}</p>
     {!active && <p role="alert" className="text-sm text-destructive">This account is unavailable. Go back to choose or connect a {label} account.</p>}
     <VolumeDetailsFields value={details} onChange={onDetailsChange} disabled={isSaving}>{children}</VolumeDetailsFields>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
