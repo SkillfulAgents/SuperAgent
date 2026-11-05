@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA-20261105-185419-ts8j agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and reports it back to the user.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with sidebar showing agents.",
+    "Step 2 - Found and clicked the \"QA-20261105-185419-ts8j\" agent in the sidebar — Successfully navigated to the agent's page showing the chat interface and configuration options.",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered into the input field and sent via the Send message button. Agent status changed to \"working\".",
+    "Step 4 - Waited up to 3 minutes for a response — Agent completed processing in approximately 4 seconds (worked for 4s, used 3 tool calls, consumed 159,952 tokens).",
+    "Step 5 - Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The page title is \"Example Domain\". The browser loaded https://example.com without errors, and I closed it after reading the title.\" Screenshot saved as qa-test-result.png showing the complete conversation with the verified response."
+  ],
+  "bugs": [],
+  "durationMs": 57446,
+  "sessionId": "c84eea74-3115-42d0-8c43-6d0d96aeae52",
+  "cost": {
+    "inputTokens": 320,
+    "outputTokens": 9632,
+    "cacheCreationTokens": 73713,
+    "cacheReadTokens": 888824,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.229504
+  }
+}
