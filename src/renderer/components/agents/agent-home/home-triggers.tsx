@@ -40,7 +40,7 @@ import {
   type WebhookTrigger,
 } from '@renderer/hooks/use-webhook-triggers'
 import { formatDistanceToNow } from 'date-fns'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
@@ -201,13 +201,10 @@ export function HomeTriggers({
           )}
         </div>
       ) : (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No triggers yet</p>
-          <p className="text-xs mt-1">
-            Triggers fire your agent — on a schedule (crons) or in response to events (webhooks).
-            Your agent will create them as needed.
-          </p>
-        </div>
+        <HomeEmptyState
+          title="No triggers yet"
+          description="Triggers fire your agent — on a schedule (crons) or in response to events (webhooks). Your agent will create them as needed."
+        />
       )}
     </HomeCollapsible>
   )
