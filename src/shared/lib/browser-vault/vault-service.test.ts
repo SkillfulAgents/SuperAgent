@@ -1,14 +1,12 @@
-import crypto from 'crypto'
-import fs from 'fs'
-import os from 'os'
-import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agentBrowserAccounts, agents, auditLog, browserAccounts, browserAccountSessions, user } from '@shared/lib/db/schema'
-import { resetVaultKeyCache, sealJson } from './vault-crypto'
+import { KeyUnavailableError } from '@shared/lib/keys/key-manager'
+import { installTestKeyManager, uninstallKeyManager, type MemoryKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
+import { sealJson } from './vault-crypto'
 
 let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
@@ -34,22 +32,18 @@ const {
   saveAccount,
   switchAccountToVia,
   VaultConflictError,
+  VaultUnavailableError,
 } = await import('./vault-service')
 
 let handle: TestDatabase
-let dataDir: string
+let keys: MemoryKeyManager
 
-beforeAll(() => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-service-'))
-  vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
-  vi.stubEnv('BETTER_AUTH_SECRET', '')
-  resetVaultKeyCache()
+beforeAll(async () => {
+  keys = await installTestKeyManager()
 })
 
 afterAll(() => {
-  vi.unstubAllEnvs()
-  resetVaultKeyCache()
-  fs.rmSync(dataDir, { recursive: true, force: true })
+  uninstallKeyManager()
 })
 
 beforeEach(async () => {
@@ -183,21 +177,49 @@ describe('saveAccount', () => {
   it('does not save over an account it cannot unlock, unless every part it holds is entered again', async () => {
     const { account } = await saveAccount({ ...github, username: 'octocat', values: { password: 'pw', 'text:workspace': 'acme' } })
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-    // Another vault key (the key file lost, and a new one made): the seal no longer opens.
-    const keyFile = path.join(dataDir, '.vault-key')
-    const original = fs.readFileSync(keyFile, 'utf-8')
-    fs.writeFileSync(keyFile, crypto.randomBytes(32).toString('base64'))
-    resetVaultKeyCache()
+    // Another vault key (the key lost, and a new one made): the seal no longer opens.
+    const original = (await keys.key('browser-vault')).export()
+    keys.replaceKey('browser-vault')
     try {
       expect(await readAccountValues(account.id)).toEqual({})
       await expect(saveAccount({ ...github, username: 'octocat', values: { password: 'new' } })).rejects.toBeInstanceOf(VaultConflictError)
       await saveAccount({ ...github, username: 'octocat', values: { password: 'new', 'text:workspace': 'acme' } })
       expect(await readAccountValues(account.id)).toEqual({ password: 'new', 'text:workspace': 'acme' })
     } finally {
-      fs.writeFileSync(keyFile, original)
-      resetVaultKeyCache()
+      keys.replaceKey('browser-vault', original)
       errors.mockRestore()
     }
+  })
+
+  it('fills nothing and saves nothing while the vault key cannot be had, saying what to do', async () => {
+    const { account } = await saveAccount({ ...github, username: 'octocat', values: { password: 'pw', 'text:workspace': 'acme' } })
+    const before = await testDb.select().from(browserAccounts).where(eq(browserAccounts.id, account.id)).get()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    keys.makeUnavailable(new KeyUnavailableError('browser-vault', 'secure-storage-unavailable', 'keychain locked (log detail)', 'Unlock your keychain, then try again.'))
+    try {
+      expect(await readAccountValues(account.id)).toEqual({})
+      // Not even with every part entered: the lock is not a lost key, and the old seal must survive it.
+      const saving = saveAccount({ ...github, username: 'octocat', values: { password: 'new', 'text:workspace': 'acme' } })
+      await expect(saving).rejects.toBeInstanceOf(VaultUnavailableError)
+      await expect(saving).rejects.toThrow('Unlock your keychain, then try again.')
+      await expect(saveAccount({ ...github, username: 'someone-new', values: { password: 'x' } })).rejects.toBeInstanceOf(VaultUnavailableError)
+      // An account with only a password needs no key to sign in through a provider instead.
+      const google = await saveAccount({ owner: null, site: 'google.com', origin: 'https://accounts.google.com', username: 'me@gmail.com' })
+      const { account: pwOnly } = await (async () => {
+        keys.makeUnavailable(null)
+        const saved = await saveAccount({ ...github, username: 'pw-only', values: { password: 'p' } })
+        keys.makeUnavailable(new KeyUnavailableError('browser-vault', 'secure-storage-unavailable', 'locked', 'Unlock your keychain, then try again.'))
+        return saved
+      })()
+      expect((await switchAccountToVia({ owner: null, accountId: pwOnly.id, viaAccountId: google.account.id })).parts).toEqual([])
+    } finally {
+      keys.makeUnavailable(null)
+      errors.mockRestore()
+    }
+    const after = await testDb.select().from(browserAccounts).where(eq(browserAccounts.id, account.id)).get()
+    expect(after?.secrets).toBe(before?.secrets)
+    expect(await readAccountValues(account.id)).toEqual({ password: 'pw', 'text:workspace': 'acme' })
+    expect(await testDb.select().from(browserAccounts).where(eq(browserAccounts.usernameKey, 'someone-new')).all()).toEqual([])
   })
 
   it('marks an account the agent says the site turned down, until the user enters its password again', async () => {
@@ -316,7 +338,7 @@ describe('grants', () => {
       id: 'session-1',
       accountId: account.id,
       browserType: 'container',
-      bundle: sealJson<unknown>({ version: 1 }, { purpose: 'account-session', id: 'session-1', site: 'github.com' }, z.unknown()),
+      bundle: await sealJson<unknown>({ version: 1 }, { purpose: 'account-session', id: 'session-1', site: 'github.com' }, z.unknown()),
       capturedAt: new Date(),
       createdAt: new Date(),
       updatedAt: new Date(),
