@@ -9,6 +9,7 @@ import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { background } from './background'
+import { initializeLocalBackgroundWork, isBackgroundWorkInitialized, serviceHost } from './background-work'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -71,6 +72,16 @@ function scheduleStartupIo(
 /** Non-null when background-service init failed and the server runs degraded. */
 export function getServicesInitError(): string | null {
   return servicesInitError
+}
+
+/**
+ * Task dispatch and the service registry. An entry point awaits this after the
+ * database, AppState and key custody and before it serves anything, since a
+ * request can schedule work as soon as the API is bound. Checked and installed
+ * in one step, so the dev server can repeat it for each request.
+ */
+export async function prepareBackgroundWork(): Promise<void> {
+  if (!isBackgroundWorkInitialized()) await initializeLocalBackgroundWork()
 }
 
 /** Idempotent; call only via afterBindInitialize (or tests). */
@@ -173,6 +184,8 @@ async function initializeServicesInner() {
   const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
   await ensureManagedPlatformConnection()
   markBoot('dbReady')
+
+  await serviceHost().start('eager')
 
   // The host's one connection to the platform webhook queue, shared by every
   // feature that receives webhooks. Cheap to start: it claims nothing until a
@@ -277,6 +290,8 @@ async function initializeServicesInner() {
 
   // Refreshes platform account + billing info when connected (no-op otherwise).
   platformService.start()
+
+  background(serviceHost().start('background'), { name: 'startup.start-background-services' })
 }
 
 /** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
@@ -300,6 +315,9 @@ export function setupServerHandlers(server: ServerType): void {
 export async function shutdownServices() {
   servicesShuttingDown = true
   stopStaleUploadCleanup()
+  // Nothing before this point has started anything: the entry point installs
+  // background work before it serves.
+  if (isBackgroundWorkInitialized()) await serviceHost().stop()
   stopBrowserProfileCleanup()
   agentIntegrationManager.stop()
   await credentialBroker.shutdown()
