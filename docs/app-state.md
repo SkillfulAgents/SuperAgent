@@ -115,3 +115,56 @@ Typed helpers over the strong operations, for limits that several consumers shar
 
 - **`defineFixedWindow({ name, limit, windowMs })`** (`fixed-window.ts`): at most `limit` hits per key in a window that opens at the key's first hit and closes `windowMs` later. `hit(key)` is one bounded `increment` on a `keep` namespace, so a refused hit is not counted, and no hit moves the window's end: a burst late in a window does not extend it. It resolves to `{ admitted, count, remaining, resetAt }`. The auth and LLM rate limits use it.
 - **`defineLockout({ name })`** (`lockout.ts`): failures per key, with no expiry, until a success clears them. `failed(key, policy)` counts one failure, and the failure that reaches `policy.threshold` locks the key for `policy.lockMs`, as does each one after it. `check(key, policy)` says whether the key is locked, and clears a lock that has run out. `succeeded(key, status)` clears the failures that the unlocked `check` saw, and keeps any failure counted since. Every write is conditional on the revision it was decided from, and a conflict is decided again from the current record. The account lockout uses it.
+
+## Helpers: owned leases
+
+**`defineLease({ name, ttlMs, renewEveryMs? })`** (`lease.ts`) lets at most one owner hold a key at a time. The lease ends when the owner releases it, or when `ttlMs` passes without a renewal. Every acquisition is a new owner with a random id. The revision of the owner's last write is its fence.
+
+A holder judges how long it has the lease by its own clock alone:
+
+- It reads `Date.now()` before it sends an acquire or a renewal. The backend can only have written the lease after that, so the lease is held at least until `sent + ttlMs`. That is the held lease's `heldUntil`.
+- An answer that arrives at or after `heldUntil` counts as not held, however the backend answered. A late acquire returns null, and a late renewal counts as lost. In both cases the write is released if it is still there, so it does not block the next owner.
+- The backend's own expiry is never compared with this process's clock, so clock skew between the two plays no part.
+
+The operations:
+
+- `acquire(key)` is one `insertIfAbsent`. It returns the held lease, or null while another owner holds the key.
+- `renew(lease)` is a `compareAndSet` against the held revision, with a fresh `ttlMs`. Once the lease has lapsed its revision never matches again, so renewal returns null even after another owner has taken the key.
+- `release(lease)` is `consume({ revision })`. A stale owner's release does nothing to a successor's lease.
+- `hold(lease, work)` runs `work` while the lease is held:
+  - It renews every `renewEveryMs` (by default a third of `ttlMs`), one renewal at a time.
+  - It aborts `holding.signal` with `LeaseLostError` when a renewal finds the lease gone, is answered too late, or cannot reach AppState. It also aborts at `heldUntil` if no renewal has landed by then, so a renewal that never answers still ends the holding.
+  - It releases the lease when the work settles.
+- `holding.confirm({ minRemainingMs })` renews at once. It resolves only if the renewal is answered in time and the lease is then held for at least `minRemainingMs` more (default 0). Otherwise it aborts the signal, releases the lease and throws `LeaseLostError`.
+  - Call it right before a request or a write only the holder may make, with nothing awaited in between.
+  - Before a request, pass the request's timeout, so the request cannot outlive the lease even if no later renewal lands. Before a write, pass a margin for the write.
+- `acquireWhenFree(key, { timeoutMs, whileWaiting })` waits while another owner holds the key. It tries again at 50 ms, doubling up to 1 s, and throws `LeaseWaitTimeoutError` after `timeoutMs`. A `whileWaiting` result other than undefined ends the wait without the lease, for when the work was done elsewhere: a waiter re-reading the row its holder writes, for example.
+
+A lease fences AppState writes, and nothing else:
+
+- A request the holder has already sent keeps running after its lease lapses.
+- A write elsewhere, to the database or a provider, needs its own condition.
+
+So pick a TTL longer than the longest request plus the time one renewal takes. Confirm with the request's timeout before sending, confirm with a margin before writing, and keep the write conditional too. If a holder that lost its lease may leave an unknown side effect behind, such as a rotated token, record that next to the lease. Use a key that outlives the lease, so the next holder can see it.
+
+The GitHub and Linear clients use it, each with a 30 s lease:
+
+- GitHub installation-token minting uses `claim:github-token`. It confirms with the 20 s request timeout before minting. Each process still mints and caches its own token. The claim only keeps two processes from minting at the same time.
+- Linear's rotating-token refresh uses `claim:linear-token-refresh`. It confirms with the 15 s exchange timeout before sending, and with 5 s before saving or revoking. Unresolved exchanges are recorded in `linear:unresolved-exchange`.
+
+## Helper: reducing one record
+
+- **`reduceRecord(key, reduce)`** (`reduce-record.ts`): the compare-and-set loop for a strong record that several writers change. `reduce` gets the stored value (null when absent) and returns `{ result }` to write nothing, `{ result, value, expiry? }` to write `value`, or `{ result, value: null }` to delete the record. The write is conditional on the revision the decision was made from. After a conflict, `reduce` decides again from the `current` the conflict returned, up to 64 times, then it throws. `reduce` can run more than once, so it must have no side effects: act on the result once `reduceRecord` resolves.
+
+## Voice session admission
+
+A user may hold four Live voice sessions at once, counting the ones a provider is still creating (`src/shared/lib/voice/live-session-admission.ts`). The ticket's `voice:owner:{userId}:sessions` is the strong namespace `voice:owner:sessions` with key part `userId`: one record per user, listing that user's sessions. Each transition goes through `reduceRecord`, so two processes cannot both admit a fifth session, and a late write cannot undo a newer one.
+
+- An entry has the reservation's id (the handle the client gets), a state, the creating provider's id, the provider's session id once it exists, and `expiresAt`. It holds no key: a hangup uses that provider's key as configured at the time.
+- `pending` counts until its two-minute lease runs out; the process creating the session renews it while the provider works. A start that fails, or whose request is cancelled, frees it at once.
+- `pending` becomes `active` only while that reservation is still pending and within its lease. Otherwise the session just created is hung up and nothing is recorded.
+- `active` counts until its deadline, an hour after creation. A release marks it `closing`, which stops counting, and the entry is removed once the hangup succeeds.
+- Removal takes only that entry, and only once it was created (`active` or `closing`), never a `pending` one. It accepts `active` for an activation whose answer was lost: the session is hung up, and its entry may still count. A removal that AppState refuses is retried until it works or the deadline passes.
+- Entries are kept five minutes past `expiresAt`, then dropped by the next write; the record expires with its last entry. The deadline hangup checks the record first, and skips a session another process has already hung up and removed. It skips only while the entry would still be kept: a timer delayed past that (a machine asleep) cannot tell, so it hangs up.
+
+Hangup retries (1 s, 5 s, 30 s), removal retries and the deadline hangup run on timers in the process that created the session, or that was asked to close it. If that process goes away, its sessions stop counting at their deadlines and nobody hangs them up. A durable owner that recovers provider cleanup is a follow-up.

@@ -106,12 +106,12 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
 // install-from-skillset resolves the skillset config from settings, then builds a
 // ref via getSkillsetProvider — stub both so the route reaches createOwnerAcl.
 vi.mock('@shared/lib/config/settings', () => ({
-  getAccountProviderUserId: () => 'test-user',
-  getEffectiveAnthropicApiKey: () => 'test-key',
-  getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => ({
+  getAccountProviderUserId: async () => 'test-user',
+  getEffectiveAnthropicApiKey: async () => 'test-key',
+  getEffectiveModels: async () => ({ summarizerModel: 'claude-3-haiku' }),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => ({
     container: {},
     skillsets: [{ id: 'test-skillset', url: 'https://example.com/s', name: 'Test Skillset', provider: 'github', providerData: {} }],
   }),

@@ -103,11 +103,11 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 const mockGetEffectiveModels = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
+  getEffectiveModels: async (...args: unknown[]) => mockGetEffectiveModels(...args),
   // resolveActiveProviderModel (host-direct summarizer resolution) reads the
   // active provider via getSettings; default to anthropic for the catalog.
-  getSettings: () => ({ llmProvider: 'anthropic' }),
-  getModelCatalogSettings: () => ({}),
+  getSettings: async () => ({ llmProvider: 'anthropic' }),
+  getModelCatalogSettings: async () => ({}),
 }))
 
 const mockReadAgentPreferences = vi.fn()

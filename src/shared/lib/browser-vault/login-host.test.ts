@@ -6,7 +6,7 @@ import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, auditLog, user } from '@shared/lib/db/schema'
 import type { LoginContext } from '@shared/lib/tools/request-login/login-request'
-import { resetVaultKeyCache } from './vault-crypto'
+import { installTestKeyManager, uninstallKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
 import { loginFillAccountSchema } from '../../../../agent-container/src/login-schema'
 
 let testDb: AppDatabase
@@ -82,16 +82,16 @@ const GITHUB: LoginContext = {
 let handle: TestDatabase
 let dataDir: string
 
-beforeAll(() => {
+beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'login-host-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
   vi.stubEnv('BETTER_AUTH_SECRET', '')
-  resetVaultKeyCache()
+  await installTestKeyManager()
 })
 
 afterAll(() => {
   vi.unstubAllEnvs()
-  resetVaultKeyCache()
+  uninstallKeyManager()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 

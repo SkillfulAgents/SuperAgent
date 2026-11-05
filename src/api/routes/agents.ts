@@ -526,8 +526,8 @@ async function requestContainerWorkspaceMutation<T>(
   return payload
 }
 
-function getConfiguredSkillsets() {
-  return getSettings().skillsets || []
+async function getConfiguredSkillsets(): Promise<SkillsetConfig[]> {
+  return (await getSettings()).skillsets || []
 }
 
 function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
@@ -1112,7 +1112,7 @@ async function processImport(c: Context, zip: TemplateZipSource, formData: FormD
 // Uses ?refresh=true to force a cache refresh before reading
 agents.get('/discoverable-agents', async (c) => {
   try {
-    const skillsets = getConfiguredSkillsets()
+    const skillsets = await getConfiguredSkillsets()
     const shouldRefresh = c.req.query('refresh') === 'true'
 
     if (shouldRefresh) {
@@ -1141,7 +1141,7 @@ agents.post('/install-from-skillset', async (c) => {
       return c.json({ error: 'skillsetId and agentPath are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -1236,7 +1236,7 @@ agents.post('/generate-name', zValidator('json', generateNameBodySchema), async 
     const anthropic = await getLlmClient()
     const raw = (
       await createSummarizerText(anthropic, {
-        model: getSummarizerModel(),
+        model: await getSummarizerModel(),
         messages: [
           {
             role: 'user',
@@ -1333,8 +1333,8 @@ async function getLlmClient(): Promise<Anthropic> {
 
 // Model used for generating session names (lightweight task).
 // Resolve here because this is a host-direct SDK call (no container chokepoint).
-function getSummarizerModel(): string {
-  return resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+async function getSummarizerModel(): Promise<string> {
+  return resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
 }
 
 /**
@@ -1368,7 +1368,7 @@ async function generateAndUpdateSessionNameAsync(
     try {
       const anthropic = await getLlmClient()
       sessionName = await createSummarizerText(anthropic, {
-        model: getSummarizerModel(),
+        model: await getSummarizerModel(),
         messages: [
           {
             role: 'user',
@@ -1559,7 +1559,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     await deletePoliciesForAgent(slug)
 
     // Turning Team Brain off: no other agent keeps reading a brain that no longer syncs. The drive and its files stay.
-    const teamBrain = getTeamBrain()
+    const teamBrain = await getTeamBrain()
     // Running agents drop it on their next start.
     if (teamBrain?.agentSlug === slug) for (const agent of await releaseVolume(teamBrain.volumeId, slug)) await afterMountChange(agent)
 
@@ -1578,7 +1578,10 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     }
 
     // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays.
-    if (getTeamBrain()?.agentSlug === slug) mutateSettings((settings) => { delete settings.teamBrain })
+    await mutateSettings((settings) => {
+      if (settings.teamBrain?.agentSlug !== slug) return false
+      delete settings.teamBrain
+    })
 
     // Remove the agent's dedicated host-browser Chrome profile. The container
     // teardown above only stops the browser on the ACTIVE provider — a Chrome
@@ -2083,7 +2086,7 @@ agents.get('/:id/sessions/:sessionId/llm-connections', AgentUser(), async c => {
   const sessionId = c.req.param('sessionId')
   if (!await actor.sessions.isKnown(sessionId)) return c.json({ error: 'Session not found' }, 404)
   const metadata = await actor.sessions.metadata(sessionId)
-  const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug), getEffectiveModels())
+  const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug), await getEffectiveModels())
   return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.llmProviderId ?? undefined) })
 })
 
@@ -2146,8 +2149,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(slug)
 
-    const agentLimits = getEffectiveAgentLimits()
-    const customEnvVars = getCustomEnvVars()
+    const agentLimits = await getEffectiveAgentLimits()
+    const customEnvVars = await getCustomEnvVars()
+    const maxBrowserTabs = (await getSettings()).app?.maxBrowserTabs
 
     // Server-generated uuid for the initial message (never client-supplied —
     // it keys the messageAuthor attribution row). Returned in the response so
@@ -2156,7 +2160,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     const agentPrefs = await readAgentPreferences(slug)
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
     await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, agentPrefs.defaultLlmProviderId)
     const resolved = await resolveConnectionRuntimeInherit(runtimeOptions, agentPrefs, models)
     const prewarm = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
@@ -2208,7 +2212,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         maxTurns: agentLimits.maxTurns,
         maxBudgetUsd: agentLimits.maxBudgetUsd,
         customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+        maxBrowserTabs,
         effort: resolved.effort,
         speed: resolved.speed,
         ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
@@ -2302,9 +2306,9 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
   const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
   if (!provider) {
     // Resolve the saved account even if its selected model has since retired.
-    const id = storedSelection(metadata?.model, metadata?.llmProviderId)?.llmProviderId
+    const id = (await storedSelection(metadata?.model, metadata?.llmProviderId))?.llmProviderId
     const connection = id ? await getConnection(id) : null
-    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection())?.provider ?? getActiveLlmProvider()
+    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection())?.provider ?? await getActiveLlmProvider()
   }
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
@@ -2312,7 +2316,7 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
     // An error keeps the copy of the provider that produced it.
     const recorded = metadata?.errorProviders?.[item.id]
     item.errorPresentation =
-      (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
+      (await (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError)) ?? undefined
   }
 }
 
@@ -2936,9 +2940,9 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
 
     const live = await actor.sessions.live(sessionId)
     let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
-    if (getSettings().llmDefault) {
+    if ((await getSettings()).llmDefault) {
       try {
-        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug), getEffectiveModels())
+        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug), await getEffectiveModels())
       } catch (error) {
         // History remains readable during provider/configuration outages.
         // A new turn still resolves and validates its runtime before sending.
@@ -3830,15 +3834,15 @@ function credentialBrokerErrorResponse(
   return c.json({ error: error.message, code: error.code }, status)
 }
 
-function configuredPasswordManagers(): string[] {
-  const configured = getSettings().app?.configuredPasswordManagers
+async function configuredPasswordManagers(): Promise<string[]> {
+  const configured = (await getSettings()).app?.configuredPasswordManagers
   return Array.isArray(configured)
     ? configured.filter((provider): provider is string => typeof provider === 'string')
     : []
 }
 
-function passwordManagerIsConfigured(provider: string): boolean {
-  return configuredPasswordManagers().includes(provider)
+async function passwordManagerIsConfigured(provider: string): Promise<boolean> {
+  return (await configuredPasswordManagers()).includes(provider)
 }
 
 const BROWSER_CONTEXT_TTL_MS = 30_000
@@ -3931,7 +3935,7 @@ agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) 
     const result = await credentialBroker.suggest(
       { agentSlug, sessionId, toolUseId },
       url,
-      configuredPasswordManagers(),
+      await configuredPasswordManagers(),
     )
     return c.json(result)
   } catch (error) {
@@ -3949,7 +3953,7 @@ agents.post(
     const body = c.req.valid('json')
     const gated = await gateCredentialRequest(c, body.toolUseId)
     if (gated instanceof Response) return gated
-    if (!passwordManagerIsConfigured(body.provider)) {
+    if (!(await passwordManagerIsConfigured(body.provider))) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
     const status = await credentialBroker.beginPairing(body.provider)
@@ -3982,7 +3986,7 @@ agents.post(
     const body = c.req.valid('json')
     const gated = await gateCredentialRequest(c, body.toolUseId)
     if (gated instanceof Response) return gated
-    if (!passwordManagerIsConfigured(body.provider)) {
+    if (!(await passwordManagerIsConfigured(body.provider))) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
     await credentialBroker.completePairing(body.provider, body.code)
@@ -4104,7 +4108,7 @@ agents.post(
  * A form for this app itself, at any of its addresses (see isOwnOrigin):
  * signing the agent's browser in there would hand it the user's session here.
  */
-function signsInToThisApp(c: Context, origin: string): boolean {
+async function signsInToThisApp(c: Context, origin: string): Promise<boolean> {
   return isOwnOrigin(origin, [c.req.header('origin'), c.req.url])
 }
 
@@ -4126,7 +4130,7 @@ agents.get('/:id/sessions/:sessionId/login-request', AgentUser(), async (c) => {
 
   const read = await readLoginContext(getAgentId(c), toolUseId)
   if (!read.ok) return c.json({ error: read.error, problems: read.problems }, read.status)
-  if (signsInToThisApp(c, read.context.origin)) return c.json(thisAppProblem(read.context.origin), 409)
+  if (await signsInToThisApp(c, read.context.origin)) return c.json(thisAppProblem(read.context.origin), 409)
   return c.json(read.context)
 })
 
@@ -4146,7 +4150,7 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
   if (!read.ok) return c.json({ error: read.error }, read.status)
   const pageOrigin = read.context.origin
   const site = siteOfOrigin(pageOrigin)
-  if (!site || signsInToThisApp(c, pageOrigin)) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
+  if (!site || await signsInToThisApp(c, pageOrigin)) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
   const viewer = getViewerUserId(c)
   const [accounts, providerAccounts, otherMembers] = await Promise.all([
     listOwnedAccountsOnSite(viewer, site),
@@ -4222,7 +4226,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       return c.json({ error: 'The sign-in form changed. Reload it and try again.' }, 409)
     }
     const context = read.context
-    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (await signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
     const site = siteOfOrigin(context.origin)
     if (!site || context.fields.length === 0) return c.json({ error: 'This sign-in request has no field to fill' }, 409)
     const heldValues = body.heldValues ?? []
@@ -4422,7 +4426,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
       return c.json({ error: 'The sign-in form changed. Reload it and try again.' }, 409)
     }
     const context = read.context
-    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (await signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
     const site = siteOfOrigin(context.origin)
     if (!site) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
     const viewer = getViewerUserId(c)
@@ -4509,7 +4513,7 @@ agents.post(
     const sessionId = c.req.param('sessionId')
     const context = await loginRequestContext(agentSlug, body.toolUseId)
     if (!context) return c.json({ error: 'The sign-in form is not ready yet' }, 409)
-    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (await signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
     // A saved login holds an identifier and a password, nothing else.
     if (!context.fields.every((field) => field.kind === 'username' || field.kind === 'password')) {
       return c.json({ error: 'This form asks for more than a saved login holds' }, 409)
@@ -4759,6 +4763,9 @@ function hostRunResponse(c: Context, outcome: HostRunOutcome, what: 'script run'
       return c.json({ success: true })
     case 'claimed':
       return c.json({ error: `This ${what} request is already being handled` }, 409)
+    case 'abandoned':
+      // Only an auto-run started by the agent's own grant can be abandoned.
+      return c.json({ error: `This ${what} request was stopped` }, 409)
     case 'missing_permissions':
       return c.json({ success: false, missingPermissions: outcome.permissions }, 428)
     case 'failed':
@@ -4930,7 +4937,7 @@ const brainUpkeepBodySchema = z.object({ scheduleExpression: z.string().trim().m
 // set-up, so it never depends on the agent's first turn. Once only.
 agents.post('/:id/team-brain/upkeep', AgentUser(), zValidator('json', brainUpkeepBodySchema), async (c) => {
   const slug = getAgentId(c)
-  if (getTeamBrain()?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
+  if ((await getTeamBrain())?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
   const { scheduleExpression } = c.req.valid('json')
   if (!validateCronExpression(scheduleExpression).valid) return c.json({ error: 'Invalid cron expression' }, 400)
   try {
@@ -5748,7 +5755,7 @@ agents.get('/:id/mcp-audit-log', AgentAdmin(), async (c) => {
 agents.get('/:id/skills', AgentRead(), async (c) => {
   try {
     const id = getAgentId(c)
-    const skills = await getAgentSkillsWithStatus(id, getConfiguredSkillsets())
+    const skills = await getAgentSkillsWithStatus(id, await getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch skills:', error)
@@ -5760,7 +5767,7 @@ agents.get('/:id/skills', AgentRead(), async (c) => {
 agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
   try {
     const id = getAgentId(c)
-    const skills = await getDiscoverableSkills(id, getConfiguredSkillsets())
+    const skills = await getDiscoverableSkills(id, await getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch discoverable skills:', error)
@@ -5778,7 +5785,7 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId and skillPath are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -5861,7 +5868,7 @@ agents.get('/:id/skills/:dir/publish-info', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -5886,7 +5893,7 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -5980,7 +5987,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
 agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const status = await getAgentTemplateStatus(slug, getConfiguredSkillsets())
+    const status = await getAgentTemplateStatus(slug, await getConfiguredSkillsets())
     return c.json(status)
   } catch (error) {
     console.error('Failed to get template status:', error)
@@ -6043,7 +6050,7 @@ agents.get('/:id/template-publish-info', AgentRead(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -6067,7 +6074,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -6084,7 +6091,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/template-refresh - Refresh status
 agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
-    const skillsets = getConfiguredSkillsets()
+    const skillsets = await getConfiguredSkillsets()
     await refreshAgentTemplates(skillsets, { background: c.req.query('background') === '1' })
     const slug = getAgentId(c)
     const status = await getAgentTemplateStatus(slug, skillsets)
@@ -6100,7 +6107,7 @@ agents.post('/:id/template-refresh', AgentUser(), async (c) => {
 agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const skillsets = getConfiguredSkillsets()
+    const skillsets = await getConfiguredSkillsets()
     await refreshAgentSkills(agentSlug, skillsets, { background: c.req.query('background') === '1' })
     const skills = await getAgentSkillsWithStatus(agentSlug, skillsets)
     return c.json({ skills })

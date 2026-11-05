@@ -418,11 +418,13 @@ describe('AgentIntegration host contract', () => {
     manager = new AgentIntegrationManager(isolated)
     await manager.start()
     await Promise.all([adapter.input('first'), second.input('second')])
-    await vi.waitFor(() => expect(state.streams.size).toBe(2))
+    // Each installation opens its stream through a session start (settings,
+    // the agent, the database): allow for a loaded test run.
+    await vi.waitFor(() => expect(state.streams.size).toBe(2), { timeout: 5_000 })
     expect(state.mappings.size).toBe(2)
     manager.stop()
     // A cancelled stream lets go of its source a moment later across a wire.
-    await vi.waitFor(() => expect(state.streams.size).toBe(0))
+    await vi.waitFor(() => expect(state.streams.size).toBe(0), { timeout: 5_000 })
     expect(adapter.connected).toBe(false)
     expect(second.connected).toBe(false)
     expect(adapter.released).toHaveLength(1)

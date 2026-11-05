@@ -100,8 +100,8 @@ async function summarizeResponse(
 
   try {
     const client = await getConfiguredLlmClient()
-    const model = resolveActiveProviderModel(
-      getEffectiveModels().summarizerModel,
+    const model = await resolveActiveProviderModel(
+      (await getEffectiveModels()).summarizerModel,
       'summarizer',
     )
     const text = await createSummarizerText(

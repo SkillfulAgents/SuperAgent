@@ -45,9 +45,9 @@ export interface SpotlightSyncDeps {
    * Where each Superagent is reached right now, or null when there is none —
    * no cloud workspace, or no live token for one. Asked on every pass.
    */
-  baseUrl(target: ApiTarget): string | null
+  baseUrl(target: ApiTarget): Promise<string | null>
   /** Which Superagent the app is driving. The cloud side is polled only while it is this one. */
-  activeTarget(): ApiTarget
+  activeTarget(): Promise<ApiTarget>
   fetch?: typeof fetch
   now?: () => number
 }
@@ -167,12 +167,21 @@ export class SpotlightSync {
   }
 
   private async syncOnce(): Promise<void> {
-    const active = this.deps.activeTarget()
+    let active: ApiTarget
+    let localUrl: string | null
+    let cloudUrl: string | null
+    try {
+      active = await this.deps.activeTarget()
+      localUrl = await this.deps.baseUrl('local')
+      cloudUrl = await this.deps.baseUrl('cloud')
+    } catch (error) {
+      // Nothing is known this pass, so nothing is changed; the next pass asks again.
+      console.warn('[Spotlight] Could not resolve the Superagents to index:', describe(error))
+      return
+    }
     if (active !== this.lastTarget) this.cloudRead = false
     this.lastTarget = active
 
-    const localUrl = this.deps.baseUrl('local')
-    const cloudUrl = this.deps.baseUrl('cloud')
     const readCloud = cloudUrl !== null && (active === 'cloud' || !this.cloudRead)
     const [local, cloud] = await Promise.all([
       localUrl ? this.collect('local', localUrl) : ('absent' as const),

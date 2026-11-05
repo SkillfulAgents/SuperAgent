@@ -803,8 +803,8 @@ class RunningTestClient extends BaseContainerClient {
     this.infoCalls++
     return { status: 'running', port: 4123 }
   }
-  // The real implementation lazily persists a per-agent token file on disk
-  getHostAuthHeaders(): Record<string, string> {
+  // The real implementation reads the agent's host token from the database
+  async getHostAuthHeaders(): Promise<Record<string, string>> {
     return {}
   }
 }

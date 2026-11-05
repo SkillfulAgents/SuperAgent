@@ -24,8 +24,8 @@ function normalize(deploymentUrl: string): string {
 }
 
 /** The facts last heard from this deployment, or null when it never said. */
-export function readCloudServerFacts(deploymentUrl: string): ServerFacts | null {
-  const parsed = cloudServerFactsRecordSchema.safeParse(getSettings().cloudServerFacts)
+export async function readCloudServerFacts(deploymentUrl: string): Promise<ServerFacts | null> {
+  const parsed = cloudServerFactsRecordSchema.safeParse((await getSettings()).cloudServerFacts)
   if (!parsed.success || parsed.data.deploymentUrl !== normalize(deploymentUrl)) return null
   return parsed.data.facts
 }
@@ -42,8 +42,9 @@ export async function refreshCloudServerFacts(deploymentUrl: string): Promise<vo
   const facts = await fetchServerFacts(url)
   if (!facts) return
   const record = cloudServerFactsRecordSchema.parse({ deploymentUrl: url, facts })
-  if (JSON.stringify(getSettings().cloudServerFacts) === JSON.stringify(record)) return
-  mutateSettings((settings) => {
+  await mutateSettings((settings) => {
+    // Unchanged: write nothing.
+    if (JSON.stringify(settings.cloudServerFacts) === JSON.stringify(record)) return false
     settings.cloudServerFacts = record
   })
 }

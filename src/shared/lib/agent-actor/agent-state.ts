@@ -84,7 +84,7 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
         clearPending: async (sessionId, id, outcome = 'answered') => sessions?.clearComputerUseRequest(sessionId, id, outcome),
       },
     },
-    container: { fetch: (path, init) => hooks.sessions.runtime.client().fetch(path, init) },
+    container: { fetch: async (path, init) => (await hooks.sessions.runtime.client()).fetch(path, init) },
     messages: { broadcastEvent: async (sessionId, event) => sessions?.emit(sessionId, event as SessionEvent) },
   }
   sessions = new LiveSessions({ slug, requests: inputRequests, computerUse, runs: hostRuns, ...hooks.sessions })

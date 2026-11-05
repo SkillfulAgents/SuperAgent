@@ -33,6 +33,7 @@ src/shared/lib/services/scheduled-task-service.overlap-guard.test.ts
 src/shared/lib/services/scheduled-task-service.parser-upgrade.test.ts
 src/shared/lib/scheduler/task-scheduler.parser-upgrade.test.ts
 src/shared/lib/agent-integrations/lifecycle.test.ts
+src/shared/lib/task-manager-integrations/linear/client.test.ts
 src/shared/lib/task-manager-integrations/linear/linear-agent-integration.test.ts
 src/shared/lib/task-manager-integrations/linear/linear-relay-transport.test.ts
 src/shared/lib/task-manager-integrations/linear/mcp.test.ts
@@ -86,5 +87,13 @@ src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts
 src/shared/lib/services/notification-read-state.test.ts
+src/shared/lib/app-records/records.test.ts
+src/shared/lib/app-records/host-records.test.ts
+src/shared/lib/config/settings-store.test.ts
+src/shared/lib/db/data-migrations/0009-import-host-records.test.ts
+src/shared/lib/config/settings.test.ts
+src/shared/lib/container/host-token-store.test.ts
+src/main/host-browser/context-map-store.test.ts
+src/shared/lib/browser-vault/vault-key-probe.test.ts
 src/shared/lib/agent-integrations/integration-row-version.test.ts
 src/shared/lib/services/notification-service-changes.test.ts

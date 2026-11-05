@@ -888,8 +888,8 @@ function isExecutableLaunchFailureError(error: unknown): boolean {
   return (error as { containerErrorClass?: unknown }).containerErrorClass === 'executable_launch_failed'
 }
 
-function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
-  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
+async function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): Promise<UnexpectedDeathPlan> {
+  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(await getSettings())) {
     return { action: 'settle' }
   }
   return plan
@@ -937,7 +937,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, installed.microvmId)
-      return honorMicrovmAutoResume(
+      // Awaited inside the try: a failed settings read falls back to the probe below, which never recovers.
+      return await honorMicrovmAutoResume(
         planFromClassification(
           classifyMicrovmDeath({
             state: mvm.state,

@@ -124,8 +124,8 @@ export function recallParticipantEvent(body: unknown): MeetingParticipantEvent |
 }
 
 /** The host for one installation, over whatever transport this deployment has; null when it has none. */
-export function recallBotHostFor(record: Pick<AgentIntegrationRecord, 'agentSlug' | 'createdByUserId'>): RecallBotHost | null {
-  const transport = resolveRecallTransport()
+export async function recallBotHostFor(record: Pick<AgentIntegrationRecord, 'agentSlug' | 'createdByUserId'>): Promise<RecallBotHost | null> {
+  const transport = await resolveRecallTransport()
   return transport ? new RecallBotHost(new RecallClient(transport, record)) : null
 }
 
@@ -135,12 +135,13 @@ export class RecallMeetingIntegration extends MeetingAgentIntegration {
   private readonly config: RecallConfig | null
   protected readonly bots: MeetingBotHost
 
+  /** `host`: the deployment's bot host (`recallBotHostFor`); without one, every operation refuses. */
   constructor(record: AgentIntegrationRecord, host?: MeetingBotHost) {
     super(record)
     let config: RecallConfig | null = null
     try { config = parseRecallConfig(record.config) } catch { config = null }
     this.config = config
-    this.bots = host ?? recallBotHostFor(record) ?? UNREACHABLE_HOST
+    this.bots = host ?? UNREACHABLE_HOST
   }
   protected isAvailable(): boolean { return this.bots !== UNREACHABLE_HOST }
   protected configuredSettings(): MeetingIntegrationSettings { return this.config ?? {} }

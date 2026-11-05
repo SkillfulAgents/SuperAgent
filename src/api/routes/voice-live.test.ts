@@ -26,7 +26,8 @@ vi.mock('@shared/lib/services/agent-service', () => ({ getAgent: mocks.getAgent 
 vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.providerName }), getAgentCapabilitySettings: () => ({ subagents: 'block', workflows: 'review' }) }))
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
-    name: { openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
+    id,
+    name:{ openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
     getLiveConversation: () => (id === 'openai' || id === 'platform')
       ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close, getLiveVoices: () => LIVE_VOICES, resolveLiveVoice: () => 'marin' }
       : mocks.alternateEnabled

@@ -746,14 +746,14 @@ const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
 const mockGetTeamBrain = vi.hoisted(() => vi.fn((): { agentSlug: string; volumeId: string } | null => null))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAgent: vi.fn(async () => 'America/Los_Angeles') }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getTeamBrain: () => mockGetTeamBrain(),
-  getEffectiveAnthropicApiKey: () => 'test-key',
-  getEffectiveModels: () => mockGetEffectiveModels(),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => mockRuntimeSettings(),
-  mutateSettings: vi.fn(),
-  getModelCatalogSettings: () => ({}),
+  getTeamBrain: async () => mockGetTeamBrain(),
+  getEffectiveAnthropicApiKey: async () => 'test-key',
+  getEffectiveModels: async () => mockGetEffectiveModels(),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => mockRuntimeSettings(),
+  mutateSettings: vi.fn(async () => mockRuntimeSettings()),
+  getModelCatalogSettings: async () => ({}),
   VALID_SCRIPT_TYPES: {
     darwin: ['applescript', 'shell'],
     linux: ['shell'],
@@ -881,6 +881,7 @@ import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
+import { mutateSettings } from '@shared/lib/config/settings'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
@@ -11015,13 +11016,13 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
   })
 
   afterEach(async () => {
-    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    await computerUsePermissionManager.revokeAllForAgent('test-agent')
     userInputRequestManager.reset()
   })
 
   it('an approved once-grant is consumed by the run it authorized', async () => {
     expect(
-      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+      await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('prompt_needed')
 
     const res = await approveScript('tool-once-1', 'once')
@@ -11032,7 +11033,7 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
 
     // The next request_script_run must prompt again, not auto-execute.
     expect(
-      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+      await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('prompt_needed')
   })
 
@@ -11041,8 +11042,31 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
 
     expect(res.status).toBe(200)
     expect(
-      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+      await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('granted')
+  })
+
+  it('"Allow always" runs no script when a Stop lands while the grant is being saved', async () => {
+    // The always-grant is a settings write; the Stop ends the turn meanwhile
+    // and cancels its parked requests.
+    vi.mocked(mutateSettings).mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      userInputRequestManager.clearSessionStreamRequests('test-agent', 'sess-1', 'cancelled')
+      // The partial settings the mocked module serves everywhere.
+      return mockRuntimeSettings() as never
+    })
+    parkScriptRun('tool-always-stopped')
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/run-script', {
+      toolUseId: 'tool-always-stopped',
+      script: 'echo ok',
+      scriptType: 'shell',
+      grantType: 'always',
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mutateSettings).toHaveBeenCalled()
   })
 })
 
@@ -11067,7 +11091,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
-    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    await computerUsePermissionManager.revokeAllForAgent('test-agent')
     userInputRequestManager.reset()
   })
 
@@ -11109,7 +11133,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
       body: JSON.stringify({ value: 'Calculator, Finder' }),
     }))
     expect(mockLiveSessions.clearComputerUseRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'cu-ok', 'answered')
-    expect(computerUsePermissionManager.checkPermission('test-agent', 'list_apps_windows')).toBe('granted')
+    expect(await computerUsePermissionManager.checkPermission('test-agent', 'list_apps_windows')).toBe('granted')
   })
 
   it('computer-use: answers 428 with the permissions, runs nothing and leaves the request open', async () => {
@@ -11162,7 +11186,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
     park('sr-bad', 'script_run')
     const res = await postJson(app, SCRIPT_URL, { toolUseId: 'sr-bad', scriptType: 'shell', grantType: 'always' })
     expect(res.status).toBe(400)
-    expect(computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell')).toBe('prompt_needed')
+    expect(await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell')).toBe('prompt_needed')
   })
 })
 

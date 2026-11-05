@@ -108,7 +108,7 @@ before the app is up and is held until `startSpotlight`.
 - `mdfind` cannot see Core Spotlight items. Spotlight itself shows what is
   visible; a `CSSearchQuery` run from inside the same app shows what is stored.
 - Without a platform stack, a cloud side can be faked in a dev build: a
-  `cloudWorkspace` record in the dev data dir's `settings.json` pointing at a
+  `cloudWorkspace` record in the dev install's settings (the `settings` app record) pointing at a
   loopback `deploymentUrl` (dev builds allow loopback, see
   `deploymentHostPolicy`). Point it at the dev app's own API and the same agents
   come back labelled Cloud. Switching *to* local needs no platform, so starting

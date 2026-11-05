@@ -1,11 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
 const capabilities = vi.hoisted(() => ({ directApi: true }))
 const mockGetApiKeyStatus = vi.fn()
 const mockCreateClient = vi.fn()
 
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
 vi.mock('./index', () => ({
-  getActiveLlmProvider: () => ({
+  activeLlmProviderFrom: () => ({
     supportsDirectApi: capabilities.directApi,
     getApiKeyStatus: mockGetApiKeyStatus,
     createClient: mockCreateClient,
@@ -23,12 +28,19 @@ import { getConfiguredLlmClient, extractTextFromLlmResponse, createSummarizerTex
 import type Anthropic from '@anthropic-ai/sdk'
 
 describe('getConfiguredLlmClient', () => {
-  beforeEach(() => { vi.clearAllMocks(); capabilities.directApi = true })
+  // Empty settings (a fresh test database): no global default selected, so the active provider answers.
+  beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
+    vi.clearAllMocks()
+    capabilities.directApi = true
+  })
+  afterEach(async () => { await handle.close() })
 
   it('returns client when API key is configured', async () => {
     const fakeClient = { messages: {} }
-    mockGetApiKeyStatus.mockReturnValue({ isConfigured: true })
-    mockCreateClient.mockReturnValue(fakeClient)
+    mockGetApiKeyStatus.mockResolvedValue({ isConfigured: true })
+    mockCreateClient.mockResolvedValue(fakeClient)
 
     const client = await getConfiguredLlmClient()
     expect(client).toBe(fakeClient)
@@ -37,13 +49,13 @@ describe('getConfiguredLlmClient', () => {
 
   it('rejects an agent-only legacy provider before creating a client', async () => {
     capabilities.directApi = false
-    mockGetApiKeyStatus.mockReturnValue({ isConfigured: true })
+    mockGetApiKeyStatus.mockResolvedValue({ isConfigured: true })
     await expect(getConfiguredLlmClient()).rejects.toThrow('Choose an API-capable global summarizer')
     expect(mockCreateClient).not.toHaveBeenCalled()
   })
 
   it('throws when API key is not configured', async () => {
-    mockGetApiKeyStatus.mockReturnValue({ isConfigured: false })
+    mockGetApiKeyStatus.mockResolvedValue({ isConfigured: false })
 
     await expect(getConfiguredLlmClient()).rejects.toThrow('LLM API key not configured')
     expect(mockCreateClient).not.toHaveBeenCalled()

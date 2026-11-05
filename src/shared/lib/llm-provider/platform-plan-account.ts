@@ -15,7 +15,7 @@ import { accountPlanPolicy } from './platform-plan-policy'
  */
 export async function actingPlanCacheKey(): Promise<string> {
   const acting = await attribution.current()
-  return platformPlanCache.key(getPlatformAuthStatus().orgId, acting?.actingMemberId() ?? getStoredPlatformMemberId())
+  return platformPlanCache.key((await getPlatformAuthStatus()).orgId, acting?.actingMemberId() ?? await getStoredPlatformMemberId())
 }
 
 /** The acting account's plan policy: cached, else read with its identity from `/v1/account`. */

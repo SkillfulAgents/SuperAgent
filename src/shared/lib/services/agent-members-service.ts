@@ -118,7 +118,7 @@ export async function addAgentUsers(agentSlug: string, userIds?: readonly string
 
 /** Someone new to the workspace gets its Team Brain, as every member has it. */
 export async function addTeamBrainUser(userId: string): Promise<void> {
-  const teamBrain = getTeamBrain()
+  const teamBrain = await getTeamBrain()
   if (teamBrain) await addAgentUsers(teamBrain.agentSlug, [userId])
 }
 

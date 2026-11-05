@@ -40,14 +40,16 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = MINIMAX_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override toolSearchEnv() { return 'true' as const }
+  override async toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = MINIMAX_MEDIA_PROMPT
   override readonly supportsModelSearch = true
   override readonly supportsUsage = true
 
-  override getEffectiveApiKey() { return this.configuration?.oauth?.accessToken }
-  override getApiKeyStatus() {
-    return this.getEffectiveApiKey() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
+  // Credentials come only from the connection, never from global settings.
+  protected override async ambientSettings() { return undefined }
+  protected override effectiveApiKeyFrom() { return this.configuration?.oauth?.accessToken }
+  override apiKeyStatusFrom() {
+    return this.effectiveApiKeyFrom() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
   }
   private get apiBase() { return MINIMAX_HOSTS[minimaxRegion(this.configuration?.oauth?.region)].api }
   private async credential(rejectedGeneration?: number) {
@@ -83,7 +85,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     }
     return response
   }
-  createClient(): Anthropic {
+  async createClient(): Promise<Anthropic> {
     return new Anthropic({ authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
   }
   private async allowance(accessToken: string) {
@@ -109,7 +111,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     const needle = query.toLowerCase()
     return MINIMAX_SEARCH_MODELS.filter(model => model.id.toLowerCase().includes(needle) || model.label.toLowerCase().includes(needle))
   }
-  protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
+  protected override async parseErrorResponseOverride(status: number | undefined, body: unknown) {
     const actual = status ?? inferErrorStatus(extractErrorMessage(body))
     if (actual === 401) return { severity: 'error' as const, icon: 'info' as const, message: '**MiniMax sign-in expired or invalid.** Reconnect in Settings → Model Providers.' }
     if (actual === 402 || actual === 403) return { severity: 'error' as const, icon: 'info' as const, message: '**MiniMax subscription access was denied.** Check the connected account’s Token Plan.' }

@@ -30,16 +30,16 @@ export function findWebProvider(id: string): BaseWebProvider | null {
  * Sticky like LLM/STT: a stored pin is a contract (broken credential fails loud).
  * Unset → Platform if Gamut login, else native. Exa is never auto-selected.
  */
-export function resolveEffectiveWebVendor(): WebProviderId {
-  const stored = getSettings().webProvider
+export async function resolveEffectiveWebVendor(): Promise<WebProviderId> {
+  const stored = (await getSettings()).webProvider
   if (stored === 'native') return 'native'
   if (stored && isVendorId(stored)) return stored
-  if (WEB_PROVIDERS.platform.getApiKeyStatus().isConfigured) return 'platform'
+  if ((await WEB_PROVIDERS.platform.getApiKeyStatus()).isConfigured) return 'platform'
   return 'native'
 }
 
 /** Active host provider, or null when effective vendor is native. */
-export function getActiveWebProvider(): BaseWebProvider | null {
-  const id = resolveEffectiveWebVendor()
+export async function getActiveWebProvider(): Promise<BaseWebProvider | null> {
+  const id = await resolveEffectiveWebVendor()
   return isVendorId(id) ? WEB_PROVIDERS[id] : null
 }

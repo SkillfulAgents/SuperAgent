@@ -14,7 +14,7 @@ import { captureException } from '@shared/lib/error-reporting'
  */
 const accountLockouts = defineLockout({ name: 'auth:lockout' })
 
-function lockoutPolicy(authSettings: ReturnType<typeof getAuthSettings>): LockoutPolicy {
+function lockoutPolicy(authSettings: Awaited<ReturnType<typeof getAuthSettings>>): LockoutPolicy {
   return {
     threshold: authSettings.accountLockoutThreshold ?? 10,
     lockMs: (authSettings.accountLockoutDurationMin ?? 30) * 60 * 1000,
@@ -37,7 +37,7 @@ export function validatePasswordComplexity(password: string): string | null {
 export async function authEnforcementMiddleware(c: Context, next: Next) {
   if (c.req.method !== 'POST') return next()
 
-  const authSettings = getAuthSettings()
+  const authSettings = await getAuthSettings()
   const policy = lockoutPolicy(authSettings)
   // The sign-in's account and the lockout state it was let through with.
   let signIn: { key: StateKey<LockoutRecord, 'strong'>; status: UnlockedStatus } | null = null

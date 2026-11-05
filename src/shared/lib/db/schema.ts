@@ -592,6 +592,19 @@ export const dataMigrations = sqliteTable('data_migrations', {
   appliedAt: integer('applied_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// App records - the deployment's small host records that used to be files in
+// the data dir (settings, tenant id, auth secret, host container tokens, …):
+// one JSON value per key, validated by the key's Zod schema on every read and
+// write (see app-records/). `revision` is 1 on insert and goes up by one on
+// every write, so a writer compares-and-sets against the revision it read
+// instead of holding a transaction open.
+export const appRecords = sqliteTable('app_records', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  revision: integer('revision').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
 // Agents - which agents exist and what they are called. The row is the
 // authority for name and description; the agent's AGENTS.md keeps a
 // frontmatter projection of them that the host writes on create and rename.

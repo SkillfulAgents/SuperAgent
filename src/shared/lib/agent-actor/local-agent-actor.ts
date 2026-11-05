@@ -198,21 +198,21 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       await runtime().restartContainer()
       return 'restarted'
     },
-    info: () => client().getInfo(),
+    info: async () => (await client()).getInfo(),
     syncConnectionEnvironment: (kind, options) => deps.syncAgentConnectionEnvironment(slug, kind, runtime(), options),
-    fetch: (...args) => client().fetch(...args),
+    fetch: async (...args) => (await client()).fetch(...args),
     webSocketTarget: async (path, init) => {
       const info = runtime().getCachedInfo()
       if (info.status !== 'running' || !info.port) return null
-      const c = client()
+      const c = await client()
       return {
         url: `${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`,
         ...(init?.protocols !== undefined ? { protocols: init.protocols } : {}),
-        headers: { ...init?.headers, ...c.getHostAuthHeaders() },
+        headers: { ...init?.headers, ...(await c.getHostAuthHeaders()) },
       }
     },
-    hostBridgeIp: async () => client().getHostBridgeIp(),
-    probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),
+    hostBridgeIp: async () => (await client()).getHostBridgeIp(),
+    probeHostPort: async (host, port) => (await client()).probeHostPortFromRunner(host, port),
   }
 }
 
@@ -223,7 +223,7 @@ function createSessionOps(
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): SessionOps {
-  const client = () => deps.containerHost.runtime(slug).getClient()
+  const client = async () => deps.containerHost.runtime(slug).getClient()
   const live = state.sessions
   // The container's CLI process rewrites the transcript on exit, so the container drops the session before the files go.
   const release = async (sessionId: string) => {
@@ -234,10 +234,10 @@ function createSessionOps(
     state.deferredNaming.delete(sessionId)
     let cause: unknown
     const dropped =
-      (await client().releaseSession(sessionId).catch((error: unknown) => {
+      (await client().then((container) => container.releaseSession(sessionId)).catch((error: unknown) => {
         cause = error
         return false
-      })) || (await client().isDefinitelyStopped().catch(() => false))
+      })) || (await client().then((container) => container.isDefinitelyStopped()).catch(() => false))
     if (!dropped) console.warn(`[sessions.delete] container kept ${sessionId}:`, cause)
     return dropped
   }
@@ -245,7 +245,7 @@ function createSessionOps(
     // The files are gone. A lost cleanup response must not turn a successful
     // delete into a failure; the container refuses to resume a released
     // record whose transcript is absent, including after a container restart.
-    await client().deleteSession(sessionId).catch((error: unknown) => {
+    await client().then((container) => container.deleteSession(sessionId)).catch((error: unknown) => {
       console.warn(`[sessions.delete] could not forget ${sessionId}:`, error)
     })
   }
@@ -308,14 +308,14 @@ function createSessionOps(
     copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
     // Creating a session delivers its first message: a refusal reads as a delivery's does.
-    create: (options) =>
-      client().createSession(options).catch((error: unknown) => {
+    create: async (options) =>
+      (await client()).createSession(options).catch((error: unknown) => {
         throw error instanceof MessageNotAcceptedError ? notAcceptedError(error) : error
       }),
     start: (request) => delivery.start(request),
-    fork: (sessionId) => client().forkSession(sessionId),
-    deleteLive: (sessionId) => client().deleteSession(sessionId),
-    warm: (sessionId) => client().warmSession(sessionId),
+    fork: async (sessionId) => (await client()).forkSession(sessionId),
+    deleteLive: async (sessionId) => (await client()).deleteSession(sessionId),
+    warm: async (sessionId) => (await client()).warmSession(sessionId),
 
     live: async (sessionId) => ({
       activity: live.activity(sessionId),
@@ -331,7 +331,7 @@ function createSessionOps(
       deps.containerHost.runtime(slug).noteSessionActivity()
       live.markIdle(sessionId)
     },
-    stopTask: (sessionId, taskId) => client().stopTask(sessionId, taskId),
+    stopTask: async (sessionId, taskId) => (await client()).stopTask(sessionId, taskId),
     waitForIdle: (sessionId, opts) => live.waitForIdle(sessionId, opts),
     broadcastUpdate: async (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
     reconcileTranscript: async (sessionId, toolCalls) => live.reconcileTranscript(sessionId, toolCalls),
@@ -354,12 +354,12 @@ function createMessageOps(
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): MessageOps {
-  const client = () => deps.containerHost.runtime(slug).getClient()
+  const client = async () => deps.containerHost.runtime(slug).getClient()
   const live = state.sessions
   return {
     deliver: (request) => delivery.deliver(request),
     // A message held while the session recovers never reached the container.
-    cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
+    cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || (await client()).cancelQueuedMessage(sessionId, uuid),
     stop: async (sessionId, options) => {
       const result = await delivery.stop(sessionId, options)
       if (options.denyReviews && result.path !== 'skipped-idle') settleStoppedSession(state, sessionId)
@@ -435,7 +435,7 @@ async function answerRequest(
     // Settled while the container started, the container has nothing parked:
     // answering now would buffer a result nothing ever collects.
     if (!requests.getOpenRequest(id)) return 'not-open'
-    const response = await runtime.getClient().fetch(`/inputs/${encodeURIComponent(id)}/resolve`, {
+    const response = await (await runtime.getClient()).fetch(`/inputs/${encodeURIComponent(id)}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
@@ -483,7 +483,7 @@ function createComputerUseOps(state: AgentState, deps: LocalActorDeps): Computer
     releaseGrab: async (sessionId) => {
       const appName = computerUse.grabbed()
       computerUse.clearGrabbed()
-      if (appName) computerUse.revoke('use_application', appName)
+      if (appName) await computerUse.revoke('use_application', appName)
       // Taking the app back ends the session's any-app grant too: its next
       // app asks again.
       computerUse.revokeSession(sessionId)

@@ -308,7 +308,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
     // Model/effort/speed preference order: task override > agent default > global default.
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: task.model,
@@ -366,7 +366,7 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
 
     const client = await getConfiguredLlmClient()
     const description = await createSummarizerText(client, {
-      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      model: await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer'),
       messages: [
         {
           role: 'user',
@@ -408,7 +408,7 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
 
     const client = await getConfiguredLlmClient()
     const expression = await createSummarizerText(client, {
-      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      model: await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer'),
       messages: [
         {
           role: 'user',

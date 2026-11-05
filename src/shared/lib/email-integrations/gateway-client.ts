@@ -8,11 +8,11 @@ export class EmailGatewayError extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = 'EmailGatewayError' }
 }
 export async function emailBearer(ownerUserId: string | null): Promise<string> {
-  if (!getPlatformAccessToken()) throw new EmailGatewayError(409, 'Connect Platform to use agent email')
+  if (!(await getPlatformAccessToken())) throw new EmailGatewayError(409, 'Connect Platform to use agent email')
   const auth = ownerUserId ? await attribution.fromUserId(ownerUserId) : await attribution.current()
   if (auth) return auth.bearerToken()
   // Single-user installations have no user row or ambient request during polling.
-  if (!attribution.requiresActingMember()) return getPlatformAccessToken()!
+  if (!(await attribution.requiresActingMember())) return (await getPlatformAccessToken())!
   throw new EmailGatewayError(403, 'A Platform member identity is required for email')
 }
 export const mailboxSchema = z.object({ id: z.string().uuid(), address: z.string().email(), name: z.string(), status: z.string(), domain: z.object({ status: z.string(), error: z.string().nullable() }).optional() })

@@ -27,10 +27,10 @@ The rule runs in an isolated sandbox: no network, no require/process/eval, the i
  * by the configured summarizer model, which is always reachable through the
  * helper client.
  */
-function directAuthoringClient(): { client: Anthropic; model: string } | null {
-  const provider = getActiveLlmProvider()
-  if (provider.supportsDirectApi === false || !provider.getApiKeyStatus().isConfigured) return null
-  return { client: provider.createClient(), model: resolveActiveProviderModel(getEffectiveModels().agentModel, 'agent') }
+async function directAuthoringClient(): Promise<{ client: Anthropic; model: string } | null> {
+  const provider = await getActiveLlmProvider()
+  if (provider.supportsDirectApi === false || !(await provider.getApiKeyStatus()).isConfigured) return null
+  return { client: await provider.createClient(), model: await resolveActiveProviderModel((await getEffectiveModels()).agentModel, 'agent') }
 }
 
 async function complete(params: {
@@ -47,7 +47,7 @@ async function complete(params: {
     messages: [{ role: 'user' as const, content: params.user }],
     output_config: { format: { type: 'json_schema' as const, schema: params.schema } },
   })
-  const direct = directAuthoringClient()
+  const direct = await directAuthoringClient()
   if (direct) {
     const signal = AbortSignal.timeout(params.timeoutMs)
     try {
@@ -64,7 +64,7 @@ async function complete(params: {
     }
   }
   const client = await getConfiguredLlmClient()
-  const summarizerModel = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+  const summarizerModel = await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
   return createSummarizerText(client, request(summarizerModel), AbortSignal.timeout(params.timeoutMs))
 }
 

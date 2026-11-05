@@ -30,9 +30,9 @@ import type { AgentIntegrationRecord } from '../agent-integrations/types'
  * mailbox's wake channel (wake.ts). See webhooks.ts.
  */
 export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
-  static override isAvailable() { return platformConnected() }
+  static override isAvailable(): Promise<boolean> { return platformConnected() }
   readonly provider = 'platform-email'
-  protected isAvailable() { return platformConnected() }
+  protected isAvailable(): Promise<boolean> { return platformConnected() }
   readonly definition = emailDefinition
   private readonly config
   private readonly client

@@ -23,8 +23,8 @@ function responseBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   return body
 }
 
-favicon.get('/', (c) => {
-  const configured = getSettings().app?.faviconDataUrl
+favicon.get('/', async (c) => {
+  const configured = (await getSettings()).app?.faviconDataUrl
   const parsed = configured ? parseFaviconDataUrl(configured) : null
 
   if (parsed) {

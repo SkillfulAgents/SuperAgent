@@ -29,15 +29,13 @@ Each sign-in step adds parts to the same account: `password`, or
 `text:<label>` for another field the site asks for (a workspace). Parts are
 sealed together in `secrets` (AES-256-GCM, bound to the row's id, site and
 purpose); `parts` lists their names in plain text for the UI and the agent. A
-one-time code is never a part. The key is the vault's own: 32 random bytes in
-`<data dir>/.vault-key` (owner-only), made on first use with an exclusive
-create, so two processes starting at once keep one key. It is not the auth
-secret: setting, rotating or resetting that never locks the vault. Restoring
-the database with that file opens the vault; a file that holds no key is never
-written over. An account sealed under another key fills nothing (the user is
-asked), and is saved over only with every part it lists, never by dropping the
-rest. On desktop, Electron's `safeStorage` (Keychain, DPAPI, libsecret) can
-hold the key later: a migration only re-stores the same key.
+one-time code is never a part. The key is the vault's own, 32 random bytes,
+held by the installed KeyManager (see [Key custody](#key-custody)). It is not
+the auth secret: setting, rotating or resetting that never locks the vault. An
+account sealed under another key fills nothing (the user is asked), and is
+saved over only with every part it lists, never by dropping the rest. A vault
+whose key cannot be had here at all (a locked keychain) fills nothing and saves
+nothing, and says what to do (`VaultUnavailableError`).
 
 An account that signs in through another one ("Continue with Google") points
 at the provider's account with `via_account_id`. Granting the site's account
@@ -174,6 +172,82 @@ Each user's saved accounts, the agents allowed to sign in with each (the same
 switches as Connections and Drives), rename and delete. Granting to an agent
 others can use asks first. Deleting an account does not sign agents'
 browsers out of the site; saved sessions (part 3) will.
+
+## Key custody
+
+`vault-crypto` seals with `keyFor('browser-vault')` and knows nothing of where
+the key lives. Each entry point installs a KeyManager
+(`src/shared/lib/keys/key-manager.ts`) after `openDatabase()` and before
+anything is served; nothing is chosen at import, and asking before the install
+is a `not-installed` error, not a key from somewhere. The manager serves one
+app (or tenant) scope for its lifetime.
+
+| Entry point | Manager | Where the key is |
+|---|---|---|
+| Electron main | `DesktopKeyManager` (`src/main/keys/`) | Wrapped by Electron `safeStorage` (macOS Keychain, Windows DPAPI, libsecret/KWallet) in `<data dir>/.vault-key.wrapped`. Without a keyring (Linux `basic_text`, or a keyring that does not answer): `<data dir>/.vault-key`, as before |
+| Web server, Vite dev server | `ServerKeyManager` | `SUPERAGENT_VAULT_KEY` (base64) or `SUPERAGENT_VAULT_KEY_FILE` (a mounted secret); with neither, `<data dir>/.vault-key`, as before |
+| Cloudflare (later) | `CloudflareKeyManager` | A Worker secret or Secrets Store binding, provisioned by deployment tooling. The consumers don't change |
+
+Neither the OS's key nor the unwrapped vault key is ever in the database. The
+wrapped file alone opens nothing.
+
+On Linux, Electron's async `safeStorage` reports itself available even when
+the Secret Service doesn't answer. It then encrypts with Chromium's fixed
+password, tagged `v10` (a real keyring key is `v11`). The manager wraps a
+sample first and treats `v10` as "no keyring", so a key is never presented as
+protected when anyone could unwrap it. On macOS and Windows, `v10` is the real
+Keychain or DPAPI key.
+
+**Never a new key over sealed data.** Before a manager makes, moves or uses a
+key, it checks the key against the vault's latest sealed values
+(`probeVaultKey`): a key that opens none of them is a `mismatch`, and with no
+key at all while values are sealed, it reports `missing` instead of making one.
+A damaged key file is never written over, and a locked keychain is never
+replaced by a plaintext key. In each case the vault reports the reason and
+`KeyUnavailableError.userMessage` says what to do. Startup is not blocked: the
+app runs, and the vault works again once the cause is fixed (failures are
+retried, not remembered).
+
+**Moving into the keychain.** On the first start after an upgrade, a desktop
+that has `.vault-key` and a usable keyring moves the key in unchanged. Before
+anything is written, the OS must give the wrapped key back as the same bytes,
+and those bytes must open the sealed data. Then the wrap is written. Once
+written, it is never deleted: another process may already be using it.
+`.vault-key` is deleted only after the wrap on disk reads back as the same key.
+On Windows the OS store's own key is a DPAPI-wrapped value in `Local State` in
+Electron's `userData` folder, which Chromium writes about ten seconds after it
+makes the key; a crash before that loses the key, and every wrap made with it.
+So `.vault-key` also stays until `Local State` holds a key, and a wrap replaced
+because it did not open keeps `.vault-key` until the next start opens the new
+wrap from disk. A brand-new key waits for `Local State` before it is made, and
+the call fails with a retry message if it never appears. A move cut short finishes on the next start: if the wrap was written, the
+leftover copy holding the same key is deleted; if the wrap was cut off
+mid-write, the move runs again from `.vault-key`. If the wrap can't be opened
+on this computer (it came from another computer, or the keyring can't open it)
+and `.vault-key` opens the saved logins, the file is the key: it is wrapped
+here in place of the old wrap, or used in plaintext if there is no keyring.
+Two different keys that both open here are a `conflict`, and the user picks
+one. If the OS asks for a re-wrap (`shouldReEncrypt`), the new wrap is checked
+before it replaces the old one.
+
+**Backup, restore, another computer.** A backup of the database alone does not
+recover a desktop vault: the key is bound to that computer's OS store. File →
+**Export Browser Vault Key…** writes the key (in `.vault-key` format) to a file
+the user picks, entirely in the main process: the key never crosses IPC, and
+never reaches a log or an agent. To move the vault, copy Gamut's data folder to
+the other computer and put the exported file in it as `.vault-key` before Gamut
+first starts there. That start checks the file against the copied logins and
+moves it into that computer's OS store, replacing the copied
+`.vault-key.wrapped`, which only the old computer can open. Data folders: macOS
+`~/Library/Application Support/Superagent` (Mac App Store:
+`~/Library/Containers/<bundle id>/Data/.superagent`), Windows
+`%APPDATA%\Superagent`, Linux `~/.config/Superagent`. On a server, back up the
+key with the database: the `SUPERAGENT_VAULT_KEY` secret, or the data
+directory's `.vault-key`. A server can switch to the secret by setting it to
+that file's contents; the file is then ignored (logged), and can be deleted.
+
+A key that is lost is lost. Logins sealed under it can be deleted in Settings →
+Logins, and once none remain, a new key is made on the next save.
 
 ## Parts 3 and 4
 

@@ -1334,7 +1334,7 @@ export class AgentIntegrationManager {
     const previous = continuesFrom ? continuationPrompt(continuesFrom) : null
     const systemPrompt = [input.systemPrompt, previous].filter(Boolean).join('\n\n') || undefined
     // Model/effort/speed preference order: integration override > agent default > global default.
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: integration.model,

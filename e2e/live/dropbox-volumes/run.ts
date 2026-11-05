@@ -576,6 +576,7 @@ async function parallel<T>(items: T[], run: (item: T) => Promise<void>, concurre
 }
 
 async function main() {
+  // The account providers read settings, which live in the database.
   await openDatabase()
   try {
     registerAllAccountProviders()

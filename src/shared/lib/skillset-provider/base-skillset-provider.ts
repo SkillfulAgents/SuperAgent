@@ -1,5 +1,6 @@
 import path from 'path'
 import { directoryExists } from '@shared/lib/utils/file-storage'
+import type { AppSettings } from '@shared/lib/config/settings'
 import type {
   InstalledAgentMetadata,
   InstalledSkillMetadata,
@@ -77,6 +78,13 @@ export type SkillsetDisplayInfo = {
   showUrl: boolean
 }
 
+/**
+ * The settings a provider judges a skillset record against (the platform
+ * connection lives in them). Passed in rather than read, so the checks stay
+ * synchronous inside a settings mutator and see the very settings it writes.
+ */
+export type SkillsetAuthSettings = Readonly<Pick<AppSettings, 'platformAuth'>>
+
 export abstract class BaseSkillsetProvider {
   abstract readonly id: SkillProvider
   abstract readonly name: string
@@ -127,18 +135,18 @@ export abstract class BaseSkillsetProvider {
   }
 
   /** Add provider-specific authentication to a Git child process environment. */
-  getGitEnvironment(
+  async getGitEnvironment(
     _ref: SkillsetProviderRef,
     baseEnvironment: NodeJS.ProcessEnv,
-  ): NodeJS.ProcessEnv {
+  ): Promise<NodeJS.ProcessEnv> {
     return baseEnvironment
   }
 
   /** Add provider-specific authentication to a provider CLI child process. */
-  getCliEnvironment(
+  async getCliEnvironment(
     _ref: SkillsetProviderRef,
     baseEnvironment: NodeJS.ProcessEnv,
-  ): NodeJS.ProcessEnv {
+  ): Promise<NodeJS.ProcessEnv> {
     return baseEnvironment
   }
 
@@ -170,21 +178,23 @@ export abstract class BaseSkillsetProvider {
   }
 
   /**
-   * Whether a persisted SkillsetConfig is still valid for the current auth
-   * state. Providers with no scoping (github) return true; platform checks
-   * orgId match. Callers use this to reconcile settings after auth changes.
+   * Whether a persisted SkillsetConfig is still valid for the auth state in
+   * `settings`. Providers with no scoping (github) return true; platform
+   * checks orgId match. Callers use this to reconcile settings after auth
+   * changes.
    */
-  isConfigValid(_config: SkillsetConfig): boolean {
+  isConfigValid(_config: SkillsetConfig, _settings: SkillsetAuthSettings): boolean {
     return true
   }
 
   /**
    * Whether an installed skill/agent-template metadata record is still valid
-   * for the current auth state. Used for lazy cleanup on read.
+   * for the auth state in `settings`. Used for lazy cleanup on read.
    */
   isInstalledValid(
     _meta: Pick<InstalledSkillMetadata | InstalledAgentMetadata,
       'provider' | 'providerData'>,
+    _settings: SkillsetAuthSettings,
   ): boolean {
     return true
   }
@@ -199,7 +209,8 @@ export abstract class BaseSkillsetProvider {
     throw new Error(`${this.name} does not support remote sync`)
   }
 
-  buildSkillsetConfig(remote: SkillsetRemoteDescriptor): SkillsetConfig {
+  /** A config for a remote skillset, under the auth state in `settings`. */
+  buildSkillsetConfig(remote: SkillsetRemoteDescriptor, _settings: SkillsetAuthSettings): SkillsetConfig {
     return {
       id: `${this.id}--${remote.repoId}--${remote.name}`,
       url: this.getRegistrationUrl(`${this.id}://skills/repo`),
@@ -210,7 +221,12 @@ export abstract class BaseSkillsetProvider {
     }
   }
 
-  updateSkillsetConfig(existing: SkillsetConfig, remote: SkillsetRemoteDescriptor): boolean {
+  /** Update `existing` in place from `remote`, under the auth state in `settings`; true if it changed. */
+  updateSkillsetConfig(
+    existing: SkillsetConfig,
+    remote: SkillsetRemoteDescriptor,
+    _settings: SkillsetAuthSettings,
+  ): boolean {
     let changed = false
     if (existing.name !== remote.name) {
       existing.name = remote.name

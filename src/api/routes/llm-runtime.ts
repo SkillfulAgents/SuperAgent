@@ -32,8 +32,8 @@ routes.post('/resolve', async (c) => {
   const metadata = await actor.sessions.metadata(input.sessionId)
   const preferences = await actor.config.get('preferences')
   const selected = await resolveExecutionSelection(
-    storedSelection(metadata?.model, metadata?.llmProviderId),
-    storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId)
+    await storedSelection(metadata?.model, metadata?.llmProviderId),
+    await storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId)
   )
   // The caller cannot nominate another connection. The app resolves the
   // authenticated agent's current session binding on every callback.
@@ -52,7 +52,7 @@ routes.post('/prewarm', async (c) => {
   const slug = c.get('agentSlug' as never) as string
   const preferences = await agentRegistry.get(slug).config.get('preferences')
   const selected = await resolveExecutionSelection(
-    storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
+    await storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
   )
   c.header('Cache-Control', 'no-store')
   return c.json(await connectionRuntime(selected, slug))

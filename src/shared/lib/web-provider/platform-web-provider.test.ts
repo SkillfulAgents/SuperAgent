@@ -20,7 +20,7 @@ describe('PlatformWebProvider', () => {
 
   describe('search', () => {
     it('POSTs to the proxy with Bearer + Exa body, mapping the response', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
+      vi.mocked(getPlatformAccessToken).mockResolvedValue('tok-123')
       const fetchMock = vi
         .spyOn(global, 'fetch')
         .mockResolvedValue(new Response(JSON.stringify(searchBody), { status: 200 }))
@@ -48,7 +48,7 @@ describe('PlatformWebProvider', () => {
     })
 
     it('pre-guards when not signed in (no network call)', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue(null)
+      vi.mocked(getPlatformAccessToken).mockResolvedValue(null)
       const fetchMock = vi.spyOn(global, 'fetch')
       await expect(provider.search('x', {})).rejects.toThrow(/not signed into Gamut/i)
       expect(fetchMock).not.toHaveBeenCalled()
@@ -59,7 +59,7 @@ describe('PlatformWebProvider', () => {
       [403, /does not have access.*Check your account/i],
       [402, /web search is unavailable.*billing issue/i],
     ] as const)('maps proxy %i to actionable copy', async (status, pattern) => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
+      vi.mocked(getPlatformAccessToken).mockResolvedValue('tok-123')
       vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status }))
       try {
         await provider.search('x', {})
@@ -74,7 +74,7 @@ describe('PlatformWebProvider', () => {
 
   describe('fetch', () => {
     it('POSTs to the proxy contents path with Bearer + Exa contents body', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
+      vi.mocked(getPlatformAccessToken).mockResolvedValue('tok-123')
       const fetchMock = vi
         .spyOn(global, 'fetch')
         .mockResolvedValueOnce(new Response(JSON.stringify(contentsBody), { status: 200 }))
@@ -93,7 +93,7 @@ describe('PlatformWebProvider', () => {
     })
 
     it('maps 402 on fetch to billing copy naming the surface', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
+      vi.mocked(getPlatformAccessToken).mockResolvedValue('tok-123')
       vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 402 }))
       await expect(provider.fetch('https://a.com', {})).rejects.toThrow(
         /web fetch is unavailable.*billing issue/i,
@@ -101,7 +101,7 @@ describe('PlatformWebProvider', () => {
     })
 
     it('pre-guards when not signed in (no network call)', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue(null)
+      vi.mocked(getPlatformAccessToken).mockResolvedValue(null)
       const fetchMock = vi.spyOn(global, 'fetch')
       await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/not signed into Gamut/i)
       expect(fetchMock).not.toHaveBeenCalled()

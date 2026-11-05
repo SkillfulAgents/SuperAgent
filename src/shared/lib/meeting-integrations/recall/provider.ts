@@ -16,7 +16,7 @@ export const recallProvider: MeetingIntegrationProvider = {
   setup: recallSetup,
   storage: () => [agentIntegrationMeetings],
   // A public page for the bot's browser, and a way to reach Recall (the platform proxy or a host key).
-  isAvailable: () => meetingAvailability(resolveRecallTransport() !== null),
+  isAvailable: async () => meetingAvailability((await resolveRecallTransport()) !== null),
   liveSetting: (record, externalId) => {
     const { instructions, voice } = recallSettingsOf(record.config)
     return meetingLiveSettingFor(externalId, { instructions: instructions ?? undefined, voice: voice ?? undefined })
@@ -33,12 +33,13 @@ export const recallProvider: MeetingIntegrationProvider = {
   },
   async create(record) {
     const { RecallMeetingIntegration } = await import('./recall-meeting-integration')
-    return new RecallMeetingIntegration(record)
+    const { recallBotHostFor } = await import('./recall-meeting-integration')
+    return new RecallMeetingIntegration(record, (await recallBotHostFor(record)) ?? undefined)
   },
   /** Deleting the installation sends any bot still in a call home; the rows go with the cascade. */
   async cleanup(record) {
     const { recallBotHostFor } = await import('./recall-meeting-integration')
-    const host = recallBotHostFor(record)
+    const host = await recallBotHostFor(record)
     if (host) await leaveOpenMeetings(record.id, host)
   },
   async describeTarget() { return { type: 'meeting' } },

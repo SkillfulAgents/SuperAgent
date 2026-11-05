@@ -170,7 +170,7 @@ describe('signing the app\'s own workspace requests', () => {
   }
 
   beforeEach(() => {
-    installCloudDashboardAuth(fakeSession as never, () => MAIN_ID, () => workspace.current)
+    installCloudDashboardAuth(fakeSession as never, () => MAIN_ID, async () => workspace.current)
   })
 
   it('adds the workspace token to the pane\'s workspace requests', async () => {
@@ -283,6 +283,48 @@ describe('signing the app\'s own workspace requests', () => {
     expect(await run('receive', { ...details, statusCode: 200, responseHeaders: { 'set-cookie': ['a=1'] } })).toEqual({})
   })
 
+  it('sends a request unsigned, once, when the workspace cannot be read', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    installCloudDashboardAuth(fakeSession as never, () => MAIN_ID, () => Promise.reject(new Error('database is locked')))
+    const callback = vi.fn()
+    ;(on.send as Listener)(paneFile({ requestHeaders: { Accept: '*/*' } }), callback)
+    await vi.waitFor(() => expect(callback).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(callback).toHaveBeenCalledOnce()
+    expect(callback).toHaveBeenCalledWith({ requestHeaders: { Accept: '*/*' } })
+    expect(error).toHaveBeenCalled()
+    error.mockRestore()
+  })
+
+  it('drops the token from a later hop whose workspace cannot be read', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const read = vi.fn<() => Promise<{ deploymentUrl: string; token: string } | null>>()
+      .mockResolvedValueOnce({ deploymentUrl: CLOUD, token: 'tok-1' })
+      .mockRejectedValueOnce(new Error('database is locked'))
+    installCloudDashboardAuth(fakeSession as never, () => MAIN_ID, read)
+    const details = paneFile()
+    await run('send', details)
+
+    const out = await run('send', { ...details, requestHeaders: { Authorization: 'Bearer tok-1' } })
+    expect(out.requestHeaders).toEqual({})
+    // Not signed, so its response is passed through rather than cleaned or retried.
+    expect(await run('receive', { ...details, ...LOGIN_REJECTED })).toEqual({})
+    error.mockRestore()
+  })
+
+  it('does not remember a request that ended while its workspace was being read', async () => {
+    let release!: (value: { deploymentUrl: string; token: string } | null) => void
+    installCloudDashboardAuth(fakeSession as never, () => MAIN_ID, () => new Promise((resolve) => { release = resolve }))
+    const details = paneFile()
+    const sent = run('send', details)
+    ;(on.error as (d: { id: number }) => void)({ id: details.id })
+    release({ deploymentUrl: CLOUD, token: 'tok-1' })
+
+    expect((await sent).requestHeaders).toEqual({})
+    expect(await run('receive', { ...details, statusCode: 200, responseHeaders: { 'set-cookie': ['a=1'] } })).toEqual({})
+  })
+
   it('does not earn a second retry through a redirect away and back', async () => {
     refresh.mockResolvedValue({ deploymentUrl: CLOUD, token: 'tok-2' })
     const details = paneFile()
@@ -301,7 +343,7 @@ describe('a cloud popout', () => {
     let send: ((d: Record<string, any>, cb: (r: Record<string, any>) => void) => void) | undefined
     installCloudDashboardAuth({
       webRequest: { onBeforeSendHeaders: (l: never) => { send = l }, onHeadersReceived: () => {}, onCompleted: () => {}, onErrorOccurred: () => {} },
-    } as never, () => MAIN_ID, () => workspace.current)
+    } as never, () => MAIN_ID, async () => workspace.current)
     return new Promise<Record<string, any>>((resolve) => send!({
       id: 100_000 + webContentsId,
       url: `${CLOUD}/api/agents/sales/artifacts/weekly/view`,

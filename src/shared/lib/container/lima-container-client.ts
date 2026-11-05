@@ -824,7 +824,7 @@ async function ensureLimaReadyImpl(opts: { rebuild?: boolean } = {}): Promise<vo
 
   addErrorBreadcrumb({ category: 'lima', message: 'ensureLimaReady started', data: { limaHome } })
 
-  const settings = getSettings()
+  const settings = await getSettings()
   const explicitMemory = settings.container.runtimeSettings?.lima?.vmMemory
 
   // Check if VM exists and whether its config matches
@@ -1293,7 +1293,7 @@ async function ensureContainerdProvisioned(): Promise<void> {
 }
 
 async function createLimaVm(): Promise<void> {
-  const settings = getSettings()
+  const settings = await getSettings()
   const vmMemory = settings.container.runtimeSettings?.lima?.vmMemory || DEFAULT_LIMA_VM_MEMORY
 
   const arch = process.arch === 'x64' ? 'x86_64' : 'aarch64'

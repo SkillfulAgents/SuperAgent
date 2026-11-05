@@ -5,7 +5,7 @@ import { createServer } from 'node:http'
 import { GenericLlmProvider } from './generic-provider'
 import { connectionConfigSchema, mergeConnectionConfig } from './connection-schema'
 
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}) }))
+vi.mock('../config/settings', () => ({ getSettings: async () => ({}) }))
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
 
@@ -56,13 +56,13 @@ describe('generic OpenAI connection', () => {
     expect(mergeConnectionConfig(previous, { apiKeys: {}, env: {} }).chatTokenLimitField).toBe('max_tokens')
     const native = new GenericLlmProvider({ apiKeys: { genericApiKey: 'key', genericBaseUrl: 'https://example.com' }, env: {} })
     expect(await native.getContainerProxyConfig()).toBeUndefined()
-    expect(native.toolSearchEnv()).toBe('false')
+    expect(await native.toolSearchEnv()).toBe('false')
   })
 
   it.each(['chat-completions', 'responses'] as const)('runs helper tools, streams, discovery and errors through %s', async apiFormat => {
     const upstream = await endpoint()
     const provider = new GenericLlmProvider({ apiFormat, apiKeys: { genericApiKey: 'key', genericBaseUrl: `${upstream.url}/v1` }, env: {} })
-    const client = provider.createClient().withOptions({ maxRetries: 0 })
+    const client = (await provider.createClient()).withOptions({ maxRetries: 0 })
     const reply = await client.messages.create({ ...prompt, tools: [{ name: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' } } } }] })
     expect(reply.content).toContainEqual({ type: 'tool_use', id: 'call', name: 'read', input: { path: 'a' } })
     expect(reply.usage.input_tokens).toBe(3)
@@ -78,7 +78,7 @@ describe('generic OpenAI connection', () => {
     const runtime = await provider.getContainerProxyConfig()
     expect(runtime?.format).toBe(apiFormat)
     expect(runtime?.baseUrl).toContain('host.docker.internal')
-    expect(provider.toolSearchEnv()).toBe('true')
+    expect(await provider.toolSearchEnv()).toBe('true')
   })
 
   it.each(['https://endpoint.example', 'https://endpoint.example/v1/', 'https://endpoint.example/custom'])('uses the configured API path for %s', async baseUrl => {
@@ -90,7 +90,7 @@ describe('generic OpenAI connection', () => {
 it.each(['max_tokens', 'max_completion_tokens'] as const)('uses %s consistently for host helpers and agent proxy', async chatTokenLimitField => {
   const upstream = await endpoint()
   const provider = new GenericLlmProvider({ apiFormat: 'chat-completions', chatTokenLimitField, apiKeys: { genericApiKey: 'key', genericBaseUrl: upstream.url }, env: {} })
-  await provider.createClient().messages.create(prompt)
+  await (await provider.createClient()).messages.create(prompt)
   const runtime = (await provider.getContainerProxyConfig())!
   // Loopback was rewritten for Docker; this test's proxy runs on the host.
   const handle = await startLlmProxy({ llmProviderId: 'generic', config: { ...runtime, baseUrl: upstream.url + '/v1' } })
@@ -105,11 +105,11 @@ it.each(['max_tokens', 'max_completion_tokens'] as const)('uses %s consistently 
 it('rejects unsupported SDK endpoints without sending a completion upstream', async () => {
   const upstream = await endpoint()
   const provider = new GenericLlmProvider({ apiFormat: 'responses', apiKeys: { genericApiKey: 'key', genericBaseUrl: upstream.url }, env: {} })
-  await expect(provider.createClient().messages.countTokens({ model: 'test-model', messages: prompt.messages })).rejects.toMatchObject({ status: 404 })
+  await expect((await provider.createClient()).messages.countTokens({ model: 'test-model', messages: prompt.messages })).rejects.toMatchObject({ status: 404 })
   expect(upstream.requests).toHaveLength(0)
 })
 it.each(['https://endpoint.test/v1?x=y', 'https://endpoint.test/v1#fragment'])('rejects ambiguous base URL %s', async genericBaseUrl => {
   const provider = new GenericLlmProvider({ apiFormat: 'responses', apiKeys: { genericApiKey: 'key', genericBaseUrl }, env: {} })
-  expect(() => provider.createClient()).toThrow('without a query string or fragment')
+  await expect(provider.createClient()).rejects.toThrow('without a query string or fragment')
   await expect(provider.getContainerProxyConfig()).rejects.toThrow('without a query string or fragment')
 })

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const trusted = vi.hoisted(() => ({ origins: [] as string[] }))
-vi.mock('./trusted-origins', () => ({ getTrustedOrigins: () => trusted.origins }))
+vi.mock('./trusted-origins', () => ({ getTrustedOrigins: async () => trusted.origins }))
 
 const { isLocalHostname, isOwnOrigin } = await import('./own-origin')
 
@@ -39,8 +39,8 @@ describe('isOwnOrigin', () => {
       ['IPv6 loopback', 'http://[::1]:47891'],
       ['an IPv4-mapped loopback', 'http://[::ffff:127.0.0.1]:47891'],
       ['the uppercased public host', 'https://APP.EXAMPLE.COM'],
-    ])('is this app: %s', (_name, origin) => {
-      expect(isOwnOrigin(origin, request)).toBe(true)
+    ])('is this app: %s', async (_name, origin) => {
+      expect(await isOwnOrigin(origin, request)).toBe(true)
     })
 
     it.each([
@@ -48,28 +48,28 @@ describe('isOwnOrigin', () => {
       ['a sibling subdomain', 'https://www.example.com'],
       ['a local dev server on another port', 'http://host.docker.internal:3000'],
       ['a private-network service on another port', 'http://192.168.1.20:8080'],
-    ])('is not this app: %s', (_name, origin) => {
-      expect(isOwnOrigin(origin, request)).toBe(false)
+    ])('is not this app: %s', async (_name, origin) => {
+      expect(await isOwnOrigin(origin, request)).toBe(false)
     })
   })
 
-  it('knows the address this request reached it at, on a desktop install with no configuration', () => {
+  it('knows the address this request reached it at, on a desktop install with no configuration', async () => {
     process.env.PORT = '47896'
-    expect(isOwnOrigin('http://localhost:47896', [undefined, 'http://localhost:47896/api/agents/a'])).toBe(true)
-    expect(isOwnOrigin('http://host.docker.internal:47896', [undefined, 'http://localhost:47896/api/agents/a'])).toBe(true)
-    expect(isOwnOrigin('http://localhost:5173', [undefined, 'http://localhost:47896/api/agents/a'])).toBe(false)
+    expect(await isOwnOrigin('http://localhost:47896', [undefined, 'http://localhost:47896/api/agents/a'])).toBe(true)
+    expect(await isOwnOrigin('http://host.docker.internal:47896', [undefined, 'http://localhost:47896/api/agents/a'])).toBe(true)
+    expect(await isOwnOrigin('http://localhost:5173', [undefined, 'http://localhost:47896/api/agents/a'])).toBe(false)
   })
 
-  it('knows HOST_PUBLIC_URL and HOST, whatever the request came through', () => {
+  it('knows HOST_PUBLIC_URL and HOST, whatever the request came through', async () => {
     process.env.HOST_PUBLIC_URL = 'https://tunnel.example.net'
     process.env.HOST = 'server.example.org'
-    expect(isOwnOrigin('https://tunnel.example.net', ['http://localhost:47891/api'])).toBe(true)
-    expect(isOwnOrigin('https://server.example.org', ['http://localhost:47891/api'])).toBe(true)
+    expect(await isOwnOrigin('https://tunnel.example.net', ['http://localhost:47891/api'])).toBe(true)
+    expect(await isOwnOrigin('https://server.example.org', ['http://localhost:47891/api'])).toBe(true)
   })
 
-  it('takes nothing that is not a URL for an address', () => {
-    expect(isOwnOrigin('not a url', ['http://localhost:47891'])).toBe(false)
-    expect(isOwnOrigin('https://github.com', ['garbage', undefined])).toBe(false)
+  it('takes nothing that is not a URL for an address', async () => {
+    expect(await isOwnOrigin('not a url', ['http://localhost:47891'])).toBe(false)
+    expect(await isOwnOrigin('https://github.com', ['garbage', undefined])).toBe(false)
   })
 })
 

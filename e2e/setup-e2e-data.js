@@ -2,8 +2,9 @@
  * Pre-server setup script for E2E tests.
  *
  * Runs BEFORE the Vite dev server starts (called from the webServer command
- * in playwright configs) so that settings.json is on disk before the first
- * call to getSettings(), which caches the result for the lifetime of the process.
+ * in playwright configs). It deletes the database and writes settings.json, so
+ * the server's first boot creates a new database and imports the file into it
+ * (data migration 9). A settings.json written after that boot is never read.
  *
  * Usage:
  *   SUPERAGENT_DATA_DIR=.e2e-data node e2e/setup-e2e-data.js

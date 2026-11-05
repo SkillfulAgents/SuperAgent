@@ -32,7 +32,7 @@ import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
-import { initErrorReporting, setErrorReportingUser } from './error-reporting'
+import { attachErrorReportingIdentity, initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
@@ -104,11 +104,13 @@ async function initializeServicesInner() {
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.
   if (process.env.NODE_ENV === 'production') {
     initErrorReporting({ environment: 'web' })
+    // A provider started only now has no tenant identity yet; re-attaching is harmless.
+    await attachErrorReportingIdentity()
   }
 
   // Set platform auth user identity on error reports (if logged in)
   try {
-    const settings = getSettings()
+    const settings = await getSettings()
     if (settings.platformAuth?.token) {
       setErrorReportingUser({
         id: settings.platformAuth.tokenPreview,
@@ -128,7 +130,7 @@ async function initializeServicesInner() {
   registerAllAccountProviders()
 
   try {
-    reconcileSkillsetConfigsForCurrentAuth()
+    await reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
@@ -151,7 +153,7 @@ async function initializeServicesInner() {
 
       // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
       try {
-        const platformToken = getPlatformAccessToken()
+        const platformToken = await getPlatformAccessToken()
         if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
           installPlatformFetchInterceptor()
         }
@@ -192,7 +194,7 @@ async function initializeServicesInner() {
   // Stop the host browser for an agent before its container is torn down,
   // so the browser closes gracefully instead of getting a "socket hang up".
   containerHost.onBeforeContainerStop = async (agentId) => {
-    const provider = getActiveProvider()
+    const provider = await getActiveProvider()
     if (provider?.isRunning(agentId)) {
       await provider.stop(agentId)
     }
