@@ -421,6 +421,41 @@ export const sessionUnreadMarks = sqliteTable('session_unread_marks', {
 }))
 
 /**
+ * Threads on session messages, as in Slack's "reply in thread": a side
+ * conversation between people on a message that tagged a teammate. Replies
+ * live here, not in the agent's transcript, so the agent never reads them
+ * unless someone shares the thread with it (which sends it as a message).
+ *
+ * A thread row is written with its first reply and holds who the parent
+ * message tagged (`tagged_user_ids`, JSON, sessionThreadTaggedSchema): with the
+ * parent's author (`message_author`) and everyone who replied, that is who each
+ * reply tells. Auth mode only — teammates exist nowhere else. A session id is
+ * unique only within an agent, so every key includes the agent.
+ */
+export const sessionThreads = sqliteTable('session_threads', {
+  agentSlug: text('agent_slug').notNull(),
+  sessionId: text('session_id').notNull(),
+  parentMessageUuid: text('parent_message_uuid').notNull(),
+  taggedUserIds: text('tagged_user_ids').notNull().default('[]'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.sessionId, table.parentMessageUuid] }),
+}))
+
+export const sessionThreadReplies = sqliteTable('session_thread_replies', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+  sessionId: text('session_id').notNull(),
+  parentMessageUuid: text('parent_message_uuid').notNull(),
+  userId: text('user_id').notNull().references(() => user.id, { onDelete: 'cascade' }),
+  text: text('text').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  // The drawer reads one thread in order; the reply row reads a session's threads.
+  threadIdx: index('session_thread_replies_thread_idx').on(table.agentSlug, table.sessionId, table.parentMessageUuid, table.createdAt),
+}))
+
+/**
  * Web Push subscriptions — one row per browser/device that opted into push
  * (installed-PWA "Enable on this device" flow). Unlike `notifications` above,
  * these rows ARE per-user in auth mode: a subscription addresses one person's

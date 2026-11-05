@@ -456,6 +456,33 @@ class NotificationManager {
   }
 
   /**
+   * Tell someone a thread they are in has a new reply. It is a mention like
+   * any other (the purple @, push, the mention settings): being in a thread
+   * is what saves its people tagging each other again. The row points at the
+   * reply, so each reply is one row per person.
+   */
+  async triggerThreadReply(params: {
+    sessionId: string
+    agentSlug: string
+    replyId: string
+    recipientUserId: string
+    senderName: string
+    text: string
+  }): Promise<void> {
+    const body = params.text.length > MENTION_BODY_MAX
+      ? `${params.text.slice(0, MENTION_BODY_MAX - 1).trimEnd()}…`
+      : params.text
+    await this.triggerNotification({
+      type: 'session_mention',
+      sessionId: params.sessionId,
+      agentSlug: params.agentSlug,
+      title: `${params.senderName} replied in a thread`,
+      body,
+      recipient: { userId: params.recipientUserId, messageUuid: params.replyId },
+    })
+  }
+
+  /**
    * Take back the mentions of a message that never reached the transcript
    * (cancelled while queued, or discarded by a Stop): the inbox row and the @
    * go. A push already shown stays shown.

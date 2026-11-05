@@ -728,5 +728,15 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1793840639365,
     "hash": "773815730f63f226f64dd501cff54a9a75589b604f237b97f210d3a108d5faa5"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `session_thread_replies` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`parent_message_uuid` text NOT NULL,\n\t`user_id` text NOT NULL,\n\t`text` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `session_thread_replies_thread_idx` ON `session_thread_replies` (`agent_slug`,`session_id`,`parent_message_uuid`,`created_at`);",
+      "\nCREATE TABLE `session_threads` (\n\t`agent_slug` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`parent_message_uuid` text NOT NULL,\n\t`tagged_user_ids` text DEFAULT '[]' NOT NULL,\n\t`created_at` integer NOT NULL,\n\tPRIMARY KEY(`agent_slug`, `session_id`, `parent_message_uuid`)\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793910519652,
+    "hash": "643b8e3b89fc325b58885af9ce3c61d3b55ce89353efe62db4d05ea389bfedad"
   }
 ]
