@@ -35,7 +35,6 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from './store'
-import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -155,7 +154,6 @@ export class AgentIntegrationManager {
   // Authorization hints for each integration from its first connect attempt until it is removed or the manager stops.
   private authorization?: IntegrationAuthorizationWatch
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
-  private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
   // Integrations with a rebuild in flight. Reconcile passes (5-min tick, resume,
@@ -262,8 +260,6 @@ export class AgentIntegrationManager {
       }), { name: 'integration-manager.health-check' })
     }, HEALTH_CHECK_INTERVAL_MS)
 
-    this.subscribeGlobalNotifications()
-
     // Positive start signal: startup.ts only logs start() FAILURES, so without
     // this a dead manager is indistinguishable from a healthy idle one.
     console.log(`[AgentIntegrationManager] Started (${integrations.length} startup integration(s))`)
@@ -277,8 +273,6 @@ export class AgentIntegrationManager {
       clearInterval(this.healthCheckInterval)
       this.healthCheckInterval = null
     }
-    this.globalNotificationUnsubscribe?.()
-    this.globalNotificationUnsubscribe = null
 
     // Clean up all chat session SSE subscriptions
     for (const [, session] of this.chatSessions) {
@@ -1534,29 +1528,29 @@ export class AgentIntegrationManager {
     }), { name: 'integration-manager.pre-warm-container' })
   }
 
-  // ── Global notification handling (proxy review requests) ─────────
+  // ── Agent-scoped requests (proxy review requests) ─────────────────
 
   /**
-   * Review requests may be agent-scoped without a session SSE stream. This
-   * subscription routes their Allow/Deny cards; resolutions use the session stream.
-   * Idempotent so a harness that drives integrations without start() can arm
-   * it without risking a double-send.
+   * A request an actor opened, as it told the host (`user_request_created`).
+   * Review requests may be agent-scoped without a session stream; this routes
+   * their Allow/Deny cards. Resolutions use the session stream. The host calls
+   * it directly for every such event, so a card never waits on a feed hint
+   * reaching a listener. Never rejects.
    */
-  private subscribeGlobalNotifications(): void {
-    if (this.globalNotificationUnsubscribe) return
-    this.globalNotificationUnsubscribe = globalFeed.subscribe((event) => {
-      background(this.handleGlobalNotification(event).catch((err) => {
-        console.error('[AgentIntegrationManager] Error handling global notification:', err)
-        reportError(err, 'global-notification')
-      }), { name: 'integration-manager.global-notification' })
-    })
+  async handleRequestCreated(event: unknown): Promise<void> {
+    try {
+      await this.routeAgentScopedRequest(event)
+    } catch (err) {
+      console.error('[AgentIntegrationManager] Error handling an agent-scoped request:', err)
+      reportError(err, 'global-notification')
+    }
   }
 
-  private async handleGlobalNotification(event: unknown): Promise<void> {
+  private async routeAgentScopedRequest(event: unknown): Promise<void> {
     const data = event as Record<string, unknown>
-    // Review cards use this global wire because their scope may omit a session.
+    // Only an opened request comes this way: its scope may omit a session.
     // Resolutions with a session scope already arrive on that session's stream;
-    // forwarding them here as well would deliver each resolution twice.
+    // routing them here as well would deliver each resolution twice.
     if (data.type !== 'user_request_created') return
     const parsed = integrationRequestEventSchema.safeParse(event)
     if (!parsed.success || parsed.data.type !== 'user_request_created') return
@@ -1568,6 +1562,8 @@ export class AgentIntegrationManager {
     const isReview = request.kind === 'proxy_review' || request.kind === 'x_agent_review'
     const agentSlug = request.scope.agentSlug
     if (!isReview || !agentSlug) return
+    // Every route below delivers to a followed chat; with none there is no one to show.
+    if (this.chatSessions.size === 0) return
 
     // A proxied call carries no session of its own, so the scope has none to
     // route by; the agent's active session is the same fallback the review

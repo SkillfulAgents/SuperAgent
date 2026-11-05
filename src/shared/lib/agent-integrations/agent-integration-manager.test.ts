@@ -2,7 +2,6 @@ vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testi
 import * as integrationStore from './store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StopSessionOptions, StopSessionResult } from '../agent-actor/types'
-import type { GlobalFeedEvent } from '../notifications/global-feed'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
@@ -16,7 +15,7 @@ const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
-  global: undefined as ((event: GlobalFeedEvent) => void) | undefined, stop: vi.fn<(sessionId: string, options: StopSessionOptions) => Promise<StopSessionResult>>(),
+  stop: vi.fn<(sessionId: string, options: StopSessionOptions) => Promise<StopSessionResult>>(),
   syncMcp: vi.fn(async () => true),
   answer: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   markActive: vi.fn(), markIdle: vi.fn(), attach: vi.fn(), open: vi.fn((_sessionId?: string) => [] as unknown[]),
@@ -103,7 +102,6 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('@shared/lib/notifications/global-feed', () => ({ globalFeed: { subscribe: (listener: (event: GlobalFeedEvent) => void) => { state.global = listener; return () => { state.global = undefined } } } }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: state.notify } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
@@ -582,18 +580,19 @@ describe('AgentIntegration host contract', () => {
     adapter.outputs = []
     const request = { id: 'review', kind: 'proxy_review', blocking: true, autoApproved: false,
       scope: { agentSlug: 'installation-a', sessionId: 'another-session' }, payload: {} }
-    state.global?.({ type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'unrelated', scope: { agentSlug: 'installation-a' } })
-    state.global?.({ type: 'user_request_created', request })
-    state.global?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
+    // The host hands the manager every request an actor opens (local-host-port.ts).
+    await manager.handleRequestCreated({ type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'unrelated', scope: { agentSlug: 'installation-a' } })
+    await manager.handleRequestCreated({ type: 'user_request_created', request })
+    await manager.handleRequestCreated({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(adapter.outputs).toEqual([])
     state.streams.get('session-1')?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a', sessionId: 'session-1' } } })
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
     expect(adapter.outputs[0].output.type).toBe('request-opened')
     const resolution = { type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
-    if (order === 'global-first') state.global?.(resolution)
+    if (order === 'global-first') await manager.handleRequestCreated(resolution)
     state.streams.get('session-1')?.(resolution)
-    if (order === 'session-first') state.global?.(resolution)
+    if (order === 'session-first') await manager.handleRequestCreated(resolution)
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(2))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(adapter.outputs).toHaveLength(2)

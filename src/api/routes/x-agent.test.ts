@@ -178,8 +178,12 @@ const mockSubscribeToSession = vi.fn(async (..._args: unknown[]) => {})
 const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
 const mockPublishGlobal = vi.fn()
+const mockPublishToUsers = vi.fn()
 vi.mock('@shared/lib/notifications/global-feed', () => ({
-  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
+  globalFeed: {
+    publish: (...args: unknown[]) => mockPublishGlobal(...args),
+    publishToUsers: (...args: unknown[]) => mockPublishToUsers(...args),
+  },
 }))
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
@@ -538,7 +542,7 @@ describe('/create', () => {
     expect(newAgentAcl[0].role).toBe('owner')
   })
 
-  it('broadcasts agent_created only after inherited owner ACL is persisted', async () => {
+  it('announces agent_created to the inherited owners only after their ACL is persisted', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
     // slug and displaySlug must DIFFER here: agentSlug is the ACL filter key the
@@ -551,7 +555,7 @@ describe('/create', () => {
     })
 
     let ownerAclAtBroadcast: Array<{ userId: string; role: string }> = []
-    mockPublishGlobal.mockImplementation(() => {
+    mockPublishToUsers.mockImplementation(() => {
       ownerAclAtBroadcast = testDb
         .select()
         .from(schema.agentAcl)
@@ -564,11 +568,13 @@ describe('/create', () => {
     expect(res.status).toBe(200)
 
     expect(ownerAclAtBroadcast).toEqual([{ userId: OWNER_USER_ID, role: 'owner' }])
-    expect(mockPublishGlobal).toHaveBeenCalledTimes(1)
-    expect(mockPublishGlobal).toHaveBeenCalledWith({
+    // On each owner's own channel: their streams do not follow the new agent's yet.
+    expect(mockPublishToUsers).toHaveBeenCalledTimes(1)
+    expect(mockPublishToUsers).toHaveBeenCalledWith([OWNER_USER_ID], {
       type: 'agent_created',
       agentSlug: 'a1b2c3d4e5',
     })
+    expect(mockPublishGlobal).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'agent_created' }))
   })
 })
 
