@@ -1,6 +1,7 @@
-import { attribution, type Attribution } from '@shared/lib/platform-attribution'
+import { attribution, runWithAttribution, type Attribution } from '@shared/lib/platform-attribution'
 import {
   fetchActingPlatformAccount,
+  platformAccessTokenFrom,
   platformAuthStatusFrom,
   storedPlatformMemberIdFrom,
 } from '@shared/lib/services/platform-auth-service'
@@ -34,18 +35,32 @@ export function actingAttributionOnce(): () => Promise<Attribution | null> {
  * acting member), else the connected account's own member.
  */
 export async function actingPlanCacheKey(context: ActingPlanContext = {}): Promise<string> {
+  return (await actingAccount(context)).key
+}
+
+/** The settings and attribution an operation acts under, and the cache key they name. */
+async function actingAccount(context: ActingPlanContext) {
   const settings = context.settings ?? await getSettings()
   const acting = context.acting ? await context.acting() : await attribution.current()
   // A corrupt stored record is reported once, by the status read.
   const orgId = platformAuthStatusFrom(settings).orgId
-  return platformPlanCache.key(orgId, acting?.actingMemberId() ?? storedPlatformMemberIdFrom(settings, { report: false }))
+  const key = platformPlanCache.key(orgId, acting?.actingMemberId() ?? storedPlatformMemberIdFrom(settings, { report: false }))
+  return { settings, acting, key }
 }
 
-/** The acting account's plan policy: cached, else read with its identity from `/v1/account`. */
+/**
+ * The acting account's plan policy: cached, else read with its identity from
+ * `/v1/account`. The read uses the connection and acting member the key was
+ * made from, never the current ones: a connection switched after the
+ * operation read its settings must not file the new account's policy under
+ * the old account's key.
+ */
 export async function actingPlanPolicy(options: { fresh?: boolean } & ActingPlanContext = {}): Promise<PlatformPlanPolicy | null> {
+  const { settings, acting, key } = await actingAccount(options)
   return platformPlanCache.get(
-    await actingPlanCacheKey(options),
-    async () => accountPlanPolicy(await fetchActingPlatformAccount()),
+    key,
+    async () => accountPlanPolicy(await runWithAttribution(acting, () =>
+      fetchActingPlatformAccount(platformAccessTokenFrom(settings, { report: false })))),
     { fresh: options.fresh },
   )
 }

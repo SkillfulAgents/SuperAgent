@@ -138,12 +138,14 @@ function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T):
  * run is attributed (the fetch interceptor adds the acting member). Feeds the
  * plan policy cache like every account read. Throws on a platform failure.
  */
-export async function fetchActingPlatformAccount(): Promise<ParsedPlatformAccountInfo> {
-  const token = await getPlatformAccessToken()
-  if (!token) throw new Error('Platform is not connected')
+export async function fetchActingPlatformAccount(token?: string | null): Promise<ParsedPlatformAccountInfo> {
+  // `token`: the connection the caller already read (so the account it gets
+  // is the one it keyed on); the current one when not given.
+  const bearer = token === undefined ? await getPlatformAccessToken() : token
+  if (!bearer) throw new Error('Platform is not connected')
   return rememberAccountPolicy(await fetchPlatformJson({
     path: '/v1/account',
-    token,
+    token: bearer,
     schema: PlatformAccountInfoSchema,
     area: 'platform-auth',
     reportErrors: false,

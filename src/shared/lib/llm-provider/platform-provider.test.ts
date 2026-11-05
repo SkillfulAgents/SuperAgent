@@ -15,6 +15,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
     forAgent: (slug: string) => forAgentAttribution(slug),
     requiresActingMember: () => requiresActingMember(),
   },
+  runWithAttribution: (_attribution: unknown, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/error-reporting', () => ({
   captureMessage: (...args: unknown[]) => captureMessage(...args),
