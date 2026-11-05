@@ -240,6 +240,25 @@ describe('freshness and retention', () => {
     expect(await platformPlanCache.get(KEY, failing)).toBeNull()
   })
 
+  it('a failed reload does not bring back an answer that expires between its read and its write', async () => {
+    await remember(KEY, PRO_30)
+    vi.advanceTimersByTime(24 * HOUR - MINUTE)
+    const read = await platformPlanCache.beginRead()
+    const get = appState().get.bind(appState())
+    vi.spyOn(appState(), 'get').mockImplementationOnce((async (key: Parameters<typeof get>[0]) => {
+      const entry = await get(key)
+      vi.advanceTimersByTime(MINUTE)
+      return entry
+    }) as typeof get)
+
+    // It answers with what it read, which was still live.
+    expect(await platformPlanCache.remember(KEY, null, read)).toEqual(PRO_30)
+
+    const load = vi.fn(async () => PRO_200)
+    expect(await platformPlanCache.get(KEY, load)).toEqual(PRO_200)
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
   it('counts retention again from a new answer', async () => {
     await remember(KEY, PRO_30)
     vi.advanceTimersByTime(23 * HOUR)

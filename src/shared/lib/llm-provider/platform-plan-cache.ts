@@ -151,13 +151,16 @@ class PlatformPlanCache {
     let written: Entry<PlatformPlanSnapshot>
     let known: PlatformPlanSnapshot | undefined
     try {
-      known = (await appState().get(stateKey))?.value
+      const stored = await appState().get(stateKey)
+      known = stored?.value
       // A read that began after this one already answered.
       if (known?.policy && known.loadedAt > read.startedAt) return known.policy
-      if (!policy && known?.policy) {
-        // Ask again sooner, and let it stay no longer than the answer itself would.
-        await appState().set(stateKey, { ...known, freshUntil: read.startedAt + UNKNOWN_MS }, { expiry: 'keep' })
-        return known.policy
+      if (!policy && stored?.value.policy) {
+        // Ask again sooner, and let it stay no longer than the answer itself
+        // would: the instant it read, since `keep` starts a new lifetime if the
+        // entry expires before this write lands. An eventual entry always has one.
+        await appState().set(stateKey, { ...stored.value, freshUntil: read.startedAt + UNKNOWN_MS }, { expiry: { at: stored.expiresAt as number } })
+        return stored.value.policy
       }
       written = await appState().set(stateKey, {
         policy,
