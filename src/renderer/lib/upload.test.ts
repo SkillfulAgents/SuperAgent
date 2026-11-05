@@ -90,17 +90,6 @@ describe('uploadFileChunked (XHR transport)', () => {
     await expect(p).resolves.toEqual({ path: '/p' })
   })
 
-  it('rejects when the last chunk is only acknowledged, as the server has lost the earlier ones', async () => {
-    const onProgress = vi.fn()
-    const p = uploadFileChunked({ url: '/api/x', file: file(UPLOAD_CHUNK_SIZE * 2), onProgress })
-    const rejected = expect(p).rejects.toThrow('The upload was interrupted. Please try again.')
-    FakeXHR.instances[0].respond(200, { status: 'chunk_received', chunkIndex: 0 })
-    await vi.advanceTimersByTimeAsync(0)
-    FakeXHR.instances[1].respond(200, { status: 'chunk_received', chunkIndex: 1 })
-    await rejected
-    expect(onProgress).not.toHaveBeenCalledWith({ phase: 'processing', percent: 100 })
-  })
-
   it('rejects with UploadStalledError after stallMs without progress and aborts the XHR', async () => {
     const p = uploadFileChunked({ url: '/api/x', file: file(10), stallMs: UPLOAD_STALL_MS })
     const xhr = FakeXHR.instances[0]

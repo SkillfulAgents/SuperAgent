@@ -3,18 +3,14 @@
  * manifest per upload and decides everything; a byte store only keeps bytes
  * (`chunked-upload-bytes.ts`). docs/app-state.md has the design.
  *
- * A chunk reserves its bytes in the manifest, writes them under a key no other
- * attempt uses, then commits. The commit that completes the upload also moves
- * it to `finalizing`, in one compare-and-set, so of chunks arriving together
- * exactly one does it. Completion is never read from a listing of bytes.
+ * An upload is one attempt: its chunks in order, one write at a time. Anything
+ * else is refused, and any failure ends the attempt, so a client that wants to
+ * try again sends the file again under a new upload id.
  *
- * Each change is a reducer that recognises its own attempt or token in the
- * record, so a write whose answer was lost settles by deciding again from what
- * is stored (`settle`).
- *
- * The bytes are handed to the caller under a renewable lease, which keeps two
- * processes from doing that at once. It does not make the caller's work exactly
- * once: a takeover after a crash runs it again.
+ * The commit of the last chunk moves the upload to `finalizing` in one
+ * compare-and-set, and the request whose commit that was runs `finish`. Nobody
+ * else ever does, so a crash during `finish` is not recovered. A new attempt
+ * after an uncertain result may repeat an import that already succeeded.
  */
 import { randomUUID } from 'node:crypto'
 import * as fs from 'fs'
@@ -24,7 +20,6 @@ import { pipeline } from 'stream/promises'
 import type { ReadableStream as NodeReadableStream } from 'stream/web'
 import {
   appState,
-  defineLease,
   defineNamespace,
   digestKeyPart,
   isAppStateInitialized,
@@ -32,49 +27,26 @@ import {
   type RecordChange,
   type StateKey,
 } from '@shared/lib/app-state'
-import { background } from '@shared/lib/background'
 import { captureException } from '@shared/lib/error-reporting'
 import { LOCAL_CHUNKS_DIR, UPLOAD_BYTES_PREFIX, uploadByteStore, type UploadByteStore } from './chunked-upload-bytes'
 import {
   MAX_UPLOAD_CHUNKS,
   uploadIdSchema,
   uploadManifestSchema,
+  type CommittedChunk,
   type UploadManifest,
-  type UploadResponse,
 } from './chunked-upload-schema'
 import { ensureDirectory, getTempUploadsDir, removeDirectory } from './file-storage'
 
-// Workspace chat/file uploads. Streaming assembly keeps RAM O(chunk); this caps disk.
+// Workspace chat/file uploads. Streaming keeps RAM O(chunk); this caps disk.
 export const MAX_UPLOAD_TOTAL_SIZE = 2 * 1024 * 1024 * 1024
 
-/** A manifest's life after its last write. Matches the sweep's age: an abandoned upload is gone an hour after it stopped. */
+/**
+ * A manifest's life after its last write, judged by the backend. It is also the
+ * deadline of a write in flight and of a crashed `finish`: past it the manifest
+ * is gone, a late commit is refused, and the sweep removes the bytes.
+ */
 export const UPLOAD_IDLE_EXPIRY_MS = 60 * 60 * 1000
-/** How long a retry can still get the answer of a finished upload, from when it finished. */
-export const UPLOAD_RESULT_RETENTION_MS = 60 * 60 * 1000
-/**
- * How long an attempt's reservation counts without a commit. Far longer than
- * one chunk's write. Judged by whichever process writes next: a skewed clock
- * can only drop one early, and that attempt's commit is then refused.
- */
-export const UPLOAD_RESERVATION_MS = 10 * 60 * 1000
-/**
- * The finalizer's lease, renewed every 40 s while the caller reads and works.
- * How long a retry waits when a finalizer died. A process stalled
- * this long (a sleeping laptop) loses the lease, and can only refuse itself.
- */
-export const UPLOAD_FINALIZER_LEASE_MS = 2 * 60 * 1000
-/** What must be left of the lease when the caller's work starts. */
-const FINALIZER_CONFIRM_MARGIN_MS = 30_000
-/** How often a running finalizer writes the manifest, so it cannot idle out from under the work. */
-const MANIFEST_TOUCH_MS = 15 * 60 * 1000
-/** Attempts of one upload in flight at once. Bounds the record, and what can sit on disk past the cap. */
-const MAX_RESERVATIONS = 64
-/** A larger answer is not kept: a retry is told the upload finished, without it. */
-const MAX_RETAINED_RESPONSE_CHARS = 64 * 1024
-/** Decisions per change. A conflict means another write landed, and up to 200 chunks may land together. */
-const MAX_DECISIONS = 1024
-const LOST_ANSWER_ATTEMPTS = 3
-const LOST_ANSWER_PAUSE_MS = 100
 /** Below the temp uploads dir: files `toFile` wrote for a caller. */
 const ASSEMBLED_DIR = 'assembled'
 
@@ -84,8 +56,6 @@ const uploads = defineNamespace({
   schema: uploadManifestSchema,
   expiry: { ttlMs: UPLOAD_IDLE_EXPIRY_MS, onUpdate: 'reset' },
 })
-
-const finalizerLease = defineLease({ name: 'claim:upload-finalize', ttlMs: UPLOAD_FINALIZER_LEASE_MS })
 
 export function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
   return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
@@ -112,11 +82,22 @@ export class UploadConflictError extends Error {
   }
 }
 
+/**
+ * The upload's side effect may have happened, and what failed came after it. A
+ * consumer throws this rather than let the failure read as "nothing happened".
+ */
+export class UploadOutcomeUnknownError extends Error {
+  constructor(cause: unknown) {
+    super('The upload may have taken effect, but its result is unknown. Check before sending it again.', { cause })
+    this.name = 'UploadOutcomeUnknownError'
+  }
+}
+
 export interface StoreChunkInput {
   /** The authenticated user. Their upload ids and bytes are their own. */
   ownerId: string
   uploadId: string
-  /** What the assembled file is for, such as `agent:{slug}`. */
+  /** What the upload is for, such as `agent:{slug}`. */
   target: string
   chunkIndex: number
   totalChunks: number
@@ -130,9 +111,9 @@ export interface AssembledUpload {
   /**
    * The chunks in order, each opened only when the one before it has been read
    * through. It closes only after the last chunk proved its size: a chunk that
-   * is missing, unreadable or another size errors it, and so does losing the
-   * lease, so a consumer cannot take part of an upload for the whole. Read it
-   * before `finish` returns: the chunks may go after that.
+   * is missing, unreadable or another size errors it, so a consumer cannot take
+   * part of an upload for the whole. Read it before `finish` returns: the chunks
+   * go after that.
    */
   stream(): ReadableStream<Uint8Array>
   /**
@@ -144,21 +125,16 @@ export interface AssembledUpload {
 }
 
 /**
- * Consumes the upload. What it returns is the answer a retry gets, so it returns
- * its failures too; a throw leaves the upload for a retry to run again. So does a
- * failed read, even when `finish` made an answer of it: a read that failed says
- * nothing about the upload, and its chunks are still there to read.
+ * Consumes the upload, once. The upload ends with it whatever happens, and its
+ * bytes go, so a throw is not retried: throw `UploadOutcomeUnknownError` when
+ * the side effect may have happened.
  */
-export type FinishUpload = (assembled: AssembledUpload) => Promise<UploadResponse>
+export type FinishUpload<T> = (assembled: AssembledUpload) => Promise<T>
 
-export type StoreChunkResult =
+export type StoreChunkResult<T> =
   | { status: 'received' }
-  /** Another request is assembling or consuming this upload. Try again shortly. */
-  | { status: 'finalizing' }
-  /** The upload has ended: this request's `finish`, or the answer kept from the one that ran. */
-  | { status: 'finished'; response: UploadResponse }
-
-export type { UploadResponse }
+  /** This was the last chunk, and this is what `finish` returned. */
+  | { status: 'finished'; result: T }
 
 /** One try at storing one chunk. */
 interface ChunkAttempt {
@@ -169,41 +145,18 @@ interface ChunkAttempt {
   totalChunks: number
   maxBytes: number
   index: number
-  hash: string
   size: number
   attemptId: string
 }
 
-/** How a request ends once the manifest has decided. */
-type NextStep =
-  | { kind: 'received' }
-  | { kind: 'finalize' }
-  | { kind: 'finished'; response: UploadResponse | null }
-  | { kind: 'too_large'; size: number; committed: string[] }
-  | { kind: 'conflict'; message: string }
-
-interface CommitOutcome {
-  next: NextStep
-  /** The manifest refers to this attempt's bytes. Otherwise they are deleted. */
-  keepBytes: boolean
-  /** The attempt whose chunk this one replaced, when this decision did. */
-  replaced: string | null
-}
-
-type TakeOver =
-  | { kind: 'mine'; manifest: UploadManifest }
-  /** Someone other than the predecessor is named now: this holder is the stale one, or lost a race to be next. */
-  | { kind: 'superseded' }
-  | { kind: 'ended'; response: UploadResponse | null }
-  | { kind: 'gone' }
-
-const DIFFERENT_DETAILS = 'This upload was started with different details'
-const ALREADY_ASSEMBLING = 'This upload is already being assembled and has a different chunk at this position'
-const ALREADY_FINISHED = 'This upload has already finished, with a different chunk at this position'
-const EXPIRED = 'This upload has expired. Please start it again'
-const RESERVATION_LOST = 'This chunk took too long to store. Please send it again'
-const TOO_MANY_WRITES = 'Too many chunks of this upload are being written at once'
-const RESULT_NOT_KEPT = 'This upload has already finished'
+const START_AGAIN = 'Start a new upload to send the file again.'
+const NOT_STARTED = `This upload has not started, or it has expired. ${START_AGAIN}`
+const OUT_OF_ORDER = `This chunk is out of order for this upload. ${START_AGAIN}`
+const WRITE_IN_FLIGHT = `Another chunk of this upload is still being written. ${START_AGAIN}`
+const DIFFERENT_DETAILS = `This upload was started with different details. ${START_AGAIN}`
+const ALREADY_ENDED = 'This upload has already ended, perhaps successfully. Check its result before starting a new upload.'
+const ALREADY_FINALIZING = 'This upload is already being processed, or stopped while it was. Check its result before starting a new upload.'
+const TOO_LATE = `This chunk arrived after its upload moved on. ${START_AGAIN}`
 
 function ignoreCleanupError(err: unknown, op: string, extra?: Record<string, unknown>): void {
   if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
@@ -229,11 +182,7 @@ function bytesKey(ownerPart: string, uploadId: string, attemptId: string): strin
   return `${UPLOAD_BYTES_PREFIX}${ownerPart}/${uploadId}/${attemptId}`
 }
 
-function assembledPath(ownerPart: string, uploadId: string, token: string): string {
-  return path.join(getTempUploadsDir(), ASSEMBLED_DIR, `${ownerPart}.${uploadId}.${token}`)
-}
-
-async function describeAttempt(input: StoreChunkInput): Promise<ChunkAttempt> {
+function describeAttempt(input: StoreChunkInput): ChunkAttempt {
   const { chunkIndex, totalChunks, maxTotalBytes } = input
   const uploadId = uploadIdSchema.parse(input.uploadId).toLowerCase()
   if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > MAX_UPLOAD_CHUNKS) {
@@ -243,8 +192,6 @@ async function describeAttempt(input: StoreChunkInput): Promise<ChunkAttempt> {
     throw new RangeError('The chunk index is outside the upload')
   }
   const ownerPart = ownerPartOf(input.ownerId)
-  // Off the event loop: a chunk can be hundreds of megabytes.
-  const digest = await crypto.subtle.digest('SHA-256', input.chunk as Uint8Array<ArrayBuffer>)
   return {
     key: manifestKey(ownerPart, uploadId),
     ownerPart,
@@ -253,334 +200,193 @@ async function describeAttempt(input: StoreChunkInput): Promise<ChunkAttempt> {
     totalChunks,
     maxBytes: maxTotalBytes,
     index: chunkIndex,
-    hash: Buffer.from(digest).toString('base64url'),
     size: input.chunk.byteLength,
     attemptId: `${Date.now()}-${randomUUID()}`,
   }
 }
 
-function describesSameUpload(manifest: UploadManifest, attempt: ChunkAttempt): boolean {
-  return manifest.target === attempt.target && manifest.totalChunks === attempt.totalChunks && manifest.maxBytes === attempt.maxBytes
-}
+type Reserved =
+  | { kind: 'write' }
+  | { kind: 'refused'; message: string }
+  | { kind: 'too_large'; size: number; committed: string[] }
 
-type Reservations = Extract<UploadManifest, { state: 'receiving' }>['reservations']
-
-function liveReservations(reservations: Reservations, now: number, except?: string): Reservations {
-  return Object.fromEntries(
-    Object.entries(reservations).filter(([attemptId, reservation]) => attemptId !== except && now < reservation.expiresAt),
-  )
-}
+type Committed =
+  | { kind: 'received' }
+  /** This commit moved the upload to `finalizing`, so this request runs `finish`. */
+  | { kind: 'claimed'; chunks: CommittedChunk[] }
+  | { kind: 'refused' }
 
 /**
- * What the file would be at most. Each index counts its largest chunk, committed
- * or in flight, since one of them ends up there: a replacement is not counted
- * twice, and bytes on their way count before they are written.
+ * Takes the one write slot, for exactly the next chunk. A refusal changes
+ * nothing: whoever holds the slot goes on.
  */
-function projectedBytes(chunks: UploadManifest['chunks'], reservations: Reservations, attempt: ChunkAttempt): number {
-  const largest = new Map<number, number>()
-  const count = (index: number, size: number) => largest.set(index, Math.max(largest.get(index) ?? 0, size))
-  for (const [index, chunk] of Object.entries(chunks)) count(Number(index), chunk.size)
-  for (const reservation of Object.values(reservations)) count(reservation.index, reservation.size)
-  count(attempt.index, attempt.size)
-  let total = 0
-  for (const size of largest.values()) total += size
-  return total
-}
-
-function committedAttempts(chunks: UploadManifest['chunks']): string[] {
-  return Object.values(chunks).map((chunk) => chunk.attemptId)
-}
-
-/** What a chunk gets from an upload that stopped receiving. */
-function stepAfterReceiving(manifest: Exclude<UploadManifest, { state: 'receiving' }>, attempt: ChunkAttempt): NextStep {
-  if (manifest.state === 'too_large') {
-    return { kind: 'too_large', size: manifest.size, committed: committedAttempts(manifest.chunks) }
+function reserve(manifest: UploadManifest | null, attempt: ChunkAttempt): RecordChange<UploadManifest, Reserved> {
+  const refused = (message: string): RecordChange<UploadManifest, Reserved> => ({ result: { kind: 'refused', message } })
+  if (!manifest && attempt.index !== 0) return refused(NOT_STARTED)
+  if (manifest?.state === 'ended') return refused(ALREADY_ENDED)
+  if (manifest?.state === 'finalizing') return refused(ALREADY_FINALIZING)
+  if (manifest && (manifest.target !== attempt.target || manifest.totalChunks !== attempt.totalChunks || manifest.maxBytes !== attempt.maxBytes)) {
+    return refused(DIFFERENT_DETAILS)
   }
-  const sameChunk = manifest.chunks[attempt.index]?.hash === attempt.hash
-  if (manifest.state === 'finalizing') {
-    return sameChunk ? { kind: 'finalize' } : { kind: 'conflict', message: ALREADY_ASSEMBLING }
-  }
-  return sameChunk ? { kind: 'finished', response: manifest.response } : { kind: 'conflict', message: ALREADY_FINISHED }
-}
+  if (manifest?.writing) return refused(WRITE_IN_FLIGHT)
+  const chunks = manifest?.chunks ?? []
+  if (attempt.index !== chunks.length) return refused(OUT_OF_ORDER)
 
-/** The first step: a chunk the upload already has writes nothing, any other reserves its bytes. */
-function reserve(manifest: UploadManifest | null, attempt: ChunkAttempt): RecordChange<UploadManifest, NextStep | { kind: 'write' }> {
-  if (manifest && !describesSameUpload(manifest, attempt)) return { result: { kind: 'conflict', message: DIFFERENT_DETAILS } }
-  if (manifest && manifest.state !== 'receiving') return { result: stepAfterReceiving(manifest, attempt) }
-  if (manifest?.reservations[attempt.attemptId]) return { result: { kind: 'write' } }
-  const chunks = manifest?.chunks ?? {}
-  if (chunks[attempt.index]?.hash === attempt.hash) return { result: { kind: 'received' } }
-
-  const now = Date.now()
-  const reservations = liveReservations(manifest?.reservations ?? {}, now)
-  if (Object.keys(reservations).length >= MAX_RESERVATIONS) return { result: { kind: 'conflict', message: TOO_MANY_WRITES } }
-  const identity = { target: attempt.target, totalChunks: attempt.totalChunks, maxBytes: attempt.maxBytes, chunks }
-  const size = projectedBytes(chunks, reservations, attempt)
+  const size = chunks.reduce((total, chunk) => total + chunk.size, attempt.size)
   if (size > attempt.maxBytes) {
-    return {
-      result: { kind: 'too_large', size, committed: committedAttempts(chunks) },
-      value: { ...identity, state: 'too_large', size },
-      expiry: { ttlMs: UPLOAD_RESULT_RETENTION_MS },
-    }
+    return { result: { kind: 'too_large', size, committed: chunks.map((chunk) => chunk.attemptId) }, value: { state: 'ended' } }
   }
-  return {
-    result: { kind: 'write' },
-    value: {
-      ...identity,
-      state: 'receiving',
-      reservations: {
-        ...reservations,
-        [attempt.attemptId]: { index: attempt.index, hash: attempt.hash, size: attempt.size, expiresAt: now + UPLOAD_RESERVATION_MS },
-      },
-    },
-  }
+  const { target, totalChunks, maxBytes } = attempt
+  return { result: { kind: 'write' }, value: { target, totalChunks, maxBytes, state: 'receiving', chunks, writing: attempt.attemptId } }
 }
 
 /**
- * The last step for bytes that were written. The commit that leaves no chunk
- * missing also moves the upload to `finalizing`: that is the claim, one write,
- * so simultaneous last chunks can neither both miss it nor both make it. Any
- * attempt still in flight then is refused when it gets here.
+ * Commits bytes that were written, while this attempt still holds the slot. The
+ * commit of the last chunk also moves the upload to `finalizing`: that is the
+ * claim, one write, so one request and no other runs `finish`.
  */
-function commit(manifest: UploadManifest | null, attempt: ChunkAttempt): RecordChange<UploadManifest, CommitOutcome> {
-  const refused = (message: string): RecordChange<UploadManifest, CommitOutcome> => ({
-    result: { next: { kind: 'conflict', message }, keepBytes: false, replaced: null },
-  })
-  // Absent: it expired, and this attempt's guard with it. A commit never creates a record.
-  if (!manifest) return refused(EXPIRED)
-  if (!describesSameUpload(manifest, attempt)) return refused(DIFFERENT_DETAILS)
-
-  const committed = manifest.chunks[attempt.index]
-  const isMine = committed?.attemptId === attempt.attemptId
-  if (manifest.state !== 'receiving') {
-    return { result: { next: stepAfterReceiving(manifest, attempt), keepBytes: isMine, replaced: null } }
+function commit(manifest: UploadManifest | null, attempt: ChunkAttempt): RecordChange<UploadManifest, Committed> {
+  if (manifest?.state !== 'receiving' || manifest.writing !== attempt.attemptId) return { result: { kind: 'refused' } }
+  const { target, totalChunks, maxBytes } = manifest
+  const chunks = [...manifest.chunks, { attemptId: attempt.attemptId, size: attempt.size }]
+  if (chunks.length === totalChunks) {
+    return { result: { kind: 'claimed', chunks }, value: { target, totalChunks, maxBytes, state: 'finalizing', chunks } }
   }
-  // Our commit landed and its answer was lost.
-  if (isMine) return { result: { next: { kind: 'received' }, keepBytes: true, replaced: null } }
-
-  const reservations = liveReservations(manifest.reservations, Date.now(), attempt.attemptId)
-  if (committed?.hash === attempt.hash) {
-    return { result: { next: { kind: 'received' }, keepBytes: false, replaced: null }, value: { ...manifest, reservations } }
-  }
-  if (!manifest.reservations[attempt.attemptId]) return refused(RESERVATION_LOST)
-
-  const chunks = { ...manifest.chunks, [attempt.index]: { attemptId: attempt.attemptId, hash: attempt.hash, size: attempt.size } }
-  const replaced = committed?.attemptId ?? null
-  if (Object.keys(chunks).length === manifest.totalChunks) {
-    const { target, totalChunks, maxBytes } = manifest
-    return {
-      result: { next: { kind: 'finalize' }, keepBytes: true, replaced },
-      value: { target, totalChunks, maxBytes, chunks, state: 'finalizing', finalizer: null },
-    }
-  }
-  return { result: { next: { kind: 'received' }, keepBytes: true, replaced }, value: { ...manifest, chunks, reservations } }
-}
-
-/** An attempt whose write failed gives its reservation back. */
-function release(manifest: UploadManifest | null, attemptId: string): RecordChange<UploadManifest, void> {
-  if (manifest?.state !== 'receiving' || !manifest.reservations[attemptId]) return { result: undefined }
-  return { result: undefined, value: { ...manifest, reservations: liveReservations(manifest.reservations, Date.now(), attemptId) } }
+  return { result: { kind: 'received' }, value: { ...manifest, chunks, writing: null } }
 }
 
 /**
- * The lease holder names itself in the manifest, which fences whoever held it
- * before, but only in place of the predecessor it confirmed. Any other name is
- * newer than this holder's lease, and the name is what fences a publish, so a
- * stale holder must not be able to erase it. Its own name means an earlier write
- * landed and its answer was lost.
+ * Ends the upload this attempt is part of, and says which chunks were committed.
+ * Only while the manifest still names the attempt: one that has expired and been
+ * started again under the same id is another upload.
  */
-function takeOver(manifest: UploadManifest | null, token: string, predecessor: string | null): RecordChange<UploadManifest, TakeOver> {
-  if (manifest?.state === 'completed') return { result: { kind: 'ended', response: manifest.response } }
-  if (manifest?.state !== 'finalizing') return { result: { kind: 'gone' } }
-  if (manifest.finalizer === token) return { result: { kind: 'mine', manifest } }
-  if (manifest.finalizer !== predecessor) return { result: { kind: 'superseded' } }
-  const next = { ...manifest, finalizer: token }
-  return { result: { kind: 'mine', manifest: next }, value: next }
-}
-
-/**
- * Keeps the answer, while the manifest still names this holder. The lease may
- * have lapsed by now; what fences is the name, since a successor writes its own
- * before it does anything. Without a successor the answer is still the truth.
- */
-function publish(manifest: UploadManifest | null, token: string, response: UploadResponse | null): RecordChange<UploadManifest, boolean> {
-  if (manifest?.state === 'completed' && manifest.finalizer === token) return { result: true }
-  if (manifest?.state !== 'finalizing' || manifest.finalizer !== token) return { result: false }
-  const { target, totalChunks, maxBytes, chunks } = manifest
-  return {
-    result: true,
-    value: { target, totalChunks, maxBytes, chunks, state: 'completed', finalizer: token, response },
-    expiry: { ttlMs: UPLOAD_RESULT_RETENTION_MS },
-  }
-}
-
-/**
- * One change to a manifest. A failure may be a write that landed with its answer
- * lost, so the change is decided again from what is stored; each reducer above
- * recognises its own attempt or token there. If this throws, the outcome is
- * unknown and the caller must not assume either way.
- */
-async function settle<R>(key: StateKey<UploadManifest, 'strong'>, reduce: (manifest: UploadManifest | null) => RecordChange<UploadManifest, R>): Promise<R> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await reduceRecord(key, reduce, { maxAttempts: MAX_DECISIONS })
-    } catch (error) {
-      if (attempt >= LOST_ANSWER_ATTEMPTS) throw error
-      await new Promise((resolve) => setTimeout(resolve, attempt * LOST_ANSWER_PAUSE_MS))
-    }
-  }
+function end(manifest: UploadManifest | null, attemptId: string): RecordChange<UploadManifest, string[]> {
+  if (manifest?.state !== 'receiving' && manifest?.state !== 'finalizing') return { result: [] }
+  const committed = manifest.chunks.map((chunk) => chunk.attemptId)
+  const named = committed.includes(attemptId) || (manifest.state === 'receiving' && manifest.writing === attemptId)
+  return named ? { result: committed, value: { state: 'ended' } } : { result: [] }
 }
 
 /** Deletes bytes nothing refers to. One that stays is the sweep's to remove. */
-async function deleteBytes(store: UploadByteStore, keys: string[], op: string): Promise<void> {
-  await Promise.all(keys.map(async (key) => {
+async function deleteBytes(store: UploadByteStore, attempt: ChunkAttempt, attemptIds: string[]): Promise<void> {
+  await Promise.all(attemptIds.map(async (attemptId) => {
+    const key = bytesKey(attempt.ownerPart, attempt.uploadId, attemptId)
     try {
       await store.delete(key)
     } catch (err) {
-      ignoreCleanupError(err, op, { key })
+      ignoreCleanupError(err, 'delete-chunk', { key })
     }
   }))
 }
 
-async function writeAndCommit(store: UploadByteStore, attempt: ChunkAttempt, chunk: Buffer): Promise<NextStep> {
-  const key = bytesKey(attempt.ownerPart, attempt.uploadId, attempt.attemptId)
+/**
+ * Ends the attempt and deletes its bytes, plus `unneeded`, which nothing can need
+ * whatever AppState says. Never throws: if AppState cannot be reached, the
+ * manifest expires and the sweep removes the rest.
+ */
+async function endAttempt(store: UploadByteStore, attempt: ChunkAttempt, unneeded: string[] = []): Promise<void> {
+  let known: string[] = []
   try {
-    await store.put(key, chunk)
+    known = [...await reduceRecord(attempt.key, (manifest) => end(manifest, attempt.attemptId)), attempt.attemptId]
+  } catch (err) {
+    ignoreCleanupError(err, 'end-attempt', { uploadId: attempt.uploadId })
+  }
+  await deleteBytes(store, attempt, [...new Set([...known, ...unneeded])])
+}
+
+/**
+ * A change to the manifest, with no retry and no read-back. A failure may be a
+ * write that landed with its answer lost, even the claim. The request does not
+ * know it won, so it does not go on: it ends the attempt and fails.
+ */
+async function changeManifest<R>(
+  store: UploadByteStore,
+  attempt: ChunkAttempt,
+  change: (manifest: UploadManifest | null) => RecordChange<UploadManifest, R>,
+): Promise<R> {
+  try {
+    return await reduceRecord(attempt.key, change)
   } catch (error) {
-    try {
-      await settle(attempt.key, (manifest) => release(manifest, attempt.attemptId))
-    } catch (releaseError) {
-      // It stops counting at its expiry.
-      ignoreCleanupError(releaseError, 'release-reservation', { uploadId: attempt.uploadId })
-    }
-    await deleteBytes(store, [key], 'delete-failed-write')
+    await endAttempt(store, attempt)
     throw error
   }
-  // A throw here leaves the bytes alone: the commit may have landed.
-  const outcome = await settle(attempt.key, (manifest) => commit(manifest, attempt))
-  const unreferenced = outcome.replaced ? [bytesKey(attempt.ownerPart, attempt.uploadId, outcome.replaced)] : []
-  if (!outcome.keepBytes) unreferenced.push(key)
-  await deleteBytes(store, unreferenced, 'delete-unreferenced-chunk')
-  return outcome.next
 }
 
 /**
  * The committed chunks one after another, read only as they are asked for
  * (`highWaterMark: 0`), so the next chunk stays closed until the one before it
- * has been read through and proved the size the manifest says. Every way of not
- * getting the whole upload errors the stream, and `onFailure` hears of it, since
- * a consumer may swallow the error. Giving up is the consumer's own: a cancel is
- * no failure.
+ * has been read through and proved the size the manifest says.
  */
-function readChunksInOrder(
-  store: UploadByteStore,
-  attempt: ChunkAttempt,
-  manifest: UploadManifest,
-  signal: AbortSignal,
-  onFailure: (error: unknown) => void,
-): ReadableStream<Uint8Array> {
+function readChunksInOrder(store: UploadByteStore, attempt: ChunkAttempt, chunks: CommittedChunk[]): ReadableStream<Uint8Array> {
   let index = 0
   let open: ReadableStreamDefaultReader<Uint8Array> | null = null
-  let sizeOfChunk = 0
   let readOfChunk = 0
-  let stopped = false
-  let stopWatching = () => {}
-  const stop = async (reason: unknown): Promise<void> => {
-    stopped = true
-    stopWatching()
+  let cancelled = false
+  const closeOpen = async (reason: unknown): Promise<void> => {
     const reader = open
     open = null
     await reader?.cancel(reason).catch(() => undefined)
   }
   return new ReadableStream<Uint8Array>({
-    start(controller) {
-      const onAbort = () => {
-        onFailure(signal.reason)
-        controller.error(signal.reason)
-        background(stop(signal.reason), { name: 'chunked-upload.stop-reading' })
-      }
-      if (signal.aborted) {
-        onAbort()
-        return
-      }
-      signal.addEventListener('abort', onAbort, { once: true })
-      stopWatching = () => signal.removeEventListener('abort', onAbort)
-    },
     async pull(controller) {
       try {
         for (;;) {
+          const chunk = chunks[index]
+          if (!chunk) {
+            controller.close()
+            return
+          }
           if (!open) {
-            if (index === manifest.totalChunks) {
-              stopWatching()
-              controller.close()
-              return
-            }
-            const chunk = manifest.chunks[index]
-            if (!chunk) throw new Error(`Upload chunk ${index} is not in the manifest`)
             const source = await store.stream(bytesKey(attempt.ownerPart, attempt.uploadId, chunk.attemptId))
-            if (stopped) {
+            if (cancelled) {
               await source?.cancel().catch(() => undefined)
               return
             }
             if (!source) throw new Error(`Upload chunk ${index} is missing`)
             open = source.getReader()
-            sizeOfChunk = chunk.size
             readOfChunk = 0
           }
           const { done, value } = await open.read()
           if (done) {
-            if (readOfChunk !== sizeOfChunk) throw new Error(`Upload chunk ${index} is ${readOfChunk} bytes, its manifest says ${sizeOfChunk}`)
+            if (readOfChunk !== chunk.size) throw new Error(`Upload chunk ${index} is ${readOfChunk} bytes, its manifest says ${chunk.size}`)
             open = null
             index++
             continue
           }
           readOfChunk += value.byteLength
-          if (readOfChunk > sizeOfChunk) throw new Error(`Upload chunk ${index} is over the ${sizeOfChunk} bytes its manifest says`)
+          if (readOfChunk > chunk.size) throw new Error(`Upload chunk ${index} is over the ${chunk.size} bytes its manifest says`)
           controller.enqueue(value)
           return
         }
       } catch (error) {
-        // Late news of a stream that already ended, as a cancel makes a pending read finish.
-        if (stopped) return
-        onFailure(error)
-        await stop(error)
+        await closeOpen(error)
         throw error
       }
     },
     cancel(reason) {
-      return stop(reason)
+      cancelled = true
+      return closeOpen(reason)
     },
   }, { highWaterMark: 0 })
 }
 
-/** What one holder gives `finish`, and what it needs to know afterwards. */
-function openAssembled(store: UploadByteStore, attempt: ChunkAttempt, manifest: UploadManifest, filePath: string, signal: AbortSignal) {
-  let failure: { error: unknown } | null = null
-  const failed = (error: unknown) => {
-    failure ??= { error }
-  }
-  const stream = () => readChunksInOrder(store, attempt, manifest, signal, failed)
+/** What `finish` gets, and how to remove the file it may have asked for. */
+function openAssembled(store: UploadByteStore, attempt: ChunkAttempt, chunks: CommittedChunk[]) {
+  const filePath = path.join(getTempUploadsDir(), ASSEMBLED_DIR, `${attempt.ownerPart}.${attempt.uploadId}.${attempt.attemptId}`)
+  const stream = () => readChunksInOrder(store, attempt, chunks)
   const spool = async (): Promise<string> => {
-    try {
-      await ensureDirectory(path.dirname(filePath))
-      await pipeline(Readable.fromWeb(stream() as NodeReadableStream), fs.createWriteStream(filePath))
-      return filePath
-    } catch (error) {
-      failed(error)
-      throw error
-    }
+    await ensureDirectory(path.dirname(filePath))
+    await pipeline(Readable.fromWeb(stream() as NodeReadableStream), fs.createWriteStream(filePath))
+    return filePath
   }
   let spooled: Promise<string> | null = null
   const assembled: AssembledUpload = {
-    size: Object.values(manifest.chunks).reduce((total, chunk) => total + chunk.size, 0),
+    size: chunks.reduce((total, chunk) => total + chunk.size, 0),
     stream,
     toFile: () => (spooled ??= spool()),
   }
   return {
     assembled,
-    /** The first failure to read the bytes, if there was one. */
-    readFailure: () => failure,
-    /** Removes the file `toFile` wrote, if it did. */
     removeFile: async () => {
       if (!spooled) return
       await spooled.catch(() => undefined)
@@ -589,139 +395,58 @@ function openAssembled(store: UploadByteStore, attempt: ChunkAttempt, manifest: 
   }
 }
 
-/** Writes the manifest now and then for as long as this holder runs: a touch resets its idle expiry. */
-function keepManifestAlive(key: StateKey<UploadManifest, 'strong'>, token: string): () => void {
-  const touch = async () => {
-    try {
-      await reduceRecord(key, (manifest): RecordChange<UploadManifest, void> => (
-        manifest?.state === 'finalizing' && manifest.finalizer === token ? { result: undefined, value: manifest } : { result: undefined }
-      ), { maxAttempts: MAX_DECISIONS })
-    } catch (error) {
-      // AppState is out of reach: the lease's own renewal says what that means.
-      console.warn('[chunked-upload] could not touch a finalizing manifest:', error)
-    }
-  }
-  const timer = setInterval(() => background(touch(), { name: 'chunked-upload.touch-manifest' }), MANIFEST_TOUCH_MS)
-  timer.unref?.()
-  return () => clearInterval(timer)
-}
-
-function endedResult(response: UploadResponse | null): StoreChunkResult {
-  if (!response) throw new UploadConflictError(RESULT_NOT_KEPT)
-  return { status: 'finished', response }
-}
-
 /**
- * Runs the upload's end, unless someone else holds the lease. Whoever finds an
- * upload `finalizing` comes here, not only the chunk that moved it there: that
- * is how a retry takes over from a finalizer that died.
- */
-async function finalize(store: UploadByteStore, attempt: ChunkAttempt, finish: FinishUpload): Promise<StoreChunkResult> {
-  const lease = await finalizerLease.acquire(finalizerLease.key(attempt.ownerPart, attempt.uploadId))
-  if (!lease) return { status: 'finalizing' }
-  return finalizerLease.hold(lease, async (holding) => {
-    const token = holding.owner
-    const seen = await settle(attempt.key, (manifest): RecordChange<UploadManifest, UploadManifest | null> => ({ result: manifest }))
-    if (seen?.state === 'completed') return endedResult(seen.response)
-    if (seen?.state !== 'finalizing') throw new UploadConflictError(EXPIRED)
-    // A renewal that succeeds after that read proves no successor has had the
-    // lease since this holder took it, so the name it read is a predecessor's.
-    // A holder that stalled until a successor came fails here, before it can
-    // mistake that successor for someone to replace.
-    try {
-      await holding.confirm({ minRemainingMs: FINALIZER_CONFIRM_MARGIN_MS })
-    } catch (error) {
-      if (holding.signal.aborted) return { status: 'finalizing' }
-      throw error
-    }
-    const taken = await settle(attempt.key, (manifest) => takeOver(manifest, token, seen.finalizer))
-    if (taken.kind === 'superseded') return { status: 'finalizing' }
-    if (taken.kind === 'ended') return endedResult(taken.response)
-    if (taken.kind === 'gone') throw new UploadConflictError(EXPIRED)
-
-    const stopTouching = keepManifestAlive(attempt.key, token)
-    const opened = openAssembled(store, attempt, taken.manifest, assembledPath(attempt.ownerPart, attempt.uploadId, token), holding.signal)
-    try {
-      await holding.confirm({ minRemainingMs: FINALIZER_CONFIRM_MARGIN_MS })
-      const response = await finish(opened.assembled)
-      // Not an answer, even if `finish` made one of it: the chunks are still
-      // there to read, so the upload stays for a retry.
-      const failure = opened.readFailure()
-      if (failure) throw failure.error
-      await publishAndDiscard(store, attempt, taken.manifest, token, response)
-      return { status: 'finished', response }
-    } catch (error) {
-      // The next holder starts over; this request is told to come back.
-      if (holding.signal.aborted) return { status: 'finalizing' }
-      throw error
-    } finally {
-      stopTouching()
-      await opened.removeFile()
-    }
-  })
-}
-
-/**
- * The work is done whatever happens here, so a failure is reported, not thrown.
- * Only a holder whose answer was kept deletes the chunks: a successor may be
- * reading them.
- */
-async function publishAndDiscard(store: UploadByteStore, attempt: ChunkAttempt, manifest: UploadManifest, token: string, response: UploadResponse): Promise<void> {
-  const retained = JSON.stringify(response.body).length <= MAX_RETAINED_RESPONSE_CHARS ? response : null
-  let published: boolean
-  try {
-    published = await settle(attempt.key, (current) => publish(current, token, retained))
-  } catch (error) {
-    console.warn('[chunked-upload] could not keep an upload\'s answer; a retry may run it again:', error)
-    captureException(error, { tags: { area: 'chunked-upload', op: 'publish-result' }, extra: { uploadId: attempt.uploadId } })
-    return
-  }
-  if (!published) return
-  const keys = committedAttempts(manifest.chunks).map((attemptId) => bytesKey(attempt.ownerPart, attempt.uploadId, attemptId))
-  await deleteBytes(store, keys, 'delete-finished-chunks')
-}
-
-/**
- * Stores one chunk of an upload. `finish` runs once every chunk is stored, in
- * the request that gets the lease, and gets the assembled file. A chunk the
- * upload already has is not stored again: it gets `received`, `finalizing`, or
- * the kept answer, whichever the upload's state says.
+ * Stores one chunk of an upload. Chunk 0 creates the manifest, and every other
+ * chunk must be exactly the next one, with no write in flight. `finish` runs in
+ * the request that commits the last chunk.
  *
- * @throws UploadTooLargeError when the upload no longer fits `maxTotalBytes`; it stays refused
- * @throws UploadConflictError when this chunk does not fit the upload as stored
+ * @throws UploadTooLargeError when the upload goes over `maxTotalBytes`, which ends it
+ * @throws UploadConflictError when this chunk is refused
  */
-export async function storeUploadChunk(input: StoreChunkInput, finish: FinishUpload): Promise<StoreChunkResult> {
+export async function storeUploadChunk<T>(input: StoreChunkInput, finish: FinishUpload<T>): Promise<StoreChunkResult<T>> {
   const store = uploadByteStore()
-  const attempt = await describeAttempt(input)
-  const decided = await settle(attempt.key, (manifest) => reserve(manifest, attempt))
-  const next = decided.kind === 'write' ? await writeAndCommit(store, attempt, input.chunk) : decided
-  switch (next.kind) {
-    case 'received':
-      return { status: 'received' }
-    case 'finalize':
-      return finalize(store, attempt, finish)
-    case 'finished':
-      return endedResult(next.response)
-    case 'too_large': {
-      const keys = next.committed.map((attemptId) => bytesKey(attempt.ownerPart, attempt.uploadId, attemptId))
-      await deleteBytes(store, keys, 'delete-oversized-upload')
-      throw new UploadTooLargeError(next.size, attempt.maxBytes)
-    }
-    case 'conflict':
-      throw new UploadConflictError(next.message)
+  const attempt = describeAttempt(input)
+
+  const reserved = await changeManifest(store, attempt, (manifest) => reserve(manifest, attempt))
+  if (reserved.kind === 'refused') throw new UploadConflictError(reserved.message)
+  if (reserved.kind === 'too_large') {
+    await deleteBytes(store, attempt, reserved.committed)
+    throw new UploadTooLargeError(reserved.size, attempt.maxBytes)
+  }
+
+  try {
+    await store.put(bytesKey(attempt.ownerPart, attempt.uploadId, attempt.attemptId), input.chunk)
+  } catch (error) {
+    await endAttempt(store, attempt, [attempt.attemptId])
+    throw error
+  }
+
+  const committed = await changeManifest(store, attempt, (manifest) => commit(manifest, attempt))
+  if (committed.kind === 'refused') {
+    await deleteBytes(store, attempt, [attempt.attemptId])
+    throw new UploadConflictError(TOO_LATE)
+  }
+  if (committed.kind === 'received') return { status: 'received' }
+
+  const opened = openAssembled(store, attempt, committed.chunks)
+  try {
+    return { status: 'finished', result: await finish(opened.assembled) }
+  } finally {
+    await opened.removeFile()
+    await endAttempt(store, attempt, committed.chunks.map((chunk) => chunk.attemptId))
   }
 }
 
 /**
- * The attempts a manifest still refers to. Once neither a chunk nor a
- * reservation names an attempt, nothing can again: a commit needs a reservation,
- * and an attempt reserves before it writes. So bytes found unreferenced here
- * stay dead whatever happens after the read.
+ * The attempts a manifest still refers to. Once neither a chunk nor the write
+ * slot names an attempt, nothing can again: a commit needs the slot, and an
+ * attempt takes it before it writes. So bytes found unreferenced here stay dead
+ * whatever happens after the read.
  */
 function referencedAttempts(manifest: UploadManifest | null): Set<string> {
-  if (manifest?.state === 'receiving') return new Set([...committedAttempts(manifest.chunks), ...Object.keys(manifest.reservations)])
-  if (manifest?.state === 'finalizing') return new Set(committedAttempts(manifest.chunks))
-  return new Set()
+  if (manifest?.state !== 'receiving' && manifest?.state !== 'finalizing') return new Set()
+  const committed = manifest.chunks.map((chunk) => chunk.attemptId)
+  return new Set(manifest.state === 'receiving' && manifest.writing ? [...committed, manifest.writing] : committed)
 }
 
 const BYTES_KEY = new RegExp(`^${UPLOAD_BYTES_PREFIX}([^/]+)/([^/]+)/((\\d+)-[^/]+)$`)
@@ -754,12 +479,17 @@ async function removeStaleBytes(maxAgeMs: number, nowMs: number): Promise<void> 
       ignoreCleanupError(err, 'read-manifest-for-sweep', { uploadId })
       continue
     }
-    const unreferenced = blobs.filter((blob) => !referenced.has(blob.attemptId)).map((blob) => blob.key)
-    await deleteBytes(store, unreferenced, 'delete-stale-bytes')
+    await Promise.all(blobs.filter((blob) => !referenced.has(blob.attemptId)).map(async ({ key }) => {
+      try {
+        await store.delete(key)
+      } catch (err) {
+        ignoreCleanupError(err, 'delete-stale-bytes', { key })
+      }
+    }))
   }
 }
 
-/** Assembled files a crash or a lost lease left behind. The one a live finalizer is using stays, at any age. */
+/** Files `toFile` wrote that a crash left behind. While the upload is `finalizing` they stay, at any age. */
 async function removeStaleAssembledFiles(maxAgeMs: number, nowMs: number): Promise<void> {
   const dir = path.join(getTempUploadsDir(), ASSEMBLED_DIR)
   let names: string[]
@@ -773,9 +503,9 @@ async function removeStaleAssembledFiles(maxAgeMs: number, nowMs: number): Promi
     const filePath = path.join(dir, name)
     try {
       if (nowMs - (await fs.promises.stat(filePath)).mtimeMs <= maxAgeMs) continue
-      const [ownerPart, uploadId, token] = name.split('.')
-      const manifest = ownerPart && uploadId && token ? (await appState().get(manifestKey(ownerPart, uploadId)))?.value : null
-      if (manifest?.state === 'finalizing' && manifest.finalizer === token) continue
+      const [ownerPart, uploadId] = name.split('.')
+      const manifest = ownerPart && uploadId ? (await appState().get(manifestKey(ownerPart, uploadId)))?.value : null
+      if (manifest?.state === 'finalizing') continue
       await fs.promises.unlink(filePath)
     } catch (err) {
       ignoreCleanupError(err, 'remove-stale-assembled', { filePath })

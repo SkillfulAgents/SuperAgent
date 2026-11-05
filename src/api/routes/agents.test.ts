@@ -821,10 +821,10 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
 }))
 
 const mockStoreUploadChunk = vi.fn()
-/** The coordinator's part once every chunk is stored: hands `finish` the upload, here a file at `filePath`. */
+/** The coordinator's part once the last chunk is committed: hands `finish` the upload, here a file at `filePath`. */
 function assembleTo(filePath: string, size = 10, toFile = vi.fn(async () => filePath)) {
   return async (_input: unknown, finish: (assembled: unknown) => Promise<unknown>) => (
-    { status: 'finished', response: await finish({ size, stream: () => new Blob(['final chunk']).stream(), toFile }) }
+    { status: 'finished', result: await finish({ size, stream: () => new Blob(['final chunk']).stream(), toFile }) }
   )
 }
 vi.mock('@shared/lib/utils/chunked-upload', () => {
@@ -842,10 +842,16 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
     }
   }
   class UploadConflictError extends Error {}
+  class UploadOutcomeUnknownError extends Error {
+    constructor(cause: unknown) {
+      super('The upload may have taken effect, but its result is unknown. Check before sending it again.', { cause })
+    }
+  }
   return {
     MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
     formatUploadTooLargeMessage,
     UploadConflictError,
+    UploadOutcomeUnknownError,
     UploadTooLargeError,
     storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
     cleanupStaleTempUploads: vi.fn(async () => undefined),
@@ -2437,27 +2443,6 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.error).toContain('No file or chunk provided')
   })
 
-  it('handles duplicate chunk index by overwriting and still assembles correctly', async () => {
-    const uploadId = '66666666-6666-6666-6666-666666666666'
-    mockStoreUploadChunk
-      .mockResolvedValueOnce({ status: 'received' })
-      .mockImplementationOnce(assembleTo(`/mock/tmp/uploads/${uploadId}.assembled`))
-
-    const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
-    const res1 = await postFormData(app, '/api/agents/import-template', form1)
-    expect(res1.status).toBe(200)
-    expect((await res1.json()).status).toBe('chunk_received')
-
-    const form2 = buildChunkForm({ chunk: 'part1', uploadId, chunkIndex: 1, totalChunks: 2, mode: 'template' })
-    const res2 = await postFormData(app, '/api/agents/import-template', form2)
-    expect(res2.status).toBe(201)
-    expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      { filePath: `/mock/tmp/uploads/${uploadId}.assembled` },
-      undefined,
-      'template',
-    )
-  })
-
   it('rejects when assembled compressed size exceeds limit', async () => {
     const uploadId = '77777777-7777-7777-7777-777777777777'
     const assembledPath = `/mock/tmp/uploads/${uploadId}.assembled`
@@ -2477,53 +2462,38 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(mockFsReadFile).not.toHaveBeenCalled()
   })
 
-  it('answers a failed import with the response a retry will get too', async () => {
-    vi.mocked(importAgentFromTemplate).mockRejectedValue(new Error('not a template'))
-    let kept: unknown
-    mockStoreUploadChunk.mockImplementation(async (_input, finish) => {
-      kept = await finish({ size: 10, stream: () => new Blob(['x']).stream(), toFile: async () => '/mock/tmp/uploads/x.assembled' })
-      return { status: 'finished', response: kept }
-    })
+  it('returns 409 with what to do when the chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This chunk is out of order for this upload. Start a new upload to send the file again.'))
+
+    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 1, totalChunks: 2 })
+    const res = await postFormData(app, '/api/agents/import-template', form)
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('answers a failed import with its own message', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/tmp/uploads/x'))
+    vi.mocked(importAgentFromTemplate).mockRejectedValueOnce(new Error('not a template'))
 
     const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
     const res = await postFormData(app, '/api/agents/import-template', form)
 
     expect(res.status).toBe(500)
     expect((await res.json()).error).toBe('not a template')
-    expect(kept).toEqual({ status: 500, body: { error: 'not a template' } })
   })
 
-  it('answers a retry with the response the upload ended with, without importing again', async () => {
-    mockStoreUploadChunk.mockResolvedValue({ status: 'finished', response: { status: 201, body: { slug: 'kept-agent' } } })
+  it('says the result is unknown when a step after the import fails', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/tmp/uploads/x'))
+    vi.mocked(hasOnboardingSkill).mockRejectedValueOnce(new Error('workspace went away'))
 
     const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
     const res = await postFormData(app, '/api/agents/import-template', form)
 
-    expect(res.status).toBe(201)
-    expect((await res.json()).slug).toBe('kept-agent')
-    expect(importAgentFromTemplate).not.toHaveBeenCalled()
-  })
-
-  it('tells a retry to come back while another request finishes the upload', async () => {
-    mockStoreUploadChunk.mockResolvedValue({ status: 'finalizing' })
-
-    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
-    const res = await postFormData(app, '/api/agents/import-template', form)
-
-    expect(res.status).toBe(409)
-    expect(res.headers.get('Retry-After')).toBe('5')
-    expect((await res.json()).error).toContain('still being processed')
-    expect(importAgentFromTemplate).not.toHaveBeenCalled()
-  })
-
-  it('returns 409 when the chunk does not fit the upload as stored', async () => {
-    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This upload was started with different details'))
-
-    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
-    const res = await postFormData(app, '/api/agents/import-template', form)
-
-    expect(res.status).toBe(409)
-    expect((await res.json()).error).toBe('This upload was started with different details')
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toContain('its result is unknown. Check before sending it again')
+    expect(importAgentFromTemplate).toHaveBeenCalledOnce()
   })
 
   it('returns 413 when storeUploadChunk throws UploadTooLargeError', async () => {
@@ -4468,6 +4438,35 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
       chunk: expect.any(Buffer),
       maxTotalBytes: 2 * 1024 * 1024 * 1024,
     }, expect.any(Function))
+  })
+
+  function chunkForm() {
+    const form = new FormData()
+    form.append('chunk', new File(['final'], 'chunk.bin'))
+    form.append('uploadId', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    form.append('chunkIndex', '0')
+    form.append('totalChunks', '1')
+    form.append('filename', 'report.pdf')
+    return form
+  }
+
+  it('returns 409 with what to do when the chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This upload has already ended. Start a new upload to send the file again.'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', chunkForm())
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+  })
+
+  it('answers a plain failure when the write into the workspace fails', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/never', 11))
+    vi.mocked(writeFileAtomicStream).mockRejectedValueOnce(new Error('disk full'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', chunkForm())
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toBe('Failed to upload file')
   })
 })
 

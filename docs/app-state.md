@@ -226,55 +226,41 @@ Around the token exchange:
 An authorization error response (`?error=…`) with a valid issuer ends a `pending` flow. It leaves a claimed or finished one alone. Nothing is published: the callback page carries the result to the client, and the route does its own follow-up after the database write. Logs name the step that failed, never the state, the code, the verifier, the client secret or a token. A failed write is logged by its driver cause, because drizzle's own message quotes the statement's parameters.
 ## Chunked uploads
 
-A large file arrives in chunks, possibly at different processes, retried or at once (`src/shared/lib/utils/chunked-upload.ts`). AppState decides everything and a byte store only keeps bytes. Desktop and web use this machine's disk, the only store that ships. `UploadByteStore` is the port for another: a deployment that adds one passes it to `setUploadByteStore` at boot, and needs a shared AppState too, since every process that takes a chunk must see the same manifest. The ticket's `upload:{ownerId}:{uploadId}` is the strong namespace `upload`, with key parts `digestKeyPart(ownerId)` and the upload id. The bytes sit under the same two parts, so two owners using one upload id share nothing.
+A large file arrives in chunks, which can reach different processes (`src/shared/lib/utils/chunked-upload.ts`). AppState decides everything and a byte store only keeps bytes. Desktop and web use this machine's disk, the only store that ships. `UploadByteStore` is the port for another: a deployment that adds one passes it to `setUploadByteStore` at boot, and needs a shared AppState too, since every process that takes a chunk must see the same manifest. The ticket's `upload:{ownerId}:{uploadId}` is the strong namespace `upload`, with key parts `digestKeyPart(ownerId)` and the upload id. The bytes sit under the same two parts, so two owners using one upload id share nothing.
 
-The first chunk to arrive creates the manifest, which binds the target, the chunk count and the size limit. A later chunk that disagrees is refused (409).
+**An upload is one attempt: its chunks in order, one write at a time.** That is how the client sends them. A failed upload is not resumed: the user sends the file again, under a new upload id. That is the accepted cost. Resumable uploads are separate work that would need its own reason.
 
-A manifest moves one way through four states:
+A manifest moves one way through three states:
 
-- `receiving` lists the committed chunks and the attempts writing now.
-- `finalizing` has every chunk. It names the lease holder who last took it.
-- `completed` keeps the answer the upload ended with.
-- `too_large` stays refused. Its bytes are removed.
+- `receiving` binds the target, the chunk count and the size limit, and lists the committed chunks in order and the one attempt writing now.
+- `finalizing` has every chunk, and one request is running `finish`.
+- `ended` holds nothing. The upload succeeded or failed, and later chunks are refused until it expires.
 
 **Storing a chunk.**
 
-1. **Reserve.** A compare-and-set adds the attempt to the manifest with its size and hash, or refuses the upload (413) if it no longer fits. Each index counts its largest chunk, committed or in flight: bytes on their way count before they are written, so the cap cannot be raced, and a replacement is not counted twice. A chunk with the hash the manifest already has at its index writes nothing. An upload may have 64 attempts in flight, so what sits on disk past the cap is bounded too.
-2. **Write.** The bytes go under a key no other attempt uses (`uploads/{owner}/{uploadId}/{startedAtMs}-{uuid}`), so a failed or repeated write cannot touch a committed chunk. A failed write gives its reservation back and removes what it left.
-3. **Commit.** A compare-and-set names the attempt at its index. It replaces a different chunk there and removes the old bytes. If an identical chunk is already there, this attempt's bytes are removed instead. A commit is refused, and removes its bytes, when its reservation is gone, when the upload has moved past `receiving` and holds different bytes at that index, or when the manifest is gone. It never creates a manifest.
+1. **Reserve.** A compare-and-set takes the write slot, for exactly the next chunk. Chunk 0 creates the manifest. Anything else is refused with 409 and changes nothing: a gap, a duplicate, an overlap with a write in flight, chunk N with no manifest, chunk 0 on an existing manifest, or a chunk that disagrees on the target, count or limit. A chunk that takes the upload over its limit gets 413, ends the attempt and removes its bytes.
+2. **Write.** The bytes go under a key no other attempt uses (`uploads/{owner}/{uploadId}/{startedAtMs}-{uuid}`), so a late write can touch nothing but its own bytes.
+3. **Commit.** A compare-and-set adds the chunk and frees the slot, only while this attempt still holds it. A write that finds otherwise is refused and removes its bytes. It never creates a manifest.
 
-**The claim.** The commit that leaves no chunk missing moves the upload to `finalizing` in the same compare-and-set. So of chunks arriving together exactly one does it: they can neither all miss it nor both make it. Nothing lists bytes to decide completion, and attempts still in flight are refused when they reach their commit.
+**The claim.** The commit of the last chunk moves the upload to `finalizing` in the same compare-and-set, and that request runs `finish`. Nobody else ever does: a request that finds `finalizing` or `ended` gets 409. Nothing lists bytes to decide completion.
 
-**Finishing.** Any request that finds the upload `finalizing` asks for the lease `claim:upload-finalize`, and one gets it. Usually that is the request whose commit made the claim, but a duplicate that gets there first is just as good. A request that does not get it answers 409 with `Retry-After: 5`.
+**`finish`** gets the upload's `size`, a `stream()` and a `toFile()`, and the upload ends with it, whatever happens.
 
-- The holder reads the manifest, confirms the lease, and names itself in place of the name it read. Then it confirms the lease again with a 30 s margin and calls the route's `finish`.
-- `finish` gets the upload's `size`, a `stream()` and a `toFile()`. `stream()` reads the committed chunks in order through the byte store, opening each only when the one before it has been read through. `toFile()` writes that stream to a file of the holder's own under `assembled/`, for a consumer that needs a path, and the file is removed after `finish`. Nothing is written unless someone asks. The workspace route streams into `FileOps.write`, so an upload is stored once more only at its destination. Template import asks for a file, because a ZIP reader seeks.
-- The stream closes only after the last chunk proved the size in the manifest. A chunk that is missing, unreadable, shorter or longer errors it, and so does losing the lease, which also stops the read at once. So a consumer cannot take part of an upload for the whole, and `FileOps.write` leaves nothing behind when its stream errors.
-- What `finish` returns is kept in the `completed` state, failures included, for one hour from when it finished. A retry of a chunk with the same hash gets that answer and runs nothing. A chunk with other bytes is refused (409). An answer over 64 KiB is not kept: a retry is told the upload finished, without it.
-- The lease lasts 2 minutes and renews every 40 s for as long as the holder runs, however slowly the bytes stream. It is also how long a retry waits when a finalizer died. After that the retry takes over and runs everything itself.
-- A failed read, a lease lost before `finish`, and a `finish` that throws all leave the upload `finalizing` for a retry. A failed read does so even if `finish` turned it into an answer, as the routes do with their failures, because the coordinator sees the read fail for itself. A consumer that cancels the stream has not failed a read: if the destination refused the file, that answer is kept.
+- `stream()` reads the committed chunks in order through the byte store, opening each only when the one before it has been read through. It closes only after the last chunk proved the size in the manifest. A chunk that is missing, unreadable, shorter or longer errors it, so a consumer cannot take part of an upload for the whole.
+- `toFile()` writes that stream to a file under `assembled/`, for a consumer that needs a path, and the file is removed after `finish`. Nothing is written unless someone asks.
+- The workspace route streams into `FileOps.write`, which leaves nothing behind when its stream errors. Template import asks for a file, because a ZIP reader seeks.
 
-**The fence.** A successor writes its own name into the manifest before it does anything. A holder's publish is a compare-and-set that requires the manifest to still name it, so a stale holder cannot overwrite the answer. Only a holder whose answer was kept removes the chunks, since a successor may be reading them. A holder whose lease lapsed with no successor still publishes: its answer is true, and keeping it spares a retry from running the work again.
+**Any failure ends the attempt.** A failed write, a failed read or a `finish` that throws moves the upload to `ended` and removes its bytes. Nothing is retried, and no answer is kept. A compare-and-set whose answer is lost fails the request with no retry and no read-back: it may have landed, even as the claim, and a request that does not know it won does not run `finish`. It ends the attempt if it can.
 
-A stale holder must not be able to erase that name, so naming itself takes three steps:
+**An unknown outcome.** A request that finds `finalizing` or `ended` is told to check the result before starting a new upload, because that upload may have succeeded. `finish` throws `UploadOutcomeUnknownError` when its side effect may have happened and something after it failed, as an import does once the agent exists, and the error says so. A crash during `finish` leaves `finalizing` until the manifest expires, and nobody takes over. **A new attempt after an uncertain result may repeat an import that already succeeded.** That is accepted rather than recovered.
 
-1. **Read** the name in the manifest, the predecessor. An upload that already ended answers here, with no renewal.
-2. **Confirm** the lease. A renewal that succeeds after the read proves no successor has had the lease since this holder took it, so the name it read really is a predecessor's. A holder that stalled until a successor came fails here.
-3. **Write** its name, only while the manifest still holds the predecessor's. Its own name there means an earlier write landed and the answer was lost. Any other name means it is superseded: it writes nothing and its request answers 409 with `Retry-After`. The condition is decided again after a conflict, so this also covers a holder stalled between steps 2 and 3.
-
-If a stalled holder's write lands first, its successor finds a name it did not read and backs out, and the stalled holder's lease stops it at its next confirm, before any work. Neither runs, the name is the stalled holder's, and the next retry replaces it.
-
-**Not exactly once.** A lease fences AppState and nothing else. A holder that stalls or crashes after its `finish` did its work, before its publish landed, leaves a takeover to run the work again: a template imported twice, a file written twice. Only a retry after the answer was kept is safe from that.
-
-**Expiry and clocks.** A manifest expires an hour after its last write (`reset`), judged by the backend. A running finalizer writes it every 15 minutes so that it cannot idle out from under the work, and a holder that finds it gone anyway publishes nothing. A reservation counts for 10 minutes by the reserving process's clock, and the next process to write drops it after that. A skewed clock can only drop one early, and that attempt's commit is then refused. The lease is judged as in [owned leases](#helpers-owned-leases).
-
-**Lost answers.** Each change is a reducer that recognises its own attempt or token in the record, so a write whose answer was lost settles by deciding again from what is stored, up to three times. If it still cannot tell, a commit's bytes stay, since it may have landed. A retry or the sweep sorts that out.
+**Expiry.** A manifest expires an hour after its last write (`reset`), judged by the backend. That is also the deadline of the write slot, so no process compares clocks: a writer that stalls holds the slot until then, and every other chunk is refused, and a commit after it is refused. There is no lease and nothing renews the manifest while `finish` runs, so a `finish` that runs past the hour is not protected. Once the sweep has been, its stream errors on the next chunk it opens, and the request fails. A `finish` that outlives its manifest also brings nothing back, and an upload that started again under the same id is another upload it cannot touch.
 
 **The sweep.** Expiry deletes no bytes, so `cleanupStaleTempUploads` runs at startup (once AppState is initialized) and every 30 minutes, and removes bytes older than an hour that no manifest refers to.
 
-- A chunk or a reservation in a live manifest stays at any age.
-- Bytes the manifest does not name stay dead whatever happens after the read, since a commit needs a reservation and an attempt reserves before it writes.
+- A chunk, or the attempt in the write slot, stays at any age while its manifest is live.
+- Bytes the manifest does not name stay dead whatever happens after the read, since a commit needs the slot and an attempt takes it before it writes.
 - Age comes from the key, by the writer's clock, because another store's listing need not give one. It only decides when unreferenced bytes go, so no clock can cost a live upload its bytes.
-- Files `toFile` wrote that are older than an hour go too, unless a live finalizer is using them. So does anything left in the layout from before manifests, by age alone.
+- Files `toFile` wrote that are older than an hour go too, unless the upload is `finalizing`. So does anything left in the layout from before manifests, by age alone.
 
-With `LocalAppState` the manifests live in memory, so a restart forgets uploads in progress, and their bytes are swept later. A client that goes on sending gets `chunk_received` for its last chunk, which the renderer's upload code reports as an interrupted upload.
+With `LocalAppState` the manifests live in memory, so a restart forgets uploads in progress, and their bytes are swept later. A client that goes on sending gets 409 for its next chunk and sends the file again.
