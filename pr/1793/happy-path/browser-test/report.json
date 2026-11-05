@@ -1,0 +1,27 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
+    "Found the \"QA-20261105-172709-upn6\" agent in the sidebar — Agent visible in the left navigation panel under \"Your Agents\"",
+    "Clicked on the agent in the sidebar — Successfully navigated to the agent page (URL: http://localhost:47891/agents/qa-20261105-172709-upn6-aqk8thxydw)",
+    "Located the message input field with aria-label \"How can I help? Press cmd+enter to send\" — Input field found and accessible",
+    "Typed the message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message entered into the input field",
+    "Sent the message using Cmd+Enter — Message successfully submitted, session URL changed to http://localhost:47891/agents/qa-20261105-172709-upn6-aqk8thxydw/sessions/b582b0ae-09e7-4a43-baa1-13c7ebcaa930",
+    "Waited for agent response — Agent completed processing within 8 seconds after making 3 tool calls",
+    "Verified response mentions \"Example Domain\" — Response text confirmed: \"The page title at https://example.com is \\\"Example Domain\\\". I've closed the browser.\"",
+    "Took a screenshot of the response — Screenshot successfully captured showing the completed interaction with the agent response visible on screen"
+  ],
+  "bugs": [],
+  "durationMs": 220330,
+  "sessionId": "5b898c82-0114-4a69-adf8-3a073a92be91",
+  "cost": {
+    "inputTokens": 836,
+    "outputTokens": 26312,
+    "cacheCreationTokens": 73484,
+    "cacheReadTokens": 2415191,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.46577
+  }
+}
