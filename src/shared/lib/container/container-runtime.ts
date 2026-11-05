@@ -26,7 +26,7 @@ import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
-import { getSettings } from '@shared/lib/config/settings'
+import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
 import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
@@ -40,10 +40,10 @@ import { background } from '@shared/lib/background'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { firstCopies, listVolumes, remounted } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
-import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { isPlatformComposioActiveFrom } from '@shared/lib/composio/client'
 import { getDefaultAccountProvider } from '@shared/lib/account-providers/provider-factory'
 import { getAllProviders } from '@shared/lib/account-providers/service-catalog'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
 import { runsInAppSandbox, supportsComputerUse } from '@shared/lib/facts/capabilities'
@@ -91,6 +91,11 @@ export interface RuntimeHost {
   afterForceStop(slug: string): void
 }
 
+/** The auto-sleep timeout in `settings`, in ms; zero or less disables. */
+export function autoSleepTimeoutMsFrom(settings: Pick<AppSettings, 'app'>): number {
+  return (settings.app?.autoSleepTimeoutMinutes ?? 30) * 60_000
+}
+
 const healthVolumesSchema = z.object({ status: z.literal('ok'), volumes: z.array(z.string()) })
 
 function notMountedAll(volumes: ContainerVolume[], reason: NotMountedReason): NotMountedVolume[] {
@@ -136,10 +141,11 @@ export class ContainerRuntime {
    * Puts the container to sleep once it has been idle for the auto-sleep
    * timeout. Armed from the marks above, cancelled when the container stops
    * or the runtime is dropped; the host re-arms it when the timeout changes.
-   * The timeout is read from the settings at every arm and every fire.
+   * The timeout is read from the settings for every arm (marks made while a
+   * read is out share it) and at every fire.
    */
   readonly idleAlarm = new IdleAlarm({
-    timeoutMs: async () => ((await getSettings()).app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
+    timeoutMs: async () => autoSleepTimeoutMsFrom(await getSettings()),
     lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
     sleep: (timeoutMs) => this.sleepIdle(timeoutMs),
@@ -179,18 +185,31 @@ export class ContainerRuntime {
   ) {}
 
   /**
-   * The container client for the runner configured now. The runner is read
-   * from the settings on every call, so a change made anywhere (another
-   * process, or a write here that did not clear the runtimes) takes effect on
-   * the next use: a client built for another runner is replaced. A start in
-   * flight keeps the client it was handed, as it does after `resetClient`.
+   * The container client. While the container is starting, running or
+   * stopping, that is the client starting, running or stopping it, returned
+   * without reading the settings: only that client can reach and stop its
+   * container, so a runner change made anywhere (another process, or a write
+   * here that did not clear the runtimes) takes effect at the next start.
+   * (The settings route refuses a runner change while agents run.) Otherwise
+   * the runner is read on every call, and a client built for another runner
+   * is replaced. A start in flight keeps the client it was handed, as it does
+   * after `resetClient`.
    *
-   * Except while that client's container is up, coming up or going down:
-   * only that client can reach and stop it, so the runtime keeps it until
-   * the container is stopped, and the new runner applies from the next start.
+   * `configuredRunner` is the runner a caller working through many runtimes
+   * read once for all of them (the host's start-up). It stands in for this
+   * call's read when there is no client yet or the client is for that
+   * runner; a client for another runner is re-checked with a read of its own.
    */
-  async getClient(): Promise<ContainerClient> {
+  async getClient(configuredRunner?: ContainerRunner): Promise<ContainerClient> {
     if (this.client && this.holdsContainer()) return this.client
+    if (configuredRunner !== undefined && (!this.client || configuredRunner === this.clientRunner)) {
+      if (!this.client) {
+        this.client = createContainerClient(this.clientConfig(), configuredRunner)
+        this.clientRunner = configuredRunner
+        this.clientDecidedBy = ++this.clientReads
+      }
+      return this.client
+    }
     const read = ++this.clientReads
     const runner = (await getSettings()).container.containerRunner as ContainerRunner
     // Reading was an await: the container may have started on the client meanwhile.
@@ -519,10 +538,16 @@ export class ContainerRuntime {
   /**
    * Sync this agent's status with reality by querying the runtime.
    * Broadcasts status change if the actual status differs from cached.
+   *
+   * Asks the client this runtime holds, without reading the runner: the
+   * container it knows was started through that client. Only a runtime with
+   * no client yet builds one for the runner configured now. `sweep` carries
+   * what the host read once for a sweep over every runtime: the auto-sleep
+   * timeout an alarm found disarmed is armed with.
    */
-  async syncAgentStatus(): Promise<ContainerInfo> {
+  async syncAgentStatus(sweep?: { idleTimeoutMs?: number }): Promise<ContainerInfo> {
     const slug = this.slug
-    const client = await this.getClient()
+    const client = this.client ?? await this.getClient()
     const previousStatus = this.cached?.status
     const info = await client.getInfoFromRuntime()
 
@@ -540,7 +565,9 @@ export class ContainerRuntime {
       // an alarm that fired while a sync (or a transient inspect failure)
       // reported the container stopped found nothing to sleep and disarmed,
       // and the marks it would have re-armed from are still on the clock.
-      this.idleAlarm.schedule()
+      // An alarm still armed is left as it is: every mark re-armed it, and
+      // its fire reads the timeout again.
+      this.idleAlarm.ensureArmed(sweep?.idleTimeoutMs)
     } else {
       // Nothing to sleep while the container is not observed running. The
       // marks stay: if the report was a transient failure, the next running
@@ -613,7 +640,7 @@ export class ContainerRuntime {
     this.assertNotStopping('start')
     if (this.starting) return this.starting
 
-    const client = await this.getClient()
+    let client = await this.getClient()
     // Reading the runner was an await: a stop or another start may have begun meanwhile.
     this.assertNotStopping('start')
     if (this.starting) return this.starting
@@ -635,6 +662,9 @@ export class ContainerRuntime {
         console.warn(`[ContainerRuntime] Cached 'running' status for ${slug} failed liveness check, (re)starting`)
         this.markAsStopped()
         needsStart = true
+        // Not running after all: the start uses the runner configured now,
+        // which getClient reads for a container that is not running.
+        client = await this.getClient()
       }
     }
 
@@ -655,6 +685,10 @@ export class ContainerRuntime {
   private async doStartContainer(client: ContainerClient): Promise<ContainerClient> {
     const slug = this.slug
     const lifecycle = ++this.lifecycle
+    // Read once for this start, and handed to the client's start with the env:
+    // the image, the resource limits, the provider env and the platform token
+    // all come from it. The next start reads again.
+    const settings = await getSettings()
     // Pass proxy config and account metadata (no raw tokens)
     const envVars: Record<string, string> = {}
 
@@ -698,8 +732,6 @@ export class ContainerRuntime {
     }
 
     // Pass host browser env vars if a host browser provider is selected.
-    // Read once for this start: the custom env vars below come from it too.
-    const settings = await getSettings()
     if (settings.app?.hostBrowserProvider) {
       envVars['AGENT_BROWSER_USE_HOST'] = '1'
       envVars['HOST_APP_URL'] = hostApiBaseUrl
@@ -739,7 +771,7 @@ export class ContainerRuntime {
     envVars['HOST_APP_SANDBOX'] = String(runsInAppSandbox(serverFacts))
 
     // Enable Composio webhook trigger tools when platform Composio is active
-    const platformComposio = await isPlatformComposioActive()
+    const platformComposio = isPlatformComposioActiveFrom(settings)
     if (platformComposio) {
       envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
     }
@@ -758,7 +790,7 @@ export class ContainerRuntime {
     envVars['WEBHOOK_RELAY_AVAILABLE'] = String(this.webhookRelayAtStart)
 
     // Platform services (media, enrichment, search) only need the token.
-    if (await getPlatformAccessToken()) {
+    if (platformAccessTokenFrom(settings)) {
       envVars['PLATFORM_AUTH_ACTIVE'] = 'true'
     }
 
@@ -781,6 +813,7 @@ export class ContainerRuntime {
     const startedInfo = await client.start({
       envVars,
       agentName,
+      settings,
       volumes,
       onVolumesDropped: () => { volumesDropped = true },
       onAlreadyRunning: () => { alreadyRunning = true },

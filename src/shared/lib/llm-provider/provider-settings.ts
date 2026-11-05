@@ -1,12 +1,14 @@
 import { isProviderEnvVar } from './provider-env'
 import {
-  getEffectiveModels,
+  effectiveModelsFrom,
   getSettings,
   type ApiKeySettings,
   type AppSettings,
   type ModelSettings,
 } from '../config/settings'
-import { getLlmProvider, resolveModelForProviderFrom } from './index'
+import { effectiveCatalogFrom, getLlmProvider, resolveModelInCatalog } from './index'
+import type { ModelPurpose } from './base-llm-provider'
+import type { ModelDefinition } from './model-catalog-schema'
 import type { LlmProviderId } from './provider-types'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
 import { mergeCatalog } from './catalog-merge'
@@ -40,9 +42,21 @@ const envNames: Record<LlmProviderId, string[]> = {
 
 export { effectiveModelsFrom } from '../config/settings'
 
-/** Build the account used by the existing provider settings/onboarding API. */
+/** Build the account used by the existing provider settings/onboarding API, from one settings read. */
 export async function connectionFromProviderSettings(id: LlmProviderId, extraModels: Iterable<string> = []) {
-  return connectionFromSettings(id, await getSettings(), await getEffectiveModels(), extraModels)
+  const settings = await getSettings()
+  return connectionFromSettings(id, settings, effectiveModelsFrom(settings), extraModels)
+}
+
+/**
+ * Resolves selections for `id` against its effective catalog, built from
+ * `settings` on first use and then reused: a loop over the model settings
+ * builds the catalog once, not once per model.
+ */
+export function modelResolverFrom(id: LlmProviderId, settings: AppSettings) {
+  let effective: ModelDefinition[] | undefined
+  return (selection: string, purpose: ModelPurpose) =>
+    resolveModelInCatalog(selection, id, purpose, effective ??= effectiveCatalogFrom(id, settings), settings.modelCatalog)
 }
 
 /**
@@ -85,6 +99,7 @@ export function connectionFromSettings(
     ...legacyOverrides.filter(entry => builtins.some(builtin => builtin.id === entry.id)),
   ])
   const catalog = mergeCatalog(builtins, modelOverrides)
+  const resolveModel = modelResolverFrom(id, settings)
   // Old version pins could be sent even if absent from the built-in
   // catalog. Preserve explicit app defaults as catalog entries on import.
   if (id === active) {
@@ -95,7 +110,7 @@ export function connectionFromSettings(
       [models.dashboardBuilderModel, 'dashboard'],
       ...[...extraModels].map((model) => [model, 'agent']),
     ] as [string, 'agent' | 'summarizer' | 'browser' | 'dashboard'][]) {
-      const wire = resolveModelForProviderFrom(selection, id, purpose, settings)
+      const wire = resolveModel(selection, purpose)
       if (!catalog.some((m) => m.id === wire)) {
         const definition = builtins.find(model => model.id === wire)
           ?? { id: wire, label: wire, supportedEfforts: ['low' as const, 'medium' as const, 'high' as const] }
@@ -109,7 +124,7 @@ export function connectionFromSettings(
   }
   const preserve = (model: string, purpose: 'agent' | 'summarizer' | 'browser' | 'dashboard') =>
     resolveSelection({ llmProviderId: legacyLlmProviderId(id), model }, [{ id: legacyLlmProviderId(id), catalog }])
-      ?.model ?? resolveModelForProviderFrom(model, id, purpose, settings)
+      ?.model ?? resolveModel(model, purpose)
   const values = {
     id: legacyLlmProviderId(id),
     provider: id,

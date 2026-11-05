@@ -2,6 +2,12 @@ import { z } from 'zod'
 import { IntegrationPolicyError } from '../../agent-integrations/errors'
 import type { RecallOwner, RecallTransport } from './transport'
 
+/** One media file of a recording, as `media_shortcuts` lists it. */
+const recallMediaSchema = z.object({
+  data: z.object({ download_url: z.string().nullable().optional() }).nullable().optional(),
+  status: z.object({ code: z.string() }).nullable().optional(),
+}).nullable().optional()
+
 /** https://docs.recall.ai/reference/bot_create */
 export const recallBotSchema = z.object({
   id: z.string(),
@@ -15,10 +21,8 @@ export const recallBotSchema = z.object({
     id: z.string(),
     expires_at: z.string().nullable().optional(),
     media_shortcuts: z.object({
-      video_mixed: z.object({
-        data: z.object({ download_url: z.string().nullable().optional() }).nullable().optional(),
-        status: z.object({ code: z.string() }).nullable().optional(),
-      }).nullable().optional(),
+      audio_mixed: recallMediaSchema,
+      video_mixed: recallMediaSchema,
     }).nullable().optional(),
   }).loose()).default([]),
 }).loose()

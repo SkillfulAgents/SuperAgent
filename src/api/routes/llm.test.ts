@@ -19,37 +19,44 @@ const state = vi.hoisted(() => ({
 }))
 
 const mockCreate = vi.fn()
+const mockGetSettings = vi.fn()
 
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 
-vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  configuredHelperModel: () => state.helperModel,
-  getConfiguredLlmClient: async () => {
-    if (state.helperError) throw state.helperError
-    return { messages: { create: mockCreate } }
-  },
-}))
+// The real helper setup (helpers.ts) over a stand-in provider, connection
+// selection and settings.
+function provider() {
+  return {
+    id: state.providerId,
+    supportsDirectApi: true,
+    apiKeyStatusFrom: () => ({ isConfigured: state.configured }),
+    createClientFrom: async () => {
+      if (state.helperError) throw state.helperError
+      return { messages: { create: mockCreate } }
+    },
+  }
+}
 
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({
-    id: state.providerId,
-    getApiKeyStatus: () => ({ isConfigured: state.configured }),
-  }),
-  resolveActiveProviderModel: (selection: string, purpose: string) => {
+  activeLlmProviderFrom: () => provider(),
+  resolveModelForProviderFrom: (selection: string, _providerId: string, purpose: string) => {
     state.resolveModel(selection, purpose)
     return state.resolvedModel
   },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ browserModel: state.browserModel }),
-  getSettings: () => state.hasDefault ? { llmDefault: { llmProviderId: 'sub', model: 'sonnet' } } : {},
+  effectiveModelsFrom: () => ({ browserModel: state.browserModel }),
+  getSettings: async () => mockGetSettings(),
 }))
 
 vi.mock('@shared/lib/llm-provider/connections', () => ({
-  resolveHelperSelection: async () => { throw state.helperError },
+  resolveHelperSelection: async () => {
+    if (state.helperError) throw state.helperError
+    return { provider: provider(), wireModel: state.helperModel }
+  },
 }))
 
 import llm from './llm'
@@ -91,6 +98,21 @@ describe('LLM proxy endpoint', () => {
     state.helperModel = undefined
     state.browserModel = 'sonnet'
     state.resolvedModel = 'claude-sonnet-5'
+    mockGetSettings.mockImplementation(() => state.hasDefault ? { llmDefault: { llmProviderId: 'sub', model: 'sonnet' } } : {})
+  })
+
+  it.each(['config', 'v1/messages'])('reads the settings once for %s', async path => {
+    mockCreate.mockResolvedValue({ content: [] })
+    for (const hasDefault of [false, true]) {
+      state.hasDefault = hasDefault
+      state.helperModel = hasDefault ? 'global-helper-model' : undefined
+      mockGetSettings.mockClear()
+      const app = createApp()
+      const res = path === 'config' ? await get(app, '/api/llm/config')
+        : await post(app, '/api/llm/v1/messages', { messages: [{ role: 'user', content: 'hi' }] })
+      expect(res.status).toBe(200)
+      expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    }
   })
 
   it.each(['config', 'v1/messages'])('reports unavailable helpers on %s', async path => {
@@ -234,6 +256,7 @@ describe('LLM proxy endpoint', () => {
     })
 
     it('uses the global helper model when no explicit model is requested', async () => {
+      state.hasDefault = true
       state.helperModel = 'global-helper-model'
       mockCreate.mockResolvedValue({ content: [] })
       const res = await post(createApp(), '/api/llm/v1/messages', {
@@ -244,6 +267,7 @@ describe('LLM proxy endpoint', () => {
     })
 
     it('preserves an explicit model even when the helper has another default', async () => {
+      state.hasDefault = true
       state.helperModel = 'global-helper-model'
       mockCreate.mockResolvedValue({ content: [] })
 

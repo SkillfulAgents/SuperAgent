@@ -1,6 +1,6 @@
 import { HelperConfigurationError } from './helper-error'
-import { resolveHelperSelection } from './connections'
-import { getSettings } from '../config/settings'
+import { resolveHelperSelection, type ResolvedConnection } from './connections'
+import { effectiveModelsFrom, getSettings, type AppSettings, type ModelSettings } from '../config/settings'
 /**
  * LLM Provider Helpers
  *
@@ -8,30 +8,87 @@ import { getSettings } from '../config/settings'
  * eliminating repeated boilerplate across services and route handlers.
  */
 
-import { activeLlmProviderFrom } from './index'
+import { activeLlmProviderFrom, resolveModelForProviderFrom } from './index'
+import type { BaseLlmProvider, ModelPurpose } from './base-llm-provider'
 import { NonRetryableError, withRetry } from '../utils/retry'
 import type Anthropic from '@anthropic-ai/sdk'
+
+const helperModels = new WeakMap<Anthropic, string>()
+export function configuredHelperModel(client: Anthropic): string | undefined {
+  return helperModels.get(client)
+}
+
+// The model setting a helper call for each purpose reads when no summarizer
+// connection is selected (legacy settings without an app default).
+const HELPER_MODEL_SETTINGS = {
+  summarizer: 'summarizerModel',
+  agent: 'agentModel',
+  browser: 'browserModel',
+  dashboard: 'dashboardBuilderModel',
+} as const satisfies Record<ModelPurpose, keyof ModelSettings>
+
+export interface HelperSetup {
+  /** The provider helper calls go to. */
+  provider: BaseLlmProvider
+  /** The summarizer connection, when an app default is set; null on legacy settings. */
+  selection: ResolvedConnection | null
+  /** The wire model to ask for: the connection's helper model, else `purpose`'s setting for the active provider. */
+  model: string
+  /** Whether that provider has its credentials. */
+  configured: boolean
+}
+
+/**
+ * What a host-direct helper call runs on, from the settings the operation
+ * already read: with an app default, the summarizer connection
+ * ({@link resolveHelperSelection}, which throws HelperConfigurationError when
+ * none can serve) and its model; otherwise the active provider and the
+ * `purpose` model setting resolved for it. Reads no settings itself.
+ */
+export async function helperSetupFrom(settings: AppSettings, purpose: ModelPurpose = 'summarizer'): Promise<HelperSetup> {
+  const selection = settings.llmDefault ? await resolveHelperSelection(settings) : null
+  const provider = selection?.provider ?? activeLlmProviderFrom(settings)
+  // The fallback model is resolved only when no connection names one.
+  const model = selection?.wireModel
+    ?? resolveModelForProviderFrom(effectiveModelsFrom(settings)[HELPER_MODEL_SETTINGS[purpose]], provider.id, purpose, settings)
+  return { provider, selection, model, configured: provider.apiKeyStatusFrom(settings).isConfigured }
+}
+
+/**
+ * A client for host-direct helper calls and the model to ask it for, from the
+ * settings the operation already read. Throws when the helper provider has no
+ * credentials or cannot be called directly. Build one per call; never keep it.
+ */
+export async function configuredLlmClientFrom(
+  settings: AppSettings,
+  purpose: ModelPurpose = 'summarizer',
+): Promise<{ client: Anthropic; model: string }> {
+  const helper = await helperSetupFrom(settings, purpose)
+  if (!helper.configured) {
+    if (helper.provider.id === 'platform') throw new HelperConfigurationError('Reconnect Platform or choose another summarizer in Settings → Model Providers')
+    throw new Error('LLM API key not configured')
+  }
+  if (!helper.selection && helper.provider.supportsDirectApi === false) throw new HelperConfigurationError()
+  const client = await helper.provider.createClientFrom(settings)
+  if (helper.selection) helperModels.set(client, helper.selection.wireModel)
+  return { client, model: helper.model }
+}
+
+/**
+ * {@link configuredLlmClientFrom} from one settings read: the client and the
+ * model in one call, so summarizer callers need not read the settings again
+ * to pick a model.
+ */
+export async function getConfiguredLlmClientAndModel(purpose: ModelPurpose = 'summarizer'): Promise<{ client: Anthropic; model: string }> {
+  return configuredLlmClientFrom(await getSettings(), purpose)
+}
 
 /**
  * Get a configured Anthropic client from the active LLM provider.
  * Throws if the API key is not configured.
  */
-const helperModels = new WeakMap<Anthropic, string>()
-export function configuredHelperModel(client: Anthropic): string | undefined {
-  return helperModels.get(client)
-}
 export async function getConfiguredLlmClient(): Promise<Anthropic> {
-  const settings = await getSettings()
-  const selection = settings.llmDefault ? await resolveHelperSelection() : null
-  const provider = selection?.provider ?? activeLlmProviderFrom(settings)
-  if (!(await provider.getApiKeyStatus()).isConfigured) {
-    if (provider.id === 'platform') throw new HelperConfigurationError('Reconnect Platform or choose another summarizer in Settings → Model Providers')
-    throw new Error('LLM API key not configured')
-  }
-  if (!selection && provider.supportsDirectApi === false) throw new HelperConfigurationError()
-  const client = await provider.createClient()
-  if (selection) helperModels.set(client, selection.wireModel)
-  return client
+  return (await getConfiguredLlmClientAndModel()).client
 }
 
 /**

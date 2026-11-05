@@ -49,6 +49,8 @@ vi.mock('../services/platform-auth-service', () => ({
   getPlatformAccessToken: async () => state.platformToken ?? null,
   platformAccessTokenFrom: () => state.platformToken ?? null,
   getPlatformAuthStatus: async () => ({ connected: false }),
+  platformAuthStatusFrom: () => ({ connected: false }),
+  storedPlatformMemberIdFrom: () => null,
 }))
 import {
   saveConnection,

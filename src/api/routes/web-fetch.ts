@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { IsAgent } from '../middleware/auth'
-import { getActiveWebProvider } from '@shared/lib/web-provider'
+import { activeWebProviderFrom } from '@shared/lib/web-provider'
 import { isUrlAllowed } from '@shared/lib/web-provider/allowed-sites'
 import { WebFetchRequestSchema } from '@shared/lib/web-provider/web-fetch-request-schema'
 import { getSettings } from '@shared/lib/config/settings'
@@ -32,19 +32,20 @@ webFetch.post('/fetch', async (c) => {
     return c.json({ error: 'Invalid request', detail: parsed.error.issues }, 400)
   }
 
-  const provider = await getActiveWebProvider()
+  // One read for the request: the vendor, its credential and the site policy.
+  const settings = await getSettings()
+  const provider = activeWebProviderFrom(settings)
   if (!provider?.fetch) {
     return c.json({ error: 'No web fetch vendor configured' }, 400)
   }
 
   const { url, ...opts } = parsed.data
-  const settings = await getSettings()
   if (!isUrlAllowed(url, { allowedSites: settings.webAllowedSites, blockedSites: settings.webBlockedSites })) {
     return c.json({ error: 'This URL is blocked by your allowed-sites policy' }, 403)
   }
 
   try {
-    const result = await provider.fetch(url, opts)
+    const result = await provider.fetch(url, opts, settings)
     // Defense-in-depth re-check: the requested URL was allow-checked pre-dispatch, but a vendor can
     // follow a redirect / canonicalize to a DIFFERENT host. Re-check the returned host so content
     // from a blocked/non-allowed site can't be smuggled past the operator policy via a redirect.

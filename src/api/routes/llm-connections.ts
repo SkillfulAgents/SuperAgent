@@ -20,7 +20,7 @@ import {
   getConnection,
   assertManageConnection,
   providerForConnection,
-  connectionCatalog,
+  connectionCatalogFrom,
   prepareConnection,
   type ConnectionViewer,
 } from '@shared/lib/llm-provider/connections'
@@ -63,10 +63,12 @@ routes.post('/oauth/:id/poll', async c => {
   return c.json(await pollOAuthLogin(c.req.param('id'), viewer(c)))
 })
 routes.get('/', async (c) => {
-  const { connections, ...selection } = await listConnectionsWithSelection(viewer(c))
+  // One settings read for the listing, however many connections it has.
+  const settings = await getSettings()
+  const { connections, ...selection } = await listConnectionsWithSelection(viewer(c), settings)
   return c.json({
     connections,
-    legacyLlmProviderId: (await getSettings()).llmLegacyProviderId,
+    legacyLlmProviderId: settings.llmLegacyProviderId,
     ...selection,
   })
 })
@@ -140,8 +142,9 @@ routes.get('/:id/model-availability', async c => {
   if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
   // `fresh=1` re-reads the provider's source (after an upgrade, or a refusal).
   const fresh = c.req.query('fresh') === '1'
+  const settings = await getSettings()
   return c.json(await runWithOptionalUser(actor.userId,
-    async () => providerForConnection(row).getModelAvailability(await connectionCatalog(row), { fresh })))
+    async () => providerForConnection(row).getModelAvailability(connectionCatalogFrom(row, settings), { fresh, settings })))
 })
 routes.get('/:id/models/search', async (c) => {
   const row = await getConnection(c.req.param('id'))

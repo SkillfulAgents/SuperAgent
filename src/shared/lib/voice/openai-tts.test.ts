@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../config/settings', () => ({ getSettings: () => ({ apiKeys: { openaiApiKey: 'test-secret-key' } }) }))
-vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: vi.fn(), createSummarizerText: vi.fn() }))
-vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: vi.fn() }))
+vi.mock('../llm-provider/helpers', () => ({ configuredLlmClientFrom: vi.fn(), createSummarizerText: vi.fn() }))
 import { OpenaiVoiceProvider } from './openai-provider'
 const provider = new OpenaiVoiceProvider()
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks() })

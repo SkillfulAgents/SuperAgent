@@ -83,6 +83,11 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-5',
     summarizerModel: 'claude-haiku-4-5',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-5',
+    browserModel: 'claude-sonnet-4-5',
+    summarizerModel: 'claude-haiku-4-5',
+  }),
   getSettings: () => ({}),
   getAgentCapabilitySettings: () => ({ ...mockAgentCapabilities }),
   getModelCatalogSettings: () => ({}),

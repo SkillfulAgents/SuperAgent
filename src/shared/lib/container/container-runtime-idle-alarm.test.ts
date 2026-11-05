@@ -74,8 +74,9 @@ vi.mock('drizzle-orm', () => ({
 // The timeout is read at every arm and every fire, so the tests change it in place.
 const settings = { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: { autoSleepTimeoutMinutes: 30 } }
 
+const readSettings = vi.fn(async () => settings)
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: async () => settings,
+  getSettings: () => readSettings(),
 }))
 
 vi.mock('@shared/lib/config/data-dir', () => ({
@@ -98,7 +99,7 @@ vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: { getGrabbedApp: () => null, clearGrabbedApp: vi.fn() },
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({}))
-vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false }))
+vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAgent: () => 'UTC' }))
 vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }), remounted: async () => {} }))
 
@@ -215,6 +216,64 @@ describe('ContainerRuntime idle alarm', () => {
     containerHost.rearmIdleAlarms()
     await vi.advanceTimersByTimeAsync(0)
     expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-arms every running agent from one read of the timeout', async () => {
+    const slugs = ['alarm-a', 'alarm-b', 'alarm-c', 'alarm-d']
+    for (const slug of slugs) await containerHost.runtime(slug).ensureRunning()
+    await settle()
+    await vi.advanceTimersByTimeAsync(10 * MINUTE)
+    settings.app.autoSleepTimeoutMinutes = 15
+    readSettings.mockClear()
+    containerHost.rearmIdleAlarms()
+    await settle()
+    expect(readSettings).toHaveBeenCalledTimes(1)
+    // Every one of them now sleeps 15 minutes after its start, not 30.
+    await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(slugs.length)
+    for (const slug of slugs) containerHost.dropRuntime(slug)
+  })
+
+  it('a re-arm after a write uses a read made after it, not a mark\'s read already in flight', async () => {
+    const runtime = await startRuntime()
+    // A session write starts a timeout read that lands late, with the old value.
+    let landOldRead!: () => void
+    readSettings.mockImplementationOnce(() => new Promise((resolve) => {
+      landOldRead = () => resolve({ ...settings, app: { autoSleepTimeoutMinutes: 30 } })
+    }))
+    runtime.noteSessionActivity()
+    // The write commits 5 minutes; the route re-arms after it.
+    settings.app.autoSleepTimeoutMinutes = 5
+    containerHost.rearmIdleAlarms()
+    await settle()
+    landOldRead()
+    await settle()
+    await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a re-arm given the committed timeout reads nothing', async () => {
+    await startRuntime()
+    settings.app.autoSleepTimeoutMinutes = 5
+    readSettings.mockClear()
+    containerHost.rearmIdleAlarms(5 * MINUTE)
+    await settle()
+    expect(readSettings).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5 * MINUTE + 1)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a burst of session writes reads the timeout once', async () => {
+    const runtime = await startRuntime()
+    readSettings.mockClear()
+    for (let i = 0; i < 10; i++) runtime.noteSessionActivity()
+    await settle()
+    expect(readSettings).toHaveBeenCalledTimes(1)
+    // The fire reads it again before deciding (busy then: it waits another window).
+    mockHasActive.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(readSettings).toHaveBeenCalledTimes(2)
+    expect(mockStop).not.toHaveBeenCalled()
   })
 
   it('a timeout changed elsewhere, with nothing here re-arming, applies when the alarm fires', async () => {

@@ -1,4 +1,3 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Trigger Manager
  *
@@ -12,8 +11,8 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { getSettings } from '@shared/lib/config/settings'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
 import {
@@ -318,15 +317,10 @@ class TriggerManager {
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
+    // One read of the settings for this firing.
     // Model/effort/speed preference order: trigger override > agent default > global default.
-    const models = await getEffectiveModels()
-    const agentPrefs = await readAgentPreferences(trigger.agentSlug)
-    const resolved = await resolveConnectionRuntimeInherit(
-      { model: trigger.model,
-      llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed },
-      agentPrefs,
-      models,
-    )
+    const { models, resolve } = await resolveSessionDefaults(await getSettings(), trigger.agentSlug)
+    const resolved = await resolve({ model: trigger.model, llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed })
     const { id: sessionId } = await actor.sessions.start({
       create: {
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,

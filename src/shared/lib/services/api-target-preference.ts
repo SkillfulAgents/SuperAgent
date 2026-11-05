@@ -1,5 +1,5 @@
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
-import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings, type AppSettings } from '@shared/lib/config/settings'
 
 /**
  * Persistence for "which Superagent is this desktop app driving?".
@@ -18,7 +18,12 @@ import { getSettings, mutateSettings } from '@shared/lib/config/settings'
  * is actually reachable.
  */
 export async function readPreferredApiTarget(): Promise<ApiTarget> {
-  return coerceApiTarget((await getSettings()).apiTarget)
+  return preferredApiTargetFrom(await getSettings())
+}
+
+/** {@link readPreferredApiTarget} from settings already read. */
+export function preferredApiTargetFrom(settings: Pick<AppSettings, 'apiTarget'>): ApiTarget {
+  return coerceApiTarget(settings.apiTarget)
 }
 
 /**

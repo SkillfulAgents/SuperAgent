@@ -1,6 +1,12 @@
-import { getNangoSecretKey } from '@shared/lib/config/settings'
+import { getNangoSecretKey, nangoSecretKeyFrom } from '@shared/lib/config/settings'
 import { BaseAccountProvider } from './base-account-provider'
-import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
+import type {
+  AccountProviderSettings,
+  InitiateConnectionResult,
+  ProviderConnection,
+  ProviderConnectionListItem,
+  ProviderCredentials,
+} from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
 import { getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
 
@@ -28,6 +34,19 @@ interface CachedToken {
 }
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
+
+interface NangoCredentials extends ProviderCredentials {
+  readonly provider: 'nango'
+  readonly secretKey: string | undefined
+}
+
+/** A secret key the operation already took, or null to read the current one. */
+type SecretKeySource = { secretKey: string | undefined } | null
+
+/** The secret key in `credentials` when this provider made them. */
+function secretKeyOf(credentials?: ProviderCredentials): SecretKeySource {
+  return credentials?.provider === 'nango' ? { secretKey: (credentials as NangoCredentials).secretKey } : null
+}
 
 class NangoApiError extends Error {
   constructor(
@@ -60,13 +79,18 @@ export class NangoAccountProvider extends BaseAccountProvider {
     return Boolean(await this.readSecretKey())
   }
 
+  credentialsFrom(settings: AccountProviderSettings): ProviderCredentials {
+    const credentials: NangoCredentials = { provider: 'nango', secretKey: nangoSecretKeyFrom(settings) }
+    return credentials
+  }
+
   /**
-   * The current secret key and the tokens cached under it; throws when none
-   * is saved. Tokens cached under a different key (another Nango account)
-   * are dropped.
+   * The secret key (the operation's when it took one, else the current one)
+   * and the tokens cached under it; throws when none is saved. Tokens cached
+   * under a different key (another Nango account) are dropped.
    */
-  private async credentials(): Promise<{ secretKey: string; tokens: Map<string, CachedToken> }> {
-    const key = await this.readSecretKey()
+  private async credentials(source: SecretKeySource = null): Promise<{ secretKey: string; tokens: Map<string, CachedToken> }> {
+    const key = source ? source.secretKey : await this.readSecretKey()
     if (!key) throw new NangoApiError('Nango is not configured. Add a Nango secret key in Settings.', 400)
     if (this.tokenCache?.secretKey !== key) this.tokenCache = { secretKey: key, tokens: new Map() }
     return this.tokenCache
@@ -151,11 +175,11 @@ export class NangoAccountProvider extends BaseAccountProvider {
     }
   }
 
-  async getConnection(connectionId: string, toolkitSlug?: string): Promise<ProviderConnection> {
+  async getConnection(connectionId: string, toolkitSlug?: string, credentials?: ProviderCredentials): Promise<ProviderConnection> {
     try {
       const nangoSlug = toolkitSlug ? getProviderSlug(toolkitSlug, 'nango') : undefined
       const qs = nangoSlug ? `?provider_config_key=${encodeURIComponent(nangoSlug)}` : ''
-      const response = await this.nangoFetch(`/connections/${encodeURIComponent(connectionId)}${qs}`) as {
+      const response = await this.nangoFetch(`/connections/${encodeURIComponent(connectionId)}${qs}`, {}, secretKeyOf(credentials)) as {
         connection_id: string
         errors?: Array<{ type: string }>
       }
@@ -190,8 +214,9 @@ export class NangoAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    credentials?: ProviderCredentials
   }): Promise<Response> {
-    const { accessToken } = await this.resolveToken(params.providerConnectionId, params.toolkitSlug)
+    const { accessToken } = await this.resolveToken(params.providerConnectionId, params.toolkitSlug, secretKeyOf(params.credentials))
 
     const forwardHeaders = new Headers()
     params.headers.forEach((value, key) => {
@@ -234,9 +259,14 @@ export class NangoAccountProvider extends BaseAccountProvider {
     )
   }
 
-  private async resolveToken(connectionId: string, toolkitSlug: string): Promise<{ accessToken: string; providerConfigKey: string }> {
+  private async resolveToken(
+    connectionId: string,
+    toolkitSlug: string,
+    source: SecretKeySource = null,
+  ): Promise<{ accessToken: string; providerConfigKey: string }> {
     // Before the cache: a removed or changed key must not keep serving tokens.
-    const { secretKey, tokens } = await this.credentials()
+    // The key is read once here, and used for the fetch below too.
+    const { secretKey, tokens } = await this.credentials(source)
     const cached = tokens.get(connectionId)
     if (cached && cached.expiresAt > Date.now()) {
       return { accessToken: cached.accessToken, providerConfigKey: cached.providerConfigKey }
@@ -248,7 +278,7 @@ export class NangoAccountProvider extends BaseAccountProvider {
     const response = await this.nangoFetch(
       `/connections/${encodeURIComponent(connectionId)}?provider_config_key=${encodeURIComponent(nangoSlug)}&force_refresh=true`,
       {},
-      secretKey,
+      { secretKey },
     ) as {
       provider_config_key: string
       credentials: {
@@ -283,10 +313,10 @@ export class NangoAccountProvider extends BaseAccountProvider {
     return { accessToken, providerConfigKey: response.provider_config_key }
   }
 
-  /** `secretKey`: the key to sign with; the current one by default. */
-  private async nangoFetch(endpoint: string, options: RequestInit = {}, secretKey?: string): Promise<unknown> {
+  /** `source`: the key to sign with; the current one by default. */
+  private async nangoFetch(endpoint: string, options: RequestInit = {}, source: SecretKeySource = null): Promise<unknown> {
     const headers = new Headers(options.headers)
-    headers.set('Authorization', `Bearer ${secretKey ?? (await this.credentials()).secretKey}`)
+    headers.set('Authorization', `Bearer ${(await this.credentials(source)).secretKey}`)
     if (!headers.has('Content-Type') && options.body) {
       headers.set('Content-Type', 'application/json')
     }
