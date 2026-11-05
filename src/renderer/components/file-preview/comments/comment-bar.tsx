@@ -1,8 +1,8 @@
 import { useCallback } from 'react'
 import { MessageSquare, X, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
-import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { useFilePreview, type FileComment, type FileCommentContent } from '@renderer/context/file-preview-context'
+import { appendToSessionDraft, useDraftsStore, type DraftsStore } from '@renderer/context/drafts-context'
 import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
 import { describeAnchor } from './anchor'
 import { getPathName } from '@shared/lib/utils/workspace-path'
@@ -14,7 +14,7 @@ interface CommentBarProps {
   sessionId: string
 }
 
-export function formatComments(filePath: string, comments: FileComment[]): string {
+export function formatComments(filePath: string, comments: FileCommentContent[]): string {
   const filename = getPathName(filePath)
   const lines: string[] = [`File feedback on \`${filename}\`:\n`]
 
@@ -27,16 +27,20 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
   return lines.join('\n')
 }
 
+/** Comments on a file into a composer's draft, after what it holds, and focus on that composer. */
+export function sendComments(store: DraftsStore, sessionId: string, filePath: string, comments: FileCommentContent[]): void {
+  appendToSessionDraft(store, sessionId, formatComments(filePath, comments), { prepend: false })
+  queueMicrotask(() => focusSessionComposer(sessionId))
+}
+
 export function CommentBar({ comments, filePath, agentSlug, sessionId }: CommentBarProps) {
   const { clearComments, removeComment, commentsEnabled } = useFilePreview()
   const draftsStore = useDraftsStore()
 
   const handleSubmit = useCallback(() => {
     if (comments.length === 0) return
-    const content = formatComments(filePath, comments)
-    appendToSessionDraft(draftsStore, sessionId, content, { prepend: false })
+    sendComments(draftsStore, sessionId, filePath, comments)
     clearComments(filePath, agentSlug)
-    queueMicrotask(() => focusSessionComposer(sessionId))
   }, [comments, filePath, agentSlug, sessionId, draftsStore, clearComments])
 
   if (comments.length === 0 || !commentsEnabled) return null
