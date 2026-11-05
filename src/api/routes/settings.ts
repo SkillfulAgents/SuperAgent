@@ -46,7 +46,7 @@ import {
   type SettingsProblem,
 } from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
-import { appRecordStore } from '@shared/lib/app-records/records'
+import { deleteRecord } from '@shared/lib/app-records/records'
 import { PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY, SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { getVoiceProvider } from '@shared/lib/voice'
 import {
@@ -940,9 +940,8 @@ settings.post('/factory-reset', async (c) => {
     // Settings (including the platform auth token), and the platform device
     // identity so a fresh one is issued on next login. The tenant id and the
     // auth secret stay: user accounts survive a reset.
-    const records = appRecordStore()
-    await records.delete(SETTINGS_RECORD_KEY)
-    await records.delete(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY)
+    await deleteRecord(SETTINGS_RECORD_KEY)
+    await deleteRecord(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY)
     // The files they were once imported from (settings.json holds API keys).
     await fs.promises.rm(path.join(getDataDir(), 'settings.json'), { force: true })
     await fs.promises.rm(path.join(getDataDir(), '.platform-auth'), { recursive: true, force: true })

@@ -2,8 +2,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { openDatabase, closeDatabase } from '../../../src/shared/lib/db'
-import { dbAppRecordStore } from '../../../src/shared/lib/app-records/record-store'
-import { installAppRecordStore } from '../../../src/shared/lib/app-records/records'
 import { getConnection, providerForConnection } from '../../../src/shared/lib/llm-provider/connections'
 import { connectionRuntimeSchema } from '../../../agent-container/src/connection-runtime'
 
@@ -13,7 +11,7 @@ async function main() {
     connection: { type: 'string' }, out: { type: 'string' }, model: { type: 'string', default: 'grok-4.7' },
   } })
   if (!values.connection || !values.out) throw new Error('Supply --connection <id> --out <private runtime.json>')
-  installAppRecordStore(dbAppRecordStore(await openDatabase()))
+  await openDatabase()
   try {
     const row = await getConnection(values.connection)
     if (!row || row.provider !== 'grok-subscription') throw new Error('Choose a Grok Subscription connection')

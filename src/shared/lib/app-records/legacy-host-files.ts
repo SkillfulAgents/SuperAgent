@@ -36,8 +36,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { z } from 'zod'
-import type { AppRecordStore } from './record-store'
-import { parseRecordValue, serializeRecordValue } from './records'
+import { insertRecordIfAbsent, parseRecordValue, serializeRecordValue, type RecordDb } from './records'
 import {
   AUTH_SECRET_RECORD_KEY,
   PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY,
@@ -118,7 +117,7 @@ export interface LegacyImportReport {
  * not already hold. Idempotent and safe to call from more than one migration.
  */
 export async function importLegacyHostFiles(
-  store: AppRecordStore,
+  db: RecordDb,
   dataDir: string,
   files: readonly LegacyHostFile[] = LEGACY_HOST_FILES,
 ): Promise<LegacyImportReport> {
@@ -140,7 +139,7 @@ export async function importLegacyHostFiles(
       continue
     }
     for (const record of records) {
-      if (await store.insertIfAbsent(record.key, record.value)) report.imported.push(record.key)
+      if (await insertRecordIfAbsent(record.key, record.value, db)) report.imported.push(record.key)
     }
   }
   return report

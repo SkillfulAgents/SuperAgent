@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
-import { installTestAppRecordStore, MemoryAppRecordStore } from '../app-records/testing/memory-record-store'
+import * as records from '../app-records/records'
 import type { AppSettings } from '../config/settings'
 
 const state = vi.hoisted(() => ({
@@ -174,8 +174,8 @@ it('reads the agent default only when the session has no binding of its own', as
 })
 
 it('resolves a new session and each message, provider chain included, from one read of the settings each', async () => {
-  const store = new MemoryAppRecordStore()
-  installTestAppRecordStore(store)
+  // Every settings read goes through the counted getter above, none straight to the record.
+  const storedReads = vi.spyOn(records, 'readStoredRecord')
   const client = new Client({ agentId: 'agent' })
   state.settingsReads = 0
   await client.createSession({
@@ -186,7 +186,7 @@ it('resolves a new session and each message, provider chain included, from one r
   state.metadata = { llmProviderId: first, model: 'model-b' }
   for (let i = 0; i < 3; i++) await client.sendMessage('session', `message ${i}`)
   expect(state.settingsReads).toBe(4)
-  expect(store.calls.read).toBe(0)
+  expect(storedReads).not.toHaveBeenCalled()
 
   // A change committed between two messages is what the next one sends.
   await setGlobalSelection('default', { llmProviderId: second, model: 'model-a' })

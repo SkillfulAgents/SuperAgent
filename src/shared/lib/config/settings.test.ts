@@ -12,14 +12,19 @@ vi.mock('./version', () => ({
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
+// Records default to the app database: this file's own test database.
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { captureException } from '@shared/lib/error-reporting'
-import { InvalidAppRecordError } from '@shared/lib/app-records/records'
-import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import * as records from '@shared/lib/app-records/records'
 import {
-  installTestAppRecordStore,
-  MemoryAppRecordStore,
-} from '@shared/lib/app-records/testing/memory-record-store'
+  compareAndSetRecord,
+  insertRecordIfAbsent,
+  InvalidAppRecordError,
+  readStoredRecord,
+} from '@shared/lib/app-records/records'
+import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import {
   getSettings,
   loadSettingsStrict,
@@ -44,20 +49,21 @@ import {
 // Helpers
 // ============================================================================
 
-let store: MemoryAppRecordStore
+let handle: TestDatabase
+let testDb: TestDatabase['db']
 
 /**
- * Store raw text as the settings record, as if a previous write (or a bad
- * migration) had left it there. Raw so invalid values can be stored too.
- * Nothing stored at all is simply no row.
+ * Store raw text as the settings record (revision 1), as if a previous write
+ * (or a bad migration) had left it there. Raw so invalid values can be stored
+ * too. Nothing stored at all is simply no row.
  */
-function storeSettings(value: string, revision = 1) {
-  store.rows.set(SETTINGS_RECORD_KEY, { value, revision })
+async function storeSettings(value: string) {
+  if (!(await insertRecordIfAbsent(SETTINGS_RECORD_KEY, value))) throw new Error('settings are already stored')
 }
 
 /** The settings record as stored, parsed. */
-function storedSettings(): Record<string, any> {
-  const row = store.rows.get(SETTINGS_RECORD_KEY)
+async function storedSettings(): Promise<Record<string, any>> {
+  const row = await readStoredRecord(SETTINGS_RECORD_KEY)
   if (!row) throw new Error('no settings stored')
   return JSON.parse(row.value)
 }
@@ -68,18 +74,20 @@ function storedSettings(): Record<string, any> {
 
 const originalEnv = { ...process.env }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
-  store = new MemoryAppRecordStore()
-  installTestAppRecordStore(store)
+  handle = await createTestDatabase()
+  testDb = handle.db
   // Reset env vars that could interfere
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.COMPOSIO_API_KEY
   delete process.env.COMPOSIO_USER_ID
 })
 
-afterEach(() => {
+afterEach(async () => {
   process.env = { ...originalEnv }
+  vi.restoreAllMocks()
+  await handle.close()
 })
 
 // ============================================================================
@@ -133,7 +141,7 @@ describe('getSettings', () => {
       ['a JSON array', '[1, 2]'],
       ['JSON null', 'null'],
     ])('returns default settings for %s', async (_label, value) => {
-      storeSettings(value)
+      await storeSettings(value)
 
       const result = await getSettings()
 
@@ -141,7 +149,7 @@ describe('getSettings', () => {
     })
 
     it('logs and reports the error, and throws nothing', async () => {
-      storeSettings('totally broken')
+      await storeSettings('totally broken')
 
       await expect(getSettings()).resolves.toEqual(DEFAULT_SETTINGS)
 
@@ -154,13 +162,13 @@ describe('getSettings', () => {
         expect.any(InvalidAppRecordError),
         { tags: { area: 'settings', op: 'load' } }
       )
-      expect(store.rows.get(SETTINGS_RECORD_KEY)).toEqual({ value: 'totally broken', revision: 1 })
+      expect(await readStoredRecord(SETTINGS_RECORD_KEY)).toEqual({ value: 'totally broken', revision: 1 })
     })
   })
 
-  describe('when the store fails', () => {
+  describe('when the database fails', () => {
     it('propagates the error instead of degrading to defaults', async () => {
-      vi.spyOn(store, 'read').mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'))
+      vi.spyOn(records, 'readStoredRecord').mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'))
 
       await expect(getSettings()).rejects.toThrow('SQLITE_BUSY')
       expect(captureException).not.toHaveBeenCalled()
@@ -173,7 +181,7 @@ describe('getSettings', () => {
 
   describe('deep merge with defaults', () => {
     it('merges partial container settings with defaults', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { containerRunner: 'podman' },
         })
@@ -190,7 +198,7 @@ describe('getSettings', () => {
     })
 
     it('merges partial resourceLimits with defaults', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: {
             containerRunner: 'docker',
@@ -206,7 +214,7 @@ describe('getSettings', () => {
     })
 
     it('merges partial notification settings with defaults', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           app: {
             notifications: { sessionComplete: false },
@@ -223,7 +231,7 @@ describe('getSettings', () => {
     })
 
     it('merges partial app preferences with defaults', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           app: { showMenuBarIcon: false },
         })
@@ -238,7 +246,7 @@ describe('getSettings', () => {
     })
 
     it('merges partial model settings with defaults', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           // A genuine pin (older non-default version) — must survive untouched.
           models: { agentModel: 'claude-opus-4-7' },
@@ -256,7 +264,7 @@ describe('getSettings', () => {
       // Pre-SUP-275 persisted the three defaults as concrete ids. These have no
       // Bedrock catalog entry and would pass straight through (and fail) there,
       // so the settings read rewrites them to bare aliases that resolve per provider.
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           models: {
             summarizerModel: 'claude-haiku-4-5',
@@ -277,7 +285,7 @@ describe('getSettings', () => {
     })
 
     it('preserves the web provider selection', async () => {
-      storeSettings(JSON.stringify({ webProvider: 'exa' }))
+      await storeSettings(JSON.stringify({ webProvider: 'exa' }))
 
       const result = await getSettings()
 
@@ -285,7 +293,7 @@ describe('getSettings', () => {
     })
 
     it('recovers a legacy webSearchProvider selection on upgrade (pre-collapse installs)', async () => {
-      storeSettings(JSON.stringify({ webSearchProvider: 'exa' }))
+      await storeSettings(JSON.stringify({ webSearchProvider: 'exa' }))
 
       const result = await getSettings()
 
@@ -293,7 +301,7 @@ describe('getSettings', () => {
     })
 
     it('preserves the web allow/deny site lists', async () => {
-      storeSettings(JSON.stringify({ webAllowedSites: ['nytimes.com'], webBlockedSites: ['evil.com'] }))
+      await storeSettings(JSON.stringify({ webAllowedSites: ['nytimes.com'], webBlockedSites: ['evil.com'] }))
 
       const result = await getSettings()
 
@@ -302,7 +310,7 @@ describe('getSettings', () => {
     })
 
     it('merges auth settings with defaults', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           auth: { signupMode: 'open', passwordMinLength: 8 },
         })
@@ -328,7 +336,7 @@ describe('getSettings', () => {
     })
 
     it('uses DEFAULT_AUTH_SETTINGS when auth is absent', async () => {
-      storeSettings(JSON.stringify({ container: { containerRunner: 'docker' } }))
+      await storeSettings(JSON.stringify({ container: { containerRunner: 'docker' } }))
 
       const result = await getSettings()
 
@@ -338,7 +346,7 @@ describe('getSettings', () => {
     })
 
     it('preserves apiKeys as-is (no default merging)', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-test-123' },
         })
@@ -351,7 +359,7 @@ describe('getSettings', () => {
 
     it('preserves agentLimits as-is', async () => {
       const limits = { maxTurns: 10, maxBudgetUsd: 5 }
-      storeSettings(JSON.stringify({ agentLimits: limits }))
+      await storeSettings(JSON.stringify({ agentLimits: limits }))
 
       const result = await getSettings()
 
@@ -359,7 +367,7 @@ describe('getSettings', () => {
     })
 
     it('preserves app.autoDeleteInactiveDays', async () => {
-      storeSettings(JSON.stringify({ app: { autoDeleteInactiveDays: 30 } }))
+      await storeSettings(JSON.stringify({ app: { autoDeleteInactiveDays: 30 } }))
 
       const result = await getSettings()
 
@@ -367,7 +375,7 @@ describe('getSettings', () => {
     })
 
     it('preserves app.autoDeleteInactiveDays = 0 (disabled)', async () => {
-      storeSettings(JSON.stringify({ app: { autoDeleteInactiveDays: 0 } }))
+      await storeSettings(JSON.stringify({ app: { autoDeleteInactiveDays: 0 } }))
 
       const result = await getSettings()
 
@@ -375,7 +383,7 @@ describe('getSettings', () => {
     })
 
     it('leaves autoDeleteInactiveDays undefined when not set', async () => {
-      storeSettings(JSON.stringify({}))
+      await storeSettings(JSON.stringify({}))
 
       const result = await getSettings()
 
@@ -383,7 +391,7 @@ describe('getSettings', () => {
     })
 
     it('defaults app.apiLogAutoDeleteDays to 30 when not set', async () => {
-      storeSettings(JSON.stringify({}))
+      await storeSettings(JSON.stringify({}))
 
       const result = await getSettings()
 
@@ -391,7 +399,7 @@ describe('getSettings', () => {
     })
 
     it('preserves app.apiLogAutoDeleteDays = 0 (Never)', async () => {
-      storeSettings(JSON.stringify({ app: { apiLogAutoDeleteDays: 0 } }))
+      await storeSettings(JSON.stringify({ app: { apiLogAutoDeleteDays: 0 } }))
 
       const result = await getSettings()
 
@@ -399,7 +407,7 @@ describe('getSettings', () => {
     })
 
     it('preserves app.apiLogAutoDeleteDays = 90', async () => {
-      storeSettings(JSON.stringify({ app: { apiLogAutoDeleteDays: 90 } }))
+      await storeSettings(JSON.stringify({ app: { apiLogAutoDeleteDays: 90 } }))
 
       const result = await getSettings()
 
@@ -407,7 +415,7 @@ describe('getSettings', () => {
     })
 
     it('defaults app.globalDispatchShortcut to Control+Shift+Space when not set', async () => {
-      storeSettings(JSON.stringify({}))
+      await storeSettings(JSON.stringify({}))
 
       expect((await getSettings()).app?.globalDispatchShortcut).toBe('Control+Shift+Space')
     })
@@ -415,26 +423,26 @@ describe('getSettings', () => {
     it('moves the earlier persisted default launcher shortcut to the current default', async () => {
       // Every settings write persisted the merged defaults, so existing installs
       // carry the old default without having chosen it.
-      storeSettings(JSON.stringify({ app: { globalDispatchShortcut: 'CommandOrControl+Shift+Space' } }))
+      await storeSettings(JSON.stringify({ app: { globalDispatchShortcut: 'CommandOrControl+Shift+Space' } }))
 
       expect((await getSettings()).app?.globalDispatchShortcut).toBe('Control+Shift+Space')
     })
 
     it('keeps a launcher shortcut the user recorded, including ⌘⇧Space', async () => {
-      storeSettings(JSON.stringify({ app: { globalDispatchShortcut: 'Command+Shift+Space' } }))
+      await storeSettings(JSON.stringify({ app: { globalDispatchShortcut: 'Command+Shift+Space' } }))
 
       expect((await getSettings()).app?.globalDispatchShortcut).toBe('Command+Shift+Space')
     })
 
     it('keeps the launcher disabled when the shortcut is empty', async () => {
-      storeSettings(JSON.stringify({ app: { globalDispatchShortcut: '' } }))
+      await storeSettings(JSON.stringify({ app: { globalDispatchShortcut: '' } }))
 
       expect((await getSettings()).app?.globalDispatchShortcut).toBe('')
     })
 
     it('preserves customEnvVars as-is', async () => {
       const envVars = { MY_VAR: 'hello', ANOTHER: 'world' }
-      storeSettings(JSON.stringify({ customEnvVars: envVars }))
+      await storeSettings(JSON.stringify({ customEnvVars: envVars }))
 
       const result = await getSettings()
 
@@ -447,7 +455,7 @@ describe('getSettings', () => {
           overrides: [{ id: 'claude-opus-4-8', disabled: true }],
         },
       }
-      storeSettings(JSON.stringify({ modelCatalog }))
+      await storeSettings(JSON.stringify({ modelCatalog }))
 
       const result = await getSettings()
 
@@ -457,7 +465,7 @@ describe('getSettings', () => {
     it('drops one unreadable global price without failing the load or losing the others', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       const good = { inputPerMtok: 1, outputPerMtok: 2 }
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-kept' },
           modelPricing: { good, bad: { inputPerMtok: -1, outputPerMtok: 2 }, worse: 'free' },
@@ -474,7 +482,7 @@ describe('getSettings', () => {
 
     it('ignores a modelPricing value that is not a map', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-      storeSettings(JSON.stringify({ modelPricing: [1, 2] }))
+      await storeSettings(JSON.stringify({ modelPricing: [1, 2] }))
 
       expect((await getSettings()).modelPricing).toEqual({})
       expect(warn).toHaveBeenCalledOnce()
@@ -483,7 +491,7 @@ describe('getSettings', () => {
 
     it('ignores a malformed modelCatalog instead of failing settings load', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-      storeSettings(JSON.stringify({ modelCatalog: { anthropic: { overrides: [{ id: '' }] } } }))
+      await storeSettings(JSON.stringify({ modelCatalog: { anthropic: { overrides: [{ id: '' }] } } }))
 
       const result = await getSettings()
 
@@ -502,7 +510,7 @@ describe('getSettings', () => {
           addedAt: '2025-01-01T00:00:00Z',
         },
       ]
-      storeSettings(JSON.stringify({ skillsets }))
+      await storeSettings(JSON.stringify({ skillsets }))
 
       const result = await getSettings()
 
@@ -520,7 +528,7 @@ describe('getSettings', () => {
           updatedAt: '2026-08-06T00:00:00.000Z',
         },
       }
-      storeSettings(JSON.stringify({ skillsetCredentials }))
+      await storeSettings(JSON.stringify({ skillsetCredentials }))
 
       const result = await getSettings()
 
@@ -529,7 +537,7 @@ describe('getSettings', () => {
     })
 
     it('handles completely empty JSON object', async () => {
-      storeSettings('{}')
+      await storeSettings('{}')
 
       const result = await getSettings()
 
@@ -558,7 +566,7 @@ describe('getSettings', () => {
     const REGISTRY = 'ghcr.io/skillfulagents/superagent-agent-container-base'
 
     it('migrates :main tag to default image', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:main` },
         })
@@ -570,7 +578,7 @@ describe('getSettings', () => {
     })
 
     it('migrates semver tag (e.g. :0.2.0) to default image', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:0.2.0` },
         })
@@ -582,7 +590,7 @@ describe('getSettings', () => {
     })
 
     it('migrates complex semver tag (e.g. :1.23.456) to default image', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:1.23.456` },
         })
@@ -594,7 +602,7 @@ describe('getSettings', () => {
     })
 
     it('migrates semver-with-prerelease tag (e.g. :0.2.0-beta.1) to default image', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:0.2.0-beta.1` },
         })
@@ -607,7 +615,7 @@ describe('getSettings', () => {
     })
 
     it('does NOT migrate :latest tag', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:latest` },
         })
@@ -619,7 +627,7 @@ describe('getSettings', () => {
     })
 
     it('does NOT migrate custom tag like :custom', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:custom` },
         })
@@ -631,7 +639,7 @@ describe('getSettings', () => {
     })
 
     it('does NOT migrate a completely custom image', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: 'my-custom-registry.io/my-image:v1' },
         })
@@ -643,7 +651,7 @@ describe('getSettings', () => {
     })
 
     it('does NOT migrate when agentImage is absent', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { containerRunner: 'docker' },
         })
@@ -657,7 +665,7 @@ describe('getSettings', () => {
 
     it('does NOT migrate a tag that starts with digits but is not semver', async () => {
       // e.g. "42abc" - the regex /^\d+\.\d+\.\d+/ requires dots
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:42abc` },
         })
@@ -675,7 +683,7 @@ describe('getSettings', () => {
 
   describe('edge cases', () => {
     it('preserves unknown extra fields at top level', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { containerRunner: 'docker' },
           unknownField: 'should-be-preserved-by-loaded-object',
@@ -691,7 +699,7 @@ describe('getSettings', () => {
     })
 
     it('handles null values in settings', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { containerRunner: null },
           apiKeys: null,
@@ -706,7 +714,7 @@ describe('getSettings', () => {
     })
 
     it('handles empty string values', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: { containerRunner: '' },
           apiKeys: { anthropicApiKey: '' },
@@ -720,7 +728,7 @@ describe('getSettings', () => {
     })
 
     it('handles stored settings with only apiKeys', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: {
             anthropicApiKey: 'sk-test',
@@ -739,7 +747,7 @@ describe('getSettings', () => {
     })
 
     it('handles deeply nested partial overrides simultaneously', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: {
             containerRunner: 'podman',
@@ -777,7 +785,7 @@ describe('getSettings', () => {
     })
 
     it('preserves extra fields inside container', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           container: {
             containerRunner: 'docker',
@@ -798,7 +806,7 @@ describe('getSettings', () => {
     })
 
     it('preserves app-level extra preferences', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           app: {
             theme: 'dark',
@@ -831,11 +839,12 @@ describe('strict reads', () => {
   })
 
   it('reads the stored settings with their revision', async () => {
-    storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }), 7)
+    await storeSettings(JSON.stringify({ container: { containerRunner: 'docker' } }))
+    await compareAndSetRecord(SETTINGS_RECORD_KEY, 1, JSON.stringify({ container: { containerRunner: 'podman' } }))
 
     const snapshot = await readSettingsSnapshot()
 
-    expect(snapshot.revision).toBe(7)
+    expect(snapshot.revision).toBe(2)
     expect(snapshot.settings.container.containerRunner).toBe('podman')
   })
 
@@ -844,7 +853,7 @@ describe('strict reads', () => {
     ['a JSON array', '[]'],
   ])('throws InvalidAppRecordError for %s, without logging or reporting', async (_label, value) => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    storeSettings(value)
+    await storeSettings(value)
 
     await expect(loadSettingsStrict()).rejects.toBeInstanceOf(InvalidAppRecordError)
     expect(consoleSpy).not.toHaveBeenCalled()
@@ -864,10 +873,10 @@ describe('mutateSettings', () => {
     })
 
     expect(written.container.containerRunner).toBe('podman')
-    expect(store.rows.get(SETTINGS_RECORD_KEY)?.revision).toBe(1)
-    expect(storedSettings()).toEqual(written)
+    expect((await readStoredRecord(SETTINGS_RECORD_KEY))?.revision).toBe(1)
+    expect(await storedSettings()).toEqual(written)
     // The merged defaults are stored too, not only the changed field.
-    expect(storedSettings().app.notifications).toEqual(DEFAULT_SETTINGS.app?.notifications)
+    expect((await storedSettings()).app.notifications).toEqual(DEFAULT_SETTINGS.app?.notifications)
   })
 
   it('bumps the revision on the next write and keeps the earlier change', async () => {
@@ -878,53 +887,54 @@ describe('mutateSettings', () => {
       s.apiKeys = { anthropicApiKey: 'sk-test-123' }
     })
 
-    expect(store.rows.get(SETTINGS_RECORD_KEY)?.revision).toBe(2)
-    expect(storedSettings().container.containerRunner).toBe('podman')
-    expect(storedSettings().apiKeys).toEqual({ anthropicApiKey: 'sk-test-123' })
+    expect((await readStoredRecord(SETTINGS_RECORD_KEY))?.revision).toBe(2)
+    expect((await storedSettings()).container.containerRunner).toBe('podman')
+    expect((await storedSettings()).apiKeys).toEqual({ anthropicApiKey: 'sk-test-123' })
   })
 
   it('writes nothing when the mutator returns false', async () => {
     const result = await mutateSettings(() => false)
 
     expect(result).toEqual(DEFAULT_SETTINGS)
-    expect(store.rows.has(SETTINGS_RECORD_KEY)).toBe(false)
+    expect(await readStoredRecord(SETTINGS_RECORD_KEY)).toBeNull()
   })
 
   it('refuses to replace an invalid stored value with defaults', async () => {
-    storeSettings('{not valid json!!!')
+    await storeSettings('{not valid json!!!')
 
     await expect(
       mutateSettings((s) => {
         s.container.containerRunner = 'podman'
       }),
     ).rejects.toBeInstanceOf(InvalidAppRecordError)
-    expect(store.rows.get(SETTINGS_RECORD_KEY)).toEqual({ value: '{not valid json!!!', revision: 1 })
+    expect(await readStoredRecord(SETTINGS_RECORD_KEY)).toEqual({ value: '{not valid json!!!', revision: 1 })
   })
 })
 
 // ============================================================================
-// No settings cache: every getSettings() reads the store
+// No settings cache: every getSettings() reads the database
 // ============================================================================
 
 describe('no settings cache', () => {
-  it('reads the store on every call and returns distinct objects', async () => {
-    storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }))
+  it('reads the database on every call and returns distinct objects', async () => {
+    await storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }))
+    const reads = vi.spyOn(records, 'readStoredRecord')
 
     const first = await getSettings()
     const second = await getSettings()
 
-    expect(store.calls.read).toBe(2)
+    expect(reads).toHaveBeenCalledTimes(2)
     expect(first).not.toBe(second)
     expect(first).toEqual(second)
     expect(first.container.containerRunner).toBe('podman')
   })
 
-  it('sees a value changed in the store between two calls', async () => {
+  it('sees a value changed in the database between two calls', async () => {
     const first = await getSettings()
     expect(first.container.containerRunner).toBe(DEFAULT_SETTINGS.container.containerRunner)
 
     // Another process writes the row.
-    storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }))
+    await storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }))
 
     const second = await getSettings()
     expect(second.container.containerRunner).toBe('podman')
@@ -938,11 +948,11 @@ describe('no settings cache', () => {
         resourceLimits: { cpu: 4, memory: '8g' },
       }
     })
-    const readsBefore = store.calls.read
+    const reads = vi.spyOn(records, 'readStoredRecord')
 
     const after = await getSettings()
 
-    expect(store.calls.read).toBe(readsBefore + 1)
+    expect(reads).toHaveBeenCalledTimes(1)
     expect(after.container.containerRunner).toBe('podman')
     expect(after.container.agentImage).toBe('test')
     expect(after.container.resourceLimits).toEqual({ cpu: 4, memory: '8g' })
@@ -956,7 +966,7 @@ describe('no settings cache', () => {
 describe('Anthropic API key', () => {
   describe('getAnthropicApiKeyStatus', () => {
     it('returns settings source when key is in settings', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
@@ -984,7 +994,7 @@ describe('Anthropic API key', () => {
     })
 
     it('prefers settings over env var', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
@@ -997,7 +1007,7 @@ describe('Anthropic API key', () => {
     })
 
     it('treats empty string as falsy (falls through to env)', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: '' },
         })
@@ -1010,7 +1020,7 @@ describe('Anthropic API key', () => {
     })
 
     it('treats empty string in both settings and env as none', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: '' },
         })
@@ -1025,7 +1035,7 @@ describe('Anthropic API key', () => {
 
   describe('getEffectiveAnthropicApiKey', () => {
     it('returns key from settings when configured', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
@@ -1047,7 +1057,7 @@ describe('Anthropic API key', () => {
     })
 
     it('prefers settings over env var', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
@@ -1058,14 +1068,14 @@ describe('Anthropic API key', () => {
     })
 
     it('returns env var when settings apiKeys is absent', async () => {
-      storeSettings(JSON.stringify({}))
+      await storeSettings(JSON.stringify({}))
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
       expect(await getEffectiveAnthropicApiKey()).toBe('sk-from-env')
     })
 
     it('returns env var when apiKeys exists but anthropicApiKey is empty string', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: '' },
         })
@@ -1080,7 +1090,7 @@ describe('Anthropic API key', () => {
 describe('Composio API key', () => {
   describe('getComposioApiKeyStatus', () => {
     it('returns settings source when key is in settings', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { composioApiKey: 'ck-from-settings' },
         })
@@ -1108,7 +1118,7 @@ describe('Composio API key', () => {
     })
 
     it('prefers settings over env var', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { composioApiKey: 'ck-from-settings' },
         })
@@ -1123,7 +1133,7 @@ describe('Composio API key', () => {
 
   describe('getEffectiveComposioApiKey', () => {
     it('returns key from settings when configured', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { composioApiKey: 'ck-from-settings' },
         })
@@ -1149,7 +1159,7 @@ describe('Composio API key', () => {
 describe('Composio user ID', () => {
   describe('getComposioUserId', () => {
     it('returns user ID from settings when configured', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { composioUserId: 'user-from-settings' },
         })
@@ -1171,7 +1181,7 @@ describe('Composio user ID', () => {
     })
 
     it('prefers settings over env var', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { composioUserId: 'user-from-settings' },
         })
@@ -1186,7 +1196,7 @@ describe('Composio user ID', () => {
 describe('Account provider user ID', () => {
   describe('getAccountProviderUserId', () => {
     it('returns the account provider user ID from settings when configured', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { accountProviderUserId: 'acct-from-settings', composioUserId: 'user-from-settings' },
         })
@@ -1197,16 +1207,17 @@ describe('Account provider user ID', () => {
     })
 
     it('falls back to the Composio user ID from settings', async () => {
-      storeSettings(
+      await storeSettings(
         JSON.stringify({
           apiKeys: { composioUserId: 'user-from-settings' },
         })
       )
       process.env.COMPOSIO_USER_ID = 'user-from-env'
+      const reads = vi.spyOn(records, 'readStoredRecord')
 
       expect(await getAccountProviderUserId()).toBe('user-from-settings')
       // One read serves both lookups.
-      expect(store.calls.read).toBe(1)
+      expect(reads).toHaveBeenCalledTimes(1)
     })
 
     it('falls back to the COMPOSIO_USER_ID env var', async () => {
@@ -1239,7 +1250,7 @@ describe('getEffectiveModels', () => {
   })
 
   it('returns overridden models when configured', async () => {
-    storeSettings(
+    await storeSettings(
       JSON.stringify({
         models: {
           summarizerModel: 'custom-summarizer',
@@ -1261,7 +1272,7 @@ describe('getEffectiveModels', () => {
   })
 
   it('uses defaults for unset model fields', async () => {
-    storeSettings(
+    await storeSettings(
       JSON.stringify({
         models: { agentModel: 'custom-agent' },
       })
@@ -1275,7 +1286,7 @@ describe('getEffectiveModels', () => {
   })
 
   it('falls back to defaults when model values are empty strings', async () => {
-    storeSettings(
+    await storeSettings(
       JSON.stringify({
         models: {
           summarizerModel: '',
@@ -1294,7 +1305,7 @@ describe('getEffectiveModels', () => {
   })
 
   it('handles models being undefined in settings', async () => {
-    storeSettings(JSON.stringify({}))
+    await storeSettings(JSON.stringify({}))
 
     const models = await getEffectiveModels()
 
@@ -1308,7 +1319,7 @@ describe('getEffectiveModels', () => {
   })
 
   it('uses the selected provider catalog defaults when model fields are missing', async () => {
-    storeSettings(JSON.stringify({ llmProvider: 'platform' }))
+    await storeSettings(JSON.stringify({ llmProvider: 'platform' }))
 
     expect(await getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
@@ -1322,7 +1333,7 @@ describe('getEffectiveModels', () => {
   it('falls back to Anthropic defaults for an unknown persisted provider', async () => {
     // A downgrade can load a provider id written by a newer app version. The
     // stored settings are not schema-validated, so this must remain a soft fallback.
-    storeSettings(JSON.stringify({ llmProvider: 'some-future-provider' }))
+    await storeSettings(JSON.stringify({ llmProvider: 'some-future-provider' }))
 
     expect(await getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
@@ -1344,7 +1355,7 @@ describe('getEffectiveAgentLimits', () => {
   })
 
   it('returns configured limits', async () => {
-    storeSettings(
+    await storeSettings(
       JSON.stringify({
         agentLimits: { maxTurns: 25, maxBudgetUsd: 10 },
       })
@@ -1360,7 +1371,7 @@ describe('getEffectiveAgentLimits', () => {
       maxTurns: 50,
       maxBudgetUsd: 20,
     }
-    storeSettings(JSON.stringify({ agentLimits: limits }))
+    await storeSettings(JSON.stringify({ agentLimits: limits }))
 
     expect(await getEffectiveAgentLimits()).toEqual(limits)
   })
@@ -1377,13 +1388,13 @@ describe('getCustomEnvVars', () => {
 
   it('returns configured env vars', async () => {
     const envVars = { FOO: 'bar', BAZ: 'qux' }
-    storeSettings(JSON.stringify({ customEnvVars: envVars }))
+    await storeSettings(JSON.stringify({ customEnvVars: envVars }))
 
     expect(await getCustomEnvVars()).toEqual(envVars)
   })
 
   it('returns empty object when customEnvVars is null', async () => {
-    storeSettings(JSON.stringify({ customEnvVars: null }))
+    await storeSettings(JSON.stringify({ customEnvVars: null }))
 
     expect(await getCustomEnvVars()).toEqual({})
   })
@@ -1404,14 +1415,14 @@ describe('getModelCatalogSettings', () => {
         overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
       },
     }
-    storeSettings(JSON.stringify({ modelCatalog }))
+    await storeSettings(JSON.stringify({ modelCatalog }))
 
     expect(await getModelCatalogSettings()).toEqual(modelCatalog)
   })
 
   it('returns empty overrides when modelCatalog is null', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    storeSettings(JSON.stringify({ modelCatalog: null }))
+    await storeSettings(JSON.stringify({ modelCatalog: null }))
 
     expect(await getModelCatalogSettings()).toEqual({})
     expect(warn).toHaveBeenCalledOnce()
@@ -1506,15 +1517,15 @@ describe('integration scenarios', () => {
       s.apiKeys = { anthropicApiKey: 'sk-test-123' }
     })
 
-    // 4. Reload from the store
+    // 4. Reload from the database
     const reloaded = await getSettings()
     expect(reloaded.container.containerRunner).toBe('podman')
     expect(reloaded.container.resourceLimits).toEqual({ cpu: 8, memory: '16g' })
     expect(reloaded.apiKeys?.anthropicApiKey).toBe('sk-test-123')
   })
 
-  it('every getSettings-dependent function reads the store itself', async () => {
-    storeSettings(
+  it('every getSettings-dependent function reads the database itself', async () => {
+    await storeSettings(
       JSON.stringify({
         apiKeys: {
           anthropicApiKey: 'sk-test',
@@ -1526,6 +1537,7 @@ describe('integration scenarios', () => {
         customEnvVars: { MY_VAR: 'hello' },
       })
     )
+    const reads = vi.spyOn(records, 'readStoredRecord')
 
     expect(await getAnthropicApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
     expect(await getEffectiveAnthropicApiKey()).toBe('sk-test')
@@ -1536,8 +1548,8 @@ describe('integration scenarios', () => {
     expect(await getEffectiveAgentLimits()).toEqual({ maxTurns: 10 })
     expect(await getCustomEnvVars()).toEqual({ MY_VAR: 'hello' })
 
-    // No process cache: one store read per call.
-    expect(store.calls.read).toBe(8)
+    // No process cache: one database read per call.
+    expect(reads).toHaveBeenCalledTimes(8)
   })
 
   it('a mutateSettings write is what the getters return next', async () => {
@@ -1562,7 +1574,7 @@ describe('integration scenarios', () => {
 describe('runtimeSettings migration', () => {
 
   it('initializes runtimeSettings as empty object for old stored settings', async () => {
-    storeSettings(
+    await storeSettings(
       JSON.stringify({
         container: {
           containerRunner: 'docker',
@@ -1576,7 +1588,7 @@ describe('runtimeSettings migration', () => {
   })
 
   it('preserves existing runtimeSettings when present', async () => {
-    storeSettings(
+    await storeSettings(
       JSON.stringify({
         container: {
           containerRunner: 'lima',
@@ -1595,7 +1607,7 @@ describe('runtimeSettings migration', () => {
   })
 
   it('initializes runtimeSettings when container field is missing entirely', async () => {
-    storeSettings(JSON.stringify({}))
+    await storeSettings(JSON.stringify({}))
 
     const result = await getSettings()
 
@@ -1609,7 +1621,7 @@ describe('runtimeSettings migration', () => {
       }
     })
 
-    expect(storedSettings().container.runtimeSettings).toEqual({ lima: { vmMemory: '16GiB' } })
+    expect((await storedSettings()).container.runtimeSettings).toEqual({ lima: { vmMemory: '16GiB' } })
     const reloaded = await getSettings()
     expect(reloaded.container.runtimeSettings?.lima?.vmMemory).toBe('16GiB')
   })
@@ -1625,22 +1637,22 @@ describe('agentCapabilities', () => {
   })
 
   it('fills a partial stored section from the defaults', async () => {
-    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'block' } }))
+    await storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'block' } }))
     expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
   })
 
   it('preserves a fully customized section', async () => {
-    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'review', workflows: 'allow' } }))
+    await storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'review', workflows: 'allow' } }))
     expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'review', workflows: 'allow' })
   })
 
   it('defaults only the invalid field, keeping valid siblings', async () => {
-    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'allow' } }))
+    await storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'allow' } }))
     expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'allow', workflows: 'allow' })
   })
 
   it('an invalid field never lifts a valid block on the other capability', async () => {
-    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'block', workflows: 'future-tier' } }))
+    await storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'block', workflows: 'future-tier' } }))
     expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
   })
 
@@ -1655,13 +1667,13 @@ describe('globalInstructions', () => {
   })
 
   it('loads a stored string as-is', async () => {
-    storeSettings(JSON.stringify({ globalInstructions: 'Be concise.\n' }))
+    await storeSettings(JSON.stringify({ globalInstructions: 'Be concise.\n' }))
     expect((await getSettings()).globalInstructions).toBe('Be concise.\n')
   })
 
   it.each([42, { text: 'x' }, 'x'.repeat(20_001)])('drops an invalid stored value (%#) instead of prompting every agent with it', async (value) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    storeSettings(JSON.stringify({ globalInstructions: value }))
+    await storeSettings(JSON.stringify({ globalInstructions: value }))
     expect((await getSettings()).globalInstructions).toBeUndefined()
     warn.mockRestore()
   })

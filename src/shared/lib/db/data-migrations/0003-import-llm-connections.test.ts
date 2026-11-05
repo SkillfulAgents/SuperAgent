@@ -7,26 +7,21 @@ import { createTestDatabase, type TestDatabase } from '../testing/create-test-da
 import { getDb } from '../open-database'
 import { dataMigrations, llmConnections, scheduledTasks, webhookTriggers, chatIntegrations } from '../schema'
 import * as settings from '../../config/settings'
-import { dbAppRecordStore, type AppRecordStore } from '../../app-records/record-store'
-import { uninstallAppRecordStore } from '../../app-records/records'
 import { DATA_MIGRATIONS, runDataMigrations } from './index'
 import { importLlmConnections } from './0003-import-llm-connections'
 
+/** The migration's handle; its settings are what the app reads once it boots. */
 let handle: TestDatabase
 let dataDir: string
-/** The settings on the migration's handle: what the app reads once it boots. */
-let store: AppRecordStore
 const migrations = [importLlmConnections]
 beforeEach(async () => {
-  // As at boot, no global record store (the test setup installs one): a
-  // migration that read it instead of its own handle would throw.
-  uninstallAppRecordStore()
+  // Nothing opens the app database here and `@shared/lib/db` is not mocked:
+  // a migration that read it instead of its own handle would throw.
   dataDir = mkdtempSync(join(tmpdir(), 'llm-migration-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
   vi.stubEnv('AUTH_MODE', 'false')
   for (const key of ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'GENERIC_API_KEY', 'GENERIC_BASE_URL', 'PLATFORM_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_BEARER_TOKEN_BEDROCK', 'AWS_REGION']) vi.stubEnv(key, '')
   handle = await createTestDatabase()
-  store = dbAppRecordStore(handle.db)
 })
 afterEach(async () => {
   await handle.close()
@@ -50,10 +45,10 @@ async function configure() {
     s.llmProvider = legacyProviderSettings.llmProvider
     s.apiKeys = { ...legacyProviderSettings.apiKeys }
     s.models = { ...legacyProviderSettings.models }
-  }, store)
+  }, handle.db)
 }
 
-const read = () => settings.getSettings(store)
+const read = () => settings.getSettings(handle.db)
 
 describe('import-llm-connections data migration', () => {
   it('is registered and imports a legacy settings file and all SQL references before the global database is published', async () => {
@@ -114,7 +109,7 @@ describe('import-llm-connections data migration', () => {
     const custom = { id: 'private-model', label: 'Private', supportedEfforts: ['low' as const], disabled: true }
     await settings.mutateSettings(s => { s.modelCatalog = { anthropic: { overrides: [
       { id: disabled.id, disabled: true }, custom,
-    ] } } }, store)
+    ] } } }, handle.db)
     await runDataMigrations(handle.db, migrations)
     const row = (await handle.db.select().from(llmConnections).get())!
     expect(JSON.parse(row.modelOverrides)).toEqual(expect.arrayContaining([
@@ -163,7 +158,7 @@ describe('import-llm-connections data migration', () => {
     await settings.mutateSettings(s => {
       s.llmDefault = { llmProviderId: 'legacy-anthropic', model: 'haiku' }
       s.llmSummarizer = null
-    }, store)
+    }, handle.db)
     await importLlmConnections.run(handle.db)
     expect(await handle.db.select().from(llmConnections).all()).toHaveLength(1)
     expect((await read()).llmDefault?.model).toBe('haiku')
@@ -177,7 +172,7 @@ it('moves provider overrides to the imported connection and retains shared tool 
   await settings.mutateSettings(s => { s.customEnvVars = {
     ANTHROPIC_BASE_URL: 'https://old-proxy.example', ANTHROPIC_AUTH_TOKEN: 'old-bearer',
     AWS_ACCESS_KEY_ID: 'tool-key', AWS_REGION: 'eu-west-1', TOOL_SETTING: 'keep',
-  } }, store)
+  } }, handle.db)
   await runDataMigrations(handle.db, migrations)
   const row = (await handle.db.select().from(llmConnections).get())!
   expect(JSON.parse(row.config).runtimeEnv).toEqual({ ANTHROPIC_BASE_URL: 'https://old-proxy.example', ANTHROPIC_AUTH_TOKEN: 'old-bearer' })

@@ -4,9 +4,9 @@
  * candidates or models they go through, and never carry what they read into
  * the next operation.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
-import { MemoryAppRecordStore, installTestAppRecordStore } from '../app-records/testing/memory-record-store'
+import * as records from '../app-records/records'
 import { SETTINGS_RECORD_KEY } from '../app-records/record-schemas'
 
 const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null }))
@@ -36,15 +36,6 @@ import { getConfiguredLlmClientAndModel } from './helpers'
 import { ensureManagedPlatformConnection, syncProviderSettings } from './connection-settings'
 import { platformPlanCache } from './platform-plan-cache'
 
-/** Counts reads of the settings record, apart from the other host records. */
-class CountingStore extends MemoryAppRecordStore {
-  settingsReads = 0
-  override async read(key: string) {
-    if (key === SETTINGS_RECORD_KEY) this.settingsReads++
-    return super.read(key)
-  }
-}
-
 const admin = { userId: null, admin: true }
 const PLATFORM_TOKEN = 'plat_sa_settings_reads'
 const platformAuth = {
@@ -62,12 +53,13 @@ const platformAuth = {
 }
 
 let handle: TestDatabase
-let store: CountingStore
+/** Every read of a stored record; the settings ones are counted, apart from the other host records. */
+let reads: MockInstance<typeof records.readStoredRecord>
 
 beforeEach(async () => {
   handle = await createTestDatabase()
   state.db = handle.db
-  store = installTestAppRecordStore(new CountingStore()) as CountingStore
+  reads = vi.spyOn(records, 'readStoredRecord')
   platformPlanCache.clear()
   await mutateSettings((s) => {
     s.llmProvider = 'platform'
@@ -77,13 +69,14 @@ beforeEach(async () => {
   await ensureManagedPlatformConnection()
 })
 afterEach(async () => {
+  vi.restoreAllMocks()
   await handle.close()
 })
 
 async function readsDuring(work: () => Promise<unknown>): Promise<number> {
-  store.settingsReads = 0
+  reads.mockClear()
   await work()
-  return store.settingsReads
+  return reads.mock.calls.filter(([key]) => key === SETTINGS_RECORD_KEY).length
 }
 
 let added = 0

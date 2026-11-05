@@ -41,8 +41,8 @@ optional `settings` parameter (`effectiveModelsFrom`, `activeLlmProviderFrom`,
 `activeWebProviderFrom`, `composioAuthFrom`, `resolveSessionDefaults`,
 `getConfiguredLlmClientAndModel`, …): an operation reads once and passes the
 value down. A batch (a listing, a sweep, a page fetch, a fan-out) must not read
-once per item; tests count reads with the in-memory store (`store.calls.read`)
-and assert the count does not grow with the batch. Within one request, the
+once per item; tests count reads with a spy on `readStoredRecord` and assert
+the count does not grow with the batch. Within one request, the
 platform attribution is resolved once and shared
 (`platform-attribution/request-context.ts`); work the request leaves running
 after it ends resolves afresh, and a platform-auth write in the request drops it.
@@ -83,32 +83,26 @@ evidence that the record is absent.
 
 ## Startup
 
-Each entry point opens the database and installs the store before anything
-reads a record:
+Records are plain operations on the app database (`app-records/records.ts`):
+there is no record store to install. Each entry point already opens the
+database before anything else runs (`await openDatabase()` in
+`src/web/server.ts`, `src/main/index.ts`, the Vite dev server's
+`server-lifecycle` plugin and the perf harnesses), and every record operation
+uses that database through the `db` handle of `@shared/lib/db`, resolved when
+it runs. Reading before the open throws ("The database is not open"). A
+Cloudflare entry point opens D1 the same way, with its driver, and nothing
+else changes. Every operation also takes an optional database handle as its
+last argument: a data migration passes its own, a test passes a second
+connection. Error reporting starts before the database (so a failed boot is
+reported) and gets the tenant id afterwards (`attachErrorReportingIdentity()`);
+analytics drops events whose consent it cannot read.
 
-```ts
-installAppRecordStore(dbAppRecordStore(await openDatabase()))
-```
-
-The entry points are `src/web/server.ts`, `src/main/index.ts`, the Vite dev
-server's `server-lifecycle` plugin (`vite.config.ts`, which re-installs when
-an edit re-instantiates the module), and the perf harnesses.
-Reading before that throws. The store is the deployment's for the life of the
-process; it is never swapped per request. Error reporting starts before the
-database (so a failed boot is reported) and gets the tenant id afterwards
-(`attachErrorReportingIdentity()`); analytics drops events whose consent it
-cannot read.
-
-In unit tests every test starts with a fresh, empty in-memory store: the
-vitest setup file `app-records/testing/vitest-setup.ts` installs one before
-each test, so a test that only needs settings to work installs nothing. From
-`app-records/testing/memory-record-store.ts`:
-`installTestAppRecordStore(store?)` in a test's own `beforeEach` gets hold of
-the store (to seed or count reads) or installs another one (a database store
-on `createTestDatabase()`; `createTestDatabase({ file })` opens a shared file
-so two handles stand in for two processes); `keepAppRecordStoreAcrossTests()`
-in `beforeAll` keeps one store for a file that seeds once; a test of the
-no-store case calls `uninstallAppRecordStore()`.
+In unit tests a file that reaches settings or host records gives them a test
+database the usual way (`createTestDatabase()` and
+`vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))`), passes a
+handle explicitly (`createTestDatabase({ file })` twice on one file stands in
+for two processes), or mocks `@shared/lib/config/settings`. A test counts
+reads with a spy on `readStoredRecord`.
 
 ## Upgrading from files
 
@@ -121,9 +115,10 @@ The manifest, including what deliberately stays a file (`.vault-key`, the
 crash marker, workspaces, blobs, caches, machine-local runtime state), is in
 `app-records/legacy-host-files.ts`. A file that cannot be parsed is reported
 and skipped; the files are left on disk and nothing reads them afterwards.
-Migrations that read settings (2 and 3) start from `legacyRecordStore(db)`,
-which runs the same import first, so an install that skips versions migrates
-its real settings.
+Migrations that read settings (2 and 3) first call `importLegacyRecords(db)`,
+which runs the same import on their handle, and then pass that handle to the
+settings functions, so an install that skips versions migrates its real
+settings.
 
 ## Not here
 

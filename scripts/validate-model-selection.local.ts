@@ -22,8 +22,6 @@ import { containerHost } from '../src/shared/lib/container/container-host'
 import { createAgent, agentExists } from '../src/shared/lib/services/agent-service'
 import { getSessionJsonlPath } from '../src/shared/lib/utils/file-storage'
 import { openDatabase } from '../src/shared/lib/db'
-import { dbAppRecordStore } from '../src/shared/lib/app-records/record-store'
-import { installAppRecordStore } from '../src/shared/lib/app-records/records'
 import { readInstallSettings } from '../e2e/live/lib/install-settings.mjs'
 
 const DEV_DATA_DIR = path.join(os.homedir(), 'Library/Application Support/Superagent-dev')
@@ -73,7 +71,7 @@ async function main(): Promise<void> {
   // Inject the real key into env so the container env-var injection picks it up.
   process.env.ANTHROPIC_API_KEY = loadDevAnthropicKey()
   // Settings and the agent catalog live in this process's own database.
-  installAppRecordStore(dbAppRecordStore(await openDatabase()))
+  await openDatabase()
 
   const agentSlug = `validate-model-${Date.now()}`
   if (!(await agentExists(agentSlug))) {

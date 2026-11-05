@@ -1,6 +1,5 @@
 import crypto from 'crypto'
-import type { AppRecordStore } from '@shared/lib/app-records/record-store'
-import { appRecordStore, getOrCreateRecord } from '@shared/lib/app-records/records'
+import { getOrCreateRecord, type RecordDb } from '@shared/lib/app-records/records'
 import { AUTH_SECRET_RECORD_KEY, authSecretRecordSchema } from '@shared/lib/app-records/record-schemas'
 
 /**
@@ -17,13 +16,11 @@ import { AUTH_SECRET_RECORD_KEY, authSecretRecordSchema } from '@shared/lib/app-
  * it: sessions, and the S3 volume credentials sealed under a key derived from
  * this secret (volumes/s3-credentials.ts), depend on it staying the same.
  */
-export async function getOrCreateAuthSecret(store?: AppRecordStore): Promise<string> {
+export async function getOrCreateAuthSecret(db?: RecordDb): Promise<string> {
   const envSecret = process.env.BETTER_AUTH_SECRET
   if (envSecret) {
     return envSecret
   }
-  // The store only when it is needed: the env secret works before records are installed.
-  return getOrCreateRecord(store ?? appRecordStore(), AUTH_SECRET_RECORD_KEY, authSecretRecordSchema, () =>
-    crypto.randomBytes(32).toString('base64'),
-  )
+  return getOrCreateRecord(AUTH_SECRET_RECORD_KEY, authSecretRecordSchema, () =>
+    crypto.randomBytes(32).toString('base64'), db)
 }

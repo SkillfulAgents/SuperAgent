@@ -31,12 +31,12 @@ That execution behavior is not a contract for bootstrapping new installations.
 - Make `run()` idempotent. Completion is recorded after it returns, so a failure
   or crash can cause a retry over partially migrated data.
 - Use the supplied database handle and await database operations; the global
-  database handle is not available yet, and neither is the global app record
-  store. A migration that reads or writes settings starts from
-  `legacyRecordStore(db)` (in `0009-import-host-records.ts`), which imports
-  the legacy data-dir files first, and passes that store to the settings
-  functions (`getSettings(store)`, `mutateSettings(fn, store)`), and the
-  settings it read to any helper that would otherwise read them itself.
+  database handle is not available yet, and app records use it by default. A
+  migration that reads or writes settings first calls `importLegacyRecords(db)`
+  (in `0009-import-host-records.ts`), which imports the legacy data-dir files
+  on its handle, then passes that handle to the settings functions
+  (`getSettings(db)`, `mutateSettings(fn, db)`), and the settings it read to
+  any helper that would otherwise read them itself.
 - Preserve existing migrated records and user edits on retries. Test the legacy
   conversion, empty input, and interrupted/repeated execution.
 

@@ -5,6 +5,7 @@ import type { AgentIntegration } from '../agent-integrations/agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { chatProviders } from './providers'
 import * as threadState from './slack-thread-state'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
 type SlackMessage = { text: string; ts: string; thread_ts?: string; channel?: string; channel_type?: string }
 type MessageListener = (event: { message: Record<string, string>; say: unknown }) => Promise<void>
@@ -41,6 +42,11 @@ vi.mock('@slack/bolt', async () => {
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
+// Settings and host records are in the app database: a fresh test database per test.
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
 // Copy on load/save: a fresh connector cannot inherit the old one's Set by
 // reference. The SQLite store has separate tests that close/reopen the DB.
 function memoryStore() {
@@ -74,15 +80,17 @@ async function observe<T extends AgentIntegration>(connector: T) {
 }
 
 beforeEach(async () => {
+  handle = await createTestDatabase()
+  testDb = handle.db
   slack.listeners.length = 0
   slack.onStart = undefined
   vi.clearAllMocks()
 })
 afterEach(async () => {
   await Promise.all(connectors.splice(0).map(connector => connector.disconnect()))
+  await handle.close()
 })
 
-// Settings and host records are app records: a fresh in-memory store per test.
 describe('Slack thread participation across connector recreation (SUP-861)', () => {
   it('restores installation-scoped state through the application provider registry', async () => {
     const stores = { first: memoryStore(), other: memoryStore() }

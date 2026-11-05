@@ -1,6 +1,5 @@
 import crypto from 'crypto'
-import type { AppRecordStore } from '@shared/lib/app-records/record-store'
-import { appRecordStore, getOrCreateRecord } from '@shared/lib/app-records/records'
+import { getOrCreateRecord, type RecordDb } from '@shared/lib/app-records/records'
 import { hostContainerTokenKey, hostContainerTokenRecordSchema } from '@shared/lib/app-records/record-schemas'
 
 /**
@@ -19,9 +18,8 @@ import { hostContainerTokenKey, hostContainerTokenRecordSchema } from '@shared/l
  */
 export async function getOrCreateHostToken(
   agentSlug: string,
-  store: AppRecordStore = appRecordStore(),
+  db?: RecordDb,
 ): Promise<string> {
-  return getOrCreateRecord(store, hostContainerTokenKey(agentSlug), hostContainerTokenRecordSchema, () =>
-    `hostc_${crypto.randomBytes(32).toString('hex')}`,
-  )
+  return getOrCreateRecord(hostContainerTokenKey(agentSlug), hostContainerTokenRecordSchema, () =>
+    `hostc_${crypto.randomBytes(32).toString('hex')}`, db)
 }

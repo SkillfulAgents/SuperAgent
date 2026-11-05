@@ -7,8 +7,6 @@ import { build } from 'esbuild'
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { openDatabase, db, closeDatabase } from '../../../src/shared/lib/db'
-import { dbAppRecordStore } from '../../../src/shared/lib/app-records/record-store'
-import { installAppRecordStore } from '../../../src/shared/lib/app-records/records'
 import { agentVolumes, volumeDefinitions } from '../../../src/shared/lib/db/schema'
 import { registerAllAccountProviders } from '../../../src/shared/lib/account-providers/register'
 import { dropboxRequest, requireDropboxAccount } from '../../../src/shared/lib/volumes/dropbox-client'
@@ -579,7 +577,7 @@ async function parallel<T>(items: T[], run: (item: T) => Promise<void>, concurre
 
 async function main() {
   // The account providers read settings, which live in the database.
-  installAppRecordStore(dbAppRecordStore(await openDatabase()))
+  await openDatabase()
   try {
     registerAllAccountProviders()
     await mkdir(output, { recursive: true })

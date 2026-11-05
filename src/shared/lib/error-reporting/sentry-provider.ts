@@ -10,7 +10,6 @@
 import * as Sentry from '@sentry/node'
 import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 import { ERROR_REPORTING_INGEST_URL } from './config'
-import { getSettings } from '../config/settings'
 import { collectEnvironmentData } from './environment'
 import { APP_VERSION } from '../config/version'
 
@@ -54,6 +53,9 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
     // Consent is read fresh for every event, never from an earlier read.
     async beforeSend(event) {
       try {
+        // Loaded here, not at the top: error reporting is part of the
+        // database's boot graph, and settings reads go through the database.
+        const { getSettings } = await import('../config/settings')
         const settings = await getSettings()
         if (settings.shareErrorReports === false) {
           return null

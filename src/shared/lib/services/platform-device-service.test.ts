@@ -1,13 +1,25 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import {
   getOrCreatePlatformClientInstanceId,
   getPlatformDeviceName,
 } from './platform-device-service'
 
+// The client instance id is a host record in the app database: a fresh test database per test.
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
 describe('platform-device-service', () => {
-  afterEach(() => {
+  beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
+  })
+
+  afterEach(async () => {
     vi.restoreAllMocks()
+    await handle.close()
   })
 
   it('persists a stable client instance id', async () => {

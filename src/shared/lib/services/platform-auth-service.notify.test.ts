@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { keepAppRecordStoreAcrossTests } from '@shared/lib/app-records/testing/memory-record-store'
+import { closeDatabase, openDatabase } from '@shared/lib/db'
 
 let tempDataDir: string
 let prevDataDir: string | undefined
@@ -19,11 +19,13 @@ beforeAll(async () => {
   prevDataDir = process.env.SUPERAGENT_DATA_DIR
   tempDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'platform-notify-'))
   process.env.SUPERAGENT_DATA_DIR = tempDataDir
-  // Settings (where the platform connection lives) are app records.
-  keepAppRecordStoreAcrossTests()
+  // Settings (where the platform connection lives) are in the app database:
+  // the real one, in the temp data dir.
+  await openDatabase()
 })
 
 afterAll(async () => {
+  await closeDatabase()
   if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = prevDataDir
   await fs.promises.rm(tempDataDir, { recursive: true, force: true }).catch(() => {})

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { mutateSettings } from '@shared/lib/config/settings'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import {
   clearCloudWorkspaceRecord,
   readCloudWorkspaceRecord,
@@ -19,7 +20,20 @@ const RECORD = {
   tokenFingerprint: 'fp_1',
 }
 
+// Settings (where the record lives) are in the app database: a fresh test database per test.
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
 describe('cloud-workspace record', () => {
+  beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
+  })
+  afterEach(async () => {
+    await handle.close()
+  })
+
   it('writes, reads back and clears the record', async () => {
     expect(await writeCloudWorkspaceRecord(RECORD)).toBe(true)
     expect(await readCloudWorkspaceRecord()).toEqual(RECORD)

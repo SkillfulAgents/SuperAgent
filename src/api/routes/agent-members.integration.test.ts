@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { PNG } from 'pngjs'
 import { MAX_AGENT_MEMBERS_BATCH_SIZE, type CollaborationEvent } from '@shared/lib/agent-members-schema'
-import { keepAppRecordStoreAcrossTests } from '@shared/lib/app-records/testing/memory-record-store'
 import { mutateSettings } from '@shared/lib/config/settings'
 import { backgroundSettled } from '@shared/lib/background'
 
@@ -38,16 +37,15 @@ beforeAll(async () => {
   for (const slug of [agentSlug, secondAgent, privateAgent, emptyAgent]) {
     fs.mkdirSync(path.join(directory, 'agents', slug), { recursive: true })
   }
-  keepAppRecordStoreAcrossTests()
-  await mutateSettings((s) => {
-    s.auth = { signupMode: 'open', requireAdminApproval: false }
-  })
   vi.stubEnv('SUPERAGENT_DATA_DIR', directory)
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('AUTH_PROVIDERS_JSON', '[]')
   vi.stubEnv('BETTER_AUTH_SECRET', 'member-test-secret-0123456789abcdef0123456789abcdef')
   db = await import('@shared/lib/db')
   await db.openDatabase()
+  await mutateSettings((s) => {
+    s.auth = { signupMode: 'open', requireAdminApproval: false }
+  })
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(directory, 'superagent.db'))
   authModule = await import('@shared/lib/auth')

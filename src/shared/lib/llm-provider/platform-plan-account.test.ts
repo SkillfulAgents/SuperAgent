@@ -1,4 +1,5 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { platformPlanCache } from './platform-plan-cache'
 import { actingPlanCacheKey, actingPlanPolicy } from './platform-plan-account'
@@ -11,6 +12,10 @@ const accounts: Record<string, { plan: { name: string }; deniedModels: string[] 
   plat_token_b: { plan: { name: 'Plan B' }, deniedModels: [] },
 }
 const fetchAccount = vi.hoisted(() => vi.fn())
+
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 vi.mock('@shared/lib/services/platform-auth-service', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/services/platform-auth-service')>()),
@@ -25,10 +30,16 @@ function record(token: string, orgId: string, memberId: string): PlatformAuthSet
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  handle = await createTestDatabase()
+  testDb = handle.db
   platformPlanCache.clear()
   fetchAccount.mockReset()
   fetchAccount.mockImplementation(async (token?: string | null) => accounts[(token === undefined ? state.currentToken : token) ?? ''])
+})
+
+afterEach(async () => {
+  await handle.close()
 })
 
 it('reads the policy with the connection the operation keyed on, not one switched since', async () => {

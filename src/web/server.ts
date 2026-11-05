@@ -3,8 +3,6 @@ import { existsSync } from 'fs'
 import api from '../api'
 import { mountWebBuild } from './web-build'
 import { openDatabase } from '@shared/lib/db'
-import { dbAppRecordStore } from '@shared/lib/app-records/record-store'
-import { installAppRecordStore } from '@shared/lib/app-records/records'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { attachErrorReportingIdentity, flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
 import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
@@ -72,10 +70,9 @@ async function start() {
 
   // Then the database: nothing below runs without the schema being current,
   // and a migration failure must fail the boot rather than the first request.
-  // Settings and the other host records live in it: install their store
-  // before anything reads them, then give error reports the tenant identity.
-  const database = await openDatabase()
-  installAppRecordStore(dbAppRecordStore(database))
+  // Settings and the other host records live in it: give error reports the
+  // tenant identity now that it can be read.
+  await openDatabase()
   await attachErrorReportingIdentity()
   // Then the state the API's processes share; this one process keeps it in memory.
   await initializeLocalAppState()

@@ -7,7 +7,7 @@ import { dataMigrations } from '../schema'
 import { runDataMigrations } from './index'
 import { importHostRecords } from './0009-import-host-records'
 import { globalModelPricing } from './0002-global-model-pricing'
-import { dbAppRecordStore, type AppRecordStore } from '@shared/lib/app-records/record-store'
+import { listStoredRecords, readStoredRecord } from '@shared/lib/app-records/records'
 import {
   AUTH_SECRET_RECORD_KEY,
   PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY,
@@ -27,18 +27,19 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException }))
 const SECRET = 'a-legacy-auth-secret-that-is-long-enough='
 const TENANT = '7d1f4c1e-6a55-4d55-9a0b-1f0f2a3b4c5d'
 
+/** The migration's handle; its records are what the app reads once it boots. */
 let handle: TestDatabase
-let store: AppRecordStore
 let dir: string
 
 beforeEach(async () => {
+  // Nothing opens the app database here and `@shared/lib/db` is not mocked:
+  // a migration that read it instead of its own handle would throw.
   dir = fs.mkdtempSync(join(tmpdir(), 'host-records-import-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dir)
   vi.stubEnv('BETTER_AUTH_SECRET', '')
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   handle = await createTestDatabase()
-  store = dbAppRecordStore(handle.db)
   captureException.mockClear()
 })
 afterEach(async () => {
@@ -64,14 +65,14 @@ function writeAllLegacyFiles() {
 }
 
 async function value(key: string): Promise<unknown> {
-  const row = await store.read(key)
+  const row = await readStoredRecord(key, handle.db)
   return row && JSON.parse(row.value)
 }
 
 describe('import-host-records', () => {
   it('a fresh install has nothing to import and is recorded', async () => {
     expect(await runDataMigrations(handle.db, [importHostRecords])).toEqual([9])
-    expect(await store.list('')).toEqual([])
+    expect(await listStoredRecords('', handle.db)).toEqual([])
   })
 
   it('imports every file of the manifest unchanged and leaves the files in place', async () => {
@@ -91,20 +92,20 @@ describe('import-host-records', () => {
     expect(fs.readFileSync(join(dir, 'settings.json'), 'utf-8')).toBe(before)
 
     // The app reads the imported values, and the getters return them rather than new ones.
-    expect((await getSettings(store)).app?.theme).toBe('dark')
-    expect(await getTenantId(store)).toBe(TENANT)
-    expect(await getOrCreateAuthSecret(store)).toBe(SECRET)
-    expect(await getOrCreateHostToken('alpha', store)).toBe('hostc_alpha')
+    expect((await getSettings(handle.db)).app?.theme).toBe('dark')
+    expect(await getTenantId(handle.db)).toBe(TENANT)
+    expect(await getOrCreateAuthSecret(handle.db)).toBe(SECRET)
+    expect(await getOrCreateHostToken('alpha', handle.db)).toBe('hostc_alpha')
   })
 
   it('a retry never overwrites a value imported or edited since', async () => {
     writeAllLegacyFiles()
     await importHostRecords.run(handle.db)
-    await mutateSettings((s) => { s.app = { ...s.app, theme: 'light' } }, store)
+    await mutateSettings((s) => { s.app = { ...s.app, theme: 'light' } }, handle.db)
     // The ledger row was never written (a crash after run()): the next boot runs it again.
     expect(await handle.db.select().from(dataMigrations).all()).toEqual([])
     expect(await runDataMigrations(handle.db, [importHostRecords])).toEqual([9])
-    expect((await getSettings(store)).app?.theme).toBe('light')
+    expect((await getSettings(handle.db)).app?.theme).toBe('light')
     expect(await value(TENANT_ID_RECORD_KEY)).toBe(TENANT)
   })
 
@@ -135,14 +136,14 @@ describe('import-host-records', () => {
     expect(await runDataMigrations(handle.db, [importHostRecords])).toEqual([9])
 
     for (const key of [SETTINGS_RECORD_KEY, AUTH_SECRET_RECORD_KEY, TENANT_ID_RECORD_KEY, hostContainerTokenKey('alpha')]) {
-      expect(await store.read(key)).toBeNull()
+      expect(await readStoredRecord(key, handle.db)).toBeNull()
     }
     expect(await value(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY)).toBe('client-instance-1')
     expect(fs.readFileSync(join(dir, 'settings.json'), 'utf-8')).toBe('{"app": {"theme": "da')
     expect(captureException).toHaveBeenCalledTimes(4)
     // The old readers fell back for these files too: defaults, and new identities on first use.
-    expect((await getSettings(store)).app?.theme).toBeUndefined()
-    expect((await getOrCreateAuthSecret(store)).length).toBeGreaterThanOrEqual(32)
+    expect((await getSettings(handle.db)).app?.theme).toBeUndefined()
+    expect((await getOrCreateAuthSecret(handle.db)).length).toBeGreaterThanOrEqual(32)
   })
 
   it('an install that skips versions: the pricing move works on the imported legacy settings', async () => {
@@ -151,7 +152,7 @@ describe('import-host-records', () => {
     }))
     // Migration 2 runs before 9 and imports settings.json itself; 9 then finds it already there.
     expect(await runDataMigrations(handle.db, [globalModelPricing, importHostRecords])).toEqual([2, 9])
-    const settings = await getSettings(store)
+    const settings = await getSettings(handle.db)
     expect(settings.modelCatalog?.generic.overrides).toEqual([{ id: 'custom-model', label: 'Custom' }])
     expect(settings.modelPricing).toEqual({ 'custom-model': { inputPerMtok: 1, outputPerMtok: 2 } })
   })

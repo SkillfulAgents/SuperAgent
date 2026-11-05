@@ -1,5 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { ParallelWebProvider } from './parallel-web-provider'
+
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 const provider = new ParallelWebProvider()
 const defaultResults = [
@@ -26,8 +31,15 @@ function mockMcp(options?: { sse?: boolean; error?: boolean; missingTool?: boole
   return fetchMock
 }
 
-// The key getters read settings (empty here): app records.
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); result = { results: defaultResults } })
+// The key getters read settings (empty here): a fresh test database per test.
+beforeEach(async () => {
+  handle = await createTestDatabase()
+  testDb = handle.db
+})
+afterEach(async () => {
+  vi.unstubAllGlobals(); vi.unstubAllEnvs(); result = { results: defaultResults }
+  await handle.close()
+})
 
 it.each([false, true])('maps useful normalized hits over JSON/SSE (SSE=%s) without credentials', async (sse) => {
   vi.stubEnv('PARALLEL_API_KEY', 'inherited-test-key')
