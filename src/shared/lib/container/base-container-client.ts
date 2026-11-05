@@ -26,7 +26,7 @@ import type {
   StopResult,
   StreamMessage,
 } from './types'
-import { ContainerConflictError, ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
+import { ContainerConflictError, ContainerNotFoundError, type ForkSessionOptions, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
   ObserveUnexpectedDeathInput,
   RuntimeDeathProbe,
@@ -1776,8 +1776,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return true
   }
 
-  async forkSession(sessionId: string): Promise<{ id: string } | null> {
-    const response = await this.fetch(`/sessions/${sessionId}/fork`, { method: 'POST' })
+  async forkSession(sessionId: string, options: ForkSessionOptions = {}): Promise<{ id: string } | null> {
+    const response = await this.fetch(`/sessions/${sessionId}/fork`, options.upToMessageId
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ upToMessageId: options.upToMessageId }) }
+      : { method: 'POST' })
     if (response.status === 404) {
       const text = await response.text().catch(() => '')
       const trimmed = text.trim()

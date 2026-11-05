@@ -254,6 +254,12 @@ export interface StopResult {
 // Only 'unreachable' is a proven block; 'unknown' must never fail a launch.
 export type HostPortProbeResult = 'reachable' | 'unreachable' | 'unknown'
 
+/** How much of a session a fork copies. */
+export interface ForkSessionOptions {
+  /** Copy up to and including this transcript entry; the whole transcript when absent. */
+  upToMessageId?: string
+}
+
 export interface ContainerClient {
   // Lifecycle management
   // Returns the state already proven by the runtime's health gate. All
@@ -324,7 +330,7 @@ export interface ContainerClient {
   // null = the container predates the fork endpoint (plain 404). Throws
   // ContainerNotFoundError when the session is gone (JSON 404),
   // ContainerConflictError when the source is mid-turn.
-  forkSession(sessionId: string): Promise<{ id: string } | null>
+  forkSession(sessionId: string, options?: ForkSessionOptions): Promise<{ id: string } | null>
   // Ask the container to resume this session's CLI ahead of its next message
   // (it may have been evicted while idle). Best-effort and never throws:
   // false when the container predates the endpoint (plain 404), does not know

@@ -68,6 +68,13 @@ describe('SessionManager.forkSession', () => {
     fs.rmSync(workDir, { recursive: true, force: true })
   })
 
+  it('forks from a message: the SDK copies up to and including that entry', async () => {
+    sdkFork.mockResolvedValue({ sessionId: 'fork-2' })
+
+    expect(await manager.forkSession('src-1', { upToMessageId: 'entry-9' })).toBe('fork-2')
+    expect(sdkFork).toHaveBeenCalledWith('src-1', { dir: '/workspace', upToMessageId: 'entry-9' })
+  })
+
   it('copies the transcript via the SDK and records the new id with a checked write', async () => {
     sdkFork.mockResolvedValue({ sessionId: 'fork-1' })
 

@@ -313,7 +313,7 @@ function createSessionOps(
         throw error instanceof MessageNotAcceptedError ? notAcceptedError(error) : error
       }),
     start: (request) => delivery.start(request),
-    fork: async (sessionId) => (await client()).forkSession(sessionId),
+    fork: async (sessionId, options) => (await client()).forkSession(sessionId, options),
     deleteLive: async (sessionId) => (await client()).deleteSession(sessionId),
     warm: async (sessionId) => (await client()).warmSession(sessionId),
 

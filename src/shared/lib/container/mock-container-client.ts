@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { z } from 'zod'
-import { ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
+import { ContainerNotFoundError, type ForkSessionOptions, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -3662,17 +3662,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
    * SDK does (fresh uuids, parent chain remapped, `forkedFrom` backlink on
    * every line) and register a cold session so the fork is sendable.
    */
-  async forkSession(sessionId: string): Promise<{ id: string } | null> {
+  async forkSession(sessionId: string, options: ForkSessionOptions = {}): Promise<{ id: string } | null> {
     const source = this.sessions.get(sessionId)
     if (!source) throw new ContainerNotFoundError('Session not found')
 
     const agentSlug = this.config.agentId
     const sourcePath = getSessionJsonlPath(agentSlug, sessionId)
     const newId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-    const entries = (await readJsonlFile(sourcePath)).flatMap((raw) => {
+    const allEntries = (await readJsonlFile(sourcePath)).flatMap((raw) => {
       const parsed = mockJsonlLineSchema.safeParse(raw)
       return parsed.success ? [parsed.data] : []
     })
+    // As the SDK's upToMessageId: up to and including that entry.
+    const cut = options.upToMessageId ? allEntries.findIndex((entry) => entry.uuid === options.upToMessageId) : -1
+    const entries = cut === -1 ? allEntries : allEntries.slice(0, cut + 1)
     // Two passes, like the SDK: assign fresh ids, then rewrite parent links.
     const idMap = new Map<string, string>()
     for (const entry of entries) idMap.set(entry.uuid, randomUUID())

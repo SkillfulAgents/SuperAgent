@@ -1,4 +1,4 @@
-import { ChevronRight, MessageCircle } from 'lucide-react'
+import { ChevronRight, Split, Loader2, MessageCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiMessage } from '@shared/lib/types/api'
@@ -7,6 +7,7 @@ import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useOptionalThread } from '@renderer/context/thread-context'
 import { useThreadSummaries } from '@renderer/hooks/use-session-threads'
+import { useForkSession } from '@renderer/hooks/use-sessions'
 import { formatShortAgo } from '@renderer/lib/message-time'
 import { CUTOUT_BEFORE_FACE, MEMBER_FACE_OVERLAP_CLASS, MEMBER_FACE_SIZE } from '@renderer/components/agents/sidebar-member-indicator'
 
@@ -14,6 +15,8 @@ interface UserMessageActionsProps {
   message: ApiMessage
   agentSlug: string
   sessionId: string
+  /** A turn is running: a fork waits for it to finish. */
+  isSessionActive?: boolean
 }
 
 const ICON_BUTTON_CLASS = cn(
@@ -24,36 +27,50 @@ const ICON_BUTTON_CLASS = cn(
 
 /**
  * Under a person's message in a session: its thread's repliers and count once
- * it has replies, or until then a reply-in-thread icon on hover, named by a
- * quick tooltip. Interactive session views only (they hold the
+ * it has replies, then icons on hover: reply in thread (until the thread has
+ * replies, when the count opens it) and fork the conversation from here, each
+ * named by a quick tooltip. Interactive session views only (they hold the
  * ThreadProvider); people who can only view get the thread count alone.
  */
-export function UserMessageActions({ message, agentSlug, sessionId }: UserMessageActionsProps) {
+export function UserMessageActions({ message, agentSlug, sessionId, isSessionActive = false }: UserMessageActionsProps) {
   const thread = useOptionalThread()
   const summary = useThreadSummaries(agentSlug, sessionId).get(message.id)
+  const fork = useForkSession()
   if (!thread) return null
   const isOpen = thread.isOpen && thread.parent?.id === message.id
   // A thread hangs off a message a teammate wrote: the host attributes those (auth mode).
   const canThread = !!message.sender
+  const forking = fork.isPending && fork.variables?.fromMessageId === message.id
 
   return (
     <div className="flex items-center">
       {summary && <ThreadSummaryButton summary={summary} isOpen={isOpen} onOpen={() => thread.openThread(message)} />}
-      {thread.canReply && canThread && !summary && (
+      {thread.canReply && (
         // Takes no room at rest, so the row sits flush with the bubble; on hover
         // (or focus) it slides in from the right and moves the row over.
         <span
           className={cn(
             'flex items-center gap-0.5 overflow-hidden transition-all duration-200',
-            isOpen
+            isOpen || forking
               ? 'ml-0.5 max-w-16 opacity-100'
               : 'max-w-0 opacity-0 focus-within:ml-0.5 focus-within:max-w-16 focus-within:opacity-100 group-hover/message:ml-0.5 group-hover/message:max-w-16 group-hover/message:opacity-100',
           )}
         >
           {/* With replies, the count already opens the thread. */}
           <TooltipProvider delayDuration={ICON_TOOLTIP_DELAY_MS}>
-            <IconAction label="Reply in thread" onClick={() => thread.openThread(message)} testId="reply-in-thread" opensThread>
-              <MessageCircle className="h-3.5 w-3.5" aria-hidden />
+            {canThread && !summary && (
+              <IconAction label="Reply in thread" onClick={() => thread.openThread(message)} testId="reply-in-thread" opensThread>
+                <MessageCircle className="h-3.5 w-3.5" aria-hidden />
+              </IconAction>
+            )}
+            <IconAction
+              label="Fork conversation from here"
+              tooltip={isSessionActive ? 'Fork once the agent has finished' : undefined}
+              onClick={() => fork.mutate({ sessionId, agentSlug, fromMessageId: message.id })}
+              disabled={isSessionActive || fork.isPending}
+              testId="fork-from-message"
+            >
+              {forking ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <Split className="h-3.5 w-3.5" aria-hidden />}
             </IconAction>
           </TooltipProvider>
         </span>

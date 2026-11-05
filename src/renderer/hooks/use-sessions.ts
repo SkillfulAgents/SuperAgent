@@ -301,8 +301,11 @@ export function useForkSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/fork`, { method: 'POST' })
+    /** `fromMessageId` forks from that message: it and the agent's reply to it, nothing after. */
+    mutationFn: async ({ sessionId, agentSlug, fromMessageId }: { sessionId: string; agentSlug: string; fromMessageId?: string }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/fork`, fromMessageId
+        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fromMessageId }) }
+        : { method: 'POST' })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
         let message = 'Failed to fork session'

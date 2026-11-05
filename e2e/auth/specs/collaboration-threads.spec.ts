@@ -113,6 +113,22 @@ test('a mention can be answered in a thread that tells everyone in it, stays out
     expect(await transcript()).toContain(`**${graham.name}:**`)
     expect(await transcript()).toContain('Looks good, but the annual price is off by $10')
     await expect(page.getByTestId('message-assistant')).toHaveCount(assistantReplies + 1, { timeout: 30_000 })
+
+    // Forking from the first message copies it and the agent's reply, and
+    // nothing after: the mention and the thread's hand-off stay behind.
+    const first = page.getByTestId('message-user').filter({ hasText: 'Draft the launch plan' })
+    // By keyboard: the row opens on focus as on hover, and the transcript keeps
+    // itself at the live edge, which a pointer aimed at the top keeps missing.
+    await first.getByTestId('fork-from-message').focus()
+    await page.keyboard.press('Enter')
+    await expect(page).not.toHaveURL(new RegExp(`/sessions/${sessionId}$`), { timeout: 15_000 })
+    const forkId = new URL(page.url()).pathname.split('/').pop()!
+    const { messages: forked } = await (await page.request.get(`${endpoint}/sessions/${forkId}/messages?limit=50`)).json() as { messages: Array<{ type?: string; content?: { text?: string } }> }
+    const forkedText = forked.map((message) => message.content?.text ?? '').join('\n')
+    expect(forkedText).toContain('Draft the launch plan')
+    expect(forkedText).toContain('This is a mock response')
+    expect(forkedText).not.toContain('can you check the pricing section?')
+    expect(forkedText).not.toContain('were side-chatting in a thread')
   } finally {
     for (const context of contexts) await context.close()
   }
