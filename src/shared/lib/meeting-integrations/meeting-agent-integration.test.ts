@@ -26,7 +26,7 @@ const { backgroundSettled } = await import('../background')
 
 const record: AgentIntegrationRecord = {
   id: 'integration', agentSlug: 'agent', provider: 'recall', name: null, config: '{}', status: 'active', errorMessage: null,
-  createdByUserId: 'owner', llmProviderId: null, model: null, effort: null, speed: null, createdAt: new Date(), updatedAt: new Date(),
+  createdByUserId: 'owner', llmProviderId: null, model: null, effort: null, speed: null, createdAt: new Date(), version: 0, updatedAt: new Date(),
 }
 
 class FakeHost implements MeetingBotHost {
