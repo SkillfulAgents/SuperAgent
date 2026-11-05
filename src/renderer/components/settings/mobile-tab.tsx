@@ -129,7 +129,7 @@ function PairingQrCard() {
         </div>
       ) : (
         <div className="space-y-3">
-          <div className="inline-flex flex-col items-center gap-2 rounded-lg border p-4 bg-white">
+          <div className="inline-flex flex-col items-center gap-2 rounded-card border p-4 bg-white">
             {deepLink && <QRCode value={deepLink} size={192} />}
           </div>
           <p className="text-xs text-muted-foreground">
@@ -306,7 +306,7 @@ function PairedDevicesList() {
           <AlertDescription>{revokeError}</AlertDescription>
         </Alert>
       )}
-      <div className="rounded-md border overflow-x-auto">
+      <div className="rounded-card border overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
@@ -325,7 +325,7 @@ function PairedDevicesList() {
                     <Smartphone className="h-4 w-4 text-muted-foreground" />
                     {device.deviceName || 'Mobile device'}
                     {device.isCurrent && (
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      <span className="rounded-item bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                         current
                       </span>
                     )}

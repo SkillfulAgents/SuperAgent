@@ -26,7 +26,7 @@ export function IntegrationList({ children, className, variant = 'list' }: Integ
     )
   }
   return (
-    <div className={cn('rounded-xl border bg-background divide-y divide-border/50 overflow-hidden', className)}>
+    <div className={cn('rounded-card border bg-background divide-y divide-border/50 overflow-hidden', className)}>
       {children}
     </div>
   )
@@ -83,7 +83,7 @@ interface IntegrationRowProps extends Omit<HTMLAttributes<HTMLDivElement>, 'titl
 }
 
 /**
- * Standard row used inside <IntegrationList>. 7x7 rounded-md bg-muted icon,
+ * Standard row used inside <IntegrationList>. 7x7 rounded-control bg-muted icon,
  * text-xs name, text-[11px] muted subtitle, optional right-hand slot (Switch,
  * badge, spinner, etc.).
  *
@@ -128,7 +128,7 @@ export const IntegrationRow = forwardRef<HTMLDivElement, IntegrationRowProps>(fu
       style={viewTransitionName ? ({ ...style, viewTransitionName } as CSSProperties) : style}
       className={cn(
         'group relative py-3 px-4 transition-colors',
-        boxed && 'rounded-lg border bg-background',
+        boxed && 'rounded-card border bg-background',
         interactive && 'hover:bg-muted/50 cursor-pointer',
         (disabled || muted) && 'opacity-50',
         className,
@@ -150,7 +150,7 @@ export const IntegrationRow = forwardRef<HTMLDivElement, IntegrationRowProps>(fu
     >
       <div className="flex items-center gap-3">
         {icon !== null && (
-          <div className="h-7 w-7 rounded-md bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
+          <div className="h-7 w-7 rounded-control bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
             {icon ?? (
               <ServiceIcon
                 slug={iconSlug}

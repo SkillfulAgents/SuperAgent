@@ -152,9 +152,9 @@ export function AudioRenderer({ url, filePath, agentSlug }: AudioRendererProps) 
 
   return (
     <div ref={containerRef} className="relative flex min-h-full items-start justify-center p-5" data-testid="audio-renderer" data-media-player>
-      <div className="w-full max-w-[720px] rounded-xl border border-border/60 bg-card/70 p-4 shadow-sm sm:p-5">
+      <div className="w-full max-w-[720px] rounded-card border border-border/60 bg-card/70 p-4 shadow-sm sm:p-5">
         <div className="mb-5 flex items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-control bg-primary/10 text-primary">
             <AudioLines className="h-5 w-5" />
           </div>
           <div className="min-w-0">
@@ -181,7 +181,7 @@ export function AudioRenderer({ url, filePath, agentSlug }: AudioRendererProps) 
         />
 
         <div
-          className="group relative h-28 rounded-lg border border-border/60 bg-muted/30 focus-within:ring-1 focus-within:ring-primary"
+          className="group relative h-28 rounded-card border border-border/60 bg-muted/30 focus-within:ring-1 focus-within:ring-primary"
           data-testid="audio-waveform"
           onPointerMove={enabled ? handlePointerMove : undefined}
           onPointerLeave={enabled ? scheduleHoverClose : undefined}
@@ -267,7 +267,7 @@ export function AudioRenderer({ url, filePath, agentSlug }: AudioRendererProps) 
               >
                 <button
                   type="button"
-                  className="pointer-events-auto flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground shadow-md hover:bg-primary/90"
+                  className="pointer-events-auto flex items-center gap-1 rounded-item bg-primary px-2 py-1 text-xs font-medium text-primary-foreground shadow-md hover:bg-primary/90"
                   onClick={event => {
                     event.stopPropagation()
                     const timeline = timelineRef.current
@@ -309,7 +309,7 @@ export function AudioRenderer({ url, filePath, agentSlug }: AudioRendererProps) 
               type="button"
               onClick={() => open()}
               disabled={isOpen}
-              className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
+              className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap rounded-item border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
               data-testid="audio-add-comment"
             >
               <MessageSquarePlus className="h-3.5 w-3.5" />

@@ -141,8 +141,8 @@ export function ActivityCard({
         className={cn(
           'relative max-h-[30vh] overflow-y-auto border border-border/70 bg-background/85 px-3 pt-3 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]',
           isAwaitingInput || detached
-            ? 'rounded-2xl pb-3'
-            : 'rounded-t-2xl border-b-0 pb-8',
+            ? 'rounded-dialog pb-3'
+            : 'rounded-t-dialog border-b-0 pb-8',
         )}
         data-testid="activity-indicator"
       >
@@ -169,7 +169,7 @@ export function ActivityCard({
               onClick={() => setIsCollapsed((collapsed) => !collapsed)}
               // ml-auto for the rows with nothing between the status and here —
               // the ticker's flex-1 already pushes it right whenever it is shown.
-              className="-mr-1 ml-auto shrink-0 cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="-mr-1 ml-auto shrink-0 cursor-pointer rounded-icon p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-expanded={!isCollapsed}
               aria-label={isCollapsed ? 'Expand activity details' : 'Collapse activity details'}
             >
@@ -503,7 +503,7 @@ function ComputerUseRow({ computerUse, tracerRow }: {
           onClick={computerUse.onRevoke}
           disabled={computerUse.revoking}
           className={cn(
-            'shrink-0 cursor-pointer rounded p-0.5 transition-colors',
+            'shrink-0 cursor-pointer rounded-icon p-0.5 transition-colors',
             computerUse.revokeError
               ? 'text-destructive hover:bg-destructive/10'
               : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -593,7 +593,7 @@ function StopTaskButton({ taskId, label, onStop }: {
         onClick={handleClick}
         disabled={stopping}
         className={cn(
-          'shrink-0 cursor-pointer rounded p-0.5 transition-colors',
+          'shrink-0 cursor-pointer rounded-icon p-0.5 transition-colors',
           failed
             ? 'text-destructive hover:bg-destructive/10'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground',

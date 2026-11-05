@@ -76,7 +76,7 @@ describe('InboundXAgentView', () => {
 
     // The section rows live directly in the one outer card; there is no nested
     // rounded/bordered IntegrationList box.
-    expect(card.querySelectorAll('.rounded-xl.border')).toHaveLength(0)
+    expect(card.querySelectorAll('.rounded-card.border')).toHaveLength(0)
   })
 
   it('opens the selected run', () => {

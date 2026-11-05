@@ -25,7 +25,6 @@ import {
   getIntegration,
   updateIntegrationStatus,
   getIntegrationSession,
-  getIntegrationSessionBySessionId,
   createIntegrationSession,
   updateIntegrationSessionName,
   archiveIntegrationSession,
@@ -1526,83 +1525,6 @@ export class AgentIntegrationManager {
     background(agentRegistry.get(agentSlug).container.start().catch(() => {
       // Best-effort — if it fails, the normal message flow will handle the error
     }), { name: 'integration-manager.pre-warm-container' })
-  }
-
-  // ── Agent-scoped requests (proxy review requests) ─────────────────
-
-  /**
-   * A request an actor opened, as it told the host (`user_request_created`).
-   * Review requests may be agent-scoped without a session stream; this routes
-   * their Allow/Deny cards. Resolutions use the session stream. The host calls
-   * it directly for every such event, so a card never waits on a feed hint
-   * reaching a listener. Never rejects.
-   */
-  async handleRequestCreated(event: unknown): Promise<void> {
-    try {
-      await this.routeAgentScopedRequest(event)
-    } catch (err) {
-      console.error('[AgentIntegrationManager] Error handling an agent-scoped request:', err)
-      reportError(err, 'global-notification')
-    }
-  }
-
-  private async routeAgentScopedRequest(event: unknown): Promise<void> {
-    const data = event as Record<string, unknown>
-    // Only an opened request comes this way: its scope may omit a session.
-    // Resolutions with a session scope already arrive on that session's stream;
-    // routing them here as well would deliver each resolution twice.
-    if (data.type !== 'user_request_created') return
-    const parsed = integrationRequestEventSchema.safeParse(event)
-    if (!parsed.success || parsed.data.type !== 'user_request_created') return
-    const request = parsed.data.request
-    if (request.scope.sessionId) return
-
-    // Non-review kinds return null here and are left to the session stream —
-    // they arrive on BOTH wires, so rendering them here too would double-send.
-    const isReview = request.kind === 'proxy_review' || request.kind === 'x_agent_review'
-    const agentSlug = request.scope.agentSlug
-    if (!isReview || !agentSlug) return
-    // Every route below delivers to a followed chat; with none there is no one to show.
-    if (this.chatSessions.size === 0) return
-
-    // A proxied call carries no session of its own, so the scope has none to
-    // route by; the agent's active session is the same fallback the review
-    // notification uses, and it is what gives the card's link a live session
-    // to open rather than the agent home.
-    const sessionId =
-      request.scope.sessionId ?? (await agentRegistry.get(agentSlug).live()).activeSessionIds[0]
-
-    // If we know the sessionId, send only to the chat session that owns it
-    if (sessionId) {
-      try {
-        const chatSession = await getIntegrationSessionBySessionId(agentSlug, sessionId)
-        if (chatSession) {
-          const key = `${chatSession.integrationId}:${chatSession.externalId}`
-          const managed = this.chatSessions.get(key)
-          if (managed && (managed.connector.definition.family === 'chat' || request.scope.sessionId === managed.sessionId)) {
-            await this.deliver(managed.integration.id, managed.chatId, { type: 'request-opened', request }, sessionId)
-            return
-          }
-        }
-      } catch (err) {
-        console.error('[AgentIntegrationManager] Error routing approval to session:', err)
-        reportError(err, 'route-approval', { agentSlug, sessionId })
-      }
-    }
-
-    // Fallback: no sessionId match — send to first active session for this agent
-    for (const [, conn] of this.connections) {
-      if (conn.integration.agentSlug !== agentSlug || conn.connector.definition.family !== 'chat') continue
-      for (const [key, session] of this.chatSessions) {
-        if (!key.startsWith(`${conn.integration.id}:`)) continue
-        try {
-          await this.deliver(session.integration.id, session.chatId, { type: 'request-opened', request })
-        } catch (err) {
-          console.error('[AgentIntegrationManager] Failed to send approval card:', err)
-        }
-        return // Only send to first match
-      }
-    }
   }
 
   // ── SSE event handling ────────────────────────────────────────────

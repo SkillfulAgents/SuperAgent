@@ -357,7 +357,7 @@ describe('processSSEEvent', () => {
       expect(getMock(managed).sentCards.length).toBe(0)
     })
 
-    it('stays quiet for a review — those are agent-scoped and render off the global channel', async () => {
+    it('stays quiet for a review — its Allow/Deny card is sent by the connector', async () => {
       await processSSEEvent(managed, createdEvent('proxy_review', { toolkit: 'github', displayText: 'Allow?' }))
       expect(getMock(managed).sentCards.length).toBe(0)
     })

@@ -762,8 +762,11 @@ When using request tools (request_secret, request_file, request_connected_accoun
 ## Mounted Drives
 
 <%#drives%>
-- <%nameJson%> at <%pathJson%><%#readOnly%> (read only)<%/readOnly%>
+- <%nameJson%> at <%pathJson%><%#readOnly%> (read only)<%/readOnly%><%#sourceJson%>: <%sourceJson%><%/sourceJson%>
 <%/drives%>
+<%#driveNotes%>
+<%.%>
+<%/driveNotes%>
 These are the only drives mounted besides `/workspace`. Keep this agent's own work in `/workspace`.
 <%#mountIndexes%>
 

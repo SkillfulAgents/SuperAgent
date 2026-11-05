@@ -209,7 +209,7 @@ function Participant({ agentSlug, agentAvatar, sessionId, meeting, token }: Part
         </div>
       ) : image ? (
         <div className="flex items-center gap-10">
-          <img key={image.inlineUrl} src={image.inlineUrl ?? undefined} alt={image.name} className="max-h-[380px] max-w-[760px] rounded-xl object-contain shadow-2xl" data-testid="meeting-image" />
+          <img key={image.inlineUrl} src={image.inlineUrl ?? undefined} alt={image.name} className="max-h-[380px] max-w-[760px] rounded-card object-contain shadow-2xl" data-testid="meeting-image" />
           {orb(160)}
         </div>
       ) : orb(240)}

@@ -42,7 +42,7 @@ export function FileIconTile({ filename, folder = false, tinted = true, classNam
   const tint = tinted && !folder ? TINTS[fileCategory(filename)] : NEUTRAL
   return (
     <div
-      className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-black/5 bg-muted/50 dark:border-white/5', tint, className)}
+      className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-control border border-black/5 bg-muted/50 dark:border-white/5', tint, className)}
       // Reports the hue that was actually applied, not the prop: folders and
       // the categories that map to NEUTRAL render untinted whatever is asked.
       data-tinted={tint !== NEUTRAL || undefined}

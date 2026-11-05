@@ -80,7 +80,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
       <div className="mt-3 px-4">
         {volumes.operationError && <p role="alert" className="mb-2 text-xs text-destructive">{volumes.operationError}</p>}
         {volumes.pendingRestart ? (
-          <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
+          <div className="flex flex-col gap-1 rounded-card bg-orange-50 dark:bg-orange-950/30 p-2.5">
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-600 dark:text-orange-400 flex-1">
                 Restart your agent to apply recent changes.
@@ -260,7 +260,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             <PopoverContent align="end" className="w-44 p-1" onClick={(e) => e.stopPropagation()}>
               {canOpenInFileManager && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => {
                     e.stopPropagation()
                     handleOpenInFinder()
@@ -273,7 +273,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
               )}
               {hostPath && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => {
                     e.stopPropagation()
                     handleCopyPath()
@@ -315,7 +315,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                 </button>
               )}
               {canRemove && <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={(e) => {
                   e.stopPropagation()
                   setShowDeleteDialog(true)
