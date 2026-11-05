@@ -1,4 +1,4 @@
-import { CronExpressionParser } from 'cron-parser'
+import { parseScheduleCron } from './parse-schedule-cron'
 import type {
   ActivityOutcome,
   CronActivityPoint,
@@ -130,7 +130,7 @@ export function buildCronActivitySeries(input: CronActivityInput): CronActivityP
 
   const planned: Date[] = []
   try {
-    const expression = CronExpressionParser.parse(input.task.scheduleExpression, {
+    const expression = parseScheduleCron(input.task.scheduleExpression, {
       tz: input.task.timezone || 'UTC',
       currentDate: end,
     })
@@ -140,7 +140,10 @@ export function buildCronActivitySeries(input: CronActivityInput): CronActivityP
       planned.push(previous)
     }
   } catch {
-    return []
+    // A later iteration can fail at a DST discontinuity even after yielding
+    // valid recent slots. Keep those slots and their recorded outcomes rather
+    // than blanking the whole chart. A parse/first-iteration failure still
+    // leaves planned empty; do not invent slots beyond the failed iteration.
   }
 
   // Sessions are matched to planned slots by exact ISO-string equality:

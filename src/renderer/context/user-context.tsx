@@ -1,9 +1,11 @@
-import { createContext, useContext, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { createContext, useContext, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
+import { forgetLoginValues } from '@shared/lib/tools/request-login/login-request-store'
 import { apiFetch, clearRedirectStash, markDeliberateSignOut, clearDeliberateSignOut } from '@renderer/lib/api'
 import { isAuthMode } from '@renderer/lib/auth-mode'
 import { onCloudSessionRejected } from '@renderer/lib/cloud-session'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentRole } from '@shared/lib/types/agent'
 
@@ -22,13 +24,32 @@ interface User {
   mustChangePassword?: boolean
 }
 
+/** A cloud workspace with no session because it can't be reached right now, not because it has none. */
+export type CloudWait = 'starting' | 'reconnecting'
+
+const CLOUD_WAIT_RETRY_MS = 2_500
+
+/**
+ * A failed `get-session` that is not a 401 means the workspace did not answer
+ * (restarting, waking, network), so the session is unknown rather than gone.
+ * The router's not-ready body carries the route state.
+ */
+function cloudWaitFor(error: { status?: number; state?: unknown } | null | undefined): CloudWait | null {
+  if (!error || error.status === 401) return null
+  return error.state === 'waking' || error.state === 'provisioning' ? 'starting' : 'reconnecting'
+}
+
 export interface UserContextValue {
+  /** Changes after every identity transition, including signing back into the same account. */
+  authGeneration: object
   user: User | null
   isAuthenticated: boolean
   isAdmin: boolean
   isAuthMode: boolean
   isPending: boolean
   mustChangePassword: boolean
+  /** Set while a cloud workspace can't be reached; its session is retried until it answers. */
+  cloudWait: CloudWait | null
   agentRole: (agentSlug: string) => AgentRole | null
   agentMemberCount: (agentSlug: string) => number
   canAccessAgent: (agentSlug: string) => boolean
@@ -104,37 +125,32 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const session = useAuthSession()
   const queryClient = useQueryClient()
   const sessionUser = authMode ? (session.data?.user as User | undefined) ?? null : null
-  const isPending = authMode ? session.isPending : false
+  const userId = sessionUser?.id ?? null
+  const [identity, setIdentity] = useState(() => ({ userId, generation: {} }))
+  const identityChanged = identity.userId !== userId
+  const isPending = authMode && (session.isPending || identityChanged)
 
   const isAuthenticated = authMode && sessionUser !== null
   const isAdmin = isAuthenticated && sessionUser?.role === 'admin'
   const mustChangePassword = isAuthenticated && sessionUser?.mustChangePassword === true
 
-  // Clear the React Query cache whenever an authenticated session is LOST — the
-  // manual signOut() below does this, but the 401 auto-sign-out in api.ts calls
-  // better-auth's signOut directly and bypasses it. Without this, the agent route
-  // loader's ensureQueryData could serve a previous user's warm-cached agent to
-  // the next user on a shared tab without a server re-check. Guard
-  // on a genuine true→false transition so a cold signed-out load never clears.
-  //
-  // Caveat: better-auth nulls session.data on ANY /get-session error (no retry),
-  // so a transient network blip can also flip isAuthenticated false and clear the
-  // cache. Acceptable: AuthGate already swaps the whole app to <AuthPage/> on that
-  // same data=null, so the only incremental cost is a cold-cache reload (vs warm
-  // re-render) once the session refetch re-succeeds — not a correctness issue.
-  const wasAuthenticatedRef = useRef(false)
-  useEffect(() => {
+  // A session refresh can replace A directly with B, without an observed logout.
+  // Keep AuthGate mounted (it remembers whether this was a cold signed-out load),
+  // but publish pending and disable our own queries until the old cache is gone.
+  // The following render rebinds the query observers to the new cache entries.
+  useLayoutEffect(() => {
+    if (identityChanged) {
+      queryClient.clear()
+      forgetLoginValues()
+      setIdentity({ userId, generation: {} })
+    }
     if (isAuthenticated) {
-      wasAuthenticatedRef.current = true
       // Re-arm the apiFetch 401 auto-sign-out once a session is live again —
       // signOut() below latches it off so trailing 401s from a deliberate
       // sign-out can't re-stash the signed-out user's URL.
       clearDeliberateSignOut()
-    } else if (wasAuthenticatedRef.current) {
-      wasAuthenticatedRef.current = false
-      queryClient.clear()
     }
-  }, [isAuthenticated, queryClient])
+  }, [identityChanged, userId, isAuthenticated, queryClient])
 
   // A cloud 401 must reach the session, or the UI keeps claiming to be signed in
   // while every query fails behind it (signing out is not an option there — see
@@ -150,31 +166,46 @@ export function UserProvider({ children }: { children: ReactNode }) {
     })
   }, [authMode])
 
+  // Held across a retry: a refetch clears `error` while it is in flight, and
+  // dropping the wait screen for that moment would flash the loading screen.
+  const remote = authMode && targetIsRemote()
+  const sessionError = (session as { error?: { status?: number; state?: unknown } | null }).error
+  const settled = remote && !session.isPending
+  const settledWait = settled && sessionUser === null ? cloudWaitFor(sessionError) : null
+  const [lastWait, setLastWait] = useState<CloudWait | null>(null)
+  if (settled && lastWait !== settledWait) setLastWait(settledWait)
+  const cloudWait = !remote ? null : settled ? settledWait : lastWait
+  useEffect(() => {
+    if (!cloudWait || session.isPending) return
+    const timer = setTimeout(() => void refetchSessionRef.current?.(), CLOUD_WAIT_RETRY_MS)
+    return () => clearTimeout(timer)
+  }, [cloudWait, session.isPending])
+
   // Fetch agent roles when authenticated
-  const { data: agentRoles, isFetched: rolesFetched } = useAgentRoles(isAuthenticated)
-  const rolesReady = !authMode || !isAuthenticated || rolesFetched
+  const { data: agentRoles, isFetched: rolesFetched } = useAgentRoles(isAuthenticated && !identityChanged)
+  const rolesReady = !authMode || !isAuthenticated || (!identityChanged && rolesFetched)
 
   // `agentRoles` is keyed by the canonical agent id, but callers pass whatever
   // slug they have on hand — frequently the URL **display slug** (`{name}-{id}`),
   // which never matches an id-keyed entry. Resolve to the canonical id first so a
   // route-derived slug doesn't silently read as "no role" (false view-only).
-  const { data: agents } = useResolverAgents(isAuthenticated)
+  const { data: agents } = useResolverAgents(isAuthenticated && !identityChanged)
   const agentRole = useCallback(
     (agentSlug: string): AgentRole | null => {
-      if (!authMode) return null
+      if (!authMode || identityChanged) return null
       const id = resolveRouteAgentId(agentSlug, agents) ?? agentSlug
       return agentRoles?.[id]?.role ?? null
     },
-    [authMode, agentRoles, agents],
+    [authMode, identityChanged, agentRoles, agents],
   )
 
   const agentMemberCount = useCallback(
     (agentSlug: string): number => {
-      if (!authMode) return 0
+      if (!authMode || identityChanged) return 0
       const id = resolveRouteAgentId(agentSlug, agents) ?? agentSlug
       return agentRoles?.[id]?.memberCount ?? 0
     },
-    [authMode, agentRoles, agents],
+    [authMode, identityChanged, agentRoles, agents],
   )
 
   const canAccessAgent = useCallback(
@@ -223,16 +254,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
     clearRedirectStash()
     await authSignOut()
     queryClient.clear()
+    forgetLoginValues()
   }, [queryClient])
 
   const value = useMemo<UserContextValue>(
     () => ({
+      authGeneration: identity.generation,
       user: sessionUser,
       isAuthenticated,
       isAdmin,
       isAuthMode: authMode,
       isPending,
       mustChangePassword,
+      cloudWait,
       agentRole,
       agentMemberCount,
       canAccessAgent,
@@ -242,12 +276,14 @@ export function UserProvider({ children }: { children: ReactNode }) {
       signOut,
     }),
     [
+      identity.generation,
       sessionUser,
       isAuthenticated,
       isAdmin,
       authMode,
       isPending,
       mustChangePassword,
+      cloudWait,
       agentRole,
       agentMemberCount,
       canAccessAgent,

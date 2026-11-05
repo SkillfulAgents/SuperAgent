@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
+import * as records from '../app-records/records'
 import type { AppSettings } from '../config/settings'
 
 const state = vi.hoisted(() => ({
@@ -8,6 +9,7 @@ const state = vi.hoisted(() => ({
   metadata: {} as { llmProviderId?: string; model?: string; effort?: string },
   preferences: {} as { defaultModel?: string; defaultLlmProviderId?: string },
   signedOutConnection: null as string | null,
+  settingsReads: 0,
   reads: [] as string[],
   writes: [] as Record<string, unknown>[],
 }))
@@ -25,10 +27,16 @@ vi.mock('@shared/lib/llm-provider/connection-runtime', async original => {
 vi.mock('../db', () => ({ get db() { return state.db } }))
 vi.mock('../config/settings', async original => ({
   ...(await original<typeof import('../config/settings')>()),
-  getSettings: () => state.settings,
+  getSettings: () => {
+    state.settingsReads++
+    return state.settings
+  },
   mutateSettings: (change: (s: AppSettings) => void) => change(state.settings),
 }))
-vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'host-test-token' }))
+// The integration families check their own availability (some through the
+// platform token); the settings reads counted below are the session's own.
+vi.mock('@shared/lib/agent-integrations/registry', () => ({ agentIntegrationRegistry: { listAvailableDefinitions: async () => [] } }))
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: async () => 'host-test-token' }))
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: { get: () => ({
     sessions: {
@@ -132,7 +140,7 @@ it('stores nothing and reads neither document when the caller passes a binding t
     metadataUpdates: { effort: 'low' },
   })
   expect(requests[0]).toMatchObject({ llmRuntime: { llmProviderId: first, model: 'model-b' } })
-  expect(result).toEqual({ selection: { llmProviderId: first, model: 'model-b' } })
+  expect(result).toEqual({ selection: { llmProviderId: first, model: 'model-b' }, llmDefault: true })
   // The session's own binding runs, so the agent default is never needed.
   expect(state.reads).toEqual([])
   expect(state.writes).toEqual([])
@@ -154,7 +162,7 @@ it('stores a changed binding before the POST, with the caller\'s fields in the s
   expect(state.writes).toEqual([{ effort: 'low', llmProviderId: second, model: 'model-b' }])
   // The container's credential callback checks the stored binding, so it is there first.
   expect(writesAtPost).toBe(1)
-  expect(result).toEqual({ selection: { llmProviderId: second, model: 'model-b' }, metadataWritten: true })
+  expect(result).toEqual({ selection: { llmProviderId: second, model: 'model-b' }, metadataWritten: true, llmDefault: true })
 })
 
 it('reads the agent default only when the session has no binding of its own', async () => {
@@ -163,6 +171,28 @@ it('reads the agent default only when the session has no binding of its own', as
   expect(state.reads).toEqual(['preferences'])
   expect(result.selection).toEqual({ llmProviderId: second, model: 'model-b' })
   expect(state.writes).toEqual([{ llmProviderId: second, model: 'model-b' }])
+})
+
+it('resolves a new session and each message, provider chain included, from one read of the settings each', async () => {
+  // Every settings read goes through the counted getter above, none straight to the record.
+  const storedReads = vi.spyOn(records, 'readStoredRecord')
+  const client = new Client({ agentId: 'agent' })
+  state.settingsReads = 0
+  await client.createSession({
+    initialMessage: 'hello', model: 'model-b', llmProviderId: second,
+    prewarmDefaults: { llmProviderId: first, model: 'model-a', effort: 'low' },
+  })
+  expect(state.settingsReads).toBe(1)
+  state.metadata = { llmProviderId: first, model: 'model-b' }
+  for (let i = 0; i < 3; i++) await client.sendMessage('session', `message ${i}`)
+  expect(state.settingsReads).toBe(4)
+  expect(storedReads).not.toHaveBeenCalled()
+
+  // A change committed between two messages is what the next one sends.
+  await setGlobalSelection('default', { llmProviderId: second, model: 'model-a' })
+  state.metadata = {}
+  await client.sendMessage('session', 'after the change', undefined, { sessionMetadata: null })
+  expect(requests.at(-1)).toMatchObject({ llmRuntime: { llmProviderId: second, model: 'model-a' } })
 })
 
 it('reads the metadata itself when the caller passes none', async () => {

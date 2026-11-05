@@ -87,10 +87,10 @@ Avoid recurring intervals shorter than 15 minutes unless truly necessary: freque
         'Optional IANA timezone for interpreting the schedule (e.g., "America/New_York", "Europe/London"). If not specified, uses the creating user\'s timezone.'
       ),
     model: z
-      .enum(['opus', 'sonnet', 'haiku'])
+      .string()
       .optional()
       .describe(
-        'Optional model family to use for this task. If not specified, uses the global default.'
+        'Optional model for this task: a model id or a family name such as "sonnet". An unknown model is rejected with the list of valid ids. If not specified, uses the agent default.'
       ),
     effort: z
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])

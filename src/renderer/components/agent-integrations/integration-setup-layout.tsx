@@ -28,7 +28,7 @@ export function IntegrationSetupLayout({ provider, label, iconClassName = '', in
       <div className="md:w-[55%] min-w-0 flex flex-col justify-center gap-4 md:max-h-[60vh] md:overflow-y-auto">
         {instructions}
       </div>
-      <div className="md:w-[45%] min-w-0 rounded-lg border bg-muted/40 shadow-md flex flex-col md:max-h-[60vh]">
+      <div className="md:w-[45%] min-w-0 rounded-card border bg-muted/40 shadow-md flex flex-col md:max-h-[60vh]">
         <div className="flex flex-col gap-4 overflow-y-auto p-4 flex-1 min-h-0">
           <div className="space-y-3">{children}</div>
           {feedback}
@@ -62,7 +62,7 @@ export function IntegrationSetupFeedback({ state, children }: { state: 'error' |
   const colors = state === 'error' ? 'border-red-200 bg-red-50 text-red-600 dark:border-red-900 dark:bg-red-950 dark:text-red-400'
     : state === 'success' ? 'border-green-200 bg-green-50 text-green-600 dark:border-green-900 dark:bg-green-950 dark:text-green-400'
       : 'border-border bg-background text-muted-foreground'
-  return <div role={state === 'error' ? 'alert' : 'status'} className={`flex items-start gap-2 p-2 rounded-md border text-xs ${colors}`}>
+  return <div role={state === 'error' ? 'alert' : 'status'} className={`flex items-start gap-2 p-2 rounded-item border text-xs ${colors}`}>
     <Icon className={`h-4 w-4 shrink-0 ${state === 'pending' ? 'animate-spin' : ''}`} />
     <div>{children}</div>
   </div>

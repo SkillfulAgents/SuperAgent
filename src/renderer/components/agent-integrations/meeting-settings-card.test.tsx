@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { MeetingSettingsCard } from './meeting-settings-card'
 import { makeChatIntegration } from './test-factories'
 
-const LIVE_VOICES = [{ id: 'marin', label: 'Marin', description: 'OpenAI' }, { id: 'cinder', label: 'Cinder', description: 'OpenAI' }]
+const LIVE_VOICES = [{ id: 'marin', label: 'Marin', description: 'English' }, { id: 'cinder', label: 'Cinder', description: 'Southern U.S. English' }]
 const state = vi.hoisted(() => ({ mutate: vi.fn(), isSuccess: false, voices: [] as Array<{ id: string; label: string; description: string }> }))
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useUpdateAgentIntegration: () => ({ mutate: state.mutate, isPending: false, isError: false, isSuccess: state.isSuccess, error: null }),
@@ -26,7 +26,7 @@ it('shows the stored name, mode, voice and standing instructions and saves only 
   expect(screen.getByLabelText(/instructions for every meeting/i)).toHaveValue('Keep it short.')
   expect(screen.getByLabelText(/in meetings/i)).toHaveTextContent('Silent')
   expect(screen.getByText(/Never speaks\. Replies go into the meeting chat/)).toBeInTheDocument()
-  expect(screen.getByLabelText(/^voice$/i)).toHaveTextContent('Cinder')
+  expect(screen.getByLabelText(/^voice$/i)).toHaveTextContent('Cinder(Southern U.S. English)')
   const save = screen.getByRole('button', { name: /save meeting settings/i })
   expect(save).toBeDisabled()
   await userEvent.type(screen.getByLabelText(/instructions for every meeting/i), ' Track action items.')

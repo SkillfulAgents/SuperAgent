@@ -1,5 +1,6 @@
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import {
   getPlatformAuthStatus,
   refreshStoredPlatformAccount,
@@ -46,13 +47,13 @@ class PlatformService {
     // refresh() is self-guarding (no-op when disconnected) and never rejects.
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      void this.refresh()
+      background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
     }, this.startupDelayMs)
     // Keep the cloud-workspace deployment token fresh even when the app is left
     // running and the Account tab is never opened. Self-gates (Electron +
     // connected) and never throws.
     this.cloudWorkspaceTimer = setInterval(() => {
-      void refreshCloudWorkspace()
+      background(refreshCloudWorkspace(), { name: 'platform-service.refresh-cloud-workspace' })
     }, this.cloudWorkspaceIntervalMs)
     // Positive start signal — every service launched by startup.ts logs one
     // so a silent-dead service is distinguishable from a healthy idle one.
@@ -74,7 +75,7 @@ class PlatformService {
   /** Connect → refresh; disconnect → clear the cache. Either way the account changed. */
   onAuthChanged(connected: boolean): void {
     platformPlanCache.clear()
-    if (connected) void this.refresh()
+    if (connected) background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
     else this.clearCache()
   }
 
@@ -118,12 +119,14 @@ class PlatformService {
   async refresh(): Promise<void> {
     try {
       if (this.isProcessing) return
-      if (!getPlatformAuthStatus().connected) {
-        this.clearCache()
-        return
-      }
+      // Claimed before the auth read, so a second refresh() cannot slip in
+      // while it is in flight.
       this.isProcessing = true
       try {
+        if (!(await getPlatformAuthStatus()).connected) {
+          this.clearCache()
+          return
+        }
         await refreshStoredPlatformAccount().catch((error) =>
           captureException(error, { tags: { area: 'platform-service', op: 'refresh-account' } }),
         )

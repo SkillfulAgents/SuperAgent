@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { apiFetch } from '@renderer/lib/api'
 import { XAgentReviewRequestItem } from './request'
 
 vi.mock('@tanstack/react-router', () => ({
@@ -76,5 +77,74 @@ describe('XAgentReviewRequestItem attachments', () => {
     expect(screen.getByText(/download a delivered file/)).toBeInTheDocument()
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
     expect(screen.queryByTestId('xagent-review-allow-menu')).not.toBeInTheDocument()
+  })
+})
+
+describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
+  it('says why on the card, then ends the request with Allow Once', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(apiFetch).mockReset()
+      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Forbidden: this agent link is blocked', blocked: true }), { status: 403 }))
+      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+      const onComplete = vi.fn()
+      render(<XAgentReviewRequestItem reviewId="review-9" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke' }} onComplete={onComplete} />)
+      fireEvent.click(screen.getByTestId('xagent-review-allow-menu'))
+      await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-always-invoke')) })
+      expect(screen.getByTestId('xagent-review-completed')).toHaveTextContent('Blocked by policy')
+      expect(apiFetch).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(2000) })
+      expect(vi.mocked(apiFetch).mock.calls[1]).toEqual(['/api/agents/caller/proxy-review/review-9', expect.objectContaining({ body: JSON.stringify({ decision: 'allow' }) })])
+      expect(onComplete).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  const card = (onComplete = vi.fn()) => render(<XAgentReviewRequestItem reviewId="review-9" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke' }} onComplete={onComplete} />)
+  const clickAlways = async () => {
+    fireEvent.click(screen.getByTestId('xagent-review-allow-menu'))
+    await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-always-invoke')) })
+  }
+
+  it('still ends the request, once, when the card goes away before the delay', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(apiFetch).mockReset()
+      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Forbidden: this agent link is blocked', blocked: true }), { status: 403 }))
+      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+      const { unmount } = card()
+      await clickAlways()
+      unmount()
+      await act(async () => { vi.advanceTimersByTime(2000) })
+      expect(apiFetch).toHaveBeenCalledTimes(2)
+      expect(vi.mocked(apiFetch).mock.calls[1]).toEqual(['/api/agents/caller/proxy-review/review-9', expect.objectContaining({ body: JSON.stringify({ decision: 'allow' }) })])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still ends the request when the card goes away before the Block answer arrives', async () => {
+    vi.mocked(apiFetch).mockReset()
+    let answer: (r: Response) => void = () => {}
+    vi.mocked(apiFetch).mockReturnValueOnce(new Promise<Response>((resolve) => { answer = resolve }))
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+    const { unmount } = card()
+    fireEvent.click(screen.getByTestId('xagent-review-allow-menu'))
+    fireEvent.click(screen.getByTestId('xagent-review-always-invoke'))
+    unmount()
+    await act(async () => { answer(new Response(JSON.stringify({ error: 'Forbidden: this agent link is blocked', blocked: true }), { status: 403 })) })
+    expect(apiFetch).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(apiFetch).mock.calls[1]).toEqual(['/api/agents/caller/proxy-review/review-9', expect.objectContaining({ body: JSON.stringify({ decision: 'allow' }) })])
+  })
+
+  it('shows any other refusal inline and keeps the card open', async () => {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 }))
+    card()
+    await clickAlways()
+    expect(screen.getByText('Error: Forbidden')).toBeInTheDocument()
+    expect(screen.queryByTestId('xagent-review-completed')).not.toBeInTheDocument()
+    expect(apiFetch).toHaveBeenCalledTimes(1)
   })
 })

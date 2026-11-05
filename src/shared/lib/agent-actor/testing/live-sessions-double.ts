@@ -27,6 +27,7 @@ export type LiveSessionsAnswers = {
 const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) => ReturnType<Methods[K]> } = {
   activity: () => 'idle',
   isActive: () => false,
+  has: () => false,
   isAwaitingInput: () => false,
   isWaitingBackground: () => false,
   hasOnlyUntrackedBackgroundWork: () => false,
@@ -51,6 +52,7 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   listen: () => () => {},
   onDispose: () => () => {},
   follow: async () => () => {},
+  grantComputerUse: () => {},
   emit: () => {},
   subscribe: async () => {},
   attachReplaying: async () => {},

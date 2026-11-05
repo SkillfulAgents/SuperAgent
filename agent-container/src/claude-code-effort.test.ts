@@ -569,6 +569,24 @@ describe('ClaudeCodeProcess dashboard browser tools', () => {
   })
 })
 
+describe('ClaudeCodeProcess web browser tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('lets the web browser list workspace files before uploading them', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-web-browser-glob',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const agents = calls[0].options.agents as Record<string, { tools: string[] }>
+    const tools = agents['web-browser'].tools
+    expect(tools).toContain('Glob')
+  })
+})
+
 describe('ClaudeCodeProcess mount index Bash hook', () => {
   beforeEach(() => {
     calls.length = 0

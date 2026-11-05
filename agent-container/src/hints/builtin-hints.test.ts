@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk'
-import { builtinHints, builtinHintsEnabled } from './builtin-hints'
+import { allBuiltinHints, builtinHintsEnabled, hintAvailable } from './builtin-hints'
 import { createHintHookMatchers, createHintsHook } from './hint-hook'
 import { compileTrigger, type HintEventInput } from './hint-matchers'
 
-const compiled = builtinHints.map((hint) => ({ name: hint.name, triggers: hint.triggers.map(compileTrigger) }))
+const compiled = allBuiltinHints.map((hint) => ({ name: hint.name, triggers: hint.triggers.map(compileTrigger) }))
 const matching = (input: HintEventInput) => compiled.filter(({ triggers }) => triggers.some((m) => m(input))).map(({ name }) => name).sort()
 
 const bash = (command: string): HintEventInput => ({ event: 'PreToolUse', toolName: 'Bash', toolInput: { command } })
@@ -12,6 +12,7 @@ const read = (file_path: string): HintEventInput => ({ event: 'PreToolUse', tool
 const wrote = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Write', toolInput: { file_path } })
 const edited = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Edit', toolInput: { file_path } })
 const before = (toolName: string, toolInput: Record<string, unknown> = {}): HintEventInput => ({ event: 'PreToolUse', toolName, toolInput })
+const after = (toolName: string, toolInput: Record<string, unknown> = {}): HintEventInput => ({ event: 'PostToolUse', toolName, toolInput })
 
 // Every row lists the exact hints a call triggers. A new hint that also fires on another hint's example
 // fails here, so its author decides whether both should fire.
@@ -44,6 +45,27 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['list triggers', before('mcp__user-input__list_triggers'), []],
   ['supabase SQL', before('mcp__supabase__execute_sql', { project_id: 'abc', query: 'select id from public.orders limit 5' }), ['supabase-check-columns']],
   ['supabase list tables', before('mcp__supabase__list_tables', { project_id: 'abc' }), []],
+  ['after a sign-in step', after('mcp__user-input__request_login', { message: 'Sign in to MockMail.', fields: [] }), ['sign-in-verify-way']],
+  ['before a sign-in step', before('mcp__user-input__request_login', { message: 'Sign in to MockMail.' }), []],
+  ['browser hand-over', before('mcp__user-input__request_browser_input', { message: 'Solve the CAPTCHA.' }), []],
+  ['run faster-whisper with uv', bash('cd /tmp/review && uv run --with faster-whisper python -I scripts/tr.py audio.wav transcript.txt'), ['builtin-transcription', 'uv-run-env-file']],
+  ['write a faster_whisper script', bash("cat > tr.py <<'EOF'\nfrom faster_whisper import WhisperModel\nEOF"), ['builtin-transcription']],
+  ['install openai-whisper', bash('pip install -U openai-whisper'), ['builtin-transcription']],
+  ['whisper command line', bash('whisper meeting.mp3 --model small'), ['builtin-transcription']],
+  ['list a whisper folder', bash('ls whisper-models'), []],
+  ['grep for whisper', bash('grep -r whisper notes/'), []],
+  ['python playwright install', bash('cd /tmp && timeout 300 uv run --with playwright python -m playwright install chromium 2>&1 | tail -3'), ['playwright-install']],
+  ['python playwright install headless shell', bash('cd /tmp && uv run --with playwright python -m playwright install chromium-headless-shell > /tmp/pw.log 2>&1; echo done >> /tmp/pw.log'), ['playwright-install', 'uv-run-env-file']],
+  ['npx playwright install', bash('npx playwright install chromium'), ['playwright-install']],
+  ['pinned npx playwright install', bash('npx --yes playwright@1.64.1 install chromium --only-shell'), ['playwright-install']],
+  ['playwright CLI by file path', bash('PLAYWRIGHT_BROWSERS_PATH=/workspace/playwright-tools/browsers node /workspace/playwright-tools/node_modules/playwright/cli.js install chromium'), ['playwright-install']],
+  ['playwright-core CLI by file path', bash('node node_modules/playwright-core/cli.js install chromium-headless-shell'), ['playwright-install']],
+  ['playwright CLI help by file path', bash('node node_modules/playwright/cli.js --help'), []],
+  ['playwright CLI install-deps by file path', bash('node node_modules/playwright/cli.js install-deps'), []],
+  ['playwright install-deps', bash('npx playwright install-deps'), []],
+  ['pip install playwright', bash('pip install playwright'), []],
+  ['npm install playwright into a folder', bash('npm install --prefix /workspace/playwright-tools playwright'), []],
+  ['grep for the install phrase (refused once, retry runs)', bash('grep -rn "playwright install chromium" notes/'), ['playwright-install']],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
@@ -52,20 +74,50 @@ describe('built-in hints: which hints each call triggers', () => {
   })
 
   it('all compile into hook entries', () => {
-    expect(() => createHintHookMatchers(builtinHints, () => 1)).not.toThrow()
+    expect(() => createHintHookMatchers(allBuiltinHints, () => 1)).not.toThrow()
   })
 
   it('every built-in hint has at least one example here', () => {
     const covered = new Set(CASES.flatMap(([, , names]) => names))
-    expect(builtinHints.map((h) => h.name).filter((name) => !covered.has(name))).toEqual([])
+    expect(allBuiltinHints.map((h) => h.name).filter((name) => !covered.has(name))).toEqual([])
   })
 
   it('agent-browser-bash warns on every call, like the hook it replaced', async () => {
-    const hook = createHintsHook(builtinHints, () => 1)
+    const hook = createHintsHook(allBuiltinHints, () => 1)
     const call = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'agent-browser snapshot' } } as HookInput
     for (const id of ['tool-1', 'tool-2']) {
       expect(JSON.stringify(await hook(call, id, { signal: new AbortController().signal }))).toContain('STRONG WARNING')
     }
+  })
+
+  it('playwright-install refuses the first install call of each turn', async () => {
+    let turn = 1
+    const hook = createHintsHook(allBuiltinHints, () => turn)
+    const call = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npx playwright install chromium' } } as HookInput
+    const run = (id: string) => hook(call, id, { signal: new AbortController().signal })
+
+    const first = await run('tool-1')
+    expect(first).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+    expect(JSON.stringify(first)).toContain('/opt/playwright-browsers/chromium-current')
+    expect(JSON.stringify(first)).toContain('run the same command again')
+    expect(JSON.stringify(await run('tool-2'))).not.toContain('deny')
+
+    turn = 2
+    expect(await run('tool-3')).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+  })
+})
+
+describe('requires', () => {
+  const hint = (requires?: 'platform') => ({ ...allBuiltinHints[0], requires })
+
+  it('loads a platform hint only when platform services are on', () => {
+    expect(hintAvailable(hint('platform'), { PLATFORM_AUTH_ACTIVE: 'true' })).toBe(true)
+    expect(hintAvailable(hint('platform'), { PLATFORM_AUTH_ACTIVE: 'false' })).toBe(false)
+    expect(hintAvailable(hint('platform'), {})).toBe(false)
+  })
+
+  it('always loads a hint without requires', () => {
+    expect(hintAvailable(hint(), {})).toBe(true)
   })
 })
 

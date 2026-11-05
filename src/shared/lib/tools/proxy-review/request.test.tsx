@@ -4,9 +4,11 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyReviewRequestItem } from './request'
+import { gmailSendCustomPreview } from './gmail-send'
 import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { canonicalizeTargetPath } from '@shared/lib/proxy/target-path'
+import { requestBodyPreview } from '@shared/lib/proxy/review-display'
 
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
@@ -69,6 +71,43 @@ describe('ProxyReviewRequestItem title', () => {
     expect(screen.getByText('To').tagName).toBe('CODE')
     expect(document.body.textContent).not.toContain('](')
     expect(document.body.textContent).not.toContain('`')
+  })
+
+  describe('of a call a custom preview draws', () => {
+    const gmailSend = (mime: string) => ({
+      toolkit: 'gmail',
+      targetPath: 'gmail/v1/users/me/messages/send',
+      displayText: 'Allow sending a message?',
+      requestBody: JSON.stringify({ raw: Buffer.from(mime).toString('base64url') }, null, 2),
+    })
+
+    it('is the custom preview\'s once it reads the body', async () => {
+      renderCard(gmailSend('To: dana@acme.com\r\nSubject: Hi\r\n\r\nhello'))
+      expect(await screen.findByText('Allow sending this email from Gmail?')).toBeTruthy()
+      expect(screen.getByTestId('gmail-send')).toBeTruthy()
+      expect(screen.queryByText('Allow sending a message?')).toBeNull()
+      // The preview names the call, so the raw request folds even with no endpoint description.
+      expect(screen.queryByTestId('proxy-review-body')).toBeNull()
+    })
+
+    it('is the custom preview\'s alone when the body is too long to draw', async () => {
+      const content = Buffer.from('x'.repeat(60_000)).toString('base64')
+      renderCard({ toolkit: 'github', method: 'PUT', targetPath: 'repos/acme/api/contents/src/big.ts', displayText: 'Allow create or update file contents?', requestBody: requestBodyPreview(new TextEncoder().encode(JSON.stringify({ message: 'Add', content })).buffer) })
+      expect((await screen.findByText('src/big.ts')).tagName).toBe('CODE')
+      expect(screen.queryByText('Allow create or update file contents?')).toBeNull()
+      // Nothing is drawn, so the raw request stays open as it is today.
+      expect(screen.getByTestId('proxy-review-body')).toBeTruthy()
+    })
+
+    it('stays the endpoint\'s when the body does not read', async () => {
+      const props = gmailSend('Resent-To: hidden@elsewhere.io\r\nTo: dana@acme.com\r\n\r\nhello')
+      renderCard(props)
+      // The card's read started first, so it has settled once this one has.
+      await act(async () => { await gmailSendCustomPreview.read(props.requestBody) })
+      expect(screen.getByText('Allow sending a message?')).toBeTruthy()
+      expect(screen.queryByText('Allow sending this email from Gmail?')).toBeNull()
+      expect(screen.queryByTestId('gmail-send')).toBeNull()
+    })
   })
 })
 

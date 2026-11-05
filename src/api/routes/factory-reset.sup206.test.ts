@@ -29,12 +29,15 @@ vi.mock('@shared/lib/db', () => ({
 
 // --- Heavy deps the route pulls in at import time / during factory-reset ----
 
-const mockClearSettingsCache = vi.fn()
+const mockDeletedRecords: string[] = []
+
+vi.mock('@shared/lib/app-records/records', () => ({
+  deleteRecord: async (key: string) => { mockDeletedRecords.push(key) },
+}))
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
-  clearSettingsCache: (...args: unknown[]) => mockClearSettingsCache(...args),
   getBrowserbaseApiKeyStatus: vi.fn(),
   getComposioApiKeyStatus: vi.fn(),
   getNangoApiKeyStatus: vi.fn(),
@@ -139,8 +142,10 @@ const BETTER_AUTH_TABLES = new Set<unknown>([
 ])
 
 // The data-migration ledger survives too: it says which one-time moves this
-// database has been through, and a reset database is empty, not legacy.
-const PRESERVED_TABLES = new Set<unknown>([...BETTER_AUTH_TABLES, schema.dataMigrations])
+// database has been through, and a reset database is empty, not legacy. App
+// records are cleared key by key: settings go, the tenant id and the auth
+// secret (which user accounts depend on) stay.
+const PRESERVED_TABLES = new Set<unknown>([...BETTER_AUTH_TABLES, schema.dataMigrations, schema.appRecords])
 
 /** Every Drizzle table defined in the schema (by object identity). */
 function allSchemaTables(): unknown[] {
@@ -162,6 +167,7 @@ describe('POST /api/settings/factory-reset — agent/app-owned table cleanup', (
   beforeEach(() => {
     vi.clearAllMocks()
     mockDeletedTables.length = 0
+    mockDeletedRecords.length = 0
     app = createApp()
   })
 
@@ -171,12 +177,12 @@ describe('POST /api/settings/factory-reset — agent/app-owned table cleanup', (
     })
   }
 
-  it('returns 200 and stops containers + clears settings cache', async () => {
+  it('returns 200, stops containers, and deletes the settings and device identity records', async () => {
     const res = await factoryReset()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true })
     expect(mockStopAll).toHaveBeenCalledOnce()
-    expect(mockClearSettingsCache).toHaveBeenCalledOnce()
+    expect(mockDeletedRecords.sort()).toEqual(['platform-client-instance-id', 'settings'])
   })
 
   it('clears all agent-owned relational data (every non-Better-Auth table)', async () => {

@@ -20,7 +20,7 @@ import { signIn } from '@renderer/lib/auth-client'
 describe('AuthPage', () => {
   beforeEach(() => {
     vi.resetAllMocks()
-    vi.mocked(signIn.oauth2).mockResolvedValue(undefined as never)
+    vi.mocked(signIn.social).mockResolvedValue(undefined as never)
     apiFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -100,8 +100,8 @@ describe('AuthPage', () => {
     fireEvent.click(screen.getByTestId('auth-provider-platform'))
 
     await waitFor(() => {
-      expect(signIn.oauth2).toHaveBeenCalledWith({
-        providerId: 'platform',
+      expect(signIn.social).toHaveBeenCalledWith({
+        provider: 'platform',
         callbackURL: '/',
         errorCallbackURL: '/',
       })
@@ -109,7 +109,7 @@ describe('AuthPage', () => {
   })
 
   it('only shows provider loading state on the clicked provider', async () => {
-    vi.mocked(signIn.oauth2).mockReturnValue(new Promise(() => {}) as never)
+    vi.mocked(signIn.social).mockReturnValue(new Promise(() => {}) as never)
     apiFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -227,5 +227,34 @@ describe('AuthPage', () => {
     })
     expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
     expect(screen.queryByTestId('signup-submit')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['offers sign-up to the first user while signups are closed', true, true],
+    ['offers no sign-up when the server keeps it closed even without users (platform-controlled)', false, false],
+    ['falls back to the user count when the server predates the flag', undefined, true],
+  ])('%s', async (_label, firstUserSignupOpen, offered) => {
+    apiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        signupMode: 'closed',
+        allowLocalAuth: true,
+        allowSocialAuth: false,
+        providers: [],
+        passwordMinLength: 8,
+        passwordRequireComplexity: false,
+        requireAdminApproval: false,
+        hasUsers: false,
+        ...(firstUserSignupOpen === undefined ? {} : { firstUserSignupOpen }),
+      }),
+    })
+
+    render(<AuthPage />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('signin-submit')).toBeInTheDocument()
+    })
+    if (offered) expect(screen.getByTestId('auth-tab-signup')).toBeInTheDocument()
+    else expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
   })
 })

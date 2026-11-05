@@ -18,9 +18,9 @@ beforeEach(() => {
 })
 
 describe('getSubagentModelCatalog', () => {
-  it('projects only latest models from the active provider in deterministic order', () => {
-    const effective = getEffectiveCatalog('openrouter')
-    const catalog = getSubagentModelCatalog(getEffectiveCatalog('openrouter'))
+  it('projects only latest models from the active provider in deterministic order', async () => {
+    const effective = await getEffectiveCatalog('openrouter')
+    const catalog = getSubagentModelCatalog(await getEffectiveCatalog('openrouter'))
 
     expect(catalog.map((model) => model.id)).toEqual(
       effective
@@ -33,9 +33,9 @@ describe('getSubagentModelCatalog', () => {
     expect(subagentModelCatalogSchema.parse(catalog)).toEqual(catalog)
   })
 
-  it('does not create separate subagents for older versions in a model family', () => {
-    const effective = getEffectiveCatalog('anthropic')
-    const catalog = getSubagentModelCatalog(getEffectiveCatalog('anthropic'))
+  it('does not create separate subagents for older versions in a model family', async () => {
+    const effective = await getEffectiveCatalog('anthropic')
+    const catalog = getSubagentModelCatalog(await getEffectiveCatalog('anthropic'))
 
     expect(effective.some((model) => model.id === 'claude-opus-4-8')).toBe(true)
     expect(effective.some((model) => model.id === 'claude-opus-5')).toBe(true)
@@ -44,28 +44,28 @@ describe('getSubagentModelCatalog', () => {
     expect(catalog.some((model) => model.id === 'claude-opus-5-5')).toBe(true)
   })
 
-  it('exposes the latest model of each GPT tier family as a subagent', () => {
+  it('exposes the latest model of each GPT tier family as a subagent', async () => {
     settingsMock.mockReturnValue({ llmProvider: 'platform' })
-    const gptIds = (provider: 'platform' | 'codex-subscription') =>
-      getSubagentModelCatalog(getEffectiveCatalog(provider))
+    const gptIds = async (provider: 'platform' | 'codex-subscription') =>
+      getSubagentModelCatalog(await getEffectiveCatalog(provider))
         .map((model) => model.id)
         .filter((id) => id.startsWith('gpt-'))
 
-    const latestPerTier = ['gpt-6-luna', 'gpt-5.6-terra', 'gpt-6.1-sol', 'gpt-6-astra']
-    expect(gptIds('platform').sort()).toEqual([...latestPerTier].sort())
-    expect(gptIds('codex-subscription').sort()).toEqual([...latestPerTier].sort())
-    expect(resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')
-    expect(resolveModelForProvider('gpt-astra', 'platform', 'agent')).toBe('gpt-6-astra')
+    const latestPerTier = ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra']
+    expect((await gptIds('platform')).sort()).toEqual([...latestPerTier].sort())
+    expect((await gptIds('codex-subscription')).sort()).toEqual([...latestPerTier].sort())
+    expect(await resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    expect(await resolveModelForProvider('gpt-astra', 'platform', 'agent')).toBe('gpt-6-astra')
   })
 
-  it('keeps a stored bare gpt selection on the Sol family', () => {
+  it('keeps a stored bare gpt selection on the Sol family', async () => {
     settingsMock.mockReturnValue({ llmProvider: 'platform' })
 
-    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.1-sol')
-    expect(resolveModelForProvider('gpt', 'codex-subscription', 'agent')).toBe('gpt-6.1-sol')
+    expect(await resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-6.1-sol')
+    expect(await resolveModelForProvider('gpt', 'codex-subscription', 'agent')).toBe('gpt-6.1-sol')
   })
 
-  it('does not pass disabled catalog entries to the container', () => {
+  it('does not pass disabled catalog entries to the container', async () => {
     settingsMock.mockReturnValue({
       llmProvider: 'openrouter',
       modelCatalog: {
@@ -75,10 +75,10 @@ describe('getSubagentModelCatalog', () => {
       },
     })
 
-    expect(getSubagentModelCatalog(getEffectiveCatalog('openrouter')).some((model) => model.id === 'openai/gpt-5.5')).toBe(false)
+    expect(getSubagentModelCatalog(await getEffectiveCatalog('openrouter')).some((model) => model.id === 'openai/gpt-5.5')).toBe(false)
   })
 
-  it('warns when the effective catalog exceeds the subagent cap', () => {
+  it('warns when the effective catalog exceeds the subagent cap', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     settingsMock.mockReturnValue({
       llmProvider: 'openrouter',
@@ -95,7 +95,7 @@ describe('getSubagentModelCatalog', () => {
       },
     })
 
-    expect(getSubagentModelCatalog(getEffectiveCatalog('openrouter'))).toHaveLength(MAX_SUBAGENT_MODELS)
+    expect(getSubagentModelCatalog(await getEffectiveCatalog('openrouter'))).toHaveLength(MAX_SUBAGENT_MODELS)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('only the first 32'))
     warn.mockRestore()
   })

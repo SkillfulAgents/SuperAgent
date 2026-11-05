@@ -1,3 +1,4 @@
+import voiceTranscripts from './routes/voice-transcripts'
 import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
@@ -12,6 +13,7 @@ import volumeDefinitions from './routes/volume-definitions'
 import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
+import browserAccounts from './routes/browser-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
@@ -44,6 +46,7 @@ import llmRouter from './routes/llm'
 import llmRuntimeRouter from './routes/llm-runtime'
 import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
+import serverFactsRouter from './routes/server-facts'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
@@ -62,7 +65,8 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware } from './middleware/auth-enforcement'
-import { getAuthSettings } from '@shared/lib/auth/auth-settings'
+import { authRateLimit } from './middleware/rate-limit'
+import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
@@ -110,38 +114,9 @@ if (!isAuthMode()) {
   })
 }
 
-// Simple rate limiter for auth endpoints
-const authAttempts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT_MAX = 100
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000 // 15 minutes
-
+// Rate limit for auth POSTs (sign-in, sign-up attempts): 100 per client per 15 minutes
 if (isAuthMode()) {
-  app.use('/api/auth/*', async (c, next) => {
-    // Only rate-limit POST requests (sign-in, sign-up attempts)
-    if (c.req.method !== 'POST') return next()
-
-    const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-    const now = Date.now()
-    const entry = authAttempts.get(ip)
-
-    if (entry && now < entry.resetAt) {
-      if (entry.count >= RATE_LIMIT_MAX) {
-        return c.json({ error: 'Too many attempts. Please try again later.' }, 429)
-      }
-      entry.count++
-    } else {
-      authAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW })
-    }
-
-    // Clean up old entries periodically
-    if (authAttempts.size > 1000) {
-      for (const [key, val] of authAttempts) {
-        if (now >= val.resetAt) authAttempts.delete(key)
-      }
-    }
-
-    return next()
-  })
+  app.use('/api/auth/*', authRateLimit)
 }
 
 // Auth enforcement middleware (signup mode, password policy, account lockout)
@@ -178,8 +153,8 @@ if (isAuthMode()) {
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
 if (isAuthMode()) {
   app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
-    const { getAuth } = await import('@shared/lib/auth/index')
-    return getAuth().handler(c.req.raw)
+    const { handleAuthRequest } = await import('@shared/lib/auth/handler')
+    return handleAuthRequest(c.req.raw)
   })
 }
 
@@ -187,7 +162,7 @@ if (isAuthMode()) {
 // settings so the auth page can adapt (hide signup tab, show password policy, etc.)
 if (isAuthMode()) {
   app.get('/api/auth-config', async (c) => {
-    const authSettings = getAuthSettings()
+    const authSettings = await getAuthSettings()
     const publicProviders = getPublicAuthProviders()
 
     // Check if any users exist (first-user signup bypass)
@@ -208,6 +183,8 @@ if (isAuthMode()) {
       passwordRequireComplexity: authSettings.passwordRequireComplexity,
       requireAdminApproval: authSettings.requireAdminApproval,
       hasUsers,
+      // Mirrors the sign-up middleware's first-user bypass.
+      firstUserSignupOpen: !hasUsers && !isPlatformControlledAuth(),
     })
   })
 }
@@ -247,6 +224,7 @@ app.route('/api/x-agent/rules', xAgentRules)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
+app.route('/api/browser-accounts', browserAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
 app.route('/api/scheduled-tasks', scheduledTasks)
@@ -289,6 +267,7 @@ if (isAuthMode()) {
   // Platform "Open Cloud Agents" link can target a stable deployment path.
   app.route('/auth', platformSsoStart)
 }
+app.route('/api/voice/agents/:id/sessions/:sessionId/transcripts', voiceTranscripts)
 app.route('/api/voice', voiceRouter)
 // Legacy prefix: the polyfill is cached for an hour in browsers and fetches
 // its token from the prefix it was built with, and third-party dashboards
@@ -298,6 +277,7 @@ app.route('/api/llm', llmRouter)
 app.route('/api/llm-runtime', llmRuntimeRouter)
 app.route('/api/llm-connections', llmConnectionsRouter)
 app.route('/api/favicon', faviconRouter)
+app.route('/api/server-facts', serverFactsRouter)
 app.route('/api/debug', debugRouter)
 
 // Desktop → cloud-workspace forwarding. Mounted outside `/api` on purpose: it

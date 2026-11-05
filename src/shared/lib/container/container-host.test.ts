@@ -137,12 +137,13 @@ vi.mock('@shared/lib/config/settings', () => ({
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
   // mutator to a fresh snapshot and return it (matching the real return shape).
-  mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void) => {
+  mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void | false) => {
     const s = {
       container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
       app: {},
     }
-    mutator(s)
+    // `false` writes nothing; a write persists the runner, as the store would.
+    if (mutator(s) !== false) mockSettingsState.containerRunner = s.container.containerRunner
     return s
   },
 }))
@@ -182,7 +183,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => false,
+  isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
@@ -190,8 +191,12 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 const mockListVolumes = vi.fn()
+const mockFirstCopies = vi.fn()
+const mockRemounted = vi.fn()
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: (...args: unknown[]) => mockListVolumes(...args),
+  firstCopies: (...args: unknown[]) => mockFirstCopies(...args),
+  remounted: (...args: unknown[]) => mockRemounted(...args),
 }))
 
 import { containerHost } from './container-host'
@@ -543,6 +548,36 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockHealth).toHaveBeenCalledWith(8080)
     expect(mountWarnings()).toEqual([[{ name: 'gone', reason: 'not found' }, { name: 'stuck', reason: 'failed in the agent' }]])
     expect(mockCaptureMessage).toHaveBeenCalledWith('Agent container could not mount folders', expect.objectContaining({ extra: { agentId: 'test-agent', count: 1 } }))
+    // Its drives start with empty caches, so they forget what earlier mounts held.
+    expect(mockRemounted).toHaveBeenCalledExactlyOnceWith('test-agent')
+  })
+
+  it.each(['preparing', 'preparing: GitHub is busy'])('marks the agent stale once a drive that missed its start (%s) can mount', async (reason) => {
+    let copied!: () => void
+    mockFirstCopies.mockReturnValueOnce(new Promise<void>((resolve) => { copied = resolve }))
+    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason }] })
+      .mockResolvedValueOnce({ volumes: [{ volumeId: 'm1', name: 'repo' }], notMounted: [] })
+    const runtime = containerHost.runtime('test-agent')
+
+    await runtime.ensureRunning()
+    expect(mountWarnings()).toEqual([[{ name: 'repo', reason }]])
+    expect(runtime.isStale()).toBe(false)
+    copied()
+
+    await vi.waitFor(() => expect(runtime.isStale()).toBe(true))
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
+  })
+
+  it('leaves the agent as it is when a drive that missed its start fails its first copy', async () => {
+    mockFirstCopies.mockResolvedValueOnce(undefined)
+    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing' }] })
+      .mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing: GitHub is busy' }] })
+    const runtime = containerHost.runtime('test-agent')
+
+    await runtime.ensureRunning()
+    await vi.waitFor(() => expect(mockListVolumes).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runtime.isStale()).toBe(false)
   })
 
   it.each([
@@ -664,6 +699,7 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
 
     expect(mockHealth).not.toHaveBeenCalled()
     expect(mountWarnings()).toEqual([])
+    expect(mockRemounted).not.toHaveBeenCalled()
   })
 
   it('leaves every volume out when the runtime refused the flags', async () => {
@@ -1253,6 +1289,23 @@ describe('ContainerHost.ensureImageReady — state machine', () => {
 
     // Should have called checkImageExists with the alternative runner
     expect(checkImageExists).toHaveBeenCalledWith('podman', 'test-image')
+  })
+
+  it('does not auto-switch over a runner the user picked during the availability check', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockImplementation(async () => {
+      // The user picks Lima while the (slow) availability check is running.
+      mockSettingsState.containerRunner = 'lima'
+      return [
+        { runner: 'docker', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: true },
+        { runner: 'podman', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+      ]
+    })
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerHost.ensureImageReady()
+
+    expect(mockSettingsState.containerRunner).toBe('lima')
+    expect(checkImageExists).not.toHaveBeenCalledWith('podman', 'test-image')
   })
 
   it('reports RUNTIME_UNAVAILABLE when runner installed but not running and no alternative', async () => {

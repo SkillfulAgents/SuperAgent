@@ -26,10 +26,9 @@ import {
 import { ArrowRight, Loader2, Plus, Search, SearchX } from 'lucide-react'
 import { IntegrationList, IntegrationRow } from './integration-row'
 import { mcpDraftSchema, type McpDraft, type McpAuthType } from './mcp-draft-schema'
-import {
-  useInitiateConnection,
-  useInvalidateConnectedAccounts,
-} from '@renderer/hooks/use-connected-accounts'
+import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
+import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
 import {
   useAddRemoteMcp,
   useInitiateMcpOAuth,
@@ -38,8 +37,7 @@ import {
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
-import { getProvider, type Provider } from '@shared/lib/account-providers/service-catalog'
-import { openExternalUrl } from '@renderer/lib/open-external'
+import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
 import { McpSetupGuide } from './mcp-setup-guide'
 import { McpAdvancedClientFields } from './mcp-advanced-client-fields'
@@ -102,7 +100,7 @@ function CrossDirectoryHint({ count, noun, query, onSeeAll }: {
       type="button"
       onClick={onSeeAll}
       data-testid="directory-see-all"
-      className="relative -mt-3 flex w-full items-center justify-between gap-2 rounded-b-lg bg-[#E5F2FF] px-3 pb-2 pt-5 text-left text-[11px] text-[#0A7CFF] transition-opacity hover:opacity-80"
+      className="relative -mt-3 flex w-full items-center justify-between gap-2 rounded-b-card bg-[#E5F2FF] px-3 pb-2 pt-5 text-left text-[11px] text-[#0A7CFF] transition-opacity hover:opacity-80"
     >
       <span className="truncate">{`${count} ${noun}${count === 1 ? ' matches' : 's match'} \u201C${query}\u201D.`}</span>
       <span className="flex items-center gap-1 font-medium shrink-0">
@@ -117,7 +115,7 @@ function CrossDirectoryHint({ count, noun, query, onSeeAll }: {
 // chips already carry the "nothing here, try this instead" message.
 function DirectoryFooterNote({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn('rounded-lg bg-[#E5F2FF] px-3 py-2.5 text-[11px] text-[#0A7CFF]', className)}>
+    <div className={cn('rounded-card bg-[#E5F2FF] px-3 py-2.5 text-[11px] text-[#0A7CFF]', className)}>
       {children}
     </div>
   )
@@ -131,9 +129,9 @@ function DirectoryEmptyState({ noun, query, chin }: { noun: string; query: strin
     <div className="relative">
       {/* bg-background under the muted tint keeps this layer opaque, so the
           chin tucked behind it can't bleed through. */}
-      <div className="relative z-10 rounded-lg border bg-background shadow-sm">
-        <div className="flex items-center gap-3 rounded-lg bg-muted/50 p-3">
-          <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0">
+      <div className="relative z-10 rounded-card border bg-background shadow-sm">
+        <div className="flex items-center gap-3 rounded-card bg-muted/50 p-3">
+          <div className="h-7 w-7 rounded-control bg-muted flex items-center justify-center shrink-0">
             <SearchX className="h-4 w-4 text-muted-foreground/60" />
           </div>
           <div className="min-w-0 flex-1">
@@ -160,10 +158,7 @@ function DirectorySectionHeading({ title, description }: { title: string; descri
   )
 }
 
-export interface NewApiConnection {
-  accountId: string
-  toolkit: string
-}
+export type { NewApiConnection } from '@renderer/hooks/use-connect-account'
 
 export interface NewMcpConnection {
   mcpId: string
@@ -289,105 +284,15 @@ function AllPanel({ filter, onApiConnected, onMcpConnected, fallbackClose }: {
 
 function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSeeAll }: { filter: string; onConnected: (connection: NewApiConnection) => void; fallbackClose: () => void; embedded?: boolean; onSeeAll?: () => void }) {
   const { data: providersData, isLoading } = useProviders()
-  const initiateConnection = useInitiateConnection()
-  const invalidateAccounts = useInvalidateConnectedAccounts()
-
-  const loginWindow = useLoginWindow()
-  const closeLoginWindow = loginWindow.close
-  const [launchedSlug, setLaunchedSlug] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const connecting = loginWindow.pending ? launchedSlug : null
-  const connectingRef = useRef(connecting)
-  connectingRef.current = connecting
-
-  const cancelOAuthFlow = useCallback(() => {
-    closeLoginWindow()
-    setError(null)
-  }, [closeLoginWindow])
-
-  useEffect(() => {
-    if (!connecting) return
-
-    const handleComplete = (success: boolean, accountId?: string, toolkit?: string) => {
-      const resolvedToolkit = toolkit || connectingRef.current
-      closeLoginWindow()
-      if (success) {
-        invalidateAccounts()
-        if (accountId && resolvedToolkit) {
-          onConnected({ accountId, toolkit: resolvedToolkit })
-        } else {
-          fallbackClose()
-        }
-      }
-    }
-
-    if (window.electronAPI) {
-      const unsubscribe = window.electronAPI.onOAuthCallback(async (params) => {
-        if (params.toolkit && params.toolkit !== connectingRef.current) return
-        if (params.error || params.status === 'failed') {
-          handleComplete(false)
-          return
-        }
-        if (params.connectionId && params.toolkit) {
-          try {
-            const res = await apiFetch('/api/connected-accounts/complete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                connectionId: params.connectionId,
-                toolkit: params.toolkit,
-              }),
-            })
-            if (res.ok) {
-              const data = await res.json()
-              handleComplete(true, data.account?.id, params.toolkit)
-            } else {
-              handleComplete(false)
-            }
-          } catch {
-            handleComplete(false)
-          }
-        } else {
-          handleComplete(false)
-        }
-      })
-      return () => { unsubscribe?.() }
-    }
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'oauth-callback') {
-        if (event.data.toolkitSlug && event.data.toolkitSlug !== connectingRef.current) return
-        handleComplete(event.data.success, event.data.accountId, event.data.toolkitSlug)
-      }
-    }
-    window.addEventListener('message', handleMessage)
-    return () => window.removeEventListener('message', handleMessage)
-  }, [connecting, closeLoginWindow, invalidateAccounts, onConnected, fallbackClose])
+  // A sign-in that names no account still worked; close and let the lists refresh.
+  const { connect, connecting, canCancel, cancel: cancelOAuthFlow, error } = useConnectAccount({
+    location: 'connections_tab',
+    onConnected,
+    onConnectedWithoutAccount: fallbackClose,
+  })
 
   const filtered = useMemo(() => filterProviders(providersData?.providers, filter), [providersData, filter])
   const mcpMatchCount = useMemo(() => filterMcpServers(filter).length, [filter])
-
-  const handleConnect = async (slug: string) => {
-    const installUrl = getProvider(slug)?.installUrl
-    if (installUrl) {
-      void openExternalUrl(installUrl)
-      return
-    }
-    setLaunchedSlug(slug)
-    setError(null)
-    try {
-      await loginWindow.open(async () => {
-        const result = await initiateConnection.mutateAsync({
-          providerSlug: slug,
-          electron: !!window.electronAPI,
-          location: 'connections_tab',
-        })
-        return 'redirectUrl' in result ? result.redirectUrl : null
-      })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect')
-    }
-  }
 
   return (
     <div className="space-y-3">
@@ -397,11 +302,13 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           description="The most reliable and robust connections — check here first."
         />
       )}
-      {error && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
-          {error}
+      {error && (resolveAgentRuntimeErrorPreview(error) ? (
+        <AgentRuntimeErrorView error={error} />
+      ) : (
+        <div className="rounded-item border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+          {error.message}
         </div>
-      )}
+      ))}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -435,7 +342,7 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
                       size="icon"
                       variant="outline"
                       className="h-7 w-7"
-                      onClick={() => handleConnect(provider.slug)}
+                      onClick={() => { void connect(provider.slug) }}
                       disabled={connecting !== null}
                       aria-label={`Connect ${provider.displayName}`}
                       data-testid={`directory-connect-api-${provider.slug}`}
@@ -443,7 +350,7 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
                       // Icon-only, so the announcement carries the pending text.
                       pendingLabel={<span className="sr-only">{`Connecting ${provider.displayName}…`}</span>}
                       pending={pending}
-                      canCancel={pending && loginWindow.canCancel}
+                      canCancel={pending && canCancel}
                       onCancel={cancelOAuthFlow}
                       cancelSide="left"
                       cancelTestId={`directory-cancel-api-${provider.slug}`}
@@ -612,7 +519,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
     const setup = COMMON_MCP_SERVERS.find((s) => s.slug === draft.sourceSlug)?.setup
     return (
       <div className="space-y-2">
-        {setup && <McpSetupGuide guide={setup} redirectUri={redirectUris?.preferred} />}
+        {setup && <McpSetupGuide guide={setup} redirectUri={draft.authType === 'oauth' ? redirectUris?.preferred : undefined} />}
         <div>
           <Label className="text-xs font-normal text-muted-foreground/70">Name</Label>
           <Input
@@ -675,7 +582,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           />
         )}
         {error && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+          <div className="rounded-item border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
             {error}
           </div>
         )}
@@ -710,9 +617,9 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   ) => {
     const isExpanded = draft?.sourceSlug === sourceSlug
     return (
-      <div key={sourceSlug} className="rounded-lg border bg-background p-3 space-y-3">
+      <div key={sourceSlug} className="rounded-card border bg-background p-3 space-y-3">
         <div className="flex items-center gap-3">
-          <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0">
+          <div className="h-7 w-7 rounded-control bg-muted flex items-center justify-center shrink-0">
             <ServiceIcon slug={iconSlug} fallback={iconFallback} className="h-4 w-4 text-muted-foreground/60" />
           </div>
           <div className="min-w-0 flex-1">
@@ -761,7 +668,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
         />
       )}
       {error && !draft && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
+        <div className="rounded-item border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
         </div>
       )}

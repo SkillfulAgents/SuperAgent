@@ -8,6 +8,7 @@ import { RemoteMcpRequestItem } from '../request-remote-mcp/request'
 import { QuestionRequestItem } from '../ask-user-question/request'
 import { FileRequestItem } from '../request-file/request'
 import { BrowserInputRequestItem } from '../request-browser-input/request'
+import { LoginRequestItem } from '../request-login/request'
 import { ScriptRunRequestItem } from '../request-script-run/request'
 import { ComputerUseRequestItem } from '../computer-use/request'
 import { CapabilityReviewRequestItem } from '../capability-review/request'
@@ -121,6 +122,23 @@ const cases: Array<{
     },
     expectedComponent: BrowserInputRequestItem,
     expectedProps: { toolUseId: 'tu6', message: 'fill form', requirements: ['name', 'email'] },
+  },
+  {
+    name: 'login',
+    descriptor: {
+      kind: 'login',
+      key: 'k13',
+      toolUseId: 'tu13',
+      message: 'Sign in to GitHub',
+      fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }],
+      onComplete: noop,
+    },
+    expectedComponent: LoginRequestItem,
+    expectedProps: {
+      toolUseId: 'tu13',
+      message: 'Sign in to GitHub',
+      fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }],
+    },
   },
   {
     name: 'script_run',

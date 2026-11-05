@@ -31,6 +31,10 @@ interface AvatarViewProps {
   state?: AvatarMotionState
   /** Follow the cursor: `true` anywhere in the window, or a selector for an ancestor region to follow within. */
   followPointer?: boolean | string
+  /** Hold the state's still frame. */
+  still?: boolean
+  /** Off, only the body is drawn: the outer shape without its inner face. */
+  showsFace?: boolean
   className?: string
 }
 
@@ -52,4 +56,13 @@ export function AvatarView({
   ...rest
 }: { source: AvatarSource; restingPhi?: number } & AvatarViewProps) {
   return <OrbAvatar orb={source.orb} shape={source.shape} diameter={size} restingPhi={restingPhi} {...rest} />
+}
+
+/**
+ * An agent's orb as its outer shape alone, still, in its colours and without
+ * its face: a ghost to keep behind the orb's other forms (voice mode's
+ * working dots), as on the iOS call screen.
+ */
+export function AgentOrbSilhouette({ agent, size, className }: { agent: Pick<ApiAgent, 'slug' | 'avatar'>; size: number; className?: string }) {
+  return <AgentAvatar agent={agent} size={size} state="idle" still showsFace={false} className={className} />
 }

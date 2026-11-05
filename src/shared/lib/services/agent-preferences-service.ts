@@ -1,4 +1,4 @@
-import { getSettings } from '@shared/lib/config/settings'
+import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 import { resolveConnectionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { agentRegistry, ConfigDocError, updateConfigDoc } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
@@ -26,23 +26,37 @@ async function readAgentPreferencesStrict(agentSlug: string): Promise<AgentPrefe
  * aborts on any failure so a broken document is never overwritten.
  */
 export async function readAgentPreferences(
-  agentSlug: string
+  agentSlug: string,
+  /** The operation's settings, when the caller already read them. */
+  settings?: AppSettings,
 ): Promise<AgentPreferences> {
-  let prefs: AgentPreferences
+  const prefs = await readStoredAgentPreferences(agentSlug)
+  if (!prefs.defaultModel) return prefs
+  const current = settings ?? await getSettings()
+  if (current.llmDefault) {
+    const selected = await resolveConnectionSelection(
+      await storedSelection(prefs.defaultModel, prefs.defaultLlmProviderId, current), false, undefined, current)
+    if (!selected) return { ...prefs, defaultModel: undefined, defaultLlmProviderId: null }
+    return { ...prefs, defaultModel: selected.model, defaultLlmProviderId: selected.llmProviderId }
+  }
+  return prefs
+}
+
+/**
+ * The agent's preferences as stored, without resolving its default model
+ * against the connections (so without reading settings): for readers that do
+ * not use the model, such as the retention sweeps. Unreadable preferences
+ * read as empty, reported, never overwritten.
+ */
+export async function readStoredAgentPreferences(agentSlug: string): Promise<AgentPreferences> {
   try {
-    prefs = await readAgentPreferencesStrict(agentSlug)
+    return await readAgentPreferencesStrict(agentSlug)
   } catch (error) {
     const kind = error instanceof ConfigDocError ? 'Corrupt' : 'Unreadable'
     console.error(`${kind} agent preferences for ${agentSlug}; using empty (NOT overwriting)`, error)
     captureException(error, { tags: { area: 'agent-preferences', op: 'read' }, extra: { agentSlug } })
     return {}
   }
-  if (getSettings().llmDefault && prefs.defaultModel) {
-    const selected = await resolveConnectionSelection(storedSelection(prefs.defaultModel, prefs.defaultLlmProviderId))
-    if (!selected) return { ...prefs, defaultModel: undefined, defaultLlmProviderId: null }
-    return { ...prefs, defaultModel: selected.model, defaultLlmProviderId: selected.llmProviderId }
-  }
-  return prefs
 }
 
 export async function writeAgentPreferences(
@@ -57,6 +71,11 @@ export async function updateAgentPreferences(
   agentSlug: string,
   updates: Record<string, unknown>
 ): Promise<AgentPreferences> {
+  // A model-only write binds to the app default's account; read it up front,
+  // since the mutator below may run more than once.
+  const bindsToDefault = Object.hasOwn(updates, 'defaultModel') && !!updates.defaultModel
+    && !Object.hasOwn(updates, 'defaultLlmProviderId')
+  const defaultLlmProviderId = bindsToDefault ? (await getSettings()).llmDefault?.llmProviderId : undefined
   // Serialized read-modify-write: fresh STRICT read (a corrupt document aborts
   // the update, never synthesizes {} from a parse error), merge, atomic write.
   const updated = await updateConfigDoc(agentRegistry.get(agentSlug).config, 'preferences', (current) => {
@@ -74,7 +93,7 @@ export async function updateAgentPreferences(
     if (Object.hasOwn(updates, 'defaultModel')) {
       if (!updates.defaultModel) merged.defaultLlmProviderId = null
       else if (!Object.hasOwn(updates, 'defaultLlmProviderId')) {
-        const llmProviderId = current?.defaultLlmProviderId ?? getSettings().llmDefault?.llmProviderId
+        const llmProviderId = current?.defaultLlmProviderId ?? defaultLlmProviderId
         if (llmProviderId) merged.defaultLlmProviderId = llmProviderId
       }
     }

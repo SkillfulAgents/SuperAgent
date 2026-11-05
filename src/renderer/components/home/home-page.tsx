@@ -1,12 +1,13 @@
 
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { WidgetActionRow, WidgetBoard, WidgetSizePopover, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
-import { useAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
+import { useListedAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { LazyHalftone } from '@renderer/components/agents/halftone'
 import { ActivitySparkChart, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
@@ -44,7 +45,7 @@ import { toast } from 'sonner'
 
 // Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
 // should pay for on a cards-only page load.
-const AgentGraph = lazy(() =>
+const AgentGraph = lazyWithReload(() =>
   import('./graph/agent-graph').then((m) => ({ default: m.AgentGraph })),
 )
 
@@ -128,7 +129,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
         title={isRunning ? 'Stop agent' : 'Wake up agent'}
         onClick={activate}
         className={cn(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded border bg-background text-foreground shadow-sm',
+          'flex h-5 w-5 shrink-0 items-center justify-center rounded-control border bg-background text-foreground shadow-sm',
           'cursor-pointer transition-colors hover:bg-muted',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
           'disabled:cursor-wait disabled:opacity-60'
@@ -341,7 +342,7 @@ function AgentCardSessions({
                         }}
                         aria-label="Mark as read"
                         title="Mark as read"
-                        className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <Check className="h-3.5 w-3.5" />
                       </button>
@@ -354,7 +355,7 @@ function AgentCardSessions({
                       }}
                       aria-label="Open session"
                       title="Open session"
-                      className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <ArrowRight className="h-3.5 w-3.5" />
                     </button>
@@ -376,7 +377,7 @@ function AgentCardSessions({
             className="group/row flex h-6 w-full cursor-pointer items-center justify-end gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <span>{moreCount} more</span>
-            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 transition-all group-hover/row:opacity-100">
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-control text-muted-foreground opacity-60 transition-all group-hover/row:opacity-100">
               <ArrowRight className="h-3.5 w-3.5" />
             </span>
           </button>
@@ -527,7 +528,7 @@ function AgentHealthCarousel({
 
 /**
  * Small-card title meta as a ticker: a single line that continuously scrolls
- * "Last run X · {N} new notifications" (orange needs-input dot wins over blue
+ * "Last active X · {N} new notifications" (orange needs-input dot wins over blue
  * unread), looping seamlessly via a duplicated run.
  */
 function TickerTitleMeta({
@@ -584,7 +585,7 @@ function AgentCard({
   health?: HomeCardHealthData
 }) {
   useRenderTracker('AgentCard')
-  const lastRun = formatLastRun(agent.lastActivityAt) ?? 'Last run never'
+  const lastRun = formatLastRun(agent.lastActivityAt) ?? 'Never active'
 
   const isSmall = size === 'S'
 
@@ -656,7 +657,7 @@ function AgentCard({
               })
             )
           }}
-          className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="absolute inset-0 z-20 rounded-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         />
 
         {/* The card has one visible control row and one menu surface: its
@@ -764,7 +765,7 @@ function HomeArrangeMenu({
           aria-label="Home options"
           title="Home options"
           data-testid="home-options-trigger"
-          className="app-no-drag flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="app-no-drag flex h-8 w-8 items-center justify-center rounded-control border border-input bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <MoreVertical className="h-4 w-4" />
         </button>
@@ -778,7 +779,7 @@ function HomeArrangeMenu({
             setOpen(false)
             onArrange()
           }}
-          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+          className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
         >
           <LayoutPanelTop className="h-4 w-4" />
           Arrange
@@ -866,9 +867,9 @@ function HomeEmptySkeletonBoard({
           implicit third column and squeeze every row. */}
       <div
         ref={ctaRef}
-        className="relative rounded-lg border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
+        className="relative rounded-card border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
       >
-        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-item bg-muted/30" />
         {/* Backgrounded like the ghost title pills it stands in for; hover
             firms it up so it still declares itself interactive. */}
         <Button
@@ -887,12 +888,12 @@ function HomeEmptySkeletonBoard({
           key={i}
           aria-hidden="true"
           className={cn(
-            'pointer-events-none relative rounded-lg border border-border/40 bg-card/25',
+            'pointer-events-none relative rounded-card border border-border/40 bg-card/25',
             size === 'W' && 'col-span-2',
           )}
         >
-          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-md bg-muted/40" />
-          <div className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-item bg-muted/40" />
+          <div className="absolute top-2 right-4 h-6 w-20 rounded-item bg-muted/30" />
         </div>
       ))}
     </div>
@@ -901,7 +902,7 @@ function HomeEmptySkeletonBoard({
 
 export function HomePage() {
   useRenderTracker('HomePage')
-  const { data: agents, isLoading: agentsLoading } = useAgents()
+  const { data: agents, isLoading: agentsLoading } = useListedAgents()
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const isMobile = useIsMobile()
@@ -1233,7 +1234,7 @@ export function HomePage() {
           <button
             type="button"
             onClick={openSearch}
-            className="flex items-center gap-2 w-full max-w-md h-7 rounded-md border bg-muted/30 hover:bg-muted/60 transition-colors px-3 text-xs text-muted-foreground app-no-drag"
+            className="flex items-center gap-2 w-full max-w-md h-7 rounded-control border bg-muted/30 hover:bg-muted/60 transition-colors px-3 text-xs text-muted-foreground app-no-drag"
             data-testid="header-search-trigger"
           >
             <Search className="h-3.5 w-3.5 shrink-0" />
@@ -1243,14 +1244,14 @@ export function HomePage() {
             </kbd>
           </button>
         </div>
-        <div className="app-no-drag flex items-center gap-0.5 rounded-md border p-0.5">
+        <div className="app-no-drag flex items-center gap-0.5 rounded-item border p-0.5">
           <button
             type="button"
             onClick={() => setView('cards')}
             title="Card view"
             aria-pressed={view === 'cards'}
             data-testid="home-view-cards"
-            className={`rounded p-1 transition-colors ${view === 'cards' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            className={`rounded-item p-1 transition-colors ${view === 'cards' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <LayoutGrid className="h-3.5 w-3.5" />
           </button>
@@ -1260,7 +1261,7 @@ export function HomePage() {
             title="Graph view"
             aria-pressed={view === 'graph'}
             data-testid="home-view-graph"
-            className={`rounded p-1 transition-colors ${view === 'graph' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            className={`rounded-item p-1 transition-colors ${view === 'graph' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <Waypoints className="h-3.5 w-3.5" />
           </button>

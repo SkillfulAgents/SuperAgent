@@ -1,46 +1,26 @@
 import crypto from 'crypto'
-import fs from 'fs'
-import path from 'path'
-import { getDataDir } from '@shared/lib/config/data-dir'
-
-const AUTH_SECRET_FILENAME = '.auth-secret'
+import { getOrCreateRecord, type RecordDb } from '@shared/lib/app-records/records'
+import { AUTH_SECRET_RECORD_KEY, authSecretRecordSchema } from '@shared/lib/app-records/record-schemas'
 
 /**
  * Get or create the Better Auth secret.
  *
  * Priority:
  * 1. BETTER_AUTH_SECRET env var (explicit override)
- * 2. Persisted secret file (~/.superagent/.auth-secret)
- * 3. Generate new secret, persist to file, return
+ * 2. The deployment's persisted secret (app record `auth-secret`, imported
+ *    from `~/.superagent/.auth-secret` by data migration 9)
+ * 3. A new secret, committed with insert-if-absent so concurrent first uses
+ *    agree on one
+ *
+ * A database error or an invalid stored secret throws rather than replacing
+ * it: sessions, and the S3 volume credentials sealed under a key derived from
+ * this secret (volumes/s3-credentials.ts), depend on it staying the same.
  */
-export function getOrCreateAuthSecret(): string {
-  // 1. Check env var
+export async function getOrCreateAuthSecret(db?: RecordDb): Promise<string> {
   const envSecret = process.env.BETTER_AUTH_SECRET
   if (envSecret) {
     return envSecret
   }
-
-  const secretPath = path.join(getDataDir(), AUTH_SECRET_FILENAME)
-
-  // 2. Check persisted file
-  if (fs.existsSync(secretPath)) {
-    const secret = fs.readFileSync(secretPath, 'utf-8').trim()
-    if (secret.length >= 32) {
-      return secret
-    }
-  }
-
-  // 3. Generate new secret
-  const secret = crypto.randomBytes(32).toString('base64')
-
-  // Ensure data directory exists
-  const dataDir = getDataDir()
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true })
-  }
-
-  // Write with restrictive permissions (owner read/write only)
-  fs.writeFileSync(secretPath, secret, { mode: 0o600 })
-
-  return secret
+  return getOrCreateRecord(AUTH_SECRET_RECORD_KEY, authSecretRecordSchema, () =>
+    crypto.randomBytes(32).toString('base64'), db)
 }

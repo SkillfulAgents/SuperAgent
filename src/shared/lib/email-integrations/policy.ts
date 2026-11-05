@@ -17,7 +17,7 @@ export function emailAddress(value: string): string | null {
 }
 export async function agentUserEmails(agentSlug: string): Promise<Set<string>> {
   if (!isAuthMode()) {
-    const address = getPlatformAuthStatus().email
+    const address = (await getPlatformAuthStatus()).email
     return new Set(address ? [address.toLowerCase()] : [])
   }
   const rows = await db.select({ email: user.email }).from(user).where(and(
@@ -48,7 +48,7 @@ export function wasContacted(message: EmailMessage, history: EmailMessage[]): bo
     && previous.createdAt < message.createdAt && !!previous.messageId && ['sent', 'delivered', 'delivery_delayed'].includes(previous.status)
     && [...previous.to, ...previous.cc, ...previous.bcc].some(address => emailAddress(address) === sender))
 }
-export function platformConnected() { return !!getPlatformAccessToken() }
+export async function platformConnected(): Promise<boolean> { return !!(await getPlatformAccessToken()) }
 
 export class EmailPolicyError extends Error {
   constructor(message: string) { super(message); this.name = 'EmailPolicyError' }

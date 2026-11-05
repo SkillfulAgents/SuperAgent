@@ -16,8 +16,8 @@ export function getIntegrationSetup(provider: string) {
   if (!setup) throw new IntegrationSetupError('Provider setup is unavailable')
   return setup
 }
-export function integrationSetupContext(provider: string, request: Request | string, agentSlug: string, userId?: string): IntegrationSetupContext {
-  const baseUrl = resolvePublicAppBaseUrl(request)
+export async function integrationSetupContext(provider: string, request: Request | string, agentSlug: string, userId?: string): Promise<IntegrationSetupContext> {
+  const baseUrl = await resolvePublicAppBaseUrl(request)
   if (!baseUrl) throw new IntegrationSetupError('Public app URL is unavailable')
   return { agentSlug, userId, callbackUrl: `${baseUrl}/api/agent-integrations/providers/${encodeURIComponent(provider)}/callback` }
 }

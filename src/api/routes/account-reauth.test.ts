@@ -163,7 +163,7 @@ describe('account reauthentication replacement', () => {
     expect(mappedAccounts('shared-agent')).toEqual(['mine'])
     expect(mappedAccounts('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.connectedAccounts).where(eq(schema.connectedAccounts.id, 'old')).get()).toEqual(oldRecord)
-    expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('other-agent', other.id)).not.toBeNull()
     expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'connected-accounts', expect.objectContaining({ slug: 'shared-agent' }), undefined)
   })
 
@@ -172,14 +172,14 @@ describe('account reauthentication replacement', () => {
     const request = park()
     expect((await replace(request.id)).status).toBe(403)
     expect(mappedAccounts('shared-agent')).toEqual(['old'])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
   })
 
   it('rejects a replacement owned by another user', async () => {
     const request = park()
     expect((await replace(request.id, ['theirs'])).status).toBe(404)
     expect(mappedAccounts('shared-agent')).toEqual(['old'])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
   })
 
   it.each([
@@ -208,7 +208,7 @@ describe('account reauthentication replacement', () => {
       .where(eq(schema.agentConnectedAccounts.agentSlug, 'shared-agent')).run()
     expect((await replace(request.id)).status).toBe(409)
     expect(mappedAccounts('shared-agent')).toEqual([])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
   })
 
   it('accepts an already-assigned replacement without duplicating its mapping', async () => {
@@ -224,7 +224,7 @@ describe('account reauthentication replacement', () => {
     const request = park()
     expect((await replace(request.id)).status).toBe(500)
     expect(mappedAccounts('shared-agent')).toEqual(['old'])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
     expect(syncEnvironment).not.toHaveBeenCalled()
   })
 

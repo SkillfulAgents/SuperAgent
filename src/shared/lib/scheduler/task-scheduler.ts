@@ -1,4 +1,3 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Task Scheduler
  *
@@ -8,8 +7,8 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
 
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { AgentActor } from '@shared/lib/agent-actor'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { getSettings } from '@shared/lib/config/settings'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import {
@@ -25,6 +24,7 @@ import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { deliverSessionWake } from './wake-delivery'
 
 /**
@@ -72,10 +72,10 @@ class TaskScheduler {
     // in getDueTasks — SUP-224) can no longer prevent polling from running, so
     // the scheduler self-heals on the next tick instead of wedging.
     this.intervalId = setInterval(() => {
-      this.executeOverdueTasks().catch((error) => {
+      background(this.executeOverdueTasks().catch((error) => {
         console.error('[TaskScheduler] Error in polling cycle:', error)
         captureException(error, { tags: { component: 'task-scheduler', phase: 'poll' } })
-      })
+      }), { name: 'task-scheduler.run-overdue' })
     }, this.pollIntervalMs)
 
     console.log(
@@ -247,16 +247,11 @@ class TaskScheduler {
     // Get available env vars for the agent
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
 
-    // Create a new session with the scheduled prompt.
+    // Create a new session with the scheduled prompt, from one read of the
+    // settings for this execution (the next one reads its own).
     // Model/effort/speed preference order: task override > agent default > global default.
-    const models = getEffectiveModels()
-    const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = await resolveConnectionRuntimeInherit(
-      { model: task.model,
-      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
-      agentPrefs,
-      models,
-    )
+    const { models, resolve } = await resolveSessionDefaults(await getSettings(), task.agentSlug)
+    const resolved = await resolve({ model: task.model, llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed })
     const { id: sessionId } = await actor.sessions.start({
       create: {
         availableEnvVars:
@@ -285,14 +280,14 @@ class TaskScheduler {
     )
 
     // Trigger scheduled session started notification
-    notificationManager.triggerScheduledSessionStarted(
+    background(notificationManager.triggerScheduledSessionStarted(
       sessionId,
       task.agentSlug,
       task.id,
       task.name || undefined
     ).catch((err) => {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
-    })
+    }), { name: 'task-scheduler.notify-session-started' })
 
     await this.recordTaskExecution(task, sessionId)
   }

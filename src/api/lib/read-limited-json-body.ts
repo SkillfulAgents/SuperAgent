@@ -1,3 +1,5 @@
+import { background } from '@shared/lib/background'
+
 export class JsonBodyTooLargeError extends Error {
   constructor() { super('Payload Too Large') }
 }
@@ -16,7 +18,7 @@ export async function readLimitedJsonBody(request: Request, maxBytes: number): P
       size += value.byteLength
       if (size > maxBytes) {
         // Do not wait for the sender or its cancellation hook to finish.
-        void reader.cancel().catch(() => {})
+        background(reader.cancel().catch(() => {}), { name: 'read-limited-json-body.cancel-request-body' })
         throw new JsonBodyTooLargeError()
       }
       if (value.byteLength) chunks.push(value)

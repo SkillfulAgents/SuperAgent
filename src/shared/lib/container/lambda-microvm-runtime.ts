@@ -30,6 +30,7 @@ import type {
 } from './types'
 import { getSettings, isAutoResumeOnUnexpectedDeathEnabled } from '@shared/lib/config/settings'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 import {
   classifyMicrovmDeath,
@@ -54,6 +55,10 @@ const RESUME_RETRY_DELAY_MS = 400
 // handshake completes (a live stream is idle by design).
 const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
 const ECS_METADATA_TIMEOUT_MS = 2_000
+// start() re-checks a RUNNING VM's /health before adopting it; a second try
+// keeps one slow reply from replacing a busy but live VM.
+const ADOPT_HEALTH_ATTEMPTS = 2
+const ADOPT_HEALTH_RETRY_DELAY_MS = 1_000
 // Quiet session streams through MicroVM ingress die at ~60s without traffic.
 export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
 
@@ -265,8 +270,10 @@ export class LocalAuthForwardProxy {
 
   async start(): Promise<number> {
     if (this.port !== null) return this.port
-    const server = http.createServer((req, res) => this.handleRequest(req, res))
-    server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket as net.Socket, head))
+    const server = http.createServer((req, res) => background(this.handleRequest(req, res), { name: 'microvm-proxy.forward-request' }))
+    server.on('upgrade', (req, socket, head) =>
+      background(this.handleUpgrade(req, socket as net.Socket, head), { name: 'microvm-proxy.forward-upgrade' }),
+    )
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
       server.listen(0, '127.0.0.1', () => resolve())
@@ -881,8 +888,8 @@ function isExecutableLaunchFailureError(error: unknown): boolean {
   return (error as { containerErrorClass?: unknown }).containerErrorClass === 'executable_launch_failed'
 }
 
-function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
-  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
+async function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): Promise<UnexpectedDeathPlan> {
+  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(await getSettings())) {
     return { action: 'settle' }
   }
   return plan
@@ -896,6 +903,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly supportsCustomAgentImage = false
 
   private replaceInFlight: Promise<void> | null = null
+  private lastMicrovmId: string | null = null
 
   constructor(config: ContainerConfig) {
     super(config)
@@ -929,7 +937,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, installed.microvmId)
-      return honorMicrovmAutoResume(
+      // Awaited inside the try: a failed settings read falls back to the probe below, which never recovers.
+      return await honorMicrovmAutoResume(
         planFromClassification(
           classifyMicrovmDeath({
             state: mvm.state,
@@ -986,8 +995,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     // PENDING-as-alive is for waitForHealthy. start() must not adopt a stuck
     // PENDING generation — replace it so the next Run can self-heal.
     if (info.status === 'running' && local?.lastObservedState !== 'PENDING') {
-      this.rememberRunningPort(info.port)
-      return info
+      // A frozen guest still reports RUNNING to the control plane; only /health
+      // tells it apart. Adopting it would make every restart reuse the dead VM.
+      if (await this.answersHealth(info.port)) {
+        this.rememberRunningPort(info.port)
+        return info
+      }
+      console.warn(
+        `[LambdaMicroVmRuntimeClient] MicroVM ${local?.microvmId} is RUNNING but fails /health, replacing it agent=${this.config.agentId}`,
+      )
     }
     if (agentStates.has(this.config.agentId)) {
       await this.teardown()
@@ -996,7 +1012,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName)
+    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName, options?.settings)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
@@ -1069,6 +1085,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
 
     return { status: 'running', port: proxyPort }
+  }
+
+  private async answersHealth(port: number | null): Promise<boolean> {
+    if (port === null) return false
+    for (let attempt = 0; attempt < ADOPT_HEALTH_ATTEMPTS; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, ADOPT_HEALTH_RETRY_DELAY_MS))
+      if (await this.isHealthy(port)) return true
+    }
+    return false
   }
 
   // On connect-refused against a dead generation (lifetime-cap / stop race),
@@ -1167,6 +1192,21 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         extra: { microvmId: observedId },
       })
       return { status: 'running', port: state.proxyPort }
+    }
+  }
+
+  async isDefinitelyStopped(): Promise<boolean> {
+    // A missing local record after a host restart is not proof of VM death.
+    // Keep the last id when routing state is discarded so a terminating VM
+    // can still be checked after it actually exits.
+    const currentId = () => agentStates.get(this.config.agentId)?.microvmId ?? this.lastMicrovmId
+    const id = currentId()
+    if (!id) return false
+    try {
+      const mvm = await getMicrovm(getMicrovmRuntimeConfig().region, id)
+      return currentId() === id && mvm.state === 'TERMINATED'
+    } catch (error) {
+      return currentId() === id && isNotFound(error)
     }
   }
 
@@ -1355,6 +1395,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   private cleanupLocal(): void {
     const state = agentStates.get(this.config.agentId)
+    if (state) this.lastMicrovmId = state.microvmId
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
     clearBootstrapEnv(this.config.agentId)

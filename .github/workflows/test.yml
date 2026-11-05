@@ -268,9 +268,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Rebuild native modules
-        run: npm rebuild better-sqlite3
-
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
@@ -325,9 +322,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Rebuild native modules
-        run: npm rebuild better-sqlite3
-
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
@@ -357,6 +351,7 @@ jobs:
       # Section drag targets must stay still while the pointer crosses them.
       # Other specs creating agents used to move those targets mid-gesture.
       - name: Run sidebar E2E suite
+        id: sidebar_e2e
         if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure' || steps.graph_e2e.outcome == 'failure') }}
         env:
           PORT: '3000'
@@ -366,6 +361,18 @@ jobs:
         run: |
           set -o pipefail
           npm run test:e2e:sidebar 2>&1 | tee /tmp/sidebar-e2e-results.txt
+
+      - name: Run Radix Chromium interaction and touch suites
+        if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure' || steps.graph_e2e.outcome == 'failure' || steps.sidebar_e2e.outcome == 'failure') }}
+        env:
+          E2E_PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/radix-chromium
+          PLAYWRIGHT_OUTPUT_DIR: test-results/radix-chromium
+          PLAYWRIGHT_HTML_REPORT: playwright-report/radix-chromium
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --config=playwright.radix.config.ts --project=radix-chromium --project=radix-chromium-touch --retries=0 2>&1 | tee test-results/radix-chromium.log
 
       - name: Upload Playwright artifacts
         if: always()
@@ -416,13 +423,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Rebuild native modules
-        run: npm rebuild better-sqlite3
-
       - name: Install Playwright WebKit
         run: npx playwright install webkit
 
+      - name: Enable keyboard navigation for Playwright WebKit
+        id: webkit_setup
+        # macOS otherwise skips buttons on plain Tab. Enable Keyboard Navigation
+        # for this test app only, preserving native Tab and Radix's focus-loop
+        # assertions (FocusScope deliberately ignores Option+Tab).
+        # https://github.com/microsoft/playwright/issues/41808
+        run: |
+          defaults write org.webkit.Playwright AppleKeyboardUIMode -int 2
+          defaults read org.webkit.Playwright AppleKeyboardUIMode
+
       - name: Run WebKit regression suite
+        id: webkit_e2e
         env:
           PORT: '3000'
           SUPERAGENT_DATA_DIR: .e2e-data/webkit
@@ -431,7 +446,38 @@ jobs:
           # Serial: timing-sensitive scroll tests must not share the box with
           # each other.
           PLAYWRIGHT_WORKERS: '1'
-        run: E2E_MOCK=true npx playwright test --project=web-webkit --retries=0
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit.log
+
+      - name: Run WebKit navigation contracts
+        if: ${{ matrix.repeat == 1 && !cancelled() && steps.webkit_setup.outcome == 'success' }}
+        env:
+          E2E_PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/webkit-navigation
+          PLAYWRIGHT_OUTPUT_DIR: test-results/webkit-navigation
+          PLAYWRIGHT_HTML_REPORT: playwright-report/webkit-navigation
+          PLAYWRIGHT_WORKERS: '1'
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --project=web-webkit-navigation --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit-navigation.log
+
+      # Exercise the same real app controls on Apple's WebKit, including the
+      # touch project. These deterministic interaction tests need one pass;
+      # the compositor regression suite above keeps its three independent runs.
+      - name: Run Radix WebKit interaction and touch suites
+        if: ${{ matrix.repeat == 1 && !cancelled() && steps.webkit_setup.outcome == 'success' }}
+        env:
+          E2E_PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/radix-webkit
+          PLAYWRIGHT_OUTPUT_DIR: test-results/radix-webkit
+          PLAYWRIGHT_HTML_REPORT: playwright-report/radix-webkit
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --config=playwright.radix.config.ts --project=radix-webkit --project=radix-webkit-touch --retries=0 2>&1 | tee test-results/radix-webkit.log
 
       - name: Upload Playwright artifacts
         if: always()
@@ -463,9 +509,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Rebuild native modules
-        run: npm rebuild better-sqlite3
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
@@ -513,18 +556,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Electron ABI, not Node's. The deployment is started with
-      # ELECTRON_RUN_AS_NODE so it loads this same build — one node_modules can
-      # only hold one.
-      - name: Rebuild native modules for Electron
-        run: npx electron-rebuild -f
-
       # Only for the shared libraries Electron needs on a bare runner; this job
       # drives Electron over CDP and never launches a Playwright browser.
       - name: Install Electron's system dependencies
         run: npx playwright install-deps chromium
 
-      # `npm ci` unpacks chrome-sandbox owned by the runner user, and Chromium
+      # Electron no longer downloads its binary on install, only on first launch.
+      # The chown below needs dist/ on disk before anything has launched it.
+      - name: Download the Electron binary
+        run: npx --no install-electron
+
+      # The download leaves chrome-sandbox owned by the runner user, and Chromium
       # aborts on startup rather than run unsandboxed — SIGTRAP before the app
       # exists, which reaches the harness only as "the API server never bound".
       # Fixed here rather than with --no-sandbox because this suite exists to
@@ -542,10 +584,56 @@ jobs:
         run: npm run build:api
 
       - name: Build the desktop app
+        id: desktop_build
         run: npx electron-vite build
 
+      # These harnesses use isolated app state. A failed harness must not skip
+      # the others; a failed build or cancelled job must skip all of them.
+      - name: Validate packaged PDF rendering and local worker
+        if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          xvfb-run --auto-servernum npx tsx e2e/live/pdf-preview/run.ts 2>&1 | tee /tmp/electron-pdf-results.txt
+
+      - name: Validate built Electron navigation and unsaved drafts
+        if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/router/run.ts 2>&1 | tee test-results/electron-router.log
+
+      - name: Upload Electron navigation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-router-artifacts
+          path: |
+            test-results/electron-router/
+            test-results/electron-router.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Validate built Electron Radix interactions
+        if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/radix/run.ts 2>&1 | tee test-results/electron-radix.log
+
       - name: Run the cloud-workspace app suite
+        if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
         run: xvfb-run --auto-servernum node e2e/live/cloud-electron/ci.mjs
+
+      - name: Upload Electron interaction artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-radix-artifacts
+          path: |
+            test-results/electron-radix/
+            test-results/electron-radix.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   e2e-a11y-audit:
     runs-on: ubuntu-24.04
@@ -566,9 +654,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Rebuild native modules
-        run: npm rebuild better-sqlite3
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium

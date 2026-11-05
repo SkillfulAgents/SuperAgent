@@ -29,7 +29,7 @@ test('manages a volume from its own page and browses files without starting an a
     expect((await (await request.get(`/api/agents/${agent.slug}`)).json()).status).toBe('stopped')
     await page.reload()
     await expect(toggle).toBeChecked()
-    await expect(page.getByRole('button', { name: 'Delete drive', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Remove drive', exact: true })).toBeDisabled()
 
     const directoryTab = page.getByTestId('file-tab').filter({ has: page.locator('[data-testid="file-tab-select"]', { hasText: 'Files' }) })
     await expect(directoryTab.getByTestId('file-tab-close')).toHaveCount(0)

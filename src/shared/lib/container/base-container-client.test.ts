@@ -3,12 +3,14 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape } from './base-container-client'
+import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape, spawnWithPath } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
+import type { AppSettings } from '@shared/lib/config/settings'
 
 const enableToolSearch = vi.fn((): boolean | undefined => true)
+const getSettings = vi.fn(() => ({ enableToolSearch: enableToolSearch() }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ enableToolSearch: enableToolSearch() }),
+  getSettings: () => getSettings(),
 }))
 const getContainerEnvVars = vi.fn((): Record<string, string> => ({ ANTHROPIC_API_KEY: 'provider-key' }))
 const platformToken = vi.fn(async (_agentId: string): Promise<string | undefined> => undefined)
@@ -18,9 +20,9 @@ vi.mock('../platform-attribution/container-token', () => ({
 vi.mock('../platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'http://localhost:8080',
 }))
-const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
+const toolSearchEnv = vi.fn((): 'true' | 'false' => 'true')
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
+  activeLlmProviderFrom: () => ({ getContainerEnvVars, toolSearchEnv }),
 }))
 
 /** Minimal concrete subclass to exercise protected run-error classification. */
@@ -32,8 +34,8 @@ class TestContainerClient extends BaseContainerClient {
   public testIsPortConflictError(error: unknown): boolean {
     return this.isPortConflictError(error)
   }
-  public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
-    return this.buildAgentEnv(extra)
+  public testBuildAgentEnv(extra?: Record<string, string>, settings?: AppSettings): Promise<Record<string, string>> {
+    return this.buildAgentEnv(extra, undefined, settings)
   }
 }
 
@@ -90,17 +92,19 @@ describe('buildAgentEnv', () => {
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', async () => {
-    toolSearchEnv.mockReturnValue(undefined)
+  // Unset reads as on behind any custom base URL (CLI 2.1.304+), so a
+  // provider's 'false' must reach the container as an explicit value.
+  it("passes a provider's 'false' through", async () => {
+    toolSearchEnv.mockReturnValue('false')
     const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
-    expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
   // The setting is a master switch, not a way to force tool search onto an
   // endpoint that rejects deferred tools.
   it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', async () => {
     enableToolSearch.mockReturnValue(false)
-    toolSearchEnv.mockReturnValue(undefined)
+    toolSearchEnv.mockReturnValue('true')
     const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
@@ -108,8 +112,18 @@ describe('buildAgentEnv', () => {
   it('passes the agent identity to the provider so it can attribute LLM usage', async () => {
     await new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
     expect(getContainerEnvVars).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'my-agent' })
+      expect.objectContaining({ id: 'my-agent' }),
+      expect.anything(),
     )
+  })
+
+  it('builds from the settings the start read, reading none of its own', async () => {
+    getSettings.mockClear()
+    const startSettings = { enableToolSearch: false } as AppSettings
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv(undefined, startSettings)
+    expect(getSettings).not.toHaveBeenCalled()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+    expect(getContainerEnvVars).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }), startSettings)
   })
 })
 
@@ -531,6 +545,47 @@ describe('shellEscape', () => {
   })
 })
 
+describe('spawnWithPath', () => {
+  it.skipIf(process.platform === 'win32')('spawns an unquoted path that contains a space', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spawn path '))
+    const bin = path.join(dir, 'print args')
+    fs.writeFileSync(bin, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 })
+    try {
+      const proc = spawnWithPath(bin, ['a b', 'c'])
+      const out = await new Promise<string>((resolve, reject) => {
+        let s = ''
+        proc.stdout!.on('data', (d) => { s += d })
+        proc.on('error', reject)
+        proc.on('close', () => resolve(s))
+      })
+      expect(out).toBe('a b\nc\n')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('quotes a path with a space on Windows, where spawn goes through a shell', async () => {
+    const spawn = vi.fn(() => ({}))
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    vi.resetModules()
+    vi.doMock('child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('child_process')>()), spawn }))
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      const { spawnWithPath: spawnOnWindows } = await import('./base-container-client')
+      spawnOnWindows('C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd', ['ps'])
+      expect(spawn).toHaveBeenCalledWith(
+        '"C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd"',
+        ['ps'],
+        expect.objectContaining({ shell: true }),
+      )
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      vi.doUnmock('child_process')
+      vi.resetModules()
+    }
+  })
+})
+
 describe('shellQuote', () => {
   // Note: shellQuote checks the module-level `isWindows` constant which is
   // set at module load time from process.platform. On macOS/Linux this will
@@ -760,8 +815,8 @@ class RunningTestClient extends BaseContainerClient {
     this.infoCalls++
     return { status: 'running', port: 4123 }
   }
-  // The real implementation lazily persists a per-agent token file on disk
-  getHostAuthHeaders(): Record<string, string> {
+  // The real implementation reads the agent's host token from the database
+  async getHostAuthHeaders(): Promise<Record<string, string>> {
     return {}
   }
 }

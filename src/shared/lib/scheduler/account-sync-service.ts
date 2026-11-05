@@ -9,6 +9,7 @@ import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { syncAgentsAssignedConnectedAccount } from '@shared/lib/services/connection-sync-service'
+import { background } from '@shared/lib/background'
 
 type LocalStatus = 'active' | 'revoked' | 'expired'
 
@@ -42,14 +43,14 @@ class AccountSyncService {
 
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      this.syncAll().catch((error) => {
+      background(this.syncAll().catch((error) => {
         console.error('[AccountSync] Error in initial sync:', error)
-      })
+      }), { name: 'account-sync.sync-all' })
 
       this.intervalId = setInterval(() => {
-        this.syncAll().catch((error) => {
+        background(this.syncAll().catch((error) => {
           console.error('[AccountSync] Error in sync cycle:', error)
-        })
+        }), { name: 'account-sync.sync-all' })
       }, this.pollIntervalMs)
     }, this.startupDelayMs)
 
@@ -76,7 +77,7 @@ class AccountSyncService {
     this.isProcessing = true
 
     try {
-      const providers = getRegisteredProviders()
+      const providers = await getRegisteredProviders()
       for (const provider of providers) {
         try {
           await this.syncProvider(provider)
@@ -92,7 +93,7 @@ class AccountSyncService {
   private async syncProvider(provider: BaseAccountProvider): Promise<void> {
     // Org-scoped tokens need per-member attribution; local/opaque-key has one
     // implicit member, so a single global pass suffices.
-    if (!attribution.requiresActingMember()) {
+    if (!(await attribution.requiresActingMember())) {
       await this.syncProviderForOwner(provider, null)
       return
     }
@@ -122,7 +123,7 @@ class AccountSyncService {
     provider: BaseAccountProvider,
     ownerUserId: string | null,
   ): Promise<void> {
-    const userId = getAccountProviderUserId()
+    const userId = await getAccountProviderUserId()
 
     let remoteConnections: ProviderConnectionListItem[]
     try {

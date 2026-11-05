@@ -10,13 +10,26 @@
 import * as Sentry from '@sentry/node'
 import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 import { ERROR_REPORTING_INGEST_URL } from './config'
-import { getSettings } from '../config/settings'
 import { collectEnvironmentData } from './environment'
-import { getTenantId } from '../analytics/tenant-id'
 import { APP_VERSION } from '../config/version'
 
 function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
   return level as Sentry.SeverityLevel
+}
+
+/**
+ * Routes whose request bodies carry credentials: a sign-in form's values,
+ * a secret, a password manager's verification code. The HTTP integration
+ * buffers incoming bodies and attaches them to any event captured while the
+ * request is handled; these never go along.
+ */
+export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)/
+
+/** Drop a captured request body from an event raised while handling a credential route. */
+export function scrubCredentialRequestBody<T extends { request?: { url?: string; data?: unknown } }>(event: T): T {
+  const url = event.request?.url
+  if (url && CREDENTIAL_BODY_ROUTE.test(url) && event.request) delete event.request.data
+  return event
 }
 
 /**
@@ -31,25 +44,29 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
     environment: options.environment,
     release: APP_VERSION,
     tracesSampleRate: 0,
-    beforeSend(event) {
+    integrations: (defaults) => [
+      ...defaults.filter((integration) => integration.name !== 'Http'),
+      Sentry.httpIntegration({
+        ignoreIncomingRequestBody: (url) => CREDENTIAL_BODY_ROUTE.test(url),
+      }),
+    ],
+    // Consent is read fresh for every event, never from an earlier read.
+    async beforeSend(event) {
       try {
-        const settings = getSettings()
+        // Loaded here, not at the top: error reporting is part of the
+        // database's boot graph, and settings reads go through the database.
+        const { getSettings } = await import('../config/settings')
+        const settings = await getSettings()
         if (settings.shareErrorReports === false) {
           return null
         }
       } catch {
-        // If we can't load settings, allow the event (fail-open for crash reports)
+        // Settings unreadable, or not available yet (a boot failure before the
+        // database opened): allow the event (fail-open for crash reports).
       }
-      return event
+      return scrubCredentialRequestBody(event)
     },
   })
-
-  // Set tenant ID as the default user so all events are attributable
-  try {
-    Sentry.setUser({ id: getTenantId() })
-  } catch {
-    // Non-critical — events will still be sent, just without tenant ID
-  }
 
   // Collect and attach environment fingerprint data
   try {
@@ -63,6 +80,14 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
 }
 
 class SentryServerProvider implements ErrorReportingProvider {
+  /** The deployment's tenant id once the entry point attached it; events before that have no user. */
+  private tenantId: string | null = null
+
+  setTenantId(tenantId: string): void {
+    this.tenantId = tenantId
+    // The default user, so every event is attributable to the deployment.
+    Sentry.setUser({ id: tenantId })
+  }
   captureException(error: unknown, context?: ErrorContext): string | undefined {
     return Sentry.captureException(error, {
       tags: context?.tags,
@@ -85,7 +110,7 @@ class SentryServerProvider implements ErrorReportingProvider {
     if (user) {
       Sentry.setUser({ id: user.id, email: user.email })
     } else {
-      Sentry.setUser({ id: getTenantId() })
+      Sentry.setUser(this.tenantId ? { id: this.tenantId } : null)
     }
   }
 

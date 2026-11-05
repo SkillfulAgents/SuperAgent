@@ -89,8 +89,13 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)
-          const providerName = getSettings().app?.hostBrowserProvider ?? 'container'
-          trackServerEvent('browser_opened', { using: providerName })
+          getSettings()
+            .then((settings) => {
+              trackServerEvent('browser_opened', { using: settings.app?.hostBrowserProvider ?? 'container' })
+            })
+            .catch((error) => {
+              console.error('[BrowserProxy] Could not read the browser provider for analytics:', error)
+            })
         })
 
         // Forward frames from container to client, preserving text/binary

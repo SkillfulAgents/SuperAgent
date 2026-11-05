@@ -40,6 +40,10 @@ export type FakeAgentActor = {
   readonly files: FakeOps<AgentActor['files']>
   readonly memories: FakeOps<AgentActor['memories']>
   readonly config: FakeOps<AgentActor['config']>
+  readonly locks: FakeOps<AgentActor['locks']>
+  readonly widgets: FakeOps<AgentActor['widgets']>
+  readonly mcpSessions: FakeOps<AgentActor['mcpSessions']>
+  readonly volumeUploads: FakeOps<AgentActor['volumeUploads']>
 }
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends Fn ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] }
@@ -101,6 +105,10 @@ export function createFakeAgentActor(slug: AgentSlug, overrides: FakeActorOverri
     files: fakeGroup(overrides.files as Record<string, unknown>) as FakeAgentActor['files'],
     memories: fakeGroup(overrides.memories as Record<string, unknown>) as FakeAgentActor['memories'],
     config: fakeGroup(overrides.config as Record<string, unknown>) as FakeAgentActor['config'],
+    locks: fakeGroup(overrides.locks as Record<string, unknown>) as FakeAgentActor['locks'],
+    widgets: fakeGroup(overrides.widgets as Record<string, unknown>) as FakeAgentActor['widgets'],
+    mcpSessions: fakeGroup(overrides.mcpSessions as Record<string, unknown>) as FakeAgentActor['mcpSessions'],
+    volumeUploads: fakeGroup(overrides.volumeUploads as Record<string, unknown>) as FakeAgentActor['volumeUploads'],
   }
 }
 

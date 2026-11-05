@@ -3,6 +3,8 @@ import plugin from 'tailwindcss/plugin'
 
 const config: Config = {
   darkMode: ['class'],
+  // Re-registered below so `h-*` also sets --control-h.
+  corePlugins: { height: false },
   content: [
     './src/renderer/**/*.{js,ts,jsx,tsx,mdx}',
     './src/shared/**/*.{js,ts,jsx,tsx,mdx}',
@@ -78,7 +80,14 @@ const config: Config = {
 		borderRadius: {
 			lg: 'var(--radius)',
 			md: 'calc(var(--radius) - 2px)',
-			sm: 'calc(var(--radius) - 4px)'
+			sm: 'calc(var(--radius) - 4px)',
+			// The radius scale - defined and explained in globals.css (:root).
+			control: 'calc(var(--control-h) * var(--control-radius-ratio))',
+			icon: 'var(--radius-icon)',
+			item: 'var(--radius-item)',
+			popover: 'var(--radius-popover)',
+			card: 'var(--radius-card)',
+			dialog: 'var(--radius-dialog)'
 		},
 		// Slussen is declared in globals.css (@font-face) and set on <body> from
 		// this stack, so `font-sans` (e.g. on <kbd> chips, which default to
@@ -203,6 +212,29 @@ const config: Config = {
       // existing at all — e.g. hover-revealed controls that would otherwise be
       // invisible-but-tappable ghosts under a finger.
       addVariant('has-touch', '@media (any-pointer: coarse)')
+      // `menu-revealed:` — the 3-dot button of a context-menu target is showing
+      // (`ContextMenuMoreButton` in ui/context-menu.tsx): the target is hovered,
+      // its menu is open, or something inside it has keyboard focus. Every
+      // `ContextMenuTrigger` is `group/context-menu`, matched as an ancestor, so
+      // a trigger holding a button must not sit inside another trigger. Never
+      // on touch, which keeps the long-press and no button, so anything that
+      // yields its place to the button (`menu-revealed:opacity-0`) stays put
+      // there too.
+      addVariant('menu-revealed', [
+        '@media not all and (hover: none) and (pointer: coarse) { .group\\/context-menu:hover & }',
+        '@media not all and (hover: none) and (pointer: coarse) { .group\\/context-menu[data-state="open"] & }',
+        '@media not all and (hover: none) and (pointer: coarse) { .group\\/context-menu:has(:focus-visible) & }',
+      ])
+    }),
+    // Core `height`, re-registered so every `h-*` also publishes its value as
+    // --control-h, which `rounded-control` reads. It has to replace the core
+    // plugin (corePlugins.height is off) rather than add a second `h` utility:
+    // two plugins matching `h-[34px]` make it ambiguous and Tailwind drops it.
+    plugin(({ matchUtilities, theme }) => {
+      matchUtilities(
+        { h: (value) => ({ height: value, '--control-h': value }) },
+        { values: theme('height') },
+      )
     }),
   ],
 }

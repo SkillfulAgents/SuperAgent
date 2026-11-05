@@ -1,4 +1,5 @@
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
+import { background } from '@shared/lib/background'
 import { z } from 'zod'
 import { captureException } from '../error-reporting'
 import { InvalidDeliveryEnvelope, parseDeliveryEnvelope } from './delivery-schema'
@@ -61,7 +62,7 @@ export class IntegrationDeliveryQueue {
     this.timerAt = Date.now() + delay
     this.timer = setTimeout(() => {
       this.timerAt = Infinity
-      void this.pump().catch(error => { this.report(error, 'schedule'); this.wake(5_000) })
+      background(this.pump().catch(error => { this.report(error, 'schedule'); this.wake(5_000) }), { name: 'delivery-queue.pump' })
     }, delay)
     this.timer.unref?.()
   }

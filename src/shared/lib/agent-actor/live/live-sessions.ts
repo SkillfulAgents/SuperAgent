@@ -26,9 +26,15 @@ import {
   type UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
-import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import {
+  getSessionMetadata,
+  readAgentSlashCommands,
+  storeAgentSlashCommands,
+  updateSessionMetadata,
+} from '@shared/lib/services/session-service'
 import { isAgentIntegrationSession, isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 import { z } from 'zod'
 import { sessionFilePath, type SessionStore } from '../session-store'
@@ -47,8 +53,8 @@ import { OrderedSends } from '../ordered-sends'
 
 /** The agent's container runtime, as its sessions need it. */
 export interface SessionsRuntime extends SessionRuntime {
-  /** The agent's current container client. */
-  client(): ContainerClient
+  /** The agent's current container client (for the runner configured now, read from the settings). */
+  client(): Promise<ContainerClient>
 }
 
 export interface LiveSessionsDeps {
@@ -67,10 +73,9 @@ export interface LiveSessionsDeps {
 // Body of the container's POST /sessions/:id/interrupt.
 const interruptResponseSchema = z.object({ processKept: z.boolean().optional() })
 
-/** The model runtime a session's turns run on: the non-secret facts its errors and usage are read with. */
+/** The model runtime a session's turns run on: the non-secret facts its errors and analytics are read with. */
 export interface SessionModelRuntime {
   provider: LlmProviderId
-  modelContextWindows: Record<string, number>
 }
 
 /** How many sessions' runtimes an agent keeps (see `LiveSessions.recordRuntime`). */
@@ -131,6 +136,11 @@ export class LiveSessions {
 
   isActive(sessionId: string): boolean {
     return this.states.get(sessionId)?.isActive ?? false
+  }
+
+  /** The host holds the session's live state, whether or not its turn runs. */
+  has(sessionId: string): boolean {
+    return this.states.has(sessionId)
   }
 
   isAwaitingInput(sessionId: string): boolean {
@@ -289,10 +299,18 @@ export class LiveSessions {
     return release
   }
 
+  /**
+   * The user started the session with computer use on: it may list and use
+   * any app without asking (`AgentComputerUse.grantSession`).
+   */
+  grantComputerUse(sessionId: string): void {
+    this.deps.computerUse.grantSession(sessionId)
+  }
+
   /** An event for a session's listeners. */
   emit(sessionId: string, event: SessionEvent): void {
     const tagged = this.provisionalSessions.has(sessionId) ? { ...event, provisional: true } : event
-    void this.deps.capture?.recordOutput(sessionId, tagged)
+    if (this.deps.capture) background(this.deps.capture.recordOutput(sessionId, tagged), { name: 'live-sessions.capture-output' })
     this.channels.emit(sessionId, tagged)
   }
 
@@ -319,14 +337,16 @@ export class LiveSessions {
     )
   }
 
-  /** The commands the session's metadata kept (after a container restart, say), repaired once. */
+  /** The commands the agent kept (after a container restart, say), repaired once. */
   private async storedSlashCommands(sessionId: string): Promise<SlashCommandInfo[]> {
-    const meta = await getSessionMetadata(this.deps.store, sessionId)
-    if (!meta?.slashCommands || meta.slashCommands.length === 0) return []
-    const repaired = repairLegacySlashCommands(meta.slashCommands)
+    const commands = await readAgentSlashCommands(this.deps.store)
+    if (commands.length === 0) return []
+    const repaired = repairLegacySlashCommands(commands)
     this.setSlashCommands(sessionId, repaired.commands)
     if (repaired.changed) {
-      updateSessionMetadata(this.deps.store, sessionId, { slashCommands: repaired.commands }).catch(console.error)
+      background(storeAgentSlashCommands(this.deps.store, repaired.commands).catch(console.error), {
+        name: 'live-sessions.persist-repaired-slash-commands',
+      })
     }
     return repaired.commands
   }
@@ -411,18 +431,18 @@ export class LiveSessions {
     this.subscriptions.get(sessionId)?.()
     this.subscriptions.delete(sessionId)
     const prior = this.states.get(sessionId)
-    prior?.dispose()
+    prior?.dispose({ replaced: true })
     const state = this.create(sessionId, prior)
     this.resolveStreamPolicy(sessionId, state, metadata)
     this.clients.set(sessionId, client)
     const frame = (message: StreamMessage) => this.states.get(sessionId)?.frame(message)
     let held: StreamMessage[] | null = holdFramesUntil ? [] : null
     if (holdFramesUntil) {
-      void holdFramesUntil.then(() => undefined, () => undefined).then(() => {
+      background(holdFramesUntil.then(() => undefined, () => undefined).then(() => {
         const waiting = held ?? []
         held = null
         for (const message of waiting) frame(message)
-      })
+      }), { name: 'live-sessions.release-held-frames' })
     }
     const { unsubscribe, ready } = client.subscribeToStream(containerSessionId, (message) => {
       if (held) held.push(message)
@@ -454,9 +474,9 @@ export class LiveSessions {
     this.subscriptions.set(sessionId, unsubscribe)
     // A failed reattach comes back through the stream as a synthesized
     // connection_closed; this only keeps the rejection from going unhandled.
-    this.trackConnecting(sessionId, ready).catch((error) => {
+    background(this.trackConnecting(sessionId, ready).catch((error) => {
       console.error(`[LiveSessions] Re-subscribe failed for session ${sessionId}:`, error)
-    })
+    }), { name: 'live-sessions.reattach-stream' })
   }
 
   /**
@@ -465,23 +485,26 @@ export class LiveSessions {
    * the stream rather than guess.
    */
   private resolveStreamPolicy(sessionId: string, state: LiveSession, known?: SessionMetadata | null): void {
-    void (known !== undefined ? Promise.resolve(known) : getSessionMetadata(this.deps.store, sessionId))
-      .then((meta) => {
-        // A reattach replaced the state and resolves its own policy.
-        if (this.states.get(sessionId) !== state) return
-        state.applyStreamPolicy({
-          releaseStreamWhenIdle: isHiddenAutomatedSession(meta),
-          retainStateOnStreamRelease: isAgentIntegrationSession(meta),
+    background(
+      (known !== undefined ? Promise.resolve(known) : getSessionMetadata(this.deps.store, sessionId))
+        .then((meta) => {
+          // A reattach replaced the state and resolves its own policy.
+          if (this.states.get(sessionId) !== state) return
+          state.applyStreamPolicy({
+            releaseStreamWhenIdle: isHiddenAutomatedSession(meta),
+            retainStateOnStreamRelease: isAgentIntegrationSession(meta),
+          })
+          this.releaseIfIdle(sessionId)
         })
-        this.releaseIfIdle(sessionId)
-      })
-      .catch((error) => {
-        console.warn('[LiveSessions] Failed to resolve automation stream policy:', error)
-        captureException(error, {
-          tags: { area: 'container', op: 'resolveStreamReleasePolicy' },
-          extra: { sessionId, agentSlug: this.deps.slug },
-        })
-      })
+        .catch((error) => {
+          console.warn('[LiveSessions] Failed to resolve automation stream policy:', error)
+          captureException(error, {
+            tags: { area: 'container', op: 'resolveStreamReleasePolicy' },
+            extra: { sessionId, agentSlug: this.deps.slug },
+          })
+        }),
+      { name: 'live-sessions.resolve-stream-policy' },
+    )
   }
 
   /**
@@ -559,12 +582,14 @@ export class LiveSessions {
   }
 
   /**
-   * The container stopped. Every session's stream goes; a session mid-turn
-   * ends (see `LiveSession.markInactive`); a recovering one is left to its
-   * recovery, or settled with it when the stop ends the recovery too.
+   * The container stopped. Every session's stream goes, and the host runs
+   * its calls were waiting on (see `LiveSession.abandonHostRuns`); a session
+   * mid-turn ends (see `LiveSession.markInactive`); a recovering one is left
+   * to its recovery, or settled with it when the stop ends the recovery too.
    */
   markAllInactive(options?: { settleRecovering?: boolean }): void {
     for (const [sessionId, state] of [...this.states]) {
+      state.abandonHostRuns()
       if (state.isRecovering) {
         if (options?.settleRecovering) this.settleRecovering([sessionId])
         else this.detach(sessionId)
@@ -761,7 +786,9 @@ export class LiveSessions {
    * best-effort cancel must never block the message.
    */
   async cancelAwaitingInput(sessionId: string): Promise<void> {
-    if (!this.isAwaitingInput(sessionId)) return
+    // An idle session waits only on a call parked on its own card, held by a
+    // background script: there is no turn to stop, and the message starts one.
+    if (!this.isActive(sessionId) || !this.isAwaitingInput(sessionId)) return
     // Taken before the stop: the stop's idle clears the stream store, and
     // computer-use approvals survive that boundary on purpose. Recovered
     // stubs are included: their container-side pending may well be live.
@@ -793,8 +820,9 @@ export class LiveSessions {
    * untracked cannot be settled by a turn stop, so that one stops everything.
    */
   private async interruptContainer(sessionId: string): Promise<{ processKept: boolean }> {
+    const client = await this.deps.runtime.client()
     const scope = this.hasOnlyUntrackedBackgroundWork(sessionId) ? 'all' : 'turn'
-    const response = await this.deps.runtime.client().fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+    const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),
@@ -861,9 +889,10 @@ export class LiveSessions {
     if (!request.blocking || request.autoApproved) return
     const agentSlug = this.deps.slug
     if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
-      // Agent-scoped: attributed to the first active session, the awaiting
-      // projection's heuristic. With none (a dashboard-triggered review) the
-      // dashboard panel is the surface.
+      // A review scoped to the session whose call it holds notifies that
+      // session; an agent-scoped one is attributed to the first active
+      // session. With none (a dashboard-triggered review) the dashboard
+      // panel is the surface.
       const sessionId = request.scope.sessionId ?? this.activeIds()[0]
       if (!sessionId) return
       const payload = request.payload as { displayText?: unknown }
@@ -877,8 +906,9 @@ export class LiveSessions {
       })
       return
     }
-    // Agent-scoped reviews and re-auth requests have no session to notify
-    // for; their in-app cards are the prompt.
+    // Agent-scoped requests have no session to notify for, and re-auth cards
+    // are no notification category even when scoped to the calling session;
+    // their in-app cards are the prompt.
     const sessionId = request.scope.sessionId
     if (!sessionId) return
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
@@ -920,8 +950,13 @@ export class LiveSessions {
     const capture = this.deps.capture
     if (capture) {
       const { store } = this.deps
-      capture.snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'state-created').catch(() => {})
-      capture.recordNote(sessionId, 'state_created', { agentSlug: this.deps.slug }).catch(() => {})
+      background(
+        capture.snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'state-created').catch(() => {}),
+        { name: 'live-sessions.capture-subagents-snapshot' },
+      )
+      background(capture.recordNote(sessionId, 'state_created', { agentSlug: this.deps.slug }).catch(() => {}), {
+        name: 'live-sessions.capture-note',
+      })
     }
     return state
   }
@@ -951,9 +986,9 @@ export class LiveSessions {
       resyncAwaiting: () => this.states.get(sessionId)?.syncAwaiting(),
       completions: () => this.completionsOf(sessionId),
       promote: () => {
-        this.promoteAutomated(sessionId).catch((error) => {
+        background(this.promoteAutomated(sessionId).catch((error) => {
           console.error('[LiveSessions] Failed to promote automated session:', error)
-        })
+        }), { name: 'live-sessions.promote-automated' })
       },
       workflows: this.workflowsOf(sessionId),
     }

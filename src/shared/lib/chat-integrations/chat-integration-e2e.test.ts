@@ -83,6 +83,11 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-5',
     summarizerModel: 'claude-haiku-4-5',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-5',
+    browserModel: 'claude-sonnet-4-5',
+    summarizerModel: 'claude-haiku-4-5',
+  }),
   getSettings: () => ({}),
   getAgentCapabilitySettings: () => ({ ...mockAgentCapabilities }),
   getModelCatalogSettings: () => ({}),
@@ -592,11 +597,6 @@ describe('Chat integration E2E', () => {
       vi.mocked(containerManager.ensureRunning).mockReset()
       vi.mocked(containerManager.ensureRunning).mockResolvedValue(mockContainerClient)
 
-      // start() arms this in production; this harness drives addIntegration
-      // directly, and without it the review card has no wire to arrive on.
-      ;(agentIntegrationManager as unknown as { subscribeGlobalNotifications(): void })
-        .subscribeGlobalNotifications()
-
       // Two kinds the shared scenario table has no trigger for.
       MockContainerClient.registerScenario('need a file', new UserInputRequestScenario([
         { name: 'mcp__user-input__request_file', input: { description: 'A CSV of last quarter' } },
@@ -632,19 +632,14 @@ describe('Chat integration E2E', () => {
       // the user to the wrong place.
       expect(sent.sessionId).toBeTruthy()
       // …and it must be the id the registry holds, not a chat-side invention.
-      const open = userInputRequestManager.getOpenRequest(
-        (sent.event as { toolUseId: string }).toolUseId,
-      )
+      const open = userInputRequestManager.getOpenRequest('test-agent', (sent.event as { toolUseId: string }).toolUseId)
       expect(open?.kind).toBe(row.kind)
       expect(open?.scope.sessionId).toBe(sent.sessionId)
       if (row.expect) expect(sent.event).toMatchObject(row.expect)
     })
 
-    it('a parked proxy review reaches chat as the Allow/Deny card off the global wire', async () => {
-      // Reviews are agent-scoped, so they never touch a session SSE stream —
-      // this is the only path that carries them, and it is a different one from
-      // every row above.
-      const sent = await cardFor('proxy review please')
+    it("a proxy review from the chat's session reaches chat as the Allow/Deny card", async () => {
+      const sent = await cardFor('proxy review please scope=session')
 
       expect(sent.event.type).toBe('question_request')
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId
@@ -655,7 +650,20 @@ describe('Chat integration E2E', () => {
       // The id in the card is the registry's review id, so the decision routes
       // back to the entry that is actually parked.
       const reviewId = toolUseId.split(':')[1]
-      expect(userInputRequestManager.getOpenRequest(reviewId)?.kind).toBe('proxy_review')
+      expect(userInputRequestManager.getOpenRequest('test-agent', reviewId)?.kind).toBe('proxy_review')
+    })
+
+    it('an agent-wide proxy review stays in the app and never reaches chat', async () => {
+      const integrationId = await createTestIntegration()
+      await agentIntegrationManager.addIntegration(integrationId)
+      mockConnector.simulateIncomingMessage('proxy review please', 'chat-1', 'user-1')
+      await waitForCondition(
+        () => userInputRequestManager.getOpenRequestsForAgent('test-agent').some((r) => r.kind === 'proxy_review'),
+        8000,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      expect(mockConnector.sentCards).toHaveLength(0)
     })
 
     it('a press on a card settled elsewhere is refused instead of buffered in the container', async () => {
@@ -663,7 +671,7 @@ describe('Chat integration E2E', () => {
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId
 
       // Settled in the app while the chat card still shows live buttons.
-      expect(userInputRequestManager.resolve(toolUseId, 'answered')).not.toBeNull()
+      expect(userInputRequestManager.resolve('test-agent', toolUseId, 'answered')).not.toBeNull()
 
       const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
       mockConnector.sentMessages = []
@@ -683,7 +691,7 @@ describe('Chat integration E2E', () => {
 
       // Same id, re-parked under a different agent — the shape a forged or
       // crossed-wires payload takes. Still open, still not this chat's to decide.
-      userInputRequestManager.resolve(toolUseId, 'cancelled')
+      userInputRequestManager.resolve('test-agent', toolUseId, 'cancelled')
       userInputRequestManager.register({
         id: toolUseId,
         kind: 'secret',
@@ -700,7 +708,7 @@ describe('Chat integration E2E', () => {
 
       expect(mockConnector.sentMessages[0].message.text).toContain('already handled')
       expect(fetchSpy.mock.calls.filter(([p]) => String(p).includes('/resolve'))).toHaveLength(0)
-      expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('other-agent', toolUseId)).not.toBeNull()
       fetchSpy.mockRestore()
     })
 
@@ -727,7 +735,7 @@ describe('Chat integration E2E', () => {
 
       // Settle in the app while the press is parked on the container lookup.
       await waitForCondition(() => vi.mocked(containerManager.ensureRunning).mock.calls.length > 0, 3000)
-      expect(userInputRequestManager.resolve(toolUseId, 'answered')).not.toBeNull()
+      expect(userInputRequestManager.resolve('test-agent', toolUseId, 'answered')).not.toBeNull()
       releaseContainer()
 
       // Wait on something BOTH outcomes produce, so the assertion below is what
@@ -759,7 +767,7 @@ describe('Chat integration E2E', () => {
 
       await waitForCondition(() => userInputRequestManager.stats.claimed === 0, 3000)
       // Still open, and the next press gets through.
-      expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('test-agent', toolUseId)).not.toBeNull()
       const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
       mockConnector.simulateInteractiveResponse(toolUseId, 'hunter2', 'chat-1')
       await waitForCondition(
@@ -781,7 +789,7 @@ describe('Chat integration E2E', () => {
       mockConnector.simulateInteractiveResponse(toolUseId, { question: 'Pick one', answer: 'Blue' }, 'chat-1')
       await waitForCondition(() => fetchSpy.mock.calls.some(([p]) => String(p).includes('/resolve')), 3000)
 
-      expect(userInputRequestManager.getRecentResolution(toolUseId)?.outcome).toBe('answered')
+      expect(userInputRequestManager.getRecentResolution('test-agent', toolUseId)?.outcome).toBe('answered')
       expect(mockConnector.sentMessages.map(m => m.message.text).join('\n')).not.toContain('already handled')
       fetchSpy.mockRestore()
     })

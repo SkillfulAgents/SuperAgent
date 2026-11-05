@@ -8,7 +8,7 @@ import {
 
 export type SessionUpdate = Partial<Pick<
   SessionMetadata,
-  'lastActivity' | 'metadata' | 'llmProviderId' | 'effort' | 'speed' | 'model' | 'capabilityPolicies' | 'globalInstructions'
+  'lastActivity' | 'metadata' | 'llmProviderId' | 'effort' | 'speed' | 'model' | 'capabilityPolicies' | 'globalInstructions' | 'releasedForDeletion'
 >>;
 
 // Overridable so the session-GC E2E harness (which runs this stack on a dev

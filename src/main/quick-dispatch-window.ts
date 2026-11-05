@@ -1,6 +1,16 @@
 import { app, BrowserWindow, screen } from 'electron'
 import path from 'path'
 import { installPopupHandler } from './dashboard-window'
+import {
+  QUICK_DISPATCH_GLASS_MATERIAL,
+  QUICK_DISPATCH_MATERIAL_PARAM,
+} from '@shared/lib/quick-dispatch-glass'
+import {
+  applyQuickDispatchGlass,
+  loadQuickDispatchGlass,
+  quickDispatchGlassAvailable,
+} from './quick-dispatch-glass'
+import { releaseQuickDispatchCapture } from './quick-dispatch-capture'
 
 // The quick-dispatch launcher: a frameless, translucent, always-on-top panel
 // (Spotlight/Raycast style) that floats over whatever the user is doing. It is
@@ -30,17 +40,23 @@ let suppressBlurHide = false
 const blurHideDisabled = process.env.QUICK_DISPATCH_NO_BLUR_HIDE === '1'
 
 function buildQuickDispatchWindow(): BrowserWindow {
+  // Liquid Glass (macOS 26+) is a native view behind the web content of a
+  // fully transparent window (quick-dispatch-glass.ts), so it is decided here,
+  // at construction. Older macOS keeps Electron's vibrancy. The glass bridge
+  // loads at startup (prewarmQuickDispatchWindow); a window built before it
+  // settles gets vibrancy.
+  const wantsGlass = quickDispatchGlassAvailable()
   const win = new BrowserWindow({
     width: QUICK_WIDTH,
     height: INITIAL_HEIGHT,
     frame: false,
-    // Native vibrancy (macOS) / acrylic (Windows) = real whole-window frost.
+    // Native glass / vibrancy (macOS) / acrylic (Windows) = real whole-window frost.
     // The window grows to fit FULL-WIDTH dropdowns (Raycast-style), so the
     // frosted area is always filled by the menu — never an empty frosted gap.
     // (CSS backdrop-blur can't frost the desktop here, so native is the only
     // real-frost option; whole-window is fine because menus fill the growth.)
-    transparent: process.platform === 'linux',
-    ...(process.platform === 'linux' && { backgroundColor: '#00000000' }),
+    transparent: process.platform === 'linux' || wantsGlass,
+    ...((process.platform === 'linux' || wantsGlass) && { backgroundColor: '#00000000' }),
     resizable: false,
     movable: true,
     minimizable: false,
@@ -64,7 +80,9 @@ function buildQuickDispatchWindow(): BrowserWindow {
       // below) drops work. If 'under-window' (behind-window blend → more
       // transparent backing) ever regresses drops, fall back to a within-window
       // material ('hud' / 'menu' / 'popover' / 'sidebar').
-      vibrancy: 'under-window' as const,
+      ...(!wantsGlass && { vibrancy: 'under-window' as const }),
+      // Always set: Electron reads it at construction, so the setVibrancy
+      // fallback below stays active too when the launcher isn't key.
       visualEffectState: 'active' as const,
     }),
     ...(process.platform === 'win32' && {
@@ -96,10 +114,18 @@ function buildQuickDispatchWindow(): BrowserWindow {
   // links through the same scheme-validated opener as the rest of the app.
   installPopupHandler(win.webContents)
 
+  const hasGlass = wantsGlass && applyQuickDispatchGlass(win)
+  // The window is already transparent; don't leave it with no material at all.
+  if (wantsGlass && !hasGlass) win.setVibrancy('under-window')
+
+  // The renderer styles the card for glass (larger radius, no CSS ring); it
+  // reads the material from the URL so the first paint is already right.
+  const query = hasGlass ? { [QUICK_DISPATCH_MATERIAL_PARAM]: QUICK_DISPATCH_GLASS_MATERIAL } : undefined
   if (process.env.ELECTRON_RENDERER_URL) {
-    void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/quick-dispatch.html`)
+    const search = query ? `?${new URLSearchParams(query).toString()}` : ''
+    void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}/quick-dispatch.html${search}`)
   } else {
-    void win.loadFile(path.join(__dirname, '../renderer/quick-dispatch.html'))
+    void win.loadFile(path.join(__dirname, '../renderer/quick-dispatch.html'), { query })
   }
 
   // Debug aid: the launcher is frameless with no menu, so devtools is otherwise
@@ -130,6 +156,9 @@ function buildQuickDispatchWindow(): BrowserWindow {
   // survives. Tell the renderer to reset when it hides so the next open is
   // fresh — fires for every dismiss path (Esc, blur, post-dispatch).
   win.on('hide', () => {
+    // A screenshot still flying into the composer has nowhere to land, and the
+    // overlay kept for the next one goes with the panel.
+    releaseQuickDispatchCapture()
     if (!win.isDestroyed()) win.webContents.send('quick-dispatch:reset')
   })
 
@@ -148,8 +177,13 @@ export function getQuickDispatchWindow(): BrowserWindow {
   return quickWindow
 }
 
-/** Pre-create the hidden window at startup so the first open is instant. */
-export function prewarmQuickDispatchWindow(): void {
+/**
+ * Pre-create the hidden window at startup so the first open is instant. Waits
+ * for the glass bridge first, since the window's material is fixed when it is
+ * built; startApp starts that load early, so this wait is normally already over.
+ */
+export async function prewarmQuickDispatchWindow(): Promise<void> {
+  await loadQuickDispatchGlass()
   getQuickDispatchWindow()
 }
 
@@ -230,6 +264,9 @@ export function setQuickDispatchContentHeight(height: number): void {
   const maxTop = workArea.y + workArea.height - clamped - 8
   const top = Math.max(workArea.y + 8, Math.min(topBefore, maxTop))
   quickWindow.setPosition(x, Math.round(top))
+  // A transparent (glass) window's shadow follows its painted alpha; redraw it
+  // at the new size. Harmless on a vibrancy window.
+  if (process.platform === 'darwin') quickWindow.invalidateShadow()
 }
 
 // --- JS window drag (frameless move without a CSS drag region, which would be

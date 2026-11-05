@@ -1,15 +1,18 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import net from 'net'
+import { createRequire } from 'node:module'
 import { serve } from '@hono/node-server'
 import type { ServerType } from '@hono/node-server'
 import { Hono } from 'hono'
 import { armAbortSignal } from './arm-abort-signal'
 
-// Real @hono/node-server + real socket disconnects: the adapter creates the
-// request AbortController lazily on first `.signal` access and its close
-// handler only aborts a controller that already exists, so these tests can't
-// run against Hono's in-process `app.request()` helper — the laziness under
-// test lives in the node adapter.
+// Real adapters + socket disconnects: node-server 2 replays a hangup when the
+// signal is first accessed. Vite still resolves node-server 1, which needs the
+// middleware to arm it before asynchronous auth work. Resolve through the
+// plugin so this follows its installed dependency rather than a hoisting path.
+const require = createRequire(import.meta.url)
+const requireFromVite = createRequire(require.resolve('@hono/vite-dev-server'))
+const { serve: serveDevelopment } = requireFromVite('@hono/node-server') as typeof import('@hono/node-server')
 
 interface Probe {
   abortedSeenByHandler?: boolean
@@ -38,9 +41,9 @@ afterEach(() => {
   server = undefined
 })
 
-function serveApp(app: Hono): Promise<number> {
+function serveApp(app: Hono, adapter = serve): Promise<number> {
   return new Promise((resolve) => {
-    server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) =>
+    server = adapter({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) =>
       resolve(info.port)
     )
   })
@@ -69,13 +72,17 @@ describe('armAbortSignal', () => {
     expect(probe.abortedSeenByHandler).toBe(true)
   })
 
-  // Control: pins the adapter behavior that makes the middleware necessary.
-  // If an upgraded @hono/node-server starts observing pre-access hangups on
-  // its own, this fails — delete the middleware and this file together.
-  it('without arming, the same hangup is permanently missed', async () => {
+  it('the production adapter replays a hangup even before the signal is accessed', async () => {
     const { app, probe } = buildApp(false)
     const port = await serveApp(app)
     await hitAndHangUp(port)
-    expect(probe.abortedSeenByHandler).toBe(false)
+    expect(probe.abortedSeenByHandler).toBe(true)
+  })
+
+  it.each([true, false])('the Vite adapter observes an early hangup only with arming=%s', async (withArming) => {
+    const { app, probe } = buildApp(withArming)
+    const port = await serveApp(app, serveDevelopment)
+    await hitAndHangUp(port)
+    expect(probe.abortedSeenByHandler).toBe(withArming)
   })
 })

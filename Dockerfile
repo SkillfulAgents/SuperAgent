@@ -2,7 +2,7 @@
 # Runs on the build host's platform: dist/ is plain JS (natives stay external
 # in tsup.config.ts), so one native build serves every target platform instead
 # of a second one under QEMU. Only the deps stage needs target-arch binaries.
-FROM --platform=$BUILDPLATFORM node:22-slim AS builder
+FROM --platform=$BUILDPLATFORM node:22.23.4-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -26,7 +26,7 @@ ENV AUTH_MODE=${AUTH_MODE}
 RUN npm run build
 
 # ---- deps: production-only node_modules ----
-FROM node:22-slim AS deps
+FROM node:22.23.4-bookworm-slim AS deps
 
 WORKDIR /app
 
@@ -40,7 +40,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 # ---- runtime ----
-FROM node:22-slim AS runtime
+FROM node:22.23.4-bookworm-slim AS runtime
 
 WORKDIR /app
 
@@ -57,7 +57,10 @@ RUN apt-get update && apt-get install -y git ca-certificates \
         && chmod a+r /etc/apt/keyrings/docker.gpg \
         && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
         && apt-get update \
-        && apt-get install -y docker-ce-cli \
+        && apt-get install -y --no-install-recommends \
+            docker-ce-cli=5:29.9.2-1~debian.12~bookworm \
+            docker-buildx-plugin=0.38.1-1~debian.12~bookworm \
+            docker-compose-plugin=5.6.1-1~debian.12~bookworm \
         && apt-get purge -y curl gnupg \
         && apt-get autoremove -y; \
     fi \

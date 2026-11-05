@@ -6,6 +6,7 @@ import type { NsisUpdater } from 'electron-updater'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { verifyUpdateSignature } from './update-signature'
+import { removeInstalledUpdateDownload } from './update-download-cache'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -44,6 +45,18 @@ const CHECK_TIMEOUT_MS = 25_000
 async function getAutoUpdater() {
   const mod = await import('electron-updater')
   return mod.autoUpdater ?? (mod as any).default?.autoUpdater
+}
+
+// Where electron-updater keeps its downloads, from its own helper (private in
+// its typings). Null if this electron-updater has no such helper.
+async function pendingUpdateDir(autoUpdater: unknown): Promise<string | null> {
+  const updater = autoUpdater as { getOrCreateDownloadHelper?: () => Promise<{ cacheDirForPendingUpdate: string }> }
+  try {
+    return (await updater.getOrCreateDownloadHelper?.())?.cacheDirForPendingUpdate ?? null
+  } catch (err) {
+    console.warn('[auto-updater] Could not find the update download folder:', err)
+    return null
+  }
 }
 
 function semverGt(a: string, b: string): boolean {
@@ -454,6 +467,13 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
       }
       setStatus({ state: 'error', error: err.message })
     })
+
+    // Before any check or download can start: a second copy of the update
+    // zip this app was installed from (update-download-cache.ts).
+    if (process.platform === 'darwin') {
+      const pendingDir = await pendingUpdateDir(autoUpdater)
+      if (pendingDir) await removeInstalledUpdateDownload(pendingDir, app.getVersion())
+    }
 
     updaterReady = true
     scheduleAutomaticUpdateChecks()

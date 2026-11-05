@@ -3,7 +3,7 @@ import { getAuth } from './index'
 import { withSessionAuditContext, type SessionCreationMethod } from './session-audit'
 
 type InstalledClientMethod = Extract<SessionCreationMethod, 'token-exchange' | 'mobile'>
-type AuthContext = Awaited<ReturnType<typeof getAuth>['$context']>
+type AuthContext = Awaited<Awaited<ReturnType<typeof getAuth>>['$context']>
 
 export interface InstalledClientRequestMeta {
   userAgent?: string
@@ -41,7 +41,7 @@ export async function mintInstalledClientSession({
   meta = {},
   deviceId,
 }: MintInstalledClientSessionOptions) {
-  const ctx: AuthContext = await getAuth().$context
+  const ctx: AuthContext = await (await getAuth()).$context
   const fresh = await ctx.internalAdapter.findUserById(userId)
   if (!fresh) {
     captureException(new Error('installed client session: user missing at session mint'), {

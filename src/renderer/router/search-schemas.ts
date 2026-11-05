@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { isSafeInternalPath } from '@renderer/lib/safe-internal-path'
 import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 import { SUPPORTED_PROVIDERS } from '@shared/lib/account-providers/service-catalog'
+import { notificationFilterSchema } from '@shared/lib/notifications/notification-filters'
 
 /**
  * Zod schemas for the router's URL boundary (search params + the settings tab
@@ -32,6 +33,12 @@ const connectionDetailKey = z.string().regex(/^(account|mcp)-.+$/)
 // `/%2f`/`/%5c`), so the schema gate and the sanitizer can't drift. Shared by
 // the post-login `redirect` and the settings and connection-detail `from` close-targets.
 const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
+
+// Agent Home. `from` is the page that opened it: the Team Brain page's settings open the Team Brain agent's Agent Home,
+// which every other way in skips for /team-brain.
+export const agentHomeSearchSchema = z.object({
+  from: internalPath.optional(),
+})
 
 // Connections detail overlay on the list. `detail` is the unified-row key;
 // `source` decides the breadcrumb + back-target. They travel together — today
@@ -76,6 +83,13 @@ export const homeSearchSchema = z.object({
   template_slug: z.string().regex(TEMPLATE_SLUG_RE).optional().catch(undefined),
 })
 
+// Notifications page type filter. URL-driven so a filtered view can be linked
+// and survives back/forward; absent = all. Per-field .catch: a stale or typo'd
+// value falls back to all instead of breaking the page.
+export const notificationsSearchSchema = z.object({
+  filter: notificationFilterSchema.optional().catch(undefined),
+})
+
 const arrivalParams = Object.fromEntries(
   SUPPORTED_PROVIDERS.flatMap((p) => (p.arrivalParam ? [[p.arrivalParam, z.string().optional().catch(undefined)]] : [])),
 )
@@ -96,6 +110,8 @@ export const settingsSearchSchema = z
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
     volume: z.string().min(1).max(255).optional(),
+    // A saved login open in Settings → Logins.
+    login: z.string().min(1).max(64).optional(),
     source: z.enum(['home', 'list']).optional(),
     connectionView: z.literal('logs').optional(),
   })
@@ -120,6 +136,7 @@ export const SETTINGS_TABS = [
   'browser',
   'web',
   'volumes',
+  'logins',
   'capabilities',
   'global-guidance',
   'computer-use',

@@ -27,6 +27,7 @@ import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
 import { homeSearchSchema } from '@renderer/router/search-schemas'
 import { lenient } from '@renderer/router/zod-search'
+import { AuthRouteBoundary } from '@renderer/router/auth-boundary'
 
 const SearchDialog = lazyRouteComponent(
   () => import('@renderer/components/search/search-dialog'),
@@ -43,6 +44,10 @@ const GettingStartedWizard = lazyRouteComponent(
  * shell.
  */
 export function RootLayout() {
+  return <AuthRouteBoundary><RootLayoutContent /></AuthRouteBoundary>
+}
+
+function RootLayoutContent() {
   useTheme()
   useInsetRadius()
   useDocumentTitle()

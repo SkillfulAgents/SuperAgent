@@ -54,6 +54,13 @@ describe('checkIMessageWebhook', () => {
     expect(checkIMessageWebhook(event, SECRET, PHONE).ok).toBe(true)
   })
 
+  it('authenticates an ignored event without message data while still checking its signature and phone', () => {
+    const delivery = { id: 'sent_1', type: 'message.sent', phoneNumber: PHONE }
+    expect(checkIMessageWebhook(relayedDelivery(delivery), SECRET, PHONE)).toEqual({ ok: true, delivery })
+    expect(checkIMessageWebhook(relayedDelivery(delivery), 'wrong-secret', PHONE)).toEqual({ ok: false, reason: 'signature' })
+    expect(checkIMessageWebhook(relayedDelivery(delivery), SECRET, '+15550000000')).toEqual({ ok: false, reason: 'other_phone' })
+  })
+
   it('rejects other secrets, missing signatures and tampered bodies', () => {
     expect(checkIMessageWebhook(relayedDelivery(message, { secret: 'b'.repeat(64) }), SECRET, PHONE)).toEqual({ ok: false, reason: 'signature' })
 

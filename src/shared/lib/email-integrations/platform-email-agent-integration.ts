@@ -4,9 +4,12 @@ import { chatIntegrations } from '../db/schema'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { EMAIL_HISTORY_THREAD_LIMIT } from './directory'
 import { captureException } from '../error-reporting'
+import { background } from '../background'
 import { createHash } from 'node:crypto'
 import { platformConnected } from './policy'
 import { watchEmail } from './live'
+import { emailMailboxWake, type EmailMailboxWake } from './wake'
+import { appState } from '../app-state'
 import { z } from 'zod'
 import { EmailAgentIntegration, emailDefinition } from './email-agent-integration'
 import { parseEmailConfig, emailConfigSchema, emailMessageSchema, type EmailSend } from './config-schema'
@@ -23,12 +26,13 @@ import type { AgentIntegrationRecord } from '../agent-integrations/types'
  * The cursor poll is the source of truth: it runs on connect, every 30s and on
  * each wake-up. Wake-ups come through the webhook relay when the host has one
  * as this connection starts, and then no stream is opened; otherwise they come
- * from the member's shared SSE stream (live.ts). See webhooks.ts.
+ * from the member's shared SSE stream (live.ts), which sends them on the
+ * mailbox's wake channel (wake.ts). See webhooks.ts.
  */
 export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
-  static override isAvailable() { return platformConnected() }
+  static override isAvailable(): Promise<boolean> { return platformConnected() }
   readonly provider = 'platform-email'
-  protected isAvailable() { return platformConnected() }
+  protected isAvailable(): Promise<boolean> { return platformConnected() }
   readonly definition = emailDefinition
   private readonly config
   private readonly client
@@ -43,6 +47,8 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   private pending?: Promise<void>
   private uploads = new Map<string, string>()
   private unwatch?: () => void
+  /** Ends this connection's wake subscription, also while it is being set up. */
+  private wakes?: AbortController
   constructor(record: AgentIntegrationRecord, private readonly relays: EmailRelays = emailRelays) { super(record); this.config = parseEmailConfig(record.config); this.client = clientFor(record) }
   private get base() { return `/mailboxes/${encodeURIComponent(this.config.mailboxId)}` }
   async connect() {
@@ -56,12 +62,23 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     // stream otherwise, or if webhooks can't be set up right now.
     const webhook = this.host.relay ? await this.registerWebhook() : null
     if (generation !== this.generation) return
+    // Subscribed before the first poll, so a wake sent while it runs is not missed.
+    const wakes = new AbortController()
+    this.wakes?.abort()
+    this.wakes = wakes
+    await appState().subscribe([emailMailboxWake.channel(this.config.mailboxId)], wake => this.woken(wake, generation), { signal: wakes.signal })
+    if (generation !== this.generation) { wakes.abort(); return }
     this.stopped = false
     this.connected = mailbox.domain?.status === 'ready'
     this.mode = webhook ? 'webhooks' : 'stream'
     if (webhook) this.relayAttachment = this.relays.attach(webhook, this.config.mailboxId, cursor => this.catchUp(cursor))
-    else this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId, () => { void this.pollNow() })
+    else this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId)
     this.schedule(0)
+  }
+  /** Polls on a wake; one for an event polls until the stored cursor reaches it, so a repeated or late one finds it there. */
+  private woken(wake: EmailMailboxWake, generation: number) {
+    if (this.stopped || generation !== this.generation) return
+    background(wake.cursor === undefined ? this.pollNow() : this.catchUp(wake.cursor), { name: 'platform-email.wake' })
   }
   /** Registers the relay endpoint as this mailbox's gateway webhook. Null leaves this connection to the stream. */
   private async registerWebhook(): Promise<EmailWebhook | null> {
@@ -91,10 +108,10 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   private schedule(ms: number) {
     if (this.stopped) return
     clearTimeout(this.timer)
-    this.timer = setTimeout(() => { void this.pollNow() }, ms)
+    this.timer = setTimeout(() => { background(this.pollNow(), { name: 'platform-email.poll' }) }, ms)
     this.timer.unref?.()
   }
-  /** A relayed pointer: polls until the stored cursor reaches it, at most twice (a running poll may predate it). */
+  /** A relayed pointer or a wake: polls until the stored cursor reaches it, at most twice (a running poll may predate it). */
   private async catchUp(cursor: number): Promise<number> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const reached = await this.storedCursor()
@@ -108,8 +125,10 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     return current ? parseEmailConfig(current.config).eventCursor : -1
   }
   private async poll() {
+    // One bearer for the whole poll: the mailbox check, every events page and every message.
+    const client = this.client.forOperation()
     if (!this.connected) {
-      const box = await this.client.json(this.base, mailboxSchema)
+      const box = await client.json(this.base, mailboxSchema)
       if (box.domain?.status !== 'ready') return
       this.connected = true
     }
@@ -117,11 +136,11 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     if (!current) return
     let cursor = parseEmailConfig(current.config).eventCursor
     for (let page = 0; page < 10 && !this.stopped; page++) {
-      const result = await this.client.json(`/events?mailboxIds=${this.config.mailboxId}&after=${cursor}&limit=100`, emailEventsSchema)
+      const result = await client.json(`/events?mailboxIds=${this.config.mailboxId}&after=${cursor}&limit=100`, emailEventsSchema)
       for (const event of result.data) {
         if (this.stopped) return
         if (event.type === 'message.received' && event.messageId) {
-          const message = await this.getMessage(event.messageId)
+          const message = await client.message(this.config.mailboxId, event.messageId)
           if (this.stopped) return
           const handoff = await this.emitEvent({ type: 'input', id: message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
           // Not taken: this connection was replaced or stopped while it polled.
@@ -144,6 +163,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     this.generation++
     this.stopped = true; this.connected = false; this.mode = null
     this.unwatch?.(); this.unwatch = undefined
+    this.wakes?.abort(); this.wakes = undefined
     this.relayAttachment?.detach(); this.relayAttachment = undefined
     clearTimeout(this.timer); await this.pending
   }
@@ -155,14 +175,16 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   protected getMessage(id: string) { return this.client.message(this.config.mailboxId, id) }
   protected getThread(id: string) { return this.client.thread(this.config.mailboxId, id) }
   protected async recentHistory() {
-    const page = await this.client.json(`${this.base}/threads?limit=${EMAIL_HISTORY_THREAD_LIMIT + 1}`, z.object({ data: z.array(z.object({ id: z.string() })) }))
+    // One bearer for the thread list and every thread read.
+    const client = this.client.forOperation()
+    const page = await client.json(`${this.base}/threads?limit=${EMAIL_HISTORY_THREAD_LIMIT + 1}`, z.object({ data: z.array(z.object({ id: z.string() })) }))
     const threads = []
     let truncated = page.data.length > EMAIL_HISTORY_THREAD_LIMIT
     const selected = page.data.slice(0, EMAIL_HISTORY_THREAD_LIMIT)
     for (let offset = 0; offset < selected.length; offset += 5) {
       // Bound gateway concurrency and history; do not fetch entire large archives.
       const results = await Promise.all(selected.slice(offset, offset + 5).map(thread =>
-        this.client.json(`${this.base}/threads/${encodeURIComponent(thread.id)}?after=0`, z.object({ messages: z.array(emailMessageSchema), hasMore: z.boolean() }))))
+        client.json(`${this.base}/threads/${encodeURIComponent(thread.id)}?after=0`, z.object({ messages: z.array(emailMessageSchema), hasMore: z.boolean() }))))
       for (const result of results) {
         truncated ||= result.hasMore
         threads.push(result.messages)

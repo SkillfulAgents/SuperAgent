@@ -25,6 +25,7 @@ import { z } from 'zod'
 import { integrationSetupContext, prepareIntegrationSetup, setupError } from '@shared/lib/agent-integrations/setup'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
 
 type XAgentChatVariables = { callerSlug: string }
@@ -61,16 +62,9 @@ xAgentChat.post('/list', async (c) => {
       // capabilities so agents know which discovery tools apply here.
       const connectorClass = await agentIntegrationManager.getDefinition(i.provider)
       const sessions = await listAgentIntegrationSessions(i.id)
-      const activeChats = await Promise.all(sessions
-        .filter((s) => !s.archivedAt)
-        .map(async (s) => {
-          const { type } = await agentIntegrationManager.describeTarget(i.provider, s.externalChatId)
-          return {
-            chatId: s.externalChatId,
-            displayName: s.displayName,
-            ...(type ? { type } : {}),
-          }
-        }))
+      const asChat = ({ externalId, displayName, type }: { externalId: string; displayName: string | null; type?: string }) => ({ chatId: externalId, displayName, ...(type ? { type } : {}) })
+      const activeChats = (await agentIntegrationRegistry.conversations(i, sessions.filter((s) => !s.archivedAt), { threads: true }))
+        .map(({ threads, ...chat }) => ({ ...asChat(chat), ...(threads ? { threads: threads.map(asChat) } : {}) }))
       return {
         id: i.id,
         provider: i.provider,
@@ -99,7 +93,7 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, callerSlug), true)
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug), true)
 
     let id: string
     try {
@@ -127,7 +121,7 @@ xAgentChat.post('/add', async (c) => {
 
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error.
-    void agentIntegrationManager.integrationCreated(id)
+    background(agentIntegrationManager.integrationCreated(id), { name: 'x-agent-chat-route.integration-created' })
 
     const created = await getAgentIntegration(id)
     if (!created) {
@@ -253,10 +247,11 @@ xAgentChat.post('/send', async (c) => {
       }
     }
 
+    const active = (await listAgentIntegrationSessions(integration_id)).filter((s) => !s.archivedAt)
+    const activeChats = await agentIntegrationRegistry.conversations(integration, active)
+
     // No explicit target: fall back to the integration's single active chat
     if (!resolvedChatId) {
-      const sessions = await listAgentIntegrationSessions(integration_id)
-      const activeChats = sessions.filter((s) => !s.archivedAt)
       if (activeChats.length === 0) {
         return c.json({
           error: 'No active chats found for this integration. Someone needs to message the bot first, or specify a chat_id directly.',
@@ -264,13 +259,13 @@ xAgentChat.post('/send', async (c) => {
       }
       if (activeChats.length > 1) {
         const chatList = activeChats.map((s) =>
-          `  - chatId: ${s.externalChatId}${s.displayName ? ` (${s.displayName})` : ''}`,
+          `  - chatId: ${s.externalId}${s.displayName ? ` (${s.displayName})` : ''}`,
         ).join('\n')
         return c.json({
           error: `Multiple active chats — specify chat_id. Available:\n${chatList}`,
         }, 400)
       }
-      resolvedChatId = activeChats[0].externalChatId
+      resolvedChatId = activeChats[0].externalId
     }
 
     if (!(await isChatAllowed(integration_id, resolvedChatId))) {
@@ -283,9 +278,13 @@ xAgentChat.post('/send', async (c) => {
 
     // Notify the chat session's agent so it knows a message was sent on its behalf.
     // Uses shouldQuery: false so the message enters the agent's context without
-    // triggering a new assistant turn.
+    // triggering a new assistant turn. A channel known only through its threads
+    // already has its conversations there, so none is opened for the channel
+    // itself; a target with no conversation at all still gets one, as before.
     try {
-      await notifySessionOfOutboundMessage(integration_id, integration.agentSlug, resolvedChatId, message, context)
+      const onlyThroughThreads = !active.some((s) => s.externalChatId === resolvedChatId)
+        && activeChats.some((c) => c.externalId === resolvedChatId)
+      if (!onlyThroughThreads) await notifySessionOfOutboundMessage(integration_id, integration.agentSlug, resolvedChatId, message, context)
     } catch (err) {
       // Best-effort — don't fail the send if notification fails
       captureException(err, {

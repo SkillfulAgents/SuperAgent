@@ -65,13 +65,16 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
 import type { ComputerUseRun, HostRunOutcome, ScriptRun } from './host-runs'
+import type { WidgetRefreshOutcome } from '@shared/lib/widgets/agent-widget-refreshes'
+import type { McpProxySession } from '@shared/lib/mcp/agent-mcp-sessions'
+import type { VolumeUploadOutcome } from '@shared/lib/volumes/volume-upload-guard'
 
 /** The agent's directory-name slug. Not the URL `displaySlug`. */
 export type AgentSlug = string
@@ -94,7 +97,20 @@ export interface AgentRegistry {
  * The keys of `AgentActor` that hold op groups, for a transport that wraps
  * them (`serializingActor`). The type test checks the list is complete.
  */
-export const ACTOR_GROUPS = ['container', 'sessions', 'messages', 'inputs', 'usage', 'files', 'memories', 'config'] as const
+export const ACTOR_GROUPS = [
+  'container',
+  'sessions',
+  'messages',
+  'inputs',
+  'usage',
+  'files',
+  'memories',
+  'config',
+  'locks',
+  'widgets',
+  'mcpSessions',
+  'volumeUploads',
+] as const
 
 export interface AgentActor {
   readonly slug: AgentSlug
@@ -108,6 +124,75 @@ export interface AgentActor {
   readonly files: FileOps
   readonly memories: MemoryOps
   readonly config: ConfigOps
+  readonly locks: LockOps
+  readonly widgets: WidgetOps
+  readonly mcpSessions: McpSessionOps
+  readonly volumeUploads: VolumeUploadOps
+}
+
+/**
+ * Named locks over the agent, for host work that must not run twice at once
+ * for it. A key is the caller's own, prefixed with what it guards
+ * (`wake:<taskId>`, `x-agent-invoke:<sessionId>`). Releasing with a token
+ * that no longer holds the lock does nothing. Evicting the agent lets go of
+ * every lock and rejects every `acquire` still waiting.
+ */
+export interface LockOps {
+  /** Take `key` unless it is held: the token that releases it, or null. */
+  tryAcquire(key: string): Promise<string | null>
+  /** Take `key` once every earlier holder and waiter has let it go. */
+  acquire(key: string): Promise<string>
+  release(key: string, token: string): Promise<void>
+}
+
+/**
+ * What the host's widget refresh service remembers about the agent's
+ * widgets (see `AgentWidgetRefreshes`). The service runs the refreshes.
+ */
+export interface WidgetOps {
+  /** Start refreshing a widget unless a refresh of it is in flight: the token that finishes it, or null. */
+  beginRefresh(widgetSlug: string): Promise<string | null>
+  /**
+   * Start refreshing a widget, or join the refresh in flight: the token that
+   * finishes the new one, or the joined one's outcome once it ends. Decided in
+   * one step, so a refresh ending in between cannot make the caller run another.
+   */
+  beginOrJoinRefresh(widgetSlug: string): Promise<{ token: string } | { outcome: WidgetRefreshOutcome }>
+  /** The refresh `token` began is over: hand its outcome to whoever joined it, and note when it ended. */
+  finishRefresh(widgetSlug: string, token: string, outcome: WidgetRefreshOutcome): Promise<void>
+  /** The widgets with a refresh in flight. */
+  refreshing(): Promise<string[]>
+  /** When each widget's last refresh ended, epoch ms by widget slug. */
+  refreshedAt(): Promise<Record<string, number>>
+  /** True, and noted, unless a stale sweep ran within `throttleMs`. */
+  claimStaleSweep(throttleMs: number): Promise<boolean>
+  /** One of the agent's runs ended: the stamp a post-run sweep is due for. */
+  notePostRun(): Promise<number>
+  /** Whether no run has ended since the one `stamp` noted. */
+  isLatestPostRun(stamp: number): Promise<boolean>
+}
+
+/** The MCP sessions the proxy opened on the agent's behalf (see `AgentMcpSessions`). */
+export interface McpSessionOps {
+  /** Open a session for `mcpId`: the id the client sends back. */
+  open(mcpId: string, protocolVersion: string): Promise<string>
+  /** The session `id` if it is this MCP's and still in use; reading it counts as use. */
+  get(mcpId: string, id: string): Promise<McpProxySession | null>
+  /** The upstream session `id` now speaks for (null: the upstream is stateless). */
+  bind(id: string, upstreamSessionId: string | null): Promise<void>
+  /** Forget the upstream session `upstreamSessionId` (one a request found dead); a binding made since is kept. */
+  unbind(id: string, upstreamSessionId: string | null): Promise<void>
+  close(id: string): Promise<void>
+}
+
+/** The agent's volume uploads, as the delete that may follow one needs them (see `VolumeUploadGuard`). */
+export interface VolumeUploadOps {
+  /** An upload of `key` starts: its number, for `end`. */
+  begin(key: string): Promise<number>
+  /** The upload `begin` numbered is over. */
+  end(key: string, upload: number, outcome: VolumeUploadOutcome): Promise<void>
+  /** Whether a delete of `key` may go ahead. A refusal consumes what one unfinished upload left. */
+  allowDelete(key: string): Promise<boolean>
 }
 
 /** The agent's persistent memories. Paths are relative to its memory directory. */
@@ -260,13 +345,13 @@ export interface SessionOps {
   isRegistered(sessionId: string): Promise<boolean>
   /** `registerSession` */
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
-  /** `updateSessionName` */
+  /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
-  /** `deleteSession` — the files are the authority. */
+  /** Stop the writer, delete its files, then forget its resume record. Unknown runtime state keeps the files. */
   delete(sessionId: string): Promise<boolean>
   /**
-   * `deleteSessionsBatch` over the sessions not running now: one that is
-   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   * Delete each idle session after its writer has stopped, holding its delivery queue through file removal.
+   * Active sessions and sessions whose release cannot be confirmed are kept. Returns the ids deleted.
    */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
@@ -385,6 +470,15 @@ export interface SessionOps {
    * Attached and busy, the live stream already carries what it needs.
    */
   attach(sessionId: string, options?: { metadata?: SessionMetadata | null; replayTerminal?: boolean }): Promise<void>
+
+  /**
+   * The session was opened by a notice, not by a person (voice mode started
+   * from the agent home): it is named from the first message a person sends.
+   * In memory: a restart leaves such a session with its placeholder name.
+   */
+  deferNaming(sessionId: string): Promise<void>
+  /** True once for a session whose naming was deferred: the caller names it now. */
+  takeDeferredNaming(sessionId: string): Promise<boolean>
 }
 
 /** The agent's live state as of one moment (`actor.live()`). */
@@ -547,12 +641,6 @@ export interface DeliverRequest {
   cancelAwaiting?: boolean
   /** Hold the message while the session recovers from a runtime death; the recovery sends it. */
   coalesce?: boolean
-  /**
-   * Refuse to join a running turn: `busy` instead. Decided with the queued
-   * decision, after the attach (which can reveal a running turn). An append
-   * starts no turn, so it is never refused.
-   */
-  ifIdle?: boolean
   /** The `user_message` the session's viewers see, sent once it is known whether the message is queued. */
   echo?: UserMessageEcho
 }
@@ -561,8 +649,6 @@ export type DeliverResult = (
   | { status: 'sent'; queued: boolean }
   /** Held for the recovery to send. */
   | { status: 'coalesced' }
-  /** `ifIdle` and the session was running: nothing was sent. */
-  | { status: 'busy' }
 ) & {
   /** The provider the session's turns run on, once the container resolved it (the credential that served it). */
   provider?: string
@@ -587,6 +673,12 @@ export interface StartSessionRequest {
   notAfter?: number
   /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */
   attachTimeoutMs?: number
+  /**
+   * The user started it with computer use on: the session may list and use
+   * any app without asking. Granted before the stream attaches, so the first
+   * turn's calls already find it.
+   */
+  grantComputerUse?: boolean
 }
 
 export interface StopSessionOptions {
@@ -599,7 +691,10 @@ export interface StopSessionOptions {
    * instead: nothing would be left to stop it with.
    */
   escalateUntracked?: boolean
-  /** Deny the agent's pending API reviews too: the user stopped the agent. */
+  /**
+   * The user stopped the session: deny the API reviews it shows (its own and
+   * the agent-wide ones) and dismiss the calls parked on its own re-auth cards.
+   */
   denyReviews?: boolean
   /**
    * Mark the session stopped only once the container confirms the interrupt:
@@ -682,7 +777,7 @@ export interface ReviewOps {
   /** One review waiting on the user, or null when this agent holds none by that id. */
   get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
-  submit(id: string, decision: 'allow' | 'deny'): Promise<boolean>
+  submit(id: string, decision: 'allow' | 'deny', reason?: string): Promise<boolean>
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */
@@ -695,7 +790,7 @@ export interface ReviewOps {
    * (its request was aborted), or to resume or settle it after a `recheck`.
    * `awaitReview` (proxy/review-request) is the host's way to wait for one.
    */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
+  request(details: ReviewRequest, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     request: {
@@ -704,6 +799,8 @@ export interface ReviewOps {
       operation: 'list' | 'read' | 'invoke' | 'create'
       preview?: string
       fileTransfer?: XAgentFileTransfer
+      /** The session the call came from, when the request named one. */
+      callerSessionId?: string
     },
     options: { id: string },
   ): Promise<ReviewOutcome>
@@ -713,13 +810,16 @@ export interface ReviewOps {
   resume(id: string): Promise<ReviewOutcome>
   /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
   settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
+  /** `AgentReviews.takeDenyReason`: what the person typed with a deny, once. */
+  takeDenyReason(id: string): Promise<string | undefined>
 }
 
 /** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
   /**
    * The user let go of the app the agent had grabbed: forget the grab, revoke
-   * the agent's grant for that app and tell the session's viewers, in one turn.
+   * the agent's grant for that app and the session's any-app grant, and tell
+   * the session's viewers, in one turn.
    */
   releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */

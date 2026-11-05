@@ -1,9 +1,11 @@
-import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
 import api from '../api'
+import { mountWebBuild } from './web-build'
 import { openDatabase } from '@shared/lib/db'
-import { flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
+import { initializeLocalAppState } from '@shared/lib/app-state'
+import { installServerKeyManager } from '@shared/lib/keys/install-server-key-manager'
+import { attachErrorReportingIdentity, flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
 import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
@@ -13,43 +15,10 @@ const app = new Hono()
 // Mount API routes
 app.route('/', api)
 
-// Cache policy for the static web build. Vite emits content-hashed JS/CSS into
-// `/assets/*`, so the filename itself changes whenever the bytes change — those
-// can be cached permanently and a new deploy is picked up automatically (new
-// URLs, nothing to invalidate). `index.html` is the un-hashed entry that points
-// at the hashed bundles, so it must always be revalidated or clients pin to a
-// stale build. Stable-named `public/` assets (icons, manifest) have no hash to
-// bust them, so they revalidate too rather than caching forever.
-function staticCacheControl(filePath: string): string {
-  const p = filePath.replace(/\\/g, '/')
-  if (p.includes('/assets/')) return 'public, max-age=31536000, immutable'
-  if (p.endsWith('index.html')) return 'no-cache'
-  // The service worker script is the update trigger for the whole precached
-  // asset set — browsers revalidate it on their own schedule, but an explicit
-  // no-cache removes any intermediary-cache delay on picking up a deploy.
-  if (p.endsWith('/sw.js')) return 'no-cache'
-  return 'public, max-age=3600, must-revalidate'
-}
-
 // Only serve static files in production (when dist/renderer exists)
 // In development, Vite dev server handles the frontend
 if (existsSync('./dist/renderer')) {
-  app.use(
-    '/*',
-    serveStatic({
-      root: './dist/renderer',
-      onFound: (filePath, c) => c.header('Cache-Control', staticCacheControl(filePath)),
-    }),
-  )
-  // SPA fallback: any unmatched route serves the HTML entry, which must never be
-  // cached so a reload always discovers the latest hashed bundles.
-  app.get(
-    '*',
-    serveStatic({
-      path: './dist/renderer/index.html',
-      onFound: (_filePath, c) => c.header('Cache-Control', 'no-cache'),
-    }),
-  )
+  mountWebBuild(app, './dist/renderer')
 }
 
 let server: BoundServer['server']
@@ -102,7 +71,15 @@ async function start() {
 
   // Then the database: nothing below runs without the schema being current,
   // and a migration failure must fail the boot rather than the first request.
+  // Settings and the other host records live in it: give error reports the
+  // tenant identity now that it can be read.
   await openDatabase()
+  await attachErrorReportingIdentity()
+  // Then the state the API's processes share; this one process keeps it in memory.
+  await initializeLocalAppState()
+  // Then key custody: the vault seals and opens through it, and it checks a
+  // key against the sealed data, so after the database and before any request.
+  await installServerKeyManager()
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 

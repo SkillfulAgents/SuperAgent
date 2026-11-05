@@ -33,13 +33,13 @@ export function SortPopover({ value, onChange, ariaLabel }: SortPopoverProps) {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-40 p-1">
         <button
-          className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${value === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
+          className={`flex w-full items-center rounded-item px-2 py-1.5 text-xs transition-colors ${value === 'newest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
           onClick={() => select('newest')}
         >
           Newest first
         </button>
         <button
-          className={`flex w-full items-center rounded-sm px-2 py-1.5 text-xs transition-colors ${value === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
+          className={`flex w-full items-center rounded-item px-2 py-1.5 text-xs transition-colors ${value === 'oldest' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}
           onClick={() => select('oldest')}
         >
           Oldest first

@@ -109,7 +109,7 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => false,
+  isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
@@ -118,6 +118,7 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  remounted: async () => {},
 }))
 
 import { containerHost } from './container-host'

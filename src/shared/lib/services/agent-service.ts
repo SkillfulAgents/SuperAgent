@@ -26,6 +26,8 @@ import {
 import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { workspaceAgentDescriptionSchema, workspaceAgentNameSchema } from './agent-identity-schema'
+import { getTeamBrain } from '@shared/lib/config/settings'
+import type { TeamBrainRecord } from '@shared/lib/config/team-brain-schema'
 import {
   CONFIG_DOCS,
   agentCatalog,
@@ -47,11 +49,12 @@ import {
 function toApiAgent(
   record: AgentRecord,
   container: Pick<AgentLiveSummary['container'], 'status' | 'port' | 'healthWarnings' | 'stale'>,
+  teamBrain: TeamBrainRecord | null,
   instructions?: string,
 ): ApiAgent {
   const { status, port, healthWarnings, stale } = container
   return {
-    ...newAgentResponse(record, instructions),
+    ...newAgentResponse(record, teamBrain, instructions),
     status,
     containerPort: port,
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
@@ -60,11 +63,12 @@ function toApiAgent(
 }
 
 /** The API shape of an agent that was just created: stopped, and with no health to report yet. */
-function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent {
+function newAgentResponse(record: AgentRecord, teamBrain: TeamBrainRecord | null, instructions?: string): ApiAgent {
   return {
     slug: record.slug,
     displaySlug: displaySlug(record.name, record.slug),
     name: record.name,
+    ...(teamBrain?.agentSlug === record.slug ? { teamBrain: { volumeId: teamBrain.volumeId } } : {}),
     avatar: record.avatar,
     description: record.description,
     ...(instructions === undefined ? {} : { instructions }),
@@ -103,22 +107,20 @@ async function readInstructionsDocument(slug: string): Promise<InstructionsDocum
 }
 
 /**
- * Per-slug promise chains: every change to an agent's identity, which spans
+ * The agent's identity lock: every change to an agent's identity, which spans
  * the catalog row and the `AGENTS.md` projection, runs to completion before
  * the next one starts, so two overlapping renames cannot leave the row with
- * one name and the document with the other. The same in-process
- * serialization the config documents use for their read-modify-write.
+ * one name and the document with the other.
  */
-const identityChains = new Map<string, Promise<unknown>>()
-function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
-  const previous = identityChains.get(slug) ?? Promise.resolve()
-  const run = previous.then(fn, fn)
-  const settled = run.catch(() => undefined)
-  identityChains.set(slug, settled)
-  void settled.then(() => {
-    if (identityChains.get(slug) === settled) identityChains.delete(slug)
-  })
-  return run
+const IDENTITY_LOCK = 'identity'
+async function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
+  const { locks } = agentRegistry.get(slug)
+  const token = await locks.acquire(IDENTITY_LOCK)
+  try {
+    return await fn()
+  } finally {
+    await locks.release(IDENTITY_LOCK, token)
+  }
 }
 
 /**
@@ -205,7 +207,7 @@ export async function getAgentWithStatus(
   // The cached container status: no docker process is spawned.
   const live = await actor.live()
   const record = (await agentCatalog.get(slug))!
-  const base = toApiAgent(record, live.container, agent.instructions)
+  const base = toApiAgent(record, live.container, await getTeamBrain(), agent.instructions)
 
   // Routes that either discard the body (/start) or immediately run the richer
   // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
@@ -238,7 +240,8 @@ export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): 
   const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
 
   // The cached container statuses: no docker process is spawned.
-  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container)))
+  const teamBrain = await getTeamBrain()
+  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container, teamBrain)))
 }
 
 // ============================================================================
@@ -253,7 +256,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const name = String(rawName)
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
   const record = await writeNewAgent({ name, description: description || undefined }, body)
-  return newAgentResponse(record, body)
+  return newAgentResponse(record, await getTeamBrain(), body)
 }
 
 /**
@@ -319,7 +322,7 @@ export async function updateAgent(
     // The runtime's own status, with the cached health beside it.
     const actor = agentRegistry.get(slug)
     const [info, live] = await Promise.all([actor.container.info(), actor.live()])
-    return toApiAgent(updated, { ...live.container, status: info.status, port: info.port }, body)
+    return toApiAgent(updated, { ...live.container, status: info.status, port: info.port }, await getTeamBrain(), body)
   })
 }
 
@@ -470,7 +473,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
   const name = String(rawName)
   // A basic AGENTS.md (may be overwritten by template)
   const record = await writeNewAgent({ name }, DEFAULT_AGENT_INSTRUCTIONS)
-  return newAgentResponse(record)
+  return newAgentResponse(record, await getTeamBrain())
 }
 
 /**

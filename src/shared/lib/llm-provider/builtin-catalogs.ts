@@ -46,7 +46,7 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
  *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
  *   - xAI grok: `service_tier` priority only (2x when granted) → normal/fast.
- *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 / 4.8 → normal/fast.
+ *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
  *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
  *     request param — the proxy swaps the outbound model id → normal/fast.
@@ -54,8 +54,10 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
 const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 
-// Anthropic fast mode covers Opus 5.5, 5 and 4.8 (4.7's was removed 2026-07-24).
-const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5'])
+// Anthropic fast mode covers Opus 5.5 and 5. Opus 4.7's was removed 2026-07-24;
+// Opus 4.8's is deprecated and is removed 2026-11-30, after which a fast request
+// errors instead of falling back, so the picker stopped offering it early.
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-5', 'claude-opus-5-5'])
 
 /** Claude entries with the speed tiers the Platform proxy can request. */
 function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
@@ -99,7 +101,7 @@ export const CLAUDE_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[]
   },
 ]
 
-/** Platform-specific default-model shortlist. The provider default is Grok. */
+/** Platform-specific default-model shortlist. The provider default is Sonnet. */
 export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
   {
     model: 'opus',
@@ -107,6 +109,14 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     tag: 'Deep reasoning',
     description: 'Best for complex, multi-step tasks.',
     subdescription: 'A premium choice for the hardest agent work.',
+  },
+  {
+    model: 'sonnet',
+    label: 'Sonnet',
+    resolveLabelFromCatalog: true,
+    tag: 'Recommended',
+    description: 'Fast, capable, and efficient for everyday agent work.',
+    subdescription: 'The default model for Gamut Platform.',
   },
   {
     model: 'gpt-sol',
@@ -120,9 +130,9 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     model: 'grok',
     label: 'Grok',
     resolveLabelFromCatalog: true,
-    tag: 'Recommended',
-    description: 'Fast, capable, and efficient for everyday agent work.',
-    subdescription: 'The default model for Gamut Platform.',
+    tag: 'xAI flagship',
+    description: 'Fast and capable for everyday agent work.',
+    subdescription: 'An efficient alternative to Sonnet.',
   },
 ]
 
@@ -631,12 +641,26 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     label: 'GPT-5.6 Terra',
     blurb: 'OpenAI balanced tier, served via Platform',
     ...GPT_TERRA,
-    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: pricingFor('gpt-5.6-terra'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6.1-terra',
+    label: 'GPT-6.1 Terra',
+    blurb: 'OpenAI balanced tier, served via Platform',
+    ...GPT_TERRA,
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6.1-terra'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6.1-terra).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,

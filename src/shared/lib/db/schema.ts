@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
+import { NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-filters'
 
 // =============================================================================
 // Better Auth tables (user, session, account, verification)
@@ -183,7 +184,7 @@ export const verification = sqliteTable('verification', {
 // Connected accounts - app-level OAuth connections via pluggable providers (Composio, Nango, …)
 export const connectedAccounts = sqliteTable('connected_accounts', {
   id: text('id').primaryKey(),
-  providerConnectionId: text('provider_connection_id').notNull().unique(),
+  providerConnectionId: text('provider_connection_id').notNull(),
   providerName: text('provider_name').notNull().default('composio'),
   toolkitSlug: text('toolkit_slug').notNull(), // e.g., 'gmail', 'slack', 'github'
   displayName: text('display_name').notNull(), // User-friendly label
@@ -195,6 +196,8 @@ export const connectedAccounts = sqliteTable('connected_accounts', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   userIdIdx: index('connected_accounts_userId_idx').on(table.userId),
+  // Connection ids are opaque per provider: two providers may hand out the same one.
+  providerConnectionUnique: uniqueIndex('connected_accounts_provider_connection_unique').on(table.providerName, table.providerConnectionId),
 }))
 
 // Agent connected accounts - junction table for agent-to-account mappings
@@ -216,6 +219,67 @@ export const agentConnectedAccounts = sqliteTable(
     ),
   })
 )
+
+// Browser Vault - accounts the owner signs in to websites with, saved from the
+// sign-in form (request_login). An account is a site and a username; each
+// sign-in step can add parts. See src/shared/lib/browser-vault/.
+export const browserAccounts = sqliteTable('browser_accounts', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }), // Owner in auth mode, null in non-auth mode
+  site: text('site').notNull(), // Host of the frame holding the fields, without a leading www, e.g. 'github.com', 'acme.okta.com'
+  username: text('username').notNull(), // The identifier the site knows the account by, as entered
+  usernameKey: text('username_key').notNull(), // `username` trimmed and lowercased: what makes two saves one account
+  label: text('label'), // The owner's name for it; null shows the username
+  origin: text('origin').notNull(), // Where its password was last typed (else where it was first saved), e.g. 'https://acme.okta.com'
+  // The account it signs in with on another site ("Continue with Google"):
+  // this site's row points at the provider's.
+  viaAccountId: text('via_account_id').references((): AnySQLiteColumn => browserAccounts.id, { onDelete: 'set null' }),
+  secrets: text('secrets'), // Sealed JSON (vault-crypto, accountSecretsSchema); null until a secret part is saved
+  parts: text('parts').notNull().default('[]'), // JSON list of the part keys `secrets` holds ('password', 'text:…'), never values
+  revision: integer('revision').notNull().default(1), // Bumped on every write: the compare-and-set guard for `secrets`
+  // An agent said the site rejected what the vault filled: the user is asked
+  // until they enter its password again. Null while it signs in fine.
+  rejectedAt: integer('rejected_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  // coalesce: non-auth mode's NULL owner counts as one owner.
+  ownerSiteUsernameUnique: uniqueIndex('browser_accounts_owner_site_username_unique')
+    .on(sql`coalesce(user_id, '')`, table.site, table.usernameKey),
+  userSiteIdx: index('browser_accounts_user_site_idx').on(table.userId, table.site),
+  viaIdx: index('browser_accounts_via_idx').on(table.viaAccountId),
+}))
+
+// Browser Vault grants - which agents may sign in with an account.
+export const agentBrowserAccounts = sqliteTable('agent_browser_accounts', {
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  grantedBy: text('granted_by').references(() => user.id, { onDelete: 'set null' }), // Who granted it (auth mode)
+  // Part 3: the version of the account's saved session this agent's browser holds.
+  appliedSessionVersion: integer('applied_session_version'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.accountId] }),
+  accountIdx: index('agent_browser_accounts_account_idx').on(table.accountId),
+}))
+
+// Browser Vault saved sessions (part 3) - an account's cookies and web
+// storage, captured after a sign-in. They restore only into the browser type
+// they came from.
+export const browserAccountSessions = sqliteTable('browser_account_sessions', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform'] }).notNull(),
+  bundle: text('bundle').notNull(), // Sealed JSON (vault-crypto, sessionBundleSchema)
+  version: integer('version').notNull().default(1), // Bumped on every capture
+  capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  accountTypeUnique: uniqueIndex('browser_account_sessions_account_type_unique').on(table.accountId, table.browserType),
+}))
 
 // Scheduled tasks - tasks scheduled by agents for future execution
 export const scheduledTasks = sqliteTable('scheduled_tasks', {
@@ -284,7 +348,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration', 'session_mention'] }).notNull(),
+  type: text('type', { enum: NOTIFICATION_TYPES }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
@@ -528,6 +592,19 @@ export const dataMigrations = sqliteTable('data_migrations', {
   appliedAt: integer('applied_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// App records - the deployment's small host records that used to be files in
+// the data dir (settings, tenant id, auth secret, host container tokens, …):
+// one JSON value per key, validated by the key's Zod schema on every read and
+// write (see app-records/). `revision` is 1 on insert and goes up by one on
+// every write, so a writer compares-and-sets against the revision it read
+// instead of holding a transaction open.
+export const appRecords = sqliteTable('app_records', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  revision: integer('revision').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
 // Agents - which agents exist and what they are called. The row is the
 // authority for name and description; the agent's AGENTS.md keeps a
 // frontmatter projection of them that the host writes on create and rename.
@@ -590,8 +667,10 @@ export const agentAcl = sqliteTable('agent_acl', {
 }))
 
 // User settings - per-user preferences (uses 'local' sentinel in non-auth mode)
+// No FK to `user`: the 'local' sentinel has no user row. The Better Auth
+// user-delete hook removes a deleted user's row instead.
 export const userSettings = sqliteTable('user_settings', {
-  userId: text('user_id').primaryKey().references(() => user.id, { onDelete: 'cascade' }),
+  userId: text('user_id').primaryKey(),
   settings: text('settings').notNull(), // JSON blob validated by Zod
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 })
@@ -798,6 +877,12 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+
+  // Moves on every write to the row, so a copy read from it says which write it
+  // saw. The trigger `chat_integrations_version_bump` (migration 0062) adds 1 to
+  // any update that does not raise it itself; a writer that needs the version it
+  // produced sets `version + 1` and reads it back with RETURNING.
+  version: integer('version').notNull().default(0),
 }, (table) => ({
   agentSlugIdx: index('chat_integrations_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('chat_integrations_status_idx').on(table.status),
@@ -990,6 +1075,10 @@ export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
 export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
+export type BrowserAccount = typeof browserAccounts.$inferSelect
+export type NewBrowserAccount = typeof browserAccounts.$inferInsert
+export type AgentBrowserAccount = typeof agentBrowserAccounts.$inferSelect
+export type BrowserAccountSession = typeof browserAccountSessions.$inferSelect
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
 export type Notification = typeof notifications.$inferSelect

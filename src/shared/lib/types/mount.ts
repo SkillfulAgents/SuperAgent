@@ -1,5 +1,5 @@
 /** Every source a volume can come from. A new source adds its id here. */
-export const VOLUME_TYPES = ['local', 'dropbox', 'googledrive', 's3'] as const
+export const VOLUME_TYPES = ['local', 'dropbox', 'googledrive', 's3', 'platform', 'github'] as const
 export type VolumeType = (typeof VOLUME_TYPES)[number]
 
 /** A volume as stored: `type` picks its implementation, and only that type's schema reads `config`. */
@@ -10,14 +10,23 @@ export interface StoredVolume {
   config: unknown
 }
 
+/** Changes that have not reached the source. */
+export interface VolumeAttention {
+  badge?: { label: string; tone: 'warning' | 'error' } // shown in place of the health badge
+  detail?: string // the badge's tooltip
+  unsynced: number // files a delete of the drive would lose
+}
+
 /** A volume as the API returns it: no config, only the host folder the card shows. */
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
   sourceLabel?: string // display-only description for remote sources
+  sourceReadOnly?: boolean // the source itself refuses writes, whatever the attachment says
+  attention?: VolumeAttention
   hostPath: string | null // the volume's folder on the machine that runs the agent, if it has one
 }
 
 export interface VolumeSummaryWithHealth extends VolumeSummary {
-  health: 'ok' | 'missing'
+  health: 'ok' | 'preparing' | 'missing'
 }
 
 export type GlobalAccess = 'read' | 'write'
@@ -28,6 +37,8 @@ export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
   canManage: boolean
   attachmentCount: number
   globalAccess: GlobalAccess | null
+  /** A local drive whose folder the App Sandbox can no longer open: choosing it again in the open panel fixes it in place. */
+  pickFolderAgain?: true
 }
 
 /** An agent's attachment, whose id and name are independent of the definition. */
@@ -64,12 +75,20 @@ export interface ContainerVolume {
   dirCacheSeconds?: number
   /** Older hosts omit this, and the volume mounts read and write. */
   readOnly?: boolean
+  /** Where a drive with an agent note lives. Read-only drives omit it. */
+  sourceLabel?: string
+  /** The drive type's agent note. Read-only drives omit it. */
+  agentNote?: string
 }
 
 /** Why a volume is not in the container. */
 export type NotMountedReason =
+  | 'preparing'
+  | `preparing: ${string}`
   | 'not found'
   | 'not accessible'
+  /** A local drive whose folder the App Sandbox can no longer open. */
+  | 'pick the folder again'
   | 'unreadable'
   | 'invalid name'
   | 'not supported here'

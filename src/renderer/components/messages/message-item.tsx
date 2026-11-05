@@ -8,6 +8,7 @@ import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { WorkflowResultCard } from './workflow-result-card'
+import { DashboardCommentContext } from './dashboard-comment-context'
 import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
@@ -370,7 +371,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               // Assistant bubbles opt into table breakout and must not clip it.
               data-allow-table-breakout={isAssistant ? '' : undefined}
               className={cn(
-                'rounded-lg max-w-full text-foreground',
+                'rounded-card max-w-full text-foreground',
                 !isAssistant && 'overflow-hidden',
                 isUser && 'px-4 py-2',
                 isUser && !silentMention && 'bg-zinc-100 dark:bg-zinc-800/70',
@@ -503,6 +504,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               </div>
             ))}
           </div>
+        )}
+
+        {/* What a dashboard comment told the agent beside the comment, folded */}
+        {isUser && userParts?.dashboardContext && (
+          <DashboardCommentContext context={userParts.dashboardContext} />
         )}
 
         {/* Workflow result cards parsed from inline task-notification blocks */}

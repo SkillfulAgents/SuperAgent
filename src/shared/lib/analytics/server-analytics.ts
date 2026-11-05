@@ -1,6 +1,8 @@
 import { getTenantId } from './tenant-id'
+import { getServerFacts } from '../facts/server-facts'
 import { getSettings, type AnalyticsTarget } from '../config/settings'
 import { DEFAULT_AMPLITUDE_KEY } from './constants'
+import { background } from '../background'
 
 interface EventPayload {
   event_type: string
@@ -19,12 +21,13 @@ export function setServerAnalyticsVersion(version: string) {
   appVersion = version
 }
 
-function getBaseProperties(): Record<string, unknown> {
+function getBaseProperties(tenantId: string): Record<string, unknown> {
   return {
     source: 'server',
     versionId: appVersion ?? 'unknown',
     platform: 'server',
-    tenantId: getTenantId(),
+    tenantId,
+    distribution: getServerFacts().distribution,
   }
 }
 
@@ -57,7 +60,7 @@ async function sendToMixpanel(token: string, event: string, properties: Record<s
       event,
       properties: {
         token,
-        distinct_id: properties.user_id ?? getTenantId(),
+        distinct_id: properties.user_id,
         ...properties,
       },
     }]
@@ -93,24 +96,24 @@ function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties
     switch (target.type) {
       case 'amplitude':
         if (target.config.apiKey) {
-          void sendToAmplitude(target.config.apiKey, [{
+          background(sendToAmplitude(target.config.apiKey, [{
             event_type: event,
             user_id: userId,
             event_properties: properties,
             ...(userProperties ? { user_properties: { $set: userProperties } } : {}),
             app_version: appVersion,
             platform: 'server',
-          }])
+          }]), { name: 'server-analytics.send-amplitude' })
         }
         break
       case 'mixpanel':
         if (target.config.token) {
-          void sendToMixpanel(target.config.token, event, { ...properties, user_id: userId })
+          background(sendToMixpanel(target.config.token, event, { ...properties, user_id: userId }), { name: 'server-analytics.send-mixpanel' })
         }
         break
       case 'google-analytics':
         if (target.config.measurementId) {
-          void sendToGA(target.config.measurementId, event, properties)
+          background(sendToGA(target.config.measurementId, event, properties), { name: 'server-analytics.send-ga' })
         }
         break
     }
@@ -118,8 +121,8 @@ function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties
 }
 
 /**
- * Track an analytics event from the server side.
- * Reads current settings to determine active targets.
+ * Track an analytics event from the server side. Fire-and-forget: the
+ * targets and consent are read fresh for this event, in the background.
  * userId defaults to tenantId for server-originated events.
  * `userProperties` are set on the Amplitude user (e.g. the email an
  * email tool keys on).
@@ -131,13 +134,31 @@ export function trackServerEvent(
   userProperties?: Record<string, unknown>,
 ) {
   if (process.env.E2E_MOCK === 'true') return
+  background(
+    sendServerEvent(event, properties, userId, userProperties).catch((err) => {
+      // Settings or the tenant id unreadable (or not available yet, early in
+      // boot): consent is unknown, so the event is dropped.
+      console.warn(`[Analytics] Dropped ${event}:`, err)
+    }),
+    { name: 'server-analytics.track' },
+  )
+}
 
-  const settings = getSettings()
+async function sendServerEvent(
+  event: string,
+  properties: Record<string, unknown>,
+  userId: string | undefined,
+  userProperties: Record<string, unknown> | undefined,
+) {
+  const settings = await getSettings()
   const targets = settings.analyticsTargets ?? []
-  const effectiveUserId = userId ?? getTenantId()
+  const shareAnalytics = settings.shareAnalytics
+  if (targets.length === 0 && !(DEFAULT_AMPLITUDE_KEY && shareAnalytics)) return
+  const tenantId = await getTenantId()
+  const effectiveUserId = userId ?? tenantId
 
   const fullProperties = {
-    ...getBaseProperties(),
+    ...getBaseProperties(tenantId),
     ...properties,
   }
 
@@ -147,14 +168,14 @@ export function trackServerEvent(
   }
 
   // Send to hardcoded Amplitude (Datawizz) only if shareAnalytics is enabled
-  if (DEFAULT_AMPLITUDE_KEY && settings.shareAnalytics) {
-    void sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
+  if (DEFAULT_AMPLITUDE_KEY && shareAnalytics) {
+    background(sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
       event_type: event,
       user_id: effectiveUserId,
       event_properties: fullProperties,
       ...(userProperties ? { user_properties: { $set: userProperties } } : {}),
       app_version: appVersion,
       platform: 'server',
-    }])
+    }]), { name: 'server-analytics.send-amplitude' })
   }
 }

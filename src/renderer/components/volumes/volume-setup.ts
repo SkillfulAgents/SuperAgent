@@ -1,7 +1,7 @@
 import type { ComponentType } from 'react'
 import type { z } from 'zod'
 import type { VolumeType } from '@shared/lib/types/mount'
-import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
+import { volumeConfigSchema, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import type { VolumeDetails } from './volume-details-schema'
 
 export interface VolumeSetupProps {
@@ -29,4 +29,9 @@ export interface VolumeSetupDefinition<T extends VolumeType = VolumeType> {
   /** Optional immediate action on source selection. null means cancelled. */
   begin?: () => Promise<Extract<VolumeSource, { type: T }>['config'] | null>
   Setup: ComponentType<VolumeSetupProps>
+}
+
+/** A setup's submitted config as a validated drive source. Throws on an invalid config. */
+export function parseVolumeSource(definition: VolumeSetupDefinition, config: unknown): VolumeSource {
+  return volumeConfigSchema.parse({ type: definition.type, config: definition.configSchema.parse(config) })
 }

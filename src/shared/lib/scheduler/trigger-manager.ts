@@ -1,4 +1,3 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Trigger Manager
  *
@@ -10,9 +9,10 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
  */
 
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { getSettings } from '@shared/lib/config/settings'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
 import {
@@ -174,7 +174,7 @@ class TriggerManager {
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null
       // A failure schedules its own retry.
-      this.syncRegistrations().catch(() => {})
+      background(this.syncRegistrations().catch(() => {}), { name: 'trigger-manager.sync-registrations' })
     }, delayMs)
     this.resyncTimer.unref?.()
   }
@@ -188,7 +188,7 @@ class TriggerManager {
     let memberIds = endpointIds.length > 0 ? await getDistinctPlatformMemberIdsForActiveTriggers() : []
     // An opaque key is bound to one member by the platform, so it claims under
     // the local scope. An org token needs a real member, and has none here.
-    if (endpointIds.length > 0 && memberIds.length === 0 && !attribution.requiresActingMember()) {
+    if (endpointIds.length > 0 && memberIds.length === 0 && !(await attribution.requiresActingMember())) {
       memberIds = [LOCAL_RELAY_SCOPE]
     }
     if (!this.isRunning) return
@@ -317,15 +317,10 @@ class TriggerManager {
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
+    // One read of the settings for this firing.
     // Model/effort/speed preference order: trigger override > agent default > global default.
-    const models = getEffectiveModels()
-    const agentPrefs = await readAgentPreferences(trigger.agentSlug)
-    const resolved = await resolveConnectionRuntimeInherit(
-      { model: trigger.model,
-      llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed },
-      agentPrefs,
-      models,
-    )
+    const { models, resolve } = await resolveSessionDefaults(await getSettings(), trigger.agentSlug)
+    const resolved = await resolve({ model: trigger.model, llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed })
     const { id: sessionId } = await actor.sessions.start({
       create: {
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -356,11 +351,11 @@ class TriggerManager {
     )
 
     // Notification
-    notificationManager
+    background(notificationManager
       .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.id, trigger.name || undefined)
       .catch((err) => {
         console.error('[TriggerManager] Failed to trigger notification:', err)
-      })
+      }), { name: 'trigger-manager.notify-session-started' })
   }
 }
 

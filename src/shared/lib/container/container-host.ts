@@ -9,7 +9,7 @@
  * this module — everything else asks the actor for its agent and imports
  * `containerHost` from `@shared/lib/agent-actor` for the host-level calls.
  */
-import { ContainerRuntime, type RuntimeHost } from './container-runtime'
+import { autoSleepTimeoutMsFrom, ContainerRuntime, type RuntimeHost } from './container-runtime'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import type { AgentSessionsAccess } from './agent-sessions-access'
 import {
@@ -33,10 +33,11 @@ import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
-import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings, type AppSettings } from '@shared/lib/config/settings'
 import path from 'path'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -174,9 +175,37 @@ export class ContainerHost {
     return false
   }
 
-  /** The auto-sleep timeout changed: every runtime re-arms its idle alarm against the new value. */
-  rearmIdleAlarms(): void {
-    for (const runtime of this.runtimes.values()) runtime.idleAlarm.schedule()
+  /** Orders the re-arms' timeout reads: only the newest one to start re-arms. */
+  private idleRearms = 0
+
+  /**
+   * The auto-sleep timeout changed: every runtime re-arms its idle alarm
+   * against the new value, read once for all of them. `timeoutMs`, when the
+   * caller has the value its write committed, is used as is; otherwise the
+   * timeout is read here, after the write, and never joined to a read an
+   * alarm started before it (see `IdleAlarm.rearm`). Returns before the
+   * alarms are armed when it reads.
+   */
+  rearmIdleAlarms(timeoutMs?: number): void {
+    const rearm = ++this.idleRearms
+    if (timeoutMs !== undefined) {
+      for (const runtime of this.runtimes.values()) runtime.idleAlarm.rearm(timeoutMs)
+      return
+    }
+    if (this.runtimes.size === 0) return
+    background((async () => {
+      let read: number
+      try {
+        read = autoSleepTimeoutMsFrom(await getSettings())
+      } catch (error) {
+        // Each alarm keeps what it armed; its next mark or fire reads again.
+        console.error('[ContainerHost] Could not read the auto-sleep timeout to re-arm the idle alarms:', error)
+        return
+      }
+      // A later re-arm started meanwhile decides instead.
+      if (rearm !== this.idleRearms) return
+      for (const runtime of this.runtimes.values()) runtime.idleAlarm.rearm(read)
+    })(), { name: 'container-host.rearm-idle-alarms' })
   }
 
   // Get list of running agent slugs (uses cached status)
@@ -219,13 +248,18 @@ export class ContainerHost {
   async initializeAgents(agentSlugs: string[]): Promise<void> {
     console.log(`[ContainerHost] Initializing ${agentSlugs.length} agents...`)
 
+    // One read for every agent: the runner their clients are built for, and
+    // what the sync below needs.
+    const settings = await getSettings()
+    const runner = settings.container.containerRunner as ContainerRunner
+
     // Create clients for all agents (this registers them for sync)
     for (const slug of agentSlugs) {
-      this.runtime(slug).getClient()
+      await this.runtime(slug).getClient(runner)
     }
 
     // Sync all statuses
-    await this.syncAllStatuses()
+    await this.syncAllStatuses(settings)
 
     console.log(`[ContainerHost] Initialized ${agentSlugs.length} agents`)
   }
@@ -233,8 +267,13 @@ export class ContainerHost {
   /**
    * Sync every known agent's status with reality.
    * Called on startup and periodically.
+   *
+   * One settings read for the sweep, however many agents (`settings`, when
+   * the caller read them for the same operation): each runtime asks the
+   * client it holds without reading the runner, and an idle alarm the sync
+   * finds disarmed is armed with the sweep's timeout.
    */
-  async syncAllStatuses(): Promise<void> {
+  async syncAllStatuses(settings?: Pick<AppSettings, 'app'>): Promise<void> {
     if (this.isSyncing) {
       console.log('[ContainerHost] Sync already in progress, skipping')
       return
@@ -246,12 +285,22 @@ export class ContainerHost {
     try {
       const runtimes = Array.from(this.runtimes.values()).filter((runtime) => runtime.hasClient())
 
+      let idleTimeoutMs: number | undefined
+      if (runtimes.length > 0) {
+        try {
+          idleTimeoutMs = autoSleepTimeoutMsFrom(settings ?? await getSettings())
+        } catch (error) {
+          // The sync goes on; an alarm it arms reads the timeout for itself.
+          console.warn('[ContainerHost] Could not read the auto-sleep timeout for the status sync:', error)
+        }
+      }
+
       for (const runtime of runtimes) {
         // Skip agents currently being stopped
         if (runtime.isStopping()) continue
 
         try {
-          await runtime.syncAgentStatus()
+          await runtime.syncAgentStatus({ idleTimeoutMs })
         } catch (error) {
           console.error(`[ContainerHost] Failed to sync status for ${runtime.slug}:`, error)
           // Mark as stopped on error
@@ -278,9 +327,9 @@ export class ContainerHost {
 
     // Set up periodic sync (initial sync is done by initializeAgents)
     this.syncIntervalId = setInterval(() => {
-      this.syncAllStatuses().catch((error) => {
+      background(this.syncAllStatuses().catch((error) => {
         console.error('[ContainerHost] Periodic sync failed:', error)
-      })
+      }), { name: 'container-host.sync-statuses' })
     }, STATUS_SYNC_INTERVAL_MS)
   }
 
@@ -306,9 +355,9 @@ export class ContainerHost {
     console.log(`[ContainerHost] Starting health monitor (interval: ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`)
 
     this.healthCheckIntervalId = setInterval(() => {
-      this.runHealthChecks().catch((error) => {
+      background(this.runHealthChecks().catch((error) => {
         console.error('[ContainerHost] Health check failed:', error)
-      })
+      }), { name: 'container-host.run-health-checks' })
     }, HEALTH_CHECK_INTERVAL_MS)
   }
 
@@ -403,9 +452,9 @@ export class ContainerHost {
 
     clearRunnerAvailabilityCache()
 
-    this.ensureImageReady().catch((err) => {
+    background(this.ensureImageReady().catch((err) => {
       console.error('[ContainerHost] Failed to re-check readiness after force stop:', err)
-    })
+    }), { name: 'container-host.ensure-image-ready' })
   }
 
   /** Get the current runtime readiness state. */
@@ -490,12 +539,12 @@ export class ContainerHost {
       return
     }
 
-    let settings = getSettings()
+    const settings = await getSettings()
     const image = settings.container.agentImage
 
     // Step 1: Check configured runner availability
     // We check the *configured* runner specifically (not a fallback) because
-    // createContainerClient() always uses the configured runner.
+    // a runtime's getClient() always builds for the configured runner.
     let configuredRunner = settings.container.containerRunner as ContainerRunner
 
     this.setReadiness({
@@ -590,12 +639,17 @@ export class ContainerHost {
         const alternativeRunner = allAvailability.find((r) => r.available && r.runner !== configuredRunner)
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
+          const unavailableRunner = configuredRunner
           configuredRunner = alternativeRunner.runner as ContainerRunner
-          // Serialized fresh-read + atomic write; re-bind the local
-          // snapshot to the persisted result so later reads see fresh state.
-          settings = mutateSettings((s) => {
+          // Switch only away from the runner found unavailable: one the user
+          // picked during the availability check above stands. Each runtime's
+          // getClient() reads the runner while its container is not running,
+          // and replaces a client built for another one on its next use.
+          const switched = await mutateSettings((s) => {
+            if (s.container.containerRunner !== unavailableRunner) return false
             s.container.containerRunner = configuredRunner
           })
+          configuredRunner = switched.container.containerRunner as ContainerRunner
         } else {
           const displayName = getRunnerDisplayName(configuredRunner)
           const detail = !runnerStatus?.installed
@@ -726,9 +780,9 @@ export class ContainerHost {
           const registry = image.substring(0, lastColon)
           const currentTag = image.substring(lastColon + 1)
           const ClientClass = getContainerClientClass(effectiveRunner)
-          ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
+          background(ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
             console.warn('[ContainerHost] Image cleanup failed:', error)
-          })
+          }), { name: 'container-host.remove-old-images' })
         }
         return
       } catch (error) {

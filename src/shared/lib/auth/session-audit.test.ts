@@ -28,6 +28,7 @@ describe('resolveSessionAuditContext', () => {
     ['/sign-up/email', 'password'],
     ['/callback/:id', 'oidc'],
     ['/oauth2/callback/:providerId', 'oidc'],
+    ['/sign-in/social', 'oidc'],
     ['/admin/impersonate-user', 'impersonation'],
   ])('maps %s to %s', (path, method) => {
     expect(resolveSessionAuditContext(path).method).toBe(method)

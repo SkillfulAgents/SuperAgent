@@ -4,7 +4,6 @@
  * activity label reflects (compacting, retrying). Fed by the SDK's stream
  * events; complete messages are the transcript's business, not this one's.
  */
-import type { SessionUsage } from '@shared/lib/types/agent'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { redactStreamedToolInput } from './redaction'
 import type { SessionEvent } from './session-channel'
@@ -31,17 +30,7 @@ type StreamEvent = {
   message?: { id?: string }
   content_block?: { type: string; id?: string; name?: string }
   delta?: { type: string; text?: string; partial_json?: string; thinking?: string }
-  usage?: TokenUsage
 }
-
-export type TokenUsage = {
-  input_tokens?: number
-  output_tokens?: number
-  cache_creation_input_tokens?: number
-  cache_read_input_tokens?: number
-}
-
-const DEFAULT_CONTEXT_WINDOW = 200_000
 
 export class MainStream {
   /** Text streamed in the current message; cleared once the message is complete. */
@@ -57,10 +46,6 @@ export class MainStream {
   // live block's id matches the persisted one.
   private messageId: string | null = null
   private thinkingBlockIndex: number | null = null
-  /** The window the last result reported (or the catalog says), for context usage. */
-  contextWindow = DEFAULT_CONTEXT_WINDOW
-  /** The latest single API call's usage: the context's size as of then. */
-  lastUsage: SessionUsage | null = null
 
   constructor(private readonly sink: MainStreamSink) {}
 
@@ -129,11 +114,6 @@ export class MainStream {
           ? { id: this.currentToolUse.id, name: this.currentToolUse.name, input: this.currentToolInput }
           : null
 
-      case 'message_delta':
-        // Final usage arrives here too (OpenRouter sends input_tokens: 0 in
-        // message_start and the real numbers in message_delta).
-        if (event.usage && (event.usage.input_tokens || event.usage.output_tokens)) this.reportUsage(event.usage)
-        return null
 
       case 'message_stop':
         this.isStreaming = false
@@ -182,31 +162,6 @@ export class MainStream {
       delayMs: content.delay_ms,
       errorStatus: content.error_status,
     })
-  }
-
-  /** One API call's usage: the context's current size. */
-  reportUsage(usage: TokenUsage): void {
-    this.lastUsage = {
-      inputTokens: usage.input_tokens ?? 0,
-      outputTokens: usage.output_tokens ?? 0,
-      cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
-      cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
-      contextWindow: this.contextWindow,
-    }
-    this.sink.emit({ type: 'context_usage', ...this.lastUsage })
-  }
-
-  /**
-   * The result names the window: the latest call's usage goes out again with
-   * it, and is returned for the session to persist. (Not the result's own
-   * usage, which sums every call in the turn.)
-   */
-  settleUsage(contextWindow: number | undefined): SessionUsage | null {
-    if (contextWindow) this.contextWindow = contextWindow
-    if (!this.lastUsage) return null
-    const usage = { ...this.lastUsage, contextWindow: this.contextWindow }
-    this.sink.emit({ type: 'context_usage', ...usage })
-    return usage
   }
 
   /** A complete assistant message landed: its streamed text is now in the transcript. */

@@ -18,6 +18,7 @@
 
 import pLimit from 'p-limit'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 import type {
   VerificationProfile,
@@ -90,9 +91,10 @@ export interface PlatformWebhookRelayDeps {
   claim(scope: RelayScope, endpointIds: readonly string[], signal: AbortSignal): Promise<PlatformClaim>
   acknowledge(scope: RelayScope, eventIds: readonly string[], signal: AbortSignal): Promise<void>
   endpoints: PlatformEndpointsApi
-  getToken(): string | null
+  /** The platform token, read fresh. */
+  getToken(): Promise<string | null>
   /** True for an org token, which needs a real member scope on every call. */
-  requiresMemberScope(): boolean
+  requiresMemberScope(token: string): boolean
   createRealtime(): RealtimeConnection
   /** Runs fn, and what it schedules, outside any request/attribution scope. */
   detach<T>(fn: () => T): T
@@ -199,7 +201,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Aborted by stop(), cancelling every request still in flight.
   private lifecycle = new AbortController()
   private online = false
+  /** The token the relay went online with (see applyAuth). */
   private token: string | null = null
+  /** Auth changes are applied one at a time, in order (see queueApplyAuth). */
+  private authApplying: Promise<void> = Promise.resolve()
   // Bumped whenever the connection goes away, so async work from an older
   // identity can't touch the current one's realtime client or status.
   private generation = 0
@@ -312,7 +317,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Only minting needs a running relay (a URL nobody claims from is the
   // problem); taking one down just needs the platform.
   async disableEndpoint(scope: RelayScope, endpointId: string): Promise<void> {
-    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
+    if (!(await this.deps.getToken())) throw new WebhookRelayUnavailableError('platform_disconnected')
     await this.deps.endpoints.disable(scope, endpointId)
   }
 
@@ -455,7 +460,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
 
   /** Registered endpoints in a scope this token can claim. */
   private hasClaimableEndpoints(): boolean {
-    const orgToken = this.deps.requiresMemberScope()
+    const orgToken = this.memberScoped()
     for (const state of this.consumers.values()) {
       if (state.endpointIds.size > 0 && !(orgToken && state.scope === LOCAL_RELAY_SCOPE)) return true
     }
@@ -494,7 +499,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.started) return
     this.started = true
     this.lifecycle = new AbortController()
-    this.applyAuth()
+    this.queueApplyAuth()
     // Resume delivery that stop() suspended.
     for (const state of this.deliveringConsumers()) this.pump(state)
   }
@@ -512,11 +517,29 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   onAuthChanged(): void {
-    if (this.started) this.applyAuth()
+    if (this.started) this.queueApplyAuth()
   }
 
-  private applyAuth(): void {
-    const token = this.deps.getToken()
+  /**
+   * Apply the current platform token. Reading it is asynchronous, so each
+   * application waits for the one before it: two in flight could otherwise
+   * finish out of order and leave the relay on the older answer.
+   */
+  private queueApplyAuth(): void {
+    const run = this.authApplying.then(() => this.applyAuth())
+    this.authApplying = run.catch(() => {})
+    background(run, { name: 'webhook-relay.apply-auth' })
+  }
+
+  /** Whether the token the relay is online with is an org token (claims per member). */
+  private memberScoped(): boolean {
+    return this.token !== null && this.deps.requiresMemberScope(this.token)
+  }
+
+  private async applyAuth(): Promise<void> {
+    const token = await this.deps.getToken()
+    // Stopped while the token was being read: stop() already went offline.
+    if (!this.started) return
     if (!token) {
       if (this.online) console.log('[WebhookRelay] Platform disconnected; delivery paused')
       this.goOffline()
@@ -584,12 +607,12 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     lifecycle.addEventListener('abort', onStop, { once: true })
     if (lifecycle.aborted) onStop()
     const run = new Promise<T>((resolve) => resolve(fn(controller.signal)))
-    void run.catch(() => {}).finally(() => lifecycle.removeEventListener('abort', onStop))
+    run.catch(() => {}).finally(() => lifecycle.removeEventListener('abort', onStop))
 
     let timer: NodeJS.Timeout | undefined
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        if (late) void run.then(late.result, late.failure)
+        if (late) background(run.then(late.result, late.failure), { name: 'webhook-relay.late-claim' })
         else controller.abort(new Error('deadline'))
         reject(new RequestDeadlineError(this.requestTimeoutMs))
       }, this.requestTimeoutMs)
@@ -611,7 +634,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.draining) return
     this.draining = true
     this.deps.detach(() => {
-      void this.drain()
+      background(this.drain(), { name: 'webhook-relay.drain' })
     })
   }
 
@@ -660,7 +683,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     for (const lane of lanes) {
       if (generation !== this.generation) return
       if (failedScopes.has(lane.scope)) continue
-      if (lane.scope === LOCAL_RELAY_SCOPE && this.deps.requiresMemberScope()) {
+      if (lane.scope === LOCAL_RELAY_SCOPE && this.memberScoped()) {
         if (!this.warnedLocalScope) {
           this.warnedLocalScope = true
           console.warn('[WebhookRelay] Skipping the local scope: an org token claims per member')
@@ -797,7 +820,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     state.retryTimer = null
     state.offering = true
     this.deps.detach(() => {
-      void this.limit(() => this.offer(state))
+      background(this.limit(() => this.offer(state))
         .catch((error: unknown) => {
           captureException(error, { tags: { area: 'webhook-relay', op: 'offer' }, extra: { consumerId: state.id } })
         })
@@ -805,7 +828,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
           state.offering = false
           this.finishIfDrained(state)
           this.pump(state)
-        })
+        }), { name: 'webhook-relay.offer' })
     })
   }
 
@@ -884,7 +907,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.acking || !this.online || this.pendingAcks.size === 0) return
     this.acking = true
     this.deps.detach(() => {
-      void this.runAcks()
+      background(this.runAcks(), { name: 'webhook-relay.ack' })
     })
   }
 
@@ -963,9 +986,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (current?.isActive()) {
       if (now - this.realtimeTokenAt >= this.realtimeTokenRefreshMs) {
         this.realtimeTokenAt = now
-        current.updateToken(config.jwt).catch((error: unknown) => {
+        background(current.updateToken(config.jwt).catch((error: unknown) => {
           console.warn(`[WebhookRelay] Realtime token refresh failed: ${errorMessage(error)}`)
-        })
+        }), { name: 'webhook-relay.refresh-realtime-token' })
       }
       return
     }
@@ -978,7 +1001,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.realtime = client
     this.realtimeConnecting = true
     this.realtimeTokenAt = now
-    client
+    background(client
       .connect(
         config,
         (record) => this.onRealtimeInsert(record),
@@ -1004,7 +1027,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       .finally(() => {
         if (this.realtime === client) this.realtimeConnecting = false
         this.emit()
-      })
+      }), { name: 'webhook-relay.connect-realtime' })
   }
 
   private onRealtimeInsert(raw: unknown): void {

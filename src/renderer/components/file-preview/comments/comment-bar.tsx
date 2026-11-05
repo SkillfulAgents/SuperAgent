@@ -28,7 +28,7 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
 }
 
 export function CommentBar({ comments, filePath, agentSlug, sessionId }: CommentBarProps) {
-  const { clearComments, removeComment } = useFilePreview()
+  const { clearComments, removeComment, commentsEnabled } = useFilePreview()
   const draftsStore = useDraftsStore()
 
   const handleSubmit = useCallback(() => {
@@ -39,7 +39,7 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
     queueMicrotask(() => focusSessionComposer(sessionId))
   }, [comments, filePath, agentSlug, sessionId, draftsStore, clearComments])
 
-  if (comments.length === 0) return null
+  if (comments.length === 0 || !commentsEnabled) return null
 
   return (
     <div className="shrink-0 border-t border-border/40 bg-muted/20">
@@ -54,7 +54,7 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
             </div>
             <button
               onClick={() => removeComment(filePath, agentSlug, comment.id)}
-              className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+              className="p-0.5 rounded-icon hover:bg-destructive/10 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
               title="Remove comment"
             >
               <Trash2 className="h-3 w-3" />

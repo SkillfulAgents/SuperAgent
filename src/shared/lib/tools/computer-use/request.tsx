@@ -12,7 +12,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { PERMISSION_LEVEL_LABELS } from '@shared/lib/computer-use/types'
 import { DeclineButton } from '../requests/decline-button'
 import { RequestItemShell } from '../requests/request-item-shell'
@@ -163,10 +163,10 @@ export function ComputerUseRequestItem({
 
   const codeBlock = (
     <div className="pt-4">
-      <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
+      <div className="overflow-hidden rounded-card border border-border bg-white dark:bg-background">
         <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 text-xs font-mono text-foreground/75">
           <code>
-            <span className="mr-2 inline-flex h-6 items-center rounded-md bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
+            <span className="mr-2 inline-flex h-6 items-center rounded-control bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
               {PERMISSION_LABELS[permissionLevel] || permissionLevel}
             </span>
             {method}{paramStr ? `(${paramStr})` : '()'}
@@ -288,7 +288,7 @@ export function ComputerUseRequestItem({
 
           <div className="space-y-3 py-2">
             {missingPermissions && !missingPermissions.accessibility && (
-              <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="flex items-center justify-between rounded-card border p-3">
                 <div>
                   <p className="font-medium text-sm">Accessibility</p>
                   <p className="text-xs text-muted-foreground">Required to interact with UI elements</p>
@@ -302,7 +302,7 @@ export function ComputerUseRequestItem({
               </div>
             )}
             {missingPermissions && !missingPermissions.screen_recording && (
-              <div className="flex items-center justify-between rounded-md border p-3">
+              <div className="flex items-center justify-between rounded-card border p-3">
                 <div>
                   <p className="font-medium text-sm">Screen Recording</p>
                   <p className="text-xs text-muted-foreground">Required to capture screen content</p>

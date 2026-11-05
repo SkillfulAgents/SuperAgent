@@ -27,7 +27,7 @@ import {
   type WebhookEndpointEvent,
 } from '@shared/lib/services/webhook-endpoint-schema'
 import type { z } from 'zod'
-import { errorMessage, parseToolInput, rejected, resolved, sessionOwnerOf } from './host-tool-result'
+import { agentModelChoice, errorMessage, parseToolInput, rejected, resolved, sessionOwnerOf } from './host-tool-result'
 import { resolvePlatformMemberForSession } from './platform-member'
 
 // One inspection line per stored delivery. Bodies are already previews (the
@@ -92,6 +92,13 @@ export async function createWebhookEndpoint({ agentSlug, sessionId, toolUseId, i
     const verification = input.verification ?? undefined
     const filterExp = input.filter_exp ?? undefined
 
+    let modelChoice: { model?: string; llmProviderId?: string }
+    try {
+      modelChoice = await agentModelChoice(agentSlug, input.model ?? undefined)
+    } catch (error) {
+      return rejected(errorMessage(error))
+    }
+
     const memberId = await resolvePlatformMemberForSession(agentSlug, sessionId)
     // Minted explicitly as `token::memberId` below, so record that when no
     // ALS attribution is active; never persist the opaque-key 'local' placeholder.
@@ -119,7 +126,7 @@ export async function createWebhookEndpoint({ agentSlug, sessionId, toolUseId, i
         createdBySessionId: sessionId,
         createdByUserId: await sessionOwnerOf(agentSlug, sessionId),
         mintedByMemberId,
-        model: input.model,
+        ...modelChoice,
         effort: input.effort,
         speed: input.speed,
       })

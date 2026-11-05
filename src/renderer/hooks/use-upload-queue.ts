@@ -4,6 +4,9 @@ import { captureRendererException } from '@renderer/lib/error-reporting'
 import { isRetryableRequestError } from '@renderer/lib/http-error'
 import { zipFolderFiles } from '@renderer/lib/file-utils'
 import { UPLOAD_STALL_MS, type UploadProgress } from '@renderer/lib/upload'
+import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
+import { requiresImagePreviewConversion } from '@renderer/lib/file-types'
+import { getAgentFileUrl } from '@renderer/lib/workspace-file-url'
 import type { Attachment, FileAttachment, FolderAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadPatch } from './use-attachments'
 
@@ -81,7 +84,12 @@ export function useUploadQueue(options: UploadQueueOptions) {
       }
       if (!live()) return
       pathsRef.current.set(id, { path: result.path, agentSlug })
-      opts.updateAttachment(id, { upload: { status: 'done', path: result.path, agentSlug } })
+      opts.updateAttachment(id, {
+        upload: { status: 'done', path: result.path, agentSlug },
+        ...(attachment.type === 'file' && attachment.file.size <= HEIC_PREVIEW_MAX_SOURCE_BYTES && requiresImagePreviewConversion(attachment.file.name)
+          ? { preview: getAgentFileUrl(agentSlug, result.path, { inline: true }) }
+          : {}),
+      })
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return
       if (!live()) return
@@ -104,7 +112,12 @@ export function useUploadQueue(options: UploadQueueOptions) {
     failedRef.current.delete(attachment.id)
     pathsRef.current.delete(attachment.id)
     const slug = optionsRef.current.agentSlug
-    optionsRef.current.updateAttachment(attachment.id, { upload: { status: 'queued', agentSlug: slug }, error: undefined, errorRetryable: undefined })
+    optionsRef.current.updateAttachment(attachment.id, {
+      upload: { status: 'queued', agentSlug: slug },
+      error: undefined,
+      errorRetryable: undefined,
+      ...(attachment.type === 'file' && requiresImagePreviewConversion(attachment.file.name) ? { preview: undefined } : {}),
+    })
     // No agent yet (Quick Dispatch before the list loads): keep the chip waiting.
     // requeueAll runs when the slug arrives.
     if (!slug) return

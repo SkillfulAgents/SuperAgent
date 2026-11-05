@@ -3,17 +3,18 @@ import path from 'node:path'
 import type { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { background } from '@shared/lib/background'
 import { DriveExportTooLargeError, driveRequest, driveUpload, requireGoogleDriveAccount, withGoogleDriveAccount, type DriveRequest } from './google-drive-client'
 import pLimit from 'p-limit'
-import { googleDriveBrowseSchema, DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, driveFileListSchema, driveFileSchema, driveListSchema, driveSchema, type DriveFile, type GoogleDriveVolumeConfig } from './google-drive-schema'
+import { googleDriveBrowseSchema, googleDriveCreateFolderSchema, DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, driveFileListSchema, driveFileSchema, driveListSchema, driveSchema, type DriveFile, type GoogleDriveVolumeConfig } from './google-drive-schema'
 import { googleDriveExportCache, type ExportSize, type Export } from './google-drive-export-cache'
 import { driveNameOf, folderView, isExport, isFolder, nameTaken, ownId, writeTarget, type VisibleEntry, type WriteTarget } from './google-drive-folder-view'
 import { RemoteListingCache, serialize } from './remote-listing-cache'
 import { GoogleDriveChangeFeed } from './google-drive-changes'
-import { volumeFolderBrowser } from './volume-folder-browser'
+import { volumeFolderBrowser, volumeFolderCreator } from './volume-folder-browser'
 import { rangedVolumeFile } from './remote-file'
 import { RemoteHealthCache } from './remote-health-cache'
-import { volumeUploads } from './volume-upload-guard'
+import { guardDelete, guardedUpload } from './guarded-upload'
 import { throwIfUploadAborted } from './remote-transfer'
 import { VolumeError } from './volume-error'
 
@@ -144,6 +145,15 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     })
   })
 
+  // Also before a definition exists: make a folder inside the one the picker is in, the way a mount makes one.
+  static readonly createFolder = volumeFolderCreator(googleDriveCreateFolderSchema, async ({ accountId, folderId, name }, viewer) => {
+    await requireGoogleDriveAccount(accountId, viewer)
+    // The names only label a mounted volume, which this one never is.
+    const parent = new GoogleDriveMountableVolume('', '', { accountId, folderId, folderName: folderId, driveName: folderId })
+    const made = await parent.makeFolder(name)
+    return { folder: { id: made.id, name: made.name } }
+  })
+
   readonly type = 'googledrive'
   readonly cacheMode = 'remote'
   // A Google file saved as .md, .xlsx or .pptx is stored as the Google file, at its export size.
@@ -158,6 +168,11 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
 
   get sourceLabel(): string {
     return `Google Drive · ${this.config.driveName} / ${this.config.folderName}`
+  }
+
+  override get agentNote(): string {
+    return 'Google Drive drives show Google Docs, Sheets and Slides as .md, .xlsx and .pptx copies. ' +
+      'Saving one updates the original Google file, and saving a Doc drops its fonts, colors and alignment.'
   }
 
   private request(request: DriveRequest) {
@@ -410,7 +425,9 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       if (prefetching.has(key) || googleDriveListingCache.cached(key)) continue
       prefetching.add(key)
       // A failed listing ahead is read again when the walk reaches it.
-      void limit(() => this.children(file.id)).catch(() => {}).finally(() => prefetching.delete(key))
+      background(limit(() => this.children(file.id)).catch(() => {}).finally(() => prefetching.delete(key)), {
+        name: 'google-drive-volume.prefetch-folder',
+      })
     }
   }
 
@@ -456,7 +473,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
-    return volumeUploads.write(JSON.stringify([this.id, relative]), body, signal, () =>
+    return guardedUpload(this.agentSlug, JSON.stringify([this.id, relative]), body, signal, () =>
       withGoogleDriveAccount(this.config.accountId, () => this.writeImpl(relative, body, signal)))
   }
 
@@ -503,16 +520,21 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async mkdir(relative: string): Promise<void> {
+    await this.makeFolder(relative)
+  }
+
+  /** `mkdir`, answering with the folder Drive made. */
+  private makeFolder(relative: string): Promise<DriveFile> {
     return withGoogleDriveAccount(this.config.accountId, () => this.mkdirImpl(relative))
   }
 
-  private async mkdirImpl(relative: string): Promise<void> {
+  private async mkdirImpl(relative: string): Promise<DriveFile> {
     const name = this.writableName(relative)
     const parentId = await this.parentOf(relative)
     const madeAt = Date.now()
     const made = await this.change([parentId], async (fresh, settle) => {
       const children = await fresh(parentId, TRUSTED_LISTING_MS)
-      if (nameTaken(children, this.view(children).entries, name)) throw new WorkspaceFileError('already-exists')
+      if (nameTaken(children, this.view(children).entries, name)) throw new WorkspaceFileError('already-exists', `“${name}” is already used here.`)
       const response = await this.request({ method: 'POST', path: 'drive/v3/files', query: { fields: DRIVE_FILE_FIELDS }, json: { name, mimeType: FOLDER_MIME_TYPE, parents: [parentId] } })
       const made = driveFileSchema.parse(await response.json())
       settle(parentId, children => [...children, made])
@@ -520,6 +542,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     })
     // The folder is empty when made, so its first listing costs no Drive call.
     googleDriveListingCache.seed(this.config.accountId, keyOf(this.config.accountId, made.id), [], madeAt)
+    return made
   }
 
   /** Where a delete or move starts. A name the cached listing lacks is looked up in Drive again, so an
@@ -548,7 +571,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
 
   private async deleteImpl(relative: string): Promise<void> {
     this.writableName(relative)
-    volumeUploads.beforeDelete(JSON.stringify([this.id, relative]))
+    await guardDelete(this.agentSlug, JSON.stringify([this.id, relative]))
     const planned = await this.planned(relative)
     // A folder is held too, so nothing is written into it while it is checked empty and trashed.
     await this.change([planned.parentId, planned.entry.file.id], async (fresh, settle) => {

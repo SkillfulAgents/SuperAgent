@@ -7,6 +7,7 @@
  */
 import { randomUUID } from 'crypto'
 import type { ReviewDecision, ReviewOutcome, ReviewRequestOptions } from './agent-reviews'
+import { background } from '../background'
 
 /**
  * Decide the parked request again from scratch (policy and proxy rules), for
@@ -20,7 +21,11 @@ export interface ReviewParking {
   withdraw(id: string): unknown
   resume(id: string): Promise<ReviewOutcome>
   settle(id: string, decision: ReviewDecision): Promise<ReviewOutcome>
+  takeDenyReason(id: string): Promise<string | undefined>
 }
+
+/** How a review was decided; a deny carries what the person typed, if anything. */
+export type ReviewResult = { decision: 'allow' } | { decision: 'deny'; reason?: string }
 
 /**
  * Raise a review with `raise` and wait for its decision. Throws when nobody
@@ -30,15 +35,15 @@ export async function awaitReview(
   reviews: ReviewParking,
   raise: (options: ReviewRequestOptions) => Promise<ReviewOutcome>,
   options: { signal?: AbortSignal; reevaluate?: ReviewReevaluator } = {},
-): Promise<ReviewDecision> {
+): Promise<ReviewResult> {
   const { signal, reevaluate } = options
   // The caller is already gone: raise no card nobody waits on.
   if (signal?.aborted) throw new Error('Request aborted')
   const id = randomUUID()
   const withdraw = () => {
-    void Promise.resolve(reviews.withdraw(id)).catch((error: unknown) => {
+    background(Promise.resolve(reviews.withdraw(id)).catch((error: unknown) => {
       console.warn('[reviews] Failed to withdraw an aborted review:', error)
-    })
+    }), { name: 'review-request.withdraw-review' })
   }
   signal?.addEventListener('abort', withdraw, { once: true })
   try {
@@ -52,7 +57,8 @@ export async function awaitReview(
     }
     if (outcome === 'timeout') throw new Error('Review timeout')
     if (outcome === 'withdrawn') throw new Error('Request aborted')
-    return outcome
+    if (outcome === 'allow') return { decision: 'allow' }
+    return { decision: 'deny', reason: await reviews.takeDenyReason(id) }
   } finally {
     signal?.removeEventListener('abort', withdraw)
   }

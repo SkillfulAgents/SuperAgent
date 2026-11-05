@@ -16,7 +16,7 @@ vi.mock('../db', () => ({
 
 import {
   createNotification,
-  getUnreadCount,
+  getNotificationCounts,
   getSessionIdsWithUnreadNotifications,
   getUnreadNotificationsByAgents,
   deleteNotificationsBySessionIds,
@@ -74,11 +74,11 @@ describe('notification-service', () => {
     })
   })
 
-  describe('getUnreadCount', () => {
+  describe('getNotificationCounts', () => {
     it('counts only user-actionable types — lifecycle events do not contribute', async () => {
       await seedOneOfEachType('agent-a', 'sess')
       // 5 unread notifications inserted, but only 2 are user-actionable.
-      expect(await getUnreadCount()).toBe(2)
+      expect((await getNotificationCounts()).count).toBe(2)
     })
 
     it('returns 0 when only lifecycle events are unread', async () => {
@@ -91,13 +91,13 @@ describe('notification-service', () => {
           body: 'b',
         })
       }
-      expect(await getUnreadCount()).toBe(0)
+      expect((await getNotificationCounts()).count).toBe(0)
     })
 
     it('counts both session_complete and session_waiting', async () => {
       await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'a', title: 't', body: 'b' })
       await createNotification({ type: 'session_waiting', sessionId: 's2', agentSlug: 'a', title: 't', body: 'b' })
-      expect(await getUnreadCount()).toBe(2)
+      expect((await getNotificationCounts()).count).toBe(2)
     })
   })
 

@@ -35,7 +35,7 @@ export function ConfigureModelStep() {
   const options = provider?.defaultModelOptions ?? []
   const catalog = provider?.catalog ?? []
   // The provider default is the last-resort selection while settings load or
-  // when no global model has been persisted. Platform declares Grok here.
+  // when no global model has been persisted.
   const agentModel = settings?.models?.agentModel ?? provider?.defaultModels?.agent
   const matchedOption = findDefaultModelOption(agentModel, options, catalog)
   const otherSelected = showOther || (Boolean(agentModel) && !matchedOption)
@@ -93,7 +93,7 @@ export function ConfigureModelStep() {
           return (
             <div
               key={option.model}
-              className={`rounded-lg border text-left transition-colors ${
+              className={`rounded-card border text-left transition-colors ${
                 isSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
               }`}
             >
@@ -122,7 +122,7 @@ export function ConfigureModelStep() {
         })}
 
         <div
-          className={`rounded-lg border text-left transition-colors ${
+          className={`rounded-card border text-left transition-colors ${
             otherSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
           }`}
         >

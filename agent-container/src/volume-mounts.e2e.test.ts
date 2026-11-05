@@ -6,6 +6,7 @@
  * Opt-in: needs Docker with /dev/fuse. Uses the app's FUSE permissions,
  * including its AppArmor override on Linux. Builds the image first.
  *   RUN_VOLUMES_E2E=1 npx vitest run src/volume-mounts.e2e.test.ts
+ * Set VOLUMES_E2E_IMAGE to test an already-built image without rebuilding.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
@@ -16,7 +17,8 @@ import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 
 const ENABLED = process.env.RUN_VOLUMES_E2E === '1';
-const IMAGE = 'superagent-volumes-e2e';
+const PREBUILT_IMAGE = process.env.VOLUMES_E2E_IMAGE;
+const IMAGE = PREBUILT_IMAGE || 'superagent-volumes-e2e';
 const CONTEXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const containers: string[] = [];
 
@@ -57,6 +59,13 @@ function healthVolumes(container: string): string[] {
   return JSON.parse(sh(container, 'curl -s localhost:3000/health')).volumes;
 }
 
+async function waitForUploadQueueToDrain(container: string, volumeId: string): Promise<void> {
+  await waitFor(() => {
+    const reply = sh(container, `curl -sf --unix-socket /tmp/rclone-${volumeId}.sock -X POST -H "Content-Type: application/json" -d '{}' http://rc/vfs/queue`);
+    return JSON.parse(reply).queue.length === 0;
+  }, 5_000);
+}
+
 // Every /health status seen until it answers 200.
 async function healthUntilOk(container: string): Promise<Set<string>> {
   const seen = new Set<string>();
@@ -70,7 +79,9 @@ async function healthUntilOk(container: string): Promise<Set<string>> {
 
 describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
   beforeAll(() => {
-    execFileSync('docker', ['build', '-t', IMAGE, CONTEXT], { stdio: 'ignore', timeout: 900_000 });
+    if (!PREBUILT_IMAGE) {
+      execFileSync('docker', ['build', '-t', IMAGE, CONTEXT], { stdio: 'ignore', timeout: 900_000 });
+    }
   }, 900_000);
 
   afterAll(() => {
@@ -205,6 +216,9 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     await healthUntilOk(container);
     sh(container, `mkdir -p ${mount}/tree/a/b && echo original > ${mount}/tree/a/b/file`);
     await waitFor(() => sh(container, `cat ${source}/tree/a/b/file 2>/dev/null || true`) === 'original', 5_000);
+    // Source bytes appear before rclone finishes upload verification. Wait for
+    // that upload before testing a rename or an external edit of the same file.
+    await waitForUploadQueueToDrain(container, 'cloud');
     sh(container, `mv ${mount}/tree/a ${mount}/tree/moved`);
     expect(sh(container, `cat ${mount}/tree/moved/b/file`)).toBe('original');
     sh(container, `rm ${mount}/tree/moved/b/file`);
@@ -212,6 +226,7 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
 
     sh(container, `echo initial > ${mount}/fresh`);
     await waitFor(() => sh(container, `cat ${source}/fresh 2>/dev/null || true`) === 'initial', 5_000);
+    await waitForUploadQueueToDrain(container, 'cloud');
     expect(sh(container, `cat ${mount}/fresh`)).toBe('initial');
     await new Promise(resolve => setTimeout(resolve, 1_100));
     sh(container, `echo replaced-and-longer > ${source}/fresh`);

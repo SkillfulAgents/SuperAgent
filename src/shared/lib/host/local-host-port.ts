@@ -6,10 +6,10 @@
  * first use: the agent registry wires this port into every actor, and a
  * static import would put all of their services and child_process in the
  * import graph of anything that touches an agent. Notifications, analytics
- * and the global feed are sent synchronously, as they always were.
+ * and the global feed are handed over synchronously, as they always were.
  */
 import { createLocalHostPort, type SessionNotification } from '@shared/lib/agent-actor/host-port'
-import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 
@@ -42,6 +42,25 @@ function notify(notification: SessionNotification): Promise<void> {
   }
 }
 
+/**
+ * An actor's event for the global feed. Clients get it from the feed, as a
+ * hint that may never reach them. Work the host must do because of it is
+ * started here, directly, so it never waits on a hint reaching a listener.
+ */
+function feedEvent(event: GlobalFeedEvent): Promise<void> {
+  globalFeed.publish(event)
+  return hostWorkFor(event)
+}
+
+/** Loaded on first use, as the tools are: both services reach back to the agent registry. */
+async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
+  // A session settled: the agent's stale and opted-in widgets re-run.
+  if (event.type === 'session_idle' && typeof event.agentSlug === 'string') {
+    const { widgetRefreshService } = await import('@shared/lib/services/widget-refresh-service')
+    widgetRefreshService.afterSessionSettled(event.agentSlug)
+  }
+}
+
 export const localHostPort = createLocalHostPort({
   calls: {
     hostTool: async (request) => (await import('./tools')).runHostTool(request),
@@ -51,9 +70,10 @@ export const localHostPort = createLocalHostPort({
     computerUseWindowApp: async ({ ref }) => (await computerUse()).resolveAppFromWindowRef(ref),
     computerUseAppIcon: async ({ app }) => (await import('@shared/lib/computer-use/app-icon')).getAppIconBase64(app),
     hostScript: async ({ script, scriptType }) => (await import('./script')).runHostScript(script, scriptType),
+    loginRequest: async (request) => (await import('@shared/lib/browser-vault/login-host')).decideLoginRequest(request),
   },
   events: {
-    global: (event) => globalFeed.publish(event),
+    global: feedEvent,
     notification: notify,
     analytics: ({ event, properties }) => trackServerEvent(event, properties),
   },

@@ -255,6 +255,38 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(1)
   })
 
+  it('keeps review and re-auth cards scoped to this session after its turn ends', () => {
+    // A background script started in the turn is still parked on these proxy
+    // calls; hiding the cards would leave the session "needs input" with
+    // nothing to click.
+    mockUnified.data = [
+      unified('proxy_review', 'review-bg', {
+        accountId: 'acct-gh', toolkit: 'github', method: 'GET', targetPath: '/user', matchedScopes: [], scopeDescriptions: {},
+      }),
+      unified('x_agent_review', 'invoke-bg', {
+        accountId: 'x-agent', toolkit: 'agents', method: 'POST', targetPath: '/invoke', matchedScopes: [],
+        xAgent: { targetAgentSlug: 'research', targetAgentName: 'Research', operation: 'invoke' },
+      }),
+      unified('account_reauth_required', 'reauth-bg', {
+        accountId: 'acct-slack', toolkit: 'slack', accountStatus: 'expired', proxyRequestId: 'proxy-request-bg',
+      }),
+      unified('mcp_reauth_required', 'mcp-reauth-bg', {
+        mcpId: 'mcp-fake', mcpName: 'Fake MCP', authType: 'bearer', proxyRequestId: 'mcp-proxy-request-bg',
+      }),
+    ]
+
+    mockStreamState.isActive = true
+    const { result, rerender } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(result.current.count).toBe(4)
+
+    mockStreamState.isActive = false
+    rerender()
+    expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(1)
+    expect(ofKind(result.current.items, 'x_agent_review')).toHaveLength(1)
+    expect(ofKind(result.current.items, 'account_reauth_required')).toHaveLength(1)
+    expect(ofKind(result.current.items, 'mcp_reauth_required')).toHaveLength(1)
+  })
+
   it('derives pending secret request from message history when active', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [
@@ -703,6 +735,96 @@ describe('usePendingRequests', () => {
     const matches = ofKind(result.current.items, 'browser_input')
     expect(matches).toHaveLength(1)
     expect(matches[0].requirements).toEqual([])
+  })
+
+  it('draws no sign-in card from the transcript until the server holds the request', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-login',
+            name: 'mcp__user-input__request_login',
+            input: { message: 'Sign in to GitHub.', fields: [{ ref: '@e3', kind: 'username', label: 'Email' }] },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    // The host is still deciding: it may sign in from the vault without the user.
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, 'login')).toHaveLength(0)
+  })
+
+  it('carries how the host left a sign-in request to the card', () => {
+    mockStreamState.isActive = true
+    mockUnified.data = [unified('login', 'tu-login', {
+      message: 'Sign in to GitHub.',
+      fields: [{ kind: 'password', label: 'Password' }],
+      vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [0] },
+    })]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'login')[0]).toMatchObject({
+      toolUseId: 'tu-login',
+      vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [0] },
+    })
+  })
+
+  it('projects a sign-in request the server recovered from the transcript, with its normalized fields', () => {
+    mockStreamState.isActive = true
+    mockUnified.data = [unified('login', 'tc-login', { recovered: true })]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-login',
+            name: 'mcp__user-input__request_login',
+            input: { message: 'Sign in to GitHub.', fields: [{ ref: '@e3', kind: 'username', label: 'Email' }, { kind: 'bogus' }, 'junk'] },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'login')
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({ toolUseId: 'tc-login', message: 'Sign in to GitHub.', fields: [{ kind: 'username', label: 'Email' }] })
+  })
+
+  it('draws no sign-in card from the stream without a reason or a field list, as the server parks none', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({ id: 'tc-blank', name: 'mcp__user-input__request_login', input: { message: '  ', fields: [] }, result: undefined }),
+          createToolCall({ id: 'tc-nofields', name: 'mcp__user-input__request_login', input: { message: 'Sign in.' }, result: undefined }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'login')).toEqual([])
+  })
+
+  it('projects a sign-in request from a unified envelope, ignoring a malformed field list', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [unified('login', 'tu-login', { message: 'Sign in.', fields: 'not-an-array' })]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'login')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].fields).toEqual([])
   })
 
   it('skips message-based requests when subsequent user message exists', () => {

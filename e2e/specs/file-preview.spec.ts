@@ -637,7 +637,7 @@ test.describe('File Preview', () => {
         const response = await route.fetch()
         const session = await response.json()
         session.lastActivityAt = new Date(Date.now() - 7 * 3600_000).toISOString()
-        session.lastUsage = { inputTokens: 150_000, outputTokens: 1_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200_000 }
+        session.lastUsage = { totalTokens: 150_000, contextWindow: 200_000 }
         session.pendingWakeAt = new Date(Date.now() + 3 * 3600_000).toISOString()
         session.pendingWakeTaskId = 'task-wake'
         // A long note, so the banner's two-line limit is what holds when it resumes in view.
@@ -860,8 +860,16 @@ test.describe('File Preview', () => {
     await page.getByTestId('delivered-images').getByRole('button', { name: 'chart.png', exact: true }).click()
     const image = page.getByTestId('tray-drawer').getByRole('img', { name: 'chart.png', exact: true })
     await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth), { timeout: 10000 }).toBe(400)
-    // The drawer grows in: measure the image once it has its size.
-    await expect.poll(async () => (await image.boundingBox())?.width).toBeGreaterThan(300)
+    // The drawer grows in: click only once the image's box holds still, or a
+    // click measured mid-animation lands a point or two off the expected spot.
+    let lastBox = ''
+    await expect.poll(async () => {
+      const box = await image.boundingBox()
+      const key = box && box.width > 300 ? JSON.stringify(box) : ''
+      const held = key !== '' && key === lastBox
+      lastBox = key
+      return held
+    }).toBe(true)
     const at = async (x: number, y: number) => {
       const b = (await image.boundingBox())!
       await page.mouse.click(b.x + b.width * x, b.y + b.height * y)

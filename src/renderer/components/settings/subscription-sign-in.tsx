@@ -98,7 +98,7 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
         <>
           <span>Open the {name} sign-in page and enter the code.</span>
           <a
-            className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent"
+            className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-item border bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent"
             href={login.url}
             target="_blank"
             rel="noreferrer"

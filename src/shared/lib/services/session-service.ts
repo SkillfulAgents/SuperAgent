@@ -24,6 +24,7 @@ import {
   streamLines,
 } from '@shared/lib/agent-actor/jsonl-files'
 import { MESSAGES_PAGE_MAX_BYTES } from '@shared/lib/messages-page'
+import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 import { ConfigDocError, type ConfigDoc } from '@shared/lib/agent-actor/config-schema'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { parseJsonl, parseJsonlLine } from '@shared/lib/utils/file-storage'
@@ -31,17 +32,20 @@ import {
   transformMessages,
   isToolResultOnlyMessage,
   isTaskNotificationMessage,
+  monitorNotificationOf,
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import { background } from '@shared/lib/background'
 import {
   sortSessionsByActivity,
   type SessionActivityFields,
 } from '@shared/lib/session-ordering'
 import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataHolds } from './session-metadata-holds'
-import { isHiddenAutomatedSession } from './session-visibility'
+import { isHiddenAutomatedSession, sessionOrigin } from './session-visibility'
+import type { SlashCommandInfo } from '@shared/lib/container/types'
 import {
   SessionInfo,
   SessionMetadata,
@@ -207,6 +211,25 @@ async function mutateSessionMetadata(
 }
 
 /**
+ * The slash commands the agent's container last listed, shared by every
+ * session. Read-only: a corrupt copy reads as none, so a viewer still attaches.
+ */
+export async function readAgentSlashCommands(store: SessionStore): Promise<SlashCommandInfo[]> {
+  try {
+    return ((await store.config.get('slashCommands')) as SlashCommandInfo[] | null) ?? []
+  } catch (error) {
+    if (!(error instanceof ConfigDocError && error.code === 'corrupt')) throw error
+    console.error(`[SessionService] Corrupt slash commands for agent ${store.slug}`, error)
+    return []
+  }
+}
+
+export async function storeAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
+  await store.config.update('slashCommands', (current) =>
+    current !== null && JSON.stringify(current) === JSON.stringify(commands) ? null : (commands as ConfigDoc<'slashCommands'>))
+}
+
+/**
  * Update metadata for a single session. Returns the session's previous
  * metadata entry (undefined when it had none), captured under the same
  * serialization as the write, so callers can tell whether an update actually
@@ -231,6 +254,19 @@ export async function updateSessionMetadata(
     }
   })
   return previous
+}
+
+export async function recordErrorProvider(
+  store: SessionStore,
+  sessionId: string,
+  messageId: string,
+  provider: LlmProviderId,
+): Promise<void> {
+  await mutateSessionMetadata(store, (metadata) => {
+    const previous = metadata[sessionId]
+    if (previous?.errorProviders?.[messageId] === provider) return false
+    metadata[sessionId] = { ...previous, errorProviders: { ...previous?.errorProviders, [messageId]: provider } }
+  })
 }
 
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
@@ -397,6 +433,7 @@ function sessionFromTranscriptStat(
     name: meta?.name || 'New Session',
     createdAt: resolveSessionCreatedAt(meta, stat),
     lastActivityAt: new Date(stat.mtimeMs),
+    origin: sessionOrigin(meta),
   }
 }
 
@@ -421,6 +458,7 @@ function emptySessionFromMetadata(
     name: meta.name || 'New Session',
     createdAt,
     lastActivityAt: createdAt,
+    origin: sessionOrigin(meta),
   }
 }
 
@@ -455,7 +493,7 @@ function metadataOnlySession(
  */
 function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void {
   if (sessionIds.length === 0) return
-  void store.config
+  background(store.config
     .update('sessionMetadata', async (current) => {
       const metadata = { ...(current ?? {}) } as SessionMetadataMap
       const now = Date.now()
@@ -473,7 +511,7 @@ function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void 
     .catch((error) => {
       console.warn(`Could not prune orphaned session metadata for agent ${store.slug}:`, error)
       captureException(error, { tags: { area: 'session-metadata', op: 'prune-orphans' }, extra: { agentSlug: store.slug } })
-    })
+    }), { name: 'session-service.prune-orphaned-metadata' })
 }
 
 // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on network
@@ -1207,7 +1245,7 @@ function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): bool
   if (msg.type === 'user') {
     if (msg.isCompactSummary) return false
     if (isToolResultOnlyMessage(msg)) return false
-    if (isTaskNotificationMessage(msg)) return false
+    if (isTaskNotificationMessage(msg)) return monitorNotificationOf(msg) !== null
     return true
   }
   const messageId = msg.message.id

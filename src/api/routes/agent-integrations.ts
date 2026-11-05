@@ -43,6 +43,7 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { SPEED_LEVELS } from '@shared/lib/container/types'
 
 const SENTRY_TAGS = { component: 'agent-integration' } as const
@@ -178,7 +179,7 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
     const provider = c.req.param('provider')
     await assertIntegrationAvailable(provider)
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
-    const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
+    const context = await integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
     const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
     return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
@@ -210,7 +211,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
     await assertConnectionSelectionAccess(llmProviderId)
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
     // Get the authenticated user ID if available
     const user = c.get('user' as never) as { id: string } | undefined
@@ -225,7 +226,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
         config: prepared.config,
         status: prepared.status,
         showToolCalls: showToolCalls ?? false,
-        sessionTimeout: sessionTimeout ?? null,
+        sessionTimeout,
         ...parsedRuntime.data,
         model: parsedRuntime.data.model ?? null,
         effort: parsedRuntime.data.effort ?? null,
@@ -267,7 +268,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error. Not awaited either — the upload has its
     // own 30s timeout and setup must not block on it.
-    void agentIntegrationManager.integrationCreated(id)
+    background(agentIntegrationManager.integrationCreated(id), { name: 'agent-integrations-route.integration-created' })
 
     const integration = await getAgentIntegration(id)
     if (!integration) throw new Error('Agent integration disappeared after creation')
@@ -291,7 +292,7 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())
-    const result = await authorization.run(row, input, integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
+    const result = await authorization.run(row, input, await integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
     // Validation, credential lookup and attempt persistence may fail. Keep the
     // current account running until the provider has a usable authorization URL.
     await agentIntegrationManager.pauseIntegration(row.id)
@@ -599,7 +600,7 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
       const ok = await accessActions[verb](accessId, getCurrentUserId(c))
       if (ok) {
         await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
-        if (verb === 'approve') void agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId)
+        if (verb === 'approve') background(agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId), { name: 'agent-integrations-route.notify-access-approved' })
         if (verb === 'revoke' || verb === 'deny') await agentIntegrationManager.releaseExternalSession(integrationId, row.externalChatId)
       }
       return c.json({ ok })

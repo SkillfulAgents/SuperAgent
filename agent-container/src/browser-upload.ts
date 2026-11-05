@@ -223,6 +223,24 @@ export async function runBrowserUpload(
   }
 }
 
+// Runs in the page. Root capture beats site handlers that clear the input; window misses shadow DOM (change isn't composed).
+export function recordFileInputChange(element: any, key: string): void {
+  const store = globalThis as typeof globalThis & Record<string, UploadVerification | null>
+  store[key] = null
+  const root = element.getRootNode()
+  const onChange = (event: { target: unknown }) => {
+    if (event.target !== element) return
+    root.removeEventListener('change', onChange, true)
+    const uploadedFile = element.files?.[0] ?? null
+    store[key] = {
+      count: element.files?.length ?? 0,
+      name: uploadedFile?.name ?? null,
+      size: uploadedFile?.size ?? null,
+    }
+  }
+  root.addEventListener('change', onChange, true)
+}
+
 export async function uploadToFileInput({
   connectionUrl,
   activeTargetUrl,
@@ -239,17 +257,7 @@ export async function uploadToFileInput({
     }
 
     const verificationKey = `__superagentUpload_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    await locator.evaluate((element: any, key: string) => {
-      ;(globalThis as typeof globalThis & Record<string, UploadVerification | null>)[key] = null
-      element.addEventListener('change', () => {
-        const uploadedFile = element.files?.[0] ?? null
-        ;(globalThis as typeof globalThis & Record<string, UploadVerification | null>)[key] = {
-          count: element.files?.length ?? 0,
-          name: uploadedFile?.name ?? null,
-          size: uploadedFile?.size ?? null,
-        }
-      }, { once: true })
-    }, verificationKey)
+    await locator.evaluate(recordFileInputChange, verificationKey)
 
     await locator.setInputFiles({
       name: file.name,

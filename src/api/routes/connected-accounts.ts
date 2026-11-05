@@ -12,10 +12,11 @@ import {
 } from '@shared/lib/account-providers'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { isOwnedByCaller } from '@shared/lib/auth/ownership'
+import { getViewerUserId, isOwnedByCaller } from '@shared/lib/auth/ownership'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { background } from '@shared/lib/background'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
 import {
@@ -25,6 +26,7 @@ import {
   syncConnectedAccountAgents,
 } from '@shared/lib/services/connection-sync-service'
 import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import type { BaseAccountProvider } from '@shared/lib/account-providers/base-account-provider'
 
 const connectedAccountsRouter = new Hono()
@@ -83,7 +85,7 @@ connectedAccountsRouter.post('/', async (c) => {
       providerName: providerName ?? 'composio',
       toolkitSlug,
       displayName,
-      userId: getCurrentUserId(c),
+      userId: getViewerUserId(c),
       status: reqStatus ?? 'active',
       createdAt: now,
       updatedAt: now,
@@ -141,6 +143,23 @@ async function nameFinishedGrant(
   return { displayName, reconnectAccountId }
 }
 
+/**
+ * Revoke the remote connection a reconnect replaced, through the provider that
+ * issued it. Connection ids are only unique per provider, so after a provider
+ * switch the new provider must not be handed the old id: it can name another
+ * account's connection there.
+ */
+function deleteReplacedConnection(
+  replaced: Pick<ConnectedAccount, 'providerName' | 'providerConnectionId' | 'toolkitSlug'>,
+  providerName: string,
+  connectionId: string,
+): void {
+  if (replaced.providerName === providerName && replaced.providerConnectionId === connectionId) return
+  background((async () => {
+    await getAccountProviderByName(replaced.providerName).deleteConnection(replaced.providerConnectionId, replaced.toolkitSlug)
+  })().catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
+}
+
 // POST /api/connected-accounts/initiate - Start OAuth flow
 connectedAccountsRouter.post('/initiate', async (c) => {
   try {
@@ -167,7 +186,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       reconnecting = existing
     }
 
-    const provider = getDefaultAccountProvider()
+    const provider = await getDefaultAccountProvider()
 
     if (!isProviderSupported(providerSlug, provider.name)) {
       return c.json(
@@ -184,13 +203,13 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
       callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     } else {
-      const origin = getAppBaseUrlFromRequest(c)
+      const origin = await getAppBaseUrlFromRequest(c)
       callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     }
 
     const userId = isAuthMode()
       ? getCurrentUserId(c)
-      : getAccountProviderUserId()
+      : await getAccountProviderUserId()
 
     const startConnect = getServerAdapter(providerSlug)?.startConnect
     const started = startConnect
@@ -208,6 +227,9 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     })
   } catch (error: any) {
     console.error('Failed to initiate connection:', error)
+
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
 
     // Detect "no managed credentials" error from Composio and return a friendly message
     const slug = typeof error.details?.error === 'object' ? error.details.error.slug : undefined
@@ -279,6 +301,8 @@ connectedAccountsRouter.post('/complete', async (c) => {
       const [oldRecord] = await db
         .select({
           providerConnectionId: connectedAccounts.providerConnectionId,
+          providerName: connectedAccounts.providerName,
+          toolkitSlug: connectedAccounts.toolkitSlug,
           userId: connectedAccounts.userId,
         })
         .from(connectedAccounts)
@@ -309,10 +333,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
       await resumeAccountReauthWaits(id)
 
       // Clean up the old remote connection (fire-and-forget)
-      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
-      }
+      deleteReplacedConnection(oldRecord, providerName, connectionId)
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
       await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
@@ -325,7 +346,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
         providerName,
         toolkitSlug,
         displayName,
-        userId: getCurrentUserId(c),
+        userId: getViewerUserId(c),
         status: 'active',
         createdAt: now,
         updatedAt: now,
@@ -417,6 +438,8 @@ connectedAccountsRouter.get('/callback', async (c) => {
       const [oldRecord] = await db
         .select({
           providerConnectionId: connectedAccounts.providerConnectionId,
+          providerName: connectedAccounts.providerName,
+          toolkitSlug: connectedAccounts.toolkitSlug,
           userId: connectedAccounts.userId,
         })
         .from(connectedAccounts)
@@ -444,10 +467,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
 
       await resumeAccountReauthWaits(id)
 
-      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
-      }
+      deleteReplacedConnection(oldRecord, providerName, connectionId)
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
       await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
@@ -460,7 +480,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
         providerName,
         toolkitSlug,
         displayName,
-        userId: getCurrentUserId(c),
+        userId: getViewerUserId(c),
         status: 'active',
         createdAt: now,
         updatedAt: now,

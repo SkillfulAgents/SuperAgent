@@ -127,6 +127,7 @@ test.describe('Proxy review policy persistence', () => {
     await expectPendingProxyReviewResolved(request, agent, review)
     await sessionPage.waitForInputEnabled(15000)
     await sessionPage.expectAssistantMessage('denied by user', 0, 15000)
+    await sessionPage.expectAssistantMessage('Not permitted during this test', 0, 15000)
 
     // A one-time deny is NOT an "always" decision: unlike always-allow-all above, it
     // writes nothing to the scope-policy table.

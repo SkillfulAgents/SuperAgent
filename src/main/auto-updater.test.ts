@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: vi.fn(() => ({ app: {} })),
+  getSettings: vi.fn(async () => ({ app: {} })),
 }))
 
 vi.mock('@shared/lib/services/user-settings-service', () => ({
@@ -59,6 +59,11 @@ Object.defineProperty(mockAutoUpdater, 'channel', {
 
 vi.mock('electron-updater', () => ({
   autoUpdater: mockAutoUpdater,
+}))
+
+const mockRemoveInstalledUpdateDownload = vi.fn(async (_pendingDir: string, _runningVersion: string) => false)
+vi.mock('./update-download-cache', () => ({
+  removeInstalledUpdateDownload: mockRemoveInstalledUpdateDownload,
 }))
 
 // ---------------------------------------------------------------------------
@@ -183,7 +188,7 @@ describe('check-for-updates', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -546,7 +551,7 @@ describe('silent background checks', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -648,7 +653,7 @@ describe('channel file not found (latest-mac.yml 404)', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -732,7 +737,7 @@ describe('concurrent check coalescing', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -804,7 +809,7 @@ describe('check timeout (watchdog)', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -867,7 +872,7 @@ describe('download and install lifecycle', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -947,7 +952,7 @@ describe('download target channel (re-run invariant)', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -990,7 +995,7 @@ describe('prerelease setting transitions', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -1040,5 +1045,60 @@ describe('Windows signature check', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin' })
     await boot()
     expect(mockAutoUpdater.verifyUpdateCodeSignature).toBeUndefined()
+  })
+})
+
+describe('the download of an installed update', () => {
+  const platform = process.platform
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRemoveInstalledUpdateDownload.mockReset()
+    mockRemoveInstalledUpdateDownload.mockResolvedValue(false)
+    mockAutoUpdater.getOrCreateDownloadHelper = vi.fn(async () => ({ cacheDirForPendingUpdate: '/caches/superagent-updater/pending' }))
+  })
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: platform })
+    delete mockAutoUpdater.getOrCreateDownloadHelper
+  })
+
+  it('is removed on macOS, from the folder electron-updater uses, for the running version', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    vi.mocked(app.getVersion).mockReturnValue('0.5.49')
+    await boot()
+    expect(mockRemoveInstalledUpdateDownload).toHaveBeenCalledWith('/caches/superagent-updater/pending', '0.5.49')
+  })
+
+  it('is removed before the updater takes a download request', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    let finishRemoving: (removed: boolean) => void = () => {}
+    mockRemoveInstalledUpdateDownload.mockImplementation(() => new Promise((resolve) => { finishRemoving = resolve }))
+    const booted = boot()
+    await vi.waitFor(() => expect(mockRemoveInstalledUpdateDownload).toHaveBeenCalled())
+    // A download now would start while the old one is being deleted.
+    await handlers['download-update']()
+    expect(mockAutoUpdater.downloadUpdate).not.toHaveBeenCalled()
+    finishRemoving(true)
+    await booted
+    await handlers['download-update']()
+    expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it("doesn't stop the updater when its folder can't be found", async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    mockAutoUpdater.getOrCreateDownloadHelper = vi.fn(async () => {
+      throw new Error('ENOENT app-update.yml')
+    })
+    await boot()
+    expect(mockRemoveInstalledUpdateDownload).not.toHaveBeenCalled()
+    await handlers['download-update']()
+    expect(mockAutoUpdater.downloadUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('is left alone on other platforms', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    await boot()
+    expect(mockRemoveInstalledUpdateDownload).not.toHaveBeenCalled()
   })
 })

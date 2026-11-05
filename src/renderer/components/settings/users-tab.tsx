@@ -205,7 +205,7 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
           <span className="text-sm font-medium">Users</span>
           {platformControlled ? (
             <p className="text-xs text-muted-foreground mt-0.5">
-              Invite members on Platform. Role, ban, and remove stay here.
+              Invite members on Platform. They join with their Platform role; role, ban, and remove stay here.
             </p>
           ) : null}
         </div>
@@ -288,7 +288,7 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
                 key={user.id}
                 data-testid={`user-row-${user.email}`}
                 className={cn(
-                  'grid grid-cols-[1fr_1fr_100px_80px_80px] gap-2 items-center px-2 py-1.5 rounded text-sm',
+                  'grid grid-cols-[1fr_1fr_100px_80px_80px] gap-2 items-center px-2 py-1.5 rounded-item text-sm',
                   user.banned && 'opacity-60',
                   isRowLoading && 'opacity-50 pointer-events-none'
                 )}

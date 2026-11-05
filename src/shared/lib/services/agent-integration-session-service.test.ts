@@ -219,7 +219,7 @@ describe('agent-integration-session-service', () => {
       const onArchive = vi.fn()
       await resolveActiveSession(integrationId, 'chat-1', 1, onArchive)
 
-      expect(onArchive).toHaveBeenCalledWith(sessionId)
+      expect(onArchive).toHaveBeenCalledWith(sessionId, 'session-1')
     })
 
     it('does not call onArchive when session is valid', async () => {

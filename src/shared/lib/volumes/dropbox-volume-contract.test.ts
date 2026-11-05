@@ -85,7 +85,7 @@ function fixture(): VolumeContractFixture {
     throw new Error(`Unexpected Dropbox endpoint: ${endpoint}`)
   })
   return {
-    volume: () => new DropboxMountableVolume(id, 'Team', { accountId: id, path: '/Team' }),
+    volume: () => new DropboxMountableVolume(id, 'Team', { accountId: id, path: '/Team' }, 'agent'),
     put: (path, bytes) => { tree.put(path, bytes) }, mkdir: path => { tree.mkdir(path) },
     bytes: path => tree.get(path)?.bytes, exists: path => !!tree.get(path),
     failWrite: () => { fail = true }, beforeCommit: run => { onCommit = run }, revoke: () => { active = false },

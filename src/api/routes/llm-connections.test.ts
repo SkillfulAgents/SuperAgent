@@ -432,6 +432,30 @@ it('binds OAuth grants to the initiating owner and never returns subscription cr
   expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
 })
 
+it('lets only the user who started a sign-in cancel it, and refuses its save afterwards', async () => {
+  const login = await (await request('/oauth/grok/start', 'POST', { userId: 'alice' }, 'alice')).json()
+  expect(await (await request(`/oauth/${login.id}`, 'DELETE', undefined, 'bob')).json()).toEqual({ cancelled: false })
+  expect(await (await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')).json()).toEqual({ status: 'connected', accountLabel: 'Alice Grok' })
+  expect(await (await request(`/oauth/${login.id}`, 'DELETE', undefined, 'alice')).json()).toEqual({ cancelled: true })
+  const polled = await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')
+  expect(polled.status).toBe(400)
+  expect(await polled.json()).toEqual({ error: 'Sign-in expired. Start again.' })
+  const saved = await request('', 'POST', { name: 'Grok', provider: 'grok-subscription', userId: 'alice', oauthLoginId: login.id, config: {} }, 'alice')
+  expect(saved.status).toBe(400)
+})
+
+it('hands a sign-in back when its save fails, so a corrected save can use it', async () => {
+  const login = await (await request('/oauth/grok/start', 'POST', { userId: 'alice' }, 'alice')).json()
+  await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')
+  const draft = { name: 'Grok', provider: 'grok-subscription', userId: 'alice', oauthLoginId: login.id, config: {} }
+  const insert = state.db!.insert.bind(state.db)
+  const failing = vi.spyOn(state.db!, 'insert').mockImplementationOnce(() => { throw new Error('Database is busy') })
+  expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
+  failing.mockImplementation(insert)
+  expect((await request('', 'POST', draft, 'alice')).status).toBe(201)
+  expect((await request('', 'POST', draft, 'alice')).status).toBe(400)
+})
+
 it('preserves the rotated credential pair when a name edit lands during refresh', async () => {
   const { resolveConnectionCredential } = await import('@shared/lib/llm-provider/connection-credentials')
   const { connectionConfigSchema } = await import('@shared/lib/llm-provider/connection-schema')
@@ -559,4 +583,23 @@ describe('connection allowance access', () => {
       if (caller === 'alice') expect(await res.json()).toMatchObject({ status: 'unsupported', limits: [] })
     }
   })
+})
+
+// Last in the file: it loads a second copy of the modules, as another process would.
+it('saves a sign-in once when two processes save it at the same time', async () => {
+  const login = await (await request('/oauth/grok/start', 'POST', { userId: 'alice' }, 'alice')).json()
+  await request(`/oauth/${login.id}/poll`, 'POST', {}, 'alice')
+  const connection = { name: 'Grok', provider: 'grok-subscription', userId: 'alice', oauthLoginId: login.id, config: {} }
+  // Its own copy of the connections module, with its own save queue.
+  vi.resetModules()
+  const other = await import('@shared/lib/llm-provider/connections')
+  const saves = await Promise.allSettled([
+    (async () => {
+      const response = await request('', 'POST', connection, 'alice')
+      if (response.status !== 201) throw new Error(`${response.status}`)
+    })(),
+    other.saveConnection(connection, { userId: 'alice', admin: false }),
+  ])
+  expect(saves.filter(save => save.status === 'fulfilled')).toHaveLength(1)
+  expect(await database.db.select().from(llmConnections).where(eq(llmConnections.provider, 'grok-subscription')).all()).toHaveLength(1)
 })

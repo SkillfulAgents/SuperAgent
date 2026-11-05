@@ -9,6 +9,7 @@ import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
+import { listsRecentFiles } from '@renderer/lib/capabilities'
 
 // Inline, full-width menus for the quick-dispatch launcher. Unlike the main
 // app's floating popovers, these render INSIDE the panel's flex column so the
@@ -79,7 +80,7 @@ export function AgentMenu({
               onClick={() => onSelect(agent.slug)}
               data-testid="quick-dispatch-agent-option"
               className={cn(
-                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent',
+                'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left text-sm hover:bg-accent',
                 agent.slug === selectedSlug && 'bg-accent',
               )}
             >
@@ -148,10 +149,10 @@ export function AttachMenu({
   const folderRef = useRef<HTMLInputElement>(null)
   const [recent, setRecent] = useState<RecentFile[]>([])
   const [loadingPath, setLoadingPath] = useState<string | null>(null)
-  const isElectron = !!window.electronAPI?.getRecentFiles
+  const recentFilesListed = listsRecentFiles()
 
   useEffect(() => {
-    if (!isElectron) return
+    if (!recentFilesListed) return
     let cancelled = false
     window.electronAPI!.getRecentFiles(5)
       .then((files) => {
@@ -161,7 +162,7 @@ export function AttachMenu({
     return () => {
       cancelled = true
     }
-  }, [isElectron])
+  }, [recentFilesListed])
 
   const handleRecent = useCallback(
     async (filePath: string) => {
@@ -195,12 +196,12 @@ export function AttachMenu({
               type="button"
               disabled={loadingPath !== null}
               onClick={() => handleRecent(f.path)}
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"
+              className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left hover:bg-accent disabled:opacity-50"
             >
               {loadingPath === f.path ? (
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
               ) : f.thumbnail ? (
-                <img src={f.thumbnail} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" />
+                <img src={f.thumbnail} alt="" className="h-5 w-5 shrink-0 rounded-control object-cover" />
               ) : (
                 <FileTypeIcon filename={f.name} size="sm" className="text-muted-foreground" />
               )}
@@ -212,14 +213,14 @@ export function AttachMenu({
       <button
         type="button"
         onClick={() => fileRef.current?.click()}
-        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+        className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-accent"
       >
         <FileIcon className="h-4 w-4" /> Files
       </button>
       <button
         type="button"
         onClick={() => folderRef.current?.click()}
-        className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+        className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-accent"
       >
         <FolderOpen className="h-4 w-4" /> Folder
       </button>

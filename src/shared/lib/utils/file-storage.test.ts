@@ -418,6 +418,34 @@ describe('removeDirectory', () => {
     const dirPath = path.join(testDir, 'nonexistent')
     await expect(removeDirectory(dirPath)).resolves.toBeUndefined()
   })
+
+  it.skipIf(process.getuid?.() === 0)('removes a workspace with a read-only folder inside', async () => {
+    const dirPath = path.join(testDir, 'workspace')
+    const sealed = path.join(dirPath, 'artifacts', 'sealed-receipts')
+    await fs.promises.mkdir(sealed, { recursive: true })
+    await fs.promises.writeFile(path.join(sealed, 'receipt.json'), '{}')
+    await fs.promises.chmod(path.join(sealed, 'receipt.json'), 0o400)
+    await fs.promises.chmod(sealed, 0o500)
+
+    await removeDirectory(dirPath)
+    expect(await directoryExists(dirPath)).toBe(false)
+  })
+
+  it.skipIf(process.getuid?.() === 0)('does not change folders outside the workspace through a symlink', async () => {
+    const outside = path.join(testDir, 'outside')
+    await fs.promises.mkdir(outside)
+    await fs.promises.chmod(outside, 0o500)
+    const dirPath = path.join(testDir, 'workspace')
+    const sealed = path.join(dirPath, 'sealed')
+    await fs.promises.mkdir(sealed, { recursive: true })
+    await fs.promises.symlink(outside, path.join(sealed, 'link'))
+    await fs.promises.chmod(sealed, 0o500)
+
+    await removeDirectory(dirPath)
+    expect(await directoryExists(dirPath)).toBe(false)
+    expect((await fs.promises.stat(outside)).mode & 0o777).toBe(0o500)
+    await fs.promises.chmod(outside, 0o700)
+  })
 })
 
 // ============================================================================

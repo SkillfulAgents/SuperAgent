@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InMemoryFileOps } from '@shared/lib/agent-actor/testing/in-memory-file-ops'
+import { ChromeProfileAccessError } from './chrome-profile'
 import { BROWSER_PROFILE_DIR, seedBrowserProfileFromChrome } from './seed-browser-profile'
 
 const settingsState: { chromeProfileId?: string; hostBrowserProvider?: string } = {}
@@ -8,8 +9,8 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 const copyChromeProfileData = vi.fn()
-vi.mock('./chrome-profile', () => ({
-  PROFILE_SYNC_MANIFEST: '.superagent-profile-sync.json',
+vi.mock('./chrome-profile', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./chrome-profile')>(),
   copyChromeProfileData: (...args: unknown[]) => copyChromeProfileData(...args),
 }))
 
@@ -39,10 +40,40 @@ describe('seedBrowserProfileFromChrome', () => {
     expect(copyChromeProfileData).not.toHaveBeenCalled()
   })
 
+  it('starts without the profile when this app may not read it', async () => {
+    settingsState.chromeProfileId = 'Default'
+    copyChromeProfileData.mockRejectedValue(new ChromeProfileAccessError('Default', {
+      cause: Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }),
+    }))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(seedBrowserProfileFromChrome('a', new InMemoryFileOps())).resolves.toBeUndefined()
+  })
+
+  it('fails the start on any other failure', async () => {
+    settingsState.chromeProfileId = 'Default'
+    const failure = new Error('disk full')
+    copyChromeProfileData.mockRejectedValue(failure)
+
+    await expect(seedBrowserProfileFromChrome('a', new InMemoryFileOps())).rejects.toBe(failure)
+  })
+
   it('does not copy a local profile into a workspace that uses the host browser', async () => {
     settingsState.chromeProfileId = 'Default'
     settingsState.hostBrowserProvider = 'chrome'
     await seedBrowserProfileFromChrome('a', new InMemoryFileOps())
+    expect(copyChromeProfileData).not.toHaveBeenCalled()
+  })
+
+  it('copies no profile in the Mac App Store edition, whose sandbox can’t read Chrome’s', async () => {
+    settingsState.chromeProfileId = 'Default'
+    vi.stubEnv('E2E_MOCK', 'true')
+    vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+    try {
+      await seedBrowserProfileFromChrome('a', new InMemoryFileOps())
+    } finally {
+      vi.unstubAllEnvs()
+    }
     expect(copyChromeProfileData).not.toHaveBeenCalled()
   })
 })

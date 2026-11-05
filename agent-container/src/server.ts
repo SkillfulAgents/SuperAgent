@@ -19,7 +19,7 @@ import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import { z } from 'zod';
 
-import { inputManager } from './input-manager';
+import { inputManager, UNANSWERED_REASONS } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
@@ -52,6 +52,13 @@ import { createBrowserNavigation, type BrowserNavigation } from './browser-navig
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
 import { clampViewerWidth, jpegWidth, sameFrameWidth, screencastSize } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
+import { CdpConnection } from './login-cdp';
+import type { LoginFillDeps, PageActivity } from './login-fill';
+import type { FieldBox } from './login-form-script';
+import { closePreparedLogins } from './login-requests';
+import type { LoginFillReport } from './login-schema';
+import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
+import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
 import { drainVolumeUploads, finishVolumeStop, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
@@ -180,6 +187,14 @@ app.get('/sessions/:id/capability-grants', (c) => {
 app.get('/sessions', (c) => {
   const sessions = sessionManager.getAllSessions();
   return c.json(sessions);
+});
+
+app.post('/sessions/:id/release', async (c) => {
+  const sessionId = c.req.param('id');
+  await sessionManager.releaseSession(sessionId);
+  inputManager.rejectForSession(sessionId);
+  // Also acknowledges an unknown session: it has no process to release.
+  return c.json({ success: true });
 });
 
 app.delete('/sessions/:id', async (c) => {
@@ -450,15 +465,23 @@ app.post('/inputs/:toolUseId/resolve', async (c) => {
   }
 });
 
+// `unanswered`: the person chose not to answer (the card's Decline); a
+// question then ends as an annotated answer rather than a failed tool call.
+const rejectInputBodySchema = z.object({
+  reason: z.string().optional(),
+  unanswered: z.enum(UNANSWERED_REASONS).optional(),
+});
+
 // POST /inputs/:toolUseId/reject - Reject a pending input request
 app.post('/inputs/:toolUseId/reject', async (c) => {
   const toolUseId = c.req.param('toolUseId');
 
   try {
-    const body = await c.req.json<{ reason?: string }>();
-    const reason = body.reason || 'User declined';
+    const parsed = rejectInputBodySchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const reason = parsed.data.reason || 'User declined';
 
-    if (inputManager.reject(toolUseId, reason)) {
+    if (inputManager.reject(toolUseId, reason, parsed.data.unanswered)) {
       return c.json({ success: true });
     }
 
@@ -789,7 +812,7 @@ function validateBrowserSessionWithRecovery(requestSessionId: string): string | 
 
 const execFileAsync = promisify(execFile);
 
-import { resolveRunCommandArgs } from './browser-command-args';
+import { resolveRunCommandArgs, runCommandRefusal } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 import { judgeSelectCommit, parseSelectOptions, targetOptionMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
@@ -804,7 +827,7 @@ import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THI
 import { formatStatusLine, waitForLoaded } from './page-status';
 import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, effectWantsTree, sameDocument, newDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
-import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
+import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, goneRefOf, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
 import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead, formatUnreadFrames } from './page-reader';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
@@ -886,13 +909,16 @@ async function execBrowser(
         AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
+    // Raw on purpose: the server parses this output itself. Text bound for the
+    // agent is redacted where it leaves (the browser tools' results).
     return { stdout: capBrowserOutput(stripWebMcpNotices(stdout.trim()), outputCap), exitCode: 0 };
   } catch (error: any) {
     // Full, unsanitized detail (incl. the command line with the CDP URL) goes
     // to container logs for connectivity debugging — never to the model.
-    console.error('[Browser] agent-browser failed:', error.message);
+    // Container logs reach error reports: no injected value goes along.
+    console.error('[Browser] agent-browser failed:', redactInjectedSecrets(String(error.message)));
     if (error.stderr) {
-      console.error('[Browser] agent-browser stderr:', error.stderr);
+      console.error('[Browser] agent-browser stderr:', redactInjectedSecrets(String(error.stderr)));
     }
     // error.message carries the full argv (the agent's own script or text)
     // and stands in for a cause it does not name — describeExecFailure
@@ -1030,37 +1056,35 @@ async function runWithEffect(
 }
 
 /**
- * The CLI's `✗ Unknown ref: eN`, plus what eN was when the agent last saw it
- * and which current refs carry exactly that line (tree-diff.ts
- * formatUnknownRef). Refs persist since 0.38, so this error now means the
- * element left the tree — most often a site re-rendering it under a new ref.
- * Costs one tree read, only on this error; the read becomes the baseline.
+ * The CLI's answer that a ref's element is gone (`✗ Unknown ref: eN`, or a
+ * role+name fallback that found none or several — tree-diff.ts goneRefOf),
+ * plus what eN was when the agent last saw it and which current refs carry
+ * exactly that line (formatUnknownRef). Refs persist since 0.38, so this
+ * means the element left the tree — most often a site re-rendering it under
+ * a new ref. Costs one tree read, only on this error; the read becomes the
+ * baseline.
  */
 async function explainUnknownRef(stdout: string, actionRef?: string): Promise<string> {
-  // 0.39.1 falls back to role+name for a ref whose node is gone, and says
-  // "Could not locate element with role=… name=…" when that fails too: the
-  // same situation, named by the ref the action was given.
-  const m = /Unknown ref: @?(e\d+)/.exec(stdout)
-    ?? (/Could not locate element with role=/.test(stdout) && actionRef ? /@?(e\d+)/.exec(actionRef) : null);
-  if (!m) return stdout;
+  const ref = goneRefOf(stdout, actionRef);
+  if (!ref) return stdout;
   const cdp = browserState.cdpUrl || undefined;
   // By document, not URL: after an in-page URL change (a back within the
   // page, a hash) the baseline is still this document's.
   const page = await observeNow();
   if (!page.url) return stdout;
-  const was = getTreeBaseline(page.url, page.docStart)?.seen.get(m[1]);
+  const was = getTreeBaseline(page.url, page.docStart)?.seen.get(ref);
   if (!was) {
     // A ref from before the page loaded a new document (the observer's load
     // start moved on): every ref of that document is gone.
-    const old = lineFromPreviousDocument(m[1]);
+    const old = lineFromPreviousDocument(ref);
     return old
-      ? `${stdout}\n${m[1]} was ${lineWithoutRef(old.text).slice(0, 160)} on the previous page load (${old.url}); the page has loaded a new document since, and refs from before the load do not carry over.`
+      ? `${stdout}\n${ref} was ${lineWithoutRef(old.text).slice(0, 160)} on the previous page load (${old.url}); the page has loaded a new document since, and refs from before the load do not carry over.`
       : stdout;
   }
   const fresh = await execBrowser(['snapshot', '-i', '-c'], cdp, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (fresh.exitCode !== 0) return stdout;
   setTreeBaseline(page.url, fresh.stdout, 'action', Date.now(), page.docStart);
-  return stdout + formatUnknownRef(m[1], was, parseTreeRefs(fresh.stdout));
+  return stdout + formatUnknownRef(ref, was, parseTreeRefs(fresh.stdout));
 }
 
 /**
@@ -1101,6 +1125,19 @@ function resetPerBrowserState(): void {
   forgetScreenshots();
   setCapture(null);
   resetChallengedSites();
+  closePreparedLogins();
+  forgetInjectedSecrets();
+}
+
+/**
+ * Requests only answerable while the browser exists: a hand-off. They may
+ * belong to a session other than the one that closed it (a background
+ * subagent parked on a hand-off). A sign-in is not one of them: the user may
+ * answer it long after its browser closed, and what they save then signs the
+ * agent in once it opens the page again.
+ */
+function rejectBrowserBoundInputs(reason: string): void {
+  inputManager.rejectByType('browser_input', reason);
 }
 
 /**
@@ -1416,10 +1453,7 @@ app.post('/browser/open', async (c) => {
       _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
       tabManager.resetTabCount();
       resetPerBrowserState();
-      inputManager.rejectByType(
-        'browser_input',
-        'The browser provider changed before the user completed this request'
-      );
+      rejectBrowserBoundInputs('The browser provider changed before the user completed this request');
     }
 
     // If browser is already active, check for a matching tab before opening a new one
@@ -1456,7 +1490,10 @@ app.post('/browser/open', async (c) => {
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
-    // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
+    // Create /workspace/downloads and name it in the profile's preferences. The
+    // headless shell does not read those preferences: the Chrome agent-browser
+    // launches saves there because of AGENT_BROWSER_DOWNLOAD_PATH (Dockerfile),
+    // and a host browser because of setDownloadBehaviorViaCDP below.
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
     // Clear leftover daemon state only before a net-new launch. While a browser
@@ -1572,10 +1609,7 @@ app.post('/browser/close', async (c) => {
     // subagent parked on a login while the main agent closes the browser).
     // Reject them all so blocked awaiters unblock instead of hanging for the
     // 24h human-input TTL behind a card the user can no longer act on.
-    inputManager.rejectByType(
-      'browser_input',
-      'The browser was closed before the user completed this request'
-    );
+    rejectBrowserBoundInputs('The browser was closed before the user completed this request');
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -1639,10 +1673,7 @@ async function handleExternalBrowserClose(
   }
   // Outside the guard: an external close can race the active flag, and a
   // pending browser_input is unanswerable once the browser is gone either way.
-  inputManager.rejectByType(
-    'browser_input',
-    'The browser was closed before the user completed this request'
-  );
+  rejectBrowserBoundInputs('The browser was closed before the user completed this request');
 
   // Only when we detected this ourselves. A host-driven close has already torn
   // the process down — the window is gone but, on macOS, the app it belonged
@@ -2225,7 +2256,9 @@ app.post('/browser/capture-traffic', async (c) => {
         return c.json({ error: stopped.stdout, success: false }, 500);
       }
       const har = harSchema.parse(JSON.parse(await fs.promises.readFile(rawPath, 'utf-8')));
-      const redacted = redactHar(har);
+      // By name (tokens, cookies, auth headers), then by value: a password or
+      // code the host injected, in whatever field the site posted it.
+      const redacted = redactInjectedSecretsDeep(redactHar(har));
       await fs.promises.mkdir(WORKSPACE_CAPTURES_DIR, { recursive: true });
       const fileName = captureFileName(body.label);
       const outPath = path.join(WORKSPACE_CAPTURES_DIR, fileName);
@@ -2246,7 +2279,9 @@ app.post('/browser/capture-traffic', async (c) => {
         if (!entry?.response.content.text) continue;
         if (n === 0) await fs.promises.mkdir(bodyDir, { recursive: true });
         const file = path.join(bodyDir, bodyFileName(++n, e.url, e.mimeType));
-        await fs.promises.writeFile(file, readableBody(entry.response.content.text));
+        // Pretty-printing re-serializes JSON, which decodes escapes (`&`)
+        // the HAR's redaction could not see through: redact what is written.
+        await fs.promises.writeFile(file, redactInjectedSecrets(readableBody(entry.response.content.text)));
         // Its request too, so the headers can be read without opening the
         // whole HAR (bench, USGS: a 62,000-token file read in pieces).
         await fs.promises.writeFile(requestFileName(file), JSON.stringify({
@@ -2560,32 +2595,10 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    // The agent-browser CLI `upload` command does not work reliably in this
-    // environment — refuse it and steer the model to `browser_upload`, which
-    // routes through the buffer-based path with size verification.
-    if (commandArgs[0] === 'upload') {
-      return c.json({
-        error: 'Use the `browser_upload(filePath, selector)` MCP tool for file uploads instead of `browser_run("upload …")`.',
-        success: false,
-      }, 400);
-    }
 
-    // A HAR written by the CLI itself carries the session's cookies and
-    // tokens unredacted, to wherever the agent points it.
-    if (commandArgs[0] === 'network' && commandArgs[1]?.toLowerCase() === 'har') {
-      return c.json({
-        error: 'Use the `browser_capture_traffic` tool to record traffic: it saves a HAR with cookies, tokens and auth headers redacted. `network har` through browser_run is not available.',
-        success: false,
-      }, 400);
-    }
-
-    // Same guard as /browser/press for the raw CLI form: `press` with a
-    // non-key string silently types nothing while reporting success.
-    if (commandArgs[0] === 'press' && commandArgs.length === 2) {
-      const keyError = validatePressKey(commandArgs[1]);
-      if (keyError) {
-        return c.json({ error: keyError, success: false }, 400);
-      }
+    const refusal = runCommandRefusal(commandArgs);
+    if (refusal) {
+      return c.json({ error: refusal, success: false }, 400);
     }
 
     const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
@@ -3318,6 +3331,8 @@ app.post('/browser/fill-credential', async (c) => {
 
     const target = await findActivePageTarget(true);
     if (!target) return c.json({ error: 'No active browser page was found' }, 409);
+    // From here the password may be on the page: what the agent reads redacts it.
+    rememberInjectedSecret(body.password);
     const result = await autofillCredentialViaCdp(
       target,
       body.username,
@@ -3339,6 +3354,115 @@ app.post('/browser/fill-credential', async (c) => {
     console.error('[Browser] Credential autofill failed:', error instanceof Error ? error.message : 'Unknown error');
     return c.json({ error: 'Credential autofill failed' }, 500);
   }
+});
+
+// ── request_login ───────────────────────────────────────────────────────────
+// The endpoints live in login-routes.ts; these are their hands on the live
+// browser: the CLI for refs, our own CDP connection for the page, and the
+// settle-and-observe primitive for the submit.
+
+function loginFillDeps(): LoginFillDeps {
+  const cdpUrl = () => browserState.cdpUrl || undefined;
+  return {
+    focusRef: async (ref) => {
+      const r = await withRefRestore(ref, () => execBrowser(['focus', ref], cdpUrl()));
+      // Redacted before it is cut: a cut can split a value past recognition.
+      return r.exitCode === 0 ? null : redactInjectedSecrets(r.stdout.split('\n')[0] || 'the CLI reported an error').slice(0, 200);
+    },
+    boxOfRef: async (ref) => {
+      const r = await withRefRestore(ref, () => execBrowser(['get', 'box', ref, '--json'], cdpUrl()));
+      if (r.exitCode !== 0) return null;
+      const parsed = z.object({
+        data: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+      }).safeParse((() => { try { return JSON.parse(r.stdout); } catch { return null; } })());
+      if (!parsed.success) return null;
+      const { x, y, width, height } = parsed.data.data;
+      return { x, y, width, height } satisfies FieldBox;
+    },
+    isEnabled: async (ref) => {
+      const r = await execBrowser(['is', 'enabled', ref], cdpUrl());
+      if (r.exitCode !== 0) return null;
+      const answer = r.stdout.trim().toLowerCase();
+      return answer === 'true' ? true : answer === 'false' ? false : null;
+    },
+    connect: async () => {
+      // agent-browser's active tab: the one its refs belong to.
+      const target = await findActivePageTarget();
+      if (!target) throw new Error('No active browser page was found');
+      return CdpConnection.open(target);
+    },
+  };
+}
+
+/**
+ * Submit a filled sign-in form: click the agent's submit ref through the CLI
+ * (trusted input); when a banner covers it, click it from the page instead;
+ * with no submit ref, press Enter — only while focus is still in the last
+ * field written, so Enter cannot land in another document or field.
+ * Right before each try, the page is checked once more: one that moved on by
+ * itself gets nothing (the CLI resolves a stale ref by role and name, on
+ * whatever page is there by then).
+ */
+async function submitLoginForm(plan: SubmitPlan): Promise<SubmitOutcome> {
+  const cdpUrl = browserState.cdpUrl || undefined;
+  let submitted: NonNullable<LoginFillReport['submitted']> | null = null;
+  let activity: PageActivity | null = null;
+  let error: string | null = null;
+  // Redacted before it is cut: a cut can split a value past recognition.
+  const firstLine = (text: string) => redactInjectedSecrets(text.split('\n')[0] || 'the CLI reported an error').slice(0, 300);
+  const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+    async (before) => {
+      const { submitRef } = plan;
+      activity = await plan.stillCurrent();
+      if (activity) return { exitCode: 0, stdout: '' };
+      if (submitRef) {
+        const click = await clickSubmit(plan, submitRef, (ref) => withRefRestore(ref, () => execBrowser(['click', ref, ...(useHumanInput(before) ? ['--human'] : [])], cdpUrl)));
+        if (click.clicked === 'cli') {
+          submitted = { via: 'click', ref: submitRef };
+          return click.result;
+        }
+        if (click.clicked === 'in-page') {
+          submitted = { via: 'click-in-page', ref: submitRef, clickError: firstLine(click.cliError) };
+          return { exitCode: 0, stdout: '' };
+        }
+        if ('activity' in click) {
+          activity = click.activity;
+          return { exitCode: 0, stdout: '' };
+        }
+        error = `clicking ${submitRef} failed: ${firstLine(click.result.stdout)}`;
+        return click.result;
+      }
+      if (!(await plan.enterLandsInField())) {
+        error = 'Enter was not pressed: focus is no longer in the last field filled';
+        return { exitCode: 1, stdout: error };
+      }
+      const pressed = await execBrowser(['press', 'Enter'], cdpUrl);
+      if (pressed.exitCode === 0) submitted = { via: 'enter' };
+      else error = `pressing Enter failed: ${firstLine(pressed.stdout)}`;
+      return pressed;
+    },
+    // A submit that only shows an error message still changed the page:
+    // wait for the settle like a click on a button.
+    plan.submitRef ? { ...ACTION_POLICIES.click, recheck: () => true } : pressPolicy('Enter'),
+  );
+  const observation = { settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(treeDiff && { treeDiff }) };
+  if (activity) return { ok: true, submitted: null, activity, observation };
+  if (result.exitCode !== 0 || !submitted) return { ok: false, error: error ?? firstLine(result.stdout) };
+  const tabInfo = await tabManager.detectNewTab();
+  return { ok: true, submitted, observation: { ...observation, ...(tabInfo && { tabInfo }) } };
+}
+
+registerLoginRoutes(app, {
+  hostAuthEnabled,
+  validateSession: validateBrowserSessionWithRecovery,
+  browserActive: () => browserState.active,
+  fillDeps: loginFillDeps,
+  submit: submitLoginForm,
+  observeUrl: async () => {
+    const digest = await observeUrlDigest();
+    return digest ? { ...digest } : null;
+  },
+  notifyBrowserAction,
 });
 
 /** Helper to build a CDP message, adding sessionId when in session mode */

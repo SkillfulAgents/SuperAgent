@@ -53,7 +53,9 @@ export type {
   FileOps,
   FileStat,
   InputOps,
+  LockOps,
   McpReauthOps,
+  McpSessionOps,
   MediaBlob,
   MessageOps,
   MemoryOps,
@@ -69,6 +71,8 @@ export type {
   StopSessionResult,
   UsageOps,
   UserMessageEcho,
+  VolumeUploadOps,
+  WidgetOps,
   WriteOptions,
 } from './types'
 export type { SessionEvent, WireFrame } from './live/session-channel'

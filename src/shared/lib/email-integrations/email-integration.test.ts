@@ -27,7 +27,7 @@ function message(overrides: Partial<EmailMessage> = {}): EmailMessage {
 }
 class FakeEmail extends EmailAgentIntegration {
   readonly provider = 'platform-email'
-  isAvailable = () => platform.connected
+  isAvailable = async () => platform.connected
   readonly definition = emailDefinition
   submitted: EmailSend[] = []
   incoming = message()
@@ -57,6 +57,7 @@ const scope = { agentSlug: 'agent-a', sessionId: 'session-1' }
 const question = { id: 'q1', kind: 'question', scope, blocking: true, payload: { questions: [{ question: 'Allow <both> mailboxes?', options: [{ label: 'Allow both', description: 'Skips reCAPTCHA' }, { label: 'Only Chris' }] }] } } as never
 const approval = { id: 'r1', kind: 'secret', scope, blocking: true, payload: { secretName: 'API_KEY' } } as never
 
+// Settings and host records are app records: a fresh in-memory store per test.
 describe('email access levels', () => {
   it('defaults to agent users plus replies; validates internal-only domains', () => {
     expect(config.accessLevel).toBe('agent-users-and-replies')

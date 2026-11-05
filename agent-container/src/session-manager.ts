@@ -21,6 +21,7 @@ import {
   type WarmProfile,
 } from './warm-profile';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
+import { knownPreloadToolsets } from './preload-toolsets';
 
 interface SessionData {
   session: Session;
@@ -123,6 +124,7 @@ export class SessionManager extends EventEmitter {
   private sessions: Map<string, SessionData> = new Map();
   // In-flight resumes, keyed by session id — see resumeSession().
   private resuming: Map<string, Promise<SessionData | undefined>> = new Map();
+  private releasing = new Map<string, Promise<boolean>>();
   private baseWorkingDirectory: string;
   private persistence: SessionPersistence;
   private readonly idleEvictionMs: number;
@@ -341,6 +343,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: request.customEnvVars,
         effort: request.effort,
         speed,
+        preloadToolsets: request.preloadToolsets,
         capabilityPolicies,
         globalInstructions,
       });
@@ -495,6 +498,7 @@ export class SessionManager extends EventEmitter {
       customEnvVars: request.customEnvVars,
       effort: request.effort,
       speed,
+      preloadToolsets: knownPreloadToolsets(request.preloadToolsets),
       capabilityPolicies,
       globalInstructions,
       metadata: request.metadata,
@@ -596,6 +600,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: profile.customEnvVars,
         effort: profile.effort,
         speed: profile.speed,
+        preloadToolsets: profile.preloadToolsets,
         capabilityPolicies: profile.capabilityPolicies,
         globalInstructions: profile.globalInstructions,
       });
@@ -699,6 +704,9 @@ export class SessionManager extends EventEmitter {
     if (!persisted) {
       return undefined;
     }
+    // A successful host delete may outlive its final cleanup request. Never
+    // recreate its transcript from a retained resume record.
+    if (!this.retainedTranscriptExists(sessionId)) return undefined;
 
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
@@ -732,6 +740,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: persisted.customEnvVars,
         effort: persisted.effort,
         speed: persisted.speed,
+        preloadToolsets: persisted.preloadToolsets,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
         globalInstructions: persisted.globalInstructions,
@@ -797,7 +806,9 @@ export class SessionManager extends EventEmitter {
 
       // Start the process (which will resume the Claude session)
       // Note: slash commands are captured later when init event fires via WebSocket
-      if (!requiresConnectionRuntime) await process.start();
+      // A read/reconnect after release can attach, but only an explicit send
+      // may restart the CLI. Otherwise a viewer could race the host's unlink.
+      if (!requiresConnectionRuntime && !persisted.releasedForDeletion) await process.start();
 
       // Publish only once fully started — concurrent callers wait on the
       // resuming promise, never on a half-initialized entry. A failed start
@@ -822,6 +833,9 @@ export class SessionManager extends EventEmitter {
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
+    const releasing = this.releasing.get(sessionId);
+    if (releasing) await releasing;
+    if (!this.retainedTranscriptExists(sessionId)) return null;
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -836,16 +850,32 @@ export class SessionManager extends EventEmitter {
     return sessionData.session;
   }
 
-  async deleteSession(sessionId: string): Promise<boolean> {
+  /** Stop terminally, but preserve the resume record until the host removes its files. */
+  releaseSession(sessionId: string): Promise<boolean> {
+    return this.stopSession(sessionId, true);
+  }
+
+  private stopSession(sessionId: string, preserveResume: boolean): Promise<boolean> {
+    const pending = this.releasing.get(sessionId);
+    if (pending) return pending;
+    const released = this.performRelease(sessionId, preserveResume).finally(() => {
+      if (this.releasing.get(sessionId) === released) this.releasing.delete(sessionId);
+    });
+    this.releasing.set(sessionId, released);
+    return released;
+  }
+
+  private async performRelease(sessionId: string, preserveResume: boolean): Promise<boolean> {
+    // A resume that started before the release must be published and stopped
+    // too. Later readers/senders wait on `releasing` instead of reviving it.
+    await this.resuming.get(sessionId);
     const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) {
-      // A never-opened (cold) session lives only in the listing. Forget it
-      // there too — otherwise a rollback leaves a record pointing at a
-      // deleted transcript, with no GC path.
-      if (!this.persistence.getSession(sessionId)) return false;
-      this.persistence.deleteSession(sessionId);
-      return true;
-    }
+    const persisted = this.persistence.getSession(sessionId);
+    if (!sessionData && !persisted) return false;
+    // Checked and durable before disposal: a container restart must not warm
+    // this record into a file the host has since removed.
+    if (persisted && preserveResume) this.persistence.saveSessionChecked({ ...persisted, releasedForDeletion: true });
+    if (!sessionData) return true;
 
     // Release browser lock if this session owns it
     const released = releaseBrowserLock(sessionId);
@@ -856,6 +886,7 @@ export class SessionManager extends EventEmitter {
     // Stop the process terminally — dispose (not stop) so a straggler
     // interrupt/continuation can't revive a subprocess for a session that no
     // longer exists in this map (the reaper would never see it).
+    if (sessionData.eviction) await sessionData.eviction;
     await sessionData.process.dispose();
 
     // Clean up subscribers
@@ -864,11 +895,23 @@ export class SessionManager extends EventEmitter {
     // Remove from map
     this.sessions.delete(sessionId);
 
-    // Remove from persistence
+    return true;
+  }
+
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const existed = await this.stopSession(sessionId, false);
+    this.sessions.delete(sessionId);
     this.persistence.deleteSession(sessionId);
 
     console.log(`Deleted session ${sessionId}`);
-    return true;
+    return existed;
+  }
+
+  private retainedTranscriptExists(sessionId: string): boolean {
+    const persisted = this.persistence.getSession(sessionId);
+    if (!persisted?.releasedForDeletion) return true;
+    const project = persisted.workingDirectory.replace(/[/\\]+/g, '-');
+    return fs.existsSync(`${this.baseWorkingDirectory}/.claude/projects/${project}/${persisted.claudeSessionId}.jsonl`);
   }
 
   /**
@@ -954,6 +997,9 @@ export class SessionManager extends EventEmitter {
     uuid?: UUID,
     options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
   ): Promise<void> {
+    const releasing = this.releasing.get(sessionId);
+    if (releasing) await releasing;
+    if (!this.retainedTranscriptExists(sessionId)) throw new Error(`Session ${sessionId} not found`);
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -979,6 +1025,7 @@ export class SessionManager extends EventEmitter {
     // Human input promotes the session to the interactive eviction class so
     // the conversation doesn't pay a cold restart after every turn.
     const persisted: SessionUpdate = {};
+    if (this.persistence.getSession(sessionId)?.releasedForDeletion) persisted.releasedForDeletion = false;
     if (expectsResponse && !options?.isAutomated && sessionData.session.metadata?.isAutomated) {
       console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
       sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
@@ -1031,6 +1078,7 @@ export class SessionManager extends EventEmitter {
    */
   async warmSession(sessionId: string): Promise<'unknown' | 'busy' | 'running' | 'resumed' | 'skipped'> {
     if (this.shuttingDown) return 'skipped';
+    if (this.releasing.has(sessionId) || this.persistence.getSession(sessionId)?.releasedForDeletion) return 'skipped';
     let data = this.sessions.get(sessionId);
     // Shared with a racing send through the resume dedup, like every resume.
     const fromDisk = !data;
@@ -1039,7 +1087,7 @@ export class SessionManager extends EventEmitter {
     // A racing idle eviction may be closing the process: let it finish, then
     // resume — the order a send into the same session takes.
     if (data.eviction) await data.eviction;
-    if (this.shuttingDown || this.sessions.get(sessionId) !== data) return 'skipped';
+    if (this.shuttingDown || this.releasing.has(sessionId) || this.sessions.get(sessionId) !== data || this.persistence.getSession(sessionId)?.releasedForDeletion) return 'skipped';
     if (!data.settlement.isSettled()) return 'busy';
     // In memory only: the reaper reads this clock. The persisted timestamp is
     // conversation activity, and a keystroke is not that.

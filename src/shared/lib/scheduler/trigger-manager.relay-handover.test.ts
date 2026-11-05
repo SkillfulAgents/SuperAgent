@@ -25,6 +25,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
   getEffectiveModels: () => ({ agentModel: 'm', browserModel: 'm', agentEffort: 'low' }),
+  effectiveModelsFrom: () => ({ agentModel: 'm', browserModel: 'm', agentEffort: 'low' }),
 }))
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble(),
@@ -104,7 +105,7 @@ beforeEach(() => {
       acked.push(...ids)
     },
     endpoints: {} as never,
-    getToken: () => 'opaque_key',
+    getToken: async () => 'opaque_key',
     requiresMemberScope: () => false,
     createRealtime: () => {
       throw new Error('no realtime in this test')

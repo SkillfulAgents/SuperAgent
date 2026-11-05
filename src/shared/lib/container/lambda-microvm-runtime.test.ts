@@ -34,8 +34,11 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addEr
 // output here (that's the builder's concern), we only verify the runtime
 // delivers the agent's own config.envVars through runHookPayload.
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }),
+  activeLlmProviderFrom: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
+
+// The host token is an app record; these tests have no database.
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: async () => 'hostc_test' }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
 const autoResumeOnUnexpectedDeath = vi.fn((): boolean => true)
@@ -410,6 +413,31 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
 
   it('getInfoFromRuntime reports stopped before any start (no state)', async () => {
     expect(await newClient().getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(await newClient().isDefinitelyStopped()).toBe(false)
+  })
+
+  it.each(['RUNNING', 'PENDING', 'SUSPENDING', 'SUSPENDED', 'TERMINATING', 'TERMINATED'])('proves VM exit only once TERMINATED (%s)', async (state) => {
+    const client = newClient()
+    await client.start()
+    responses.getState = state
+    expect(await client.isDefinitelyStopped()).toBe(state === 'TERMINATED')
+  })
+
+  it('checks a terminating VM even after routing state was discarded', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATING'
+    await client.getInfoFromRuntime()
+    expect(await client.isDefinitelyStopped()).toBe(false)
+    responses.getState = 'TERMINATED'
+    expect(await client.isDefinitelyStopped()).toBe(true)
+  })
+
+  it('does not treat an unsuccessful VM lookup as proof of exit', async () => {
+    const client = newClient()
+    await client.start()
+    sendMock.mockRejectedValueOnce(new Error('network error'))
+    expect(await client.isDefinitelyStopped()).toBe(false)
   })
 
   it('getInfoFromRuntime treats SUSPENDED as stopped and terminates the leftover VM', async () => {
@@ -755,6 +783,49 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await client.start()
     sendMock.mockClear()
     await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+  })
+
+  it('start replaces a RUNNING VM that fails /health instead of adopting it', async () => {
+    const client = newClient()
+    await client.start()
+    let terminated = false
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Terminate') terminated = true
+      if (cmd.type === 'Run') return { microvmId: 'mvm-2', endpoint: 'ep.lambda-microvm.aws' }
+      if (cmd.type === 'Get') return { state: 'RUNNING' }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    // The frozen VM never answers /health; the new one does.
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (!terminated) throw new Error('The operation was aborted due to timeout')
+      return { ok: true } as Response
+    }))
+    sendMock.mockClear()
+
+    const info = await client.start()
+
+    expect(info.status).toBe('running')
+    const types = sendMock.mock.calls.map((c) => c[0].type)
+    expect(types.indexOf('Terminate')).toBeGreaterThanOrEqual(0)
+    expect(types.indexOf('Run')).toBeGreaterThan(types.indexOf('Terminate'))
+  })
+
+  it('start keeps a RUNNING VM when /health answers on the second try', async () => {
+    const client = newClient()
+    await client.start()
+    let probes = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      probes += 1
+      if (probes === 1) throw new Error('The operation was aborted due to timeout')
+      return { ok: true } as Response
+    }))
+    sendMock.mockClear()
+
+    expect((await client.start()).status).toBe('running')
+    expect(probes).toBe(2)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
   })
 

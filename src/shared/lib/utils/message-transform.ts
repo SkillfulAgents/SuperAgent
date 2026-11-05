@@ -10,6 +10,8 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { parseMonitorNotification, type MonitorNotification } from '@shared/lib/utils/monitor-notifications'
+import { unansweredQuestionsFrom, type UnansweredReason } from '@shared/lib/tools/types'
 
 export interface TransformedThinkingBlock {
   /** Stable live↔persisted identity when the SDK message id is available. */
@@ -35,8 +37,12 @@ export interface TransformedMessage {
       totalTokens?: number
       totalToolUseCount?: number
     }
-    /** The runtime's task id for a Bash call run in the background. */
+    /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
     backgroundTaskId?: string
+    /** A TaskCreate call's description as the CLI saved it (CLI 2.1.317+). */
+    taskDescription?: string
+    /** An AskUserQuestion call's questions that ended without an answer, by question text. */
+    unansweredQuestions?: Record<string, UnansweredReason>
   }>
   createdAt: Date
   sender?: {
@@ -103,7 +109,29 @@ export interface TransformedInformational {
   forked?: boolean
 }
 
-export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall | TransformedInformational
+/**
+ * One batch of a Monitor watch's output, where the runtime delivered it (see
+ * monitor-notifications.ts). The notification itself is hidden like every
+ * task notification; this is what stands in for it.
+ */
+export interface TransformedMonitorEvent {
+  id: string
+  type: 'monitor_event'
+  taskId: string
+  description: string | null
+  events: string[]
+  status: string | null
+  endReason: string | null
+  createdAt: Date
+  forked?: boolean
+}
+
+export type TransformedItem =
+  | TransformedMessage
+  | TransformedCompactBoundary
+  | TransformedMemoryRecall
+  | TransformedInformational
+  | TransformedMonitorEvent
 
 /**
  * Parse a user message that may contain SDK-injected slash command XML tags.
@@ -177,6 +205,12 @@ export function isTaskNotificationMessage(entry: JsonlMessageEntry): boolean {
   // Match both the bare `<task-notification>` form and attributed variants
   // (`<task-notification id="..." type="workflow-complete" ...>`).
   return /^<task-notification[\s>]/.test(content.trimStart())
+}
+
+/** A task notification carrying a Monitor watch's output: hidden, but shown as a monitor_event item. */
+export function monitorNotificationOf(entry: JsonlMessageEntry): MonitorNotification | null {
+  if (!isTaskNotificationMessage(entry)) return null
+  return parseMonitorNotification(entry.message.content)
 }
 
 /**
@@ -554,8 +588,21 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     // Skip user messages that only contain tool results
     if (isToolResultOnlyMessage(entry)) continue
 
-    // Skip SDK-injected task notification messages (sub-agent results)
-    if (isTaskNotificationMessage(entry)) continue
+    // Skip SDK-injected task notification messages (sub-agent results). A
+    // Monitor's output is the one kind that is shown, in its own item.
+    if (isTaskNotificationMessage(entry)) {
+      const monitor = monitorNotificationOf(entry)
+      if (monitor) {
+        result.push({
+          id: entry.uuid,
+          type: 'monitor_event',
+          ...monitor,
+          createdAt: new Date(entry.timestamp),
+          ...(entry.forkedFrom && { forked: true }),
+        })
+      }
+      continue
+    }
 
     const content = entry.message.content
     let text = ''
@@ -589,7 +636,16 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
 
           // A backgrounded Bash call's result is its (empty) stdout; the id
           // the runtime assigned is what lets the UI name the running task.
-          const backgroundTaskId = toolResult?.toolUseResult?.backgroundTaskId
+          // A Monitor call's result names its watch the same way.
+          const backgroundTaskId = block.name === 'Monitor'
+            ? toolResult?.toolUseResult?.taskId
+            : toolResult?.toolUseResult?.backgroundTaskId
+          const taskDescription = block.name === 'TaskCreate'
+            ? toolResult?.toolUseResult?.task?.description
+            : undefined
+          const unansweredQuestions = block.name === 'AskUserQuestion'
+            ? unansweredQuestionsFrom(toolResult?.toolUseResult?.annotations)
+            : undefined
           toolCalls.push({
             id: block.id,
             name: block.name,
@@ -598,6 +654,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
             isError: toolResult?.isError,
             subagent,
             ...(typeof backgroundTaskId === 'string' && backgroundTaskId ? { backgroundTaskId } : {}),
+            ...(typeof taskDescription === 'string' && taskDescription.trim() ? { taskDescription } : {}),
+            ...(unansweredQuestions ? { unansweredQuestions } : {}),
           })
         }
       }

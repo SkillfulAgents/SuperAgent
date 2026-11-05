@@ -4,6 +4,8 @@ import devServer from '@hono/vite-dev-server'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 import { readFileSync } from 'fs'
+import { monacoAliases, monacoOptimizerPlugin } from './scripts/lib/monaco-vite'
+import { SERVER_FACTS_REVISION_PLACEHOLDER } from './src/shared/lib/facts/facts-schema'
 
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
 const analyticsConfig = JSON.parse(readFileSync(path.resolve(__dirname, 'src/shared/lib/analytics/config.json'), 'utf-8'))
@@ -55,30 +57,56 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         inlineWorkboxRuntime: true, // single sw.js file, nothing extra at the dist root
         sourcemap: false,
+        // The HTML entry carries the server's facts, which the build can't
+        // know, so its revision leaves room for the server to add them
+        // (src/web/web-build.ts). Otherwise a deploy that changes only the
+        // facts would leave every installed worker serving the old ones.
+        manifestTransforms: [
+          (entries) => ({
+            manifest: entries.map((entry) =>
+              entry.url === 'index.html'
+                ? { ...entry, revision: `${entry.revision}-${SERVER_FACTS_REVISION_PLACEHOLDER}` }
+                : entry,
+            ),
+          }),
+        ],
       },
     }),
     {
       // Before the API plugin, so its middleware runs first: the dev server is
       // an entry point like the web server and Electron main, and opening the
-      // database is its first boot step. /api requests wait for the open.
-      // Re-checked per request because an edit under src/shared/lib/db makes
-      // Vite re-instantiate that module with nothing open.
+      // database, then initializing AppState, then installing key custody,
+      // are its first boot steps. /api requests wait for them. Re-checked per
+      // request because an edit under src/shared/lib/db (or keys) makes Vite
+      // re-instantiate that module with nothing open (AppState keeps its
+      // instance on globalThis, so it survives one).
       name: 'server-lifecycle',
       configureServer(server) {
         const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')
-        const ensureDatabaseOpen = async () => {
+        const appStateModule = path.resolve(__dirname, 'src/shared/lib/app-state/index.ts')
+        const keysModule = path.resolve(__dirname, 'src/shared/lib/keys/install-server-key-manager.ts')
+        const ensureBooted = async () => {
           const { isDatabaseOpen, openDatabase } = await server.ssrLoadModule(dbModule)
           if (!isDatabaseOpen()) {
             await openDatabase()
           }
+          const { isAppStateInitialized, initializeLocalAppState } = await server.ssrLoadModule(appStateModule)
+          // Checked and installed in one step: a local AppState installs synchronously.
+          if (!isAppStateInitialized()) {
+            await initializeLocalAppState()
+          }
+          // Then key custody, as the web server does: the vault seals through it.
+          // Concurrent requests share one install (ensureKeyManager).
+          const { installServerKeyManager } = await server.ssrLoadModule(keysModule)
+          await installServerKeyManager()
         }
         server.middlewares.use((req, res, next) => {
           if (!req.url?.startsWith('/api')) return next()
-          ensureDatabaseOpen().then(
+          ensureBooted().then(
             () => next(),
             (error) => {
               res.statusCode = 500
-              res.end(`The database failed to open: ${error instanceof Error ? error.message : String(error)}`)
+              res.end(`The server failed to boot: ${error instanceof Error ? error.message : String(error)}`)
             },
           )
         })
@@ -91,14 +119,14 @@ export default defineConfig({
           }
         })
         if (server.httpServer) {
-          ensureDatabaseOpen()
+          ensureBooted()
             .then(() => server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')))
             .then(({ setupServerHandlers, afterBindInitialize }) => {
               setupServerHandlers(server.httpServer as any)
               void afterBindInitialize()
             })
             .catch((error) => {
-              console.error('Failed to open the database:', error)
+              console.error('Failed to boot the dev server:', error)
             })
         }
         server.httpServer?.on('close', async () => {
@@ -110,6 +138,20 @@ export default defineConfig({
         })
       },
     },
+    {
+      // The dev server's half of src/web/web-build.ts: the HTML entry carries
+      // the server's facts. Dev only, so a build never bakes in the facts of
+      // the machine that built it; production inlines them as it serves.
+      name: 'server-facts',
+      apply: 'serve',
+      async transformIndexHtml(html, ctx) {
+        if (!ctx.server) return html
+        const { getServerFacts, withServerFacts } = await ctx.server.ssrLoadModule(
+          path.resolve(__dirname, 'src/shared/lib/facts/server-facts.ts'),
+        )
+        return withServerFacts(html, getServerFacts())
+      },
+    },
     devServer({
       entry: 'src/api/index.ts',
       exclude: [/^(?!\/api).*/], // Only handle /api/* routes
@@ -117,12 +159,14 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      ...monacoAliases,
       '@': path.resolve(__dirname, './src'),
       '@shared': path.resolve(__dirname, './src/shared'),
       '@renderer': path.resolve(__dirname, './src/renderer'),
     },
   },
   root: './src/renderer',
+  optimizeDeps: { esbuildOptions: { plugins: [monacoOptimizerPlugin] } },
   // outDir sits OUTSIDE the Vite root, so Vite does not clean it by default —
   // consecutive builds would accumulate old hashed chunks, and the SW precache
   // manifest globs the output dir, so stale generations would be precached as

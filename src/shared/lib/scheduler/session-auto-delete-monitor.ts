@@ -1,11 +1,12 @@
 import { listAgents } from '@shared/lib/services/agent-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { readStoredAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
+import { background } from '@shared/lib/background'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { inArray } from 'drizzle-orm'
@@ -29,14 +30,14 @@ class SessionAutoDeleteMonitor {
 
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      this.cleanupAllAgents().catch((error) => {
+      background(this.cleanupAllAgents().catch((error) => {
         console.error('[SessionAutoDeleteMonitor] Error in initial cleanup:', error)
-      })
+      }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
 
       this.intervalId = setInterval(() => {
-        this.cleanupAllAgents().catch((error) => {
+        background(this.cleanupAllAgents().catch((error) => {
           console.error('[SessionAutoDeleteMonitor] Error in cleanup cycle:', error)
-        })
+        }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
       }, this.pollIntervalMs)
     }, this.startupDelayMs)
 
@@ -63,12 +64,12 @@ class SessionAutoDeleteMonitor {
     this.isProcessing = true
 
     try {
-      const globalDefault = getSettings().app?.autoDeleteInactiveDays
+      const globalDefault = (await getSettings()).app?.autoDeleteInactiveDays
       const agents = await listAgents()
 
       for (const agent of agents) {
         try {
-          const agentPrefs = await readAgentPreferences(agent.slug)
+          const agentPrefs = await readStoredAgentPreferences(agent.slug)
           const effectiveDays = agentPrefs.autoDeleteInactiveDays ?? globalDefault
           if (effectiveDays === undefined || effectiveDays <= 0) continue
 

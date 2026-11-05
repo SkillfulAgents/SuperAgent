@@ -18,6 +18,8 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const webTestIgnore = [
   '**/auth/**',
+  // Desktop runtime tests have their own app launcher and config.
+  '**/electron/**',
   // Real-container probes with their own config (playwright.live-mcp.config.ts).
   '**/live/**',
   // Recorded walkthroughs, not regression tests — they throttle the network and
@@ -41,6 +43,10 @@ const webTestIgnore = [
   // Section drags also need a stable list; sibling specs create/delete agents
   // mid-gesture. Run on a fresh server through test:e2e:sidebar.
   '**/agent-folders.spec.ts',
+  // Layer/focus and touch gestures need stable lists and their own settings.
+  // Runs across desktop/touch engines via playwright.radix.config.ts.
+  '**/radix-interactions.spec.ts',
+  '**/radix-touch.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {
@@ -82,7 +88,7 @@ export default defineConfig({
   // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
   // holds probes against the REAL container (playwright.live-mcp.config.ts
   // and the .mjs harnesses), which the mock host cannot satisfy.
-  testIgnore: ['**/auth/**', '**/live/**'],
+  testIgnore: ['**/auth/**', '**/live/**', '**/electron/**'],
   outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -107,7 +113,15 @@ export default defineConfig({
     // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
     {
       name: 'web-webkit',
-      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts'],
+      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts', '**/pdf-preview.spec.ts'],
+      use: { ...devices['Desktop Safari'] },
+    },
+    // Deterministic navigation contracts run once on macOS per PR. Keep the
+    // compositor regressions above in their three independent serial runs.
+    {
+      name: 'web-webkit-navigation',
+      testMatch: ['**/navigation.spec.ts', '**/router-upgrade.spec.ts', '**/memory-history.spec.ts', '**/router-response-guard.spec.ts'],
+      fullyParallel: false,
       use: { ...devices['Desktop Safari'] },
     },
     // Section drag-and-drop and persistence, on their own server/data dir.

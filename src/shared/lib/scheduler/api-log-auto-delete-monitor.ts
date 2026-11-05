@@ -1,10 +1,11 @@
 import { listAgents } from '@shared/lib/services/agent-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { readStoredAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveApiLogAutoDeleteDays } from '@shared/lib/config/api-log-auto-delete'
 import { pruneExpiredApiLogsForAgent } from '@shared/lib/services/api-log-auto-delete'
 import { db } from '@shared/lib/db'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 class ApiLogAutoDeleteMonitor {
   private intervalId: NodeJS.Timeout | null = null
@@ -25,16 +26,16 @@ class ApiLogAutoDeleteMonitor {
 
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      this.cleanupAllAgents().catch((error) => {
+      background(this.cleanupAllAgents().catch((error) => {
         console.error('[ApiLogAutoDeleteMonitor] Error in initial cleanup:', error)
         captureException(error, { tags: { area: 'api-log-auto-delete', op: 'initial-cleanup' } })
-      })
+      }), { name: 'api-log-auto-delete-monitor.cleanup-all-agents' })
 
       this.intervalId = setInterval(() => {
-        this.cleanupAllAgents().catch((error) => {
+        background(this.cleanupAllAgents().catch((error) => {
           console.error('[ApiLogAutoDeleteMonitor] Error in cleanup cycle:', error)
           captureException(error, { tags: { area: 'api-log-auto-delete', op: 'cleanup-cycle' } })
-        })
+        }), { name: 'api-log-auto-delete-monitor.cleanup-all-agents' })
       }, this.pollIntervalMs)
     }, this.startupDelayMs)
 
@@ -61,12 +62,12 @@ class ApiLogAutoDeleteMonitor {
     this.isProcessing = true
 
     try {
-      const appDays = getSettings().app?.apiLogAutoDeleteDays
+      const appDays = (await getSettings()).app?.apiLogAutoDeleteDays
       const agents = await listAgents()
 
       for (const agent of agents) {
         try {
-          const agentPrefs = await readAgentPreferences(agent.slug)
+          const agentPrefs = await readStoredAgentPreferences(agent.slug)
           const effectiveDays = resolveApiLogAutoDeleteDays(
             agentPrefs.apiLogAutoDeleteDays,
             appDays,

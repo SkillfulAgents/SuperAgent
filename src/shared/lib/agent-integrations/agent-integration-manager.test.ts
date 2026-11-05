@@ -1,21 +1,21 @@
 vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import * as integrationStore from './store'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StopSessionOptions, StopSessionResult } from '../agent-actor/types'
-import type { GlobalFeedEvent } from '../notifications/global-feed'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
 import { AgentIntegrationRegistry } from './registry'
 import { captureException } from '../error-reporting'
 import { updateAgentIntegrationStatus } from '../services/agent-integration-service'
+import { backgroundSettled } from '../background'
+import { publishIntegrationAuthorization } from './authorization-events'
 import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
 
 const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
   streams: new Map<string, (event: unknown) => void>(),
-  global: undefined as ((event: GlobalFeedEvent) => void) | undefined, stop: vi.fn<(sessionId: string, options: StopSessionOptions) => Promise<StopSessionResult>>(),
-  authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
+  stop: vi.fn<(sessionId: string, options: StopSessionOptions) => Promise<StopSessionResult>>(),
   syncMcp: vi.fn(async () => true),
   answer: vi.fn(), notify: vi.fn().mockResolvedValue(undefined),
   markActive: vi.fn(), markIdle: vi.fn(), attach: vi.fn(), open: vi.fn((_sessionId?: string) => [] as unknown[]),
@@ -23,13 +23,14 @@ const state = vi.hoisted(() => ({
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn((_sessionId?: string) => false), register: vi.fn(), metadata: vi.fn(),
   broadcast: vi.fn(), isActive: vi.fn((_sessionId?: string) => false),
   recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
+  // A chat whose active mapping timed out: the next lookup archives it and reports the replaced session.
+  rotated: new Map<string, { rowId: string; sessionId: string }>(),
   // Runs before each read of a session's live state: a test can hold the read there.
   beforeLive: undefined as (() => Promise<void>) | undefined,
   // Every delivery the manager asked the actor for, as asked.
   deliveries: [] as Array<{ sessionId: string; content: string; uuid?: string; echo?: object }>,
 }))
 vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ recordIntegrationMessage: state.recordMessage }))
-vi.mock('./lifecycle', () => ({ onIntegrationAuthorizationLost: (callback: typeof state.authorizationLost) => { state.authorizationLost = callback; return () => { state.authorizationLost = undefined } } }))
 vi.mock('@shared/lib/services/connection-sync-service', () => ({ syncRemoteMcpAgents: state.syncMcp }))
 vi.mock('@shared/lib/services/agent-integration-service', () => ({
   listStartupAgentIntegrations: () => state.rows,
@@ -37,7 +38,13 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   updateAgentIntegrationStatus: vi.fn(),
 }))
 vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
-  resolveActiveSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
+  resolveActiveSession: (id: string, externalId: string, _timeoutHours: unknown, onArchive?: (rowId: string, sessionId: string) => void) => {
+    const rotated = state.rotated.get(`${id}:${externalId}`)
+    if (!rotated) return state.mappings.get(`${id}:${externalId}`)
+    state.rotated.delete(`${id}:${externalId}`)
+    onArchive?.(rotated.rowId, rotated.sessionId)
+    return undefined
+  },
   createAgentIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
     state.mappings.set(`${mapping.integrationId}:${mapping.externalChatId}`, { id: `mapping-${mapping.sessionId}`, ...mapping })
   },
@@ -92,10 +99,9 @@ vi.mock('@shared/lib/agent-actor', async () => {
 })
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
+  getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }), effectiveModelsFrom: () => ({ agentModel: 'test-model' }) }))
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('@shared/lib/notifications/global-feed', () => ({ globalFeed: { subscribe: (listener: (event: GlobalFeedEvent) => void) => { state.global = listener; return () => { state.global = undefined } } } }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: state.notify } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
@@ -135,12 +141,18 @@ class ObjectIntegration extends AgentIntegration {
 
 function record(id: string): AgentIntegrationRecord {
   return { id, agentSlug: id, provider: 'test-objects', name: null, config: '{}', status: 'active', errorMessage: null,
-    model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+    model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date(), version: 0 }
 }
+/** The loss hint for installation-a, for the loss that wrote row version `version` (rows start at 0). */
+const loseAuthorization = (version = 1) => publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a', version })
 
 let manager: AgentIntegrationManager
 let adapter: ObjectIntegration
 let registry: AgentIntegrationRegistry
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('@shared/lib/services/session-defaults') })
 beforeEach(async () => {
   vi.clearAllMocks()
   state.rows = [record('installation-a')]
@@ -173,6 +185,7 @@ beforeEach(async () => {
   })
   state.mappings.clear()
   state.streams.clear()
+  state.rotated.clear()
   state.create.mockImplementation(async () => ({ id: `session-${state.create.mock.calls.length}` }))
   state.subscribeStream.mockResolvedValue(undefined)
   state.isStreamSubscribed.mockReturnValue(false)
@@ -196,6 +209,38 @@ describe('AgentIntegration host contract', () => {
     expect(state.metadata).toHaveBeenCalledWith('session-1', { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect('sendMessage' in adapter).toBe(false)
     expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+  })
+
+  describe('rotation after inactivity', () => {
+    it('points the new session to the replaced one', async () => {
+      state.rotated.set('installation-a:object-7', { rowId: 'row-old', sessionId: 'old-session' })
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
+
+      const systemPrompt = state.create.mock.calls[0][0].systemPrompt as string
+      expect(systemPrompt).toContain('<previous_session>')
+      expect(systemPrompt).toContain('read-session.py old-session')
+    })
+
+    it('still points to the replaced session when the first attempt fails after the rotation', async () => {
+      state.rotated.set('installation-a:object-7', { rowId: 'row-old', sessionId: 'old-session' })
+      adapter.prepareInput.mockRejectedValueOnce(new Error('Attachment download failed'))
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce(), { timeout: 5_000 })
+
+      expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+      expect(state.create.mock.calls[0][0].systemPrompt).toContain('read-session.py old-session')
+    })
+
+    it('starts a first session without a pointer', async () => {
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
+
+      expect(state.create.mock.calls[0][0].systemPrompt).toBeUndefined()
+    })
   })
 
   describe('message display', () => {
@@ -377,11 +422,13 @@ describe('AgentIntegration host contract', () => {
     manager = new AgentIntegrationManager(isolated)
     await manager.start()
     await Promise.all([adapter.input('first'), second.input('second')])
-    await vi.waitFor(() => expect(state.streams.size).toBe(2))
+    // Each installation opens its stream through a session start (settings,
+    // the agent, the database): allow for a loaded test run.
+    await vi.waitFor(() => expect(state.streams.size).toBe(2), { timeout: 5_000 })
     expect(state.mappings.size).toBe(2)
     manager.stop()
     // A cancelled stream lets go of its source a moment later across a wire.
-    await vi.waitFor(() => expect(state.streams.size).toBe(0))
+    await vi.waitFor(() => expect(state.streams.size).toBe(0), { timeout: 5_000 })
     expect(adapter.connected).toBe(false)
     expect(second.connected).toBe(false)
     expect(adapter.released).toHaveLength(1)
@@ -532,25 +579,22 @@ describe('AgentIntegration host contract', () => {
     expect(state.stop).toHaveBeenCalledWith('session-1', { scope: 'turn' })
     expect(acknowledged).toHaveBeenCalledOnce()
   })
-  it.each(['global-first', 'session-first'])('routes reviews once when resolution arrives %s', async order => {
+  it.each(['proxy_review', 'x_agent_review'])('routes %s only through its owning session', async kind => {
     await manager.start()
     await adapter.input('comment')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
     adapter.outputs = []
-    const request = { id: 'review', kind: 'proxy_review', blocking: true, autoApproved: false,
+    const request = { id: 'review', kind, blocking: true, autoApproved: false,
       scope: { agentSlug: 'installation-a', sessionId: 'another-session' }, payload: {} }
-    state.global?.({ type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'unrelated', scope: { agentSlug: 'installation-a' } })
-    state.global?.({ type: 'user_request_created', request })
-    state.global?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
+    state.streams.get('session-1')?.({ type: 'user_request_created', request })
+    state.streams.get('session-1')?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(adapter.outputs).toEqual([])
     state.streams.get('session-1')?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a', sessionId: 'session-1' } } })
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
     expect(adapter.outputs[0].output.type).toBe('request-opened')
-    const resolution = { type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
-    if (order === 'global-first') state.global?.(resolution)
+    const resolution = { type: 'user_request_resolved', kind, outcome: 'answered', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
     state.streams.get('session-1')?.(resolution)
-    if (order === 'session-first') state.global?.(resolution)
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(2))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(adapter.outputs).toHaveLength(2)
@@ -1044,7 +1088,7 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
   await manager.start()
   state.syncMcp.mockClear(); vi.mocked(captureException).mockClear()
   state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
-  state.authorizationLost?.({ integrationId: 'installation-a' })
+  await loseAuthorization()
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
   await vi.waitFor(() => expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a']))
   expect(captureException).not.toHaveBeenCalled()
@@ -1052,9 +1096,114 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
 it('does not tear down replacement authorization on a late revocation notification', async () => {
   await manager.start()
   state.rows[0].config = '{"replacement":true}'
-  state.authorizationLost?.({ integrationId: 'installation-a' })
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await loseAuthorization()
+  await backgroundSettled()
   expect(adapter.connected).toBe(true)
+})
+it('lets neither a repeated nor a late loss hint tear down the authorization that replaced the revoked one', async () => {
+  await manager.start()
+  state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
+  const loss = { type: 'authorization_lost', integrationId: 'installation-a', version: 1 } as const
+  await publishIntegrationAuthorization(loss)
+  await backgroundSettled()
+  expect(adapter.connected).toBe(false)
+  // Re-authorized: new credentials, active again, connected by the owner.
+  state.rows[0].status = 'active'; state.rows[0].config = '{"replacement":true}'; state.rows[0].version = 2
+  await manager.addIntegration('installation-a')
+  expect(adapter.connected).toBe(true)
+  // The same hint again, and once more after other work: the row says active.
+  await publishIntegrationAuthorization(loss)
+  await publishIntegrationAuthorization(loss)
+  await backgroundSettled()
+  expect(adapter.connected).toBe(true)
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})
+it('does not cancel the connect of credentials written after the loss when the late hint arrives mid-connect', async () => {
+  let release!: () => void, reached!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const making = new Promise<void>(resolve => { reached = resolve })
+  let gated = false
+  manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => {
+    if (gated) { reached(); await gate }
+    return adapter
+  } }]))
+  await manager.start()
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true}', version: 1 }
+  // A config edit: replacement credentials with the row still `disconnected`, then remove + add.
+  state.rows[0] = { ...state.rows[0], config: '{"replacement":true}', version: 2 }
+  await manager.removeIntegration('installation-a')
+  gated = true
+  const adding = manager.addIntegration('installation-a')
+  // The hint arrives while the replacement's connector is still being made.
+  await making
+  await loseAuthorization(1)
+  await backgroundSettled()
+  release(); await adding
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})
+it('treats a copy read at the loss version itself as holding the lost authorization', async () => {
+  await manager.start()
+  await manager.removeIntegration('installation-a')
+  // The loss is written (version 1), and a connect reads that row before its hint arrives.
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true}', version: 1 }
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+  await loseAuthorization(1)
+  await backgroundSettled()
+  expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  // Heard now: no connect is made from that copy again.
+  await manager.addIntegration('installation-a')
+  expect(manager.getActiveIntegrationIds()).toEqual([])
+})
+it('does not connect a copy of the row read before a loss it has already heard', async () => {
+  // Startup reads every row first, then connects them one at a time.
+  state.rows = [record('installation-a'), record('installation-b')]
+  let release!: () => void, reached!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const parked = new Promise<void>(resolve => { reached = resolve })
+  manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async row => {
+    if (row.id === 'installation-a') { reached(); await gate }
+    return adapter
+  } }]))
+  const starting = manager.start()
+  await parked
+  // installation-b loses its authorization while installation-a is still connecting.
+  state.rows[1] = { ...state.rows[1], status: 'disconnected', config: '{"revoked":true}', version: 1 }
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-b', version: 1 })
+  await backgroundSettled()
+  release(); await starting
+  expect(manager.getActiveIntegrationIds()).toEqual(['installation-a'])
+})
+it('stops hearing an integration once it is removed, and hears it again once it is connected', async () => {
+  (adapter.definition.capabilities as string[]).push('mcp')
+  await manager.start()
+  await manager.removeIntegration('installation-a')
+  state.syncMcp.mockClear()
+  state.rows[0].status = 'disconnected'
+  await loseAuthorization()
+  await backgroundSettled()
+  expect(state.syncMcp).not.toHaveBeenCalled()
+
+  state.rows[0].status = 'active'
+  await manager.addIntegration('installation-a')
+  state.syncMcp.mockClear()
+  state.rows[0].status = 'disconnected'
+  await loseAuthorization()
+  await backgroundSettled()
+  expect(adapter.connected).toBe(false)
+  expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
+})
+it('hears nothing once stopped, and again once started', async () => {
+  const heard = vi.spyOn(manager as unknown as { authorizationLost: (change: unknown) => Promise<void> }, 'authorizationLost')
+  await manager.start()
+  manager.stop()
+  await loseAuthorization()
+  await backgroundSettled()
+  expect(heard).not.toHaveBeenCalled()
+  await manager.start()
+  await loseAuthorization()
+  await backgroundSettled()
+  expect(heard).toHaveBeenCalledOnce()
 })
 
 
@@ -1113,8 +1262,8 @@ it('delivers stream output by its routing alone, reading the session only for a 
 
 it('tears down revoked authorization even if an unrelated config write followed the revocation', async () => {
   await manager.start()
-  state.rows[0].status = 'disconnected'
-  state.rows[0].config = '{"revoked":true,"transportHealth":"offline"}'
-  state.authorizationLost?.({ integrationId: 'installation-a' })
+  // The loss (version 1), then another write (version 2); the connection was read before both.
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true,"transportHealth":"offline"}', version: 2 }
+  await loseAuthorization(1)
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
 })

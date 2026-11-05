@@ -121,6 +121,7 @@ function PaywallActions({
   // The embedded frame is showing a panel: give it the full row, Dismiss drops below it.
   expanded: boolean
   // Fill the column (the subscribe price block) instead of hugging the right edge.
+  // The column is narrow, so Dismiss drops below the CTA instead of squeezing it.
   stretch?: boolean
   dismissible: boolean
   embeddedAction: ReactNode
@@ -140,12 +141,12 @@ function PaywallActions({
   const brand = cta ? BRAND_CTAS.has(cta.kind) : false
   return (
     <div
-      className={cn('flex gap-2', expanded ? 'basis-full flex-col items-stretch' : stretch ? 'w-full items-stretch' : 'items-end')}
+      className={cn('flex gap-2', expanded ? 'basis-full flex-col items-stretch' : stretch ? 'w-full flex-col items-stretch' : 'items-end')}
       data-testid="paywall-actions"
       data-expanded={expanded}
     >
       {dismissible && (
-        <Button size="sm" variant="ghost" className={expanded ? 'order-last self-end' : undefined} onClick={() => onDismiss(ctaKind)}>
+        <Button size="sm" variant="ghost" className={expanded ? 'order-last self-end' : stretch ? 'order-last' : undefined} onClick={() => onDismiss(ctaKind)}>
           Dismiss
         </Button>
       )}
@@ -215,7 +216,7 @@ function SubscribeBody({ plan, hint, actions, expanded, selectedPlanId, onSelect
                   aria-checked={selected}
                   onClick={() => onSelectPlan(option.id)}
                   className={cn(
-                    'rounded-lg border px-2.5 py-2 text-left transition-colors',
+                    'rounded-item border px-2.5 py-2 text-left transition-colors',
                     selected ? 'border-brand bg-brand/5' : 'border-border/70 hover:bg-muted/50',
                   )}
                 >
@@ -466,7 +467,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           data-embedded={embedded}
           data-expanded={panelOpen}
           className={cn(
-            'relative flex flex-col gap-3 rounded-xl border',
+            'relative flex flex-col gap-3 rounded-card border',
             PAYWALL_GLASS_CLASS,
             subscribeLayout ? 'px-4 py-4 sm:px-6 sm:py-5' : 'px-5 py-4',
             // West's purchase dialog was max-w-md; keep the collapsed banner full-width.

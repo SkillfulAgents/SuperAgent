@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
+import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
+import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -20,6 +22,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Records the choice for subsequent boots; the caller reloads.
   setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
     return ipcRenderer.invoke('set-preferred-api-target', target)
+  },
+  // The facts this renderer gates on, for the target it settled (main/facts.ts).
+  getFacts: (target: ApiTarget): Promise<Facts> => {
+    return ipcRenderer.invoke('get-facts', target)
   },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
@@ -260,6 +266,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // True when the user turned off notifications for the app in macOS System Settings.
+  getOsNotificationsBlocked: (): Promise<boolean> => {
+    return ipcRenderer.invoke('get-os-notifications-blocked')
+  },
+
   // Pull events queued while the window was closed (main-process fallback
   // notifications). Renderer calls this once on mount so click/action
   // events captured before any IPC listener existed still get dispatched.
@@ -309,6 +320,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-dashboard-window', { agentSlug, dashboardSlug, dashboardName })
   },
 
+  // A PNG of a region of this window, in CSS pixels (a dashboard comment's screenshot)
+  captureRegion: (rect: { x: number; y: number; width: number; height: number }): Promise<Uint8Array | null> => {
+    return ipcRenderer.invoke('capture-region', rect)
+  },
+
   // Show the native emoji picker
   showEmojiPanel: (): Promise<void> => {
     return ipcRenderer.invoke('show-emoji-panel')
@@ -324,9 +340,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return webUtils.getPathForFile(file)
   },
 
-  // Open a native directory picker dialog
-  openDirectory: (): Promise<string | null> => {
-    return ipcRenderer.invoke('open-directory')
+  // Open a native directory picker dialog. In the Mac App Store build the pick
+  // also carries the security-scoped bookmark that reopens it after a relaunch.
+  // `startIn` opens the dialog in that folder.
+  openDirectory: (startIn?: string): Promise<{ path: string; bookmark?: string } | null> => {
+    return ipcRenderer.invoke('open-directory', startIn)
   },
 
   // Reveal a path in the OS file manager (Finder / Explorer / Files)
@@ -453,6 +471,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('quick-dispatch:attach-pending', handler)
     }
   },
+  // Computer-use toggle: screenshot the screen under the launcher (and play the
+  // shutter that carries it into the composer).
+  quickDispatchCaptureScreen: (): Promise<QuickDispatchCaptureResult> => ipcRenderer.invoke('quick-dispatch:capture-screen'),
+  // The pointer is on the toggle: get the shutter ready so the click answers at once.
+  quickDispatchCapturePrepare: () => {
+    ipcRenderer.send('quick-dispatch:capture-prepare')
+  },
+  // Where the screenshot's chip rendered, in the launcher's viewport (null: nowhere).
+  quickDispatchCaptureTarget: (rect: CaptureRect | null) => {
+    ipcRenderer.send('quick-dispatch:capture-target', rect)
+  },
+  // Main → launcher: the shutter landed (or ended) — show the chip it covered.
+  onQuickDispatchCaptureLanded: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:capture-landed', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:capture-landed', handler)
+    }
+  },
   // Main → launcher: the panel was hidden — reset transient state (attachments).
   onQuickDispatchReset: (callback: () => void): (() => void) => {
     const handler = () => callback()
@@ -499,6 +536,8 @@ declare global {
       // Optional: an older main process has no such handler (see env.ts).
       getApiTarget?: () => Promise<ResolvedApiTarget>
       setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
+      // Optional for the same reason as getApiTarget.
+      getFacts?: (target: ApiTarget) => Promise<Facts>
       platform: string
       osVersion: string
       desktopProtocol?: string
@@ -542,6 +581,7 @@ declare global {
       onNotificationEvent: (
         callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
       ) => () => void
+      getOsNotificationsBlocked: () => Promise<boolean>
       flushPendingNotificationEvents: () => Promise<{
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>
@@ -559,10 +599,11 @@ declare global {
       setNativeTheme: (theme: string) => Promise<void>
       popupAppMenu: (x: number, y: number) => Promise<void>
       openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
+      captureRegion: (rect: { x: number; y: number; width: number; height: number }) => Promise<Uint8Array | null>
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
-      openDirectory: () => Promise<string | null>
+      openDirectory: (startIn?: string) => Promise<{ path: string; bookmark?: string } | null>
       showInFolder: (hostPath: string) => Promise<string | null>
       revealInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
@@ -589,6 +630,10 @@ declare global {
       onQuickDispatchToggleDictation: (callback: () => void) => () => void
       quickDispatchDrainAttach: () => Promise<string[]>
       onQuickDispatchAttachPending: (callback: () => void) => () => void
+      quickDispatchCaptureScreen: () => Promise<QuickDispatchCaptureResult>
+      quickDispatchCapturePrepare: () => void
+      quickDispatchCaptureTarget: (rect: CaptureRect | null) => void
+      onQuickDispatchCaptureLanded: (callback: () => void) => () => void
       onQuickDispatchReset: (callback: () => void) => () => void
       setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
       importPackagesDrain: () => Promise<ClassifiedImportPackage[]>

@@ -47,7 +47,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Pre({ children }: { children: React.ReactNode }) {
   return (
-    <pre className="rounded-md bg-muted p-3 text-xs font-mono overflow-x-auto overflow-y-auto max-h-64 w-0 min-w-full">
+    <pre className="rounded-card bg-muted p-3 text-xs font-mono overflow-x-auto overflow-y-auto max-h-64 w-0 min-w-full">
       {children}
     </pre>
   )
@@ -187,7 +187,7 @@ export function DebugTab() {
             {/* Runner availability */}
             <div>
               <Label className="text-xs text-muted-foreground">Runners</Label>
-              <div className="mt-1 rounded-md border text-xs">
+              <div className="mt-1 rounded-card border text-xs">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b bg-muted/50">
@@ -242,7 +242,7 @@ export function DebugTab() {
                   const name = ct.Names || ct.ID || `container-${i}`
                   const isExpanded = expandedLogs[name]
                   return (
-                    <div key={name} className="rounded-md border text-xs">
+                    <div key={name} className="rounded-card border text-xs">
                       <div className="flex items-center justify-between p-2 bg-muted/30">
                         <div className="space-y-0.5">
                           <div className="font-medium">{name}</div>

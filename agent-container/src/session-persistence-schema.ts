@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { globalInstructionsSchema } from './global-instructions';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
+import { preloadToolsetsSchema } from './preload-toolsets';
 
 export const sessionMetadataSchema = z
   .object({
@@ -11,6 +12,8 @@ export const sessionMetadataSchema = z
     workingDirectory: z.string().min(1),
     createdAt: z.string().min(1),
     lastActivity: z.string().min(1),
+    // A host delete stopped the process but has not yet confirmed file removal.
+    releasedForDeletion: z.boolean().optional(),
     systemPrompt: z.string().optional(),
     modelPromptHints: z.array(z.string()).optional(),
     availableEnvVars: z.array(z.string()).optional(),
@@ -30,6 +33,7 @@ export const sessionMetadataSchema = z
     customEnvVars: z.record(z.string(), z.string()).transform(withoutProviderCredentials).optional(),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     speed: speedLevelSchema,
+    preloadToolsets: preloadToolsetsSchema,
     capabilityPolicies: agentCapabilityPoliciesSchema,
     globalInstructions: globalInstructionsSchema,
     sessionCapabilityGrants: z.array(z.enum(['subagents', 'workflows'])).optional(),

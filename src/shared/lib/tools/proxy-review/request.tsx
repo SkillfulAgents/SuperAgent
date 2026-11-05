@@ -28,6 +28,7 @@ import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { heldByRequireRule, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RuleOutcomesList, RuleProposalRequestItem } from './rule-review'
+import { TitleCode, useCustomPreview } from './custom-previews'
 
 // Endpoint descriptions come from API docs and carry inline Markdown
 // (`code`, [links](…)). The title renders them inline: no paragraph or block
@@ -36,7 +37,7 @@ const Inline = ({ children }: { children?: React.ReactNode }) => <>{children}</>
 const TITLE_MARKDOWN: Components = {
   p: Inline,
   pre: Inline,
-  code: ({ children }) => <code className="rounded bg-muted px-1 py-px font-mono text-[0.9em]">{children}</code>,
+  code: TitleCode,
 }
 
 // read is least privileged, destructive most — used to pick the minimal group
@@ -105,8 +106,8 @@ function InfoHint({ text, children }: { text: string; children: ReactElement }) 
 }
 
 /**
- * The service, method and path, and what the request sends. The body starts open when the card
- * cannot name the call: it is then the only thing that says what the call does.
+ * The service, method and path, and what the request sends. The body starts open when neither the
+ * endpoint nor a custom preview names the call: it is then the only thing that says what the call does.
  */
 function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
   toolkit: ReactNode
@@ -115,9 +116,9 @@ function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
   named: boolean
 }) {
   return (
-    <Collapsible defaultOpen={!named} className="mt-3 rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
+    <Collapsible key={String(named)} defaultOpen={!named} className="mt-3 rounded-card border border-border bg-white px-3 py-2 dark:bg-background">
       <div className="flex items-center">
-        <span className="mr-2 inline-flex h-7 shrink-0 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
+        <span className="mr-2 inline-flex h-7 shrink-0 items-center rounded-control bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
           {toolkit}
         </span>
         <span className="min-w-0 flex-1 break-all font-mono text-xs text-foreground/85">{requestLabel}</span>
@@ -125,7 +126,7 @@ function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
           <CollapsibleTrigger
             data-testid="proxy-review-body-toggle"
             aria-label="Show what the request sends"
-            className="group ml-2 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted"
+            className="group ml-2 shrink-0 rounded-icon p-0.5 text-muted-foreground hover:bg-muted"
           >
             <ChevronRight className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-90" />
           </CollapsibleTrigger>
@@ -184,6 +185,7 @@ function ScopeReviewRequestItem({
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const denyReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const requestLabel = `${method} /${targetPath}`
+  const customPreview = useCustomPreview(toolkit, method, targetPath, requestBody)
   const named = !!endpointDescription
 
   // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
@@ -336,14 +338,17 @@ function ScopeReviewRequestItem({
   const readOnlyConfig = readOnly
     ? {
         extraContent: (
-          <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
+          <>
+            {customPreview?.preview}
+            <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named || customPreview?.preview != null} />
+          </>
         ),
       }
     : false as const
 
   return (
     <RequestItemShell
-      title={displayText ? <Markdown components={TITLE_MARKDOWN}>{displayText}</Markdown> : requestLabel}
+      title={customPreview?.title ??(displayText ? <Markdown components={TITLE_MARKDOWN}>{displayText}</Markdown> : requestLabel)}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -355,8 +360,9 @@ function ScopeReviewRequestItem({
       data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
-      {/* Code block showing method/path + toolkit, what the request sends, and the rules that held it */}
-      <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named} />
+      {/* The call as its service shows it, when a custom preview can read it, then method/path + toolkit, what the request sends, and the rules that held it */}
+      {customPreview?.preview}
+      <RequestDetails toolkit={toolkitName()} requestLabel={requestLabel} requestBody={requestBody} named={named || customPreview?.preview != null} />
       {ruleOutcomes && ruleOutcomes.length > 0 && <RuleOutcomesList outcomes={ruleOutcomes} />}
 
       {/* Action buttons */}
@@ -403,7 +409,7 @@ function ScopeReviewRequestItem({
                       {HINT_ICON}
                     </div>
                   </InfoHint>
-                  <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
+                  <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-item border border-border bg-background pl-3 pr-0 pb-1">
                     <textarea
                       ref={denyReasonInputRef}
                       data-testid="proxy-review-deny-reason-input"
@@ -433,7 +439,7 @@ function ScopeReviewRequestItem({
                         setDenyMenuOpen(false)
                         handleDecision('deny', denyReason.trim())
                       }}
-                      className="mr-1 h-8 w-8 shrink-0 self-end rounded-md border border-border bg-foreground text-background hover:bg-foreground/90"
+                      className="mr-1 h-8 w-8 shrink-0 self-end rounded-control border border-border bg-foreground text-background hover:bg-foreground/90"
                     >
                       <ArrowUp className="h-3.5 w-3.5" />
                     </Button>
@@ -501,7 +507,7 @@ function ScopeReviewRequestItem({
                     <span className="flex min-w-0 w-full flex-col items-start text-left">
                       <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
                         <span className="shrink-0">Allow all</span>
-                        <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground/70">
+                        <span className="inline-flex shrink-0 items-center rounded-item bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground/70">
                           {minimalLabel}
                         </span>
                         <span className="shrink-0">

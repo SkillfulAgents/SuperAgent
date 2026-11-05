@@ -4,7 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { Hono } from 'hono'
 import { PNG } from 'pngjs'
-import { SignJWT } from 'jose'
+import { createOidcTestServer, completeOidcLogin, type OidcTestServer } from '@shared/lib/auth/testing/oidc-server'
+import { handleAuthRequest } from '@shared/lib/auth/handler'
 import Database from 'better-sqlite3'
 
 let directory: string
@@ -13,7 +14,7 @@ let sqlite: Database.Database
 let authModule: typeof import('@shared/lib/auth')
 let app: Hono
 const base = 'http://localhost:47891'
-const issuer = 'https://identity.example.com'
+let oidc: OidcTestServer
 
 beforeAll(async () => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-avatars-'))
@@ -21,6 +22,10 @@ beforeAll(async () => {
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('BETTER_AUTH_SECRET', 'avatar-test-secret-0123456789abcdef0123456789abcdef')
   vi.stubEnv('TRUSTED_ORIGINS', base)
+  vi.stubEnv('PLATFORM_TOKEN', '')
+  oidc = await createOidcTestServer()
+  oidc.state.acceptedRedirectUri = `${base}/api/auth/oauth2/callback/platform`
+  const issuer = oidc.state.issuer
   vi.stubEnv('AUTH_PROVIDERS_JSON', JSON.stringify([{
     id: 'platform', type: 'oidc', issuer, discoveryUrl: `${issuer}/.well-known/openid-configuration`, clientId: 'test-client', scopes: ['openid', 'profile', 'email'],
   }]))
@@ -46,12 +51,13 @@ afterAll(async () => {
   authModule.resetAuth()
   sqlite.close()
   await db.closeDatabase()
+  await oidc.close()
   vi.unstubAllEnvs()
   fs.rmSync(directory, { recursive: true, force: true })
 })
 
 async function login() {
-  return authModule.getAuth().api.signUpEmail({ body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'TestingPassword123!' } })
+  return (await authModule.getAuth()).api.signUpEmail({ body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'TestingPassword123!' } })
 }
 function png(): Buffer {
   const image = new PNG({ width: 4, height: 4 })
@@ -66,7 +72,7 @@ describe('profile avatar API', () => {
   it('stores an override, returns an authenticated image, refreshes the session, and restores the provider photo', async () => {
     const signedIn = await login()
     const headers = { authorization: `Bearer ${signedIn.token}` }
-    await (await authModule.getAuth().$context).internalAdapter.updateUser(signedIn.user.id, { image: 'https://example.com/provider.png' })
+    await (await (await authModule.getAuth()).$context).internalAdapter.updateUser(signedIn.user.id, { image: 'https://example.com/provider.png' })
     const response = await upload(signedIn.token!)
     expect(response.status).toBe(200)
     const { avatarOverride } = await response.json()
@@ -76,7 +82,7 @@ describe('profile avatar API', () => {
     expect(image.headers.get('cache-control')).toContain('private')
     expect(PNG.sync.read(Buffer.from(await image.arrayBuffer())).width).toBe(4)
     expect((await app.request(avatarOverride)).status).toBe(401)
-    const session = await authModule.getAuth().api.getSession({ headers: new Headers(headers) })
+    const session = await (await authModule.getAuth()).api.getSession({ headers: new Headers(headers) })
     expect(session?.user.avatarOverride).toBe(avatarOverride)
     expect(session?.user.image).toBe('https://example.com/provider.png')
     expect((await app.request('/api/profile/avatar', { method: 'DELETE', headers })).status).toBe(200)
@@ -107,7 +113,7 @@ describe('profile avatar API', () => {
     const { avatarOverride } = await (await upload(signedIn.token!)).json()
     const file = path.join(directory, 'profile-photos', path.basename(avatarOverride))
     expect(fs.existsSync(file)).toBe(true)
-    await (await authModule.getAuth().$context).internalAdapter.deleteUser(signedIn.user.id)
+    await (await (await authModule.getAuth()).$context).internalAdapter.deleteUser(signedIn.user.id)
     expect(fs.existsSync(file)).toBe(false)
   })
 
@@ -132,7 +138,7 @@ describe('profile avatar API', () => {
 
   it('only writes the signed-in user and does not accept an override through update-user', async () => {
     const signedIn = await login()
-    const response = await authModule.getAuth().handler(new Request(`${base}/api/auth/update-user`, {
+    const response = await (await authModule.getAuth()).handler(new Request(`${base}/api/auth/update-user`, {
       method: 'POST', headers: { authorization: `Bearer ${signedIn.token}`, 'content-type': 'application/json', origin: base },
       body: JSON.stringify({ avatarOverride: '/api/profile/images/00000000-0000-4000-8000-000000000001.png' }),
     }))
@@ -146,42 +152,19 @@ describe('profile avatar API', () => {
 describe('browser OIDC image propagation', () => {
   it('persists and refreshes the actual callback image while preserving a workspace override and member identity', async () => {
     let picture = 'https://example.com/first.png'
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      if (url === `${issuer}/.well-known/openid-configuration`) {
-        return Response.json({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token` })
-      }
-      if (url === `${issuer}/token`) {
-        const idToken = await new SignJWT({ sub: 'sub_member_one', name: 'Ada Lovelace', email: 'ada@example.com', email_verified: true, picture })
-          .setProtectedHeader({ alg: 'HS256' }).setIssuer(issuer).setAudience('test-client').setIssuedAt().setExpirationTime('5m')
-          .sign(new TextEncoder().encode('test-only-signing-key-with-32-bytes'))
-        return Response.json({ access_token: 'test-access', token_type: 'Bearer', id_token: idToken, expires_in: 3600 })
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
-    }))
     async function callback() {
-      const auth = authModule.getAuth()
-      const start = await auth.handler(new Request(`${base}/api/auth/sign-in/oauth2`, {
-        method: 'POST', headers: { 'content-type': 'application/json', origin: base },
-        body: JSON.stringify({ providerId: 'platform', callbackURL: `${base}/` }),
-      }))
-      expect(start.status).toBe(200)
-      const state = new URL((await start.json()).url).searchParams.get('state')!
-      const cookie = start.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ')
-      const finish = await auth.handler(new Request(`${base}/api/auth/oauth2/callback/platform?${new URLSearchParams({ code: 'test-code', state, iss: issuer })}`, { headers: { cookie } }))
+      oidc.state.profile.picture = picture
+      const finish = await completeOidcLogin(handleAuthRequest, base)
       expect(finish.headers.get('location')).toBe(`${base}/`)
+      expect(oidc.state.failures).toEqual([])
     }
-    try {
-      await callback()
-      expect(sqlite.prepare('SELECT image FROM user').get()).toEqual({ image: picture })
-      const override = '/api/profile/images/00000000-0000-4000-8000-000000000001.png'
-      sqlite.prepare('UPDATE user SET avatar_override = ?').run(override)
-      picture = 'https://example.com/new.png'
-      await callback()
-      expect(sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: picture, avatar_override: override })
-      expect(sqlite.prepare('SELECT account_id FROM account').all()).toEqual([{ account_id: 'sub_member_one' }])
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    await callback()
+    expect(sqlite.prepare('SELECT image FROM user').get()).toEqual({ image: picture })
+    const override = '/api/profile/images/00000000-0000-4000-8000-000000000001.png'
+    sqlite.prepare('UPDATE user SET avatar_override = ?').run(override)
+    picture = 'https://example.com/new.png'
+    await callback()
+    expect(sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: picture, avatar_override: override })
+    expect(sqlite.prepare('SELECT account_id FROM account').all()).toEqual([{ account_id: 'sub_member_one' }])
   })
 })

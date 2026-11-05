@@ -19,7 +19,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {script && (
         <div>
           <FieldLabel>Script</FieldLabel>
-          <pre className="bg-background rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
+          <pre className="bg-background rounded-item p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
             <code>{script}</code>
           </pre>
         </div>
@@ -30,7 +30,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
           <FieldLabel>{isError ? 'Error' : 'Output'}</FieldLabel>
           <pre
             className={cn(
-              'bg-background rounded p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all',
+              'bg-background rounded-item p-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all',
               isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'
             )}
           >

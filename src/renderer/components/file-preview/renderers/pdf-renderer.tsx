@@ -66,7 +66,7 @@ export function PdfRenderer({
   }
 
   return (
-    <div ref={containerRef} className="relative flex flex-col items-center">
+    <div ref={containerRef} data-testid="pdf-renderer" className="relative flex flex-col items-center">
       <Document
         file={url}
         onLoadSuccess={handleLoadSuccess}
@@ -104,7 +104,7 @@ export function PdfRenderer({
             onClick={() => onPageChange(Math.max(1, currentPage - 1))}
             disabled={currentPage <= 1}
             aria-label="Previous PDF page"
-            className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="p-1 rounded-icon hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
@@ -116,7 +116,7 @@ export function PdfRenderer({
             onClick={() => onPageChange(Math.min(numPages, currentPage + 1))}
             disabled={currentPage >= numPages}
             aria-label="Next PDF page"
-            className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="p-1 rounded-icon hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronRight className="h-4 w-4" />
           </button>

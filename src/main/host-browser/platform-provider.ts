@@ -1,13 +1,10 @@
-import path from 'path'
 import { getSettings } from '@shared/lib/config/settings'
-import { getDataDir } from '@shared/lib/config/data-dir'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getOrCreateMapping } from './context-map-store'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
-const CONTEXTS_FILE = 'platform-browserbase-contexts.json'
 
 interface BrowserbaseSession {
   id: string
@@ -36,7 +33,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
-  detect(): HostBrowserProviderStatus {
+  async detect(): Promise<HostBrowserProviderStatus> {
     if (!getPlatformProxyBaseUrl()) {
       return {
         id: this.id,
@@ -45,7 +42,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
         reason: 'proxy URL not configured',
       }
     }
-    if (!getPlatformAccessToken()) {
+    if (!(await getPlatformAccessToken())) {
       return {
         id: this.id,
         name: this.name,
@@ -57,7 +54,9 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
   }
 
   async launch(instanceId: string, _options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo> {
-    const token = getPlatformAccessToken()
+    // One read for the token and the stealth / proxy options below.
+    const settings = await getSettings()
+    const token = platformAccessTokenFrom(settings)
     if (!token) {
       throw new Error('Not signed in to Platform — cannot use platform-managed Browserbase')
     }
@@ -85,7 +84,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     const contextKey = agentId || instanceId
     const contextId = await this.getOrCreateContext(contextKey, token)
 
-    const settings = getSettings()
     const browserSettings: Record<string, unknown> = {
       context: { id: contextId, persist: true },
     }
@@ -140,7 +138,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return null
 
-    const token = getPlatformAccessToken()
+    const token = await getPlatformAccessToken()
     if (!token) return null
 
     const response = await fetch(`${this.proxyBase()}/sessions/${sessionId}/debug`, {
@@ -165,13 +163,18 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
   }
 
   async stop(instanceId: string): Promise<void> {
+    return this.stopWith(instanceId)
+  }
+
+  /** Stop one session, with the token `stopAll` read for every session, else one read now. */
+  private async stopWith(instanceId: string, token?: string | null): Promise<void> {
     this.passkeyRecovery.stop(instanceId)
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return
 
     this.sessions.delete(instanceId)
 
-    const token = getPlatformAccessToken()
+    if (token === undefined) token = await getPlatformAccessToken()
     if (!token) return
 
     try {
@@ -188,7 +191,10 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
 
   async stopAll(): Promise<void> {
     const instanceIds = Array.from(this.sessions.keys())
-    await Promise.all(instanceIds.map((id) => this.stop(id)))
+    if (instanceIds.length === 0) return
+    // One read for the whole batch.
+    const token = await getPlatformAccessToken()
+    await Promise.all(instanceIds.map((id) => this.stopWith(id, token)))
   }
 
   isRunning(instanceId?: string): boolean {
@@ -212,15 +218,12 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     return headers
   }
 
-  private contextMapPath(): string {
-    return path.join(getDataDir(), CONTEXTS_FILE)
-  }
 
   private async getOrCreateContext(contextKey: string, token: string): Promise<string> {
     // getOrCreateMapping dedups concurrent first-opens for the same key so we
-    // never create (and then orphan/leak) two paid contexts; it re-reads the map
-    // and persists atomically.
-    return getOrCreateMapping(this.contextMapPath(), contextKey, async () => {
+    // never create (and then orphan/leak) two paid contexts; it re-reads the mapping
+    // and commits it with insert-if-absent.
+    return getOrCreateMapping('platform', contextKey, async () => {
       const response = await fetch(`${this.proxyBase()}/contexts`, {
         method: 'POST',
         headers: this.authHeaders(token, true),

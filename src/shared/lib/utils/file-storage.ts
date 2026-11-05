@@ -17,6 +17,7 @@ import pLimit from 'p-limit'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { CLI_TRANSCRIPTS_DIR } from '@shared/lib/agent-actor/session-store'
+import { background } from '@shared/lib/background'
 
 // ============================================================================
 // Slug Generation
@@ -228,7 +229,24 @@ export async function fileExists(filePath: string): Promise<boolean> {
  * Safely remove directory recursively
  */
 export async function removeDirectory(dirPath: string): Promise<void> {
-  await fs.promises.rm(dirPath, { recursive: true, force: true })
+  try {
+    await fs.promises.rm(dirPath, { recursive: true, force: true })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'EACCES' && code !== 'EPERM') throw error
+    // An agent can chmod its own folders read-only; unlinking needs a writable parent.
+    await makeFoldersWritable(dirPath)
+    await fs.promises.rm(dirPath, { recursive: true, force: true })
+  }
+}
+
+async function makeFoldersWritable(dirPath: string): Promise<void> {
+  const stat = await fs.promises.lstat(dirPath)
+  if (!stat.isDirectory()) return
+  await fs.promises.chmod(dirPath, stat.mode | 0o700)
+  for (const entry of await fs.promises.readdir(dirPath, { withFileTypes: true })) {
+    if (entry.isDirectory()) await makeFoldersWritable(path.join(dirPath, entry.name))
+  }
 }
 
 /**
@@ -1036,9 +1054,9 @@ export function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise
   fileWriteQueues.set(key, tail)
   // Drop the map entry once this is the last queued op, so the map can't grow
   // unbounded across many distinct paths.
-  void tail.then(() => {
+  background(tail.then(() => {
     if (fileWriteQueues.get(key) === tail) fileWriteQueues.delete(key)
-  })
+  }), { name: 'file-storage.drop-write-queue' })
   return result
 }
 
