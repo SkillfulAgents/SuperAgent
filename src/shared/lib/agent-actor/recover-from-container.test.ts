@@ -64,7 +64,7 @@ describe('recoverFromContainer', () => {
     const d = deps()
     d.stored.set('turning', [{ uuid: 'msg-1', text: 'also check the invoice' }, { uuid: 'msg-2', text: 'and the refund' }, { uuid: 'msg-3', text: 'thanks' }])
     d.stored.set('asking', [{ uuid: 'msg-4', text: 'the blue one' }])
-    d.sendHeld.mockImplementation(async (sessionId: string, message: { uuid: string }) => {
+    vi.mocked(d.sendHeld).mockImplementation(async (sessionId: string, message: { uuid: string }) => {
       d.order.push(`send ${sessionId} ${message.uuid}`)
       if (message.uuid === 'msg-2') throw new Error('container went away')
     })

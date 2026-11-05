@@ -671,6 +671,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   async runPass(): Promise<void> {
+    // A pass right after start() or a token change goes online with the token they queued.
+    await this.authApplying
     if (!this.online) return
     // Retries that came due since the last pass, and acks it left behind.
     for (const state of this.deliveringConsumers()) this.pump(state)

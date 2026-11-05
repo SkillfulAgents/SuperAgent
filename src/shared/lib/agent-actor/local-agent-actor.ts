@@ -349,13 +349,13 @@ function createSessionOps(
     recover: () => recoverFromContainer({
       // Asks the runtime: in a restarted actor the cached status reads 'stopped' until a sync.
       containerStatus: async () => (await deps.containerHost.runtime(slug).syncAgentStatus()).status,
-      fetch: (path) => client().fetch(path),
+      fetch: async (path) => (await client()).fetch(path),
       attach: (sessionId) => delivery.attach(sessionId),
       recoverAwaitingInput: (sessionId, unresolved) => live.recoverAwaitingInput(sessionId, unresolved),
       storedCoalesced: () => live.storedCoalescedSessions(),
       storeCoalesced: (sessionId, messages) => live.storeCoalesced(sessionId, messages),
       sendHeld: (sessionId, message) => live.inDeliveryTurn(sessionId, async () => {
-        await client().sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true })
+        await (await client()).sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true })
       }),
     }),
 

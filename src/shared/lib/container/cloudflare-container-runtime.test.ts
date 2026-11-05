@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
+  activeLlmProviderFrom: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
+// The host token is an app record; these tests have no database.
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: async () => 'hostc_test' }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ app: {}, enableToolSearch: true }),
 }))

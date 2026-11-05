@@ -407,13 +407,15 @@ describe('IdleAlarm on a host timer', () => {
     })
     const alarm = new IdleAlarm({
       agentSlug: () => 'sales-agent',
-      timeoutMs: () => TIMEOUT,
+      timeoutMs: async () => TIMEOUT,
       lastActivityAt: () => lastActivityAt,
       isBusy: () => false,
       sleep,
     })
 
     alarm.schedule()
+    // The timeout is read in the background before the alarm arms.
+    await settle()
     expect(hostTimers).toHaveLength(1)
     expect(hostTimers[0].agentSlug).toBe('sales-agent')
     expect(hostTimers[0].set).toHaveBeenLastCalledWith(T0 + TIMEOUT)
@@ -427,12 +429,13 @@ describe('IdleAlarm on a host timer', () => {
     expect(alarm.isArmed()).toBe(false)
   })
 
-  it('clears the host alarm on cancel', () => {
+  it('clears the host alarm on cancel', async () => {
     const clear = vi.fn()
     setIdleAlarmTimers(() => ({ set: vi.fn(), clear }))
-    const alarm = new IdleAlarm({ timeoutMs: () => TIMEOUT, lastActivityAt: () => Date.now(), isBusy: () => false, sleep: vi.fn() })
+    const alarm = new IdleAlarm({ timeoutMs: async () => TIMEOUT, lastActivityAt: () => Date.now(), isBusy: () => false, sleep: vi.fn() })
 
     alarm.schedule()
+    await settle()
     alarm.cancel()
 
     expect(clear).toHaveBeenCalledTimes(1)
