@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Globe, FileText, PanelRightOpen, Workflow } from 'lucide-react'
+import { Globe, FileText, MessageCircle, PanelRightOpen, Workflow } from 'lucide-react'
 import { DrawerShell } from './drawer-shell'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { TrayTabStrip, type TrayDef } from './tray-tab-strip'
 import { BrowserTrayContent } from '@renderer/components/browser/browser-tray-content'
 import { FilePreviewTrayContent } from '@renderer/components/file-preview/file-preview-tray-content'
 import { WorkflowTrayContent } from '@renderer/components/workflow/workflow-tray-content'
+import { ThreadTrayContent } from '@renderer/components/threads/thread-tray-content'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { useWorkflow } from '@renderer/context/workflow-context'
+import { useOptionalThread } from '@renderer/context/thread-context'
 
 const DRAWER_STORAGE_KEY = 'tray_drawer_width'
 
@@ -35,6 +37,9 @@ export function TrayManager({
   const hasOpenFiles = filePreview.openTabs.length > 0 && filePreview.isOpen
   const workflow = useWorkflow()
   const hasWorkflow = workflow.openWorkflows.length > 0 && workflow.isOpen
+  // Session views only: Agent Home and read-only mirrors have no ThreadProvider.
+  const thread = useOptionalThread()
+  const hasThread = !!thread?.parent && thread.isOpen
   const [selectedTrayId, setSelectedTrayId] = useState<string>('browser')
   const [isOpen, setIsOpen] = useState(false)
   const [userClosed, setUserClosed] = useState(false)
@@ -118,6 +123,17 @@ export function TrayManager({
     />
   ), [agentSlug, sessionId, handleCloseWorkflow])
 
+  const closeThread = thread?.close
+  const handleCloseThread = useCallback(() => closeThread?.(), [closeThread])
+
+  const threadTrayContent = useMemo(() => (
+    <ThreadTrayContent
+      agentSlug={agentSlug}
+      sessionId={sessionId}
+      onClose={handleCloseThread}
+    />
+  ), [agentSlug, sessionId, handleCloseThread])
+
   const trays: TrayDef[] = useMemo(() => [
     {
       id: 'browser',
@@ -142,7 +158,14 @@ export function TrayManager({
       badge: workflow.openWorkflows.length,
       content: workflowTrayContent,
     },
-  ], [browserActive, hasOpenFiles, filePreview.openTabs.length, browserTrayContent, filePreviewTrayContent, hasWorkflow, workflow.openWorkflows.length, workflowTrayContent])
+    {
+      id: 'thread',
+      icon: MessageCircle,
+      label: 'Thread',
+      available: hasThread,
+      content: threadTrayContent,
+    },
+  ], [browserActive, hasOpenFiles, filePreview.openTabs.length, browserTrayContent, filePreviewTrayContent, hasWorkflow, workflow.openWorkflows.length, workflowTrayContent, hasThread, threadTrayContent])
 
   const availableTrays = trays.filter(t => t.available)
   const anyAvailable = availableTrays.length > 0
@@ -179,6 +202,19 @@ export function TrayManager({
       })
     }
   }, [hasWorkflow, selectedRunId])
+
+  // Open the drawer to the thread whenever one is opened, as Slack's pane does.
+  // Re-fire on every open so re-opening a thread re-focuses its tray.
+  const threadOpenCount = thread?.openCount ?? 0
+  useEffect(() => {
+    if (hasThread) {
+      requestAnimationFrame(() => {
+        setIsOpen(true)
+        setUserClosed(false)
+        setSelectedTrayId('thread')
+      })
+    }
+  }, [hasThread, threadOpenCount])
 
   // Close when no trays are available
   useEffect(() => {

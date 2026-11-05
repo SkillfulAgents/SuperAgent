@@ -8,6 +8,8 @@ interface ComposerActionButtonProps {
   isSending: boolean
   isInterrupting: boolean
   onInterrupt: () => void
+  /** 28px instead of 34px, for a smaller box (a thread's reply box). */
+  compact?: boolean
 }
 
 export function ComposerActionButton({
@@ -17,7 +19,9 @@ export function ComposerActionButton({
   isSending,
   isInterrupting,
   onInterrupt,
+  compact = false,
 }: ComposerActionButtonProps) {
+  const sizeClass = compact ? 'h-7 w-7 [&_svg]:size-3.5' : 'h-[34px] w-[34px]'
   // While the agent works (or background tasks linger) show Stop alongside
   // Send — messages sent mid-turn are queued and picked up by the agent loop.
   if (isActive || isWaitingBackground) {
@@ -29,7 +33,7 @@ export function ComposerActionButton({
           type="button"
           size="icon"
           variant="outline"
-          className="h-[34px] w-[34px]"
+          className={sizeClass}
           onClick={onInterrupt}
           disabled={isInterrupting}
           aria-label={stopLabel}
@@ -45,7 +49,7 @@ export function ComposerActionButton({
         <Button
           type="submit"
           size="icon"
-          className="h-[34px] w-[34px]"
+          className={sizeClass}
           disabled={!canSubmit || isSending}
           aria-label={sendLabel}
           title={sendLabel}
@@ -65,7 +69,7 @@ export function ComposerActionButton({
     <Button
       type="submit"
       size="icon"
-      className="h-[34px] w-[34px]"
+      className={sizeClass}
       disabled={!canSubmit || isSending}
       aria-label="Send message"
       title="Send message"

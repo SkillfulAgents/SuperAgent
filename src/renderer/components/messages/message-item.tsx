@@ -33,6 +33,7 @@ import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { rehypeMentions } from '@renderer/lib/rehype-mentions'
+import { UserMessageActions } from '@renderer/components/threads/user-message-actions'
 import { formatMessageTimeExact, formatShortAgo } from '@renderer/lib/message-time'
 import type { Mention } from '@shared/lib/utils/mentions'
 
@@ -120,7 +121,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
 })
 
 /** Bubble text body: the default Markdown surface for every message kind. */
-const PROSE_CLASS = cn(
+export const PROSE_CLASS = cn(
   'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
   'prose-strong:font-medium'
 )
@@ -544,6 +545,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           )}
         </SenderAvatarGroup>
 
+        {/* Under a person's message: its thread, or reply-in-thread on hover */}
+        {isUser && !isIntegrationMessage && showMessageBubble && !bareUserRender && agentSlug && sessionId && (
+          // Tucked up under the bubble: it belongs to the message above.
+          <div className="-mt-1" style={avatarSender ? { marginRight: SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP } : undefined}>
+            <UserMessageActions message={message} agentSlug={agentSlug} sessionId={sessionId} />
+          </div>
+        )}
 
         {/* What a dashboard comment told the agent beside the comment, folded */}
         {isUser && userParts?.dashboardContext && (

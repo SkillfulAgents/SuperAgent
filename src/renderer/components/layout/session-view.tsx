@@ -1,6 +1,7 @@
 import { SessionChatColumn } from './session-chat-column'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
+import { ThreadProvider } from '@renderer/context/thread-context'
 import { CalendarClock, GitFork, Wrench, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
 import { useEffect } from 'react'
@@ -166,30 +167,32 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
 
       <FilePreviewProvider commentsEnabled={!isViewOnly}>
         <WorkflowProvider>
-          <div className="flex-1 flex flex-col min-h-0">
-            {sessionId && <SessionSearchBar search={search} />}
-            <SessionChatColumn
-              sessionId={sessionId}
-              onSessionCreated={handleSessionCreated ?? onSessionCreated}
-              agentSlug={agentSlug}
-              agentId={session?.agentSlug}
-              pendingUserMessages={getPendingMessages(sessionId)}
-              isViewOnly={isViewOnly}
-              contextPercent={contextPercent}
-              effort={session?.effort}
-              speed={session?.speed}
-              model={session?.model} llmProviderId={session?.llmProviderId}
-              onPendingMessageAppeared={onPendingMessageAppeared}
-              onMessageSent={onMessageSent}
-              onMessageUuidAssigned={onMessageUuidAssigned}
-              onMessageFailed={onPendingMessageAppeared}
-              lastActivityAt={session?.lastActivityAt ? new Date(session.lastActivityAt) : null}
-              contextUsage={contextUsage}
-              pendingWakeAt={session?.pendingWakeAt}
-              pendingWakeTaskId={session?.pendingWakeTaskId}
-              pendingWakeNote={session?.pendingWakeNote}
-            />
-          </div>
+          <ThreadProvider sessionId={sessionId} canReply={!isViewOnly}>
+            <div className="flex-1 flex flex-col min-h-0">
+              {sessionId && <SessionSearchBar search={search} />}
+              <SessionChatColumn
+                sessionId={sessionId}
+                onSessionCreated={handleSessionCreated ?? onSessionCreated}
+                agentSlug={agentSlug}
+                agentId={session?.agentSlug}
+                pendingUserMessages={getPendingMessages(sessionId)}
+                isViewOnly={isViewOnly}
+                contextPercent={contextPercent}
+                effort={session?.effort}
+                speed={session?.speed}
+                model={session?.model} llmProviderId={session?.llmProviderId}
+                onPendingMessageAppeared={onPendingMessageAppeared}
+                onMessageSent={onMessageSent}
+                onMessageUuidAssigned={onMessageUuidAssigned}
+                onMessageFailed={onPendingMessageAppeared}
+                lastActivityAt={session?.lastActivityAt ? new Date(session.lastActivityAt) : null}
+                contextUsage={contextUsage}
+                pendingWakeAt={session?.pendingWakeAt}
+                pendingWakeTaskId={session?.pendingWakeTaskId}
+                pendingWakeNote={session?.pendingWakeNote}
+              />
+            </div>
+          </ThreadProvider>
         </WorkflowProvider>
       </FilePreviewProvider>
     </>

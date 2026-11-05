@@ -144,6 +144,9 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
         style={{ width: isOpen ? shownWidth : 0, maxWidth: '100%', marginLeft: -overlap, contain: 'layout paint', willChange: 'transform' }}
         onTransitionEnd={onTransitionEnd}
         data-testid="tray-drawer"
+        // What a tray's "click outside closes it" treats as inside: the
+        // panel, its resize edge and its tab strip.
+        data-tray-drawer=""
         data-fullscreen={fullScreen || undefined}
       >
         {/* Resize handle on left edge */}

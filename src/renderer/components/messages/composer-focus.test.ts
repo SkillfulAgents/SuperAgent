@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { focusSessionComposer, registerSessionComposerFocus } from './composer-focus'
+import { fillSessionComposer, focusSessionComposer, registerSessionComposerFill, registerSessionComposerFocus } from './composer-focus'
 
 describe('composer focus registry', () => {
   it('focuses the handler registered for the session', () => {
@@ -29,5 +29,17 @@ describe('composer focus registry', () => {
 
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)
+  })
+
+  it('puts text in the session composer, and says when none is mounted', () => {
+    const fill = vi.fn()
+    const unregister = registerSessionComposerFill('s-3', fill)
+
+    expect(fillSessionComposer('s-3', 'the thread')).toBe(true)
+    expect(fill).toHaveBeenCalledWith('the thread')
+
+    unregister()
+    expect(fillSessionComposer('s-3', 'again')).toBe(false)
+    expect(fill).toHaveBeenCalledTimes(1)
   })
 })
