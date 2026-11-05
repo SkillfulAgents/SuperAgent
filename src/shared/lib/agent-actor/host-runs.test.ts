@@ -301,13 +301,42 @@ describe('runScript', () => {
   })
 
   it('does nothing for a request another decision holds', async () => {
-    const { actor, park, requests } = fakeActor()
+    const { actor, park, requests, grants } = fakeActor()
     const host = fakeHost()
     park('sr-1', 'script_run')
     requests.claimRequest('sr-1')
 
     expect(await runScript(actor, host.port, scriptRun())).toEqual({ status: 'claimed' })
     expect(host.calls).toEqual([])
+    expect(grants.grant).not.toHaveBeenCalled()
+  })
+
+  // An "always" grant is a settings write: a Stop can land while it is saved.
+  it('runs no script when a Stop cancels the request while an "always" grant is being saved', async () => {
+    const { actor, park, requests, grants } = fakeActor()
+    const host = fakeHost()
+    park('sr-1', 'script_run')
+    grants.grant.mockImplementation(async () => {
+      await Promise.resolve()
+      // The Stop: the turn ended, its parked requests are cancelled.
+      requests.resolve('sr-1', 'cancelled')
+    })
+
+    expect(await runScript(actor, host.port, scriptRun({ grantType: 'always' }))).toEqual({ status: 'claimed' })
+    expect(host.calls).toEqual([])
+    // What the user chose is kept: it covers the agent's next script.
+    expect(grants.grant).toHaveBeenCalledWith('use_host_shell', 'always')
+  })
+
+  // A once-grant lives in memory until a run spends it: one recorded for a
+  // decision that runs nothing would approve the agent's next script.
+  it.each(['once', 'timed'] as const)('records no %s grant for a request another decision holds', async (grantType) => {
+    const { actor, park, requests, grants } = fakeActor()
+    park('sr-1', 'script_run')
+    requests.claimRequest('sr-1')
+
+    expect(await runScript(actor, fakeHost().port, scriptRun({ grantType }))).toEqual({ status: 'claimed' })
+    expect(grants.grant).not.toHaveBeenCalled()
   })
 
   it('leaves the request open when the container will not take the result', async () => {

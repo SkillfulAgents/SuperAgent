@@ -196,9 +196,10 @@ export class ToolCalls {
    * the subagent call that made them, if any. Nothing is registered or run
    * until the check lands, so a Stop meanwhile finds nothing to cancel: it
    * drops the stopped turn's entries instead, as do the call's result, the
-   * session going away and that subagent ending, and the check then
-   * registers and runs nothing. A second delivery of a call already being
-   * checked does nothing either. Carried across a reattach, like the checks.
+   * session going away, its container stopping and that subagent ending,
+   * and the check then registers and runs nothing. A second delivery of a
+   * call already being checked does nothing either. Carried across a
+   * reattach, like the checks.
    */
   private readonly hostRunChecks: Map<string, string | undefined>
 

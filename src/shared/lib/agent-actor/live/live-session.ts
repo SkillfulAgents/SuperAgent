@@ -637,6 +637,7 @@ export class LiveSession {
    */
   markInactive(): void {
     const diedMidTurn = this.isActive && !this.isInterrupted
+    this.abandonHostRuns()
     this.stream.stop()
     this.isAwaitingInput = false
     this.subagents.clear()
@@ -656,6 +657,17 @@ export class LiveSession {
     const error = { error: CONNECTION_LOST_ERROR, apiErrorCode: null, terminalReason: 'connection_lost', isActive: false }
     this.ctx.emit({ type: 'session_error', ...error, turnOutcome })
     this.publish({ type: 'session_error', ...error })
+  }
+
+  /**
+   * The runtime that made this session's calls is gone, and the calls with
+   * it: a host script or computer-use command whose grant check is still in
+   * flight runs nothing when the check lands, and an auto-run that has not
+   * reached the machine yet does not start. A recovery that resumes the
+   * conversation runs in a new process, which makes its own calls.
+   */
+  abandonHostRuns(): void {
+    this.toolCalls.dropHostRunChecks()
   }
 
   /** Recovery claims this session: it was mid-turn when the runtime died. */
