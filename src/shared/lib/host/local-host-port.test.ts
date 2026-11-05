@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   publish: vi.fn(),
   afterSessionSettled: vi.fn(),
-  handleRequestCreated: vi.fn(async () => {}),
 }))
 
 // The feed only hints to clients; here it reaches no one, so whatever the
@@ -11,9 +10,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@shared/lib/notifications/global-feed', () => ({ globalFeed: { publish: mocks.publish } }))
 vi.mock('@shared/lib/services/widget-refresh-service', () => ({
   widgetRefreshService: { afterSessionSettled: mocks.afterSessionSettled },
-}))
-vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
-  agentIntegrationManager: { handleRequestCreated: mocks.handleRequestCreated },
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: {} }))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
@@ -39,15 +35,15 @@ describe('the local host port: an actor\'s feed events', () => {
     localHostPort.send('global', { type: 'session_idle', agentSlug: 'a', sessionId: 's', isActive: false })
 
     await vi.waitFor(() => expect(mocks.afterSessionSettled).toHaveBeenCalledWith('a'))
-    expect(mocks.handleRequestCreated).not.toHaveBeenCalled()
   })
 
-  it('hands an opened request to the chat integrations itself', async () => {
+  it('publishes agent-wide requests as feed hints only', async () => {
     const event = { type: 'user_request_created', agentSlug: 'a', request: { id: 'r', kind: 'proxy_review', scope: { agentSlug: 'a' } } }
 
     localHostPort.send('global', event)
 
-    await vi.waitFor(() => expect(mocks.handleRequestCreated).toHaveBeenCalledWith(event))
+    await settle()
+    expect(mocks.publish).toHaveBeenCalledWith(event)
     expect(mocks.afterSessionSettled).not.toHaveBeenCalled()
   })
 
@@ -60,6 +56,5 @@ describe('the local host port: an actor\'s feed events', () => {
 
     expect(mocks.publish).toHaveBeenCalledTimes(4)
     expect(mocks.afterSessionSettled).not.toHaveBeenCalled()
-    expect(mocks.handleRequestCreated).not.toHaveBeenCalled()
   })
 })

@@ -1641,6 +1641,9 @@ export class ProxyReviewScenario implements MockScenario {
     // policies each own a distinct account and don't race on the shared
     // MOCK_ACCOUNT_ID scope-policy rows across workers.
     const accountId = getMessageParam(userMessage, 'account_id') ?? MOCK_ACCOUNT_ID
+    // `scope=session` raises the review as a call from this session's
+    // proxy URL does; without it the review is agent-wide.
+    const callerSessionId = getMessageParam(userMessage, 'scope') === 'session' ? sessionId : undefined
     const capturedDelay = delay
     setTimeout(() => background(async () => {
       await seedMockConnectedAccount(accountId)
@@ -1648,6 +1651,7 @@ export class ProxyReviewScenario implements MockScenario {
       background(reviewManager.requestReview({
         agentSlug,
         accountId,
+        callerSessionId,
         reviewType: 'api',
         toolkit: this.toolkit,
         method: this.method,

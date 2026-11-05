@@ -126,7 +126,7 @@ export function AttachmentPicker({
                 <button
                   key={file.path}
                   type="button"
-                  className="flex items-center gap-2 w-full rounded-sm px-2 py-1.5 hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+                  className="flex items-center gap-2 w-full rounded-item px-2 py-1.5 hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
                   disabled={loadingPath !== null}
                   onClick={() => handleRecentClick(file.path)}
                 >
@@ -145,7 +145,7 @@ export function AttachmentPicker({
           )}
           <button
             type="button"
-            className="flex items-center gap-2 w-full rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex items-center gap-2 w-full rounded-item px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             onClick={() => { setOpen(false); fileInputRef.current?.click() }}
           >
             <FileIcon className="h-4 w-4" />
@@ -153,7 +153,7 @@ export function AttachmentPicker({
           </button>
           <button
             type="button"
-            className="flex items-center gap-2 w-full rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex items-center gap-2 w-full rounded-item px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground"
             onClick={() => { setOpen(false); folderInputRef.current?.click() }}
           >
             <FolderOpen className="h-4 w-4" />

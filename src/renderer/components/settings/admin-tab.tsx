@@ -15,7 +15,7 @@ import { useFactoryReset } from '@renderer/hooks/use-settings'
 import { RotateCcw, Bug } from 'lucide-react'
 import { DebugTab } from './debug-tab'
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 interface SettingRowProps {

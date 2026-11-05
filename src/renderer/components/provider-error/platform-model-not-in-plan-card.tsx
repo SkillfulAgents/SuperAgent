@@ -61,7 +61,7 @@ export function PlatformModelNotInPlanCard({ presentation, live = true, dismissi
       <div
         data-testid="model-not-in-plan-card"
         data-allowed={allowedNow}
-        className="relative flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/70 bg-background/90 px-5 py-4 backdrop-blur-md"
+        className="relative flex flex-wrap items-center gap-x-6 gap-y-3 rounded-card border border-border/70 bg-background/90 px-5 py-4 backdrop-blur-md"
       >
         <div className="flex min-w-0 flex-1 basis-60 items-start gap-2.5">
           <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />

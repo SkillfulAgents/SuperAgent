@@ -20,7 +20,7 @@ export function SetupPanel({ title, children, notes, className, ...rest }: {
 }) {
   const shownNotes = notes?.filter(Boolean) ?? []
   const panel = (
-    <div className={cn('rounded-lg bg-muted p-4 text-sm space-y-4', className)} {...(title ? {} : rest)}>
+    <div className={cn('rounded-card bg-muted p-4 text-sm space-y-4', className)} {...(title ? {} : rest)}>
       {children}
       {shownNotes.length > 0 && (
         <ul className="space-y-1 border-t border-border/60 pt-3 text-[11px] text-muted-foreground">
@@ -65,7 +65,7 @@ export function CopyableValue({ value, label, large = false }: { value: string; 
       .catch(() => toast.error('Could not copy. Select and copy it manually.'))
   }
   return (
-    <span className="mt-2 flex items-center justify-between gap-2 rounded-md border bg-background py-1.5 pl-3 pr-1.5">
+    <span className="mt-2 flex items-center justify-between gap-2 rounded-card border bg-background py-1.5 pl-3 pr-1.5">
       <code className={cn('select-all font-mono', large ? 'text-base font-medium tracking-widest' : 'text-xs')}>{value}</code>
       <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={copied ? 'Copied' : label} title={label} onClick={copy}>
         {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}

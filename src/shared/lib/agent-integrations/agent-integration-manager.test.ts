@@ -575,26 +575,22 @@ describe('AgentIntegration host contract', () => {
     expect(state.stop).toHaveBeenCalledWith('session-1', { scope: 'turn' })
     expect(acknowledged).toHaveBeenCalledOnce()
   })
-  it.each(['global-first', 'session-first'])('routes reviews once when resolution arrives %s', async order => {
+  it.each(['proxy_review', 'x_agent_review'])('routes %s only through its owning session', async kind => {
     await manager.start()
     await adapter.input('comment')
     await vi.waitFor(() => expect(state.mappings.size).toBe(1))
     adapter.outputs = []
-    const request = { id: 'review', kind: 'proxy_review', blocking: true, autoApproved: false,
+    const request = { id: 'review', kind, blocking: true, autoApproved: false,
       scope: { agentSlug: 'installation-a', sessionId: 'another-session' }, payload: {} }
-    // The host hands the manager every request an actor opens (local-host-port.ts).
-    await manager.handleRequestCreated({ type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'unrelated', scope: { agentSlug: 'installation-a' } })
-    await manager.handleRequestCreated({ type: 'user_request_created', request })
-    await manager.handleRequestCreated({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
+    state.streams.get('session-1')?.({ type: 'user_request_created', request })
+    state.streams.get('session-1')?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a' } } })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(adapter.outputs).toEqual([])
     state.streams.get('session-1')?.({ type: 'user_request_created', request: { ...request, scope: { agentSlug: 'installation-a', sessionId: 'session-1' } } })
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(1))
     expect(adapter.outputs[0].output.type).toBe('request-opened')
-    const resolution = { type: 'user_request_resolved', kind: 'proxy_review', outcome: 'answered', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
-    if (order === 'global-first') await manager.handleRequestCreated(resolution)
+    const resolution = { type: 'user_request_resolved', kind, outcome: 'answered', requestId: 'review', scope: { agentSlug: 'installation-a', sessionId: 'session-1' } }
     state.streams.get('session-1')?.(resolution)
-    if (order === 'session-first') await manager.handleRequestCreated(resolution)
     await vi.waitFor(() => expect(adapter.outputs).toHaveLength(2))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(adapter.outputs).toHaveLength(2)

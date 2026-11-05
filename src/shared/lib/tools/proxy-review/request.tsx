@@ -116,9 +116,9 @@ function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
   named: boolean
 }) {
   return (
-    <Collapsible key={String(named)} defaultOpen={!named} className="mt-3 rounded-md border border-border bg-white px-3 py-2 dark:bg-background">
+    <Collapsible key={String(named)} defaultOpen={!named} className="mt-3 rounded-card border border-border bg-white px-3 py-2 dark:bg-background">
       <div className="flex items-center">
-        <span className="mr-2 inline-flex h-7 shrink-0 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
+        <span className="mr-2 inline-flex h-7 shrink-0 items-center rounded-control bg-muted px-2.5 text-xs font-medium text-foreground/80 capitalize">
           {toolkit}
         </span>
         <span className="min-w-0 flex-1 break-all font-mono text-xs text-foreground/85">{requestLabel}</span>
@@ -126,7 +126,7 @@ function RequestDetails({ toolkit, requestLabel, requestBody, named }: {
           <CollapsibleTrigger
             data-testid="proxy-review-body-toggle"
             aria-label="Show what the request sends"
-            className="group ml-2 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted"
+            className="group ml-2 shrink-0 rounded-icon p-0.5 text-muted-foreground hover:bg-muted"
           >
             <ChevronRight className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-90" />
           </CollapsibleTrigger>
@@ -409,7 +409,7 @@ function ScopeReviewRequestItem({
                       {HINT_ICON}
                     </div>
                   </InfoHint>
-                  <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
+                  <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-item border border-border bg-background pl-3 pr-0 pb-1">
                     <textarea
                       ref={denyReasonInputRef}
                       data-testid="proxy-review-deny-reason-input"
@@ -439,7 +439,7 @@ function ScopeReviewRequestItem({
                         setDenyMenuOpen(false)
                         handleDecision('deny', denyReason.trim())
                       }}
-                      className="mr-1 h-8 w-8 shrink-0 self-end rounded-md border border-border bg-foreground text-background hover:bg-foreground/90"
+                      className="mr-1 h-8 w-8 shrink-0 self-end rounded-control border border-border bg-foreground text-background hover:bg-foreground/90"
                     >
                       <ArrowUp className="h-3.5 w-3.5" />
                     </Button>
@@ -507,7 +507,7 @@ function ScopeReviewRequestItem({
                     <span className="flex min-w-0 w-full flex-col items-start text-left">
                       <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
                         <span className="shrink-0">Allow all</span>
-                        <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground/70">
+                        <span className="inline-flex shrink-0 items-center rounded-item bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground/70">
                           {minimalLabel}
                         </span>
                         <span className="shrink-0">

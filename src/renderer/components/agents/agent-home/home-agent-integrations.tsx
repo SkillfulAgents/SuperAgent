@@ -126,10 +126,10 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
                 {providers.map((tile) => (
                   <button
                     key={tile.slug}
-                    className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                    className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                     onClick={() => setSetupProvider(tile)}
                   >
-                    <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border bg-background dark:bg-zinc-200">
+                    <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-control border border-border bg-background dark:bg-zinc-200">
                       <ServiceIcon slug={tile.slug} fallback="mcp" className="h-3 w-3" />
                     </div>
                     {tile.label}

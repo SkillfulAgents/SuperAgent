@@ -90,7 +90,7 @@ export function SpeedSection({
         <div
           role="radiogroup"
           aria-label="Processing speed"
-          className="flex rounded-lg bg-muted p-0.5 text-muted-foreground"
+          className="flex rounded-item bg-muted p-0.5 text-muted-foreground"
         >
           {speeds.map((level) => {
             const isActive = level === value
@@ -103,7 +103,7 @@ export function SpeedSection({
                 data-testid={`speed-option-${level}`}
                 onClick={() => onChange(level)}
                 className={cn(
-                  'flex-1 rounded-md px-2 py-1 text-xs transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'h-6 flex-1 rounded-control px-2 py-1 text-xs transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   isActive && 'bg-background text-foreground shadow'
                 )}
               >
