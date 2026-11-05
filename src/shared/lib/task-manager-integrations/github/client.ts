@@ -37,9 +37,10 @@ export function forgetGitHubToken(id: string): void { tokens.delete(id) }
 
 /**
  * One process mints an installation token for an authorization at a time:
- * `claim:github-token/{integrationId}:{authorizationVersion}`. The lease
- * outlasts the 20 s request and is renewed while the request runs. The token
- * is not shared: a process that waited for the claim then mints its own.
+ * `claim:github-token/{integrationId}:{authorizationVersion}`. A mint is sent
+ * only while the claim is held for the request's whole 20 s timeout, and the
+ * claim is renewed while it runs. The token is not shared: a process that
+ * waited for the claim then mints its own.
  */
 const mintClaims = defineLease({ name: 'claim:github-token', ttlMs: 30_000 })
 /** Long enough for a dead holder's claim to lapse and one more mint to run. */
@@ -52,6 +53,9 @@ async function mintInstallationToken(integrationId: string, config: GitHubConfig
   const turn = await mintClaims.acquireWhenFree(claim, { timeoutMs: MINT_WAIT_MS })
   if (!turn.acquired) return turn.result
   return mintClaims.hold(turn.lease, async holding => {
+    // Held for the request's whole timeout, by this process's clock, with
+    // nothing awaited before the send: the mint cannot outlive the claim.
+    await holding.confirm({ minRemainingMs: REQUEST_TIMEOUT_MS })
     const result = await githubRequest(`/app/installations/${installationId}/access_tokens`, githubTokenSchema, githubAppJwt(app), {}, holding.signal)
     return { value: result.token, expiresAt: Date.parse(result.expires_at), version: config.authorizationVersion }
   })

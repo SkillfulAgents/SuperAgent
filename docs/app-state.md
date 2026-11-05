@@ -120,14 +120,24 @@ Typed helpers over the strong operations, for limits that several consumers shar
 
 **`defineLease({ name, ttlMs, renewEveryMs? })`** (`lease.ts`) lets at most one owner hold a key at a time. The lease ends when the owner releases it, or when `ttlMs` passes without a renewal. Every acquisition is a new owner with a random id. The revision of the owner's last write is its fence.
 
+A holder judges how long it has the lease by its own clock alone:
+
+- It reads `Date.now()` before it sends an acquire or a renewal. The backend can only have written the lease after that, so the lease is held at least until `sent + ttlMs`. That is the held lease's `heldUntil`.
+- An answer that arrives at or after `heldUntil` counts as not held, however the backend answered. A late acquire returns null, and a late renewal counts as lost. In both cases the write is released if it is still there, so it does not block the next owner.
+- The backend's own expiry is never compared with this process's clock, so clock skew between the two plays no part.
+
+The operations:
+
 - `acquire(key)` is one `insertIfAbsent`. It returns the held lease, or null while another owner holds the key.
 - `renew(lease)` is a `compareAndSet` against the held revision, with a fresh `ttlMs`. Once the lease has lapsed its revision never matches again, so renewal returns null even after another owner has taken the key.
 - `release(lease)` is `consume({ revision })`. A stale owner's release does nothing to a successor's lease.
 - `hold(lease, work)` runs `work` while the lease is held:
   - It renews every `renewEveryMs` (by default a third of `ttlMs`), one renewal at a time.
-  - It aborts `holding.signal` with `LeaseLostError` when a renewal finds the lease gone, or cannot reach AppState.
+  - It aborts `holding.signal` with `LeaseLostError` when a renewal finds the lease gone, is answered too late, or cannot reach AppState. It also aborts at `heldUntil` if no renewal has landed by then, so a renewal that never answers still ends the holding.
   - It releases the lease when the work settles.
-  - `holding.confirm()` renews at once and throws when the lease is lost. Call it right before a write only the holder may make.
+- `holding.confirm({ minRemainingMs })` renews at once. It resolves only if the renewal is answered in time and the lease is then held for at least `minRemainingMs` more (default 0). Otherwise it aborts the signal, releases the lease and throws `LeaseLostError`.
+  - Call it right before a request or a write only the holder may make, with nothing awaited in between.
+  - Before a request, pass the request's timeout, so the request cannot outlive the lease even if no later renewal lands. Before a write, pass a margin for the write.
 - `acquireWhenFree(key, { timeoutMs, whileWaiting })` waits while another owner holds the key. It tries again at 50 ms, doubling up to 1 s, and throws `LeaseWaitTimeoutError` after `timeoutMs`. A `whileWaiting` result other than undefined ends the wait without the lease, for when the work was done elsewhere: a waiter re-reading the row its holder writes, for example.
 
 A lease fences AppState writes, and nothing else:
@@ -135,9 +145,9 @@ A lease fences AppState writes, and nothing else:
 - A request the holder has already sent keeps running after its lease lapses.
 - A write elsewhere, to the database or a provider, needs its own condition.
 
-So pick a TTL longer than the longest request plus one renewal interval, and renew until the request's deadline has passed. Confirm the lease before writing, and keep the write conditional too. If a holder that lost its lease may leave an unknown side effect behind, such as a rotated token, record that next to the lease. Use a key that outlives the lease, so the next holder can see it.
+So pick a TTL longer than the longest request plus the time one renewal takes. Confirm with the request's timeout before sending, confirm with a margin before writing, and keep the write conditional too. If a holder that lost its lease may leave an unknown side effect behind, such as a rotated token, record that next to the lease. Use a key that outlives the lease, so the next holder can see it.
 
-The GitHub and Linear clients use it:
+The GitHub and Linear clients use it, each with a 30 s lease:
 
-- GitHub installation-token minting uses `claim:github-token`. Each process still mints and caches its own token. The claim only keeps two processes from minting at the same time.
-- Linear's rotating-token refresh uses `claim:linear-token-refresh`. Unresolved exchanges are recorded in `linear:unresolved-exchange`.
+- GitHub installation-token minting uses `claim:github-token`. It confirms with the 20 s request timeout before minting. Each process still mints and caches its own token. The claim only keeps two processes from minting at the same time.
+- Linear's rotating-token refresh uses `claim:linear-token-refresh`. It confirms with the 15 s exchange timeout before sending, and with 5 s before saving or revoking. Unresolved exchanges are recorded in `linear:unresolved-exchange`.

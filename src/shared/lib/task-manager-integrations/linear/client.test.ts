@@ -70,7 +70,7 @@ beforeEach(async () => {
     tokens: tokens(0, 1),
   } })
 })
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await handle.close() })
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); await handle.close() })
 
 describe('Linear token renewal across processes', () => {
   it('renews within 60 seconds of expiry, and not before', async () => {
@@ -199,6 +199,57 @@ describe('Linear token renewal across processes', () => {
     // Nothing was sent, so A leaves no record that would make a later refusal
     // of that token look uncertain.
     expect(await appState().get(unresolvedExchanges.key(id, 'v1', digestKeyPart('refresh-0')))).toBeNull()
+  })
+
+  it('does not send an exchange on a lease confirmation answered after the lease ran out', async () => {
+    // Both clocks move together here, as on one machine: the backend's and
+    // the holder's own.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const a = await instance()
+    const b = await instance()
+    answers = [async () => granted(1)]
+    const state = appState()
+    const compareAndSet = state.compareAndSet.bind(state)
+    let delayed = false
+    vi.spyOn(state, 'compareAndSet').mockImplementation(async (key, expected, value, options) => {
+      const answer = await compareAndSet(key, expected, value, options)
+      // A's renewal right before its send commits, but its answer comes back
+      // after 31 s; meanwhile B takes the lapsed claim, renews and saves.
+      if (!delayed && key.namespace.name === 'claim:linear-token-refresh') {
+        delayed = true
+        clock += 31_000
+        vi.setSystemTime(Date.now() + 31_000)
+        await expect(authorize(b.client)).resolves.toMatchObject({ accessToken: 'access-1' })
+      }
+      return answer
+    })
+    await expect(authorize(a.client)).rejects.toMatchObject({ name: 'LeaseLostError' })
+    expect(exchanges).toEqual(['refresh-0'])
+    expect((await getLinearConfig(id)).tokens?.refreshToken).toBe('refresh-1')
+  })
+
+  it('does not send an exchange the lease would not outlast, and leaves the claim free', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const { client } = await instance()
+    answers = [async () => granted(1)]
+    const state = appState()
+    const compareAndSet = state.compareAndSet.bind(state)
+    vi.spyOn(state, 'compareAndSet').mockImplementation(async (key, expected, value, options) => {
+      const answer = await compareAndSet(key, expected, value, options)
+      // The renewal before the send is answered 20 s after it was sent: 10 s
+      // of the lease are left, less than the exchange's 15 s timeout.
+      if (key.namespace.name === 'claim:linear-token-refresh' && exchanges.length === 0) {
+        clock += 20_000
+        vi.setSystemTime(Date.now() + 20_000)
+      }
+      return answer
+    })
+    await expect(authorize(client)).rejects.toMatchObject({ name: 'LeaseLostError' })
+    expect(exchanges).toEqual([])
+    expect(await appState().get(unresolvedExchanges.key(id, 'v1', digestKeyPart('refresh-0')))).toBeNull()
+    vi.mocked(state.compareAndSet).mockImplementation(compareAndSet)
+    await expect(authorize(client)).resolves.toMatchObject({ accessToken: 'access-1' })
+    expect(exchanges).toEqual(['refresh-0'])
   })
 
   it('revokes when Linear refuses a token that no earlier exchange spent', async () => {

@@ -6,7 +6,7 @@ let handle: TestDatabase
 let testDb: AppDatabase
 vi.mock('../../db', () => ({ get db() { return testDb } }))
 vi.mock('../../error-reporting', () => ({ captureException: vi.fn() }))
-import { closeAppState, createLocalAppState, defineLease, initializeAppState, LocalAppStateBackend } from '../../app-state'
+import { appState, closeAppState, createLocalAppState, defineLease, initializeAppState, LocalAppStateBackend } from '../../app-state'
 import { createAgentIntegration, deleteAgentIntegration, updateAgentIntegration } from '../../services/agent-integration-service'
 import { GitHubClient, githubAppJwt } from './client'
 import { configured, appIdentity, privateKey } from './test-fixtures'
@@ -21,7 +21,7 @@ beforeEach(async () => {
   client = new GitHubClient(id)
   fetchMock = vi.fn<typeof fetch>(async () => tokenResponse()); vi.stubGlobal('fetch', fetchMock)
 })
-afterEach(async () => { await handle.close(); vi.unstubAllGlobals() })
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); await handle.close(); vi.unstubAllGlobals() })
 it('signs a bounded app JWT and coalesces installation token minting across clients', async () => {
   const jwt = githubAppJwt(appIdentity)
   const [header, payload, signature] = jwt.split('.')
@@ -111,6 +111,24 @@ describe('installation token minting across processes', () => {
     releases[1]()
     await expect(second).resolves.toBe('installation-token')
     expect(mostAtOnce).toBe(1)
+  })
+
+  it('does not mint unless the claim is held for the request\'s whole timeout', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const state = appState()
+    const compareAndSet = state.compareAndSet.bind(state)
+    vi.spyOn(state, 'compareAndSet').mockImplementationOnce(async (key, expected, value, options) => {
+      const answer = await compareAndSet(key, expected, value, options)
+      // The renewal before the mint is answered 15 s after it was sent: 15 s
+      // of the claim are left, less than the request's 20 s timeout.
+      vi.setSystemTime(Date.now() + 15000)
+      return answer
+    })
+    await expect(client.authorization()).rejects.toMatchObject({ name: 'LeaseLostError' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    // The claim was given up at once.
+    await expect(client.authorization()).resolves.toBe('installation-token')
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('mints once a dead holder\'s claim has lapsed', async () => {

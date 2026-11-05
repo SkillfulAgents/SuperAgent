@@ -7,4 +7,4 @@ export { appState, closeAppState, initializeAppState, initializeLocalAppState, i
 export { defineNamespace, defineTopic, digestKeyPart } from './definitions'
 export { createLocalAppState, LocalAppStateBackend, LOCAL_APP_STATE_SCOPE } from './local-app-state'
 export { defineLease, LeaseLostError, LeaseWaitTimeoutError } from './lease'
-export type { HeldLease, Lease, LeaseDefinition, LeaseHolding, LeaseRecord, LeaseWait, LeaseWaitResult } from './lease'
+export type { ConfirmOptions, HeldLease, Lease, LeaseDefinition, LeaseHolding, LeaseRecord, LeaseWait, LeaseWaitResult } from './lease'

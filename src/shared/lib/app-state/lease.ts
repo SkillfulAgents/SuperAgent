@@ -6,12 +6,22 @@
  * that revision, so an owner whose lease lapsed can neither extend nor delete
  * a successor's.
  *
- * A lease serializes work among the processes that ask for it. It cannot
- * reach outside AppState: a request a holder already sent runs on after its
- * lease lapses, and a write it makes elsewhere (the database, a provider) is
- * fenced only by that write's own condition. `hold` gives work a signal that
- * aborts when the lease is found lost, and `confirm()` to check it right
- * before a write only the holder may make.
+ * What a holder knows, it knows by its own clock. It reads `Date.now()` before
+ * it sends an acquire or a renewal; the backend can only have written the lease
+ * after that, so the lease is surely held until `sent + ttlMs` (`heldUntil`),
+ * whatever the backend's clock says. A response that arrives at or after that
+ * instant proves nothing: the write is treated as not held (and released, if it
+ * is still there), however it was answered. The backend's own expiry is never
+ * compared with this process's clock, so clock skew between them plays no part.
+ *
+ * A lease serializes work among the processes that ask for it. It cannot reach
+ * outside AppState: a request a holder already sent runs on after its lease
+ * lapses, and a write it makes elsewhere (the database, a provider) is fenced
+ * only by that write's own condition. `hold` gives work a signal that aborts
+ * when the lease is lost, at the latest at `heldUntil`, and `confirm()`, which
+ * renews and resolves only if the lease is then held for at least a given
+ * time: call it right before a request or write only the holder may make, with
+ * that request's timeout, so the request cannot outlive the lease.
  */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -42,11 +52,14 @@ export interface HeldLease {
   readonly owner: string
   /** The fence: this holder's last write. Renewal and release are conditional on it. */
   readonly revision: Revision
-  /** Epoch ms (the AppState clock) at which the lease lapses unless renewed. */
-  readonly expiresAt: number
+  /**
+   * Epoch ms by this process's clock until which the lease is surely held:
+   * when the acquire or renewal that wrote it was sent, plus `ttlMs`.
+   */
+  readonly heldUntil: number
 }
 
-/** The lease was not this holder's any more: it lapsed, or a renewal could not be confirmed. */
+/** The lease was not this holder's any more, or not for long enough. */
 export class LeaseLostError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options)
@@ -62,16 +75,31 @@ export class LeaseWaitTimeoutError extends Error {
   }
 }
 
+export interface ConfirmOptions {
+  /**
+   * How long the lease must still be held when `confirm` resolves, by this
+   * process's clock. Pass the timeout of the request about to be sent, or a
+   * margin for the write about to be made. Default 0: held now.
+   */
+  readonly minRemainingMs?: number
+}
+
 /** What `hold` gives its work. */
 export interface LeaseHolding {
   readonly owner: string
-  /** Aborts, with a `LeaseLostError`, once a renewal finds the lease lost or cannot confirm it. */
+  /**
+   * Aborts, with a `LeaseLostError`, once a renewal finds the lease lost, is
+   * answered too late or fails, and at the latest when the lease runs out
+   * without a renewal.
+   */
   readonly signal: AbortSignal
   /**
-   * Renews the lease now and throws `LeaseLostError` if it is no longer held.
-   * Call it right before a write that only the holder may make.
+   * Renews the lease now. Resolves only if the renewal is answered in time and
+   * the lease is then held for at least `minRemainingMs` more; otherwise aborts
+   * the signal and throws `LeaseLostError`. Call it right before a request or
+   * write that only the holder may make, with nothing awaited in between.
    */
-  confirm(): Promise<void>
+  confirm(options?: ConfirmOptions): Promise<void>
 }
 
 export interface LeaseWait<R> {
@@ -97,16 +125,16 @@ export interface Lease {
   readonly renewEveryMs: number
   /** The key for these parts. Pass an identifier that must not appear in a key through `digestKeyPart` first. */
   key(...parts: string[]): StateKey<LeaseRecord, 'strong'>
-  /** Takes the lease when nobody holds it; null while another owner does. */
+  /** Takes the lease when nobody holds it. Null while another owner does, or when the answer came too late to rely on. */
   acquire(key: StateKey<LeaseRecord, 'strong'>): Promise<HeldLease | null>
-  /** Extends the lease to `ttlMs` from now; null when it is not this holder's any more. */
+  /** Extends the lease to `ttlMs` from now. Null when it is not this holder's any more, or the answer came too late. */
   renew(lease: HeldLease): Promise<HeldLease | null>
   /** Ends the lease if it is still this holder's, and says whether it was. Never touches a successor's. */
   release(lease: HeldLease): Promise<boolean>
   /**
    * Runs `work` while holding `lease`: renews it every `renewEveryMs`, aborts
-   * the holding's signal once a renewal finds it lost, and releases it when the
-   * work settles. The work's result or error is returned as is.
+   * the holding's signal once the lease is lost, and releases it when the work
+   * settles. The work's result or error is returned as is.
    */
   hold<T>(lease: HeldLease, work: (holding: LeaseHolding) => Promise<T>): Promise<T>
   /**
@@ -140,9 +168,16 @@ export function defineLease(definition: LeaseDefinition): Lease {
     if (key.namespace !== namespace) throw new TypeError(`${name}: the key belongs to ${key.namespace.name}`)
   }
 
-  function held(key: StateKey<LeaseRecord, 'strong'>, entry: Entry<LeaseRecord>): HeldLease {
-    if (entry.expiresAt === null) throw new Error(`${key.path}: a lease has no expiry`)
-    return { key, owner: entry.value.owner, revision: entry.revision, expiresAt: entry.expiresAt }
+  /**
+   * The lease a write answered at `sentAt` gives, or null when the answer came
+   * at or after the instant it was surely held until: the write is released,
+   * if it is still there, rather than relied on.
+   */
+  async function inTime(key: StateKey<LeaseRecord, 'strong'>, entry: Entry<LeaseRecord>, sentAt: number): Promise<HeldLease | null> {
+    const written: HeldLease = { key, owner: entry.value.owner, revision: entry.revision, heldUntil: sentAt + ttlMs }
+    if (Date.now() < written.heldUntil) return written
+    await lease.release(written).catch(() => false)
+    return null
   }
 
   const lease: Lease = {
@@ -153,16 +188,18 @@ export function defineLease(definition: LeaseDefinition): Lease {
 
     async acquire(key) {
       assertOwn(key)
+      const sentAt = Date.now()
       const result = await appState().insertIfAbsent(key, { owner: randomUUID() }, { expiry: { ttlMs } })
-      return result.inserted ? held(key, result.entry) : null
+      return result.inserted ? inTime(key, result.entry, sentAt) : null
     },
 
     async renew(current) {
       assertOwn(current.key)
+      const sentAt = Date.now()
       // Conditional on the holder's last write: a lapsed lease's revision never
       // matches again, even when the key has been taken since.
       const result = await appState().compareAndSet(current.key, current.revision, { owner: current.owner }, { expiry: { ttlMs } })
-      return result.ok ? held(current.key, result.entry) : null
+      return result.ok ? inTime(current.key, result.entry, sentAt) : null
     },
 
     async release(current) {
@@ -177,6 +214,15 @@ export function defineLease(definition: LeaseDefinition): Lease {
       const lose = (error: LeaseLostError) => {
         if (!controller.signal.aborted) controller.abort(error)
       }
+      // Lost at the latest when the lease runs out unrenewed, even if a
+      // renewal never answers.
+      let runsOut: ReturnType<typeof setTimeout> | undefined
+      const watchDeadline = () => {
+        clearTimeout(runsOut)
+        runsOut = setTimeout(() => lose(new LeaseLostError(`${current.key.path}: the lease ran out unrenewed`)), Math.max(0, current.heldUntil - Date.now()))
+        runsOut.unref?.()
+      }
+      watchDeadline()
       // One renewal at a time: two renewals racing from the same revision would
       // see the second fail against the first's write and report a false loss.
       let renewals: Promise<boolean> = Promise.resolve(true)
@@ -186,10 +232,14 @@ export function defineLease(definition: LeaseDefinition): Lease {
           try {
             const renewed = await lease.renew(current)
             if (renewed) {
+              // Kept even when the deadline passed meanwhile, so the release
+              // at the end frees this write instead of leaving it to lapse.
               current = renewed
+              if (controller.signal.aborted) return false
+              watchDeadline()
               return true
             }
-            lose(new LeaseLostError(`${current.key.path}: the lease lapsed or was taken`))
+            lose(new LeaseLostError(`${current.key.path}: the lease lapsed, was taken, or was renewed too late to rely on`))
           } catch (error) {
             // Unconfirmed is lost: the holder stops rather than act on a lease
             // it cannot vouch for.
@@ -205,17 +255,28 @@ export function defineLease(definition: LeaseDefinition): Lease {
       const holding: LeaseHolding = {
         owner: initial.owner,
         signal: controller.signal,
-        async confirm() {
+        async confirm(options = {}) {
+          const minRemainingMs = options.minRemainingMs ?? 0
           if (!(await renewNow())) throw controller.signal.reason
+          const remaining = current.heldUntil - Date.now()
+          if (remaining <= 0 || remaining < minRemainingMs) {
+            lose(new LeaseLostError(`${current.key.path}: ${remaining} ms of the lease left, ${minRemainingMs} ms needed`))
+            // Given up at once rather than when the work settles, so whoever
+            // takes over (this process's own retry, too) need not wait it out.
+            await lease.release(current).catch(() => false)
+            throw controller.signal.reason
+          }
         },
       }
       try {
         return await work(holding)
       } finally {
         clearInterval(timer)
+        clearTimeout(runsOut)
         await renewals
-        // A failed release leaves the lease to lapse on its own.
-        if (!controller.signal.aborted) await lease.release(current).catch(() => false)
+        // Conditional on this holder's last write, so a successor's lease is
+        // never touched. A failed release leaves the lease to lapse on its own.
+        await lease.release(current).catch(() => false)
       }
     },
 

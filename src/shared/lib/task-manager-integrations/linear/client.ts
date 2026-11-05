@@ -42,12 +42,15 @@ const changedDuringRenewal = () => new Error('Linear authorization changed durin
 /**
  * One process exchanges an authorization's rotating refresh token at a time:
  * `claim:linear-token-refresh/{integrationId}:{authorizationVersion}`. The
- * lease outlasts the 15 s exchange and is renewed until the result is saved.
- * Tokens live only in the integration row: everyone else waits for the row.
+ * exchange is sent only while the lease is held for its whole 15 s timeout,
+ * and the lease is renewed until the result is saved. Tokens live only in the
+ * integration row: everyone else waits for the row.
  */
 const refreshClaims = defineLease({ name: 'claim:linear-token-refresh', ttlMs: 30_000 })
 /** Long enough for a dead holder's claim to lapse and one more exchange to run. */
 const REFRESH_WAIT_MS = refreshClaims.ttlMs + EXCHANGE_TIMEOUT_MS
+/** How much of the lease a holder needs left to save or revoke: a few database round trips. */
+const WRITE_MARGIN_MS = 5_000
 
 /**
  * Exchanges whose outcome nobody has recorded, by the refresh token they spent
@@ -152,9 +155,11 @@ async function exchangeUnderClaim(id: string, version: string | undefined, holdi
   }
   // A renewal, not the abort flag: the reads and writes above can stall past
   // the lease while another process takes the claim and spends this token.
-  // Nothing is awaited between this confirmation and the send.
+  // It must leave the lease held for the exchange's whole timeout, and nothing
+  // is awaited between this confirmation and the send, so the exchange cannot
+  // outlive the lease even if no renewal lands after it.
   try {
-    await holding.confirm()
+    await holding.confirm({ minRemainingMs: EXCHANGE_TIMEOUT_MS })
   } catch (lost) {
     // Nothing was sent. A record this attempt created would make a later
     // refusal look uncertain; one it took over still stands for the earlier
@@ -169,13 +174,13 @@ async function exchangeUnderClaim(id: string, version: string | undefined, holdi
     // Any other failure leaves the record: Linear may have rotated the token.
     if (!(error instanceof LinearAuthorizationError)) throw error
     if (earlier) return reconcileRefusal(id, version, refreshToken)
-    await holding.confirm()
+    await holding.confirm({ minRemainingMs: WRITE_MARGIN_MS })
     await revokeLinearAuthorization(id, { refreshToken, authorizationVersion: version })
     await appState().consume(unresolved)
     throw error
   }
   try {
-    await holding.confirm()
+    await holding.confirm({ minRemainingMs: WRITE_MARGIN_MS })
   } catch {
     return saveLate(id, version, refreshToken, tokens)
   }
@@ -203,7 +208,7 @@ async function saveLate(id: string, version: string | undefined, refreshToken: s
   return underClaim(id, version, async holding => {
     const fresh = freshAuthorization(await getLinearConfig(id), version)
     if (fresh) return fresh
-    await holding.confirm()
+    await holding.confirm({ minRemainingMs: WRITE_MARGIN_MS })
     return save(id, version, refreshToken, tokens)
   })
 }
