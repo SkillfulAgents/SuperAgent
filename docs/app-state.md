@@ -94,3 +94,17 @@ What a backend must preserve beyond the suite:
 - Use the shared encoders in `definitions.ts` (`scopePrefix`, `encodeValue`, `decodeValue`, `resolveExpiry`, `assertStrong`) so keys, validation and expiry behave identically everywhere.
 - Subscriptions must be rebuilt from serialized routing when a Durable Object is woken from hibernation. They must not rely on a JavaScript callback surviving eviction.
 - Secrets in a shared backend are sealed through KeyManager (SUP-1509). AppState never holds a raw root key.
+
+## The global feed
+
+`globalFeed` (`src/shared/lib/notifications/global-feed.ts`) carries the app's live hints to clients through three topics. It picks an event's channel from its top-level `recipientUserId` and `agentSlug`:
+
+- `events:feed:user`, one channel per user: an event with a `recipientUserId` (a mention, its withdrawal), and what `publishToUsers` addresses (membership changes, a new agent to its members).
+- `events:feed:agent`, one channel per agent: any other event that names an agent (status, sessions, requests, schedules, triggers, dashboards, widgets, shared notifications).
+- `events:feed:tenant`, one channel: everything else (runtime readiness, alerts, the webhook relay, drives, platform notifications).
+
+Local mode has one principal and no access lists, so every event goes on the tenant channel there.
+
+The notifications SSE route (`src/api/lib/notifications-feed.ts`) follows the tenant's channel, its user's channel and the channel of each agent the user can access. It reloads that set on a membership hint, on a new agent announced on the user's channel, and every minute, and it still checks every event against the loaded set. A revocation is sent on the removed user's own channel, so it reaches them after they stop following the agent. Each stream holds at most 1,000 frames or 1 MiB for a slow client; past that the stream ends and the client reconnects and refetches.
+
+`publish` returns before any listener runs. Work that must happen because of an actor's event is not a feed listener: the host starts it directly in `host/local-host-port.ts` (the after-run widget sweep, the chat card for an agent-scoped review).
