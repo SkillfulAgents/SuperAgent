@@ -5,6 +5,8 @@ export const LLM_PROVIDER_IDS = [
   'codex-subscription',
   'kimi-subscription',
   'minimax-subscription',
+  'qwen-subscription',
+  'doubao-subscription',
   'openrouter',
   'bedrock',
   'platform',

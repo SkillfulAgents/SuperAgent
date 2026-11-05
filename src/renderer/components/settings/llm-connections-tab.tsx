@@ -55,6 +55,8 @@ const providers = {
   'codex-subscription': 'Codex Subscription',
   'kimi-subscription': 'Kimi Subscription',
   'minimax-subscription': 'MiniMax Subscription',
+  'qwen-subscription': 'Qwen Subscription',
+  'doubao-subscription': 'Doubao Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   generic: 'Generic',
@@ -67,6 +69,8 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'codex-subscription': 'Work ChatGPT Pro',
   'kimi-subscription': 'Personal Kimi Code',
   'minimax-subscription': 'Personal MiniMax',
+  'qwen-subscription': 'Personal Token Plan',
+  'doubao-subscription': 'Personal Agent Plan',
   openrouter: 'Shared OpenRouter',
   bedrock: 'Bedrock us-east-1',
   generic: 'Local vLLM server',
@@ -79,6 +83,8 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'codex-subscription': 'Sign in with ChatGPT to use your Codex subscription.',
   'kimi-subscription': 'Sign in with your Kimi account to use your Kimi Code membership.',
   'minimax-subscription': 'Sign in with your MiniMax account to use your Token Plan.',
+  'qwen-subscription': 'Use your Alibaba Cloud Token Plan with its plan API key.',
+  'doubao-subscription': 'Use your Volcengine Agent Plan with its plan API key.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
   generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',
@@ -439,6 +445,7 @@ export function ConnectionEditor({
       if (provider === 'openrouter') apiKeys.openrouterApiKey = apiKey
       if (provider === 'generic') apiKeys.genericApiKey = apiKey
       if (provider === 'bedrock') apiKeys.bedrockApiKey = apiKey
+      if (provider === 'qwen-subscription' || provider === 'doubao-subscription') apiKeys.planApiKey = apiKey.trim()
     }
     if (provider === 'generic' && (!existing || baseUrl !== (existing.baseUrl ?? ''))) apiKeys.genericBaseUrl = baseUrl
     if (provider === 'bedrock') {
