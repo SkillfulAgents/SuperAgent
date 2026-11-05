@@ -17,11 +17,11 @@
               - /url: /notifications
               - img [ref=e29]
               - generic [ref=e32]: Notifications
-          - listitem [ref=e145]:
-            - link "Discover New Agents" [ref=e146] [cursor=pointer]:
+          - listitem [ref=e146]:
+            - link "Discover New Agents" [ref=e147] [cursor=pointer]:
               - /url: /explore
-              - img [ref=e147]
-              - generic [ref=e150]: Discover New Agents
+              - img [ref=e148]
+              - generic [ref=e151]: Discover New Agents
           - listitem [ref=e33]:
             - button "New Agent" [ref=e34] [cursor=pointer]:
               - img [ref=e35]
@@ -35,49 +35,49 @@
             - button "New agent in Your Agents" [ref=e47] [cursor=pointer]:
               - img [ref=e48]
             - list [ref=e50]:
-              - button "QA-20261105-012629-xx1p , idle. Never active Options for QA-20261105-012629-xx1p Open QA-20261105-012629-xx1p New session with QA-20261105-012629-xx1p" [ref=e51] [cursor=pointer]:
+              - button "QA-20261105-172244-t20s , idle. Never active Options for QA-20261105-172244-t20s Open QA-20261105-172244-t20s New session with QA-20261105-172244-t20s" [ref=e51] [cursor=pointer]:
                 - generic [ref=e52]:
-                  - link "QA-20261105-012629-xx1p , idle. Never active" [ref=e53]:
-                    - /url: /agents/qa-20261105-012629-xx1p-cloxowfpm4
-                    - generic [ref=e54]: QA-20261105-012629-xx1p
+                  - link "QA-20261105-172244-t20s , idle. Never active" [ref=e53]:
+                    - /url: /agents/qa-20261105-172244-t20s-dejjigrle6
+                    - generic [ref=e54]: QA-20261105-172244-t20s
                     - generic [ref=e55]: ", idle."
                     - generic [ref=e56]: Never active
                   - generic:
-                    - button "Options for QA-20261105-012629-xx1p"
+                    - button "Options for QA-20261105-172244-t20s"
                     - generic:
-                      - link "Open QA-20261105-012629-xx1p":
-                        - /url: /agents/qa-20261105-012629-xx1p-cloxowfpm4
-                      - link "New session with QA-20261105-012629-xx1p":
-                        - /url: /agents/qa-20261105-012629-xx1p-cloxowfpm4/sessions/new
+                      - link "Open QA-20261105-172244-t20s":
+                        - /url: /agents/qa-20261105-172244-t20s-dejjigrle6
+                      - link "New session with QA-20261105-172244-t20s":
+                        - /url: /agents/qa-20261105-172244-t20s-dejjigrle6/sessions/new
                         - img
-              - button "QA-20261105-012628-lgp9 , idle. Never active Options for QA-20261105-012628-lgp9 Open QA-20261105-012628-lgp9 New session with QA-20261105-012628-lgp9" [ref=e57] [cursor=pointer]:
+              - button "QA-20261105-172243-sdv0 , idle. Never active Options for QA-20261105-172243-sdv0 Open QA-20261105-172243-sdv0 New session with QA-20261105-172243-sdv0" [ref=e57] [cursor=pointer]:
                 - generic [ref=e58]:
-                  - link "QA-20261105-012628-lgp9 , idle. Never active" [ref=e59]:
-                    - /url: /agents/qa-20261105-012628-lgp9-ccpiajwqgw
-                    - generic [ref=e60]: QA-20261105-012628-lgp9
+                  - link "QA-20261105-172243-sdv0 , idle. Never active" [ref=e59]:
+                    - /url: /agents/qa-20261105-172243-sdv0-03q83u43g6
+                    - generic [ref=e60]: QA-20261105-172243-sdv0
                     - generic [ref=e61]: ", idle."
                     - generic [ref=e62]: Never active
                   - generic:
-                    - button "Options for QA-20261105-012628-lgp9"
+                    - button "Options for QA-20261105-172243-sdv0"
                     - generic:
-                      - link "Open QA-20261105-012628-lgp9":
-                        - /url: /agents/qa-20261105-012628-lgp9-ccpiajwqgw
-                      - link "New session with QA-20261105-012628-lgp9":
-                        - /url: /agents/qa-20261105-012628-lgp9-ccpiajwqgw/sessions/new
+                      - link "Open QA-20261105-172243-sdv0":
+                        - /url: /agents/qa-20261105-172243-sdv0-03q83u43g6
+                      - link "New session with QA-20261105-172243-sdv0":
+                        - /url: /agents/qa-20261105-172243-sdv0-03q83u43g6/sessions/new
                         - img
-          - status [ref=e160]
-          - listitem [ref=e63]:
-            - button "Add section" [ref=e64] [cursor=pointer]:
-              - img [ref=e66]
-              - generic [ref=e67]: Add section
-      - generic [ref=e69]:
-        - button "Settings" [ref=e70] [cursor=pointer]:
-          - img [ref=e71]
-          - generic [ref=e74]: Settings
-        - button "0.6.4" [ref=e75] [cursor=pointer]:
-          - generic [ref=e76]: 0.6.4
-      - button "Toggle Sidebar" [ref=e77]
-    - main [ref=e78]:
+          - status [ref=e63]
+          - listitem [ref=e64]:
+            - button "Add section" [ref=e65] [cursor=pointer]:
+              - img [ref=e67]
+              - generic [ref=e68]: Add section
+      - generic [ref=e70]:
+        - button "Settings" [ref=e71] [cursor=pointer]:
+          - img [ref=e72]
+          - generic [ref=e75]: Settings
+        - button "0.6.4" [ref=e76] [cursor=pointer]:
+          - generic [ref=e77]: 0.6.4
+      - button "Toggle Sidebar" [ref=e78]
+    - main [ref=e79]:
       - generic [ref=e161]:
         - generic [ref=e162]:
           - button "Toggle Sidebar" [ref=e163] [cursor=pointer]:
@@ -86,8 +86,8 @@
           - generic [ref=e167]:
             - generic:
               - link:
-                - /url: /agents/qa-20261105-012628-lgp9-ccpiajwqgw
-                - text: QA-20261105-012628-lgp9
+                - /url: /agents/qa-20261105-172243-sdv0-03q83u43g6
+                - text: QA-20261105-172243-sdv0
           - generic [ref=e168]:
             - generic [ref=e169]:
               - img [ref=e170]
@@ -97,8 +97,8 @@
         - generic [ref=e184]:
           - generic [ref=e185]:
             - generic [ref=e186]:
-              - button "Change QA-20261105-012628-lgp9's avatar" [ref=e187] [cursor=pointer]
-              - button "Rename agent" [ref=e199] [cursor=pointer]: QA-20261105-012628-lgp9
+              - button "Change QA-20261105-172243-sdv0's avatar" [ref=e187] [cursor=pointer]
+              - button "Rename agent" [ref=e199] [cursor=pointer]: QA-20261105-172243-sdv0
               - button "Share agent" [ref=e200] [cursor=pointer]: Share
               - button "Agent menu" [ref=e201] [cursor=pointer]:
                 - img
