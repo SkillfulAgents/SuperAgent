@@ -7,6 +7,8 @@
  * page still renders local agent notifications.
  */
 
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import { Hono } from 'hono'
 import { getSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -20,6 +22,19 @@ import { Authenticated } from '../middleware/auth'
 const platformNotificationsRouter = new Hono()
 
 platformNotificationsRouter.use('*', Authenticated())
+
+platformNotificationsRouter.use('*', async (c, next) => {
+  try {
+    await next()
+  } finally {
+    if (c.req.method === 'POST') {
+      const user = c.get('user' as never) as { id: string } | undefined
+      if (!isAuthMode() || user) {
+        globalFeed.publish({ type: 'platform_notifications_changed', ...(isAuthMode() && user ? { recipientUserId: user.id } : {}) })
+      }
+    }
+  }
+})
 
 /**
  * The platform connection this request calls with, from one settings read;
@@ -118,11 +133,18 @@ platformNotificationsRouter.post('/read-all', async (c) => {
     return c.json({ success: true, updated: 0 })
   }
   try {
-    // The platform has no bulk endpoint; resolve the unread page (100 covers
-    // realistic announcement volume) and ack those ids.
-    const unread = await listPlatformNotifications({ status: 'unread', limit: 100 }, caller.memberId, caller.token)
-    const ids = unread.notifications.map((n) => n.id)
-    const updated = ids.length > 0 ? await markPlatformNotificationsRead(ids, caller.memberId, caller.token) : 0
+    // Drain unread pages from offset zero: each ack removes rows from that
+    // result set. Stop if the proxy makes no progress instead of looping.
+    let updated = 0
+    const attempted = new Set<string>()
+    for (;;) {
+      const unread = await listPlatformNotifications({ status: 'unread', limit: 100 }, caller.memberId, caller.token)
+      const ids = unread.notifications.map(n => n.id).filter(id => !attempted.has(id))
+      if (!ids.length) break
+      ids.forEach(id => attempted.add(id))
+      updated += await markPlatformNotificationsRead(ids, caller.memberId, caller.token)
+      if (unread.unread_count <= ids.length) break
+    }
     return c.json({ success: true, updated })
   } catch (error) {
     console.error('Failed to mark all platform notifications read:', error)

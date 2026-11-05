@@ -76,6 +76,7 @@ src/shared/lib/task-manager-integrations/github/client.test.ts
 src/shared/lib/task-manager-integrations/github/github-agent-integration.test.ts
 src/shared/lib/task-manager-integrations/github/mcp.test.ts
 src/shared/lib/services/notification-service-mentions.test.ts
+src/shared/lib/services/notification-service-type-filters.test.ts
 src/shared/lib/services/connection-sync-service.resume.test.ts
 src/shared/lib/auth/password-session.integration.test.ts
 src/shared/lib/auth/oidc.integration.test.ts
@@ -97,5 +98,6 @@ src/shared/lib/container/host-token-store.test.ts
 src/main/host-browser/context-map-store.test.ts
 src/shared/lib/browser-vault/vault-key-probe.test.ts
 src/shared/lib/agent-integrations/integration-row-version.test.ts
+src/shared/lib/services/notification-service-changes.test.ts
 src/api/routes/meeting-participant.test.ts
 src/shared/lib/meeting-integrations/meeting-agent-integration.test.ts

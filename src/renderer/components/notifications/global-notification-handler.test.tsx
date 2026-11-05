@@ -1,3 +1,4 @@
+import { notificationClientId } from '@renderer/lib/notification-read-cache'
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, cleanup, waitFor } from '@testing-library/react'
@@ -430,7 +431,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // No OS popup (the user is watching it live), but the backend-created
     // record is marked read so the unread badge doesn't inflate.
     expect(showOSNotification).not.toHaveBeenCalled()
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' }))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', expect.objectContaining({ method: 'POST' })))
   })
 
   it('also invalidates sessions query (for sidebar awaiting_input indicator)', () => {
@@ -741,6 +742,24 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(agents?.[0].hasUnreadNotifications).toBe(false)
   })
 
+  it.each(['notifications_changed', 'agent_access_revoked', 'agent_members_changed'])('%s refreshes list, unified counts and every unread projection', type => {
+    const keys = [['notifications', 15, 0, 'all'], ['notifications', 'unread-count'], ['agents'], ['sessions', 'a'], ['session', 's1', 'a']]
+    keys.forEach(key => queryClient.setQueryData(key, {}))
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type, agentSlug: 'a' })
+    keys.forEach(key => expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true))
+  })
+
+  it('ignores the initiating cache’s echo but refreshes another window', () => {
+    const key = ['notifications', 'unread-count']
+    queryClient.setQueryData(key, { count: 0 })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'notifications_changed', agentSlug: 'a', sourceClientId: notificationClientId(queryClient) })
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false)
+    simulateSSEMessage(getLatestEventSource(), { type: 'notifications_changed', agentSlug: 'a', sourceClientId: crypto.randomUUID() })
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+  })
+
   it('platform_notifications_changed refreshes the proxy-live inbox queries', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -769,7 +788,8 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     })
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notifications'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-x'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['session'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
   })
 

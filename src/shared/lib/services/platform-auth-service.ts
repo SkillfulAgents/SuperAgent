@@ -1,3 +1,4 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { errors as joseErrors } from 'jose'
 import { eq, and, desc } from 'drizzle-orm'
 
@@ -293,6 +294,7 @@ async function reconcileAfterAuthChange(): Promise<void> {
  * (platform-service → platform-auth-service → here).
  */
 function notifyPlatformServiceAuthChanged(connected: boolean): void {
+  globalFeed.publish({ type: 'platform_notifications_changed' })
   // The success log is the only positive signal this fire-and-forget path ran;
   // platform-auth-service.notify.test.ts asserts on it.
   background(import('./platform-service')

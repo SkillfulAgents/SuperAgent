@@ -1,3 +1,4 @@
+import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
@@ -183,9 +184,7 @@ export function useDeleteSession() {
       // 204 No Content - no body to parse
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
-      })
+      invalidateNotificationCaches(queryClient, resolveAgentSlugFromCache(queryClient, variables.agentSlug))
       // A Todo item started in it lets go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },

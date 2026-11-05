@@ -1,3 +1,4 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { db } from '@shared/lib/db'
 import { batch } from '@shared/lib/db/batch'
 import {
@@ -46,6 +47,9 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
     // Todo board items outlive the agent: they let go of it instead.
     ...unlinkAgentStatements(agentSlug),
   ])
+  // ACL rows are gone too, so an agent-scoped hint could be filtered out.
+  // This content-free hint makes every connected cache recheck its own scope.
+  globalFeed.publish({ type: 'notifications_changed' })
   invalidateRuleCache()
   for (const rule of scopedRules) await auditRuleChange('deleted', rule, { by: 'system', reason: 'agent_deleted' })
 }

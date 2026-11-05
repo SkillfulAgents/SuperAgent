@@ -34,7 +34,7 @@ const mockDeleteCalls: DeleteCall[] = []
 const mockDbDelete = vi.fn((table: unknown) => ({
   where: (predicate: unknown) => {
     mockDeleteCalls.push({ table, predicate })
-    return { changes: 0 }
+    return { returning: async () => [] }
   },
 }))
 

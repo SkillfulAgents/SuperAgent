@@ -495,18 +495,18 @@ test.describe('Navigation - discriminated AgentView', () => {
     }
   })
 
-  test('UI: Notifications route survives reload and Back leaves it', async ({ page }) => {
+  test('UI: Notifications route survives reload and Home leaves it', async ({ page }) => {
     await loadApp()
 
     await page.locator('[data-testid="notifications-button"]').click()
     await expect(page).toHaveURL(/\/notifications$/)
-    await expect(page.locator('[data-testid="notifications-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="notifications-filter-all"]')).toBeVisible()
 
     await appPage.reload()
     await expect(page).toHaveURL(/\/notifications$/)
-    await expect(page.locator('[data-testid="notifications-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="notifications-filter-all"]')).toBeVisible()
 
-    await page.locator('[data-testid="notifications-back-button"]').click()
+    await page.locator('[data-testid="home-button"]').click()
     await expect(page).not.toHaveURL(/\/notifications/)
   })
 

@@ -1,3 +1,4 @@
+import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { isRetryableRequestError } from '@renderer/lib/http-error'
@@ -190,7 +191,7 @@ export function useDeleteAgent() {
       // entry without a blocking refetch. Defense-in-depth: the server already
       // 404s the agent, so this only removes a brief stale name/description flash.
       queryClient.removeQueries({ queryKey: ['agents', slug] })
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      invalidateNotificationCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })

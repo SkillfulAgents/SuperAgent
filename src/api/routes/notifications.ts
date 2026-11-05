@@ -1,3 +1,4 @@
+import { NOTIFICATION_CLIENT_HEADER, notificationClientIdSchema } from '@shared/lib/notifications/notification-change-schema'
 import { notificationReadAgentSlugs, confirmNotificationRead } from '@shared/lib/services/notification-read-state'
 /**
  * Notifications API Routes
@@ -11,13 +12,13 @@ import { streamSSE } from 'hono/streaming'
 import {
   listNotifications,
   countNotifications,
-  getUnreadCount,
+  getNotificationCounts,
   markAsRead,
   markAllAsRead,
   markSessionNotificationsRead,
   deleteNotification,
-  getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
+import { notificationTypesQuerySchema, readAllNotificationsBodySchema } from '@shared/lib/notifications/notification-filters'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
@@ -114,11 +115,14 @@ notificationsRouter.get('/', async (c) => {
     const offsetParam = c.req.query('offset')
     const limit = limitParam ? parseInt(limitParam, 10) : 50
     const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+    const parsedTypes = notificationTypesQuerySchema.safeParse(c.req.query('types'))
+    if (!parsedTypes.success) return c.json({ error: 'Unknown notification type' }, 400)
+    const types = parsedTypes.data
     const userId = getScopedUserId(c)
 
     const [items, total] = await Promise.all([
-      listNotifications(limit, userId, offset),
-      countNotifications(userId),
+      listNotifications(limit, userId, offset, types),
+      countNotifications(userId, types),
     ])
     return c.json({ items, total })
   } catch (error) {
@@ -127,16 +131,10 @@ notificationsRouter.get('/', async (c) => {
   }
 })
 
-// GET /api/notifications/unread-count - Get unread notification count
+// GET /api/notifications/unread-count - Badge counts and per-type tab totals
 notificationsRouter.get('/unread-count', async (c) => {
   try {
-    const userId = getScopedUserId(c)
-    const [count, mentions] = await Promise.all([
-      getUnreadCount(userId),
-      // Mentions exist in auth mode only, for a signed-in recipient.
-      userId ? getUnreadMentionCount(userId) : 0,
-    ])
-    return c.json({ count, mentions })
+    return c.json(await getNotificationCounts(getScopedUserId(c)))
   } catch (error) {
     console.error('Failed to fetch unread count:', error)
     return c.json({ error: 'Failed to fetch unread count' }, 500)
@@ -149,7 +147,7 @@ notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
     const notificationId = c.req.param('id')
     const userId = getScopedUserId(c)
     const slugs = await notificationReadAgentSlugs({ kind: 'notification', id: notificationId }, userId)
-    const success = await markAsRead(notificationId)
+    const success = await markAsRead(notificationId, notificationClientIdSchema.safeParse(c.req.header(NOTIFICATION_CLIENT_HEADER)).data)
 
     if (!success) {
       return c.json({ error: 'Notification not found' }, 404)
@@ -162,12 +160,21 @@ notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
   }
 })
 
-// POST /api/notifications/read-all - Mark all notifications as read
+// POST /api/notifications/read-all - Mark all notifications as read.
+// An optional JSON body `{ types }` narrows it to a filtered tab's types.
 notificationsRouter.post('/read-all', async (c) => {
   try {
+    const raw = await c.req.text()
+    let body: unknown = {}
+    if (raw) {
+      try { body = JSON.parse(raw) } catch { return c.json({ error: 'Invalid read-all body' }, 400) }
+    }
+    const parsedBody = readAllNotificationsBodySchema.safeParse(body)
+    if (!parsedBody.success) return c.json({ error: 'Invalid read-all body' }, 400)
+    const { types } = parsedBody.data
     const userId = getScopedUserId(c)
-    const slugs = await notificationReadAgentSlugs({ kind: 'all' }, userId)
-    const count = await markAllAsRead(userId)
+    const slugs = await notificationReadAgentSlugs({ kind: 'all', types }, userId)
+    const count = await markAllAsRead(userId, types, notificationClientIdSchema.safeParse(c.req.header(NOTIFICATION_CLIENT_HEADER)).data)
     return c.json({ success: true, count, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark all notifications as read:', error)
@@ -181,7 +188,7 @@ notificationsRouter.post('/read-by-session/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId')
     const userId = getScopedUserId(c)
     const slugs = await notificationReadAgentSlugs({ kind: 'session', sessionId }, userId)
-    const count = await markSessionNotificationsRead(sessionId, userId)
+    const count = await markSessionNotificationsRead(sessionId, userId, notificationClientIdSchema.safeParse(c.req.header(NOTIFICATION_CLIENT_HEADER)).data)
     return c.json({ success: true, count, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark session notifications as read:', error)
