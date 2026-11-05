@@ -9,7 +9,7 @@
  * before recording it in its static call log.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -132,6 +132,10 @@ function waitForCondition(
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('@shared/lib/services/session-defaults') })
 describe('chat integration model and effort resolution', () => {
   let createSessionSpy: ReturnType<typeof vi.spyOn>
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
@@ -113,6 +113,10 @@ async function startRelay(relay: FakeWebhookRelay) {
   await manager.start()
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('../services/session-defaults') })
 beforeEach(async () => {
   handle = await createTestDatabase(); database = handle.db; vi.clearAllMocks()
   runtime.create.mockImplementation(async (options: CreateSessionOptions) => {
