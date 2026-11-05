@@ -8,6 +8,8 @@ import { loadTargetContext } from '@shared/lib/proxy/rules/service'
 import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
+import sessionThreadRoutes from './session-threads'
+import { deleteSessionThreads } from '@shared/lib/session-threads/thread-service'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
@@ -1658,6 +1660,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 // ============================================================
 
 agents.route('/:id/members', agentMembers)
+agents.route('/:id/sessions/:sessionId/threads', sessionThreadRoutes)
 
 // GET /api/agents/:id/access - List users with roles on this agent
 agents.get('/:id/access', AgentAdmin(), async (c) => {
@@ -3150,6 +3153,8 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // A mark left behind would be an unreachable row: nothing lists the
     // session any more, so nothing could ever clear it.
     await deleteSessionUnreadMarks(agentSlug, [sessionId])
+    // Its threads go with it: nothing could open them again.
+    await deleteSessionThreads(agentSlug, [sessionId])
     // A Todo board item started in it goes back to Drafts (or, if finished, keeps its place).
     await unlinkTodosFromSessions(agentSlug, [sessionId])
 

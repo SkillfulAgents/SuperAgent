@@ -655,6 +655,11 @@ vi.mock('@shared/lib/services/session-unread-service', () => ({
   deleteSessionUnreadMarks: vi.fn(() => Promise.resolve(0)),
 }))
 
+vi.mock('@shared/lib/session-threads/thread-service', () => ({
+  deleteSessionThreads: vi.fn(() => Promise.resolve()),
+  deleteAgentThreadsStatements: vi.fn(() => []),
+}))
+
 vi.mock('@shared/lib/services/todo-service', () => ({
   unlinkTodosFromSessions: vi.fn(() => Promise.resolve()),
 }))
@@ -882,6 +887,7 @@ import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTas
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { deleteSessionThreads } from '@shared/lib/session-threads/thread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
@@ -5890,6 +5896,16 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 
     expect(res.status).toBe(204)
     expect(deleteSessionUnreadMarks).toHaveBeenCalledWith('test-agent', ['sess-1'])
+  })
+
+  it('removes the threads on the deleted session', async () => {
+    // Nothing could open them again once the session is gone.
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+    expect(deleteSessionThreads).toHaveBeenCalledWith('test-agent', ['sess-1'])
   })
 
   it('lets go of the deleted session on every Todo board', async () => {
