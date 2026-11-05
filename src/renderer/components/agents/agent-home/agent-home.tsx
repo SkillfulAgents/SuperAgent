@@ -33,6 +33,7 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
+import { registerSessionComposerFocus } from '@renderer/components/messages/composer-focus'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
@@ -62,7 +63,7 @@ import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
-import { useDraftsStore } from '@renderer/context/drafts-context'
+import { agentHomeId, useDraftsStore } from '@renderer/context/drafts-context'
 import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
 
@@ -114,6 +115,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const carryover = useNewSessionCarryover(agent.slug)
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLDivElement>(null)
+  // The file drawer's Submit adds comments to this composer's draft and focuses it here.
+  useEffect(() => registerSessionComposerFocus(agentHomeId(agent.slug), () => composerTextareaRef.current?.focus()), [agent.slug])
   const isMobile = useIsMobile()
   const { track } = useAnalyticsTracking()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
@@ -176,7 +179,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
 
   const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
-    draftKey: `agent:${agent.slug}`,
+    draftKey: `session:${agentHomeId(agent.slug)}`,
     initialAttachments: carryover?.attachments,
     initialOptions: {
       initialModel: carryover?.model,

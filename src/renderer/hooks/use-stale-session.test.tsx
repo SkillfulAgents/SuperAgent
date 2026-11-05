@@ -100,7 +100,7 @@ describe('useStaleSession', () => {
     })))
     act(() => result.current.stale.startFresh())
 
-    expect(result.current.store.get('agent:abc123def4')).toBe('Continue as a new task')
+    expect(result.current.store.get('session:agent-home:abc123def4')).toBe('Continue as a new task')
     expect(result.current.store.get<NewSessionCarryover>(newSessionCarryoverKey('abc123def4'))).toEqual({
       attachments: [],
       model: 'sonnet',

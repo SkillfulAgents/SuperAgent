@@ -111,6 +111,31 @@ test.describe('File Preview', () => {
     expect(Math.abs(homeBox!.x + homeBox!.width - (drawerBox!.x + drawerBox!.width))).toBeLessThanOrEqual(1)
   })
 
+  test('a comment on a file opened from agent home goes into the home composer', async ({ page }) => {
+    await agentPage.createAgent(`HomeFileComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'reports/daily.md', '# Daily Report\n\nShipped the export.\n')
+    const bookmarksResponse = await page.request.put(`/api/agents/${agentSlug}/bookmarks`, {
+      data: [{ name: 'Daily report', file: '/workspace/reports/daily.md' }],
+    })
+    expect(bookmarksResponse.ok()).toBeTruthy()
+
+    await page.reload()
+    await page.getByRole('button', { name: 'Daily report' }).click()
+    const line = markdown(page).getByText('Shipped the export.')
+    await expect(line).toBeVisible({ timeout: 10000 })
+    await line.hover()
+    await page.keyboard.press('c')
+    await page.getByPlaceholder('Add your comment...').fill('Say which export')
+    await page.locator('[data-comment-overlay]').getByRole('button', { name: 'Add' }).click()
+    await page.getByTestId('file-preview-tray').getByRole('button', { name: 'Submit' }).click()
+
+    const composer = page.getByTestId('home-message-input')
+    await expect(composer).toContainText('File feedback on daily.md:')
+    await expect(composer).toContainText('Say which export')
+    await expect(composer).toBeFocused()
+  })
+
   test('folder bookmark traverses lazily and opens files while preserving tree state', async ({ page }) => {
     await agentPage.createAgent(`FolderPreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
