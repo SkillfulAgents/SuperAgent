@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { PNG } from 'pngjs'
 import { MAX_AGENT_MEMBERS_BATCH_SIZE, type CollaborationEvent } from '@shared/lib/agent-members-schema'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
+import { keepAppRecordStoreAcrossTests } from '@shared/lib/app-records/testing/memory-record-store'
 import { mutateSettings } from '@shared/lib/config/settings'
 
 let directory: string
@@ -28,7 +28,7 @@ beforeAll(async () => {
   for (const slug of [agentSlug, secondAgent, privateAgent, emptyAgent]) {
     fs.mkdirSync(path.join(directory, 'agents', slug), { recursive: true })
   }
-  installTestAppRecordStore()
+  keepAppRecordStoreAcrossTests()
   await mutateSettings((s) => {
     s.auth = { signupMode: 'open', requireAdminApproval: false }
   })

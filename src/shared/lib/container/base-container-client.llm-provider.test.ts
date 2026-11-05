@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
-import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import type { AppSettings } from '../config/settings'
 
 const state = vi.hoisted(() => ({
@@ -59,8 +58,6 @@ const catalog = ['model-a', 'model-b'].map(id => ({ id, label: id, supportedEffo
 beforeEach(async () => {
   handle = await createTestDatabase()
   state.db = handle.db
-  // The settings getters the mock above does not replace read the records (defaults here).
-  installTestAppRecordStore()
   state.settings = {} as AppSettings
   state.metadata = {}
   state.preferences = {}

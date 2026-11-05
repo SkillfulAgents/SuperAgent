@@ -1,6 +1,5 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 const base = { slug: 'ada', name: 'Ada', appUrl: null }
 const originalHostPublicUrl = process.env.HOST_PUBLIC_URL
@@ -14,10 +13,6 @@ afterEach(() => {
 })
 
 // Settings and host records are app records: a fresh in-memory store per test.
-beforeEach(() => {
-  installTestAppRecordStore()
-})
-
 describe('buildAgentContactCard', () => {
   it('escapes backslashes, commas, semicolons, and newlines in the note', () => {
     const vcf = buildAgentContactCard({

@@ -1,7 +1,6 @@
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { mockChatIntegration } from '@shared/lib/chat-integrations/test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { Hono } from 'hono'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -158,7 +157,6 @@ describe('x-agent chat route', () => {
   let containerSendMessage: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    installTestAppRecordStore()
     // Set up real in-memory DB so isChatAllowed exercises genuine SQL.
     // Seed 'integration-1' as slack (requireApproval=false) → isChatAllowed returns
     // true for all default-path tests without any access row needed.

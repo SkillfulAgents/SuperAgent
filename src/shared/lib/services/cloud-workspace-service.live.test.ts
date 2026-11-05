@@ -74,8 +74,9 @@ d('SUP-362 live cloud-workspace chain', () => {
     mkdirSync(dataDir, { recursive: true })
     process.env.SUPERAGENT_DATA_DIR = dataDir
     // Settings (the platform account, the deployment token) are app records.
-    const { installTestAppRecordStore } = await import('@shared/lib/app-records/testing/memory-record-store')
-    installTestAppRecordStore()
+    // One store for the whole file: what beforeAll seeds (the auth secret) must last.
+    const { keepAppRecordStoreAcrossTests } = await import('@shared/lib/app-records/testing/memory-record-store')
+    keepAppRecordStoreAcrossTests()
 
     // Seed the connected platform account.
     const { mutateSettings } = await import('@shared/lib/config/settings')

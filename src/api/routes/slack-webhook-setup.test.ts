@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { Hono } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
@@ -58,7 +57,6 @@ async function stored(id: string) {
 
 const slackApi = vi.hoisted(() => ({ authTest: { ok: true } as Record<string, unknown> }))
 beforeEach(async () => {
-  installTestAppRecordStore()
   vi.clearAllMocks(); handle = await createTestDatabase(); testDb = handle.db
   vi.stubEnv('HOST_PUBLIC_URL', 'https://public.example/')
   slackApi.authTest = { ok: true }

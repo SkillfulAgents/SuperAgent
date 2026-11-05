@@ -1,16 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import {
   getOrCreatePlatformClientInstanceId,
   getPlatformDeviceName,
 } from './platform-device-service'
 
 describe('platform-device-service', () => {
-  beforeEach(() => {
-    installTestAppRecordStore()
-  })
-
   afterEach(() => {
     vi.restoreAllMocks()
   })

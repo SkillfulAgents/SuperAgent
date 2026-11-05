@@ -58,7 +58,6 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { getAgentsDir } from '@shared/lib/utils/file-storage'
 import type { SkillsetConfig, InstalledSkillMetadata, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
@@ -137,7 +136,6 @@ describe('platform-auth-service', () => {
         clientId: 'superagent-test',
       },
     ])
-    installTestAppRecordStore()
     _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
     _resetEnvManagedPlatformStatusForTest()
     mockDbGet.mockReturnValue(null)

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
   appRecordStore,
@@ -11,6 +11,10 @@ import {
 } from './records'
 import { MemoryAppRecordStore } from './testing/memory-record-store'
 
+// These tests are about installing: start each with none (the test setup installs one).
+beforeEach(() => {
+  uninstallAppRecordStore()
+})
 afterEach(() => {
   uninstallAppRecordStore()
 })

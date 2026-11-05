@@ -6,7 +6,6 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 // Which agents exist is the agents table: one in-memory database per test,
 // matching the per-test data dir, so a rolled-back import is judged against
@@ -44,7 +43,6 @@ beforeEach(() => {
   testDb = drizzle(sqlite, { schema })
   migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
   vi.clearAllMocks()
-  installTestAppRecordStore()
 })
 afterEach(async () => {
   for (const slug of await agentCatalog.list()) await agentRegistry.evict(slug)
