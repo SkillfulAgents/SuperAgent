@@ -127,6 +127,7 @@ import { serve } from '@hono/node-server'
 import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
+import { installDesktopKeyManager } from './keys/install-desktop-key-manager'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
@@ -1580,6 +1581,17 @@ async function startApp() {
   }
   // Then the state the API shares across requests, in this process's memory.
   await initializeLocalAppState()
+
+  // Key custody next, before the API serves anything: the vault seals through
+  // it, and it checks a key against the sealed data (so after the database).
+  // It waits for app `ready` (safeStorage needs it). A key it cannot hand out
+  // is reported by the vault when used; the app still runs.
+  try {
+    await installDesktopKeyManager()
+  } catch (error) {
+    console.error('Failed to set up key custody:', error)
+    captureException(error, { tags: { component: 'keys', operation: 'install' } })
+  }
 
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the

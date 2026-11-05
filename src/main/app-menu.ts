@@ -2,6 +2,7 @@ import { Menu, BrowserWindow, app, nativeImage } from 'electron'
 import path from 'path'
 import type { ApiTarget } from '@shared/lib/api-target'
 import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
+import { exportVaultKey } from './keys/vault-key-export'
 
 let mainWindowRef: BrowserWindow | null = null
 // A getter rather than a stored URL: in cloud mode the effective base is the
@@ -214,6 +215,16 @@ async function buildAppMenu(): Promise<void> {
           label: 'New Agent',
           accelerator: 'CmdOrCtrl+N',
           click: () => sendMenuCommand({ channel: 'open-create-agent' }),
+        },
+        { type: 'separator' as const },
+        {
+          // Main process end to end: the key never reaches a renderer.
+          label: 'Export Browser Vault Key…',
+          click: () => {
+            exportVaultKey(mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null).catch((error) => {
+              console.error('[keys] Exporting the vault key failed:', error instanceof Error ? error.message : error)
+            })
+          },
         },
         ...(!isMac ? [
           { type: 'separator' as const },
