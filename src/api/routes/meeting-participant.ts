@@ -15,13 +15,13 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { agentCatalog } from '@shared/lib/agent-actor'
 import { background } from '@shared/lib/background'
-import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getIntegrationSession } from '@shared/lib/agent-integrations/store'
 import { getAgentIntegration } from '@shared/lib/services/agent-integration-service'
-import { MeetingAgentIntegration, MAX_MEETING_AGE_MS } from '@shared/lib/meeting-integrations/meeting-agent-integration'
+import { receiveMeetingBotEvent } from '@shared/lib/meeting-integrations/bot-events'
+import { MAX_MEETING_AGE_MS } from '@shared/lib/meeting-integrations/meeting-agent-integration'
 import { participantCookieHeader, participantCookieValue } from '@shared/lib/meeting-integrations/participant-credential'
 import { meetingRoster } from '@shared/lib/meeting-integrations/roster'
-import { isTerminalMeetingStatus } from '@shared/lib/meeting-integrations/schemas'
+import { isTerminalMeetingStatus, type MeetingRoster } from '@shared/lib/meeting-integrations/schemas'
 import { toPublicMeeting, verifyParticipantToken, type MeetingRecord } from '@shared/lib/meeting-integrations/store'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
@@ -65,7 +65,10 @@ router.get('/:meetingId', async (c) => {
   })
 })
 
-/** Who is in the call, as a stream of roster snapshots: one now, one per change. */
+/**
+ * Who is in the call, as a stream of roster snapshots: one now, one per change.
+ * While the page follows it, the roster does not expire however quiet the call.
+ */
 router.get('/:meetingId/stream', async (c) => {
   const clientSignal = c.req.raw.signal
   const auth = await authorize(c.req.param('meetingId'), c.req.query())
@@ -76,13 +79,12 @@ router.get('/:meetingId/stream', async (c) => {
     if (clientSignal.aborted) return
     // Once the client is gone the stream is aborted, whichever way it was heard.
     const finished = waitForClientGone(clientSignal, stream)
-    const send = (roster: ReturnType<typeof meetingRoster.get>) => {
+    const send = (roster: MeetingRoster) => {
       if (!stream.aborted) background(stream.writeSSE({ event: 'roster', data: JSON.stringify(roster) }), { name: 'meeting-participant-route.write-roster' })
     }
-    const unsubscribe = meetingRoster.subscribe(meetingId, send)
-    send(meetingRoster.get(meetingId))
+    const watch = await meetingRoster.watch(meetingId, send)
     const ping = setInterval(() => { if (!stream.aborted) background(stream.writeSSE({ event: 'ping', data: '' }), { name: 'meeting-participant-route.write-ping' }) }, ROSTER_PING_MS)
-    try { await finished } finally { clearInterval(ping); unsubscribe() }
+    try { await finished } finally { clearInterval(ping); await watch.stop() }
   })
 })
 
@@ -91,15 +93,13 @@ router.get('/:meetingId/stream', async (c) => {
  * token checks out this answers 200 even for events the family does not track;
  * only an unknown meeting or a bad token is refused. Both path spellings are
  * registered because Recall requires the trailing slash before the query string.
+ * The event is applied here, not handed to the integration's connector, so it
+ * lands whether or not this process runs one.
  */
 const receiveEvent = async (c: Context<LimitedJsonBodyEnv>) => {
   const auth = await authorize(c.req.param('meetingId') ?? '', c.req.query())
   if ('error' in auth) return c.json({ error: auth.error }, auth.status)
-  const { meeting } = auth
-  const body = c.get('limitedJsonBody')
-  const connector = agentIntegrationManager.getConnector(meeting.integrationId)
-  if (!(connector instanceof MeetingAgentIntegration)) return c.json({ accepted: false, reason: 'integration not connected' })
-  const accepted = await connector.receiveBotEvent(meeting.id, body)
+  const accepted = await receiveMeetingBotEvent(auth.meeting, c.get('limitedJsonBody'))
   return c.json({ accepted })
 }
 router.post('/:meetingId/events/', limitJsonBody(EVENT_BODY_MAX_BYTES), receiveEvent)
