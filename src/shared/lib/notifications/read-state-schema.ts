@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { NotificationTypeName } from './notification-filters'
 
 export const notificationPreviewSourceSchema = z.object({
   id: z.string(),
@@ -30,4 +31,5 @@ export const notificationReadResponseSchema = z.object({
 })
 
 export type NotificationReadState = z.infer<typeof notificationReadStateSchema>
-export type NotificationReadTarget = { kind: 'all' } | { kind: 'notification'; id: string } | { kind: 'session'; sessionId: string }
+/** `all` with `types` is read-all on a filtered tab: only those types are read. */
+export type NotificationReadTarget = { kind: 'all'; types?: readonly NotificationTypeName[] } | { kind: 'notification'; id: string } | { kind: 'session'; sessionId: string }

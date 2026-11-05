@@ -126,6 +126,37 @@ describe('optimistic notification reads', () => {
     }
   })
 
+  it('a filtered read-all marks only its types, sends them, and leaves flags for the server to confirm', async () => {
+    const { client } = seed()
+    client.setQueryData(['notifications', 15, 0], {
+      items: [notification('n1', 's1'), { ...notification('n2', 's2'), type: 'session_waiting' }],
+      total: 2,
+    })
+    client.setQueryData(['notifications', 'unread-count'], { count: 2, mentions: 0 })
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all', types: ['session_complete'] })
+    await waitFor(() => expect(page(client).items.find(n => n.id === 'n1')?.isRead).toBe(true))
+    expect(page(client).items.find(n => n.id === 'n2')?.isRead).toBe(false)
+    expect(client.getQueryData(['notifications', 'unread-count'])).toMatchObject({ count: 1 })
+    // The preview has no type to match, so only the server's answer may clear it.
+    expect(agent(client)).toMatchObject({ notificationPreview: 'n1', hasUnreadMention: true })
+    expect(client.getQueryData<ApiSession>(['session', 's1', 'a'])).toMatchObject({ hasUnreadNotifications: true })
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith('/api/notifications/read-all', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ types: ['session_complete'] }),
+    }))
+    pending.resolve(response(state('n2')))
+    await operation
+    expect(agent(client)).toMatchObject({ notificationPreview: 'n2', hasUnreadMention: false })
+  })
+
+  it('an unfiltered read-all still sends no body', async () => {
+    const { client } = seed()
+    vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+    await readNotifications(client, { kind: 'all' })
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith('/api/notifications/read-all', { method: 'POST' })
+  })
+
   it('rolls back a failed write while preserving a newer notification and unrelated agent edits', async () => {
     const { client } = seed()
     const pending = deferred()

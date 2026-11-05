@@ -17,8 +17,14 @@ export function noteNotificationChange(client: QueryClient, slug?: string): void
   revision.count++
   if (slug) revision.agents.set(slug, (revision.agents.get(slug) ?? 0) + 1)
 }
-const matches = (target: NotificationReadTarget, notification: Pick<ApiNotification, 'id' | 'sessionId'>) =>
-  target.kind === 'all' || (target.kind === 'notification' ? notification.id === target.id : notification.sessionId === target.sessionId)
+/** Read-all with no type filter: every row, so counts and flags can go straight to zero. */
+const readsEverything = (target: NotificationReadTarget) => target.kind === 'all' && !target.types
+// A row without a type (an agent's preview source) can't be matched against a
+// filtered read-all, so it is left for the server's confirmation to settle.
+const matches = (target: NotificationReadTarget, notification: Pick<ApiNotification, 'id' | 'sessionId'> & { type?: ApiNotification['type'] }) =>
+  target.kind === 'all'
+    ? !target.types || (notification.type !== undefined && target.types.includes(notification.type))
+    : target.kind === 'notification' ? notification.id === target.id : notification.sessionId === target.sessionId
 
 function mapCache(key: QueryKey, data: CacheData, maps: {
   agent: (row: ApiAgent) => ApiAgent
@@ -86,17 +92,17 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
       notification: row => !row.isRead && matches(target, row) ? { ...row, isRead: true, readAt } : row,
       counts: counts => ({
         ...counts,
-        count: target.kind === 'all' ? 0 : Math.max(0, counts.count - unread.length),
-        ...(counts.mentions === undefined ? {} : { mentions: target.kind === 'all' ? 0 : Math.max(0, counts.mentions - unread.filter(n => n.type === 'session_mention').length) }),
+        count: readsEverything(target) ? 0 : Math.max(0, counts.count - unread.length),
+        ...(counts.mentions === undefined ? {} : { mentions: readsEverything(target) ? 0 : Math.max(0, counts.mentions - unread.filter(n => n.type === 'session_mention').length) }),
       }),
       agent: agent => {
-        const clearPreview = target.kind === 'all' || (agent.notificationPreviewSource && matches(target, agent.notificationPreviewSource))
+        const clearPreview = readsEverything(target) || (target.kind !== 'all' && agent.notificationPreviewSource && matches(target, agent.notificationPreviewSource))
         if (!clearPreview) return agent
         return {
           ...agent,
           notificationPreview: undefined,
           notificationPreviewSource: undefined,
-          ...(target.kind === 'all' ? {
+          ...(readsEverything(target) ? {
             // A notification read must not dismiss a personal reminder.
             hasUnreadNotifications: agent.markedUnreadSessionIds === undefined ? agent.hasUnreadNotifications : agent.markedUnreadSessionIds.length > 0,
             hasUnreadMention: false,
@@ -104,7 +110,8 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
         }
       },
       session: (session, slug) => {
-        if (target.kind === 'notification' || (target.kind === 'session' && session.id !== target.sessionId)) return session
+        // A filtered read-all can leave other types unread in a session; confirm() settles it.
+        if (target.kind === 'notification' || (target.kind === 'all' && target.types) || (target.kind === 'session' && session.id !== target.sessionId)) return session
         if (session.hasUnreadNotifications === undefined && session.hasUnreadMention === undefined) return session
         const marked = agentFor(session.agentSlug ?? slug)?.markedUnreadSessionIds
         return {
@@ -184,7 +191,9 @@ export function readNotifications(client: QueryClient, target: NotificationReadT
     const path = target.kind === 'all' ? 'read-all' : target.kind === 'session'
       ? `read-by-session/${encodeURIComponent(target.sessionId)}` : `${encodeURIComponent(target.id)}/read`
     try {
-      const response = await apiFetch(`/api/notifications/${path}`, { method: 'POST' })
+      const response = await apiFetch(`/api/notifications/${path}`, target.kind === 'all' && target.types
+        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types: target.types }) }
+        : { method: 'POST' })
       if (!response.ok) throw new Error('Failed to mark notifications as read')
       const result = notificationReadResponseSchema.parse(await response.json())
       if (result.readState) optimistic.confirm(result.readState)

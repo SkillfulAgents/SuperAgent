@@ -7,7 +7,7 @@ import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
 import { isTeamBrainAgentHome } from '@renderer/lib/team-brain/team-brain-agent-home'
-import { agentHomeSearchSchema, chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { agentHomeSearchSchema, chatSearchSchema, connectionsSearchSchema, homeSearchSchema, notificationsSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 
@@ -101,6 +101,7 @@ export const homeRoute = createRoute({
 export const notificationsRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'notifications',
+  validateSearch: lenient(notificationsSearchSchema),
   component: NotificationsRoute,
 })
 

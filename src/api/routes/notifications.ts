@@ -12,6 +12,7 @@ import { streamSSE } from 'hono/streaming'
 import {
   listNotifications,
   countNotifications,
+  countNotificationsByType,
   getUnreadCount,
   markAsRead,
   markAllAsRead,
@@ -21,6 +22,7 @@ import {
   getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
 import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
+import { notificationTypesQuerySchema, readAllNotificationsBodySchema } from '@shared/lib/notifications/notification-filters'
 import { background } from '@shared/lib/background'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
@@ -133,11 +135,14 @@ notificationsRouter.get('/', async (c) => {
     const offsetParam = c.req.query('offset')
     const limit = limitParam ? parseInt(limitParam, 10) : 50
     const offset = offsetParam ? parseInt(offsetParam, 10) : 0
+    const parsedTypes = notificationTypesQuerySchema.safeParse(c.req.query('types'))
+    if (!parsedTypes.success) return c.json({ error: 'Unknown notification type' }, 400)
+    const types = parsedTypes.data
     const userId = getScopedUserId(c)
 
     const [items, total] = await Promise.all([
-      listNotifications(limit, userId, offset),
-      countNotifications(userId),
+      listNotifications(limit, userId, offset, types),
+      countNotifications(userId, types),
     ])
     return c.json({ items, total })
   } catch (error) {
@@ -162,6 +167,16 @@ notificationsRouter.get('/unread-count', async (c) => {
   }
 })
 
+// GET /api/notifications/type-counts - Total and unread rows per type (the page's filter tabs)
+notificationsRouter.get('/type-counts', async (c) => {
+  try {
+    return c.json({ types: await countNotificationsByType(getScopedUserId(c)) })
+  } catch (error) {
+    console.error('Failed to fetch notification type counts:', error)
+    return c.json({ error: 'Failed to fetch notification type counts' }, 500)
+  }
+})
+
 // POST /api/notifications/:id/read - Mark a notification as read
 notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
   try {
@@ -181,12 +196,21 @@ notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
   }
 })
 
-// POST /api/notifications/read-all - Mark all notifications as read
+// POST /api/notifications/read-all - Mark all notifications as read.
+// An optional JSON body `{ types }` narrows it to a filtered tab's types.
 notificationsRouter.post('/read-all', async (c) => {
   try {
+    const raw = await c.req.text()
+    let body: unknown = {}
+    if (raw) {
+      try { body = JSON.parse(raw) } catch { return c.json({ error: 'Invalid read-all body' }, 400) }
+    }
+    const parsedBody = readAllNotificationsBodySchema.safeParse(body)
+    if (!parsedBody.success) return c.json({ error: 'Invalid read-all body' }, 400)
+    const { types } = parsedBody.data
     const userId = getScopedUserId(c)
-    const slugs = await notificationReadAgentSlugs({ kind: 'all' }, userId)
-    const count = await markAllAsRead(userId)
+    const slugs = await notificationReadAgentSlugs({ kind: 'all', types }, userId)
+    const count = await markAllAsRead(userId, types)
     return c.json({ success: true, count, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark all notifications as read:', error)
