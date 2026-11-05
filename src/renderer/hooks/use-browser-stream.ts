@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
-import type { BrowserTabInfo, BrowserNavigateAction } from '@shared/lib/browser-stream-protocol'
+import type { BrowserTabInfo, BrowserNavigateAction, BrowserViewportCommand } from '@shared/lib/browser-stream-protocol'
 import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-stream-state'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
@@ -15,10 +15,6 @@ export type NavigateAction = BrowserNavigateAction
 const RECONNECT_BASE_MS = 1000
 const MAX_RECONNECT_DELAY_MS = 8000
 const MAX_FAILED_RECONNECTS = 5
-
-// Resend only after a real change: Chrome's rounding nudges the card width by a few px per frame size.
-const VIEWPORT_WIDTH_HYSTERESIS = 32
-const VIEWPORT_DEBOUNCE_MS = 200
 
 function canvasDeviceWidth(canvas: HTMLCanvasElement | null): number | undefined {
   const width = Math.round((canvas?.getBoundingClientRect().width ?? 0) * window.devicePixelRatio)
@@ -61,9 +57,6 @@ export function useBrowserStream({
   const [autoFollow, setAutoFollow] = useState(true)
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
-
-  /** Canvas width last given to the current socket, in device pixels. */
-  const sentWidthRef = useRef<number | undefined>(undefined)
 
   // Lifecycle refs for cleanup
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -108,6 +101,8 @@ export function useBrowserStream({
   const pendingBlobRef = useRef<Blob | null>(null)
   const rafIdRef = useRef<number | null>(null)
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const decodesStartedRef = useRef(0)
+  const newestPaintedRef = useRef(0)
 
   const renderFrame = useCallback((blob: Blob) => {
     pendingBlobRef.current = blob
@@ -130,7 +125,14 @@ export function useBrowserStream({
         if (!ctx) return
 
         // Decode image off the main thread
+        const decode = ++decodesStartedRef.current
         createImageBitmap(latestBlob).then((bitmap) => {
+          // A large frame can finish decoding after a smaller, newer one: don't paint over it.
+          if (decode < newestPaintedRef.current) {
+            bitmap.close()
+            return
+          }
+          newestPaintedRef.current = decode
           const needsResize = canvas.width !== bitmap.width || canvas.height !== bitmap.height
           if (needsResize) {
             canvas.width = bitmap.width
@@ -166,9 +168,9 @@ export function useBrowserStream({
     const baseUrl = getApiBaseUrl()
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
-    // The width goes on the URL: the first screencast is sized right, and nothing is lost while the proxy connects upstream.
-    sentWidthRef.current = canvasDeviceWidth(canvasRef.current)
-    const widthQuery = sentWidthRef.current ? `?width=${sentWidthRef.current}` : ''
+    // Sizes the first screencast. A drawer still opening has no width yet; the report below covers that.
+    const width = canvasDeviceWidth(canvasRef.current)
+    const widthQuery = width ? `?width=${width}` : ''
     const wsUrl = `${wsProtocol}://${wsHost}/api/agents/${agentSlug}/browser/stream${widthQuery}`
 
     const ws = new WebSocket(wsUrl)
@@ -364,19 +366,15 @@ export function useBrowserStream({
   )
 
   // Tell the container when the canvas width changes, so it never streams wider frames than shown.
+  // It debounces these and ignores small moves, because any client can send them.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!connected || !canvas || typeof ResizeObserver === 'undefined') return
-    let timer: ReturnType<typeof setTimeout> | undefined
+    let sent: number | undefined
     const report = (width: number | undefined) => {
-      // The latest size decides: a drag that ends back near the sent width sends nothing.
-      if (timer) clearTimeout(timer)
-      const sent = sentWidthRef.current
-      if (!width || (sent !== undefined && Math.abs(width - sent) < VIEWPORT_WIDTH_HYSTERESIS)) return
-      timer = setTimeout(() => {
-        sentWidthRef.current = width
-        sendMessage({ type: 'viewport', width })
-      }, VIEWPORT_DEBOUNCE_MS)
+      if (!width || width === sent) return
+      sent = width
+      sendMessage({ type: 'viewport', width } satisfies BrowserViewportCommand)
     }
     const observer = new ResizeObserver(([entry]) => {
       report(entry.devicePixelContentBoxSize?.[0]?.inlineSize ?? canvasDeviceWidth(canvas))
@@ -396,7 +394,6 @@ export function useBrowserStream({
       watchPixelRatio()
     }
     return () => {
-      if (timer) clearTimeout(timer)
       observer.disconnect()
       pixelRatioQuery?.removeEventListener('change', watchPixelRatio)
     }

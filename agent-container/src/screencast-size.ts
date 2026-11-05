@@ -1,11 +1,11 @@
 /** Largest frame edge streamed, so a 5K full-screen preview can't push multi-MB frames through the container. */
 const MAX_SCREENCAST_EDGE = 2560;
 const MIN_VIEWER_WIDTH = 64;
-
-export interface ScreencastSize {
-  maxWidth: number;
-  maxHeight: number;
-}
+/**
+ * Smaller moves keep the running width. A full-screen card's width follows the frame's aspect ratio, which
+ * Chrome's rounding nudges with each frame size, so reacting to every pixel can restart the screencast in a loop.
+ */
+const VIEWER_WIDTH_MARGIN = 32;
 
 /** A viewer-reported width as a bounded integer, or undefined when it isn't a usable number. */
 export function clampViewerWidth(value: unknown): number | undefined {
@@ -14,39 +14,17 @@ export function clampViewerWidth(value: unknown): number | undefined {
   return Math.min(Math.max(width, MIN_VIEWER_WIDTH), MAX_SCREENCAST_EDGE);
 }
 
+export function viewerWidthMoved(current: number | undefined, next: number): boolean {
+  return current === undefined || Math.abs(next - current) >= VIEWER_WIDTH_MARGIN;
+}
+
 /**
  * Frame limits for a viewer canvas `viewerWidth` device px wide. Chrome only scales frames down,
  * so a page rendered at 1x stays at its own width and a Retina host Chrome can send up to 2x.
  * The page itself is never touched: its pixel ratio must not change with the viewer's size.
  */
-export function screencastSize(viewerWidth: number | undefined): ScreencastSize {
+export function screencastSize(viewerWidth: number | undefined): { maxWidth: number; maxHeight: number } {
   return viewerWidth
     ? { maxWidth: viewerWidth, maxHeight: MAX_SCREENCAST_EDGE }
     : { maxWidth: 1280, maxHeight: 720 };
-}
-
-/**
- * Whether a screencast running at `running` already sends the frames `wanted` would.
- * A frame narrower than the running cap wasn't limited by it, and Chrome only scales down,
- * so any width cap at or above that frame leaves it unchanged.
- */
-export function sameFrames(running: ScreencastSize, wanted: ScreencastSize, frameWidth: number | undefined): boolean {
-  if (running.maxHeight !== wanted.maxHeight) return false;
-  if (running.maxWidth === wanted.maxWidth) return true;
-  return frameWidth !== undefined && frameWidth < running.maxWidth && frameWidth <= wanted.maxWidth;
-}
-
-/** Pixel width from a JPEG's start-of-frame header, or undefined if none is found. */
-export function jpegWidth(jpeg: Buffer): number | undefined {
-  let offset = 2;
-  while (offset + 9 <= jpeg.length) {
-    if (jpeg[offset] !== 0xff) return undefined;
-    const marker = jpeg[offset + 1];
-    // SOF0–SOF15, except DHT (C4), JPG (C8) and DAC (CC), which share the range.
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-      return jpeg.readUInt16BE(offset + 7);
-    }
-    offset += 2 + jpeg.readUInt16BE(offset + 2);
-  }
-  return undefined;
 }

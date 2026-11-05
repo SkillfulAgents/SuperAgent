@@ -414,6 +414,53 @@ describe('useBrowserStream ordered history', () => {
   })
 })
 
+describe('useBrowserStream frame painting', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0))
+    vi.stubGlobal('cancelAnimationFrame', (id: ReturnType<typeof setTimeout>) => clearTimeout(id))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('does not paint a slow decode over a newer frame', async () => {
+    const decodes: Array<(bitmap: { width: number; height: number; close: () => void }) => void> = []
+    vi.stubGlobal('createImageBitmap', () => new Promise((resolve) => decodes.push(resolve)))
+    const canvas = document.createElement('canvas')
+    const drawImage = vi.fn()
+    canvas.getContext = (() => ({ drawImage })) as unknown as typeof canvas.getContext
+    const canvasRef = { current: canvas }
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => ws.completeHandshake())
+
+    for (let frame = 0; frame < 2; frame++) {
+      act(() => {
+        ws.onmessage?.({ data: new Blob(['jpeg']) })
+        vi.advanceTimersByTime(1)
+      })
+    }
+    expect(decodes).toHaveLength(2)
+
+    const older = { width: 2304, height: 1524, close: vi.fn() }
+    const newer = { width: 704, height: 466, close: vi.fn() }
+    await act(async () => decodes[1](newer))
+    await act(async () => decodes[0](older))
+
+    expect(canvas.width).toBe(704)
+    expect(drawImage).toHaveBeenCalledTimes(1)
+    expect(drawImage).toHaveBeenCalledWith(newer, 0, 0)
+    expect(older.close).toHaveBeenCalled()
+    hook.unmount()
+  })
+})
+
 describe('useBrowserStream viewport width', () => {
   let observed: Array<{ target: Element; options?: ResizeObserverOptions; fire: (entry: object) => void }>
 
@@ -455,7 +502,7 @@ describe('useBrowserStream viewport width', () => {
     hook.unmount()
   })
 
-  it('reports only width changes past the hysteresis, with the exact width', async () => {
+  it('reports the exact width on each change, leaving debouncing to the container', async () => {
     const canvasRef = canvasOfCssWidth(420.5)
     const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
     await settle()
@@ -464,40 +511,14 @@ describe('useBrowserStream viewport width', () => {
     expect(observed[0].target).toBe(canvasRef.current)
     expect(observed[0].options).toEqual({ box: 'device-pixel-content-box' })
 
-    // The first observation and small rounding nudges match the width already on the URL.
     act(() => resize(841))
-    act(() => resize(846))
-    act(() => resize(838))
-    act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent).toEqual([])
-
-    // A drag sends once, after it settles.
-    act(() => resize(1000))
+    act(() => resize(841))
     act(() => resize(1200))
-    act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent).toEqual([{ type: 'viewport', width: 1200 }])
-
-    act(() => resize(1210))
-    act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent).toHaveLength(1)
+    expect(ws.sent).toEqual([{ type: 'viewport', width: 841 }, { type: 'viewport', width: 1200 }])
     hook.unmount()
   })
 
-  it('drops a pending report when the width settles back near the one already sent', async () => {
-    const canvasRef = canvasOfCssWidth(420.5)
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
-    await settle()
-    const ws = FakeWebSocket.instances[0]
-    act(() => ws.completeHandshake())
-
-    act(() => resize(1000))
-    act(() => resize(845))
-    act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent).toEqual([])
-    hook.unmount()
-  })
-
-  it('ignores a hidden canvas, then reports the width it comes back at', async () => {
+  it('ignores a hidden canvas', async () => {
     const canvasRef = canvasOfCssWidth(420.5)
     const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
     await settle()
@@ -505,12 +526,15 @@ describe('useBrowserStream viewport width', () => {
     act(() => ws.completeHandshake())
 
     act(() => resize(0))
-    act(() => vi.advanceTimersByTime(200))
     expect(ws.sent).toEqual([])
+    hook.unmount()
+  })
 
-    act(() => resize(1200))
-    act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent).toEqual([{ type: 'viewport', width: 1200 }])
+  it('leaves the width off the URL while the canvas has none', async () => {
+    const canvasRef = canvasOfCssWidth(0)
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    expect(new URL(FakeWebSocket.instances[0].url).search).toBe('')
     hook.unmount()
   })
 
@@ -539,12 +563,12 @@ describe('useBrowserStream viewport width', () => {
     const ws = FakeWebSocket.instances[0]
     act(() => ws.completeHandshake())
     expect(queries.map((entry) => entry.query)).toEqual(['(resolution: 2dppx)'])
+    expect(ws.sent).toEqual([{ type: 'viewport', width: 841 }])
 
     // Dragged to a 1x screen; the CSS width is unchanged, so only the media query can tell.
     vi.stubGlobal('devicePixelRatio', 1)
     act(() => queries[0].fire())
-    act(() => vi.advanceTimersByTime(200))
-    expect(ws.sent).toEqual([{ type: 'viewport', width: 421 }])
+    expect(ws.sent.at(-1)).toEqual({ type: 'viewport', width: 421 })
     expect(queries.map((entry) => entry.query)).toEqual(['(resolution: 2dppx)', '(resolution: 1dppx)'])
 
     hook.unmount()

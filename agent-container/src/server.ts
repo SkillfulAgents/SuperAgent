@@ -50,7 +50,7 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
-import { clampViewerWidth, jpegWidth, sameFrames, screencastSize, type ScreencastSize } from './screencast-size';
+import { clampViewerWidth, screencastSize, viewerWidthMoved } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { CdpConnection } from './login-cdp';
 import type { LoginFillDeps, PageActivity } from './login-fill';
@@ -2993,35 +2993,39 @@ let cdpScreencast: {
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
-  /** The limits Chrome is streaming with; unset until the screencast starts. */
-  runningSize?: ScreencastSize;
-  /** Pixel width of the last frame sent, to tell whether a new width cap can change frames. */
-  lastFrameWidth?: number;
+  screencastStarted: boolean;
 } | null = null;
 
 /** Canvas width in device pixels each viewer last reported. */
 const viewerWidths = new WeakMap<WebSocket, number>();
+const VIEWER_WIDTH_DEBOUNCE_MS = 200;
+let viewerWidthTimer: ReturnType<typeof setTimeout> | undefined;
 
-function setViewerWidth(ws: WebSocket, value: unknown): void {
+/** Applied once reports settle: a dragged panel sends many, and each restart makes Chrome encode a frame. */
+function reportViewerWidth(ws: WebSocket, value: unknown): void {
   const width = clampViewerWidth(value);
   if (width === undefined) return;
-  viewerWidths.set(ws, width);
-  if (cdpScreencast?.clientWs === ws) syncScreencastSize(cdpScreencast);
+  clearTimeout(viewerWidthTimer);
+  viewerWidthTimer = setTimeout(() => setViewerWidth(ws, width), VIEWER_WIDTH_DEBOUNCE_MS);
 }
 
-/** CDP can't resize a running screencast, so restart it when that would change the frames; otherwise it would just pause the preview. */
-function syncScreencastSize(state: NonNullable<typeof cdpScreencast>): void {
+/** CDP can't resize a running screencast, so a new viewer width restarts it. */
+function setViewerWidth(ws: WebSocket, width: number): void {
+  if (!viewerWidthMoved(viewerWidths.get(ws), width)) return;
+  viewerWidths.set(ws, width);
+  const state = cdpScreencast;
   // Not started yet (e.g. a remote session still attaching): startScreencast reads the width.
-  if (!state.runningSize || state.cdpWs.readyState !== WebSocket.OPEN) return;
-  if (sameFrames(state.runningSize, screencastSize(viewerWidths.get(state.clientWs)), state.lastFrameWidth)) return;
+  if (state?.clientWs !== ws || !state.screencastStarted || state.cdpWs.readyState !== WebSocket.OPEN) return;
   state.cdpWs.send(cdpMsg(state, 'Page.stopScreencast'));
   startScreencast(state);
 }
 
 /** Stream frames no wider than the viewer's canvas. */
 function startScreencast(state: NonNullable<typeof cdpScreencast>): void {
-  state.runningSize = screencastSize(viewerWidths.get(state.clientWs));
-  state.cdpWs.send(cdpMsg(state, 'Page.startScreencast', { format: 'jpeg', quality: 80, everyNthFrame: 1, ...state.runningSize }));
+  state.cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
+    format: 'jpeg', quality: 80, everyNthFrame: 1, ...screencastSize(viewerWidths.get(state.clientWs)),
+  }));
+  state.screencastStarted = true;
 }
 
 /** Derive the CDP HTTP endpoint from the current browser state */
@@ -3480,7 +3484,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
   const state: NonNullable<typeof cdpScreencast> = {
     clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
     lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
-    autoFollow: prevAutoFollow, pendingSelections: new Set(),
+    autoFollow: prevAutoFollow, pendingSelections: new Set(), screencastStarted: false,
     navigation: createBrowserNavigation({
       targetId,
       sendCommand(method, params) {
@@ -3553,11 +3557,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
               deviceHeight: meta.deviceHeight,
             }));
           }
-          const frame = Buffer.from(msg.params.data, 'base64');
-          state.lastFrameWidth = jpegWidth(frame);
-          clientWs.send(frame);
-          // A page that grew can outrun a cap left running because it wasn't limiting frames then.
-          syncScreencastSize(state);
+          clientWs.send(Buffer.from(msg.params.data, 'base64'));
         }
       } else if (msg.method === 'Page.frameStartedLoading' || msg.method === 'Page.frameStoppedLoading') {
         // Only forward loading state for the main frame — subframes (ads,
@@ -3842,7 +3842,7 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     try {
       const data = JSON.parse(rawData.toString());
       if (data.type === 'viewport') {
-        setViewerWidth(ws, data.width);
+        reportViewerWidth(ws, data.width);
         return;
       }
       if (!cdpScreencast) return;
