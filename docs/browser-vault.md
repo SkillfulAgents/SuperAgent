@@ -94,8 +94,8 @@ plain-HTTP one without the user (`vaultFillsInto`, against the account's
 
 A field mapped without a ref is a later step's: on an email-first page the
 agent maps the email and the password without a ref, the user enters both,
-and once the email went into the page the host holds the password in memory
-(`held-values.ts`, 30 minutes, per agent, session and site). A later call on
+and once the email went into the page the host holds the password
+(`held-values.ts`, per agent, session and site). A later call on
 the same site that maps a password field gets it filled without the user —
 only where a saved account's password could go (no https-typed value into a
 plain-HTTP page) — and only then is it added to the account, if the user
@@ -103,6 +103,24 @@ asked to save it and the account is still theirs and still granted (the next
 step is not always a password). Declining, or signing in on the page by
 hand, drops it. The host also remembers the username the last step went in
 with, so a step without a username field still knows whose account it is.
+
+Both live in AppState (`vault:held`, `vault:identity`; see
+[docs/app-state.md](app-state.md#browser-vault-handoffs)), so every process
+serving the tenant sees them. Held values last 30 minutes from when they were
+held; using some of them does not renew the rest. The identity lasts 30
+minutes from the last step that went in. Held values are stored as typed
+for now (sealing them is a follow-up). They never go into a key, an event, a
+log or a result; they leave the host only through the container's fill
+endpoint.
+
+A held value goes into a page once at most. A fill takes the held parts it
+sends before sending them, so a second call racing for the same step does not
+get them (it is decided again without them, and the user is asked for what
+is missing). Once the browser answers, what went in, or may have, is dropped,
+and what it could not write is there for the next try. A fill the page or
+browser refused leaves everything held. A fill sent without any answer counts
+as having gone in, as does a fill whose process went away: its parts are
+dropped after five minutes, never offered again.
 
 A second step that offers several ways (a code by text, a prompt on the
 phone, a passkey) is the user's to choose, also when the page opens on one
@@ -138,7 +156,8 @@ provider account to use.
 
 A fill the vault cannot complete as the card left it is refused with a
 `reason` the card acts on: `fields_needed` (what it was to fill is gone — a
-held value expired, a part was deleted: those fields are shown) or
+held value expired or another fill took it, a part was deleted: those fields
+are shown) or
 `account_unavailable` (the account the host chose was deleted or revoked: the
 card asks for every field rather than granting it again).
 
@@ -157,8 +176,9 @@ sign-in page again and call request_login with the account's username
 - With "Save for later", what they entered (this step's fields, the next
   step's, and what an earlier step held to save) is saved and granted
   (`saved`).
-- Without it, or when the save fails, what they entered is held in memory
-  as a later step's would be (`held`, 30 minutes, this session).
+- Without it, or when the save fails, what they entered is held as a later
+  step's would be (`held`, 30 minutes, this session), along with what an
+  earlier step still holds.
 - A login picked from the password manager goes by the same "Save for
   later": saved and granted, else held.
 - An unattended fill the browser closed first opens no card: the agent is
