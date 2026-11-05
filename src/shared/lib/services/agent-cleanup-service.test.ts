@@ -1,3 +1,4 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -390,7 +391,8 @@ describe('agent-cleanup-service', () => {
       expect(countRows(schema.scheduledTasks, OTHER_AGENT_SLUG)).toBe(1)
     })
 
-    it('deletes notifications', async () => {
+    it('deletes notifications and refreshes caches after the ACL is removed', async () => {
+      const publish = vi.spyOn(globalFeed, 'publish')
       insertNotification('n-1', AGENT_SLUG)
       insertNotification('n-other', OTHER_AGENT_SLUG)
 
@@ -398,6 +400,8 @@ describe('agent-cleanup-service', () => {
 
       expect(countRows(schema.notifications, AGENT_SLUG)).toBe(0)
       expect(countRows(schema.notifications, OTHER_AGENT_SLUG)).toBe(1)
+      expect(publish).toHaveBeenCalledWith({ type: 'notifications_changed' })
+      publish.mockRestore()
     })
 
     it('deletes agent remote MCP mappings but not the MCP server', async () => {

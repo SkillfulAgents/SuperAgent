@@ -1,3 +1,4 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 /**
  * Fire-and-forget notify coverage on the real modules.
  *
@@ -29,6 +30,7 @@ afterAll(async () => {
 describe('platform-service auth-change notify (unmocked)', () => {
   it('completes the fire-and-forget platform-service import on disconnect', async () => {
     const logSpy = vi.spyOn(console, 'log')
+    const publish = vi.spyOn(globalFeed, 'publish')
     const { revokePlatformToken } = await import('./platform-auth-service')
 
     // No stored token in the temp data dir: the remote revoke short-circuits
@@ -46,6 +48,8 @@ describe('platform-service auth-change notify (unmocked)', () => {
       { timeout: 10000, interval: 50 }
     )
 
+    expect(publish).toHaveBeenCalledWith({ type: 'platform_notifications_changed' })
+    publish.mockRestore()
     logSpy.mockRestore()
   })
 

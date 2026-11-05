@@ -1,22 +1,38 @@
+import { v4 as uuid } from 'uuid'
 import { notifyManager, replaceEqualDeep, type Query, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
 import { NOTIFICATION_TYPES, type NotificationCounts } from '@shared/lib/notifications/notification-filters'
 import { notificationReadResponseSchema, type NotificationReadState, type NotificationReadTarget } from '@shared/lib/notifications/read-state-schema'
+import { NOTIFICATION_CLIENT_HEADER } from '@shared/lib/notifications/notification-change-schema'
 import { apiFetch } from './api'
 
 type Page = { items: ApiNotification[]; total: number }
 type Counts = NotificationCounts
 type CacheData = ApiAgent[] | ApiAgent | ApiSession[] | ApiSession | Page | Counts
 const families = new Set(['agents', 'sessions', 'session', 'notifications'])
-const revisions = new WeakMap<QueryClient, { count: number; agents: Map<string, number> }>()
+const revisions = new WeakMap<QueryClient, { count: number; allAgents: number; agents: Map<string, number> }>()
+const clientIds = new WeakMap<QueryClient, string>()
+
+export function notificationClientId(client: QueryClient): string {
+  let id = clientIds.get(client)
+  if (!id) clientIds.set(client, (id = uuid()))
+  return id
+}
 
 /** An incoming event may precede its refetch; don't let an older POST erase it. */
 export function noteNotificationChange(client: QueryClient, slug?: string): void {
   let revision = revisions.get(client)
-  if (!revision) revisions.set(client, (revision = { count: 0, agents: new Map() }))
+  if (!revision) revisions.set(client, (revision = { count: 0, allAgents: 0, agents: new Map() }))
   revision.count++
   if (slug) revision.agents.set(slug, (revision.agents.get(slug) ?? 0) + 1)
+  else revision.allAgents++
+}
+
+/** A write without a full projection must refresh every notification surface. */
+export function invalidateNotificationCaches(client: QueryClient, slug?: string): void {
+  noteNotificationChange(client, slug)
+  for (const family of families) client.invalidateQueries({ queryKey: [family] })
 }
 /** Read-all with no type filter: every row, so counts and flags can go straight to zero. */
 const readsEverything = (target: NotificationReadTarget) => target.kind === 'all' && !target.types
@@ -110,6 +126,9 @@ function patchCache(client: QueryClient, query: Query, value: unknown) {
 
 /** Give metadata recovery a short turn in the write queue, never an unbounded one. */
 async function refreshQueries(client: QueryClient, queries: Set<Query>) {
+  // invalidateQueries does not restart an initial load with no data. That
+  // request may have captured the state before the write committed too.
+  await client.cancelQueries({ predicate: query => queries.has(query) && query.state.data === undefined })
   const refreshing = client.invalidateQueries({ predicate: query => queries.has(query) })
   const generations = new Map([...queries].filter(query => query.state.fetchStatus !== 'idle' && query.promise)
     .map(query => [query, query.promise]))
@@ -135,8 +154,10 @@ async function refreshQueries(client: QueryClient, queries: Set<Query>) {
 
 function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
   const countRevision = revisions.get(client)?.count ?? 0
+  const allAgentsRevision = revisions.get(client)?.allAgents ?? 0
   const agentRevisions = new Map(revisions.get(client)?.agents)
-  const agentUnchanged = (slug: string) => (revisions.get(client)?.agents.get(slug) ?? 0) === (agentRevisions.get(slug) ?? 0)
+  const agentUnchanged = (slug: string) => (revisions.get(client)?.allAgents ?? 0) === allAgentsRevision
+    && (revisions.get(client)?.agents.get(slug) ?? 0) === (agentRevisions.get(slug) ?? 0)
   const entries = client.getQueryCache().findAll({ predicate: q => families.has(String(q.queryKey[0])) })
     .filter(q => q.state.data != null)
   const agents = client.getQueryData<ApiAgent[]>(['agents']) ?? []
@@ -187,10 +208,23 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
   })
 
   return {
+    recoveryQueries() {
+      // A query can mount, finish its initial load, or refetch while the POST
+      // is pending. Its snapshot may predate the write. Reconcile after commit
+      // instead of letting it silently override the optimistic read.
+      return client.getQueryCache().findAll({ predicate: query => families.has(String(query.queryKey[0])) })
+        .filter(query => {
+          const snapshot = snapshots.find(entry => entry.query === query)
+          return !snapshot || query.state.dataUpdateCount !== snapshot.updateCount
+            || query.state.fetchStatus !== 'idle' || (revisions.get(client)?.count ?? 0) !== countRevision
+        })
+    },
     refresh() {
       // Older servers (or a failed post-write projection) cannot confirm the
       // remaining unread state. Refresh only this workspace's existing queries.
-      return refreshQueries(client, new Set(snapshots.map(snapshot => snapshot.query)))
+      return refreshQueries(client, new Set(client.getQueryCache().findAll({
+        predicate: query => families.has(String(query.queryKey[0])),
+      })))
     },
     rollback() {
       for (const { query, before, after } of snapshots) {
@@ -271,19 +305,34 @@ export function readNotifications(client: QueryClient, target: NotificationReadT
     const path = target.kind === 'all' ? 'read-all' : target.kind === 'session'
       ? `read-by-session/${encodeURIComponent(target.sessionId)}` : `${encodeURIComponent(target.id)}/read`
     try {
-      const response = await apiFetch(`/api/notifications/${path}`, target.kind === 'all' && target.types
-        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types: target.types }) }
-        : { method: 'POST' })
+      const response = await apiFetch(`/api/notifications/${path}`, {
+        method: 'POST',
+        headers: {
+          [NOTIFICATION_CLIENT_HEADER]: notificationClientId(client),
+          ...(target.kind === 'all' && target.types ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(target.kind === 'all' && target.types ? { body: JSON.stringify({ types: target.types }) } : {}),
+      })
       if (!response.ok) throw new Error('Failed to mark notifications as read')
       const result = notificationReadResponseSchema.parse(await response.json())
-      if (result.readState) optimistic.confirm(result.readState)
-      else {
+      if (!isCurrentWorkspace()) return result
+      if (result.readState) {
+        // Inspect before confirm() itself changes the query update counts.
+        for (const query of optimistic.recoveryQueries()) toRefresh.add(query)
+        optimistic.confirm(result.readState)
+      } else {
         await optimistic.refresh()
         refreshed = true
       }
       return result
     } catch (error) {
       optimistic.rollback()
+      // A lost response can follow a committed write. Roll back immediately,
+      // then reconcile instead of pinning the speculative rollback as truth.
+      if (isCurrentWorkspace()) {
+        await optimistic.refresh()
+        refreshed = true
+      }
       throw error
     } finally {
       if (!refreshed && toRefresh.size && isCurrentWorkspace()) {

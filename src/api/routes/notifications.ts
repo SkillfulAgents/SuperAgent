@@ -1,3 +1,4 @@
+import { NOTIFICATION_CLIENT_HEADER, notificationClientIdSchema } from '@shared/lib/notifications/notification-change-schema'
 import { notificationReadAgentSlugs, confirmNotificationRead } from '@shared/lib/services/notification-read-state'
 /**
  * Notifications API Routes
@@ -146,7 +147,7 @@ notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
     const notificationId = c.req.param('id')
     const userId = getScopedUserId(c)
     const slugs = await notificationReadAgentSlugs({ kind: 'notification', id: notificationId }, userId)
-    const success = await markAsRead(notificationId)
+    const success = await markAsRead(notificationId, notificationClientIdSchema.safeParse(c.req.header(NOTIFICATION_CLIENT_HEADER)).data)
 
     if (!success) {
       return c.json({ error: 'Notification not found' }, 404)
@@ -173,7 +174,7 @@ notificationsRouter.post('/read-all', async (c) => {
     const { types } = parsedBody.data
     const userId = getScopedUserId(c)
     const slugs = await notificationReadAgentSlugs({ kind: 'all', types }, userId)
-    const count = await markAllAsRead(userId, types)
+    const count = await markAllAsRead(userId, types, notificationClientIdSchema.safeParse(c.req.header(NOTIFICATION_CLIENT_HEADER)).data)
     return c.json({ success: true, count, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark all notifications as read:', error)
@@ -187,7 +188,7 @@ notificationsRouter.post('/read-by-session/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId')
     const userId = getScopedUserId(c)
     const slugs = await notificationReadAgentSlugs({ kind: 'session', sessionId }, userId)
-    const count = await markSessionNotificationsRead(sessionId, userId)
+    const count = await markSessionNotificationsRead(sessionId, userId, notificationClientIdSchema.safeParse(c.req.header(NOTIFICATION_CLIENT_HEADER)).data)
     return c.json({ success: true, count, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark session notifications as read:', error)

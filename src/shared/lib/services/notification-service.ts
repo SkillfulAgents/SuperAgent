@@ -11,7 +11,7 @@
  */
 
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
 import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
@@ -78,6 +78,20 @@ export async function getAgentAccessUserIds(agentSlug: string): Promise<string[]
     .from(agentAcl)
     .where(eq(agentAcl.agentSlug, agentSlug))
   return rows.map((row) => row.userId)
+}
+
+// Return the audience from the write itself, so deletion/retention and reads
+// notify exactly the affected agents and mention recipients after committing.
+const changeAudience = { agentSlug: notifications.agentSlug, recipientUserId: notifications.recipientUserId }
+function publishChanges(rows: Array<{ agentSlug: string; recipientUserId: string | null }>, sourceClientId?: string) {
+  const audiences = new Map(rows.map(row => [JSON.stringify([row.agentSlug, row.recipientUserId]), row]))
+  for (const { agentSlug, recipientUserId } of audiences.values()) {
+    globalFeed.publish({
+      type: 'notifications_changed', agentSlug,
+      ...(recipientUserId ? { recipientUserId } : {}),
+      ...(sourceClientId ? { sourceClientId } : {}),
+    })
+  }
 }
 
 // ============================================================================
@@ -345,7 +359,7 @@ export async function getNotification(notificationId: string): Promise<Notificat
 /**
  * Mark a notification as read
  */
-export async function markAsRead(notificationId: string): Promise<boolean> {
+export async function markAsRead(notificationId: string, sourceClientId?: string): Promise<boolean> {
   const result = await db
     .update(notifications)
     .set({
@@ -353,15 +367,17 @@ export async function markAsRead(notificationId: string): Promise<boolean> {
       readAt: new Date(),
     })
     .where(eq(notifications.id, notificationId))
+    .returning(changeAudience)
 
-  return changesOf(result) > 0
+  publishChanges(result, sourceClientId)
+  return result.length > 0
 }
 
 /**
  * Mark all notifications for a session as read.
  * When userId is provided, only marks notifications for agents the user has access to.
  */
-export async function markSessionNotificationsRead(sessionId: string, userId?: string): Promise<number> {
+export async function markSessionNotificationsRead(sessionId: string, userId?: string, sourceClientId?: string): Promise<number> {
   const conditions = [
     eq(notifications.sessionId, sessionId),
     eq(notifications.isRead, false),
@@ -376,8 +392,10 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
       readAt: new Date(),
     })
     .where(and(...conditions))
+    .returning(changeAudience)
 
-  return changesOf(result)
+  publishChanges(result, sourceClientId)
+  return result.length
 }
 
 /**
@@ -385,7 +403,7 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
  * When userId is provided, only marks notifications for agents the user has access to.
  * `types` narrows the write to those notification types (read-all on a filtered tab).
  */
-export async function markAllAsRead(userId?: string, types?: readonly NotificationType[]): Promise<number> {
+export async function markAllAsRead(userId?: string, types?: readonly NotificationType[], sourceClientId?: string): Promise<number> {
   const result = await db
     .update(notifications)
     .set({
@@ -393,7 +411,9 @@ export async function markAllAsRead(userId?: string, types?: readonly Notificati
       readAt: new Date(),
     })
     .where(and(eq(notifications.isRead, false), visibleRows(userId), ofTypes(types)))
-  return changesOf(result)
+    .returning(changeAudience)
+  publishChanges(result, sourceClientId)
+  return result.length
 }
 
 // ============================================================================
@@ -407,8 +427,10 @@ export async function deleteNotification(notificationId: string): Promise<boolea
   const result = await db
     .delete(notifications)
     .where(eq(notifications.id, notificationId))
+    .returning(changeAudience)
 
-  return changesOf(result) > 0
+  publishChanges(result)
+  return result.length > 0
 }
 
 /**
@@ -428,8 +450,10 @@ export async function deleteNotificationsBySessionIds(sessionIds: string[]): Pro
   const result = await db
     .delete(notifications)
     .where(inArray(notifications.sessionId, sessionIds))
+    .returning(changeAudience)
 
-  return changesOf(result)
+  publishChanges(result)
+  return result.length
 }
 
 /**
@@ -456,6 +480,8 @@ export async function deleteOldNotifications(olderThanDays: number = 30): Promis
   const result = await db
     .delete(notifications)
     .where(lt(notifications.createdAt, cutoffDate))
+    .returning(changeAudience)
 
-  return changesOf(result)
+  publishChanges(result)
+  return result.length
 }

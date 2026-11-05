@@ -1,3 +1,4 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -204,6 +205,25 @@ describe('POST /api/platform-notifications/read-all', () => {
       'sub_member_1',
     )
     expect(mockMarkRead).toHaveBeenCalledWith([NTF_1, NTF_2], 'sub_member_1')
+  })
+
+  it('drains more than one page and announces even a later partial failure', async () => {
+    const publish = vi.spyOn(globalFeed, 'publish')
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({ ...LIST_RESPONSE.notifications[0], id: `first-${i}` }))
+    mockListNotifications.mockResolvedValueOnce({ notifications: firstPage, total: 101, unread_count: 101 })
+      .mockResolvedValueOnce(LIST_RESPONSE)
+    mockMarkRead.mockResolvedValueOnce(100).mockResolvedValueOnce(1)
+    const res = await postReadAll()
+    expect(await res.json()).toEqual({ success: true, updated: 101 })
+    expect(mockMarkRead).toHaveBeenNthCalledWith(2, [NTF_1], 'sub_member_1')
+    expect(publish).toHaveBeenCalledWith({ type: 'platform_notifications_changed' })
+    publish.mockClear()
+    mockListNotifications.mockResolvedValueOnce({ notifications: firstPage, total: 101, unread_count: 101 })
+      .mockRejectedValueOnce(new Error('Lost connection after first ack'))
+    mockMarkRead.mockResolvedValueOnce(100)
+    expect((await postReadAll()).status).toBe(502)
+    expect(publish).toHaveBeenCalledWith({ type: 'platform_notifications_changed' })
+    publish.mockRestore()
   })
 
   it('skips the ack call when nothing is unread', async () => {

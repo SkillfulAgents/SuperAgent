@@ -69,14 +69,29 @@ describe('notification type filters (routes)', () => {
       body: JSON.stringify({ types: ['session_complete'] }),
     })
     expect(res.status).toBe(200)
-    expect(markAllAsRead).toHaveBeenCalledWith(undefined, ['session_complete'])
+    expect(markAllAsRead).toHaveBeenCalledWith(undefined, ['session_complete'], undefined)
     expect(notificationReadAgentSlugs).toHaveBeenCalledWith({ kind: 'all', types: ['session_complete'] }, undefined)
   })
 
   it('read-all with no body reads everything', async () => {
     const res = await notificationsRouter.request('/read-all', { method: 'POST' })
     expect(res.status).toBe(200)
-    expect(markAllAsRead).toHaveBeenCalledWith(undefined, undefined)
+    expect(markAllAsRead).toHaveBeenCalledWith(undefined, undefined, undefined)
+  })
+
+  it('passes a validated originating cache ID to every read write', async () => {
+    const { markAsRead, markSessionNotificationsRead } = await import('@shared/lib/services/notification-service')
+    vi.mocked(markAsRead).mockResolvedValue(true)
+    vi.mocked(markSessionNotificationsRead).mockResolvedValue(1)
+    const source = crypto.randomUUID()
+    for (const path of ['/n1/read', '/read-by-session/s1', '/read-all']) {
+      expect((await notificationsRouter.request(path, { method: 'POST', headers: { 'X-Notification-Client': source } })).status).toBe(200)
+    }
+    expect(markAsRead).toHaveBeenCalledWith('n1', source)
+    expect(markSessionNotificationsRead).toHaveBeenCalledWith('s1', undefined, source)
+    expect(markAllAsRead).toHaveBeenCalledWith(undefined, undefined, source)
+    await notificationsRouter.request('/read-all', { method: 'POST', headers: { 'X-Notification-Client': 'bad-id' } })
+    expect(markAllAsRead).toHaveBeenLastCalledWith(undefined, undefined, undefined)
   })
 
   it('read-all rejects a malformed body', async () => {

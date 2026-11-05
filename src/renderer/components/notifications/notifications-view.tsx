@@ -113,7 +113,7 @@ function RowFrame({
   onMarkRead: () => void
 }) {
   return (
-    <div className="group relative">
+    <div className="group relative" data-testid="notification-row">
       {children}
       {!isRead && (
         <TooltipProvider delayDuration={300}>
