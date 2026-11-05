@@ -321,13 +321,20 @@ function filterTally(
 
 /** The same segmented tabs as the Add New Connection dialog's All / APIs / MCPs. */
 function NotificationFilterTabs({
+  active,
   tallies,
 }: {
+  active: NotificationFilter
   tallies: Record<NotificationFilter, { total: number; unread: number }>
 }) {
+  // Every agent tab always shows; Announcements only once there is one (or
+  // while it is selected, e.g. from a link), since many installs never get any.
+  const shown = NOTIFICATION_FILTERS.filter(
+    (filter) => filter !== 'announcements' || filter === active || tallies.announcements.total > 0,
+  )
   return (
     <TabsList aria-label="Filter notifications" className="h-8 max-w-full justify-start overflow-x-auto p-0.5">
-      {NOTIFICATION_FILTERS.map((filter) => {
+      {shown.map((filter) => {
         const unread = filter === 'all' ? 0 : tallies[filter].unread
         return (
           <TabsTrigger
@@ -464,7 +471,7 @@ export function NotificationsView() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div className="min-w-0 flex-1">
             <h2 className="sr-only">Notifications</h2>
-            <NotificationFilterTabs tallies={tallies} />
+            <NotificationFilterTabs active={filter} tallies={tallies} />
           </div>
           <Button
             variant="ghost"

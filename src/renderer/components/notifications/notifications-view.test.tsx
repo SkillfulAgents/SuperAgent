@@ -600,12 +600,20 @@ describe('NotificationsView', () => {
       expect(mockUseNotificationsCalls.at(-1)?.types).toBeUndefined()
     })
 
-    it('always offers every tab, even when there are no notifications', () => {
+    it('always offers every agent tab, and hides Announcements until there is one', () => {
       mockNotificationsData = { items: [], total: 0 }
       renderWithProviders(<NotificationsView />)
-      for (const filter of ['all', 'mentions', 'needs-you', 'completed', 'automations', 'announcements']) {
+      for (const filter of ['all', 'mentions', 'needs-you', 'completed', 'automations']) {
         expect(screen.getByTestId(`notifications-filter-${filter}`)).toBeTruthy()
       }
+      expect(screen.queryByTestId('notifications-filter-announcements')).toBeNull()
+    })
+
+    it('shows Announcements once there is one', () => {
+      mockNotificationsData = { items: [], total: 0 }
+      mockPlatformData = { notifications: [], total: 1, unread_count: 0, connected: true }
+      renderWithProviders(<NotificationsView />)
+      expect(screen.getByTestId('notifications-filter-announcements')).toBeTruthy()
     })
 
     it('shows a tab\'s unread count', () => {
