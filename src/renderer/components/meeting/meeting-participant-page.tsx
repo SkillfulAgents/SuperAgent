@@ -13,6 +13,11 @@ import { deliverFileDef } from '@shared/lib/tools/deliver-file/definition'
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
 import { useVoiceConversationProblem } from '@renderer/hooks/use-voice-input'
 import { VoiceOrb } from '@renderer/components/messages/voice-orb'
+import { AgentCallOrb, callOrbState } from '@renderer/components/messages/agent-call-orb'
+import { VoiceBars } from '@renderer/components/messages/voice-bars'
+import { cn } from '@shared/lib/utils'
+import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
 import type { PublicMeeting } from '@shared/lib/meeting-integrations/schemas'
 import type { DotOrbState } from '@renderer/lib/voice/orb/dot-orb'
@@ -21,6 +26,8 @@ interface ParticipantBootstrap {
   meeting: PublicMeeting
   agentSlug: string
   agentName: string
+  /** Null when the agent's row is gone; the page falls back to the dot orb. */
+  agentAvatar?: AgentAvatar | null
   sessionId: string
 }
 
@@ -86,7 +93,7 @@ function useMeetingRoster(meetingId: string, token: string): MeetingRoster {
   return roster
 }
 
-function Participant({ agentSlug, agentName, sessionId, meeting, token }: ParticipantBootstrap & { token: string }) {
+function Participant({ agentSlug, agentAvatar, sessionId, meeting, token }: ParticipantBootstrap & { token: string }) {
   const mode: MeetingMode = meeting.mode ?? DEFAULT_MEETING_MODE
   const spoken = mode === 'voice'
   const { data: messages } = useMessages(sessionId, agentSlug)
@@ -138,15 +145,11 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
   if (mode === 'listen') {
     // The room gets nothing: no orb, no words, no browser, no roster. The
     // engine still runs as the agent's ears; a fault is the one thing shown.
-    return <Stage title={agentName} subtitle={`${meeting.botName} · Listening in`} error={fault} />
+    return <Stage subtitle="Listening in" error={fault} />
   }
 
   const speaking = spoken && (voice.assistantSpeaking || voice.phase === 'speaking')
-  const orbState: DotOrbState = !voice.ready ? 'boot'
-    : speaking ? 'agent'
-    : voice.userSpeaking ? 'user'
-    : voice.working || voice.phase === 'thinking' ? 'thinking'
-    : 'ready'
+  const thinking = voice.working || voice.phase === 'thinking'
   const caption = voiceProblem ? 'Voice unavailable'
     : !voice.ready ? 'Connecting…'
     : voice.working ? 'Working on it'
@@ -157,13 +160,48 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
   // integration also posts into the call's chat.
   const latest = voice.transcript?.at(-1)
   const subtitle = spoken ? (latest?.role === 'assistant' ? latest.text : null) : latestWrittenReply(messages ?? [])
-  const orb = (size: number) => (
-    <VoiceOrb state={orbState} size={size} monochrome={!voice.ready} getAnalyser={() => orbState === 'agent' ? voice.getOutputAnalyser() : voice.getAnalyser()} />
+  // The state, small, tucked under the orb's bars (or the dot orb itself).
+  const status = (size: number) => (
+    <p className="text-center text-white/50" style={{ fontSize: Math.round(size * 0.075), marginTop: size * 0.06 }} data-testid="meeting-status">{caption}</p>
   )
+  const orb = (size: number) => {
+    if (agentAvatar) {
+      // The iOS call screen's orb and bars, sized to the camera: the room is the person's row.
+      return (
+        <div className="flex flex-col items-center">
+          <AgentCallOrb agent={{ slug: agentSlug, avatar: agentAvatar }} state={callOrbState({ ready: voice.ready, busy: speaking || thinking })} size={size} />
+          <div style={{ height: size * 0.12 }} />
+          <VoiceBars
+            agentColor={avatarSource(agentAvatar).orb.core}
+            getAgentAnalyser={voice.getOutputAnalyser}
+            getPersonAnalyser={voice.getAnalyser}
+            agentSpeaking={speaking}
+            personMuted={false}
+            scale={size / 120}
+            className={cn('text-white transition-opacity duration-300', voice.ready ? 'opacity-100' : 'opacity-0')}
+          />
+          {status(size)}
+        </div>
+      )
+    }
+    const orbState: DotOrbState = !voice.ready ? 'boot'
+      : speaking ? 'agent'
+      : voice.userSpeaking ? 'user'
+      : thinking ? 'thinking'
+      : 'ready'
+    return (
+      <div className="flex flex-col items-center">
+        <VoiceOrb state={orbState} size={size} monochrome={!voice.ready} getAnalyser={() => orbState === 'agent' ? voice.getOutputAnalyser() : voice.getAnalyser()} />
+        {status(size)}
+      </div>
+    )
+  }
   // What shares the camera with the orb: the live browser while it is open,
   // else the latest delivered image, else nothing.
   return (
-    <Stage title={agentName} subtitle={`${meeting.botName} · ${caption}`} error={fault} compact={browserActive || !!image} footer={<Roster roster={roster} />}>
+    // No name or roster: the call's own tile label already names the bot, and
+    // its people are on the tiles around it. The state sits under the orb.
+    <Stage error={fault} compact={browserActive || !!image} centered={!browserActive && !image} footer={<Subtitles text={subtitle} />}>
       {browserActive ? (
         <div className="flex items-center gap-10">
           <MeetingBrowserCard agentSlug={agentSlug} sessionId={sessionId} isActive={isActive} width={760} />
@@ -171,27 +209,11 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
         </div>
       ) : image ? (
         <div className="flex items-center gap-10">
-          <img key={image.inlineUrl} src={image.inlineUrl ?? undefined} alt={image.name} className="max-h-[380px] max-w-[760px] rounded-xl object-contain shadow-2xl" data-testid="meeting-image" />
+          <img key={image.inlineUrl} src={image.inlineUrl ?? undefined} alt={image.name} className="max-h-[380px] max-w-[760px] rounded-card object-contain shadow-2xl" data-testid="meeting-image" />
           {orb(160)}
         </div>
-      ) : orb(300)}
-      <Subtitles text={subtitle} />
+      ) : orb(240)}
     </Stage>
-  )
-}
-
-/** Who the bot can hear, by name; the speaker, when the host reports one, is highlighted. */
-function Roster({ roster }: { roster: MeetingRoster }) {
-  if (roster.participants.length === 0) return null
-  return (
-    <p className="mt-2 px-10 text-center text-base text-white/40" data-testid="meeting-roster">
-      In the call:{' '}
-      {roster.participants.map((person, index) => (
-        <span key={person.id} className={roster.speaking.includes(person.id) ? 'text-white/80' : undefined}>
-          {index > 0 && ', '}{person.name}
-        </span>
-      ))}
-    </p>
   )
 }
 
@@ -236,27 +258,30 @@ function Subtitles({ text }: { text: string | null }) {
 
 /**
  * The 1280x720 camera frame: whatever the agent is showing fills the middle,
- * and the caption block (name, state, error, roster) sits in a footer of its
- * own. The footer is in the flow, not pinned, so a tall visual compresses the
- * gap above it instead of sliding the title underneath the roster; it shrinks
- * when a visual is up so the two never fight for the same rows.
+ * and the caption block (title, state, error, subtitles) sits in a footer of
+ * its own. Centered, the middle is the whole frame and the footer lies over
+ * its bottom, so the orb sits at the true center of the tile. Otherwise the
+ * footer is in the flow, so a tall visual compresses the gap above it instead
+ * of sliding under the subtitles; it shrinks when a visual is up so the two
+ * never fight for the same rows.
  */
-function Stage({ title, subtitle, error, compact = false, footer, children }: {
-  title: string
+function Stage({ title, subtitle, error, compact = false, centered = false, footer, children }: {
+  title?: string
   subtitle?: string
   error?: string | null
   compact?: boolean
+  centered?: boolean
   footer?: React.ReactNode
   children?: React.ReactNode
 }) {
   return (
-    <main className="dark flex h-screen w-screen flex-col items-center bg-black text-white" data-testid="meeting-participant">
-      <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-4">
+    <main className="dark relative flex h-screen w-screen flex-col items-center bg-black text-white" data-testid="meeting-participant">
+      <div className={cn('flex min-h-0 w-full flex-col items-center justify-center gap-4', centered ? 'absolute inset-0' : 'flex-1')}>
         {children}
       </div>
-      <div className={compact ? 'shrink-0 pb-4 text-center' : 'shrink-0 pb-8 text-center'}>
-        <h1 className={compact ? 'text-2xl font-medium tracking-tight' : 'text-4xl font-medium tracking-tight'}>{title}</h1>
-        {subtitle && <p className={compact ? 'mt-1 text-lg text-white/60' : 'mt-2 text-2xl text-white/60'}>{subtitle}</p>}
+      <div className={cn('flex shrink-0 flex-col items-center text-center', compact ? 'pb-4' : 'pb-8', centered && 'absolute inset-x-0 bottom-0')}>
+        {title && <h1 className={compact ? 'text-2xl font-medium tracking-tight' : 'text-4xl font-medium tracking-tight'}>{title}</h1>}
+        {subtitle && <p className={cn(compact ? 'text-lg text-white/60' : 'text-2xl text-white/60', title && (compact ? 'mt-1' : 'mt-2'))}>{subtitle}</p>}
         {error && <p role="alert" className={compact ? 'mt-1 text-base text-red-400' : 'mt-3 text-lg text-red-400'}>{error}</p>}
         {footer}
       </div>

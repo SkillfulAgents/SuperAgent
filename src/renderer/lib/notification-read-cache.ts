@@ -1,4 +1,4 @@
-import type { QueryClient, QueryKey } from '@tanstack/react-query'
+import { notifyManager, replaceEqualDeep, type Query, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
 import { notificationReadResponseSchema, type NotificationReadState, type NotificationReadTarget } from '@shared/lib/notifications/read-state-schema'
@@ -68,6 +68,44 @@ function undo(current: unknown, before: unknown, after: unknown): unknown {
   return result
 }
 
+/** A notification projection does not refresh the rest of this cached record. */
+function patchCache(client: QueryClient, query: Query, value: unknown) {
+  const next = replaceEqualDeep(query.state.data, value)
+  if (next === query.state.data) return
+  const { dataUpdatedAt, isInvalidated } = query.state
+  notifyManager.batch(() => {
+    // Keep Query's manual-write bookkeeping so cancelling a concurrent fetch
+    // retains this patch, without renewing unrelated metadata's freshness.
+    client.setQueryData(query.queryKey, next, { updatedAt: dataUpdatedAt })
+    if (isInvalidated) query.invalidate()
+  })
+}
+
+/** Give metadata recovery a short turn in the write queue, never an unbounded one. */
+async function refreshQueries(client: QueryClient, queries: Set<Query>) {
+  const refreshing = client.invalidateQueries({ predicate: query => queries.has(query) })
+  const generations = new Map([...queries].filter(query => query.state.fetchStatus !== 'idle' && query.promise)
+    .map(query => [query, query.promise]))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const expired = await Promise.race([
+      refreshing.then(() => false),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), 1000) }),
+    ])
+    if (!expired) return
+    // Only cancel our exact fetch generation. A newer SSE refetch or a query
+    // recreated in another workspace must survive this deadline.
+    const ownsFetch = (query: Query) => generations.has(query) && generations.get(query) === query.promise
+    const pending = new Set([...generations.keys()].filter(query => ownsFetch(query) && query.state.fetchStatus !== 'idle'))
+    await client.cancelQueries({ predicate: query => pending.has(query) && ownsFetch(query) })
+    for (const query of pending) {
+      if (client.getQueryCache().get(query.queryHash) === query && ownsFetch(query)) query.invalidate()
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
   const countRevision = revisions.get(client)?.count ?? 0
   const agentRevisions = new Map(revisions.get(client)?.agents)
@@ -121,7 +159,7 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
         }
       },
     })
-    client.setQueryData(query.queryKey, next)
+    patchCache(client, query, next)
     return { query, before, after: query.state.data as CacheData, updateCount: query.state.dataUpdateCount }
   })
 
@@ -129,13 +167,13 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
     refresh() {
       // Older servers (or a failed post-write projection) cannot confirm the
       // remaining unread state. Refresh only this workspace's existing queries.
-      return client.invalidateQueries({ predicate: query => snapshots.some(snapshot => snapshot.query === query) })
+      return refreshQueries(client, new Set(snapshots.map(snapshot => snapshot.query)))
     },
     rollback() {
       for (const { query, before, after } of snapshots) {
         // Authentication/workspace changes can remove the cache while the POST is in flight.
         if (client.getQueryCache().get(query.queryHash) !== query) continue
-        client.setQueryData(query.queryKey, current => undo(current, before, after))
+        patchCache(client, query, undo(query.state.data, before, after))
       }
     },
     confirm(state: NotificationReadState) {
@@ -143,7 +181,8 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
         if (client.getQueryCache().get(query.queryHash) !== query) continue
         const previousAgents = Array.isArray(after) ? after as ApiAgent[] : 'slug' in after ? [after as ApiAgent] : []
         const previousSessions = Array.isArray(after) ? after as ApiSession[] : 'id' in after ? [after as ApiSession] : []
-        client.setQueryData<CacheData>(query.queryKey, current => current && mapCache(query.queryKey, current, {
+        const current = query.state.data as CacheData | undefined
+        patchCache(client, query, current && mapCache(query.queryKey, current, {
           notification: row => row,
           counts: counts => query.state.dataUpdateCount === updateCount && (revisions.get(client)?.count ?? 0) === countRevision
             ? { count: state.count, mentions: state.mentions } : counts,
@@ -181,13 +220,31 @@ const readQueues = new WeakMap<QueryClient, Promise<unknown>>()
 
 export function readNotifications(client: QueryClient, target: NotificationReadTarget) {
   const workspaceQuery = client.getQueryCache().find({ queryKey: ['agents'], exact: true })
+  const isCurrentWorkspace = () => !workspaceQuery || client.getQueryCache().get(workspaceQuery.queryHash) === workspaceQuery
   const run = async () => {
-    if (workspaceQuery && client.getQueryCache().get(workspaceQuery.queryHash) !== workspaceQuery) {
+    if (!isCurrentWorkspace()) {
       throw new Error('Workspace changed before notification read')
     }
+    // Agent/session refetches also carry metadata, such as an async agent rename.
+    // Remember interrupted query objects so the read's notification-only patch
+    // cannot leave their older metadata marked fresh after cancelling the GET.
+    const cached = client.getQueryCache().findAll({ predicate: query =>
+      query.state.data != null && families.has(String(query.queryKey[0])),
+    })
+    const toRefresh = new Set(cached.filter(query => query.state.fetchStatus !== 'idle'))
+    const invalidated = cached.filter(query => query.state.isInvalidated)
     // Cancel stale refetches, but let an initial load without cached data finish.
     await client.cancelQueries({ predicate: query => query.state.data != null && families.has(String(query.queryKey[0])) })
+    if (!isCurrentWorkspace()) {
+      throw new Error('Workspace changed before notification read')
+    }
+    // Query's manual-write cancellation snapshot can precede an invalidation.
+    // Keep that stale flag when cancellation restores the patched data.
+    for (const query of invalidated) {
+      if (client.getQueryCache().get(query.queryHash) === query) query.invalidate()
+    }
     const optimistic = optimisticRead(client, target)
+    let refreshed = false
     const path = target.kind === 'all' ? 'read-all' : target.kind === 'session'
       ? `read-by-session/${encodeURIComponent(target.sessionId)}` : `${encodeURIComponent(target.id)}/read`
     try {
@@ -196,12 +253,28 @@ export function readNotifications(client: QueryClient, target: NotificationReadT
         : { method: 'POST' })
       if (!response.ok) throw new Error('Failed to mark notifications as read')
       const result = notificationReadResponseSchema.parse(await response.json())
+      // Reads also originate in sessions and notification toasts. Refresh the
+      // tab totals here so every entry point updates the same projection.
+      const typeCounts = client.getQueryCache().find({ queryKey: ['notifications', 'type-counts'], exact: true })
+      if (typeCounts) toRefresh.add(typeCounts)
       if (result.readState) optimistic.confirm(result.readState)
-      else await optimistic.refresh()
+      else {
+        await optimistic.refresh()
+        refreshed = true
+      }
       return result
     } catch (error) {
       optimistic.rollback()
       throw error
+    } finally {
+      if (!refreshed && toRefresh.size && isCurrentWorkspace()) {
+        // Refresh tab totals and interrupted queries still in this cache after the POST
+        // has settled so an old unread projection cannot undo the write. Active
+        // queries reload now; inactive ones remain stale until next observed.
+        // Serialize a bounded recovery before the next write. On timeout its
+        // GET cannot publish an obsolete unread projection after that write.
+        await refreshQueries(client, toRefresh)
+      }
     }
   }
   const result = (readQueues.get(client) ?? Promise.resolve()).then(run, run)

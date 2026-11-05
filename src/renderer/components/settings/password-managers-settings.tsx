@@ -115,12 +115,12 @@ export function PasswordManagersSettings() {
     <div id="password-managers" className="space-y-2" data-testid="password-managers-settings">
       <h3 className="px-1 text-xs font-medium text-muted-foreground">Password Managers</h3>
       {loading && providers.length === 0 ? (
-        <div className="flex items-center gap-2 rounded-xl border bg-background px-4 py-3 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 rounded-card border bg-background px-4 py-3 text-xs text-muted-foreground">
           <RefreshCw className="h-3.5 w-3.5 animate-spin" />
           Checking password managers…
         </div>
       ) : providers.length === 0 ? (
-        <div className="rounded-xl border bg-background px-4 py-3 text-xs text-muted-foreground">
+        <div className="rounded-card border bg-background px-4 py-3 text-xs text-muted-foreground">
           No password managers are available on this device.
         </div>
       ) : (
@@ -132,7 +132,7 @@ export function PasswordManagersSettings() {
             return (
               <div
                 key={provider.provider}
-                className={`rounded-xl border bg-background transition-colors ${
+                className={`rounded-card border bg-background transition-colors ${
                   provider.configured
                     ? 'border-primary'
                     : disabled && !unavailable

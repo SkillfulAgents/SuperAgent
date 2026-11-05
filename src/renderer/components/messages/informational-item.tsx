@@ -26,7 +26,7 @@ export function InformationalItem({ item }: InformationalItemProps) {
 
   return (
     <div
-      className="rounded-[12px] border border-amber-300/70 dark:border-amber-700/60 bg-amber-50/60 dark:bg-amber-950/20 p-4"
+      className="rounded-card border border-amber-300/70 dark:border-amber-700/60 bg-amber-50/60 dark:bg-amber-950/20 p-4"
       data-testid="informational-item"
     >
       <div className="flex items-start gap-3">

@@ -112,7 +112,7 @@ export function CapabilityReviewRequestItem({
         <p className="text-sm text-foreground/85">{description}</p>
       )}
       {isWorkflow && parsed && parsed.phases.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background p-2">
+        <div className="overflow-hidden rounded-card border border-border bg-white dark:bg-background p-2">
           <p className="mb-1 text-xs font-medium text-foreground/80">
             {parsed.phases.length} {parsed.phases.length === 1 ? 'phase' : 'phases'}
             {parsed.agentCalls.length > 0 && (
@@ -134,7 +134,7 @@ export function CapabilityReviewRequestItem({
         </div>
       )}
       {!isWorkflow && prompt && (
-        <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
+        <div className="overflow-hidden rounded-card border border-border bg-white dark:bg-background">
           <pre className="max-h-40 overflow-y-auto overflow-x-auto whitespace-pre-wrap break-words p-2 text-xs font-mono text-foreground/75">
             <code>{prompt}</code>
           </pre>

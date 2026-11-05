@@ -36,6 +36,7 @@ import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-
 import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { ContainerSession } from '@shared/lib/container/types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
@@ -222,6 +223,7 @@ async function checkAgentPolicy(
   targetName: string,
   preview?: string,
   fileTransfer?: XAgentFileTransfer,
+  callerSessionId?: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
@@ -233,7 +235,7 @@ async function checkAgentPolicy(
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
     const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
-      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
     if (userDecision === 'deny') {
@@ -302,25 +304,21 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
   })
 
   // In auth mode, copy ACL from caller's owners so the new agent inherits them
-  if (isAuthMode()) {
-    const owners = await getOwnersOfAgent(callerSlug)
-    const now = new Date()
-    for (const userId of owners) {
-      await db.insert(agentAcl).values({
-        id: randomUUID(),
-        userId,
-        agentSlug: agent.slug,
-        role: 'owner',
-        createdAt: now,
-      })
-    }
+  const owners = isAuthMode() ? await getOwnersOfAgent(callerSlug) : []
+  const now = new Date()
+  for (const userId of owners) {
+    await db.insert(agentAcl).values({
+      id: randomUUID(),
+      userId,
+      agentSlug: agent.slug,
+      role: 'owner',
+      createdAt: now,
+    })
   }
 
-  // Announce only after ACL inheritance so live stream filters admit owners.
-  globalFeed.publish({
-    type: 'agent_created',
-    agentSlug: agent.slug,
-  })
+  // Announce only after ACL inheritance, to each inherited owner, so their
+  // live streams load their agents again and follow the new one.
+  announceAgentCreated(agent.slug, owners)
 
   return c.json({ slug: agent.displaySlug, name: agent.name })
 })
@@ -788,6 +786,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     target.name,
     prompt.slice(0, 200),
     attachments.length ? { kind: 'send', paths: attachments } : undefined,
+    // Shows the review in the calling session, so a chat can answer it.
+    _callerSessionId,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)

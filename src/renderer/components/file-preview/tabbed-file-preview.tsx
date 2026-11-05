@@ -46,7 +46,7 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
       <div className="flex flex-1 min-h-0 flex-col bg-muted/60 px-2 pb-2">
         <div
           className={cn(
-            'flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border border-black/5 bg-background dark:border-white/5',
+            'flex flex-1 min-h-0 flex-col overflow-hidden rounded-card border border-black/5 bg-background dark:border-white/5',
             // Square only where a tab actually meets the corner. Under an inactive
             // tab — or a strip scrolled away from its first tab — the square edge
             // would be a corner cut for no one.
@@ -79,7 +79,7 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
                         href={file.downloadUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="p-0.5 rounded hover:bg-muted transition-colors"
+                        className="p-0.5 rounded-icon hover:bg-muted transition-colors"
                         aria-label="Download file"
                       >
                         <ArrowDownToLine className="h-4 w-4" />

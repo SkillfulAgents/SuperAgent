@@ -33,7 +33,7 @@ export function ToolPolicySummaryPill({ mcpId, onClick }: ToolPolicySummaryPillP
       onClick={onClick}
       className={cn(
         'inline-flex items-center gap-1.5 overflow-hidden border border-transparent bg-transparent px-1.5 py-px text-xs transition-colors hover:opacity-80',
-        'rounded-[6px]',
+        'rounded-item',
         'text-emerald-600 dark:text-emerald-400'
       )}
     >

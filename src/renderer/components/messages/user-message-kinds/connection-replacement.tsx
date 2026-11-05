@@ -8,7 +8,7 @@ export function ConnectionReplacementNotice({ text, message }: UserMessageRender
   const reference = replacement.kind === 'connected-accounts' ? 'account' : 'MCP'
   return (
     <div
-      className="my-6 rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm"
+      className="my-6 rounded-card border border-border bg-muted/30 px-4 py-3 text-sm"
       data-testid="connection-replacement-notice"
       data-turn-anchor-id={message.id}
     >

@@ -227,7 +227,7 @@ const mockEnsureRunning = vi.fn()
 const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
-const mockClientDeleteSession = vi.fn()
+const mockClientDeleteSession = vi.fn(async (..._args: unknown[]) => true)
 const mockClientWarmSession = vi.fn()
 // The container's view of a session, which an uncertain send asks for. Unknown unless a test says.
 const mockClientGetSession = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
@@ -247,6 +247,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
       interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
       stopTask: (...args: unknown[]) => mockStopTask(...args),
       forkSession: (...args: unknown[]) => mockForkSession(...args),
+      releaseSession: async () => true,
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
       warmSession: (...args: unknown[]) => mockClientWarmSession(...args),
       getSession: (...args: unknown[]) => mockClientGetSession(...args),
@@ -1379,6 +1380,7 @@ describe('GET /:id/chat-integrations', () => {
       createdByUserId: 'owner-user',
       createdAt: new Date('2026-07-17T00:00:00Z'),
       updatedAt: new Date('2026-07-17T00:00:00Z'),
+      version: 0,
     }])
 
     const res = await getReq(createApp(), '/api/agents/test-agent/chat-integrations')
@@ -6366,6 +6368,19 @@ describe('decision routes settle their request immediately', () => {
     const res = await postJson(app, url, body)
     expect(res.status).toBe(200)
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', body.toolUseId, outcome, )
+  })
+
+  it('declines a question as the person skipping it, with their reason', async () => {
+    parkOpen('tool-dec-12', 'question')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
+      toolUseId: 'tool-dec-12',
+      decline: true,
+      declineReason: 'Not now',
+    })
+    expect(res.status).toBe(200)
+    const [path, init] = mockContainerFetch.mock.calls.at(-1)!
+    expect(path).toBe('/inputs/tool-dec-12/reject')
+    expect(JSON.parse(String(init?.body))).toEqual({ reason: 'Not now', unanswered: 'skipped' })
   })
 
   it('answers 409 to a decision whose request another decision settled between its gate and its claim', async () => {

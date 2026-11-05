@@ -7,6 +7,7 @@ import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
@@ -140,8 +141,8 @@ export function ActivityCard({
         className={cn(
           'relative max-h-[30vh] overflow-y-auto border border-border/70 bg-background/85 px-3 pt-3 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]',
           isAwaitingInput || detached
-            ? 'rounded-2xl pb-3'
-            : 'rounded-t-2xl border-b-0 pb-8',
+            ? 'rounded-dialog pb-3'
+            : 'rounded-t-dialog border-b-0 pb-8',
         )}
         data-testid="activity-indicator"
       >
@@ -168,7 +169,7 @@ export function ActivityCard({
               onClick={() => setIsCollapsed((collapsed) => !collapsed)}
               // ml-auto for the rows with nothing between the status and here —
               // the ticker's flex-1 already pushes it right whenever it is shown.
-              className="-mr-1 ml-auto shrink-0 cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="-mr-1 ml-auto shrink-0 cursor-pointer rounded-icon p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-expanded={!isCollapsed}
               aria-label={isCollapsed ? 'Expand activity details' : 'Collapse activity details'}
             >
@@ -502,7 +503,7 @@ function ComputerUseRow({ computerUse, tracerRow }: {
           onClick={computerUse.onRevoke}
           disabled={computerUse.revoking}
           className={cn(
-            'shrink-0 cursor-pointer rounded p-0.5 transition-colors',
+            'shrink-0 cursor-pointer rounded-icon p-0.5 transition-colors',
             computerUse.revokeError
               ? 'text-destructive hover:bg-destructive/10'
               : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -592,7 +593,7 @@ function StopTaskButton({ taskId, label, onStop }: {
         onClick={handleClick}
         disabled={stopping}
         className={cn(
-          'shrink-0 cursor-pointer rounded p-0.5 transition-colors',
+          'shrink-0 cursor-pointer rounded-icon p-0.5 transition-colors',
           failed
             ? 'text-destructive hover:bg-destructive/10'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -707,46 +708,76 @@ function TodoPlan({
           </button>
         )}
       </div>
-      <ul className="mt-1 space-y-1">
-        {visibleTodos.map((todo, index) => (
-          <li key={index}>
-            <div
-              className={cn(
-                'flex items-center gap-1.5',
-                // The task being worked on steps up in color only — weight too
-                // made it the loudest thing on the card, louder than the
-                // header it sits under. One step of contrast is enough to find
-                // it. (Pending used to sit at plain foreground, which made the
-                // row NOT being worked on the darkest thing in the list.)
-                todo.status === 'in_progress'
-                  ? 'text-foreground'
-                  : 'text-muted-foreground'
-              )}
-            >
-              <RowMark>
-                {todo.status === 'completed' ? (
-                  // No strikethrough — the ringed check plus the muted label is
-                  // enough, and it keeps the row readable. Uncolored on purpose:
-                  // it inherits the completed row's muted-foreground, so the
-                  // mark recedes with its label instead of being the loudest
-                  // thing in a finished row.
-                  <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
-                ) : todo.status === 'in_progress' ? (
-                  // The app's one spinner (Loader2 + animate-spin), at the same
-                  // 12px box as the pending circle and the completed check — a
-                  // task's mark must not resize as it moves through the list.
-                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden data-testid="todo-status-in-progress" />
-                ) : (
-                  // Same 12px box and stroke as the check, so a task's mark
-                  // doesn't change size when it completes.
-                  <Circle className="h-3 w-3" aria-hidden data-testid="todo-status-pending" />
-                )}
-              </RowMark>
-              <span className="truncate">{todo.content}</span>
-            </div>
-          </li>
-        ))}
-      </ul>
+      <TooltipProvider delayDuration={300}>
+        <ul className="mt-1 space-y-1">
+          {visibleTodos.map((todo, index) => (
+            <li key={index}>
+              <TodoDescriptionTooltip description={todo.description}>
+                <div
+                  data-testid="activity-plan-task"
+                  className={cn(
+                    'flex items-center gap-1.5',
+                    // The task being worked on steps up in color only — weight too
+                    // made it the loudest thing on the card, louder than the
+                    // header it sits under. One step of contrast is enough to find
+                    // it. (Pending used to sit at plain foreground, which made the
+                    // row NOT being worked on the darkest thing in the list.)
+                    todo.status === 'in_progress'
+                      ? 'text-foreground'
+                      : 'text-muted-foreground'
+                  )}
+                >
+                  <RowMark>
+                    {todo.status === 'completed' ? (
+                      // No strikethrough — the ringed check plus the muted label is
+                      // enough, and it keeps the row readable. Uncolored on purpose:
+                      // it inherits the completed row's muted-foreground, so the
+                      // mark recedes with its label instead of being the loudest
+                      // thing in a finished row.
+                      <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
+                    ) : todo.status === 'in_progress' ? (
+                      // The app's one spinner (Loader2 + animate-spin), at the same
+                      // 12px box as the pending circle and the completed check — a
+                      // task's mark must not resize as it moves through the list.
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden data-testid="todo-status-in-progress" />
+                    ) : (
+                      // Same 12px box and stroke as the check, so a task's mark
+                      // doesn't change size when it completes.
+                      <Circle className="h-3 w-3" aria-hidden data-testid="todo-status-pending" />
+                    )}
+                  </RowMark>
+                  <span className="truncate">{todo.content}</span>
+                </div>
+              </TodoDescriptionTooltip>
+            </li>
+          ))}
+        </ul>
+      </TooltipProvider>
     </div>
+  )
+}
+
+/**
+ * A task's description on hover, when the agent gave one (TaskCreate's
+ * `description`, as the CLI saved it). The row stays a plain row: the subject
+ * is what scans, the description is detail for whoever wants it. Rows without
+ * one get no tooltip at all rather than an empty or repeated one.
+ */
+function TodoDescriptionTooltip({ description, children }: { description?: string; children: ReactNode }) {
+  if (!description) return <>{children}</>
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        // Descriptions run from one line to a paragraph or more; pre-line keeps
+        // the agent's own line breaks, and the cap keeps a long one readable.
+        className="max-w-sm whitespace-pre-line break-words"
+        data-testid="activity-plan-task-description"
+      >
+        {description}
+      </TooltipContent>
+    </Tooltip>
   )
 }

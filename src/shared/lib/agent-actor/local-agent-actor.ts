@@ -13,7 +13,7 @@ import type { syncAgentConnectionEnvironment } from '@shared/lib/container/conne
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { HostPort } from './host-port'
 import { runComputerUse, runScript } from './host-runs'
-import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
+import type { SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { background } from '@shared/lib/background'
@@ -21,7 +21,7 @@ import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
+import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import { sessionEvents, sessionFrames } from './session-streams'
@@ -146,7 +146,7 @@ export class LocalAgentActor implements AgentActor {
     this.container = createContainerOps(slug, deps)
     const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)
     this.sessions = createSessionOps(slug, this.store, this.state, delivery, deps)
-    this.messages = createMessageOps(slug, this.store, this.state.sessions, delivery, deps)
+    this.messages = createMessageOps(slug, this.store, this.state, delivery, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
     this.locks = createLockOps(this.state)
@@ -225,6 +225,30 @@ function createSessionOps(
 ): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   const live = state.sessions
+  // The container's CLI process rewrites the transcript on exit, so the container drops the session before the files go.
+  const release = async (sessionId: string) => {
+    // Settle the calls parked on the session's own cards before the stream drops them.
+    releaseSessionState(state, sessionId)
+    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
+    live.unsubscribe(sessionId)
+    state.deferredNaming.delete(sessionId)
+    let cause: unknown
+    const dropped =
+      (await client().releaseSession(sessionId).catch((error: unknown) => {
+        cause = error
+        return false
+      })) || (await client().isDefinitelyStopped().catch(() => false))
+    if (!dropped) console.warn(`[sessions.delete] container kept ${sessionId}:`, cause)
+    return dropped
+  }
+  const forget = async (sessionId: string) => {
+    // The files are gone. A lost cleanup response must not turn a successful
+    // delete into a failure; the container refuses to resume a released
+    // record whose transcript is absent, including after a container restart.
+    await client().deleteSession(sessionId).catch((error: unknown) => {
+      console.warn(`[sessions.delete] could not forget ${sessionId}:`, error)
+    })
+  }
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
     listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(store, ...args),
@@ -240,20 +264,28 @@ function createSessionOps(
       live.emit(sessionId, { type: 'session_updated' })
       deps.host.send('global', { type: 'session_updated', sessionId, agentSlug: slug })
     },
-    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
-    delete: (sessionId) => {
-      live.unsubscribe(sessionId)
-      state.deferredNaming.delete(sessionId)
-      return deps.sessionService.deleteSession(store, sessionId)
-    },
-    // Decided and let go of in one step, before the delete, as `delete` does.
+    delete: (sessionId) => live.inDeliveryTurn(sessionId, async () => {
+      if (!(await release(sessionId))) throw new Error(`Container did not drop session ${sessionId}`)
+      const deleted = await deps.sessionService.deleteSession(store, sessionId)
+      await forget(sessionId)
+      return deleted
+    }),
+    // Activity is checked right before each release, since the ones before it wait on the container.
     deleteMany: async (sessionIds) => {
-      const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
-      for (const sessionId of idle) {
-        live.unsubscribe(sessionId)
-        state.deferredNaming.delete(sessionId)
+      const deleted: string[] = []
+      for (const sessionId of sessionIds) {
+        // Keep the send queue held through the file delete. Releasing every
+        // process first would let a send resume an earlier session while a
+        // later container request is still pending.
+        await live.inDeliveryTurn(sessionId, async () => {
+          if (live.isActive(sessionId) || !(await release(sessionId))) return
+          const removed = await deps.sessionService.deleteSessionsBatch(store, [sessionId])
+          if (removed.length === 0) return
+          deleted.push(...removed)
+          await forget(sessionId)
+        })
       }
-      return deps.sessionService.deleteSessionsBatch(store, idle)
+      return deleted
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),
@@ -318,16 +350,21 @@ function createSessionOps(
 function createMessageOps(
   slug: AgentSlug,
   store: SessionStore,
-  live: LiveSessions,
+  state: AgentState,
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
+  const live = state.sessions
   return {
     deliver: (request) => delivery.deliver(request),
     // A message held while the session recovers never reached the container.
     cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
-    stop: (sessionId, options) => delivery.stop(sessionId, options),
+    stop: async (sessionId, options) => {
+      const result = await delivery.stop(sessionId, options)
+      if (options.denyReviews && result.path !== 'skipped-idle') settleStoppedSession(state, sessionId)
+      return result
+    },
 
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),

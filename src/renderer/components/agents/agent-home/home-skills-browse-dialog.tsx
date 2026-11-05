@@ -132,7 +132,7 @@ export function HomeSkillsBrowseDialog({
                           next.size === skillsetList.length ? null : next
                         )
                       }}
-                      className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent ${
+                      className={`flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left hover:bg-accent ${
                         checked ? 'bg-accent' : ''
                       }`}
                     >

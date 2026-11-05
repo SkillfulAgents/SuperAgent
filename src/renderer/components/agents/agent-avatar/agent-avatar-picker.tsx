@@ -73,7 +73,7 @@ function AvatarPicker({
         onMouseEnter={() => setPreviewing(id)}
         onFocus={() => setPreviewing(id)}
         className={cn(
-          'flex items-center justify-center rounded-md p-2 outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
+          'flex items-center justify-center rounded-item p-2 outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
           pressed && 'bg-accent',
         )}
       >
@@ -97,7 +97,7 @@ function AvatarPicker({
           title="Change avatar"
           data-testid="agent-avatar-picker"
           disabled={update.isPending}
-          className="shrink-0 rounded-md outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
+          className="shrink-0 rounded-item outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {/* While picking, the avatar itself shows the draft. */}
           <AvatarView source={avatarSource(open || update.isPending ? draft : saved)} restingPhi={orbRestingPhi(agent.slug)} size={size} state={state} />

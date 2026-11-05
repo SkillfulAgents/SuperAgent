@@ -54,10 +54,6 @@ export function useNotificationTypeCounts() {
   })
 }
 
-// The read cache updates lists and badges in place; the per-type tab counts are
-// a separate projection, so a read refetches them instead.
-const TYPE_COUNTS_KEY = ['notifications', 'type-counts'] as const
-
 /**
  * Fetch unread notification count (for badge)
  */
@@ -82,7 +78,6 @@ export function useMarkNotificationRead() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: (id: string) => readNotifications(queryClient, { kind: 'notification', id }),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: TYPE_COUNTS_KEY }),
   })
 }
 
@@ -95,7 +90,6 @@ export function useMarkAllNotificationsRead() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: (types?: readonly NotificationTypeName[]) => readNotifications(queryClient, types ? { kind: 'all', types } : { kind: 'all' }),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: TYPE_COUNTS_KEY }),
   })
 }
 

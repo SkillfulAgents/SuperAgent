@@ -12,7 +12,7 @@ import { usePendingUserRequests } from './use-pending-user-requests'
 import { isTurnStartingUserMessage, type PendingMessage } from '@renderer/components/messages/pending-message'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '../ask-user-question/definition'
-import type { PendingUserInputRequest } from './request-schema'
+import { PARKED_CALL_KINDS, type PendingUserInputRequest } from './request-schema'
 import { loginVaultPayloadSchema, summarizeLoginFields, type LoginFieldSummary, type LoginVaultPayload } from '../request-login/login-request'
 
 interface UsePendingRequestsArgs {
@@ -613,9 +613,11 @@ export function usePendingRequests({
     // approval deliberately survives the idle boundary server-side for
     // reconnect replay. Rendering it on an idle session would gate the
     // composer behind a dead card. Agent-scoped reviews render regardless:
-    // they outlive any one turn.
+    // they outlive any one turn. So do review and re-auth cards scoped to this
+    // session: they hold a parked proxy call, which a background script can
+    // keep waiting after the turn ends.
     return projectUnifiedRequests(
-      isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined),
+      isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined || PARKED_CALL_KINDS.has(r.kind)),
     )
   }, [sessionId, unifiedRequestsData, isActive])
   // Requests the server holds open for this session, registered or recovered.

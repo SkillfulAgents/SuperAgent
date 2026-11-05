@@ -108,8 +108,8 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
         buttonVariants({ variant: 'outline', size: 'icon' }),
         'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',
         active
-          ? `${config.pill} gap-2 justify-between rounded-md border-primary/30 bg-primary/10 px-2 text-foreground hover:bg-primary/15 dark:border-primary/40 dark:bg-primary/15 dark:hover:bg-primary/20`
-          : `gap-0 rounded-md ${config.button}`,
+          ? `${config.pill} gap-2 justify-between border-primary/30 bg-primary/10 px-2 text-foreground hover:bg-primary/15 dark:border-primary/40 dark:bg-primary/15 dark:hover:bg-primary/20`
+          : `gap-0 ${config.button}`,
         glass && 'rounded-full',
         glass && !active && GLASS_IDLE,
       )}

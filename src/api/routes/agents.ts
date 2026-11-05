@@ -86,6 +86,7 @@ import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
 import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -1283,8 +1284,8 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
     createdAt: new Date(),
   })
   // Notification streams load the user's agents when they open; this tells
-  // the creator's open streams to load again, so the new agent's events reach them.
-  globalFeed.publish({ type: 'agent_created', agentSlug })
+  // the creator's open streams to load again and follow the new agent.
+  announceAgentCreated(agentSlug, [userId])
 }
 
 // Insert the owner ACL for a just-created agent, rolling back the on-disk
@@ -3658,12 +3659,15 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
     if (decline) {
       const reason = declineReason || 'User declined to answer'
 
+      // `skipped`: the person chose not to answer. The container ends the
+      // question as an annotated answer (the reason is what the agent reads)
+      // where the CLI supports it, and as a declined tool call otherwise.
       const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
+          body: JSON.stringify({ reason, unanswered: 'skipped' }),
         }
       )
 

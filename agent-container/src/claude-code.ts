@@ -64,7 +64,7 @@ function mcpToolNames(
     .filter(t => !excludeSet || !excludeSet.has(t.name))
     .map(t => `mcp__${serverName}__${t.name}`)
 }
-import { inputManager } from './input-manager';
+import { inputManager, InputRejectedError } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { withAgentAttributionHeaders, withSpeedHeader } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
@@ -250,6 +250,14 @@ function remoteMcpViews(): RemoteMcpView[] {
   }));
 }
 
+/** Read by the host's MCP proxy to show a card in the calling session only. */
+const CALLER_SESSION_HEADER = 'x-superagent-session-id';
+
+/** The host's account proxy accepts `<agent base>/s/<session>/<account>/...`. */
+export function sessionProxyBaseUrl(agentBaseUrl: string, sessionId: string): string {
+  return `${agentBaseUrl.replace(/\/+$/, '')}/s/${encodeURIComponent(sessionId)}`;
+}
+
 /** Env vars the agent may read directly — the proxy's own vars are documented separately. */
 function agentEnvVars(availableEnvVars?: string[]): string[] {
   const proxyEnvVars = new Set(['PROXY_BASE_URL', 'PROXY_TOKEN', 'CONNECTED_ACCOUNTS']);
@@ -350,7 +358,8 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  drives: { nameJson: string; pathJson: string; readOnly: boolean }[];
+  drives: { nameJson: string; pathJson: string; readOnly: boolean; sourceJson?: string }[];
+  driveNotes: string[];
   mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
@@ -424,9 +433,10 @@ export function buildSystemPromptVars(
     hasEnvVars: envVars.length > 0,
     envVars,
     hasMounts: drives.length > 0,
-    // Names and paths render as JSON string literals. Both are user bytes, and
+    // Names, paths and sources render as JSON string literals. All are user bytes, and
     // a raw newline or `#` in them would read as prompt structure.
-    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly })),
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly, sourceJson: d.sourceLabel && JSON.stringify(d.sourceLabel) })),
+    driveNotes: [...new Set(drives.flatMap((d) => d.agentNote ?? []))],
     mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
@@ -888,7 +898,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       configs[sanitizedName] = {
         type: 'http',
         url: mcp.proxyUrl,
-        headers: proxyToken ? { 'Authorization': `Bearer ${proxyToken}` } : undefined,
+        headers: {
+          ...(proxyToken && { 'Authorization': `Bearer ${proxyToken}` }),
+          [CALLER_SESSION_HEADER]: this.claudeSessionId || this.sessionId,
+        },
         // The proxy parks tool calls while the user approves them, which can
         // take arbitrarily long. CLI 2.1.219 aborts HTTP MCP requests after
         // 60s by default (plus a 5-min idle watchdog); this per-server
@@ -1180,6 +1193,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         // them on under us.
         autoDreamEnabled: false,
         enableArtifact: false,
+        // Idle compaction (default on) is off for the same reason: once a long
+        // conversation sits idle, the CLI summarizes it with a model call of
+        // its own and uses the summary on the next message. CLI 2.1.314
+        // extended it to custom base URLs (LLM gateways) once the 1-hour
+        // prompt cache is on. It would bill a request nobody asked for inside
+        // a session the host already counts as settled. Auto-compaction still
+        // runs when the context actually fills.
+        idleCompaction: false,
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the
@@ -1231,6 +1252,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         // in and reading it back as prior work (seen live). Pinned after the
         // customEnvVars spread so an agent-set value cannot mask it.
         GAMUT_SESSION_ID: this.claudeSessionId || this.sessionId,
+        // Names this session in every proxied call, so a re-auth or API review
+        // card the call raises shows in this session only. Pinned for the
+        // same reason as GAMUT_SESSION_ID.
+        ...(process.env.PROXY_BASE_URL && {
+          PROXY_BASE_URL: sessionProxyBaseUrl(process.env.PROXY_BASE_URL, this.claudeSessionId || this.sessionId),
+        }),
         // CLI 2.1.212+ moves MCP tool calls that run >2min to a background
         // task. Our blocking user-input tools (request_user_input et al.)
         // legitimately block far longer than that waiting on a human, and
@@ -1380,10 +1407,28 @@ export class ClaudeCodeProcess extends EventEmitter {
             };
           } catch (error) {
             console.log('[canUseTool] User declined:', error);
-            return {
-              behavior: 'deny' as const,
-              message: error instanceof Error ? error.message : 'User declined to answer',
-            };
+            const message = error instanceof Error ? error.message : 'User declined to answer';
+            // The person chose not to answer (the card's Decline): end the
+            // question as answered-with-annotation, not as a failed tool call.
+            // The model reads only `answers`; `unanswered` rides into the tool
+            // result for the transcript. A CLI that doesn't advertise the
+            // capability may refuse the whole answer, so it keeps the deny.
+            if (
+              error instanceof InputRejectedError &&
+              error.unanswered &&
+              this.cliCapabilities.has('ask_user_question_unanswered_v1')
+            ) {
+              const unanswered = error.unanswered;
+              return {
+                behavior: 'allow' as const,
+                updatedInput: {
+                  questions,
+                  answers: Object.fromEntries(questions.map((q) => [q.question, message])),
+                  annotations: Object.fromEntries(questions.map((q) => [q.question, { unanswered }])),
+                },
+              };
+            }
+            return { behavior: 'deny' as const, message };
           }
         }
 
@@ -2283,6 +2328,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   async dispose(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
     this.disposed = true;
+    // A pre-resume may still be starting its query (e.g. waiting for the
+    // provider proxy). It must finish before we promise there is no writer.
+    await this.warmRestart?.catch(() => undefined);
     await this.stop(options);
   }
 

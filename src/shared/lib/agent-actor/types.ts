@@ -65,7 +65,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
@@ -347,11 +347,11 @@ export interface SessionOps {
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
   /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
-  /** `deleteSession` — the files are the authority. */
+  /** Stop the writer, delete its files, then forget its resume record. Unknown runtime state keeps the files. */
   delete(sessionId: string): Promise<boolean>
   /**
-   * `deleteSessionsBatch` over the sessions not running now: one that is
-   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   * Delete each idle session after its writer has stopped, holding its delivery queue through file removal.
+   * Active sessions and sessions whose release cannot be confirmed are kept. Returns the ids deleted.
    */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
@@ -691,7 +691,10 @@ export interface StopSessionOptions {
    * instead: nothing would be left to stop it with.
    */
   escalateUntracked?: boolean
-  /** Deny the agent's pending API reviews too: the user stopped the agent. */
+  /**
+   * The user stopped the session: deny the API reviews it shows (its own and
+   * the agent-wide ones) and dismiss the calls parked on its own re-auth cards.
+   */
   denyReviews?: boolean
   /**
    * Mark the session stopped only once the container confirms the interrupt:
@@ -787,7 +790,7 @@ export interface ReviewOps {
    * (its request was aborted), or to resume or settle it after a `recheck`.
    * `awaitReview` (proxy/review-request) is the host's way to wait for one.
    */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
+  request(details: ReviewRequest, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     request: {
@@ -796,6 +799,8 @@ export interface ReviewOps {
       operation: 'list' | 'read' | 'invoke' | 'create'
       preview?: string
       fileTransfer?: XAgentFileTransfer
+      /** The session the call came from, when the request named one. */
+      callerSessionId?: string
     },
     options: { id: string },
   ): Promise<ReviewOutcome>

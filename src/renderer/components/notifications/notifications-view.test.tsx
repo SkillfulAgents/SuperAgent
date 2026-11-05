@@ -106,7 +106,7 @@ vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => 'http://localhost:3000',
 }))
 
-// The back button navigates via useNavigate. Capture the navigate target via a
+// The filter tabs navigate via useNavigate. Capture the navigate target via a
 // file-level useNavigate spy (overrides the global no-op stub). The notification
 // ROWS navigate declaratively via <AppLink>, which the global stub renders as
 // <a data-to/data-params>.
@@ -372,6 +372,13 @@ describe('NotificationsView', () => {
     expect(screen.getByTestId('notifications-mark-all-read')).toBeEnabled()
   })
 
+  it('enables mark-all-read for unread automations beyond the loaded page', () => {
+    mockNotificationsData = { items: makeNotifications(15).map(n => ({ ...n, isRead: true })), total: 16 }
+    mockTypeCounts = { session_scheduled: { total: 1, unread: 1 } }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByTestId('notifications-mark-all-read')).toBeEnabled()
+  })
+
   // -----------------------------------------------------------------------
   // Pagination
   // -----------------------------------------------------------------------
@@ -571,6 +578,24 @@ describe('NotificationsView', () => {
   // -----------------------------------------------------------------------
 
   describe('type filters', () => {
+    it('resets pagination on every filter change, including returning to a previous filter', async () => {
+      const user = userEvent.setup()
+      mockNotificationsData = { items: makeNotifications(30), total: 30 }
+      const { rerender } = renderWithProviders(<NotificationsView />)
+      const next = screen.getAllByRole('button').find(b => b.querySelector('.lucide-chevron-right'))!
+      await user.click(next)
+      expect(screen.getByText('2 / 2')).toBeTruthy()
+
+      mockSearch = { filter: 'completed' }
+      rerender(<NotificationsView />)
+      expect(screen.getByText('1 / 2')).toBeTruthy()
+
+      mockSearch = {}
+      rerender(<NotificationsView />)
+      expect(screen.getByText('1 / 2')).toBeTruthy()
+      expect(screen.getByText('Notification n1')).toBeTruthy()
+    })
+
     it('defaults to All and fetches every type', () => {
       mockNotificationsData = { items: [makeNotification({ id: '1' })], total: 1 }
       renderWithProviders(<NotificationsView />)

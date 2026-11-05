@@ -6,7 +6,7 @@ import { Button } from '@renderer/components/ui/button'
 import { TriangleAlert } from 'lucide-react'
 import { PERMISSION_LEVEL_LABELS, type ComputerUseSettings } from '@shared/lib/computer-use/types'
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 export function ComputerUseTab() {
@@ -58,7 +58,7 @@ export function ComputerUseTab() {
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-2 rounded-md bg-yellow-500/10 px-2.5 py-2 text-[11px] text-yellow-700 dark:text-yellow-500/90 leading-relaxed">
+      <div className="flex gap-2 rounded-item bg-yellow-500/10 px-2.5 py-2 text-[11px] text-yellow-700 dark:text-yellow-500/90 leading-relaxed">
         <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />
         <p>
           Agents interact with applications on your machine using your user permissions.

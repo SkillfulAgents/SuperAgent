@@ -78,7 +78,7 @@ export function DeclineButton({
                 <span className="text-xs font-medium text-foreground">{headerCopy}</span>
               </span>
             </div>
-            <div className="mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
+            <div className="mt-2 flex min-h-10 gap-2 rounded-item border border-border bg-background pl-3 pr-0 pb-1">
               <textarea
                 ref={inputRef}
                 placeholder={`Reason for ${placeholderVerb}...`}
@@ -106,7 +106,7 @@ export function DeclineButton({
                   onDecline(reason.trim() || undefined)
                   setOpen(false)
                 }}
-                className="mr-1 h-8 w-8 shrink-0 self-end rounded-md border border-border bg-foreground text-background hover:bg-foreground/90"
+                className="mr-1 h-8 w-8 shrink-0 self-end rounded-control border border-border bg-foreground text-background hover:bg-foreground/90"
               >
                 <ArrowUp className="h-3.5 w-3.5" />
               </Button>

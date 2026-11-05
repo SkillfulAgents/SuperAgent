@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   inputManager,
+  InputRejectedError,
   AUTOMATED_INPUT_TTL_MS,
   HUMAN_INPUT_TTL_MS,
   EARLY_RESULT_TTL_MS,
@@ -27,6 +28,24 @@ describe('InputManager', () => {
       expect(rejected).toBe(true)
 
       await expect(promise).rejects.toThrow('User declined')
+    })
+
+    it("carries the person's own choice not to answer on the rejection", async () => {
+      const promise = inputManager.createPendingWithType<Record<string, string>>('tool-2b', 'question', [])
+      inputManager.reject('tool-2b', 'Not now', 'skipped')
+
+      const error = await promise.catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(InputRejectedError)
+      expect(error).toMatchObject({ message: 'Not now', unanswered: 'skipped' })
+    })
+
+    it('leaves unanswered unset on any other rejection', async () => {
+      const promise = inputManager.createPendingWithType<Record<string, string>>('tool-2c', 'question', [])
+      inputManager.reject('tool-2c', 'Superseded: the user sent a new message.')
+
+      const error = await promise.catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(InputRejectedError)
+      expect((error as InputRejectedError).unanswered).toBeUndefined()
     })
 
     it('resolves a pending typed request', async () => {
@@ -66,6 +85,14 @@ describe('InputManager', () => {
       await expect(
         inputManager.createPending('early-2', 'SLACK_TOKEN')
       ).rejects.toThrow('User declined early')
+    })
+
+    it('keeps the unanswered reason on a buffered early reject', async () => {
+      inputManager.reject('early-2b', 'Skip it', 'skipped')
+
+      await expect(
+        inputManager.createPendingWithType('early-2b', 'question', [])
+      ).rejects.toMatchObject({ unanswered: 'skipped' })
     })
 
     it('resolves immediately when resolve arrives before createPendingWithType', async () => {

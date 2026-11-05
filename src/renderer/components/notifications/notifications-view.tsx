@@ -7,13 +7,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 import {
   useNotifications,
   useNotificationTypeCounts,
-  useUnreadNotificationCount,
   useMarkNotificationRead,
   useMarkAllNotificationsRead,
   type ApiNotification,
 } from '@renderer/hooks/use-notifications'
 import {
   NOTIFICATION_FILTERS,
+  NOTIFICATION_TYPES,
   notificationFilterSchema,
   notificationFilterTypes,
   type NotificationFilter,
@@ -29,7 +29,7 @@ import {
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
+import { SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { cn } from '@shared/lib/utils'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
@@ -45,13 +45,16 @@ function formatNotificationDate(date: Date): string {
 }
 
 const ROW_CLASS_NAME = 'group relative block w-full text-left focus-visible:outline-none'
+const ROW_CONTENT_CLASS_NAME = 'relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 py-3 sm:flex sm:gap-4'
+const ROW_AGENT_CLASS_NAME = 'min-w-0 truncate text-xs flex items-center gap-2 sm:w-56 sm:shrink'
+const ROW_MESSAGE_CLASS_NAME = 'col-start-1 row-start-2 min-w-0 flex flex-col items-start truncate sm:flex-1 sm:flex-row sm:items-baseline sm:gap-2'
 
 function RowChrome({ isRead, mention = false }: { isRead: boolean; mention?: boolean }) {
   return (
     <>
       <span
         aria-hidden
-        className="absolute inset-y-0 -left-6 -right-2 rounded-md group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring transition-colors"
+        className="absolute inset-y-0 -left-6 -right-2 rounded-item group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring transition-colors"
       />
       {/* Unread dot — sits in the bled gutter, left of the aligned content. A mention is an @. */}
       {!isRead && mention ? (
@@ -71,7 +74,7 @@ function RowChrome({ isRead, mention = false }: { isRead: boolean; mention?: boo
 function RowTrailing({ isRead, dateLabel }: { isRead: boolean; dateLabel: string }) {
   // An unread row's check sits over this gap (see MarkReadButton), so the time slides clear of it.
   return (
-    <span className="shrink-0 flex items-center">
+    <span className="col-start-2 row-start-1 row-span-2 shrink-0 flex items-center">
       <span
         className={cn(
           'w-24 text-right text-xs tabular-nums',
@@ -121,7 +124,7 @@ function RowFrame({
                 aria-label="Mark as read"
                 data-testid="notification-mark-read"
                 onClick={onMarkRead}
-                className="absolute right-6 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 group-focus-within:opacity-100"
+                className="absolute right-6 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-control text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 <Check className="h-3.5 w-3.5" />
               </button>
@@ -163,9 +166,9 @@ function NotificationRow({
       <RowChrome isRead={notification.isRead} mention={notification.type === 'session_mention'} />
       {/* Content — no negative margins, so left/right edges match the page
           title and pagination exactly */}
-      <span className="relative flex items-center gap-4 py-3">
+      <span className={ROW_CONTENT_CLASS_NAME}>
         <span
-          className="w-56 shrink min-w-0 truncate text-xs flex items-center gap-2"
+          className={ROW_AGENT_CLASS_NAME}
           title={notification.agentSlug}
         >
           {/* A fixed slot, so names line up when an older deployment has no avatar. */}
@@ -181,16 +184,16 @@ function NotificationRow({
             {agent?.name ?? notification.agentSlug}
           </span>
         </span>
-        <span className="flex-1 min-w-0 flex items-baseline gap-2 truncate">
+        <span className={ROW_MESSAGE_CLASS_NAME}>
           <span
             className={cn(
-              'text-xs shrink-0 truncate max-w-[50%]',
+              'text-xs shrink-0 truncate max-w-full sm:max-w-[50%]',
               !notification.isRead ? 'font-medium text-foreground' : 'text-foreground/90',
             )}
           >
             {notification.title}
           </span>
-          <span className="text-xs text-muted-foreground truncate">
+          <span className="max-w-full text-xs text-muted-foreground truncate">
             {notification.body}
           </span>
         </span>
@@ -247,8 +250,8 @@ function PlatformNotificationRow({ notification }: { notification: ApiPlatformNo
         data-testid="platform-notification-row"
       >
         <RowChrome isRead={isRead} />
-        <span className="relative flex items-center gap-4 py-3">
-          <span className="w-56 shrink min-w-0 truncate text-xs flex items-center gap-2">
+        <span className={ROW_CONTENT_CLASS_NAME}>
+          <span className={ROW_AGENT_CLASS_NAME}>
             <span className="flex size-4 shrink-0 items-center justify-center">
               <Megaphone className="h-3 w-3 text-muted-foreground" />
             </span>
@@ -261,16 +264,16 @@ function PlatformNotificationRow({ notification }: { notification: ApiPlatformNo
               Platform
             </span>
           </span>
-          <span className="flex-1 min-w-0 flex items-baseline gap-2 truncate">
+          <span className={ROW_MESSAGE_CLASS_NAME}>
             <span
               className={cn(
-                'text-xs shrink-0 truncate max-w-[50%]',
+                'text-xs shrink-0 truncate max-w-full sm:max-w-[50%]',
                 !isRead ? 'font-medium text-foreground' : 'text-foreground/90',
               )}
             >
               {notification.title}
             </span>
-            <span className="text-xs text-muted-foreground truncate">
+            <span className="max-w-full text-xs text-muted-foreground truncate">
               {stripMarkdownPreview(notification.body)}
             </span>
           </span>
@@ -303,20 +306,20 @@ const EMPTY_MESSAGES: Record<NotificationFilter, string> = {
 // local install never shows an empty Mentions tab.
 const ALWAYS_SHOWN = new Set<NotificationFilter>(['all', 'needs-you', 'completed'])
 
-/** Total and unread rows a filter covers. `all` is left to the caller (it also spans platform rows). */
+/** Total and unread rows a filter covers, including non-actionable types. */
 function filterTally(
   filter: NotificationFilter,
   typeCounts: NotificationTypeCounts['types'] | undefined,
   platform: { total: number; unread: number },
 ): { total: number; unread: number } {
   if (filter === 'announcements') return platform
-  const types = notificationFilterTypes(filter) ?? []
+  const types = notificationFilterTypes(filter) ?? NOTIFICATION_TYPES
   return types.reduce(
     (sum, type) => ({
       total: sum.total + (typeCounts?.[type].total ?? 0),
       unread: sum.unread + (typeCounts?.[type].unread ?? 0),
     }),
-    { total: 0, unread: 0 },
+    filter === 'all' ? platform : { total: 0, unread: 0 },
   )
 }
 
@@ -332,7 +335,7 @@ function NotificationFilterTabs({
     (filter) => ALWAYS_SHOWN.has(filter) || filter === active || tallies[filter].total > 0,
   )
   return (
-    <TabsList aria-label="Filter notifications" className="h-8 p-0.5">
+    <TabsList aria-label="Filter notifications" className="h-8 max-w-full justify-start overflow-x-auto p-0.5">
       {shown.map((filter) => {
         const unread = filter === 'all' ? 0 : tallies[filter].unread
         return (
@@ -340,7 +343,7 @@ function NotificationFilterTabs({
             key={filter}
             value={filter}
             data-testid={`notifications-filter-${filter}`}
-            className="group h-full gap-1.5 py-0 text-xs"
+            className="group h-full shrink-0 gap-1.5 py-0 text-xs"
           >
             {FILTER_LABELS[filter]}
             {unread > 0 && (
@@ -380,6 +383,7 @@ export function NotificationsView() {
   // The page belongs to the filter it was chosen under: switching tabs (or
   // back/forward to another filter) starts on page one.
   const [pageState, setPageState] = useState<{ filter: NotificationFilter; page: number }>({ filter, page: 0 })
+  if (pageState.filter !== filter) setPageState({ filter, page: 0 })
   const page = pageState.filter === filter ? pageState.page : 0
   const setPage = (update: (p: number) => number) => setPageState({ filter, page: update(page) })
 
@@ -393,7 +397,6 @@ export function NotificationsView() {
   const { data: platformData, isLoading: isPlatformLoading } = usePlatformNotifications(
     showsPlatform ? Math.min(fetchWindow, PLATFORM_FETCH_CAP) : 1,
   )
-  const { data: countData } = useUnreadNotificationCount()
   const { data: platformCountData } = usePlatformUnreadCount()
   const { data: typeCountsData } = useNotificationTypeCounts()
   const { data: agents } = useAgents()
@@ -416,12 +419,8 @@ export function NotificationsView() {
 
   // The badge count skips non-actionable types (e.g. scheduled task started), but
   // the list still shows them as unread and read-all clears them.
-  const hasUnread =
-    filter === 'all'
-      ? (countData?.count ?? 0) + platformTally.unread > 0 || agentItems.some((n) => !n.isRead)
-      : tallies[filter].unread > 0 ||
-        agentItems.some((n) => !n.isRead) ||
-        platformItems.some((n) => !n.read_at)
+  const hasUnread = tallies[filter].unread > 0 ||
+    agentItems.some((n) => !n.isRead) || platformItems.some((n) => !n.read_at)
 
   const agentBySlug = useMemo(
     () => new Map(agents?.map((a) => [a.slug, a]) ?? []),
@@ -471,27 +470,23 @@ export function NotificationsView() {
         }}
         className="space-y-6"
       >
-        <PageTitle
-          // The filter tabs stand in for the heading; the nav always shows "Notifications" (not scroll-aware).
-          title={
-            <>
-              <h2 className="sr-only">Notifications</h2>
-              <NotificationFilterTabs active={filter} tallies={tallies} />
-            </>
-          }
-          actions={
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleMarkAllRead}
-              disabled={markAllRead.isPending || markAllPlatformRead.isPending || !hasUnread}
-              data-testid="notifications-mark-all-read"
-            >
-              <CheckCheck className="h-3.5 w-3.5 mr-1.5" />
-              {filter === 'all' ? 'Mark all as read' : 'Mark these as read'}
-            </Button>
-          }
-        />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="sr-only">Notifications</h2>
+            <NotificationFilterTabs active={filter} tallies={tallies} />
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 self-end sm:self-auto"
+            onClick={handleMarkAllRead}
+            disabled={markAllRead.isPending || markAllPlatformRead.isPending || !hasUnread}
+            data-testid="notifications-mark-all-read"
+          >
+            <CheckCheck className="h-3.5 w-3.5 mr-1.5" />
+            {filter === 'all' ? 'Mark all as read' : 'Mark these as read'}
+          </Button>
+        </div>
 
         <TabsContent value={filter} className="mt-0">
           {(showsAgent && isLoading) || (showsPlatform && isPlatformLoading) ? (
@@ -500,7 +495,7 @@ export function NotificationsView() {
               Loading notifications...
             </div>
           ) : pageItems.length === 0 ? (
-            <div className="rounded-xl border border-dashed p-12 text-center text-sm text-muted-foreground">
+            <div className="rounded-card border border-dashed p-12 text-center text-sm text-muted-foreground">
               <Bell className="h-8 w-8 mx-auto mb-3 opacity-20" />
               {EMPTY_MESSAGES[filter]}
             </div>
@@ -533,6 +528,7 @@ export function NotificationsView() {
                       variant="ghost"
                       size="sm"
                       className="h-7 w-7 p-0"
+                      aria-label="Previous page"
                       onClick={() => setPage((p) => p - 1)}
                       disabled={currentPage === 0}
                     >
@@ -545,6 +541,7 @@ export function NotificationsView() {
                       variant="ghost"
                       size="sm"
                       className="h-7 w-7 p-0"
+                      aria-label="Next page"
                       onClick={() => setPage((p) => p + 1)}
                       disabled={currentPage >= totalPages - 1}
                     >

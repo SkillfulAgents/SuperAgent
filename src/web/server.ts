@@ -3,6 +3,7 @@ import { existsSync } from 'fs'
 import api from '../api'
 import { mountWebBuild } from './web-build'
 import { openDatabase } from '@shared/lib/db'
+import { initializeLocalAppState } from '@shared/lib/app-state'
 import { flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
 import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { markBoot } from '@shared/lib/boot-timing'
@@ -70,6 +71,8 @@ async function start() {
   // Then the database: nothing below runs without the schema being current,
   // and a migration failure must fail the boot rather than the first request.
   await openDatabase()
+  // Then the state the API's processes share; this one process keeps it in memory.
+  await initializeLocalAppState()
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 
