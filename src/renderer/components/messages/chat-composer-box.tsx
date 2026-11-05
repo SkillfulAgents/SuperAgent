@@ -24,10 +24,10 @@ export const COMPOSER_ACTIONS_ROW_CLASS = 'mt-1 flex min-w-0 flex-wrap items-cen
 
 /**
  * The row's left group takes the width the right group leaves, and is the size container the
- * model picker collapses on. 76px holds the paperclip and the picker's icon, so the row wraps
- * before they would overlap the right group.
+ * model picker collapses on. 72px holds the paperclip and the picker's icon (two 34px buttons
+ * and the 4px gap), so the row wraps before they would overlap the right group.
  */
-export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[76px] flex-1 items-center gap-2 [container-type:inline-size]'
+export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[72px] flex-1 items-center gap-1 [container-type:inline-size]'
 
 /**
  * The floating translucent treatment for a composer that sits over content —
@@ -35,7 +35,7 @@ export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[76px] flex-1 items-cente
  * matches it instead of drifting on its own copy of the recipe.
  */
 export const FLOATING_COMPOSER_CLASS =
-  'relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]'
+  'relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[inset_0_0_0_1px_hsl(0_0%_100%/0.06)]'
 
 interface SecureSecretsProps {
   agentSlug: string
@@ -66,6 +66,8 @@ interface ChatComposerBoxProps {
   topRightActions?: ReactNode
   footer?: ReactNode
   className?: string
+  /** A `view-transition-name`, so a view transition morphs this box into its counterpart on the next page. */
+  transitionName?: string
   textareaClassName?: string
   secureSecrets?: SecureSecretsProps
   /** What the composer knows about its agent, so chips whose referent is gone are flagged. */
@@ -94,6 +96,7 @@ export function ChatComposerBox({
   topRightActions,
   footer,
   className,
+  transitionName,
   textareaClassName,
   secureSecrets,
   chipContext,
@@ -111,7 +114,7 @@ export function ChatComposerBox({
   const potentialSecrets = secureSecrets?.potentialSecrets ?? EMPTY_POTENTIAL_SECRETS
 
   return (
-    <div className={cn(COMPOSER_BOX_CLASS, className)}>
+    <div className={cn(COMPOSER_BOX_CLASS, className)} style={transitionName ? { viewTransitionName: transitionName } : undefined}>
       {topRightActions && (
         <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100">{topRightActions}</div>
       )}
@@ -148,7 +151,7 @@ export function ChatComposerBox({
       )}
       <div className={COMPOSER_ACTIONS_ROW_CLASS}>
         <div className={COMPOSER_LEFT_ACTIONS_CLASS}>{leftActions}</div>
-        <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
+        <div className="flex shrink-0 items-center gap-1">{rightActions}</div>
       </div>
       {footer}
     </div>

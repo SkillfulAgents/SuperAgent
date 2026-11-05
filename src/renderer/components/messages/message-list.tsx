@@ -88,10 +88,10 @@ function TurnSummaryRow({
     ...(turn.hasTokenUsage ? [`${turn.tokenCount.toLocaleString('en-US')} tokens`] : []),
   ]
   return (
-    <div className="flex items-center gap-3 border-b border-border text-muted-foreground">
+    <div className="flex items-center gap-3 border-b border-foreground/[0.08] text-muted-foreground">
       <button
         type="button"
-        className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
+        className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 pt-3 pb-1.5 text-left text-sm tabular-nums transition-colors hover:text-foreground"
         onClick={onToggle}
         aria-expanded={expanded}
         aria-label={expanded ? 'Collapse completed turn work' : 'Expand completed turn work'}

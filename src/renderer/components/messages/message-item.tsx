@@ -374,11 +374,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 'rounded-card max-w-full text-foreground',
                 !isAssistant && 'overflow-hidden',
                 isUser && 'px-4 py-2',
-                isUser && !silentMention && 'bg-zinc-100 dark:bg-zinc-800/70',
+                isUser && !silentMention && 'transcript-bubble',
                 silentMention && 'border border-dashed border-violet-300 bg-violet-50/60 dark:border-violet-400/40 dark:bg-violet-400/10',
                 // Relative for the read-aloud controls, which overlay the
-                // gap under the bubble rather than adding a row to it.
-                isAssistant && 'relative py-1'
+                // gap under the bubble rather than adding a row to it. A faint
+                // blur behind the reply softens the dot grid under its text.
+                isAssistant && 'relative py-1 soft-backdrop'
               )}
             >
               {/* Kind-specific user bubble (e.g. slash command) */}

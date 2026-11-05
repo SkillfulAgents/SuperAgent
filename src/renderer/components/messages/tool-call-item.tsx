@@ -299,14 +299,14 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
   const CustomExpandedView = renderer?.ExpandedView
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
+    <div className="text-sm transcript-card rounded-icon overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
       <button
         type="button"
         aria-expanded={expanded}
         aria-label={`${expanded ? 'Collapse' : 'Expand'} ${toolCall.name} tool call`}
         data-testid={`tool-call-toggle-${toolCall.name}`}
         onClick={() => setExpanded((current) => !current)}
-        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
+        className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group transition-colors"
       >
         <ToolIcon className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
         {isPendingUserInput && (
@@ -352,7 +352,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
       </button>
 
       {expanded && (
-        <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
+        <div className="border-t border-foreground/[0.06] px-3 py-3">
           {CustomExpandedView ? (
             <CustomExpandedView
               input={toolCall.input}
@@ -443,8 +443,8 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
   }
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
-      <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 bg-muted/50">
+    <div className="text-sm transcript-card rounded-icon overflow-hidden">
+      <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5">
         <ToolIcon className="h-3.5 w-3.5 shrink-0 text-foreground" />
         <ToolNameWithSummary
           name={renderer?.displayName || formatToolName(name)}
@@ -457,7 +457,7 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
         <StatusIndicator status="running" />
       </div>
 
-      <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
+      <div className="border-t border-foreground/[0.06] px-3 py-3">
         {CustomStreamingView ? (
           <CustomStreamingView partialInput={partialInput} />
         ) : (

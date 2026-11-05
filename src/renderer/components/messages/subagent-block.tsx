@@ -1,6 +1,5 @@
 
 import { useState, useRef, useMemo, useEffect } from 'react'
-import { cn } from '@shared/lib/utils/cn'
 import { ChevronDown, ChevronRight, Workflow } from 'lucide-react'
 import { StreamingToolCallItem, StatusIndicator } from './tool-call-item'
 import { flattenAssistantMessages, TranscriptItems, TranscriptText, type FlatItem } from './agent-transcript'
@@ -178,11 +177,11 @@ export function SubAgentBlock({
     || !!(subagentStreamingToolUse && !isStreamingToolUsePersisted)
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+    <div className="text-sm transcript-card rounded-icon overflow-hidden">
       {/* Header — matches ToolCallItem collapsed row */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
+        className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group transition-colors"
       >
         <Workflow className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
         <span className={SUBAGENT_LABEL_CLASS}>Sub-agent:</span>
@@ -213,7 +212,7 @@ export function SubAgentBlock({
 
       {/* Body - subagent messages */}
       {expanded && (
-        <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
+        <div className="border-t border-foreground/[0.06] px-3 py-3">
           <div className="space-y-3">
             {totalItems === 0 && isRunning && !hasStreamingContent && (
               <div className="text-xs text-muted-foreground italic py-2">

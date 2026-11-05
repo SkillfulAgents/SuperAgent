@@ -79,14 +79,14 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs
   }
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden" data-testid="thinking-block">
+    <div className="text-sm transcript-card rounded-icon overflow-hidden" data-testid="thinking-block">
       <button
         type="button"
         aria-expanded={expanded}
         aria-label={`${expanded ? 'Collapse' : 'Expand'} thinking`}
         data-testid="thinking-block-toggle"
         onClick={() => setUserExpanded(!expanded)}
-        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
+        className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group transition-colors"
       >
         <ListTree className={cn(
           'h-3.5 w-3.5 shrink-0 transition-colors',
@@ -123,7 +123,7 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="border-t border-border/70 bg-muted/50 px-3 py-2 max-h-64 overflow-y-auto"
+          className="border-t border-foreground/[0.06] px-3 py-2 max-h-64 overflow-y-auto"
           data-testid="thinking-block-body"
         >
           <div

@@ -24,7 +24,7 @@ export function ComposerActionButton({
     const stopLabel = isWaitingBackground ? 'Stop background processes' : 'Stop the agent'
     const sendLabel = isWaitingBackground ? 'Send message' : 'Queue message'
     return (
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
         <Button
           type="button"
           size="icon"

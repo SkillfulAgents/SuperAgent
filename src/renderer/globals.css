@@ -874,6 +874,27 @@ html[data-keyboard-open] [data-composer-footer] {
   background-color: hsl(var(--primary) / 0.12);
 }
 
+/* Dark mode has no drop shadows on the glass below: on a dark page they barely show and only muddy the edge, so a
+   faint light edge (border or inset hairline) shapes each surface instead. */
+/* A session's cards (tool calls, thinking, subagents, workflows) on the same glass as Agent Home's buttons, so the
+   background behind the transcript tints them rather than stopping at a grey edge. Frosted enough that the halftone's
+   dots behind them melt into a soft wash of its colour rather than speckling the card's text. */
+.transcript-card {
+  background-color: hsl(var(--background) / 0.65);
+  border: 1px solid hsl(0 0% 100% / 0.6);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  backdrop-filter: blur(8px) saturate(1.2);
+}
+.dark .transcript-card {
+  background-color: hsl(var(--background) / 0.5);
+  border-color: hsl(0 0% 100% / 0.08);
+  box-shadow: none;
+}
+/* Inside an open card, the solid panels its tools draw their input and output on (bg-background, in the tool renderers
+   and the generic JSON view) become a brighter pane of the same glass, so the background still shows through. */
+.transcript-card .bg-background { background-color: hsl(var(--background) / 0.55); }
+.dark .transcript-card .bg-background { background-color: hsl(var(--background) / 0.4); }
 /* The agent header's status chip and its power button (agent-header.tsx): the glass of Agent Home's buttons, so the
    background behind the header tints it. The chip is the thinner pane, with a light top edge; the button inside is the
    brighter one, lifted off it by a soft shadow. */
@@ -901,6 +922,38 @@ html[data-keyboard-open] [data-composer-footer] {
   box-shadow: none;
 }
 .dark .status-chip-button:hover:not(:disabled) { background-color: hsl(0 0% 100% / 0.16); }
+/* Text that sits straight on the page's dot background (an agent's reply, Agent Home's "Advanced settings"): a very
+   light blur behind it softens the dots there, feathered at its edges so it has no visible box. Behind the element's
+   own content (z-index -1 in its stacking context), so the text itself is never blurred. The element must be
+   positioned; --soft-backdrop-blur sets the blur and --soft-backdrop-wash a faint wash of the page colour under it. */
+.soft-backdrop::before {
+  content: '';
+  position: absolute;
+  inset: -12px -20px;
+  z-index: -1;
+  pointer-events: none;
+  background-color: hsl(var(--background) / var(--soft-backdrop-wash, 0));
+  -webkit-backdrop-filter: blur(var(--soft-backdrop-blur, 2px));
+  backdrop-filter: blur(var(--soft-backdrop-blur, 2px));
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent),
+    linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent),
+    linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
+  mask-composite: intersect;
+}
+/* The user's messages keep the composer's material (FLOATING_COMPOSER_CLASS): bright glass with a soft shadow, so what
+   you sent reads as lifted off the page rather than a grey slab. */
+.transcript-bubble {
+  background-color: hsl(var(--background) / 0.7);
+  box-shadow: 0 0 14px rgba(15, 23, 42, 0.035), 0 1px 4px -2px rgba(15, 23, 42, 0.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
+  backdrop-filter: blur(12px) saturate(1.3);
+}
+.dark .transcript-bubble {
+  background-color: hsl(0 0% 100% / 0.07);
+  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.06);
+}
 
 
 /*
