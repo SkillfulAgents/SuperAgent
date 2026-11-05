@@ -1642,6 +1642,33 @@ describe('Script run request detection', () => {
     expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-sr-stopped')).toBeNull()
   })
 
+  // However many microtasks after the grant check lands the Stop comes, nothing
+  // runs after it: either the check is still pending and is dropped, or the
+  // request is already registered and the Stop cancels it, or the run had
+  // already begun before the Stop.
+  it.each([0, 1, 2, 3, 4, 5, 6, 8, 12])('runs no script after a Stop that lands %i microtasks after its grant check', async (ticks) => {
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('hostScript', { exitCode: 0, stdout: 'ran', stderr: '' })
+    const scripts = () => live.host.calls.filter(([name]) => name === 'hostScript').length
+
+    await simulateToolUse('mcp__user-input__request_script_run', `tool-sr-handoff-${ticks}`, {
+      script: 'rm -rf ~/scratch',
+      explanation: 'Clean up',
+      scriptType: 'shell',
+    })
+    landCheck('granted')
+    for (let i = 0; i < ticks; i++) await Promise.resolve()
+    const ranBeforeStop = scripts()
+    sessions().markInterrupted(SESSION_ID)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(scripts()).toBe(ranBeforeStop)
+  })
+
   it('still runs a granted script whose grant check lands after a reattach of the stream', async () => {
     let landCheck!: (status: 'granted') => void
     vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
@@ -1821,6 +1848,33 @@ describe('Computer use request detection', () => {
 
       expect(live.host.calls.filter(([name]) => name === 'computerUse')).toEqual([])
       expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-stopped')).toBeNull()
+    } finally {
+      if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+      else process.env.E2E_MOCK = originalE2eMock
+    }
+  })
+
+  it.each([0, 1, 2, 3, 4, 5, 6, 8, 12])('runs no command after a Stop that lands %i microtasks after its grant check', async (ticks) => {
+    const originalE2eMock = process.env.E2E_MOCK
+    process.env.E2E_MOCK = 'true'
+    sessions().markActive(SESSION_ID)
+    let landCheck!: (status: 'granted') => void
+    vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
+      landCheck = resolve
+    }))
+    live.host.answer('computerUse', 'clicked')
+    const commands = () => live.host.calls.filter(([name]) => name === 'computerUse').length
+    try {
+      simulateToolUse('mcp__computer-use__computer_click', `tool-cu-handoff-${ticks}`, { ref: '@b1' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      landCheck('granted')
+      for (let i = 0; i < ticks; i++) await Promise.resolve()
+      const ranBeforeStop = commands()
+      sessions().markInterrupted(SESSION_ID)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(commands()).toBe(ranBeforeStop)
     } finally {
       if (originalE2eMock === undefined) delete process.env.E2E_MOCK
       else process.env.E2E_MOCK = originalE2eMock

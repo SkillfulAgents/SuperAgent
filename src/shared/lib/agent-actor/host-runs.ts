@@ -46,11 +46,23 @@ export interface ScriptRun {
   grantType?: PermissionGrantType
 }
 
+/** How a run started by the actor itself (not a decision) can be stopped before the machine work. */
+export interface HostRunGuard {
+  /**
+   * Asked in the same synchronous step as the machine work starts, so a Stop
+   * that came after the run claimed its request still stops it. False runs
+   * nothing.
+   */
+  stillWanted?: () => boolean
+}
+
 export type HostRunOutcome =
   /** Ran, and the container has the result. */
   | { status: 'resolved' }
   /** Another decision holds the request; this one did nothing. */
   | { status: 'claimed' }
+  /** The call was abandoned (a Stop) before the machine work started; nothing ran. */
+  | { status: 'abandoned' }
   /** Computer use lacks macOS permissions; nothing ran and the request is still open. */
   | { status: 'missing_permissions'; permissions: ComputerUsePermissionStatus }
   /** The command failed; the agent got the error and the request is settled. */
@@ -58,7 +70,7 @@ export type HostRunOutcome =
   /** It ran, but the container would not take the result; the request is still open. */
   | { status: 'undeliverable'; detail: string }
 
-export async function runComputerUse(actor: HostRunActor, host: HostPort, run: ComputerUseRun): Promise<HostRunOutcome> {
+export async function runComputerUse(actor: HostRunActor, host: HostPort, run: ComputerUseRun, guard: HostRunGuard = {}): Promise<HostRunOutcome> {
   const { sessionId, toolUseId, method, params, permissionLevel, appName, grantType } = run
   const { computerUse } = actor.inputs
   return withClaim(actor, toolUseId, async () => {
@@ -69,6 +81,8 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
 
     let output: string
     try {
+      // Checked in the same step as the command starts: nothing in between.
+      if (guard.stillWanted && !guard.stillWanted()) return { status: 'abandoned' }
       output = await host.call('computerUse', { method, params })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -105,10 +119,12 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
   })
 }
 
-export async function runScript(actor: HostRunActor, host: HostPort, run: ScriptRun): Promise<HostRunOutcome> {
+export async function runScript(actor: HostRunActor, host: HostPort, run: ScriptRun, guard: HostRunGuard = {}): Promise<HostRunOutcome> {
   const { sessionId, toolUseId, script, scriptType, grantType } = run
   return withClaim(actor, toolUseId, async (request) => {
     if (grantType) await actor.inputs.computerUse.grant('use_host_shell', grantType)
+    // Checked in the same step as the script starts: nothing in between.
+    if (guard.stillWanted && !guard.stillWanted()) return { status: 'abandoned' }
     const result = await host.call('hostScript', { script, scriptType })
     if (grantType === 'once') await actor.inputs.computerUse.consumeOnce('use_host_shell')
 
@@ -138,7 +154,7 @@ export type AutoApprovedRun = ({ kind: 'computerUse' } & ComputerUseRun) | ({ ki
  * leaving it parked. A second delivery of the same call finds the first run
  * holding the request and does nothing.
  */
-export async function runAutoApproved(actor: HostRunActor, host: HostPort, run: AutoApprovedRun): Promise<void> {
+export async function runAutoApproved(actor: HostRunActor, host: HostPort, run: AutoApprovedRun, guard: HostRunGuard = {}): Promise<void> {
   const { sessionId, toolUseId } = run
   const giveUp = async (reason: string) => {
     await rejectInput(actor, toolUseId, reason).catch((error) => {
@@ -155,7 +171,7 @@ export async function runAutoApproved(actor: HostRunActor, host: HostPort, run: 
   })
   try {
     const outcome = await Promise.race([
-      run.kind === 'computerUse' ? runComputerUse(actor, host, run) : runScript(actor, host, run),
+      run.kind === 'computerUse' ? runComputerUse(actor, host, run, guard) : runScript(actor, host, run, guard),
       timedOut,
     ])
     if (outcome === 'timed_out') {

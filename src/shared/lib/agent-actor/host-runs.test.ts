@@ -145,6 +145,14 @@ describe('runComputerUse', () => {
     expect(host.calls).toEqual([])
   })
 
+  it('runs no command when the call was abandoned after the run claimed its request', async () => {
+    const { actor, park } = fakeActor()
+    const host = fakeHost()
+    park('cu-1', 'computer_use')
+    expect(await runComputerUse(actor, host.port, computerUseRun(), { stillWanted: () => false })).toEqual({ status: 'abandoned' })
+    expect(host.calls.filter(([name]) => name === 'computerUse')).toEqual([])
+  })
+
   it('runs nothing without the macOS permissions, and leaves the request open for a retry', async () => {
     const { actor, park, requests, containerCalls } = fakeActor()
     const permissions = { accessibility: false, screen_recording: true }
@@ -256,6 +264,16 @@ describe('runScript', () => {
     // The user decided in the app, so the other tabs hear it settled.
     expect(settled).toEqual([{ id: 'sr-1', how: 'complete', outcome: 'answered' }])
     expect(host.sent).toEqual([['analytics', { event: 'script_executed', properties: { scriptType: 'shell', exitCode: 1 } }]])
+  })
+
+  it('runs no script when the call was abandoned after the run claimed its request', async () => {
+    const { actor, park } = fakeActor()
+    const host = fakeHost()
+    park('sr-1', 'script_run')
+    const stillWanted = vi.fn(() => false)
+    expect(await runScript(actor, host.port, scriptRun(), { stillWanted })).toEqual({ status: 'abandoned' })
+    expect(stillWanted).toHaveBeenCalledTimes(1)
+    expect(host.calls).toEqual([])
   })
 
   it('leaves out empty output streams', async () => {

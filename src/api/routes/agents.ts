@@ -4758,6 +4758,9 @@ function hostRunResponse(c: Context, outcome: HostRunOutcome, what: 'script run'
       return c.json({ success: true })
     case 'claimed':
       return c.json({ error: `This ${what} request is already being handled` }, 409)
+    case 'abandoned':
+      // Only an auto-run started by the agent's own grant can be abandoned.
+      return c.json({ error: `This ${what} request was stopped` }, 409)
     case 'missing_permissions':
       return c.json({ success: false, missingPermissions: outcome.permissions }, 428)
     case 'failed':

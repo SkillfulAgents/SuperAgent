@@ -590,7 +590,7 @@ describe('ToolCalls', () => {
         toolUseId: 't_script',
         script: 'echo hi',
         scriptType: 'shell',
-      })
+      }, { stillWanted: expect.any(Function) })
     })
 
     it('rejects a script type this platform cannot run', () => {
@@ -688,7 +688,7 @@ describe('ToolCalls', () => {
         params: { app: 'Safari', ref: '@e1' },
         permissionLevel: 'use_application',
         appName: 'Safari',
-      })
+      }, { stillWanted: expect.any(Function) })
     })
 
     it('targets the grabbed app when the command names none', async () => {
@@ -721,7 +721,7 @@ describe('ToolCalls', () => {
         method: 'apps',
         params: {},
         permissionLevel: 'list_apps_windows',
-      }))
+      }), { stillWanted: expect.any(Function) })
     })
 
     it('asks the machine which app owns a window before judging a grab by ref', async () => {
