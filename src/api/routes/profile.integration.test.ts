@@ -7,7 +7,7 @@ import { PNG } from 'pngjs'
 import { createOidcTestServer, completeOidcLogin, type OidcTestServer } from '@shared/lib/auth/testing/oidc-server'
 import { handleAuthRequest } from '@shared/lib/auth/handler'
 import Database from 'better-sqlite3'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
+import { keepAppRecordStoreAcrossTests } from '@shared/lib/app-records/testing/memory-record-store'
 
 let directory: string
 let db: typeof import('@shared/lib/db')
@@ -32,7 +32,7 @@ beforeAll(async () => {
   }]))
   db = await import('@shared/lib/db')
   await db.openDatabase()
-  installTestAppRecordStore()
+  keepAppRecordStoreAcrossTests()
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(directory, 'superagent.db'))
   authModule = await import('@shared/lib/auth')

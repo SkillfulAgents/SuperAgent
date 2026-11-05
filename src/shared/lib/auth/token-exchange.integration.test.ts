@@ -134,8 +134,9 @@ beforeAll(async () => {
   _setOidcJwksResolverForTest(createLocalJWKSet({ keys: [jwk] }) as never)
 
   // Settings live in app records: an in-memory store for this suite.
-  const { installTestAppRecordStore } = await import('@shared/lib/app-records/testing/memory-record-store')
-  installTestAppRecordStore()
+  // One store for the whole file: what beforeAll seeds (the auth secret) must last.
+  const { keepAppRecordStoreAcrossTests } = await import('@shared/lib/app-records/testing/memory-record-store')
+  keepAppRecordStoreAcrossTests()
 
   const { getAppBaseUrl } = await import('./config')
   audience = await getAppBaseUrl()

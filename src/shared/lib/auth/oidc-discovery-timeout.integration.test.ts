@@ -10,7 +10,6 @@ import { z } from 'zod'
 import { background, backgroundSettled } from '../background'
 import type { AppDatabase } from '../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
-import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import { createOidcTestServer, responseCookies, type OidcTestServer } from './testing/oidc-server'
 
 let database: TestDatabase
@@ -209,8 +208,6 @@ beforeEach(async () => {
   healthy.state.acceptedRedirectUri = `${BASE}/api/auth/oauth2/callback/secondary`
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('BETTER_AUTH_SECRET', 'discovery-isolation-secret-0123456789abcdef0123456789abcdef')
-  // Host records (the auth secret falls back to one) live in the app record store.
-  installTestAppRecordStore()
   vi.stubEnv('TRUSTED_ORIGINS', BASE)
   vi.stubEnv('PLATFORM_TOKEN', `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({ orgId: ORG })).toString('base64url')}.sig`)
   vi.stubEnv('AUTH_PROVIDERS_JSON', JSON.stringify([

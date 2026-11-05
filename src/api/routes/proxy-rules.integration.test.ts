@@ -4,7 +4,6 @@
  * restatement and the session plumbing are stubbed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { Hono } from 'hono'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -120,8 +119,6 @@ async function userRule(agentSlug: string | null = null, code = INTERNAL_ONLY, e
 }
 
 beforeEach(() => {
-  // The proxy reads settings once per call (its credentials and attribution).
-  installTestAppRecordStore()
   sqlite = new Database(':memory:')
   testDb = drizzle(sqlite, { schema })
   migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })

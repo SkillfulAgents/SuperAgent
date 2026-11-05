@@ -21,12 +21,11 @@ vi.mock('../utils/retry', () => ({
 }))
 
 import { getConfiguredLlmClient, getConfiguredLlmClientAndModel, extractTextFromLlmResponse, createSummarizerText, SUMMARIZER_MAX_TOKENS } from './helpers'
-import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import type Anthropic from '@anthropic-ai/sdk'
 
 describe('getConfiguredLlmClient', () => {
   // Empty settings: no global default selected, so the active provider answers.
-  beforeEach(() => { vi.clearAllMocks(); capabilities.directApi = true; installTestAppRecordStore() })
+  beforeEach(() => { vi.clearAllMocks(); capabilities.directApi = true })
 
   it('returns client when API key is configured', async () => {
     const fakeClient = { messages: {} }

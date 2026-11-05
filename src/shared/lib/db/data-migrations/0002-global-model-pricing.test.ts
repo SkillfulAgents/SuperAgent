@@ -6,7 +6,7 @@ import { createTestDatabase, type TestDatabase } from '../testing/create-test-da
 import * as settings from '../../config/settings'
 import { dbAppRecordStore, type AppRecordStore } from '../../app-records/record-store'
 import { SETTINGS_RECORD_KEY } from '../../app-records/record-schemas'
-import { isAppRecordStoreInstalled } from '../../app-records/records'
+import { uninstallAppRecordStore } from '../../app-records/records'
 import { dataMigrations } from '../schema'
 import { runDataMigrations } from './index'
 import { globalModelPricing } from './0002-global-model-pricing'
@@ -16,8 +16,9 @@ let dir: string
 /** The settings on the migration's handle: what the app reads once it boots. */
 let store: AppRecordStore
 beforeEach(async () => {
-  // As at boot, no global record store: a migration that read one would throw.
-  expect(isAppRecordStoreInstalled()).toBe(false)
+  // As at boot, no global record store (the test setup installs one): a
+  // migration that read it instead of its own handle would throw.
+  uninstallAppRecordStore()
   dir = mkdtempSync(join(tmpdir(), 'global-prices-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dir)
   handle = await createTestDatabase()

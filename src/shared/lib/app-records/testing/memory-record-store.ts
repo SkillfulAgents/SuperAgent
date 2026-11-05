@@ -45,8 +45,11 @@ export class MemoryAppRecordStore implements AppRecordStore {
 }
 
 /**
- * Install a fresh in-memory store as the process's record store, replacing
- * any earlier one; returns it so the test can seed or inspect rows.
+ * Install `store` (a fresh in-memory one by default) as the process's record
+ * store, replacing any earlier one, and return it so the test can seed or
+ * inspect rows. Every test already starts with a fresh in-memory store (the
+ * vitest setup file, `vitest-setup.ts`), so call this only to get hold of the
+ * store or to install a different one (a counting store, a database store):
  *
  *   beforeEach(() => { records = installTestAppRecordStore() })
  */
@@ -54,4 +57,27 @@ export function installTestAppRecordStore(store: AppRecordStore = new MemoryAppR
   uninstallAppRecordStore()
   installAppRecordStore(store)
   return store
+}
+
+/** The store a file kept across its tests, if it asked to. */
+let keptForFile: AppRecordStore | null = null
+
+/**
+ * Keep one store for every test of this file instead of a fresh one per test:
+ * for a file that seeds records once in `beforeAll` (an auth secret its
+ * sessions are signed with, settings an app instance was built from). Call it
+ * in `beforeAll`, before seeding. Each test file runs in its own module
+ * registry, so this ends with the file.
+ */
+export function keepAppRecordStoreAcrossTests(store: AppRecordStore = new MemoryAppRecordStore()): typeof store {
+  keptForFile = store
+  return installTestAppRecordStore(store)
+}
+
+/**
+ * What the vitest setup file runs before every test: the store this file
+ * kept, or a fresh in-memory store.
+ */
+export function resetTestAppRecordStore(): void {
+  installTestAppRecordStore(keptForFile ?? new MemoryAppRecordStore())
 }

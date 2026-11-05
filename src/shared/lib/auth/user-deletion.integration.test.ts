@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
-import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import type { AppDatabase } from '../db/drivers/types'
 import { agentAcl, agentConnectedAccounts, agentRemoteMcps, auditLog, authAccount, connectedAccounts, remoteMcpServers, userSettings } from '../db/schema'
 import { attribution } from '../platform-attribution'
@@ -91,8 +90,6 @@ async function seedOwned(userId: string) {
 beforeEach(async () => {
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('BETTER_AUTH_SECRET', 'user-deletion-test-secret-0123456789abcdef0123456789abcdef')
-  // Host records (the auth secret falls back to one) live in the app record store.
-  installTestAppRecordStore()
   vi.stubEnv('TRUSTED_ORIGINS', BASE)
   vi.stubEnv('AUTH_PROVIDERS_JSON', '[]')
   vi.stubEnv('PLATFORM_TOKEN', '')

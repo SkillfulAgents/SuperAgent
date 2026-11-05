@@ -30,7 +30,6 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 let testDir: string
 let testDb: ReturnType<typeof drizzle>
@@ -113,7 +112,6 @@ describe('SUP-221: cancelTriggersForConnectedAccount', () => {
     migrate(testDb, { migrationsFolder })
 
     deleteComposioTrigger.mockClear()
-    installTestAppRecordStore()
 
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-04-01T12:00:00.000Z'))

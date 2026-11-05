@@ -1,7 +1,6 @@
 vi.mock('../../services/connection-sync-service', () => ({ syncRemoteMcpAgents: vi.fn(async () => true) }))
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../../db/testing/create-test-database'
-import { installTestAppRecordStore } from '../../app-records/testing/memory-record-store'
 import type { AppDatabase } from '../../db/drivers/types'
 import { sql } from 'drizzle-orm'
 let handle: TestDatabase
@@ -34,8 +33,6 @@ const identity = { id: 'app-user', app: true, name: 'Helper', displayName: 'Help
 let fetchMock: ReturnType<typeof vi.fn>
 beforeEach(async () => {
   handle = await createTestDatabase(); testDb = handle.db
-  // Callback URLs fall back to the trusted origins in settings: app records.
-  installTestAppRecordStore()
   vi.clearAllMocks()
   fetchMock = vi.fn(async (url: string) => Response.json(url.endsWith('/oauth/token')
     ? { access_token: 'access-secret', refresh_token: 'refresh-secret', expires_in: 86400, scope: scopes }

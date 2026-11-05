@@ -5,7 +5,6 @@ import type { AgentIntegration } from '../agent-integrations/agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { chatProviders } from './providers'
 import * as threadState from './slack-thread-state'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 type SlackMessage = { text: string; ts: string; thread_ts?: string; channel?: string; channel_type?: string }
 type MessageListener = (event: { message: Record<string, string>; say: unknown }) => Promise<void>
@@ -84,10 +83,6 @@ afterEach(async () => {
 })
 
 // Settings and host records are app records: a fresh in-memory store per test.
-beforeEach(() => {
-  installTestAppRecordStore()
-})
-
 describe('Slack thread participation across connector recreation (SUP-861)', () => {
   it('restores installation-scoped state through the application provider registry', async () => {
     const stores = { first: memoryStore(), other: memoryStore() }

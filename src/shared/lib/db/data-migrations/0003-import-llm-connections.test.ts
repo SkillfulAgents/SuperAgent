@@ -8,7 +8,7 @@ import { getDb } from '../open-database'
 import { dataMigrations, llmConnections, scheduledTasks, webhookTriggers, chatIntegrations } from '../schema'
 import * as settings from '../../config/settings'
 import { dbAppRecordStore, type AppRecordStore } from '../../app-records/record-store'
-import { isAppRecordStoreInstalled } from '../../app-records/records'
+import { uninstallAppRecordStore } from '../../app-records/records'
 import { DATA_MIGRATIONS, runDataMigrations } from './index'
 import { importLlmConnections } from './0003-import-llm-connections'
 
@@ -18,8 +18,9 @@ let dataDir: string
 let store: AppRecordStore
 const migrations = [importLlmConnections]
 beforeEach(async () => {
-  // As at boot, no global record store: a migration that read one would throw.
-  expect(isAppRecordStoreInstalled()).toBe(false)
+  // As at boot, no global record store (the test setup installs one): a
+  // migration that read it instead of its own handle would throw.
+  uninstallAppRecordStore()
   dataDir = mkdtempSync(join(tmpdir(), 'llm-migration-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
   vi.stubEnv('AUTH_MODE', 'false')

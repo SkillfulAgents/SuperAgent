@@ -99,10 +99,16 @@ database (so a failed boot is reported) and gets the tenant id afterwards
 (`attachErrorReportingIdentity()`); analytics drops events whose consent it
 cannot read.
 
-Tests install an in-memory store with `installTestAppRecordStore()`
-(`app-records/testing/memory-record-store.ts`), or use the database store on
-`createTestDatabase()` — `createTestDatabase({ file })` opens a shared file so
-two handles stand in for two processes.
+In unit tests every test starts with a fresh, empty in-memory store: the
+vitest setup file `app-records/testing/vitest-setup.ts` installs one before
+each test, so a test that only needs settings to work installs nothing. From
+`app-records/testing/memory-record-store.ts`:
+`installTestAppRecordStore(store?)` in a test's own `beforeEach` gets hold of
+the store (to seed or count reads) or installs another one (a database store
+on `createTestDatabase()`; `createTestDatabase({ file })` opens a shared file
+so two handles stand in for two processes); `keepAppRecordStoreAcrossTests()`
+in `beforeAll` keeps one store for a file that seeds once; a test of the
+no-store case calls `uninstallAppRecordStore()`.
 
 ## Upgrading from files
 

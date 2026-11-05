@@ -4,7 +4,6 @@ import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { agents, auditLog, user } from '@shared/lib/db/schema'
 import type { LoginContext } from '@shared/lib/tools/request-login/login-request'
 import { resetVaultKeyCache } from './vault-crypto'
@@ -99,8 +98,6 @@ afterAll(() => {
 beforeEach(async () => {
   handle = await createTestDatabase()
   testDb = handle.db
-  // The app's own origins (isOwnOrigin) are read from the settings.
-  installTestAppRecordStore()
   await testDb.insert(agents).values({ slug: 'agent-a', name: 'Agent A', createdAt: new Date() }).run()
   container.context = GITHUB
   container.contextStatus = []

@@ -66,8 +66,6 @@ const catalog = ['model-a', 'model-b'].map(id => ({ id, label: id, supportedEffo
 beforeEach(async () => {
   handle = await createTestDatabase()
   state.db = handle.db
-  // The settings getters the mock above does not replace read the records (defaults here).
-  installTestAppRecordStore()
   state.settings = {} as AppSettings
   state.metadata = {}
   state.preferences = {}

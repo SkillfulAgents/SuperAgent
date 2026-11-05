@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -65,7 +64,7 @@ agentIntegrationRegistry.register({
 const app = new Hono().route('/api/agent-integrations', router)
 const headers = { Authorization: 'user-token', 'Content-Type': 'application/json' }
 const create = () => app.request('/api/agent-integrations/agents/agent', { method: 'POST', headers, body: JSON.stringify({ provider: 'test-oauth', name: 'Agent identity', config: {} }) })
-beforeEach(async () => { installTestAppRecordStore(); vi.clearAllMocks(); owner = true; available = true; pending.clear(); handle = await createTestDatabase(); testDb = handle.db
+beforeEach(async () => { vi.clearAllMocks(); owner = true; available = true; pending.clear(); handle = await createTestDatabase(); testDb = handle.db
   runtime.pause.mockImplementation(async id => { await updateAgentIntegrationStatus(id, 'paused') })
   runtime.resume.mockImplementation(async id => { await updateAgentIntegrationStatus(id, 'active') })
 })

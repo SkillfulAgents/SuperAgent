@@ -5,13 +5,11 @@ vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn(asyn
 vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: async () => null }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }))
 
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getActiveWebProvider, resolveEffectiveWebVendor } from '@shared/lib/web-provider'
 import webSearch from './web-search'
 
 beforeEach(() => {
-  installTestAppRecordStore()
   for (const name of ['PARALLEL_API_KEY', 'PLATFORM_TOKEN', 'EXA_API_KEY']) vi.stubEnv(name, '')
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })

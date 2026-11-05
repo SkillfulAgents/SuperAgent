@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ParallelWebProvider } from './parallel-web-provider'
 
 const provider = new ParallelWebProvider()
@@ -28,7 +27,6 @@ function mockMcp(options?: { sse?: boolean; error?: boolean; missingTool?: boole
 }
 
 // The key getters read settings (empty here): app records.
-beforeEach(() => { installTestAppRecordStore() })
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); result = { results: defaultResults } })
 
 it.each([false, true])('maps useful normalized hits over JSON/SSE (SSE=%s) without credentials', async (sse) => {

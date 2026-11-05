@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { Hono } from 'hono'
 import { captureException } from '@shared/lib/error-reporting'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -49,7 +48,7 @@ agentIntegrationRegistry.register({
 })
 const app = new Hono().route('/api/agent-integrations', router)
 const json = { 'Content-Type': 'application/json' }
-beforeEach(async () => { installTestAppRecordStore(); vi.clearAllMocks(); availability.value = true; handle = await createTestDatabase(); testDb = handle.db })
+beforeEach(async () => { vi.clearAllMocks(); availability.value = true; handle = await createTestDatabase(); testDb = handle.db })
 afterEach(async () => { await handle.close() })
 
 describe('provider availability', () => {
