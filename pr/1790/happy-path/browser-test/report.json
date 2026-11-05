@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully tested browser use capability: agent opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and reported back.",
+  "reason": "Browser use feature test - agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result accurately.",
   "steps": [
-    "Navigate to http://localhost:47891 — Page loaded successfully with Gamut application showing agent sidebar",
-    "Find and click agent \"QA-20261105-002155-gei4\" in sidebar — Agent clicked, navigated to agent detail page at http://localhost:47891/agents/qa-20261105-002155-gei4-q4vor2078o",
-    "Locate message composer and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent using ProseMirror markdown-composer-editor, new session created at /sessions/1dda3c12-d451-4738-94a5-4cabe2bb211c",
-    "Wait for agent response (up to 3 minutes) — Agent executed 3 tool calls (ToolSearch, Open Browser, Close Browser), completed in 7 seconds",
-    "Verify response mentions \"Example Domain\" and take screenshot — Response verified: \"The page title at https://example.com is \\\"Example Domain\\\". It loaded normally, and I've closed the browser.\" Screenshot taken showing complete response."
+    "Navigate to http://localhost:47891 — Successfully loaded the Gamut dashboard with agent sidebar visible.",
+    "Click on agent \"QA-20261105-005314-e5nd\" in sidebar — Successfully opened the agent page and navigated to its session view.",
+    "Type and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in textbox and sent via Send button.",
+    "Wait for agent response (up to 3 minutes) — Agent completed work in 7 seconds, confirming rapid processing.",
+    "Verify response mentions \"Example Domain\" and take screenshot — Response confirmed: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" Screenshot captured showing complete conversation with verified response content."
   ],
   "bugs": [],
-  "durationMs": 158107,
-  "sessionId": "7521a2e3-9cfb-43cd-a15b-4182983905d5",
+  "durationMs": 57685,
+  "sessionId": "03ff3c37-ba23-4091-b8d7-6b5723455638",
   "cost": {
-    "inputTokens": 548,
-    "outputTokens": 17884,
-    "cacheCreationTokens": 57864,
-    "cacheReadTokens": 1427238,
+    "inputTokens": 290,
+    "outputTokens": 10163,
+    "cacheCreationTokens": 73924,
+    "cacheReadTokens": 805309,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.305022
+    "totalCostUsd": 0.224041
   }
 }
