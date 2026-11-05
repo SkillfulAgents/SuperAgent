@@ -701,7 +701,19 @@ describe('MessageItem', () => {
       expect(screen.getByText('Alice Baker')).toBeInTheDocument()
     })
 
-    it('draws the sender avatar beside the name, from their profile image', () => {
+    it('puts when it was sent beside the sender, shown on hover only', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} />)
+      const meta = screen.getByTestId('message-meta')
+      expect(meta).toHaveTextContent(/^Alice Bakerjust now$/)
+      expect(meta).toHaveClass('opacity-0', 'group-hover/message:opacity-100')
+    })
+
+    it('draws the sender avatar beside the bubble, from their profile image', () => {
       const msg = createUserMessage({
         content: { text: 'Hello' },
         sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com', image: 'https://example.com/alice.png' },
