@@ -51,18 +51,20 @@ const advance = (ms: number) => vi.setSystemTime(Date.now() + ms)
 const record = async (id: string) => appState().get(oauthLoginKey(id))
 const places = async () => (await appState().get(pendingLoginsKey()))?.value.places ?? []
 
-type Method = 'compareAndSet' | 'consume' | 'insertIfAbsent'
+type Method = 'compareAndSet' | 'consume' | 'insertIfAbsent' | 'get'
 /**
- * Makes the next `method` call on `namespace` lose its answer: it lands (unless
- * `lands` is false) and then throws, as a response that never arrives would.
+ * Makes the next `times` `method` calls on `namespace` (after `skip` of them)
+ * lose their answers: each lands (unless `lands` is false) and then throws, as
+ * a response that never arrives would.
  */
-function loseAnswer(method: Method, namespace: string, { lands = true, times = 1 } = {}) {
+function loseAnswer(method: Method, namespace: string, { lands = true, times = 1, skip = 0 } = {}) {
   const state = appState() as unknown as Record<Method, (...args: unknown[]) => Promise<unknown>>
   const original = state[method].bind(state)
+  let skipped = 0
   let left = times
   return vi.spyOn(state, method).mockImplementation(async (...args: unknown[]) => {
     const key = args[0] as { namespace: { name: string } }
-    if (left > 0 && key.namespace.name === namespace) {
+    if (key.namespace.name === namespace && skipped++ >= skip && left > 0) {
       left--
       if (lands) await original(...args)
       throw new Error('AppState answer lost')
@@ -512,12 +514,61 @@ describe('answers that are lost', () => {
     expect(await places()).toEqual([])
   })
 
-  it('frees the place of a cancel whose removal landed but whose answer was lost', async () => {
+})
+
+describe('a cancel whose answer is lost', () => {
+  it('keeps the place of a sign-in its removal did not reach, so the limit still holds', async () => {
+    const a = await instance()
+    const b = await instance()
+    const logins = []
+    for (let i = 0; i < OAUTH_LOGIN_LIMIT; i++) logins.push(await a.startOAuthLogin(alice, 'alice'))
+    loseAnswer('consume', 'oauth:llm', { lands: false })
+    await expect(b.cancelOAuthLogin(logins[0].id, alice)).rejects.toThrow('AppState answer lost')
+    expect((await record(logins[0].id))?.value.status.state).toBe('pending')
+    expect(await places()).toHaveLength(OAUTH_LOGIN_LIMIT)
+    await expect(b.startOAuthLogin(alice, 'alice')).rejects.toThrow(TOO_MANY)
+
+    // The sign-in still works, and a later cancel frees its place.
+    await expect(a.pollOAuthLogin(logins[0].id, alice)).resolves.toMatchObject({ status: 'connected' })
+    await expect(a.cancelOAuthLogin(logins[0].id, alice)).resolves.toBe(true)
+    await expect(b.startOAuthLogin(alice, 'alice')).resolves.toMatchObject({ code: 'CODE-1' })
+  })
+
+  it('frees the place when the removal landed', async () => {
     const a = await instance()
     const login = await a.startOAuthLogin(alice, 'alice')
     loseAnswer('consume', 'oauth:llm')
-    await expect(a.cancelOAuthLogin(login.id, alice)).rejects.toThrow('AppState answer lost')
+    await expect(a.cancelOAuthLogin(login.id, alice)).resolves.toBe(true)
     expect(await record(login.id)).toBeNull()
+    expect(await places()).toEqual([])
+  })
+
+  it('decides again from what a poll wrote while the answer was lost', async () => {
+    const a = await instance()
+    const login = await a.startOAuthLogin(alice, 'alice')
+    const state = appState()
+    const key = oauthLoginKey(login.id)
+    vi.spyOn(state, 'consume').mockImplementationOnce(async () => {
+      // A poll's write lands first; the removal, decided from the older write, does not.
+      const current = (await state.get(key))!
+      await state.compareAndSet(key, current.revision, { ...current.value, writeId: crypto.randomUUID() }, { expiry: { at: current.value.expiresAt } })
+      throw new Error('AppState answer lost')
+    })
+    await expect(a.cancelOAuthLogin(login.id, alice)).resolves.toBe(true)
+    expect(await record(login.id)).toBeNull()
+    expect(await places()).toEqual([])
+  })
+
+  it('keeps the place when the sign-in cannot be read back either', async () => {
+    const a = await instance()
+    const login = await a.startOAuthLogin(alice, 'alice')
+    loseAnswer('consume', 'oauth:llm')
+    // The cancel's first read goes through; every read back fails.
+    loseAnswer('get', 'oauth:llm', { lands: false, skip: 1, times: 3 })
+    await expect(a.cancelOAuthLogin(login.id, alice)).rejects.toThrow('AppState answer lost')
+    expect(await places()).toEqual([{ id: login.id, expiresAt: login.expiresAt }])
+    // Held at worst until the device expiry.
+    advance(EXPIRES_IN * 1000)
     expect(await places()).toEqual([])
   })
 })

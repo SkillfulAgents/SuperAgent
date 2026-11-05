@@ -197,7 +197,9 @@ export async function startOAuthLogin(viewer: ConnectionViewer, owner: string | 
     return { id, url: device.verification_uri_complete ?? device.verification_uri, code: device.user_code, expiresAt, interval: device.interval }
   } catch (error) {
     // Whatever was written may have landed, its answer lost or not: nothing
-    // of a start that failed is left behind. Its id never reached anyone.
+    // of a start that failed is left behind. Its id never reached anyone, so
+    // a record the removal misses can never be polled, saved or cancelled,
+    // and its place may go either way.
     try {
       await appState().consume(logins.key(id))
     } catch (cleanup) {
@@ -365,6 +367,9 @@ export async function consumeOAuthLogin(claim: OAuthLoginClaim): Promise<void> {
   } catch (error) {
     console.warn('[llm-oauth] Could not remove a saved sign-in; it expires with its device code:', error)
   }
+  // Freed even when the removal never landed: the credential is in its
+  // connection, and a `saving` sign-in is never polled, saved or cancelled
+  // again (only a failed database write hands it back, and that one did not fail).
   await freePlace(claim.id)
 }
 
@@ -384,9 +389,27 @@ export async function cancelOAuthLogin(id: string, viewer: ConnectionViewer): Pr
     try {
       removal = await appState().consume(key, { revision: seen.revision })
     } catch (error) {
-      // The removal may have landed with its answer lost: the place is freed as if it had.
-      await freePlace(id)
-      throw error
+      // The answer was lost; the removal may or may not have landed. The
+      // place is freed only once the sign-in is surely gone: freed for one
+      // that still exists, it would stop counting while it can still be
+      // polled and saved.
+      let current
+      try {
+        current = await retryingLostAnswers(() => appState().get(key))
+      } catch {
+        // Cannot tell: the place stays held, at worst until the device expiry.
+        throw error
+      }
+      // Gone: removed by this cancel, or expired. Either way it no longer counts.
+      if (!current) {
+        await freePlace(id)
+        return true
+      }
+      // Still the write this cancel decided from: the removal did not land.
+      if (current.revision === seen.revision) throw error
+      // A poll wrote meanwhile (a removed sign-in is never written again).
+      seen = current
+      continue
     }
     if (removal.consumed) {
       await freePlace(id)
