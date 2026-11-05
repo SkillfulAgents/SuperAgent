@@ -9,14 +9,17 @@ import { Button } from '@renderer/components/ui/button'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
-const AVATAR_SIZE = 18
+/** The sidebar's stacked faces, shared with other compact stacks (a thread's repliers). */
+export const MEMBER_FACE_SIZE = 18
+const AVATAR_SIZE = MEMBER_FACE_SIZE
 const OVERFLOW_SIZE = 19
 
 // Each circle overlaps the one before it by 8px (-ml-2). Rather than a ring in
 // the sidebar colour, which had to track the row's hover and selected fills,
 // the circle underneath has a 1px gap cut out around the next one, so the row
 // shows through. Centred on the next circle: it starts 10px in.
-const CUTOUT_BEFORE_FACE = '[mask-image:radial-gradient(circle_at_19px_50%,transparent_9.5px,#000_10px)]'
+export const MEMBER_FACE_OVERLAP_CLASS = '-ml-2 first:ml-0'
+export const CUTOUT_BEFORE_FACE = '[mask-image:radial-gradient(circle_at_19px_50%,transparent_9.5px,#000_10px)]'
 const CUTOUT_BEFORE_OVERFLOW = '[mask-image:radial-gradient(circle_at_19.5px_50%,transparent_10px,#000_10.5px)]'
 
 /** A compact member stack with roster and invite access, independent of navigation. */
@@ -105,7 +108,7 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
                 user={member}
                 size={AVATAR_SIZE}
                 className={cn(
-                  '-ml-2 first:ml-0',
+                  MEMBER_FACE_OVERLAP_CLASS,
                   i < faces.length - 1 ? CUTOUT_BEFORE_FACE : remaining > 0 && CUTOUT_BEFORE_OVERFLOW,
                 )}
               />

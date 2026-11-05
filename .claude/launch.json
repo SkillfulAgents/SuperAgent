@@ -11,6 +11,15 @@
       "port": 47899
     },
     {
+      "name": "threads-mock",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "export SUPERAGENT_DATA_DIR=\"${TMPDIR:-/tmp}/superagent-threads-mock-data\" VITE_CACHE_DIR=\"${TMPDIR:-/tmp}/superagent-threads-mock-vite\" E2E_MOCK=true AUTH_MODE=true ANTHROPIC_API_KEY=sk-ant-e2e-mock PORT=47898; [ -f \"$SUPERAGENT_DATA_DIR/superagent.db\" ] || node e2e/setup-e2e-data.js; npm run dev:web"
+      ],
+      "port": 47898
+    },
+    {
       "name": "web",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

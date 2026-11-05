@@ -36,7 +36,7 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { silentOpener } from './composer-chips'
-import { registerSessionComposerFocus } from './composer-focus'
+import { registerSessionComposerFill, registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
@@ -255,6 +255,16 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     draftKey: sessionId ? `session:${sessionId}` : `new-session:${agentSlug}`,
     silentSends: !!sessionId,
   })
+  // Let the thread drawer hand this composer a thread to send: added after
+  // whatever is already typed, never replacing it, and focused for an edit.
+  const setComposerMessage = composer.setMessage
+  useEffect(() => {
+    if (!sessionId || isViewOnly) return
+    return registerSessionComposerFill(sessionId, (text) => {
+      setComposerMessage((current) => (current.trim() ? `${current.trimEnd()}\n\n${text}` : text))
+      requestAnimationFrame(() => textareaRef.current?.focus())
+    })
+  }, [sessionId, isViewOnly, setComposerMessage])
   const notifiesOnly = sessionId ? silentOpener(composer.message) : null
   const notifiesOnlyLabel = notifiesOnly?.label ?? null
   useEffect(() => {

@@ -1,4 +1,6 @@
 
+import { THREAD_REPLIES_UPDATED_EVENT } from '@shared/lib/session-threads/thread-schema'
+import { threadsQueryKey } from '@renderer/hooks/use-session-threads'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
@@ -1107,6 +1109,10 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'messages_updated') {
         invalidateMessagesThrottled(queryClient, sessionId)
+      }
+      else if (data.type === THREAD_REPLIES_UPDATED_EVENT) {
+        // Someone replied in a thread: its drawer and the row under its message redraw.
+        void queryClient.invalidateQueries({ queryKey: threadsQueryKey(sessionId) })
       }
       else if (data.type === 'turn_output_complete') {
         // A turn's output finished (the session may or may not settle — e.g.
