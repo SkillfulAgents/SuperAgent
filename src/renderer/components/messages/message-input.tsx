@@ -549,6 +549,8 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         phase={voice.phase}
         ready={voice.ready}
         agentName={voiceAgent?.name}
+        agent={voiceAgent}
+        waitingForInput={(inputRequests?.length ?? 0) > 0}
         userSpeaking={voice.userSpeaking}
         utterance={voice.utterance}
         transcript={voice.transcript}

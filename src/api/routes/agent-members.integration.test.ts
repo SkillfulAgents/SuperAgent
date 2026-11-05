@@ -9,6 +9,7 @@ import { PNG } from 'pngjs'
 import { MAX_AGENT_MEMBERS_BATCH_SIZE, type CollaborationEvent } from '@shared/lib/agent-members-schema'
 import { keepAppRecordStoreAcrossTests } from '@shared/lib/app-records/testing/memory-record-store'
 import { mutateSettings } from '@shared/lib/config/settings'
+import { backgroundSettled } from '@shared/lib/background'
 
 let directory: string
 let db: typeof import('@shared/lib/db')
@@ -16,7 +17,16 @@ let sqlite: Database.Database
 let authModule: typeof import('@shared/lib/auth')
 let service: typeof import('@shared/lib/services/agent-members-service')
 let events: typeof import('@shared/lib/services/collaboration-events')
+let feed: typeof import('@shared/lib/notifications/global-feed')
 let app: Hono
+
+/** The membership hints the feed carries on one user's own channel. Resolves to its unsubscribe. */
+async function subscribeHints(userId: string, onHint: (event: CollaborationEvent) => void): Promise<() => Promise<void>> {
+  const subscription = await feed.globalFeed.subscribe([feed.userFeedChannel(userId)], (event) => {
+    if (events.isCollaborationEvent(event)) onHint(event as CollaborationEvent)
+  })
+  return () => subscription.unsubscribe()
+}
 const agentSlug = '0123456789'
 const secondAgent = '9876543210'
 const privateAgent = 'private-agent'
@@ -43,6 +53,7 @@ beforeAll(async () => {
   authModule = await import('@shared/lib/auth')
   service = await import('@shared/lib/services/agent-members-service')
   events = await import('@shared/lib/services/collaboration-events')
+  feed = await import('@shared/lib/notifications/global-feed')
   const { Authenticated, ResolveAgent, AgentAdmin } = await import('../middleware/auth')
   const { default: members, agentMembersBatch } = await import('./agent-members')
   app = new Hono()
@@ -167,23 +178,25 @@ describe('authorized agent roster', () => {
   it('reads updated profiles on the next roster request without broadcasting changes', async () => {
     const { setAvatar } = await import('@shared/lib/services/profile-avatar-service')
     const received: CollaborationEvent[] = []
-    const stops = Object.values(people).map(person => events.subscribeCollaborationEvents(person.id, event => { received.push(event) }))
+    const stops = await Promise.all(Object.values(people).map(person => subscribeHints(person.id, event => { received.push(event) })))
     const image = new PNG({ width: 4, height: 4 })
     image.data.fill(160)
     try {
       await (await (await authModule.getAuth()).$context).internalAdapter.updateUser(people.viewer.id, { name: 'Updated Viewer', image: 'https://example.test/new.png' })
       const avatar = await setAvatar(people.viewer.id, PNG.sync.write(image))
+      await backgroundSettled()
       expect(received).toEqual([])
       const uploaded = await (await get('owner')).json()
       expect(uploaded).toContainEqual(expect.objectContaining({ id: people.viewer.id, name: 'Updated Viewer', image: avatar }))
       await setAvatar(people.viewer.id, null)
+      await backgroundSettled()
       expect(received).toEqual([])
       const restored = await (await batch('owner', [agentSlug, secondAgent])).json()
       for (const slug of [agentSlug, secondAgent]) {
         expect(restored[slug].members).toContainEqual(expect.objectContaining({ id: people.viewer.id, name: 'Updated Viewer', image: 'https://example.test/new.png' }))
       }
     } finally {
-      stops.forEach(stop => stop())
+      await Promise.all(stops.map(stop => stop()))
     }
   })
 
@@ -191,26 +204,28 @@ describe('authorized agent roster', () => {
     const { agentAcl } = await import('@shared/lib/db/schema')
     db.db.insert(agentAcl).values({ id: randomUUID(), userId: people.admin.id, agentSlug, role: 'viewer', createdAt: new Date() }).run()
     const received: CollaborationEvent[] = []
-    const stop = events.subscribeCollaborationEvents(people.admin.id, (event) => { received.push(event) })
+    const stop = await subscribeHints(people.admin.id, (event) => { received.push(event) })
     try {
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.admin.id)
       await service.notifyAgentMembersChanged(agentSlug, people.admin.id)
+      await backgroundSettled()
       expect(received).toEqual([{ type: 'agent_members_changed', agentSlug }])
       expect((await get('admin')).status).toBe(200)
       expect((await get('admin', 'access')).status).toBe(200)
       expect((await service.listAgentMembers(agentSlug)).some((member) => member.id === people.admin.id)).toBe(false)
     } finally {
-      stop()
+      await stop()
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.admin.id)
     }
   })
 
   it('scopes membership hints and delivers revocation after removing access', async () => {
     const received = Object.fromEntries(Object.keys(people).map((name) => [name, [] as CollaborationEvent[]]))
-    const stops = Object.keys(people).map((name) => events.subscribeCollaborationEvents(people[name].id, (event) => { received[name].push(event) }))
+    const stops = await Promise.all(Object.keys(people).map((name) => subscribeHints(people[name].id, (event) => { received[name].push(event) })))
     try {
       sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.viewer.id)
       await service.notifyAgentMembersChanged(agentSlug, people.viewer.id)
+      await backgroundSettled()
       expect(received.owner).toEqual([{ type: 'agent_members_changed', agentSlug }])
       expect(received.user).toEqual([{ type: 'agent_members_changed', agentSlug }])
       expect(received.viewer).toEqual([{ type: 'agent_access_revoked', agentSlug }])
@@ -219,7 +234,7 @@ describe('authorized agent roster', () => {
       expect(received.outsider).toEqual([])
       expect(received.admin).toEqual([])
     } finally {
-      stops.forEach((stop) => stop())
+      await Promise.all(stops.map((stop) => stop()))
     }
   })
 })

@@ -128,6 +128,7 @@ import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { dbAppRecordStore } from '@shared/lib/app-records/record-store'
 import { installAppRecordStore } from '@shared/lib/app-records/records'
+import { initializeLocalAppState } from '@shared/lib/app-state'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
@@ -1595,6 +1596,8 @@ async function startApp() {
   }
   // Reports so far went without the tenant identity, which lives in the database.
   await attachErrorReportingIdentity()
+  // Then the state the API shares across requests, in this process's memory.
+  await initializeLocalAppState()
 
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the

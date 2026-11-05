@@ -1,6 +1,6 @@
-import type { IntegrationProvider } from '../../agent-integrations/registry'
 import type { PublicAgentIntegration } from '../../agent-integrations/public'
 import { agentIntegrationMeetings } from '../../db/schema'
+import type { MeetingIntegrationProvider } from '../bot-host'
 import { meetingPolicy, meetingAvailability, meetingLiveSettingFor, leaveOpenMeetings } from '../definitions'
 import { recallDefinition } from './definition'
 import { recallSetup } from './setup'
@@ -10,7 +10,7 @@ import { resolveRecallTransport } from './transport'
 export interface PublicRecallIntegration extends PublicAgentIntegration<RecallSettings> { provider: 'recall' }
 export function isPublicRecallIntegration(integration: PublicAgentIntegration): integration is PublicRecallIntegration { return integration.provider === 'recall' }
 
-export const recallProvider: IntegrationProvider = {
+export const recallProvider: MeetingIntegrationProvider = {
   definition: recallDefinition,
   policy: meetingPolicy,
   setup: recallSetup,
@@ -43,4 +43,8 @@ export const recallProvider: IntegrationProvider = {
     if (host) await leaveOpenMeetings(record.id, host)
   },
   async describeTarget() { return { type: 'meeting' } },
+  async parseBotEvent(body) {
+    const { recallParticipantEvent } = await import('./recall-meeting-integration')
+    return recallParticipantEvent(body)
+  },
 }

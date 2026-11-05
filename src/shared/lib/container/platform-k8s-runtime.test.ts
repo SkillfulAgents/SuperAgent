@@ -498,6 +498,21 @@ describe('PlatformK8sRuntimeClient operability', () => {
     }))
     const client = new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} })
     await expect(client.getInfoFromRuntime()).resolves.toEqual({ status: 'stopped', port: null })
+    await expect(client.isDefinitelyStopped()).resolves.toBe(false)
+  })
+
+  it.each([
+    ['Running', false], ['Pending', false], ['Unknown', false], ['Succeeded', true], ['Failed', true],
+  ])('proves process exit only for a terminal pod phase (%s)', async (phase, stopped) => {
+    installHttpsMock(() => ({ statusCode: 200, body: JSON.stringify({
+      status: { phase, containerStatuses: [{ name: 'agent', ready: false }] },
+    }) }))
+    await expect(new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} }).isDefinitelyStopped()).resolves.toBe(stopped)
+  })
+
+  it.each([[404, true], [403, false]])('distinguishes a missing pod from a failed lookup (HTTP %s)', async (statusCode, stopped) => {
+    installHttpsMock(() => ({ statusCode, body: 'unavailable' }))
+    await expect(new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} }).isDefinitelyStopped()).resolves.toBe(stopped)
   })
 
   it('isAvailable is false without HOST_PUBLIC_URL and true with it', async () => {

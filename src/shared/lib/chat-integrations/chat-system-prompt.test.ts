@@ -18,6 +18,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
 import { MockChatAgentIntegration } from './mock-connector'
 import { isMultiPartyChatType } from './chat-agent-integration'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 
 // ── Test state ─────────────────────────────────────────────────────────
 
@@ -183,6 +184,7 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('chat id: D0AAA111')
     expect(prompt).not.toContain('Iddo Gino')
     expect(prompt).not.toContain('[Jane Doe]')
+    expect(prompt).not.toContain(NO_REPLY_TOKEN)
   })
 
   it('describes the channel and the attribution prefix for channel sessions', async () => {
@@ -190,6 +192,7 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('a channel (id C0BBB222)')
     expect(prompt).not.toContain('#office')
     expect(prompt).toContain('[Jane Doe]')
+    expect(prompt).toContain(NO_REPLY_TOKEN)
     const positions = [DELIVERY, NO_DOUBLE_POST, ATTRIBUTION, CONCISE, NORMAL_CAPABILITIES]
       .map((rule) => prompt.indexOf(rule))
     expect(positions.every((position) => position >= 0)).toBe(true)
