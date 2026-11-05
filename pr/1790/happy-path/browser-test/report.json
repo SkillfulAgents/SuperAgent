@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully tested browser use capability: agent opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and reported back.",
+  "steps": [
+    "Navigate to http://localhost:47891 — Page loaded successfully with Gamut application showing agent sidebar",
+    "Find and click agent \"QA-20261105-002155-gei4\" in sidebar — Agent clicked, navigated to agent detail page at http://localhost:47891/agents/qa-20261105-002155-gei4-q4vor2078o",
+    "Locate message composer and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent using ProseMirror markdown-composer-editor, new session created at /sessions/1dda3c12-d451-4738-94a5-4cabe2bb211c",
+    "Wait for agent response (up to 3 minutes) — Agent executed 3 tool calls (ToolSearch, Open Browser, Close Browser), completed in 7 seconds",
+    "Verify response mentions \"Example Domain\" and take screenshot — Response verified: \"The page title at https://example.com is \\\"Example Domain\\\". It loaded normally, and I've closed the browser.\" Screenshot taken showing complete response."
+  ],
+  "bugs": [],
+  "durationMs": 158107,
+  "sessionId": "7521a2e3-9cfb-43cd-a15b-4182983905d5",
+  "cost": {
+    "inputTokens": 548,
+    "outputTokens": 17884,
+    "cacheCreationTokens": 57864,
+    "cacheReadTokens": 1427238,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.305022
+  }
+}
