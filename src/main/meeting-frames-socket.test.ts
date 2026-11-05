@@ -4,17 +4,8 @@ import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => {
-  const receiveScreenFrame = vi.fn()
-  class MeetingAgentIntegration {
-    receiveScreenFrame = receiveScreenFrame
-  }
-  return { receiveScreenFrame, MeetingAgentIntegration, captureException: vi.fn(), verifyParticipantToken: vi.fn() }
-})
-vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
-  agentIntegrationManager: { getConnector: () => new mocks.MeetingAgentIntegration() },
-}))
-vi.mock('@shared/lib/meeting-integrations/meeting-agent-integration', () => ({ MeetingAgentIntegration: mocks.MeetingAgentIntegration }))
+const mocks = vi.hoisted(() => ({ receiveScreenFrame: vi.fn(async () => {}), captureException: vi.fn(), verifyParticipantToken: vi.fn() }))
+vi.mock('@shared/lib/meeting-integrations/bot-events', () => ({ meetingScreenFrameReceiver: async () => mocks.receiveScreenFrame }))
 vi.mock('@shared/lib/meeting-integrations/store', () => ({ verifyParticipantToken: mocks.verifyParticipantToken }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: mocks.captureException }))
 
@@ -62,7 +53,7 @@ describe('meeting frames socket', () => {
     client.send('invalid JSON')
     client.send(JSON.stringify({ event: 'video_separate_png.data' }))
     await vi.waitFor(() => expect(mocks.receiveScreenFrame).toHaveBeenCalledOnce())
-    expect(mocks.receiveScreenFrame).toHaveBeenCalledWith(meeting, { event: 'video_separate_png.data' })
+    expect(mocks.receiveScreenFrame).toHaveBeenCalledWith({ event: 'video_separate_png.data' })
     expect(mocks.captureException).not.toHaveBeenCalled()
   })
 

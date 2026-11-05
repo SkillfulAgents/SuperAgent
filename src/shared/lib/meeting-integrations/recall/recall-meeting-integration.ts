@@ -88,7 +88,6 @@ export class RecallBotHost implements MeetingBotHost {
   async getBotStatus(botId: string): Promise<MeetingBotStatus> { return recallBotStatus(await this.client.getBot(botId)) }
   leaveCall(botId: string): Promise<void> { return this.client.leaveCall(botId) }
   sendChatMessage(botId: string, message: string): Promise<void> { return this.client.sendChatMessage(botId, message) }
-  parseScreenFrame(message: unknown): MeetingScreenFrame | null { return recallScreenFrame(message) }
   async recordingLink(botId: string): Promise<MeetingRecordingLink | null> {
     try {
       return recallRecordingLink(await this.client.getBot(botId))

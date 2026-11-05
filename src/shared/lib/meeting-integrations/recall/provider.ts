@@ -46,4 +46,8 @@ export const recallProvider: MeetingIntegrationProvider = {
     const { recallParticipantEvent } = await import('./recall-meeting-integration')
     return recallParticipantEvent(body)
   },
+  async parseScreenFrame(message) {
+    const { recallScreenFrame } = await import('./recall-meeting-integration')
+    return recallScreenFrame(message)
+  },
 }

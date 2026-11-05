@@ -38,8 +38,6 @@ export interface MeetingBotHost {
   getBotStatus(botId: string): Promise<MeetingBotStatus>
   leaveCall(botId: string): Promise<void>
   sendChatMessage(botId: string, message: string): Promise<void>
-  /** Reduce a frames-socket message to a shared-screen frame, or null for anything else (camera frames included). */
-  parseScreenFrame?(message: unknown): MeetingScreenFrame | null
   /** A link to the call's recording while the host still keeps it; null once gone or not yet ready. */
   recordingLink?(botId: string): Promise<MeetingRecordingLink | null>
 }
@@ -52,4 +50,6 @@ export interface MeetingBotHost {
 export interface MeetingIntegrationProvider extends IntegrationProvider {
   /** Reduce an in-call callback body to a participant event, or null when it is something else. */
   parseBotEvent(body: unknown): Promise<MeetingParticipantEvent | null>
+  /** Reduce a frames-socket message to a shared-screen frame, or null for anything else (camera frames included). Absent: the host sends no frames. */
+  parseScreenFrame?(message: unknown): Promise<MeetingScreenFrame | null>
 }

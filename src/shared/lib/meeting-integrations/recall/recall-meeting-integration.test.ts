@@ -107,17 +107,16 @@ describe('RecallBotHost', () => {
       { type: 'websocket', url: 'wss://app.example/api/meeting-participant/m1/frames/?token=t', events: ['video_separate_png.data'] },
     ])
   })
-  it('keeps shared-screen frames and drops camera frames and other messages', () => {
-    const host = new RecallBotHost(new RecallClient(transport(), unowned))
+  it('keeps shared-screen frames and drops camera frames and other messages', async () => {
     const frame = (type: string) => ({
       event: 'video_separate_png.data',
       data: { data: { buffer: Buffer.from('png bytes').toString('base64'), type, timestamp: { absolute: '2026-11-04T19:03:41.392Z', relative: 12.5 }, participant: { id: 100, name: 'Anna' } } },
     })
-    const screen = host.parseScreenFrame(frame('screenshare'))
+    const screen = await recallProvider.parseScreenFrame!(frame('screenshare'))
     expect(Buffer.from(screen!.png).toString()).toBe('png bytes')
     expect(screen!.at.toISOString()).toBe('2026-11-04T19:03:41.392Z')
-    expect(host.parseScreenFrame(frame('webcam'))).toBeNull()
-    expect(host.parseScreenFrame({ event: 'participant_events.screenshare_on', data: { data: {} } })).toBeNull()
+    expect(await recallProvider.parseScreenFrame!(frame('webcam'))).toBeNull()
+    expect(await recallProvider.parseScreenFrame!({ event: 'participant_events.screenshare_on', data: { data: {} } })).toBeNull()
   })
   it('reduces Recall participant webhooks to family events and ignores the rest', async () => {
     expect(recallParticipantEvent({ event: 'participant_events.join', data: { data: { participant: { id: 100, name: 'Iddo', is_host: true } } } }))

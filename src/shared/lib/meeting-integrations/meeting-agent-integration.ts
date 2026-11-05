@@ -295,17 +295,6 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     return toPublicMeeting((await getMeeting(meeting.id))!)
   }
 
-  /**
-   * One message from the bot host's frames socket. The socket checked the
-   * meeting's token when it opened; frames arrive several times a second, so
-   * the meeting is not looked up again for each one. Camera frames are dropped
-   * by the provider's parser and never stored.
-   */
-  receiveScreenFrame(meeting: Pick<MeetingRecord, 'id' | 'agentSlug'>, message: unknown): void {
-    const frame = this.bots.parseScreenFrame?.(message)
-    if (frame) meetingScreenshots.offer(meeting, frame)
-  }
-
   async leave(meetingId: string, reason: string): Promise<PublicMeeting> {
     const meeting = await this.requireMeeting(meetingId)
     if (isTerminalMeetingStatus(meeting.status)) return toPublicMeeting(meeting)

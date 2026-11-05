@@ -12,8 +12,7 @@ import type { IncomingMessage } from 'http'
 import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
-import { MeetingAgentIntegration } from '@shared/lib/meeting-integrations/meeting-agent-integration'
+import { meetingScreenFrameReceiver } from '@shared/lib/meeting-integrations/bot-events'
 import { captureException } from '@shared/lib/error-reporting'
 import { isTerminalMeetingStatus } from '@shared/lib/meeting-integrations/schemas'
 import { verifyParticipantToken, type MeetingRecord } from '@shared/lib/meeting-integrations/store'
@@ -42,15 +41,17 @@ export function setupMeetingFramesSocket(server: ServerType): void {
     if (!token) return deny(socket, '401 Unauthorized')
     let meetingId: string
     try { meetingId = decodeURIComponent(match[1]) } catch { return deny(socket, '404 Not Found') }
-    verifyParticipantToken(meetingId, token).then((meeting) => {
+    verifyParticipantToken(meetingId, token).then(async (meeting) => {
       if (!meeting) return deny(socket, '404 Not Found')
       if (isTerminalMeetingStatus(meeting.status)) return deny(socket, '410 Gone')
-      framesWss.handleUpgrade(request, socket, head, (ws) => receiveFrames(ws, meeting))
+      const receive = await meetingScreenFrameReceiver(meeting)
+      if (!receive) return deny(socket, '404 Not Found')
+      framesWss.handleUpgrade(request, socket, head, (ws) => receiveFrames(ws, meeting, receive))
     }).catch(() => socket.destroy())
   })
 }
 
-function receiveFrames(ws: WebSocket, meeting: MeetingRecord): void {
+function receiveFrames(ws: WebSocket, meeting: MeetingRecord, receive: (message: unknown) => Promise<void>): void {
   const ping = setInterval(() => ws.ping(), PING_MS)
   ws.on('close', () => clearInterval(ping))
   // Protocol errors (including maxPayload) are emitted on the WebSocket. With
@@ -66,10 +67,11 @@ function receiveFrames(ws: WebSocket, meeting: MeetingRecord): void {
   })
   ws.on('message', (data, isBinary) => {
     if (isBinary) return
-    const connector = agentIntegrationManager.getConnector(meeting.integrationId)
-    if (!(connector instanceof MeetingAgentIntegration)) return
     let message: unknown
     try { message = JSON.parse(data.toString()) } catch { return }
-    connector.receiveScreenFrame(meeting, message)
+    receive(message).catch(error => captureException(error, {
+      tags: { component: 'meeting-frames-socket', operation: 'save-frame' },
+      extra: { meetingId: meeting.id },
+    }))
   })
 }
