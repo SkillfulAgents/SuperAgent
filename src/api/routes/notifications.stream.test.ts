@@ -145,6 +145,7 @@ beforeAll(async () => {
   // As in the real app: armed ahead of every middleware that awaits.
   app.use('*', armAbortSignal)
   app.route('/api/notifications', notificationsRouter)
+  app.get('/api/test/state', (c) => c.json(authoritative))
   await new Promise<void>((resolve) => {
     server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info: AddressInfo) => {
       port = info.port
@@ -169,7 +170,10 @@ interface Followed {
   calls: number
 }
 let followed: Followed[] = []
-let subscribeGate: Promise<void> | null = null
+/** While set, a subscribe whose channels match `when` waits for `until`. */
+let subscribeGate: { until: Promise<void>; when: (paths: string[]) => boolean } | null = null
+/** What a client's refetch reads: the state the feed's events are hints about. */
+let authoritative = { version: 1 }
 
 /** Wraps the installed AppState's subscribe to record what is followed (call again after installing another). */
 function trackSubscriptions(): void {
@@ -178,7 +182,7 @@ function trackSubscriptions(): void {
   vi.spyOn(state, 'subscribe').mockImplementation(async (channels, listener, options) => {
     const entry: Followed = { paths: channels.map((channel) => channel.path), ended: false, calls: 0 }
     followed.push(entry)
-    if (subscribeGate) await subscribeGate
+    if (subscribeGate?.when(entry.paths)) await subscribeGate.until
     const end = () => {
       entry.ended = true
     }
@@ -219,6 +223,7 @@ async function expectNothingListening(): Promise<void> {
 beforeEach(() => {
   followed = []
   subscribeGate = null
+  authoritative = { version: 1 }
   trackSubscriptions()
 })
 
@@ -383,9 +388,12 @@ describe('GET /api/notifications/stream teardown', () => {
 describe('disposal while the stream is still being set up', () => {
   it('leaves no listener behind when the client leaves while subscribing is in progress', async () => {
     let release!: () => void
-    subscribeGate = new Promise<void>((resolve) => {
-      release = resolve
-    })
+    subscribeGate = {
+      until: new Promise<void>((resolve) => {
+        release = resolve
+      }),
+      when: () => true,
+    }
     const finished = streamCallbacks.finished
     const client = await connectSSE()
     expect(await waitFor(() => followed.length === 1)).toBe(true)
@@ -415,6 +423,63 @@ describe('disposal while the stream is still being set up', () => {
     await backgroundSettled()
     expect(live()).toHaveLength(0)
     await expectNothingListening()
+  })
+})
+
+describe('connected', () => {
+  /** What a client reads when it refetches. */
+  const refetch = async () => (await fetch(`http://127.0.0.1:${port}/api/test/state`)).json() as Promise<{ version: number }>
+
+  it('comes only after the first load has followed its agents, so the refetch on it sees a change made meanwhile', async () => {
+    authMode.value = true
+    const firstLoad = deferredLoad()
+    vi.mocked(getAccessibleAgentSlugs).mockReturnValueOnce(firstLoad.promise)
+    const client = await connectSSE('member')
+    expect(await waitFor(() => vi.mocked(getAccessibleAgentSlugs).mock.calls.length === 1)).toBe(true)
+
+    // Something changes while the stream is still loading the user's agents:
+    // its hint goes on a channel the stream does not follow yet.
+    authoritative = { version: 2 }
+    globalFeed.publish({ type: 'session_idle', agentSlug: 'a', sessionId: 'while-loading' })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(client.received()).not.toContain('"type":"connected"')
+    firstLoad.resolve(['a'])
+
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+    // The refetch the client runs on connected reads the change...
+    expect(await refetch()).toEqual({ version: 2 })
+    expect(client.received()).not.toContain('while-loading')
+    // ...and every change after connected arrives as an event.
+    globalFeed.publish({ type: 'session_idle', agentSlug: 'a', sessionId: 'after-connected' })
+    expect(await client.waitForData('after-connected')).toBe(true)
+    client.destroy()
+  })
+
+  it.each([
+    { held: "the tenant's and the user's channels", auth: true, when: (paths: string[]) => paths.includes(tenantFeedChannel().path) },
+    { held: "an agent's channel", auth: true, when: (paths: string[]) => paths.includes(agentFeedChannel('a').path) },
+    { held: "the tenant's channel in local mode", auth: false, when: (paths: string[]) => paths.includes(tenantFeedChannel().path) },
+  ])('waits for every subscription: holding $held holds it', async ({ auth, when }) => {
+    authMode.value = auth
+    vi.mocked(getAccessibleAgentSlugs).mockResolvedValue(['a'])
+    let release!: () => void
+    subscribeGate = {
+      until: new Promise<void>((resolve) => {
+        release = resolve
+      }),
+      when,
+    }
+    const client = await connectSSE('member')
+    expect(await waitFor(() => followed.some((entry) => when(entry.paths)))).toBe(true)
+
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(client.received()).not.toContain('"type":"connected"')
+    release()
+
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+    globalFeed.publish({ type: 'session_idle', agentSlug: 'a', sessionId: 'after-connected' })
+    expect(await client.waitForData('after-connected')).toBe(true)
+    client.destroy()
   })
 })
 

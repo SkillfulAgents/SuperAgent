@@ -70,15 +70,24 @@ notificationsRouter.get('/stream', async (c) => {
     let pingInterval: ReturnType<typeof setInterval> | null = null
 
     try {
-      // The greeting goes first, and is sent once the stream follows its
-      // channels: what is published from then on reaches this client.
+      // The greeting goes first, and nothing is written until the stream
+      // follows every channel it carries (the tenant's, the user's and each
+      // accessible agent's): the client refetches on it, so whatever changed
+      // before it is in the refetch and whatever changes after it arrives
+      // here.
       frames.push({ type: 'connected' })
+      let loadFailed = false
       await openNotificationsFeed({
         user,
         deliver: (event) => frames.push(event),
         signal: feed.signal,
-        onLoadError: () => stream.abort(),
+        onLoadError: () => {
+          loadFailed = true
+          stream.abort()
+        },
       })
+      // A first load that failed ended the stream: it never says connected.
+      if (loadFailed) return
       frames.start()
 
       // Keep-alive every 30 seconds, when nothing else is being sent.
