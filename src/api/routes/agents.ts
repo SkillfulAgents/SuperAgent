@@ -2745,7 +2745,8 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
 /** In an agent several people can message, name the sender for the agent, as chat integrations do. */
 async function attributedForAgent(c: Context, agentSlug: string, text: string): Promise<string> {
   // A slash command or system notice only keeps its meaning at the very start of the text.
-  if (!isAuthMode() || text.startsWith('/') || isSystemMessageText(text)) return text
+  // A meeting bot relays whoever in the room spoke; its credential only names who started the meeting.
+  if (!isAuthMode() || getMeetingParticipant(c) || text.startsWith('/') || isSystemMessageText(text)) return text
   // Attribution is best-effort: a failed member count sends the message without it.
   try {
     if ((await countMembersWithMinRole(agentSlug, 'user')) < 2) return text

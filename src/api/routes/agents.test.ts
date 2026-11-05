@@ -183,7 +183,8 @@ vi.mock('../credentials/credential-broker', () => ({
 }))
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
-const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+const SIGNED_IN_USER = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+let mockAuthUser: { id: string; name?: string; email?: string } = SIGNED_IN_USER
 // Device identity of the calling session; tests set .value to simulate a
 // paired mobile device (null = browser/desktop/web).
 const mockRequestDevice = { value: null as string | null }
@@ -4615,6 +4616,22 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const shared = await (await postJson(app, URL, { content: 'hello' })).json()
     expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, sent({}, { alertDeviceId: null }))
+  })
+
+  it('sends a meeting bot\'s request unattributed in a shared agent: its credential has no name, and the speaker is whoever in the room spoke', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
+    // What Authenticated() sets for the participant cookie: an id, no name.
+    mockAuthUser = { id: 'meeting-starter' }
+    mockMeetingParticipant.value = { meetingId: 'm-1', agentSlug: 'test-agent', sessionId: 'sess-1', userId: 'meeting-starter' }
+    try {
+      const res = await postJson(app, URL, { content: 'what is the launch status' })
+      expect(res.status).toBe(201)
+      expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'what is the launch status', (await res.json()).uuid, sent({}, { alertDeviceId: null }))
+    } finally {
+      mockAuthUser = SIGNED_IN_USER
+      mockMeetingParticipant.value = null
+    }
   })
 
   it('sends the message unattributed when the member count fails', async () => {
