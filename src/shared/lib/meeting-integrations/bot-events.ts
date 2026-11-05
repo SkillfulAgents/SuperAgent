@@ -1,4 +1,5 @@
 import { getAgentIntegration } from '../services/agent-integration-service'
+import { getIntegrationSession } from '../agent-integrations/store'
 import { meetingProviders } from './providers'
 import { isMeetingBot, meetingRoster } from './roster'
 import { isTerminalMeetingStatus } from './schemas'
@@ -43,8 +44,13 @@ export async function receiveMeetingBotEvent(meeting: MeetingRecord, body: unkno
 export async function meetingScreenFrameReceiver(meeting: MeetingRecord): Promise<((message: unknown) => Promise<void>) | null> {
   const provider = await providerOf(meeting)
   if (!provider?.parseScreenFrame) return null
+  let sessionId = meeting.sessionId
   return async (message) => {
     const frame = await provider.parseScreenFrame!(message)
-    if (frame) meetingScreenshots.offer(meeting, frame)
+    if (!frame) return
+    // The socket can open before observeSession records the session on the meeting.
+    // Resolve the durable mapping, and try again on later frames if startup is still pending.
+    sessionId ??= (await getIntegrationSession(meeting.integrationId, meeting.id))?.sessionId ?? null
+    if (sessionId) meetingScreenshots.offer({ ...meeting, sessionId }, frame)
   }
 }

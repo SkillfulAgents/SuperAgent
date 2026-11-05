@@ -86,7 +86,7 @@ export function meetingSessionRules(mode: MeetingMode): string {
   ].join(' ')
 }
 
-export const MEETING_SESSION_SYSTEM_PROMPT = `${meetingSessionRules(DEFAULT_MEETING_MODE)}\n\n${meetingTranscriptRule()}`
+export const MEETING_SESSION_SYSTEM_PROMPT = meetingSessionSystemPrompt()
 
 /** Meetings add speaker guidance to the shared voice transcript notice. */
 export function meetingTranscriptRule(): string {
@@ -94,9 +94,10 @@ export function meetingTranscriptRule(): string {
 }
 
 /** Where screenshots of shared screens are and how to use them. */
-export function meetingScreenshotsRule(screenshotsDir: string): string {
+export function meetingScreenshotsRule(screenshotsDir?: string): string {
   return [
-    `When someone shares their screen, screenshots are saved in ${screenshotsDir} as HH-MM-SS.png (UTC, the transcript's clock), one each time the shared screen changes.`,
+    `When someone shares their screen, screenshots are saved in ${screenshotsDir ?? '/workspace/sessions/<sessionId>/screenshots/'} as HH-MM-SS.png (UTC, the transcript's clock), one each time the shared screen changes.`,
+    ...(!screenshotsDir ? ['Use your current agent session ID for <sessionId>.'] : []),
     'Open one only when a request is about what is on the shared screen; match its time to the transcript lines around it.',
   ].join(' ')
 }
@@ -108,7 +109,7 @@ export function meetingScreenshotsRule(screenshotsDir: string): string {
  * The per-call brief arrives separately as the first message.
  */
 export function meetingSessionSystemPrompt(standingInstructions?: string | null, mode: MeetingMode = DEFAULT_MEETING_MODE, screenshotsDir?: string): string {
-  const rules = [meetingSessionRules(mode), meetingTranscriptRule(), ...(screenshotsDir ? [meetingScreenshotsRule(screenshotsDir)] : [])].join('\n\n')
+  const rules = [meetingSessionRules(mode), meetingTranscriptRule(), meetingScreenshotsRule(screenshotsDir)].join('\n\n')
   const standing = standingInstructions?.trim()
   if (!standing) return rules
   return `${rules}\n\nStanding instructions for every meeting you join:\n${standing.slice(0, MEETING_INSTRUCTIONS_MAX_CHARS)}`

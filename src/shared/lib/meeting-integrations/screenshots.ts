@@ -3,11 +3,12 @@ import { agentRegistry } from '../agent-actor'
 import type { FileOps } from '../agent-actor/types'
 import { background } from '../background'
 import { captureException } from '../error-reporting'
+import { voiceTranscriptDirectory } from '../voice/transcripts'
 import type { MeetingScreenFrame } from './schemas'
 
-/** The folder of one meeting's screen-share screenshots, next to its transcript. */
-export function meetingScreenshotsDir(meetingId: string): string {
-  return `/workspace/meetings/${meetingId}/screenshots/`
+/** Screen-share screenshots live beside the session's voice transcripts. */
+export function meetingScreenshotsDir(sessionId: string): string {
+  return `${voiceTranscriptDirectory(sessionId)}/screenshots/`
 }
 
 /** `HH-MM-SS.png` in UTC, the same clock as the transcript lines. */
@@ -63,6 +64,7 @@ export function screenChanged(previous: Uint8Array, next: Uint8Array): boolean {
 
 interface Room {
   agentSlug: string
+  sessionId: string
   saved: number
   lastSavedAt: number
   lastCheckedAt: number
@@ -83,10 +85,10 @@ export class MeetingScreenshotStore {
     private readonly now: () => number = Date.now,
   ) {}
 
-  offer(meeting: { id: string; agentSlug: string }, frame: MeetingScreenFrame): void {
+  offer(meeting: { id: string; agentSlug: string; sessionId: string }, frame: MeetingScreenFrame): void {
     let room = this.rooms.get(meeting.id)
-    if (!room) {
-      room = { agentSlug: meeting.agentSlug, saved: 0, lastSavedAt: -Infinity, lastCheckedAt: -Infinity, thumbnail: null, busy: false }
+    if (!room || room.sessionId !== meeting.sessionId) {
+      room = { agentSlug: meeting.agentSlug, sessionId: meeting.sessionId, saved: 0, lastSavedAt: -Infinity, lastCheckedAt: -Infinity, thumbnail: null, busy: false }
       this.rooms.set(meeting.id, room)
     }
     const now = this.now()
@@ -106,7 +108,7 @@ export class MeetingScreenshotStore {
     try {
       const thumbnail = screenThumbnail(frame.png)
       if (room.thumbnail && !screenChanged(room.thumbnail, thumbnail)) return
-      await this.filesFor(room.agentSlug).putDoc(`${meetingScreenshotsDir(meetingId)}${screenshotFileName(frame.at)}`, frame.png)
+      await this.filesFor(room.agentSlug).putDoc(`${meetingScreenshotsDir(room.sessionId)}${screenshotFileName(frame.at)}`, frame.png)
       room.thumbnail = thumbnail
       room.saved++
       room.lastSavedAt = this.now()

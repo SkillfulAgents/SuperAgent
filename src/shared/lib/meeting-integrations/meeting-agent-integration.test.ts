@@ -108,12 +108,17 @@ describe('MeetingAgentIntegration', () => {
     expect(prepared.text).toContain('Take notes')
     expect(prepared.text).toContain('Google Meet')
     expect(prepared.systemPrompt).toMatch(/spoken/)
+    expect(prepared.systemPrompt).toContain('/workspace/sessions/<sessionId>/screenshots/')
+    expect(prepared.systemPrompt).not.toContain(`/workspace/meetings/${meeting.id}`)
     expect(prepared.systemPrompt).not.toContain('Standing instructions')
     // The installation's standing instructions ride along in the session prompt, read at brief time.
     integration.settings = { instructions: 'Never quote prices.' }
     const briefed = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
     expect(briefed.systemPrompt).toContain('Standing instructions for every meeting you join:\nNever quote prices.')
     expect(briefed.text).not.toContain('Never quote prices')
+    const resumed = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, sessionId: 'session-1', actor: {} as never })
+    expect(resumed.systemPrompt).toContain('/workspace/sessions/session-1/screenshots/')
+    expect(resumed.systemPrompt).not.toContain('<sessionId>')
   })
 
   it("with accounts, attributes the agent's own join to the installation's creator, else the agent's owner", async () => {

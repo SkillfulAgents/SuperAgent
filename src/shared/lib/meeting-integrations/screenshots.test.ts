@@ -1,6 +1,7 @@
 import { PNG } from 'pngjs'
 import { describe, expect, it, vi } from 'vitest'
 import { InMemoryFileOps } from '../agent-actor/testing/in-memory-file-ops'
+import { backgroundSettled } from '../background'
 
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: vi.fn() } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))
@@ -21,21 +22,20 @@ function screen(...boxes: Array<[x: number, y: number, w: number, h: number]>): 
 const slide1 = screen([20, 20, 120, 40])
 const slide1WithCursor = screen([20, 20, 120, 40], [200, 100, 2, 3])
 const slide2 = screen([20, 20, 120, 40], [20, 90, 280, 60])
-const meeting = { id: 'm-1', agentSlug: 'helper' }
-const settle = () => new Promise(resolve => setImmediate(resolve))
+const meeting = { id: 'm-1', agentSlug: 'helper', sessionId: 'session-1' }
 
 function setup() {
   let clock = 0
   const files = new InMemoryFileOps()
   const store = new MeetingScreenshotStore(() => files, () => clock)
   const saved = () => Object.keys(files.snapshot()).length
-  const savedAt = async (name: string) => files.getDoc(`${meetingScreenshotsDir('m-1')}${name}`)
+  const savedAt = async (name: string) => files.getDoc(`/workspace/sessions/session-1/screenshots/${name}`)
   const offer = async (at: number, png: Uint8Array) => {
     clock = at
     store.offer(meeting, { png, at: new Date(Date.UTC(2026, 10, 4, 10, 20, 0) + at) })
-    await settle()
+    await backgroundSettled()
   }
-  return { store, saved, savedAt, offer }
+  return { store, files, saved, savedAt, offer }
 }
 
 describe('MeetingScreenshotStore', () => {
@@ -66,6 +66,21 @@ describe('MeetingScreenshotStore', () => {
 
   it('names files by UTC time of day, matching the transcript clock', () => {
     expect(screenshotFileName(new Date('2026-11-04T19:03:41.392Z'))).toBe('19-03-41.png')
-    expect(meetingScreenshotsDir('m-1')).toBe('/workspace/meetings/m-1/screenshots/')
+    expect(meetingScreenshotsDir('session-1')).toBe('/workspace/sessions/session-1/screenshots/')
+    expect(() => meetingScreenshotsDir('../escape')).toThrow()
+  })
+
+  it('keeps identical timestamps in separate session folders', async () => {
+    const { store, files } = setup()
+    const at = new Date('2026-11-04T19:03:41Z')
+    store.offer(meeting, { at, png: slide1 })
+    store.offer({ ...meeting, id: 'm-2', sessionId: 'session-2' }, { at, png: slide2 })
+    await backgroundSettled()
+    expect(Object.keys(files.snapshot()).sort()).toEqual([
+      'sessions/session-1/screenshots/19-03-41.png',
+      'sessions/session-2/screenshots/19-03-41.png',
+    ])
+    expect(await files.getDoc('/workspace/sessions/session-1/screenshots/19-03-41.png')).toEqual(new Uint8Array(slide1))
+    expect(await files.getDoc('/workspace/sessions/session-2/screenshots/19-03-41.png')).toEqual(new Uint8Array(slide2))
   })
 })

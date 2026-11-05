@@ -114,7 +114,8 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     const agent = await agentCatalog.get(context.integration.agentSlug)
     return {
       text: meetingJoinBrief(meeting, agent?.name ?? meeting.botName),
-      systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode, meetingScreenshotsDir(meeting.id)),
+      systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode,
+        context.sessionId ? meetingScreenshotsDir(context.sessionId) : undefined),
     }
   }
 

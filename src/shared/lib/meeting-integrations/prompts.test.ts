@@ -95,7 +95,7 @@ describe('meeting prompts', () => {
   })
 
   it('adds meeting guidance and the screenshot folder alongside the shared voice transcript notice', () => {
-    const screenshots = '/workspace/meetings/m-1/screenshots/'
+    const screenshots = '/workspace/sessions/session-1/screenshots/'
     for (const mode of ['voice', 'silent', 'listen'] as const) {
       const session = meetingSessionSystemPrompt('Never quote prices.', mode, screenshots)
       expect(session).toContain('voice conversation announces its live transcript path')
@@ -104,7 +104,9 @@ describe('meeting prompts', () => {
       expect(session).toContain('Open one only when a request is about what is on the shared screen')
       expect(session.indexOf(screenshots)).toBeLessThan(session.indexOf('Standing instructions'))
     }
-    expect(meetingSessionSystemPrompt(null, 'voice')).not.toContain('screenshots')
+    const initial = meetingSessionSystemPrompt(null, 'voice')
+    expect(initial).toContain('/workspace/sessions/<sessionId>/screenshots/')
+    expect(initial).toContain('Use your current agent session ID for <sessionId>')
   })
 
   it('tells the agent where its replies go in each mode', () => {
