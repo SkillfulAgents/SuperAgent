@@ -369,7 +369,6 @@ function release(manifest: UploadManifest | null, attemptId: string): RecordChan
 function takeOver(manifest: UploadManifest | null, token: string): RecordChange<UploadManifest, TakeOver> {
   if (manifest?.state === 'completed') return { result: { kind: 'ended', response: manifest.response } }
   if (manifest?.state !== 'finalizing') return { result: { kind: 'gone' } }
-  if (manifest.finalizer === token) return { result: { kind: 'mine', manifest } }
   const next = { ...manifest, finalizer: token }
   return { result: { kind: 'mine', manifest: next }, value: next }
 }
