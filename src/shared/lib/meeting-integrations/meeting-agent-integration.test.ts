@@ -4,7 +4,7 @@ import type { AppDatabase } from '../db/drivers/types'
 import { chatIntegrations } from '../db/schema'
 import type { AgentIntegrationRecord, IntegrationInputEvent } from '../agent-integrations/types'
 import type { MeetingBotHost, MeetingBotStatus } from './bot-host'
-import type { MeetingIntegrationSettings, MeetingParticipantEvent } from './schemas'
+import type { MeetingIntegrationSettings } from './schemas'
 import { InMemoryFileOps } from '../agent-actor/testing/in-memory-file-ops'
 
 let database: AppDatabase
@@ -28,10 +28,12 @@ const { leaveOpenMeetings } = await import('./definitions')
 const { meetingEventPayloadSchema } = await import('./schemas')
 const { meetingRoster } = await import('./roster')
 const { MEETING_TRANSCRIPT_FLUSH_MS, meetingTranscriptPath } = await import('./transcript')
+const { backgroundSettled } = await import('../background')
+const { receiveMeetingBotEvent } = await import('./bot-events')
 
 const record: AgentIntegrationRecord = {
   id: 'integration', agentSlug: 'agent', provider: 'recall', name: null, config: '{}', status: 'active', errorMessage: null,
-  createdByUserId: 'owner', llmProviderId: null, model: null, effort: null, speed: null, createdAt: new Date(), updatedAt: new Date(),
+  createdByUserId: 'owner', llmProviderId: null, model: null, effort: null, speed: null, createdAt: new Date(), version: 0, updatedAt: new Date(),
 }
 
 class FakeHost implements MeetingBotHost {
@@ -55,10 +57,6 @@ class FakeHost implements MeetingBotHost {
   async leaveCall(botId: string) { if (this.failLeave) throw new Error('503 from the bot host'); this.left.push(botId) }
   async sendChatMessage(botId: string, message: string) { this.chats.push([botId, message]) }
   async recordingLink(botId: string) { return { url: `https://cdn.example/${botId}.mp4`, linkExpiresAt: null } }
-  parseEvent(body: unknown) {
-    const event = body as { kind?: MeetingParticipantEvent['kind']; participant?: MeetingParticipantEvent['participant'] } | null
-    return event?.kind && event.participant ? { kind: event.kind, participant: event.participant } : null
-  }
 }
 
 class TestIntegration extends MeetingAgentIntegration {
@@ -330,9 +328,10 @@ describe('MeetingAgentIntegration', () => {
 
     host.status = { status: 'in_call' }
     await vi.advanceTimersByTimeAsync(0)
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: { id: '1', name: 'Mike', isHost: true } })).toBe(true)
+    const speechOn = async (id: number, name: string) => receiveMeetingBotEvent((await getMeeting(meeting.id))!, { event: 'participant_events.speech_on', data: { data: { participant: { id, name } } } })
+    expect(await speechOn(1, 'Mike')).toBe(true)
     // The bot (named after the agent) starting to talk does not take over what the room says.
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: { id: '9', name: 'Ada', isHost: false } })).toBe(true)
+    expect(await speechOn(9, 'Ada')).toBe(true)
     await integration.receiveSpeech(meeting.id, [
       { role: 'user', text: 'Our price is', at: Date.now() }, { role: 'user', text: ' $30 per seat.', at: Date.now() + 500 },
       // What the bot said aloud goes under its own meeting name.
@@ -345,7 +344,7 @@ describe('MeetingAgentIntegration', () => {
     const atEnd: Array<Promise<Uint8Array | null>> = []
     integration.onEvent(event => { if (event.type === 'input' && meetingEventPayloadSchema.parse(event.payload).kind === 'ended') atEnd.push(workspace.getDoc(path)) })
     await vi.advanceTimersByTimeAsync(5000 - MEETING_TRANSCRIPT_FLUSH_MS - 100)
-    await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: { id: '2', name: 'Anna', isHost: false } })
+    await speechOn(2, 'Anna')
     await integration.receiveSpeech(meeting.id, [{ role: 'user', text: 'Thanks, bye.', at: Date.now() }])
     host.status = { status: 'ended', detail: 'call_ended_by_host' }
     await vi.advanceTimersByTimeAsync(100)
@@ -360,25 +359,33 @@ describe('MeetingAgentIntegration', () => {
   it('keeps the roster from host events and forgets it when the call ends', async () => {
     const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     const rosters: Array<string[]> = []
-    const unsubscribe = meetingRoster.subscribe(meeting.id, roster => rosters.push(roster.participants.map(person => person.name)))
+    const watch = await meetingRoster.watch(meeting.id, roster => rosters.push(roster.participants.map(person => person.name)))
+    // The callback route applies host events to the roster; the connector only ends it.
     const iddo = { id: '1', name: 'Iddo', isHost: true }
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: iddo })).toBe(true)
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: { id: '2', name: 'Maya', isHost: false } })).toBe(true)
-    // The bot's own entry is not a participant; unrelated callbacks are acknowledged but ignored.
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: { id: '3', name: 'Ada', isHost: false } })).toBe(true)
-    expect(await integration.receiveBotEvent(meeting.id, { event: 'transcript.data' })).toBe(false)
-    expect(await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: iddo })).toBe(true)
-    expect(meetingRoster.get(meeting.id)).toEqual({ participants: [iddo, { id: '2', name: 'Maya', isHost: false }], speaking: ['1'] })
-    await integration.receiveBotEvent(meeting.id, { kind: 'leave', participant: { id: '2', name: 'Maya', isHost: false } })
-    expect(meetingRoster.get(meeting.id).participants.map(person => person.name)).toEqual(['Iddo'])
+    await meetingRoster.apply(meeting.id, { kind: 'join', participant: iddo }, meeting.botName)
+    await meetingRoster.apply(meeting.id, { kind: 'join', participant: { id: '2', name: 'Maya', isHost: false } }, meeting.botName)
+    await backgroundSettled()
+    expect(rosters.at(-1)).toEqual(['Iddo', 'Maya'])
     host.status = { status: 'ended', detail: 'everyone_left' }
     await vi.advanceTimersByTimeAsync(5000)
-    expect(meetingRoster.get(meeting.id)).toEqual({ participants: [], speaking: [] })
+    await backgroundSettled()
+    expect(await meetingRoster.get(meeting.id)).toEqual({ participants: [], speaking: [] })
     expect(rosters.at(-1)).toEqual([])
-    unsubscribe()
-    // Nothing is tracked for a call that is over.
-    await integration.receiveBotEvent(meeting.id, { kind: 'join', participant: iddo })
-    expect(meetingRoster.get(meeting.id).participants).toEqual([])
+    await watch.stop()
+    // A callback that was on its way when the call ended does not start the roster again.
+    await meetingRoster.apply(meeting.id, { kind: 'join', participant: iddo }, meeting.botName)
+    expect((await meetingRoster.get(meeting.id)).participants).toEqual([])
+  })
+
+  it('still tells the agent the call ended when the roster cannot be ended', async () => {
+    const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
+    const clear = vi.spyOn(meetingRoster, 'clear').mockRejectedValueOnce(new Error('AppState unavailable'))
+    host.status = { status: 'ended', detail: 'everyone_left' }
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(clear).toHaveBeenCalledWith(meeting.id)
+    expect((await getMeeting(meeting.id))?.status).toBe('ended')
+    expect(events.map(event => meetingEventPayloadSchema.parse(event.payload).kind)).toEqual(['join', 'ended'])
+    clear.mockRestore()
   })
 
   it('leaves on request and refuses chat when not in a call', async () => {
@@ -445,8 +452,10 @@ describe('MeetingAgentIntegration', () => {
   it('leaves every open meeting of an installation on cleanup', async () => {
     const a = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     const b = await integration.requestJoin({ meetingUrl: 'https://zoom.us/j/123' })
+    await meetingRoster.apply(a.id, { kind: 'join', participant: { id: '1', name: 'Iddo', isHost: true } }, a.botName)
     await leaveOpenMeetings('integration', host)
     expect(host.left.sort()).toEqual(['bot-1', 'bot-2'])
+    expect(await meetingRoster.get(a.id)).toEqual({ participants: [], speaking: [] })
     expect((await getMeeting(a.id))?.status).toBe('ended')
     expect((await getMeeting(b.id))?.status).toBe('ended')
   })

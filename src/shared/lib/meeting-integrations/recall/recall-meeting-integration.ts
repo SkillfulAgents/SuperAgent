@@ -88,7 +88,6 @@ export class RecallBotHost implements MeetingBotHost {
   async getBotStatus(botId: string): Promise<MeetingBotStatus> { return recallBotStatus(await this.client.getBot(botId)) }
   leaveCall(botId: string): Promise<void> { return this.client.leaveCall(botId) }
   sendChatMessage(botId: string, message: string): Promise<void> { return this.client.sendChatMessage(botId, message) }
-  parseEvent(body: unknown): MeetingParticipantEvent | null { return recallParticipantEvent(body) }
   parseScreenFrame(message: unknown): MeetingScreenFrame | null { return recallScreenFrame(message) }
   async recordingLink(botId: string): Promise<MeetingRecordingLink | null> {
     try {
@@ -196,5 +195,4 @@ const UNREACHABLE_HOST: MeetingBotHost = {
   async getBotStatus() { throw new Error('Meetings are not available on this deployment.') },
   async leaveCall() { throw new Error('Meetings are not available on this deployment.') },
   async sendChatMessage() { throw new Error('Meetings are not available on this deployment.') },
-  parseEvent: () => null,
 }

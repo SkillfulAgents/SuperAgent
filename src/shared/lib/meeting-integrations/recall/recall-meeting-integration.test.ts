@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RecallApiError, RecallClient } from './client'
 import type { RecallTransport } from './transport'
-import { RECALL_AUTOMATIC_LEAVE, RecallBotHost, recallBotStatus, recallRecordingLink } from './recall-meeting-integration'
+import { RECALL_AUTOMATIC_LEAVE, RecallBotHost, recallBotStatus, recallParticipantEvent, recallRecordingLink } from './recall-meeting-integration'
 import { MEETING_RECORDING_RETENTION_HOURS } from '../schemas'
+import { recallProvider } from './provider'
+
+// These tests exercise provider payloads, without an agent runtime or workspace.
+vi.mock('../../agent-actor', () => ({ agentCatalog: { get: vi.fn() }, agentRegistry: { get: vi.fn() } }))
 
 const bot = (...codes: Array<[string, string | null]>) => ({
   id: 'bot-1', recordings: [],
@@ -115,14 +119,16 @@ describe('RecallBotHost', () => {
     expect(host.parseScreenFrame(frame('webcam'))).toBeNull()
     expect(host.parseScreenFrame({ event: 'participant_events.screenshare_on', data: { data: {} } })).toBeNull()
   })
-  it('reduces Recall participant webhooks to family events and ignores the rest', () => {
-    const host = new RecallBotHost(new RecallClient(transport(), unowned))
-    expect(host.parseEvent({ event: 'participant_events.join', data: { data: { participant: { id: 100, name: 'Iddo', is_host: true } } } }))
+  it('reduces Recall participant webhooks to family events and ignores the rest', async () => {
+    expect(recallParticipantEvent({ event: 'participant_events.join', data: { data: { participant: { id: 100, name: 'Iddo', is_host: true } } } }))
       .toEqual({ kind: 'join', participant: { id: '100', name: 'Iddo', isHost: true } })
-    expect(host.parseEvent({ event: 'participant_events.speech_on', data: { data: { participant: { id: '7', name: null } } } }))
+    expect(recallParticipantEvent({ event: 'participant_events.speech_on', data: { data: { participant: { id: '7', name: null } } } }))
       .toEqual({ kind: 'speech_on', participant: { id: '7', name: 'Unknown participant', isHost: false } })
-    expect(host.parseEvent({ event: 'transcript.data', data: { data: {} } })).toBeNull()
-    expect(host.parseEvent('nonsense')).toBeNull()
+    expect(recallParticipantEvent({ event: 'transcript.data', data: { data: {} } })).toBeNull()
+    expect(recallParticipantEvent('nonsense')).toBeNull()
+    // The provider entry reads them the same way, with no host or connection.
+    expect(await recallProvider.parseBotEvent({ event: 'participant_events.leave', data: { data: { participant: { id: 100, name: 'Iddo' } } } }))
+      .toEqual({ kind: 'leave', participant: { id: '100', name: 'Iddo', isHost: false } })
   })
   it('turns proxy refusals into messages a person can act on', async () => {
     const fetchImpl = vi.fn(async () => new Response('billing hold', { status: 402 }))

@@ -85,3 +85,6 @@ src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts
 src/shared/lib/services/notification-read-state.test.ts
+src/shared/lib/agent-integrations/integration-row-version.test.ts
+src/api/routes/meeting-participant.test.ts
+src/shared/lib/meeting-integrations/meeting-agent-integration.test.ts
