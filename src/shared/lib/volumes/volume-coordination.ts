@@ -20,7 +20,10 @@
  * contenders on theirs, so a contender treats a claim as dead only
  * `VOLUME_CLOCK_MARGIN_MS` past it, and only by a write that removes it. Clocks
  * further apart than the margin can let two overlapping changes run until the
- * pruned holder's next renewal, at most `RENEW_EVERY_MS`, aborts it.
+ * pruned holder's next renewal, at most `RENEW_EVERY_MS`, aborts it. The same
+ * assumption covers cached listings: past the margin, a reader can call a claim
+ * dead while its holder still thinks it holds it, the holder's in-time release
+ * then advances nothing, and that reader's listing lasts until its freshness bound.
  *
  * Generations. Each arrival or invalidation advances a counter. A cache entry
  * carries the generation it was read under, and a reader rejects it when a newer
