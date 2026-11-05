@@ -458,7 +458,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           />
         )}
         {!dashboardRunning && (
-          <div className="absolute inset-0 z-10 bg-background flex flex-col items-center justify-center p-8 text-muted-foreground">
+          <div className="absolute inset-0 z-10 bg-page flex flex-col items-center justify-center p-8 text-muted-foreground">
             <DashboardStatusBody
               viewState={viewState}
               startErrorMessage={startAgent.error?.message}

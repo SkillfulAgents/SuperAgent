@@ -42,7 +42,7 @@ export function WorkspaceReconnect({ waiting }: { waiting?: CloudWait | null }) 
   }
 
   return (
-    <div className="flex items-center justify-center h-screen bg-background p-6">
+    <div className="flex items-center justify-center h-screen bg-page p-6">
       <div className="max-w-md text-center space-y-4">
         {waiting ? (
           <>

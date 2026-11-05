@@ -30,7 +30,7 @@ export function SessionSearchBar({ search }: Props) {
   const disabled = search.totalMatches === 0
 
   return (
-    <div className="shrink-0 flex items-center gap-1.5 border-b bg-background px-3 py-0.5">
+    <div className="shrink-0 flex items-center gap-1.5 border-b bg-page px-3 py-0.5">
       <div className="flex-1" />
       <div className="flex items-center rounded-item border border-input bg-background focus-within:ring-1 focus-within:ring-ring w-[420px] max-w-full">
         <Search className="h-3 w-3 ml-2 text-muted-foreground shrink-0" />

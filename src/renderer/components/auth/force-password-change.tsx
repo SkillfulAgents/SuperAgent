@@ -45,7 +45,7 @@ export function ForcePasswordChange() {
   }
 
   return (
-    <div className="flex items-center justify-center h-screen bg-background">
+    <div className="flex items-center justify-center h-screen bg-page">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <h1 className="text-2xl font-medium">Change Your Password</h1>

@@ -186,7 +186,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
 
   if (agentOnly) {
     return (
-      <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
+      <div className="flex h-svh bg-page overflow-hidden" data-testid="wizard-container">
         {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
         <div className="relative flex flex-col h-svh w-full">
           <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
@@ -212,7 +212,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
   }
 
   return (
-    <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
+    <div className="flex h-svh bg-page overflow-hidden" data-testid="wizard-container">
       {/* Draggable title bar region for Electron */}
       {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
 

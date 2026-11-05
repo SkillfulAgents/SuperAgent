@@ -20,7 +20,7 @@ import { WorkspaceReconnect } from './workspace-reconnect'
  */
 function LoadingScreen() {
   return (
-    <div data-boot-surface className="flex items-center justify-center h-screen bg-background">
+    <div data-boot-surface className="flex items-center justify-center h-screen bg-page">
       <div className="text-muted-foreground text-sm animate-in fade-in duration-300 delay-500 fill-mode-both">
         Loading...
       </div>

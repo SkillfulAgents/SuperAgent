@@ -17,7 +17,7 @@ export function SessionProvenanceBanner({
   testId,
 }: SessionProvenanceBannerProps) {
   return (
-    <div className="shrink-0 border-b bg-background px-4 py-2" data-testid={testId}>
+    <div className="shrink-0 border-b bg-page px-4 py-2" data-testid={testId}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {back && (
           <>

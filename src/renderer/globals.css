@@ -44,6 +44,10 @@
 @layer base {
   :root {
     --background: 0 0% 100%;
+    /* Page canvas: every page sits on it (the main inset, its top bar, the
+       standalone pages). A neutral off-white (#fbfbfb), so bg-background
+       cards read as lifted white surfaces on it. */
+    --page: 0 0% 98.4%;
     --foreground: 0 0% 3.9%;
     --card: 0 0% 100%;
     --card-foreground: 0 0% 3.9%;
@@ -89,7 +93,7 @@
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
-    --sidebar-background: 0 0% 95%;
+    --sidebar-background: 0 0% 96.9%; /* #f7f7f7 */
     --sidebar-foreground: 240 5.3% 26.1%;
     --sidebar-primary: 240 5.9% 10%;
     --sidebar-primary-foreground: 0 0% 98%;
@@ -101,6 +105,7 @@
 
   .dark {
     --background: 0 0% 10%;
+    --page: 0 0% 10%;
     --foreground: 0 0% 98%;
     --card: 0 0% 13%;
     --card-foreground: 0 0% 98%;
@@ -125,7 +130,7 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
-    --sidebar-background: 0 0% 13%;
+    --sidebar-background: 0 0% 8.5%; /* #161616: a step darker than the page, as #f7f7f7 is in light */
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
     --sidebar-primary-foreground: 0 0% 100%;
@@ -469,6 +474,13 @@ html[data-keyboard-open] [data-composer-footer] {
    mask the vibrancy layer — force it transparent so blur shows through the gutters. */
 .electron-vibrancy .group\/sidebar-wrapper {
   background: transparent !important;
+}
+
+/* The sidebar is a solid sheet (#f7f7f7, or #161616 dark), not the native material: the window behind the sidebar
+   and the gutters around the page is painted the sidebar's colour, which the transparent sidebar shows. */
+html.electron-vibrancy,
+html.electron-vibrancy body {
+  background: hsl(var(--sidebar-background)) !important;
 }
 
 /* The pre-app screens (session check, boot) cover the whole window, so an opaque

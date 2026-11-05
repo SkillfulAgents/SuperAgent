@@ -386,9 +386,10 @@ const SidebarInset = React.forwardRef<
       ref={ref}
       className={cn(
         // pt-[env(safe-area-inset-top)]: with the PWA full-bleed under a transparent iOS
-        // status bar, this keeps content clear of the Dynamic Island while bg-background
-        // fills behind it. No-op on desktop/Electron (env resolves to 0).
-        "relative flex w-full flex-1 flex-col bg-background pt-[env(safe-area-inset-top)]",
+        // status bar, this keeps content clear of the Dynamic Island while the page
+        // canvas fills behind it. No-op on desktop/Electron (env resolves to 0).
+        // bg-page: every page sits on the off-white canvas; bg-background cards lift off it.
+        "relative flex w-full flex-1 flex-col bg-page pt-[env(safe-area-inset-top)]",
         "md:peer-data-[variant=inset]:m-2 md:peer-data-[state=collapsed]:peer-data-[variant=inset]:ml-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-[var(--inset-radius,16px)] md:peer-data-[variant=inset]:[corner-shape:var(--inset-corner-shape,round)] md:peer-data-[variant=inset]:shadow",
         className
       )}

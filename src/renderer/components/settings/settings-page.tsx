@@ -207,7 +207,7 @@ function SettingsPageContent({
   if (isMobile) {
     if (mobileView === 'menu') {
       return (
-        <div className="flex h-screen w-full flex-col bg-background pt-[env(safe-area-inset-top)]">
+        <div className="flex h-screen w-full flex-col bg-page pt-[env(safe-area-inset-top)]">
           <div className="flex items-center h-12 shrink-0 px-2 border-b">
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
               <ArrowLeft className="h-4 w-4" />
@@ -276,7 +276,7 @@ function SettingsPageContent({
     }
 
     return (
-      <div className="flex h-screen w-full flex-col bg-background pt-[env(safe-area-inset-top)]">
+      <div className="flex h-screen w-full flex-col bg-page pt-[env(safe-area-inset-top)]">
         <div className="flex items-center h-12 shrink-0 px-2 border-b">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setMobileView('menu')}>
             <ArrowLeft className="h-4 w-4" />
