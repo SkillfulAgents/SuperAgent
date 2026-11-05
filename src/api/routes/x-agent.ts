@@ -223,6 +223,7 @@ async function checkAgentPolicy(
   targetName: string,
   preview?: string,
   fileTransfer?: XAgentFileTransfer,
+  callerSessionId?: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
@@ -234,7 +235,7 @@ async function checkAgentPolicy(
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
     const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
-      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
     if (userDecision === 'deny') {
@@ -785,6 +786,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     target.name,
     prompt.slice(0, 200),
     attachments.length ? { kind: 'send', paths: attachments } : undefined,
+    // Shows the review in the calling session, so a chat can answer it.
+    _callerSessionId,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
