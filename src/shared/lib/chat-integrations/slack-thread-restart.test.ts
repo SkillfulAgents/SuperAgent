@@ -92,7 +92,7 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
       id: 'first', agentSlug: 'test-agent', provider: 'slack', name: null, status: 'active',
       config: JSON.stringify({ botToken: 'xoxb-test', appToken: 'xapp-test', onlyMentioned: true, answerInThread: true }),
       errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null,
-      createdAt: new Date(), updatedAt: new Date(),
+      createdAt: new Date(), version: 0, updatedAt: new Date(),
     }
     try {
       const first = await observe(await registry.create(record))

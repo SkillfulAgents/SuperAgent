@@ -1,5 +1,4 @@
 import { notificationReadAgentSlugs, confirmNotificationRead } from '@shared/lib/services/notification-read-state'
-import { subscribeCollaborationEvents } from '@shared/lib/services/collaboration-events'
 /**
  * Notifications API Routes
  *
@@ -17,15 +16,13 @@ import {
   markAllAsRead,
   markSessionNotificationsRead,
   deleteNotification,
-  getAccessibleAgentSlugs,
   getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
-import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
-import { background } from '@shared/lib/background'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { createAgentAccessGate, type AgentAccessGate } from '../lib/agent-access-gate'
+import { openNotificationsFeed } from '../lib/notifications-feed'
+import { createSseFrameQueue } from '../lib/sse-frame-queue'
 
 const notificationsRouter = new Hono()
 
@@ -45,7 +42,9 @@ function getScopedUserId(c: { get: (key: never) => unknown }): string | undefine
   return user.id
 }
 
-// GET /api/notifications/stream - SSE stream for global notifications (used by Electron main process)
+// GET /api/notifications/stream - SSE stream for global notifications (the
+// renderer and the Electron main process). The feed reaches it through
+// AppState, so an event published by another process arrives too.
 notificationsRouter.get('/stream', async (c) => {
   const clientSignal = c.req.raw.signal
   const user = isAuthMode()
@@ -55,73 +54,55 @@ notificationsRouter.get('/stream', async (c) => {
   return streamSSE(c, async (stream) => {
     // The client left during the middleware: nothing to set up for it.
     if (clientSignal.aborted) return
-    const clientGone = waitForClientGone(clientSignal, stream)
+    // Ends the feed's subscriptions the moment the client is gone, also ones
+    // still being set up then.
+    const feed = new AbortController()
+    const clientGone = waitForClientGone(clientSignal, stream).then(() => feed.abort())
+    const frames = createSseFrameQueue({
+      write: (data) => stream.writeSSE({ data, event: 'message' }),
+      onOverflow: () => {
+        // The client is not reading. Ending the stream bounds what waits for
+        // it; the client reconnects and refetches.
+        console.warn('[Notifications] A stream client fell too far behind; closing its stream')
+        stream.abort()
+      },
+    })
     let pingInterval: ReturnType<typeof setInterval> | null = null
-    let unsubscribe: (() => void) | null = null
-    let unsubscribeCollaboration: (() => void) | undefined
-    let gate: AgentAccessGate | null = null
-
-    const write = (event: GlobalFeedEvent): void => {
-      background(stream.writeSSE({ data: JSON.stringify(event), event: 'message' }).catch((error) => {
-        console.error('Error sending global notification SSE:', error)
-      }), { name: 'notifications-route.write-event' })
-    }
 
     try {
-      // In auth mode the stream carries only the agents the user can access
-      // (admins included). Without a user there is nothing to scope by.
-      if (isAuthMode() && user) {
-        gate = createAgentAccessGate({
-          load: () => getAccessibleAgentSlugs(user.id),
-          deliver: write,
-          onLoadError: (error) => {
-            // Without the list nothing about an agent can be judged; the
-            // client reconnects and the next stream loads it again.
-            console.error('Failed to load accessible agents for the notifications stream:', error)
-            stream.abort()
-          },
-        })
-      }
-      const scoped = gate
-      unsubscribe = globalFeed.subscribe((event) => {
-        // A targeted frame (a mention) goes to its recipient alone.
-        if (user && event.recipientUserId !== undefined && event.recipientUserId !== user.id) return
-        if (scoped) scoped.push(event)
-        else write(event)
+      // The greeting goes first, and nothing is written until the stream
+      // follows every channel it carries (the tenant's, the user's and each
+      // accessible agent's): the client refetches on it, so whatever changed
+      // before it is in the refetch and whatever changes after it arrives
+      // here.
+      frames.push({ type: 'connected' })
+      let loadFailed = false
+      await openNotificationsFeed({
+        user,
+        deliver: (event) => frames.push(event),
+        signal: feed.signal,
+        onLoadError: () => {
+          loadFailed = true
+          stream.abort()
+        },
       })
+      // A first load that failed ended the stream: it never says connected.
+      if (loadFailed) return
+      frames.start()
 
-      if (user) {
-        unsubscribeCollaboration = subscribeCollaborationEvents(user.id, async (data) => {
-          // A membership change can grant or revoke this user's access.
-          scoped?.refresh()
-          await stream.writeSSE({ data: JSON.stringify(data), event: 'message' })
-        })
-      }
-
-      // Send initial connection message
-      await stream.writeSSE({
-        data: JSON.stringify({ type: 'connected' }),
-        event: 'message',
-      })
-
-      // Keep-alive ping every 30 seconds
-      pingInterval = setInterval(() => background(async () => {
-        try {
-          await stream.writeSSE({
-            data: JSON.stringify({ type: 'ping' }),
-            event: 'message',
-          })
-        } catch {
-          if (pingInterval) clearInterval(pingInterval)
-        }
-      }, { name: 'notifications-route.write-ping' }), 30000)
+      // Keep-alive every 30 seconds, when nothing else is being sent.
+      pingInterval = setInterval(() => {
+        if (frames.idle) frames.push({ type: 'ping' })
+      }, 30000)
 
       await clientGone
+    } catch (error) {
+      // The feed could not be followed; the client reconnects.
+      console.error('Failed to open the notifications stream:', error)
     } finally {
       if (pingInterval) clearInterval(pingInterval)
-      if (unsubscribe) unsubscribe()
-      unsubscribeCollaboration?.()
-      gate?.dispose()
+      feed.abort()
+      frames.close()
     }
   })
 })

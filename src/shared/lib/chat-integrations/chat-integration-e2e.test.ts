@@ -597,11 +597,6 @@ describe('Chat integration E2E', () => {
       vi.mocked(containerManager.ensureRunning).mockReset()
       vi.mocked(containerManager.ensureRunning).mockResolvedValue(mockContainerClient)
 
-      // start() arms this in production; this harness drives addIntegration
-      // directly, and without it the review card has no wire to arrive on.
-      ;(agentIntegrationManager as unknown as { subscribeGlobalNotifications(): void })
-        .subscribeGlobalNotifications()
-
       // Two kinds the shared scenario table has no trigger for.
       MockContainerClient.registerScenario('need a file', new UserInputRequestScenario([
         { name: 'mcp__user-input__request_file', input: { description: 'A CSV of last quarter' } },

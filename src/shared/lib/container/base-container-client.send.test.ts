@@ -137,3 +137,24 @@ describe('runtime handoff rejection evidence', () => {
     expect(failure).not.toBeInstanceOf(MessageNotAcceptedError)
   })
 })
+describe('deleteSession', () => {
+  it.each([
+    ['the container has no such session', Response.json({ error: 'Session not found' }, { status: 404 }), true],
+    ['something else answered 404', new Response('Not Found', { status: 404 }), false],
+    ['the container failed', Response.json({ error: 'boom' }, { status: 500 }), false],
+  ])('when %s, reports dropped = %s', async (_case, response, dropped) => {
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    await expect(new Client().deleteSession('s1')).resolves.toBe(dropped)
+  })
+})
+
+describe('releaseSession', () => {
+  it.each([200, 404, 500])('requires the release endpoint to acknowledge HTTP %s', async (status) => {
+    const fetch = vi.fn(async () => Response.json({ success: status === 200 }, { status }))
+    vi.stubGlobal('fetch', fetch)
+    expect(await new Client().releaseSession('s1')).toBe(status === 200)
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:1234/sessions/s1/release', expect.objectContaining({
+      method: 'POST', signal: expect.any(AbortSignal),
+    }))
+  })
+})

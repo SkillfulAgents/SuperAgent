@@ -76,18 +76,20 @@ export default defineConfig({
       // Before the API plugin, so its middleware runs first: the dev server is
       // an entry point like the web server and Electron main, and opening the
       // database, then installing the app record store on it (settings and
-      // host records live there), is its first boot step. /api requests wait
-      // for both. Re-checked per request because an edit under
-      // src/shared/lib/db or src/shared/lib/app-records makes Vite
-      // re-instantiate that module with nothing open or installed.
+      // host records live there), then initializing AppState, are its first
+      // boot steps. /api requests wait for them. Re-checked per request
+      // because an edit under src/shared/lib/db or src/shared/lib/app-records
+      // makes Vite re-instantiate that module with nothing open or installed
+      // (AppState keeps its instance on globalThis, so it survives one).
       name: 'server-lifecycle',
       configureServer(server) {
         const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')
         const recordsModule = path.resolve(__dirname, 'src/shared/lib/app-records/records.ts')
         const recordStoreModule = path.resolve(__dirname, 'src/shared/lib/app-records/record-store.ts')
+        const appStateModule = path.resolve(__dirname, 'src/shared/lib/app-state/index.ts')
         // The database handle the installed store reads; a reopened database gets a new store.
         let storeDatabase: unknown = null
-        const ensureDatabaseOpen = async () => {
+        const ensureBooted = async () => {
           const { isDatabaseOpen, openDatabase, getDb } = await server.ssrLoadModule(dbModule)
           if (!isDatabaseOpen()) {
             await openDatabase()
@@ -100,14 +102,19 @@ export default defineConfig({
             records.installAppRecordStore(dbAppRecordStore(database))
             storeDatabase = database
           }
+          const { isAppStateInitialized, initializeLocalAppState } = await server.ssrLoadModule(appStateModule)
+          // Checked and installed in one step: a local AppState installs synchronously.
+          if (!isAppStateInitialized()) {
+            await initializeLocalAppState()
+          }
         }
         server.middlewares.use((req, res, next) => {
           if (!req.url?.startsWith('/api')) return next()
-          ensureDatabaseOpen().then(
+          ensureBooted().then(
             () => next(),
             (error) => {
               res.statusCode = 500
-              res.end(`The database failed to open: ${error instanceof Error ? error.message : String(error)}`)
+              res.end(`The server failed to boot: ${error instanceof Error ? error.message : String(error)}`)
             },
           )
         })
@@ -120,14 +127,14 @@ export default defineConfig({
           }
         })
         if (server.httpServer) {
-          ensureDatabaseOpen()
+          ensureBooted()
             .then(() => server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')))
             .then(({ setupServerHandlers, afterBindInitialize }) => {
               setupServerHandlers(server.httpServer as any)
               void afterBindInitialize()
             })
             .catch((error) => {
-              console.error('Failed to open the database:', error)
+              console.error('Failed to boot the dev server:', error)
             })
         }
         server.httpServer?.on('close', async () => {

@@ -223,8 +223,30 @@ function createSessionOps(
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): SessionOps {
-  const client = () => deps.containerHost.runtime(slug).getClient()
+  const client = async () => deps.containerHost.runtime(slug).getClient()
   const live = state.sessions
+  // The container's CLI process rewrites the transcript on exit, so the container drops the session before the files go.
+  const release = async (sessionId: string) => {
+    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
+    live.unsubscribe(sessionId)
+    state.deferredNaming.delete(sessionId)
+    let cause: unknown
+    const dropped =
+      (await client().then((container) => container.releaseSession(sessionId)).catch((error: unknown) => {
+        cause = error
+        return false
+      })) || (await client().then((container) => container.isDefinitelyStopped()).catch(() => false))
+    if (!dropped) console.warn(`[sessions.delete] container kept ${sessionId}:`, cause)
+    return dropped
+  }
+  const forget = async (sessionId: string) => {
+    // The files are gone. A lost cleanup response must not turn a successful
+    // delete into a failure; the container refuses to resume a released
+    // record whose transcript is absent, including after a container restart.
+    await client().then((container) => container.deleteSession(sessionId)).catch((error: unknown) => {
+      console.warn(`[sessions.delete] could not forget ${sessionId}:`, error)
+    })
+  }
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
     listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(store, ...args),
@@ -240,20 +262,28 @@ function createSessionOps(
       live.emit(sessionId, { type: 'session_updated' })
       deps.host.send('global', { type: 'session_updated', sessionId, agentSlug: slug })
     },
-    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
-    delete: (sessionId) => {
-      live.unsubscribe(sessionId)
-      state.deferredNaming.delete(sessionId)
-      return deps.sessionService.deleteSession(store, sessionId)
-    },
-    // Decided and let go of in one step, before the delete, as `delete` does.
+    delete: (sessionId) => live.inDeliveryTurn(sessionId, async () => {
+      if (!(await release(sessionId))) throw new Error(`Container did not drop session ${sessionId}`)
+      const deleted = await deps.sessionService.deleteSession(store, sessionId)
+      await forget(sessionId)
+      return deleted
+    }),
+    // Activity is checked right before each release, since the ones before it wait on the container.
     deleteMany: async (sessionIds) => {
-      const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
-      for (const sessionId of idle) {
-        live.unsubscribe(sessionId)
-        state.deferredNaming.delete(sessionId)
+      const deleted: string[] = []
+      for (const sessionId of sessionIds) {
+        // Keep the send queue held through the file delete. Releasing every
+        // process first would let a send resume an earlier session while a
+        // later container request is still pending.
+        await live.inDeliveryTurn(sessionId, async () => {
+          if (live.isActive(sessionId) || !(await release(sessionId))) return
+          const removed = await deps.sessionService.deleteSessionsBatch(store, [sessionId])
+          if (removed.length === 0) return
+          deleted.push(...removed)
+          await forget(sessionId)
+        })
       }
-      return deps.sessionService.deleteSessionsBatch(store, idle)
+      return deleted
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),
@@ -322,7 +352,7 @@ function createMessageOps(
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): MessageOps {
-  const client = () => deps.containerHost.runtime(slug).getClient()
+  const client = async () => deps.containerHost.runtime(slug).getClient()
   return {
     deliver: (request) => delivery.deliver(request),
     // A message held while the session recovers never reached the container.

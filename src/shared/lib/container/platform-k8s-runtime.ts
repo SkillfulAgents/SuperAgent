@@ -171,6 +171,17 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     }
   }
 
+  async isDefinitelyStopped(): Promise<boolean> {
+    try {
+      const { namespace } = getKubeConfig()
+      const pod = await requestJson<{ status?: KubePodStatus }>('GET', `/api/v1/namespaces/${namespace}/pods/${this.podName()}`, undefined, [200])
+      // Unready and Terminating pods can still flush their transcripts.
+      return pod.status?.phase === 'Succeeded' || pod.status?.phase === 'Failed'
+    } catch (error) {
+      return error instanceof KubeApiError && error.statusCode === 404
+    }
+  }
+
   async getLogs(tail: number = 50): Promise<string> {
     const { namespace } = getKubeConfig()
     try {

@@ -5,6 +5,7 @@ import { mountWebBuild } from './web-build'
 import { openDatabase } from '@shared/lib/db'
 import { dbAppRecordStore } from '@shared/lib/app-records/record-store'
 import { installAppRecordStore } from '@shared/lib/app-records/records'
+import { initializeLocalAppState } from '@shared/lib/app-state'
 import { attachErrorReportingIdentity, flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
 import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { markBoot } from '@shared/lib/boot-timing'
@@ -76,6 +77,8 @@ async function start() {
   const database = await openDatabase()
   installAppRecordStore(dbAppRecordStore(database))
   await attachErrorReportingIdentity()
+  // Then the state the API's processes share; this one process keeps it in memory.
+  await initializeLocalAppState()
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 

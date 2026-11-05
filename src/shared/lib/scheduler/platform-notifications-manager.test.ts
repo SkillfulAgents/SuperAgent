@@ -88,7 +88,9 @@ vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
 }))
 
 import { platformNotificationsManager } from './platform-notifications-manager'
+import { claimPlatformNotificationBroadcast } from './platform-notification-seen'
 import { backgroundSettled } from '@shared/lib/background'
+import { closeAppState, createLocalAppState, initializeAppState, LocalAppStateBackend } from '@shared/lib/app-state'
 
 // ============================================================================
 // Fixtures
@@ -285,14 +287,16 @@ describe('PlatformNotificationsManager', () => {
   })
 
   it('does not re-notify a reconnect replay of the newest row after a restart', async () => {
-    // Restart clears the in-session id-set; only the persisted watermark
-    // stands between a replayed INSERT (created_at equal to the watermark)
-    // and a duplicate OS notification.
+    // A restarted process has fresh AppState memory, so no seen marker: only
+    // the persisted watermark stands between a replayed INSERT (created_at
+    // equal to the watermark) and a duplicate OS notification.
     const onEvent = await startWithDefaults()
     await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
     expect(osNotificationBroadcasts()).toHaveLength(1)
 
     platformNotificationsManager.stop()
+    await closeAppState()
+    await initializeAppState(createLocalAppState())
     const onEventAfterRestart = await startWithDefaults()
     await onEventAfterRestart(record('ntf_new', '2026-07-02T00:00:00Z'))
 
@@ -325,7 +329,7 @@ describe('PlatformNotificationsManager', () => {
     })
   })
 
-  it('dedups reconnect replays by id and backdated inserts by watermark', async () => {
+  it('dedups reconnect replays and backdated inserts', async () => {
     const onEvent = await startWithDefaults()
 
     await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
@@ -335,6 +339,54 @@ describe('PlatformNotificationsManager', () => {
     expect(osNotificationBroadcasts()).toHaveLength(1)
     // The inbox signal still fires for every INSERT (live page update).
     expect(changedBroadcasts()).toHaveLength(3)
+  })
+
+  it('notifies once when the same INSERT is delivered twice at once', async () => {
+    const onEvent = await startWithDefaults()
+    const row = record('ntf_new', '2026-07-02T00:00:00Z')
+
+    await Promise.all([onEvent(row), onEvent(row)])
+
+    expect(osNotificationBroadcasts()).toHaveLength(1)
+    expect(changedBroadcasts()).toHaveLength(2)
+  })
+
+  describe('with another process holding a realtime connection too', () => {
+    // Two clients of one backend are two processes of one tenant.
+    async function twoProcesses() {
+      await closeAppState()
+      const backend = new LocalAppStateBackend()
+      await initializeAppState(createLocalAppState({ backend }))
+      return createLocalAppState({ backend })
+    }
+
+    it('notifies a row once when both receive the same INSERT', async () => {
+      const otherProcess = await twoProcesses()
+      const onEvent = await startWithDefaults()
+      const row = record('ntf_new', '2026-07-02T00:00:00Z')
+
+      const [, otherClaimed] = await Promise.all([
+        onEvent(row),
+        claimPlatformNotificationBroadcast('sub_member_1', 'ntf_new', otherProcess),
+      ])
+
+      // Exactly one of the two broadcasts it.
+      expect(osNotificationBroadcasts().length + (otherClaimed ? 1 : 0)).toBe(1)
+      expect(changedBroadcasts()).toHaveLength(1)
+    })
+
+    it('stays silent for a row the other process already notified, and still signals the inbox', async () => {
+      const otherProcess = await twoProcesses()
+      expect(await claimPlatformNotificationBroadcast('sub_member_1', 'ntf_new', otherProcess)).toBe(true)
+      const onEvent = await startWithDefaults()
+
+      await onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
+
+      expect(osNotificationBroadcasts()).toHaveLength(0)
+      expect(changedBroadcasts()).toHaveLength(1)
+      // This process's watermark still moved past the row.
+      expect((mockSettings.platformNotifications as { lastNotifiedAt?: string }).lastNotifiedAt).toBe('2026-07-02T00:00:00Z')
+    })
   })
 
   it('persists the advanced watermark', async () => {

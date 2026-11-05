@@ -876,6 +876,12 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+
+  // Moves on every write to the row, so a copy read from it says which write it
+  // saw. The trigger `chat_integrations_version_bump` (migration 0062) adds 1 to
+  // any update that does not raise it itself; a writer that needs the version it
+  // produced sets `version + 1` and reads it back with RETURNING.
+  version: integer('version').notNull().default(0),
 }, (table) => ({
   agentSlugIdx: index('chat_integrations_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('chat_integrations_status_idx').on(table.status),

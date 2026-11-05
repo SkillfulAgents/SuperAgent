@@ -714,10 +714,19 @@ export const migrationBundle: readonly MigrationMeta[] = [
   },
   {
     "sql": [
+      "ALTER TABLE `chat_integrations` ADD `version` integer DEFAULT 0 NOT NULL;",
+      "\n-- Hand-written: drizzle-kit does not model triggers. Every update of a row that\n-- does not raise its version itself moves it by one, in the same statement, so\n-- no writer can leave a changed row at an old version. A migration that rebuilds\n-- this table drops the trigger; integration-row-version.test.ts fails until it\n-- is created again.\nCREATE TRIGGER `chat_integrations_version_bump` AFTER UPDATE ON `chat_integrations` FOR EACH ROW WHEN NEW.`version` <= OLD.`version` BEGIN UPDATE `chat_integrations` SET `version` = OLD.`version` + 1 WHERE `id` = NEW.`id`; END;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793838676102,
+    "hash": "9bbcfdae2f84b66afa662edee0c052af30c5fabdec6ad3169fec8f0201a0c0fb"
+  },
+  {
+    "sql": [
       "CREATE TABLE `app_records` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` text NOT NULL,\n\t`revision` integer NOT NULL,\n\t`updated_at` integer NOT NULL\n);\n"
     ],
     "bps": true,
-    "folderMillis": 1793828349610,
+    "folderMillis": 1793840639365,
     "hash": "773815730f63f226f64dd501cff54a9a75589b604f237b97f210d3a108d5faa5"
   }
 ]

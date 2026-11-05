@@ -254,18 +254,20 @@ describe('browser_eval return note', () => {
   })
 
   it('does not attach the note to falsy-but-real values', async () => {
-    for (const out of ['0', 'false', '""', '{}', '[]']) {
+    // `null` is a value the body returned: the CLI prints `undefined` for a
+    // body without `return` (0.41.1+).
+    for (const out of ['0', 'false', '""', '{}', '[]', 'null']) {
       expect(await evalWith(out, true)).not.toContain('add `return`')
     }
   })
 
-  it('attaches the note only when a wrapped body produced null or nothing', async () => {
-    expect(await evalWith('null', true)).toContain('add `return`')
+  it('attaches the note only when a wrapped body produced undefined or nothing', async () => {
+    expect(await evalWith('undefined', true)).toContain('yields undefined — add `return`')
     expect(await evalWith('', true)).toContain('add `return`')
   })
 
   it('never attaches the note to an unwrapped expression', async () => {
-    expect(await evalWith('null', false)).not.toContain('add `return`')
+    expect(await evalWith('undefined', false)).not.toContain('add `return`')
     expect(await evalWith('', false)).toBe('(no output)')
   })
 })

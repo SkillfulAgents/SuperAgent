@@ -36,7 +36,6 @@ vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: 
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('../notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
-vi.mock('../agent-integrations/lifecycle', () => ({ onIntegrationAuthorizationLost: () => () => {} }))
 class Tasks extends TaskManagerAgentIntegration {
   readonly provider = 'tasks'
   readonly definition = { provider: 'tasks', name: 'Tasks', family: 'task-manager', capabilities: [], settings: [], setup: { kind: 'test', credentialFields: [] } }
