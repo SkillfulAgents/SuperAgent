@@ -274,6 +274,18 @@ describe('lapse and reacquisition', () => {
     expect(await claimCount()).toBe(0)
   })
 
+  it('tells a waiter past its own deadline that it lost its place, with its claim still in the record', async () => {
+    const holder = change(['a'])
+    await holder.entered
+    const waiting = withVolumeClaim(remote, { ...WAIT, paths: ['a'], waitTimeoutMs: 10 * DEAD_AFTER_MS }, async () => {})
+    await until(async () => await claimCount() === 2)
+    const refused = expect(waiting).rejects.toMatchObject({ name: 'LeaseLostError' })
+    // Its renewals never ran: Date moved by hand, and the holder's lapsed the same way.
+    advance(VOLUME_CLAIM_TTL_MS)
+    await refused
+    holder.finish(); await holder.done
+  })
+
   it('renews while the work runs, past any fixed expiry, and aborts when renewal stops working', async () => {
     fakeAllTimers()
     const held = change(['a'])
@@ -492,6 +504,72 @@ describe('generations and cache publication', () => {
     expect(await served(fill, 'a')).toBe(true)
     stale.finish(); await stale.done
     expect(await served(fill, 'a')).toBe(false)
+  })
+
+  it('marks a lapsed holder\'s paths changed even when nobody wrote since, so its dead claim is still in the record', async () => {
+    const stale = change(['a'])
+    await stale.entered
+    const reader = await secondProcess()
+    advance(DEAD_AFTER_MS)
+
+    // Reads remove nothing: the claim is dead and still there.
+    const fill = (await reader.beginVolumeRead(remote, 'a'))!
+    expect(fill).not.toBeNull()
+    expect((await reader.readVolumeGenerations(remote)).isCurrent(fill, 'a')).toBe(true)
+    expect(await claimCount()).toBe(1)
+
+    // Its delayed provider write lands after that read, then its work settles.
+    stale.finish(); await stale.done
+    expect((await reader.readVolumeGenerations(remote)).isCurrent(fill, 'a')).toBe(false)
+    expect(await claimCount()).toBe(0)
+  })
+
+  it('stops a holder republishing from its own deadline on, with its claim still in the record', async () => {
+    const reader = await secondProcess()
+    const base = (await reader.beginVolumeRead(remote, 'a'))!
+    const held = change(['a/file'])
+    await held.entered
+
+    advance(VOLUME_CLAIM_TTL_MS - 1)
+    expect(await held.claim.isCurrent(base, 'a')).toBe(true)
+    advance(1)
+    expect(await held.claim.isCurrent(base, 'a')).toBe(false)
+    expect(await claimCount()).toBe(1)
+    expect(held.claim.signal.aborted).toBe(false)
+    held.finish(); await held.done
+  })
+
+  it('stops a holder republishing once it was told it lost the claim, with time left on the record', async () => {
+    fakeAllTimers()
+    const base = (await beginVolumeRead(remote, 'a'))!
+    const held = change(['a/file'], { holdTimeoutMs: 45_000 })
+    await held.entered
+    await vi.advanceTimersByTimeAsync(44_999)
+    expect(await held.claim.isCurrent(base, 'a')).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(held.claim.signal.aborted).toBe(true)
+    const stored = (await record())!.claims[0]!
+    expect(stored.expiresAt).toBeGreaterThan(Date.now())
+    expect(await held.claim.isCurrent(base, 'a')).toBe(false)
+    held.finish(); await held.done
+  })
+
+  it('does not advance the generation on a release in time, however close to the deadline', async () => {
+    const reader = await secondProcess()
+    const unrelated = (await reader.beginVolumeRead(remote, 'c'))!
+    const held = change(['a'])
+    await held.entered
+    const arrived = (await record())!
+
+    advance(VOLUME_CLAIM_TTL_MS - 1)
+    held.finish(); await held.done
+
+    const after = (await record())!
+    expect(after.generation).toBe(arrived.generation)
+    expect(after.invalidations).toEqual(arrived.invalidations)
+    expect(after.claims).toEqual([])
+    expect((await reader.readVolumeGenerations(remote)).isCurrent(unrelated, 'c')).toBe(true)
   })
 
   it('stays bounded: a generation older than what is remembered counts as stale everywhere', async () => {

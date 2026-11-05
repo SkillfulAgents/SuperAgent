@@ -159,6 +159,13 @@ const makesStale = (changed: string, listing: string) => isWithin(listing, chang
 /** Judged on this instance's clock, about a deadline another instance's clock may have written. */
 const isDead = (claim: Claim, now: number) => now >= claim.expiresAt + VOLUME_CLOCK_MARGIN_MS
 
+/**
+ * An owner's own claim while it still holds, judged on the clock that wrote its
+ * deadline, so with no margin. Being in the record proves nothing: a dead claim
+ * stays there until someone's write removes it.
+ */
+const heldClaim = (claims: readonly Claim[], id: string, now: number) => claims.find(claim => claim.id === id && now < claim.expiresAt)
+
 function newRecord(): VolumeCoordinationRecord {
   return { incarnation: randomUUID(), generation: 0, floor: 0, invalidations: [], claims: [] }
 }
@@ -256,8 +263,8 @@ export interface VolumeClaim extends LeaseHolding {
   readonly generation: VolumeGeneration
   /**
    * Whether a listing read under `stamp` can be updated in place and republished:
-   * this claim is still held, and nothing but this change has affected the
-   * listing since.
+   * this claim is still held (not lost, and before its own deadline), and nothing
+   * but this change has affected the listing since.
    */
   isCurrent(stamp: VolumeGeneration, path: string): Promise<boolean>
 }
@@ -288,26 +295,27 @@ function turnCameFor(claims: readonly Claim[], mine: Claim, now: number): boolea
  */
 function renewIn(record: VolumeCoordinationRecord | null, id: string): RecordChange<VolumeCoordinationRecord, { turnCame: boolean } | null> {
   const now = Date.now()
-  const found = record?.claims.find(claim => claim.id === id)
-  if (!record || !found || now >= found.expiresAt) return { result: null }
-  const mine = { ...found, expiresAt: now + VOLUME_CLAIM_TTL_MS }
+  const held = heldClaim(record?.claims ?? [], id, now)
+  if (!record || !held) return { result: null }
+  const mine = { ...held, expiresAt: now + VOLUME_CLAIM_TTL_MS }
   const claims = record.claims.filter(claim => !isDead(claim, now)).map(claim => (claim.id === id ? mine : claim))
   return { result: { turnCame: turnCameFor(claims, mine, now) }, value: { ...record, claims } }
 }
 
 /**
  * Removes this owner's claim, never anyone else's, and says whether a remaining
- * claim may be waiting on it. A claim already gone lapsed while its work ran, so
- * a request it sent may have landed after someone's read: its paths are marked
- * changed again, now that its work has settled.
+ * claim may be waiting on it. A claim gone or past its deadline lapsed while its
+ * work ran, so a request it sent may have landed after someone's read: its paths
+ * are marked changed again, now that its work has settled. One still held needs
+ * no second advance: `beginVolumeRead` gives no generation for what it affects.
  */
 function leaveIn(record: VolumeCoordinationRecord | null, id: string, paths: readonly string[], invalidates: string[]): RecordChange<VolumeCoordinationRecord, boolean> {
   if (!record) return { result: false }
   const now = Date.now()
-  const present = record.claims.some(claim => claim.id === id)
+  const held = heldClaim(record.claims, id, now)
   const claims = record.claims.filter(claim => claim.id !== id && !isDead(claim, now))
   const result = claims.some(claim => overlap(claim.paths, paths))
-  return { result, value: present ? { ...record, claims } : withChange({ ...record, claims }, invalidates) }
+  return { result, value: held ? { ...record, claims } : withChange({ ...record, claims }, invalidates) }
 }
 
 /** A wake that arrives while the waiter is busy ends its next pause at once. */
@@ -411,10 +419,11 @@ export async function withVolumeClaim<T>(remote: VolumeRemote, request: VolumeCl
         for (let pause = FIRST_POLL_MS; ; pause = Math.min(pause * 2, LAST_POLL_MS)) {
           signal.throwIfAborted()
           const claims = (await appState().get(key))?.value.claims ?? []
-          const mine = claims.find(claim => claim.id === id)
+          const now = Date.now()
+          const mine = heldClaim(claims, id, now)
           // The turn is taken by the renewal's write, not by this read. A claim
-          // that is gone gets its answer from the renewal too: lost.
-          if (!mine || turnCameFor(claims, mine, Date.now())) await holding.confirm()
+          // gone or lapsed gets its answer from the renewal too: lost.
+          if (!mine || turnCameFor(claims, mine, now)) await holding.confirm()
           if (turn.came) break
           const remaining = waitUntil - Date.now()
           if (remaining <= 0) throw new LeaseWaitTimeoutError(`${key.path}: earlier changes held it for over ${request.waitTimeoutMs} ms`)
@@ -432,7 +441,10 @@ export async function withVolumeClaim<T>(remote: VolumeRemote, request: VolumeCl
       generation,
       async isCurrent(stamp, path) {
         const record = (await appState().get(key))?.value
-        return !!record?.claims.some(claim => claim.id === id) && isCurrentIn(record, stamp, normalized(path), generation.generation)
+        // The record can still list a claim its holder was told it lost: at the
+        // operation's deadline, or when a renewal could not be confirmed.
+        if (!record || holding.signal.aborted || !heldClaim(record.claims, id, Date.now())) return false
+        return isCurrentIn(record, stamp, normalized(path), generation.generation)
       },
     })
   })
