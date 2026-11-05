@@ -55,6 +55,8 @@ import {
   browserDownloadDef,
   browserEvalDef,
   browserRunDef,
+  browserUploadDef,
+  browserGetStateDef,
 } from './browser-tools/definition'
 import {
   createDashboardDef,
@@ -143,6 +145,8 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_download': browserDownloadDef,
   'mcp__browser__browser_eval': browserEvalDef,
   'mcp__browser__browser_run': browserRunDef,
+  'mcp__browser__browser_upload': browserUploadDef,
+  'mcp__browser__browser_get_state': browserGetStateDef,
 
   // MCP tools - dashboards
   'mcp__dashboards__create_dashboard': createDashboardDef,
