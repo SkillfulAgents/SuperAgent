@@ -1554,3 +1554,43 @@ html[data-keyboard-open] [data-composer-footer] {
   .dashboard-comment-scan,
   .dashboard-comment-energy { display: none; }
 }
+
+/* Scrollers whose bar shows only while they scroll (the session transcript, the
+   thread drawer): the thin muted thumb the app uses on Windows and in the
+   sidebar, with no track, hidden at rest. useAutoHideScrollbar sets
+   data-scrolling while the person scrolls and for a moment after. Last in the
+   file so it wins over the app-wide Windows rule above on equal specificity. */
+.auto-hide-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+.auto-hide-scrollbar::-webkit-scrollbar-track,
+.auto-hide-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.auto-hide-scrollbar::-webkit-scrollbar-button {
+  display: none;
+}
+.auto-hide-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: transparent;
+}
+.auto-hide-scrollbar[data-scrolling]::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--muted-foreground) / 0.25);
+}
+.auto-hide-scrollbar[data-scrolling]::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.4);
+}
+/* Browsers without webkit scrollbars (Firefox): thin, and coloured only while scrolling. */
+@supports not selector(::-webkit-scrollbar) {
+  .auto-hide-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  .auto-hide-scrollbar[data-scrolling] {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.25) transparent;
+  }
+}
