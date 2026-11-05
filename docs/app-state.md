@@ -169,6 +169,19 @@ A user may hold four Live voice sessions at once, counting the ones a provider i
 
 Hangup retries (1 s, 5 s, 30 s), removal retries and the deadline hangup run on timers in the process that created the session, or that was asked to close it. If that process goes away, its sessions stop counting at their deadlines and nobody hangs them up. A durable owner that recovers provider cleanup is a follow-up.
 
+## Browser Vault handoffs
+
+What the user typed for a later sign-in step, and the username the last step went in with (`src/shared/lib/browser-vault/held-values.ts`; [docs/browser-vault.md](browser-vault.md#steps) has the flow). The ticket's `vault:held:{agentSlug}:{sessionId}:H(site)` and `vault:identity:{agentSlug}:{sessionId}:H(site)` are the strong namespaces `vault:held` and `vault:identity`, with key parts agent slug, session id and `digestKeyPart(site)`.
+
+- A held record lists its parts (`password`, `text:<label>`), each with its value, its own id and, while a fill has it, a claim (`{ id, until }`). It also holds the username, the origin the values were typed on and the "Save for later" owner. The values are stored as typed for now; sealing them through KeyManager is a follow-up. They never go into a key, an event or a log.
+- A hold replaces the record and sets 30 minutes (`expiry: 'reset'`). Every other write keeps that deadline (`keep`), so using some parts does not renew the rest. With `carry`, a hold brings along the parts of an earlier read that are still there under the same id; a part used or forgotten since is not brought back.
+- Every change other than forgetting goes through `reduceRecord` and names the part ids it was decided from, so a part held again since is never claimed or released by mistake, and concurrent changes to different parts all land.
+- A fill claims the parts it sends before sending them: all of them, or none. Claimed parts are not offered to anyone else. Its settle drops the parts that went in (or may have) and frees the others while the claim stands. A claim's answer that was lost is retried under the same claim id, which recognises its own claim. A claim that cannot be confirmed is handed back, and the error is thrown, so nothing is filled.
+- A claim not settled within five minutes (its process went away, or AppState was down for all of its tries) is abandoned: its parts are dropped by the next write and never offered again, since the fill may have gone in. Its own settle after the deadline drops them too.
+- Forgetting (the user declined, or signed in by hand) deletes the record, claimed parts included.
+- The identity is a plain `set` with `reset`: 30 minutes from the latest remember, and the latest remember wins.
+
+Who may use what (the agent's grants, the page's origin, whether a saved account is still theirs) is decided by the callers at the host boundary, in `login-host.ts` and the sign-in routes. AppState only scopes the records; a read for a named account returns nothing held for another.
 ## MCP OAuth pending flows
 
 A remote MCP sign-in is stored from its start until its callback is answered (`src/shared/lib/mcp/oauth-pending-flows.ts`), so the callback can reach any process. The ticket's `oauth:mcp:H(state)` is the strong namespace `oauth:mcp`, with the key part `digestKeyPart(state)`. The record is created with `insertIfAbsent`. It expires 15 minutes after creation (`keep`), and it moves through three states:
