@@ -25,9 +25,8 @@ import {
   installPlatformFetchInterceptor,
 } from './platform-attribution'
 import { getPlatformAccessToken } from './services/platform-auth-service'
-import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
+import { setupAgentSockets } from '../../main/agent-socket'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
-import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
 import { setupMeetingFramesSocket } from '../../main/meeting-frames-socket'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
@@ -278,8 +277,7 @@ async function initializeServicesInner() {
 /** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
 export function setupServerHandlers(server: ServerType): void {
   if ('requestTimeout' in server) configureUploadTimeouts(server)
-  setupBrowserStreamProxy(server)
-  setupArtifactStreamProxy(server)
+  setupAgentSockets(server)
   setupMeetingFramesSocket(server)
   // Self-gated to Electron main outside auth mode; a no-op everywhere else.
   setupCloudStreamProxy(server)
