@@ -34,7 +34,7 @@ function CreateDashboardExpandedView({ input, result, isError }: ToolRendererPro
 
       {result && (
         <div
-          className={`bg-background rounded p-2 text-xs ${
+          className={`bg-background rounded-item p-2 text-xs ${
             isError
               ? 'text-red-800 dark:text-red-200'
               : 'text-green-800 dark:text-green-200'
@@ -86,7 +86,7 @@ function DashboardLogsExpandedView({ input, result, isError }: ToolRendererProps
             {isError ? 'Error' : 'Logs'}
           </div>
           <pre
-            className={`bg-background rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
+            className={`bg-background rounded-item p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
               isError ? 'text-red-800 dark:text-red-200' : ''
             }`}
           >

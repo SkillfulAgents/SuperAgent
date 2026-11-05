@@ -136,7 +136,7 @@ function InviteEducationPane() {
         <div className="opacity-50">
           <div className="space-y-2 px-3 pb-4 pt-6">
             <div className="flex items-start gap-2">
-              <div className="flex min-h-8 min-w-0 flex-1 items-start gap-1 rounded-md border bg-transparent px-1.5 py-0.5">
+              <div className="flex min-h-8 min-w-0 flex-1 items-start gap-1 rounded-item border bg-transparent px-1.5 py-0.5">
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
                   <input
                     disabled
@@ -160,7 +160,7 @@ function InviteEducationPane() {
               Members with access
             </p>
             {GHOST_MEMBERS.map((m) => (
-              <div key={m.name} className="flex items-center gap-2 rounded-md px-2 py-1.5">
+              <div key={m.name} className="flex items-center gap-2 rounded-item px-2 py-1.5">
                 <UserAvatar user={{ id: m.name, name: m.name }} />
                 <div className="min-w-0 flex-1 space-y-1.5 py-0.5">
                   <div className={cn('h-2 rounded-full bg-muted-foreground/30', m.nameWidth)} />
@@ -380,7 +380,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
     return (
       <div
         key={entry.id}
-        className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
+        className="flex items-center gap-2 rounded-item px-2 py-1.5 hover:bg-accent/50"
         data-testid={`access-entry-${entry.id}`}
       >
         <UserAvatar user={entry} />
@@ -543,7 +543,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                   {/* Fixed 416x224 coordinate system: user centers sit on a
                       75px radius around the cloud center (208,116) at 0° and
                       ±50°/±95° from vertical, so all five are equidistant. */}
-                  <div className="relative h-60 overflow-hidden rounded-lg bg-gradient-to-b from-muted/70 to-transparent" aria-hidden="true">
+                  <div className="relative h-60 overflow-hidden rounded-item bg-gradient-to-b from-muted/70 to-transparent" aria-hidden="true">
                     {/* Dashed arrows: pill → cloud, cloud → each teammate.
                         Painted first so the circles sit on top. */}
                     <svg className="absolute inset-0 h-full w-full text-foreground" viewBox="0 0 416 240" preserveAspectRatio="none">
@@ -611,12 +611,12 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     </div>
 
                     {/* The skillset in the cloud */}
-                    <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-xl border bg-background shadow-md">
+                    <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-control border bg-background shadow-md">
                       <LibraryBig className="h-5 w-5 text-foreground/70" />
                     </div>
 
                     {/* The agent, Manus-pill style */}
-                    <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2 rounded-xl border bg-background py-2 pl-3 pr-4 shadow-sm">
+                    <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2 rounded-card border bg-background py-2 pl-3 pr-4 shadow-sm">
                       {/* The agent's avatar, or the thought orb when it has none */}
                       <div className="shrink-0">
                         {agent?.avatar
@@ -682,7 +682,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     type="button"
                     role="radio"
                     aria-checked={isSelected}
-                    className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
+                    className="flex w-full items-center gap-3 rounded-item px-2 py-2 text-left hover:bg-accent"
                     onClick={() => setExportChoice(option.id)}
                     data-testid={`export-option-${option.id}`}
                   >
@@ -740,7 +740,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
           <div className="flex items-start gap-2">
             {/* label: clicking anywhere in the chip box natively focuses the input.
                 The role select sits inside the box, pinned top-right (Notion-style). */}
-            <label className="flex min-h-8 min-w-0 flex-1 cursor-text items-start gap-1 rounded-md border bg-transparent px-1.5 py-0.5 has-[input:focus]:ring-1 has-[input:focus]:ring-ring">
+            <label className="flex min-h-8 min-w-0 flex-1 cursor-text items-start gap-1 rounded-item border bg-transparent px-1.5 py-0.5 has-[input:focus]:ring-1 has-[input:focus]:ring-ring">
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
                 {selectedUsers.map((u) => (
                   <span
@@ -843,7 +843,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                       <button
                         key={u.id}
                         type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-accent"
+                        className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left text-[11px] hover:bg-accent"
                         onClick={() => toggleUser(u)}
                         role="checkbox"
                         aria-checked={isSelected}

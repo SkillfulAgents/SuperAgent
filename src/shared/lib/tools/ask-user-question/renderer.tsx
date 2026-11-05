@@ -54,14 +54,14 @@ function ExpandedView({ input, result, isError, unansweredQuestions }: ToolRende
               shown as that, muted, never as a (green) answer. */}
           {unansweredQuestions?.[q.question] ? (
             <div
-              className="bg-background text-muted-foreground rounded px-2 py-1 text-xs"
+              className="bg-background text-muted-foreground rounded-item px-2 py-1 text-xs"
               data-testid="ask-user-question-unanswered"
             >
               <span className="font-medium">{UNANSWERED_LABELS[unansweredQuestions[q.question]]}</span>
               {answers[q.question] && <span> · {answers[q.question]}</span>}
             </div>
           ) : answers[q.question] && (
-            <div className="bg-background text-green-800 dark:text-green-200 rounded px-2 py-1 text-xs">
+            <div className="bg-background text-green-800 dark:text-green-200 rounded-item px-2 py-1 text-xs">
               {answers[q.question]}
             </div>
           )}
@@ -93,7 +93,7 @@ function ExpandedView({ input, result, isError, unansweredQuestions }: ToolRende
 
       {/* Error case */}
       {isError && result && (
-        <div className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs">
+        <div className="bg-background text-red-800 dark:text-red-200 rounded-item p-2 text-xs">
           {result}
         </div>
       )}

@@ -350,7 +350,8 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  drives: { nameJson: string; pathJson: string; readOnly: boolean }[];
+  drives: { nameJson: string; pathJson: string; readOnly: boolean; sourceJson?: string }[];
+  driveNotes: string[];
   mountIndexes: (VolumeIndex & { pathJson: string })[];
   globalInstructions: string;
   userInstructions: string;
@@ -424,9 +425,10 @@ export function buildSystemPromptVars(
     hasEnvVars: envVars.length > 0,
     envVars,
     hasMounts: drives.length > 0,
-    // Names and paths render as JSON string literals. Both are user bytes, and
+    // Names, paths and sources render as JSON string literals. All are user bytes, and
     // a raw newline or `#` in them would read as prompt structure.
-    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly })),
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly, sourceJson: d.sourceLabel && JSON.stringify(d.sourceLabel) })),
+    driveNotes: [...new Set(drives.flatMap((d) => d.agentNote ?? []))],
     mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
     globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
@@ -2309,6 +2311,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   async dispose(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
     this.disposed = true;
+    // A pre-resume may still be starting its query (e.g. waiting for the
+    // provider proxy). It must finish before we promise there is no writer.
+    await this.warmRestart?.catch(() => undefined);
     await this.stop(options);
   }
 

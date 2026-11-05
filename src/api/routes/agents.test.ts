@@ -227,7 +227,7 @@ const mockEnsureRunning = vi.fn()
 const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
-const mockClientDeleteSession = vi.fn()
+const mockClientDeleteSession = vi.fn(async (..._args: unknown[]) => true)
 const mockClientWarmSession = vi.fn()
 // The container's view of a session, which an uncertain send asks for. Unknown unless a test says.
 const mockClientGetSession = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
@@ -247,6 +247,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
       interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
       stopTask: (...args: unknown[]) => mockStopTask(...args),
       forkSession: (...args: unknown[]) => mockForkSession(...args),
+      releaseSession: async () => true,
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
       warmSession: (...args: unknown[]) => mockClientWarmSession(...args),
       getSession: (...args: unknown[]) => mockClientGetSession(...args),
@@ -1379,6 +1380,7 @@ describe('GET /:id/chat-integrations', () => {
       createdByUserId: 'owner-user',
       createdAt: new Date('2026-07-17T00:00:00Z'),
       updatedAt: new Date('2026-07-17T00:00:00Z'),
+      version: 0,
     }])
 
     const res = await getReq(createApp(), '/api/agents/test-agent/chat-integrations')

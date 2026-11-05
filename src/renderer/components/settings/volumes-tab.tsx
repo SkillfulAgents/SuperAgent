@@ -64,7 +64,7 @@ export function VolumesTab() {
       </div>
       {((error && !deleting) || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading drives…</p> : definitions.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center">
+        <div className="rounded-card border border-dashed p-8 text-center">
           <Folder className="mx-auto mb-3 h-7 w-7 text-muted-foreground" />
           <p className="text-sm font-medium">No saved drives</p>
           <p className="mt-1 text-sm text-muted-foreground">Folders you add to an agent are saved here for reuse.</p>

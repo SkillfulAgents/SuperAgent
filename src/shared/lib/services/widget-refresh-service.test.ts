@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
-import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 
 const mocks = vi.hoisted(() => ({
   listWidgets: vi.fn<() => Promise<ApiAgentWidget[]>>(),
@@ -8,7 +7,6 @@ const mocks = vi.hoisted(() => ({
   ensureRunning: vi.fn(),
   clientFetch: vi.fn(),
   publishGlobal: vi.fn(),
-  globalListener: null as ((event: GlobalFeedEvent) => void) | null,
   openRepair: vi.fn(async () => ({ started: false, reason: 'cooldown' })),
 }))
 
@@ -32,12 +30,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
 vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: {
     publish: (...args: unknown[]) => mocks.publishGlobal(...args),
-    subscribe: (listener: (event: GlobalFeedEvent) => void) => {
-      mocks.globalListener = listener
-      return () => {
-        mocks.globalListener = null
-      }
-    },
   },
 }))
 
@@ -224,7 +216,6 @@ describe('widgetRefreshService', () => {
   it('after a session settles, stale and opted-in widgets re-run without waking the container', async () => {
     vi.useFakeTimers()
     widgetRefreshService.start()
-    expect(mocks.globalListener).not.toBeNull()
     mocks.listWidgets.mockResolvedValue([
       // Fresh and not opted in: the script said how long it stays true.
       widget({ slug: 'scripted-fresh', hasScript: true, isStale: false }),
@@ -236,9 +227,9 @@ describe('widgetRefreshService', () => {
     // A fresh Response per call: one body cannot be read twice.
     mocks.clientFetch.mockImplementation(async () => okResponse(snapshot()))
 
-    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's1', isActive: false })
-    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's2', isActive: false })
-    mocks.globalListener!({ type: 'session_complete', agentSlug: AGENT })
+    // The host calls this for each session that went idle (local-host-port.test.ts).
+    widgetRefreshService.afterSessionSettled(AGENT)
+    widgetRefreshService.afterSessionSettled(AGENT)
     await vi.advanceTimersByTimeAsync(3_500)
 
     // The sweep's reads are the actor's ops: across a transport they land after the clock moved.
@@ -257,17 +248,22 @@ describe('widgetRefreshService', () => {
     widgetRefreshService.start()
     mocks.listWidgets.mockResolvedValue([])
 
-    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's1', isActive: false })
+    widgetRefreshService.afterSessionSettled(AGENT)
     await vi.advanceTimersByTimeAsync(2_000)
-    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's2', isActive: false })
+    widgetRefreshService.afterSessionSettled(AGENT)
     await vi.advanceTimersByTimeAsync(2_000)
     // Four seconds after the first run ended, but only two after the second.
     expect(mocks.listWidgets).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1_500)
     await vi.waitFor(() => expect(mocks.listWidgets).toHaveBeenCalledTimes(1))
 
-    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's3', isActive: false })
+    widgetRefreshService.afterSessionSettled(AGENT)
     widgetRefreshService.stop()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mocks.listWidgets).toHaveBeenCalledTimes(1)
+
+    // Disarmed: a session that settles now sweeps nothing either.
+    widgetRefreshService.afterSessionSettled(AGENT)
     await vi.advanceTimersByTimeAsync(5_000)
     expect(mocks.listWidgets).toHaveBeenCalledTimes(1)
   })

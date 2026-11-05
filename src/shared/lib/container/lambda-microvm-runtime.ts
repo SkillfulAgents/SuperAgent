@@ -903,6 +903,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly supportsCustomAgentImage = false
 
   private replaceInFlight: Promise<void> | null = null
+  private lastMicrovmId: string | null = null
 
   constructor(config: ContainerConfig) {
     super(config)
@@ -1193,6 +1194,21 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
   }
 
+  async isDefinitelyStopped(): Promise<boolean> {
+    // A missing local record after a host restart is not proof of VM death.
+    // Keep the last id when routing state is discarded so a terminating VM
+    // can still be checked after it actually exits.
+    const currentId = () => agentStates.get(this.config.agentId)?.microvmId ?? this.lastMicrovmId
+    const id = currentId()
+    if (!id) return false
+    try {
+      const mvm = await getMicrovm(getMicrovmRuntimeConfig().region, id)
+      return currentId() === id && mvm.state === 'TERMINATED'
+    } catch (error) {
+      return currentId() === id && isNotFound(error)
+    }
+  }
+
   async getStats(): Promise<ContainerStats | null> {
     // lambda-microvms exposes no per-VM resource metrics; surface none.
     return null
@@ -1378,6 +1394,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   private cleanupLocal(): void {
     const state = agentStates.get(this.config.agentId)
+    if (state) this.lastMicrovmId = state.microvmId
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
     clearBootstrapEnv(this.config.agentId)

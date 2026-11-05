@@ -18,7 +18,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
   const getText = useCallback(() => extractText(children), [children])
   return (
     <pre className={cn(
-      'relative group rounded-md p-3 text-sm leading-relaxed border code-scrollbar',
+      'relative group rounded-card p-3 text-sm leading-relaxed border code-scrollbar',
       'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
     )}>
       <CodeCopyButton getText={getText} />
@@ -112,7 +112,7 @@ const STREAMING_COMPONENTS: Components = {
       alt={alt ?? ''}
       loading="lazy"
       decoding="async"
-      className="h-auto max-w-full rounded-md"
+      className="h-auto max-w-full rounded-card"
     />
   ),
 }

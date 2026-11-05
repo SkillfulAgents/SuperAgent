@@ -270,6 +270,8 @@ export interface ContainerClient {
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
   getInfoFromRuntime(): Promise<ContainerInfo>
+  /** Positive evidence that no container process remains. Unknown/unreachable is false. */
+  isDefinitelyStopped(): Promise<boolean>
 
   // Alias for getInfoFromRuntime() - prefer getCachedInfo() from containerManager
   getInfo(): Promise<ContainerInfo>
@@ -298,6 +300,9 @@ export interface ContainerClient {
   // Session management (proxied to container API)
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
+  /** Stop the session's process, retaining the record needed to resume after a failed file delete. */
+  releaseSession(sessionId: string): Promise<boolean>
+  // true once the container holds no process for the session, including one it never had.
   deleteSession(sessionId: string): Promise<boolean>
   // Copy a session's transcript into a new session (Fork Session).
   // null = the container predates the fork endpoint (plain 404). Throws

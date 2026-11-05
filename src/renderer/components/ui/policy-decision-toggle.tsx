@@ -72,7 +72,7 @@ export function PolicyDecisionToggle({
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="inline-flex items-center rounded-md bg-muted p-0.5 gap-0.5 text-muted-foreground">
+      <div className="inline-flex items-center rounded-item bg-muted p-0.5 gap-0.5 text-muted-foreground">
         {options.map((opt) => {
           const isActive = shown === opt.value
           const Icon = opt.icon
@@ -97,7 +97,7 @@ export function PolicyDecisionToggle({
                     onChange(isActive ? 'default' : opt.value)
                   }}
                   className={cn(
-                    'inline-flex items-center justify-center rounded-sm transition-colors',
+                    'inline-flex items-center justify-center rounded-control transition-colors',
                     btnSize,
                     isActive
                       ? cn(inheriting ? 'opacity-60' : 'bg-background shadow', opt.activeColor)
@@ -159,7 +159,7 @@ export function PolicyDecisionDropdown({
           data-testid="policy-dropdown-trigger"
           data-decision={value}
           className={cn(
-            'flex h-7 w-36 items-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-transparent px-2 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring',
+            'flex h-7 w-36 items-center gap-1.5 whitespace-nowrap rounded-control border border-input bg-transparent px-2 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring',
             disabled && 'cursor-wait opacity-60',
             className,
           )}
@@ -187,7 +187,7 @@ export function PolicyDecisionDropdown({
                 setOpen(false)
               }}
               className={cn(
-                'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted',
+                'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted',
                 value === opt.value && 'bg-muted',
               )}
             >
@@ -206,7 +206,7 @@ export function PolicyDecisionDropdown({
               setOpen(false)
             }}
             className={cn(
-              'flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted',
+              'flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted',
               value === 'default' && 'bg-muted',
             )}
           >

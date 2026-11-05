@@ -46,7 +46,7 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onE
       >
         <button
           onClick={onEdit}
-          className="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded-item bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
         >
           <MessageSquarePlus className="h-3 w-3" />
           Comment

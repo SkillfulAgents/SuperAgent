@@ -213,7 +213,7 @@ describe('AgentActivityIndicator', () => {
 
     const indicator = screen.getByTestId('activity-indicator')
     expect(indicator).toHaveClass(
-      'rounded-t-2xl',
+      'rounded-t-dialog',
       'border-b-0',
       'border-border/70',
       'bg-background/85',
@@ -322,7 +322,7 @@ describe('AgentActivityIndicator', () => {
 
     const indicator = screen.getByTestId('activity-indicator')
     expect(indicator).toHaveClass(
-      'rounded-2xl',
+      'rounded-dialog',
       'pb-3',
       'border-border/70',
       'bg-background/85',

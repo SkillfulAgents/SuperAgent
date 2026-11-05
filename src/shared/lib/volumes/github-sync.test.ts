@@ -77,6 +77,11 @@ async function setup(files: Record<string, string | Buffer> = { 'notes.txt': 'ke
   return { row, volume, sync, copy, write, text, read: (name = 'notes.txt') => fs.readFile(copy(name)), state: () => loadSyncState(sync.folder) }
 }
 
+it('tells the agent once what writing to a GitHub drive does', () => {
+  expect(new GithubMountableVolume('volume', 'Project', config).agentNote).toBe('GitHub drives commit and push changes straight to their branch. ' +
+    "Files over 700 KB, empty folders, and the repository's .github/workflows/ stay local.")
+})
+
 it('copies the selected folder byte-exactly', async () => {
   const files = { 'selected/binary': Buffer.from([0, 255, 128, 10]), 'selected/nested/json': '{"exact": true}\n' }
   archiveFiles = { ...Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, Buffer.from(bytes)])), outside: Buffer.from('outside') }

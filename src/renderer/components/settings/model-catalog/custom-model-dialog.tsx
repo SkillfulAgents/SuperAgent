@@ -274,7 +274,7 @@ function CustomModelDialogBody({
               id="custom-model-provider-search-results"
               role="listbox"
               aria-label="Provider model search results"
-              className="max-h-48 overflow-y-auto rounded-md border border-border/70 bg-background p-1"
+              className="max-h-48 overflow-y-auto rounded-card border border-border/70 bg-background p-1"
             >
               {providerModelSearch.isLoading ? (
                 <div className="px-2 py-2 text-[11px] text-muted-foreground">Searching...</div>
@@ -295,7 +295,7 @@ function CustomModelDialogBody({
                       role="option"
                       aria-selected={selected}
                       data-testid={`catalog-search-result-${model.id}`}
-                      className={`flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent ${
+                      className={`flex w-full items-start gap-2 rounded-item px-2 py-1.5 text-left hover:bg-accent ${
                         selected ? 'bg-accent' : ''
                       }`}
                       onClick={() => applySearchModel(model)}

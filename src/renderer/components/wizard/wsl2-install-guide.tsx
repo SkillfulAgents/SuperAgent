@@ -93,7 +93,7 @@ export function Wsl2InstallGuide({ onRefresh, isRefreshing }: Wsl2InstallGuidePr
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  className="inline-flex items-center rounded-md border border-input bg-background px-3 py-0.5 text-xs font-mono cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
+                  className="inline-flex items-center rounded-item border border-input bg-background px-3 py-0.5 text-xs font-mono cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
                   onClick={handleCopyCommand}
                 >
                   {WSL_INSTALL_COMMAND}

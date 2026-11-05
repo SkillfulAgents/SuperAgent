@@ -40,6 +40,11 @@ vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
 
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ getClient: () => ({ releaseSession: async () => true, deleteSession: async () => true }) }) }
+})
+
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
     activeIds: (agentSlug) => mockActiveIds(agentSlug),
@@ -338,7 +343,7 @@ describe('SessionAutoDeleteMonitor', () => {
     mockListSessions.mockResolvedValue([old1, old2])
     mockReadSessionMetadata.mockResolvedValue({})
     mockIsAuthMode.mockReturnValue(true)
-    mockDeleteSessionsBatch.mockResolvedValue(['ok'])
+    mockDeleteSessionsBatch.mockImplementation(async (_store: unknown, ids: string[]) => ids.filter((id) => id === 'ok'))
 
     await startAndTrigger()
 

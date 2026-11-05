@@ -1262,7 +1262,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         {typingUser && typingUser.id !== user?.id && visiblePeerMessages.length === 0 && (
           <div data-testid="typing-indicator" className="flex gap-3 flex-row-reverse">
             <UserAvatar user={typingUser} size={32} className="hidden md:inline-flex" />
-            <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground">
+            <div className="rounded-card px-4 py-2 bg-primary text-primary-foreground">
               <span className="animate-pulse tracking-widest">...</span>
             </div>
           </div>
@@ -1386,7 +1386,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-amber-100 dark:bg-amber-900/30">
               <WifiOff className="h-4 w-4 text-amber-600 dark:text-amber-400" />
             </div>
-            <div className="flex-1 rounded-lg px-4 py-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-200">
+            <div className="flex-1 rounded-card px-4 py-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-200">
               Internet connection lost.
               <br />
               <span className="text-xs text-amber-600 dark:text-amber-500">
