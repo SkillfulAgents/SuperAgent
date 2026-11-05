@@ -600,17 +600,15 @@ describe('NotificationsView', () => {
       expect(mockUseNotificationsCalls.at(-1)?.types).toBeUndefined()
     })
 
-    it('always offers All, Needs you and Completed, and hides empty optional tabs', () => {
+    it('always offers every tab, even when there are no notifications', () => {
       mockNotificationsData = { items: [], total: 0 }
       renderWithProviders(<NotificationsView />)
-      expect(screen.getByTestId('notifications-filter-needs-you')).toBeTruthy()
-      expect(screen.getByTestId('notifications-filter-completed')).toBeTruthy()
-      expect(screen.queryByTestId('notifications-filter-mentions')).toBeNull()
-      expect(screen.queryByTestId('notifications-filter-automations')).toBeNull()
-      expect(screen.queryByTestId('notifications-filter-announcements')).toBeNull()
+      for (const filter of ['all', 'mentions', 'needs-you', 'completed', 'automations', 'announcements']) {
+        expect(screen.getByTestId(`notifications-filter-${filter}`)).toBeTruthy()
+      }
     })
 
-    it('shows an optional tab once it has rows, with its unread count', () => {
+    it('shows a tab\'s unread count', () => {
       mockNotificationsData = { items: [], total: 0 }
       mockTypeCounts = { session_mention: { total: 3, unread: 2 } }
       renderWithProviders(<NotificationsView />)
