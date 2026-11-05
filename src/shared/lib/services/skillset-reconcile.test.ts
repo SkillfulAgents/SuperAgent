@@ -15,6 +15,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: vi.fn(async () => ({})),
   mutateSettings: vi.fn(),
 }))
 

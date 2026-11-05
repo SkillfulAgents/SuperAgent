@@ -58,9 +58,9 @@ describe('stale poll responses never overwrite a newer menu', () => {
   })
 
   it('discards an older build that resolves after a newer one', async () => {
-    createAppMenu(null, () => 'http://localhost:1')
+    createAppMenu(null, async () => 'http://localhost:1')
     refreshAppMenu()
-    expect(resolvers).toHaveLength(2)
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2))
 
     // The newer build (the switch refresh) answers first, with the new target's
     // agents.
@@ -75,5 +75,23 @@ describe('stale poll responses never overwrite a newer menu', () => {
     await Promise.resolve()
     expect(setApplicationMenu).toHaveBeenCalledTimes(1)
     expect(menuLabels()).toContain('cloud-agent')
+  })
+})
+
+describe('a base URL that cannot be resolved', () => {
+  afterEach(() => {
+    destroyAppMenu()
+  })
+
+  it('still builds the menu, without agents', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    buildFromTemplate.mockClear()
+    setApplicationMenu.mockClear()
+    fetchAgentsWithStatus.mockClear()
+    createAppMenu(null, () => Promise.reject(new Error('database is locked')))
+
+    await vi.waitFor(() => expect(setApplicationMenu).toHaveBeenCalledTimes(1))
+    expect(fetchAgentsWithStatus).not.toHaveBeenCalled()
+    error.mockRestore()
   })
 })

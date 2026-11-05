@@ -62,7 +62,7 @@ class ApiLogAutoDeleteMonitor {
     this.isProcessing = true
 
     try {
-      const appDays = getSettings().app?.apiLogAutoDeleteDays
+      const appDays = (await getSettings()).app?.apiLogAutoDeleteDays
       const agents = await listAgents()
 
       for (const agent of agents) {

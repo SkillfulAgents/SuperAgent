@@ -957,10 +957,11 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
       }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
-      const agentLimits = getEffectiveAgentLimits()
-      const customEnvVars = getCustomEnvVars()
+      const agentLimits = await getEffectiveAgentLimits()
+      const customEnvVars = await getCustomEnvVars()
+      const maxBrowserTabs = (await getSettings()).app?.maxBrowserTabs
       const targetPrefs = await readAgentPreferences(targetSlug)
-      const models = getEffectiveModels()
+      const models = await getEffectiveModels()
       const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
@@ -1011,7 +1012,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           maxTurns: agentLimits.maxTurns,
           maxBudgetUsd: agentLimits.maxBudgetUsd,
           customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-          maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+          maxBrowserTabs,
           metadata: { isAutomated: true },
         },
           name: `Invoked by ${callerName}`,

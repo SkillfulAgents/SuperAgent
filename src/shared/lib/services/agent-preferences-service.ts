@@ -37,8 +37,10 @@ export async function readAgentPreferences(
     captureException(error, { tags: { area: 'agent-preferences', op: 'read' }, extra: { agentSlug } })
     return {}
   }
-  if (getSettings().llmDefault && prefs.defaultModel) {
-    const selected = await resolveConnectionSelection(storedSelection(prefs.defaultModel, prefs.defaultLlmProviderId))
+  const settings = await getSettings()
+  if (settings.llmDefault && prefs.defaultModel) {
+    const selected = await resolveConnectionSelection(
+      await storedSelection(prefs.defaultModel, prefs.defaultLlmProviderId), false, undefined, settings)
     if (!selected) return { ...prefs, defaultModel: undefined, defaultLlmProviderId: null }
     return { ...prefs, defaultModel: selected.model, defaultLlmProviderId: selected.llmProviderId }
   }
@@ -57,6 +59,11 @@ export async function updateAgentPreferences(
   agentSlug: string,
   updates: Record<string, unknown>
 ): Promise<AgentPreferences> {
+  // A model-only write binds to the app default's account; read it up front,
+  // since the mutator below may run more than once.
+  const bindsToDefault = Object.hasOwn(updates, 'defaultModel') && !!updates.defaultModel
+    && !Object.hasOwn(updates, 'defaultLlmProviderId')
+  const defaultLlmProviderId = bindsToDefault ? (await getSettings()).llmDefault?.llmProviderId : undefined
   // Serialized read-modify-write: fresh STRICT read (a corrupt document aborts
   // the update, never synthesizes {} from a parse error), merge, atomic write.
   const updated = await updateConfigDoc(agentRegistry.get(agentSlug).config, 'preferences', (current) => {
@@ -74,7 +81,7 @@ export async function updateAgentPreferences(
     if (Object.hasOwn(updates, 'defaultModel')) {
       if (!updates.defaultModel) merged.defaultLlmProviderId = null
       else if (!Object.hasOwn(updates, 'defaultLlmProviderId')) {
-        const llmProviderId = current?.defaultLlmProviderId ?? getSettings().llmDefault?.llmProviderId
+        const llmProviderId = current?.defaultLlmProviderId ?? defaultLlmProviderId
         if (llmProviderId) merged.defaultLlmProviderId = llmProviderId
       }
     }

@@ -28,7 +28,7 @@ vi.mock('../config/settings', async original => ({
   getSettings: () => state.settings,
   mutateSettings: (change: (s: AppSettings) => void) => change(state.settings),
 }))
-vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'host-test-token' }))
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: async () => 'host-test-token' }))
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: { get: () => ({
     sessions: {

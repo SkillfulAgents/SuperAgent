@@ -100,7 +100,7 @@ export async function createScheduledTask(
     createdBySessionId: params.createdBySessionId,
     createdByUserId: params.createdByUserId,
     timezone: params.timezone || null,
-    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? (await getSettings()).llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model || null,
     effort: params.effort || null,
     speed: params.speed || null,
@@ -725,7 +725,10 @@ export async function updateTaskRuntimeOptions(
   if ('model' in options) {
     updates.model = options.model ?? null
     if (!options.model) updates.llmProviderId = null
-    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = task.llmProviderId ?? getSettings().llmDefault!.llmProviderId
+    else if (options.llmProviderId === undefined) {
+      const llmDefault = (await getSettings()).llmDefault
+      if (llmDefault) updates.llmProviderId = task.llmProviderId ?? llmDefault.llmProviderId
+    }
   }
   if ('effort' in options) updates.effort = options.effort ?? null
   if ('speed' in options) updates.speed = options.speed ?? null

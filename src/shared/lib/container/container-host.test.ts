@@ -137,12 +137,13 @@ vi.mock('@shared/lib/config/settings', () => ({
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
   // mutator to a fresh snapshot and return it (matching the real return shape).
-  mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void) => {
+  mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void | false) => {
     const s = {
       container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
       app: {},
     }
-    mutator(s)
+    // `false` writes nothing; a write persists the runner, as the store would.
+    if (mutator(s) !== false) mockSettingsState.containerRunner = s.container.containerRunner
     return s
   },
 }))
@@ -1288,6 +1289,23 @@ describe('ContainerHost.ensureImageReady — state machine', () => {
 
     // Should have called checkImageExists with the alternative runner
     expect(checkImageExists).toHaveBeenCalledWith('podman', 'test-image')
+  })
+
+  it('does not auto-switch over a runner the user picked during the availability check', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockImplementation(async () => {
+      // The user picks Lima while the (slow) availability check is running.
+      mockSettingsState.containerRunner = 'lima'
+      return [
+        { runner: 'docker', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: true },
+        { runner: 'podman', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+      ]
+    })
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerHost.ensureImageReady()
+
+    expect(mockSettingsState.containerRunner).toBe('lima')
+    expect(checkImageExists).not.toHaveBeenCalledWith('podman', 'test-image')
   })
 
   it('reports RUNTIME_UNAVAILABLE when runner installed but not running and no alternative', async () => {

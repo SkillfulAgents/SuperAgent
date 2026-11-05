@@ -38,18 +38,18 @@ export class PlatformWebProvider extends BaseWebProvider {
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'
   protected readonly envVarName = 'PLATFORM_TOKEN'
 
-  override getApiKeyStatus(): ApiKeyStatus {
-    if (getPlatformAccessToken()) return { isConfigured: true, source: 'settings' }
+  override async getApiKeyStatus(): Promise<ApiKeyStatus> {
+    if (await getPlatformAccessToken()) return { isConfigured: true, source: 'settings' }
     if (process.env[this.envVarName]) return { isConfigured: true, source: 'env' }
     return { isConfigured: false, source: 'none' }
   }
 
-  override getEffectiveApiKey(): string | undefined {
-    return getPlatformAccessToken() ?? process.env[this.envVarName] ?? undefined
+  override async getEffectiveApiKey(): Promise<string | undefined> {
+    return (await getPlatformAccessToken()) ?? process.env[this.envVarName] ?? undefined
   }
 
-  private requireToken(surface: 'search' | 'fetch'): string {
-    const token = this.getEffectiveApiKey()
+  private async requireToken(surface: 'search' | 'fetch'): Promise<string> {
+    const token = await this.getEffectiveApiKey()
     if (!token) {
       throw new Error(
         `Platform web ${surface} is unavailable: you are not signed into Gamut. Sign in, or pick a different provider under the Web provider setting in Settings.`,
@@ -67,7 +67,7 @@ export class PlatformWebProvider extends BaseWebProvider {
   }
 
   async search(query: string, opts: WebSearchOptions): Promise<WebSearchResponse> {
-    const token = this.requireToken('search')
+    const token = await this.requireToken('search')
     const body = buildExaSearchBody(query, opts, this.clampNumResults(opts.numResults))
     try {
       return mapExaSearchResponse(await this.postToProxy('/v1/exa/search', token, body))
@@ -77,7 +77,7 @@ export class PlatformWebProvider extends BaseWebProvider {
   }
 
   async fetch(url: string, opts: WebFetchOptions): Promise<WebFetchResult> {
-    const token = this.requireToken('fetch')
+    const token = await this.requireToken('fetch')
     const body = buildExaContentsBody(url, this.clampMaxChars(opts.maxChars))
     try {
       const json = await this.postToProxy('/v1/exa/contents', token, body)

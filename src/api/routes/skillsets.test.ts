@@ -13,16 +13,21 @@ const mockIsGitAvailable = vi.fn()
 const mockGetPlatformProxyBaseUrl = vi.fn()
 const mockGetPlatformAccessToken = vi.fn()
 const mockGetPlatformAuthStatus = vi.fn()
+/** How many discarded attempts the mocked mutateSettings runs before the committed one. */
+const mutateRetries = vi.hoisted(() => ({ count: 0 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: (...args: unknown[]) => mockGetSettings(...args),
-  updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
-  // routes now persist via the serialized fresh-read mutateSettings.
-  // Faithfully reproduce its observable effect against the seeded mock settings
-  // so existing assertions on mockUpdateSettings keep working.
-  mutateSettings: (mutator: (s: Record<string, unknown>) => void) => {
+  getSettings: async (...args: unknown[]) => mockGetSettings(...args),
+  // routes persist via the compare-and-set mutateSettings. Reproduce its
+  // observable effect against the seeded mock settings (mockUpdateSettings
+  // records each committed write), including a retry: the mutator runs again
+  // on a fresh copy when `mutateRetries` asks for it.
+  mutateSettings: async (mutator: (s: Record<string, unknown>) => void | false) => {
+    for (let attempt = 0; attempt < mutateRetries.count; attempt++) {
+      mutator(structuredClone(mockGetSettings() ?? {}))
+    }
     const s = structuredClone(mockGetSettings() ?? {})
-    mutator(s)
+    if (mutator(s) === false) return s
     mockUpdateSettings(s)
     return s
   },
@@ -44,8 +49,10 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: (...args: unknown[]) => mockGetPlatformAccessToken(...args),
-  getPlatformAuthStatus: (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
+  getPlatformAccessToken: async (...args: unknown[]) => mockGetPlatformAccessToken(...args),
+  getPlatformAuthStatus: async (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
+  // The pure form the provider applies to the settings a mutator hands it.
+  platformAuthStatusFrom: (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -58,6 +65,7 @@ import skillsets from './skillsets'
 describe('skillsets routes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mutateRetries.count = 0
     mockGetPlatformAuthStatus.mockReturnValue({
       connected: true,
       source: 'settings',
@@ -170,6 +178,39 @@ describe('skillsets routes', () => {
         orgId: 'org_current',
       },
     })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('sync-remote reports each added skillset once when the settings write retries', async () => {
+    mockGetSettings.mockReturnValue({ skillsets: [] })
+    mutateRetries.count = 2
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        skillsets: [
+          { name: 'alpha', path: 'alpha', repoId: 'repo-1', description: '', skill_count: 1, agent_count: 0 },
+          { name: 'beta', path: 'beta', repoId: 'repo-1', description: '', skill_count: 1, agent_count: 0 },
+        ],
+      }),
+    }))
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets/sync-remote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'platform' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ synced: 2, skillsets: ['alpha', 'beta'] })
+    expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
+    expect(mockUpdateSettings.mock.calls[0][0].skillsets.map((s: { id: string }) => s.id)).toEqual([
+      'platform--repo-1--alpha',
+      'platform--repo-1--beta',
+    ])
 
     vi.unstubAllGlobals()
   })

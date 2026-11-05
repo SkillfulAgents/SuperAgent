@@ -2,9 +2,9 @@ import type { ProviderUsage } from './usage-schema'
 import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
 import type { OAuthCredential } from './oauth-schema'
 import Anthropic from '@anthropic-ai/sdk'
-import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
+import { getSettings, type ApiKeySettings, type ApiKeyStatus, type AppSettings } from '../config/settings'
 import type { ConnectionConfig } from './connection-schema'
-import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { ModelCatalogSettings, ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { ModelAvailability } from './model-availability-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
@@ -55,11 +55,29 @@ export interface ProviderConfiguration {
   env: Record<string, string | undefined>
 }
 
+/**
+ * The global settings a provider without a {@link ProviderConfiguration}
+ * reads its credentials from (the platform provider: its stored connection).
+ */
+export type ProviderSettings = Pick<AppSettings, 'apiKeys' | 'platformAuth'>
+
 export abstract class BaseLlmProvider {
   constructor(protected readonly configuration?: ProviderConfiguration) {}
 
-  protected configuredKeys(): ProviderConfiguration['apiKeys'] {
-    return this.configuration?.apiKeys ?? getSettings().apiKeys ?? {}
+  /**
+   * The global settings, read fresh, for a provider that is not bound to a
+   * connection; undefined for one that is: it never reads global settings.
+   */
+  protected async ambientSettings(): Promise<ProviderSettings | undefined> {
+    return this.configuration ? undefined : await getSettings()
+  }
+
+  /**
+   * The connection's credentials, else those in the global settings given
+   * (read with {@link ambientSettings}, once per operation).
+   */
+  protected keysFrom(settings: ProviderSettings | undefined): ProviderConfiguration['apiKeys'] {
+    return this.configuration?.apiKeys ?? settings?.apiKeys ?? {}
   }
 
   protected envValue(name: string): string | undefined {
@@ -109,7 +127,7 @@ export abstract class BaseLlmProvider {
    * deferred tools), where it used to mean off for anything but
    * api.anthropic.com.
    */
-  toolSearchEnv(_model?: string): 'true' | 'false' {
+  async toolSearchEnv(_model?: string): Promise<'true' | 'false'> {
     return 'false'
   }
 
@@ -117,9 +135,18 @@ export abstract class BaseLlmProvider {
   readonly mediaPrompt: string | undefined = undefined
 
   /** Check whether an API key is configured and its source. */
-  getApiKeyStatus(): ApiKeyStatus {
-    const settings = { apiKeys: this.configuredKeys() }
-    if ((this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)) {
+  async getApiKeyStatus(): Promise<ApiKeyStatus> {
+    return this.apiKeyStatusFrom(await this.ambientSettings())
+  }
+
+  /**
+   * {@link getApiKeyStatus} from global settings already read; a provider
+   * bound to a connection ignores them. For callers that must not read the
+   * settings again, such as a data migration reading its own handle.
+   */
+  apiKeyStatusFrom(settings: ProviderSettings | undefined): ApiKeyStatus {
+    const keys = this.keysFrom(settings)
+    if ((this.settingsKeyField ? keys[this.settingsKeyField] : undefined)) {
       return { isConfigured: true, source: 'settings' }
     }
     if (this.envValue(this.envVarName)) {
@@ -129,15 +156,20 @@ export abstract class BaseLlmProvider {
   }
 
   /** Get the effective API key (settings take precedence over env var). */
-  getEffectiveApiKey(): string | undefined {
-    const settings = { apiKeys: this.configuredKeys() }
-    const fromSettings = (this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)
+  async getEffectiveApiKey(): Promise<string | undefined> {
+    return this.effectiveApiKeyFrom(await this.ambientSettings())
+  }
+
+  /** {@link getEffectiveApiKey} from global settings already read. */
+  protected effectiveApiKeyFrom(settings: ProviderSettings | undefined): string | undefined {
+    const keys = this.keysFrom(settings)
+    const fromSettings = (this.settingsKeyField ? keys[this.settingsKeyField] : undefined)
     if (fromSettings) return fromSettings
     return this.envValue(this.envVarName)
   }
 
   /** Create an Anthropic-compatible SDK client configured for this provider. */
-  abstract createClient(): Anthropic
+  abstract createClient(): Promise<Anthropic>
 
   /**
    * The provider's built-in catalog of concrete model ids (shipped in code).
@@ -162,7 +194,7 @@ export abstract class BaseLlmProvider {
   noteTurnError(_status: number | undefined, _body: unknown): void {}
 
   /** Public cache identity for availability; changes when provider account context changes. */
-  getModelAvailabilityRevision(): string | null {
+  async getModelAvailabilityRevision(): Promise<string | null> {
     return null
   }
 
@@ -171,8 +203,12 @@ export abstract class BaseLlmProvider {
    * (e.g. 'opus') so defaults ride upgrades. The resolver alias-resolves
    * this to a concrete id; it is the ultimate fallback when a selection
    * can't be matched.
+   *
+   * `modelCatalog` is the global settings' catalog, for the one provider whose
+   * defaults come from it (generic: the first model the user added). Without
+   * it that provider falls back to GENERIC_DEFAULT_MODEL or its placeholder.
    */
-  getDefaultModel(purpose: ModelPurpose): string {
+  getDefaultModel(purpose: ModelPurpose, _modelCatalog?: ModelCatalogSettings): string {
     switch (purpose) {
       case 'summarizer': return this.catalogDefaultModels.summarizerModel
       case 'agent': return this.catalogDefaultModels.agentModel
@@ -188,17 +224,17 @@ export abstract class BaseLlmProvider {
    * (which may not exist for the new one, e.g. a bare-Claude id on Bedrock)
    * can't leak across providers.
    */
-  getDefaultModels(): {
+  getDefaultModels(modelCatalog?: ModelCatalogSettings): {
     summarizerModel: string
     agentModel: string
     browserModel: string
     dashboardBuilderModel: string
   } {
     return {
-      summarizerModel: this.getDefaultModel('summarizer'),
-      agentModel: this.getDefaultModel('agent'),
-      browserModel: this.getDefaultModel('browser'),
-      dashboardBuilderModel: this.getDefaultModel('dashboard'),
+      summarizerModel: this.getDefaultModel('summarizer', modelCatalog),
+      agentModel: this.getDefaultModel('agent', modelCatalog),
+      browserModel: this.getDefaultModel('browser', modelCatalog),
+      dashboardBuilderModel: this.getDefaultModel('dashboard', modelCatalog),
     }
   }
 
@@ -229,13 +265,13 @@ export abstract class BaseLlmProvider {
   // Only consulted for upstream API failures: classes this provider recognizes
   // get one under any upstream code (the CLI tags some denials `unknown`);
   // the generic banner only under a code that marks a provider error.
-  presentationForTurnError(
+  async presentationForTurnError(
     status: number | undefined,
     body: unknown,
     apiErrorCode: string | null | undefined,
-  ): ProviderErrorPresentation | null {
+  ): Promise<ProviderErrorPresentation | null> {
     if (!isUpstreamApiErrorCode(apiErrorCode)) return null
-    const specialized = this.parseErrorResponseOverride(status, body, apiErrorCode)
+    const specialized = await this.parseErrorResponseOverride(status, body, apiErrorCode)
     if (specialized) return specialized
     return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
   }
@@ -245,11 +281,11 @@ export abstract class BaseLlmProvider {
    * recognizes. Return null for everything else — the generic banner is
    * applied here in the base class, so overrides never build it themselves.
    */
-  protected parseErrorResponseOverride(
+  protected async parseErrorResponseOverride(
     _status: number | undefined,
     _body: unknown,
     _apiErrorCode?: string,
-  ): ProviderErrorPresentation | null {
+  ): Promise<ProviderErrorPresentation | null> {
     return null
   }
 }

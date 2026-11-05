@@ -32,13 +32,13 @@ webFetch.post('/fetch', async (c) => {
     return c.json({ error: 'Invalid request', detail: parsed.error.issues }, 400)
   }
 
-  const provider = getActiveWebProvider()
+  const provider = await getActiveWebProvider()
   if (!provider?.fetch) {
     return c.json({ error: 'No web fetch vendor configured' }, 400)
   }
 
   const { url, ...opts } = parsed.data
-  const settings = getSettings()
+  const settings = await getSettings()
   if (!isUrlAllowed(url, { allowedSites: settings.webAllowedSites, blockedSites: settings.webBlockedSites })) {
     return c.json({ error: 'This URL is blocked by your allowed-sites policy' }, 403)
   }

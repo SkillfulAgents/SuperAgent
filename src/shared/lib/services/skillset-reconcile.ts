@@ -17,8 +17,9 @@
  *  - metadata readers on access — lazy backstop
  */
 
-import { mutateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import type { SkillsetAuthSettings } from '@shared/lib/skillset-provider/base-skillset-provider'
 import {
   agentCatalog,
   agentRegistry,
@@ -44,38 +45,63 @@ const TEMPLATE_METADATA_PATH = '.skillset-agent-metadata.json'
  * Filter out SkillsetConfig entries that are no longer valid for the current
  * auth state. Mutates settings.skillsets and persists if anything changed.
  */
-export function reconcileSkillsetConfigsForCurrentAuth(): { removed: number } {
-  // Filter against a FRESH read inside the serialized mutation so a concurrent
-  // add/remove of an unrelated skillset isn't lost.
+export async function reconcileSkillsetConfigsForCurrentAuth(): Promise<{ removed: number }> {
+  // Filter against a FRESH read inside the compare-and-set so a concurrent
+  // add/remove of an unrelated skillset isn't lost, and judge each config by
+  // the auth state in that same read. The mutator may run more than once, so
+  // it only assigns `removed` and `failures`, and failures are reported after.
   let removed = 0
-  mutateSettings((settings) => {
+  let failures: unknown[] = []
+  await mutateSettings((settings) => {
+    failures = []
     const before = settings.skillsets ?? []
     const kept = before.filter((c) => {
       try {
-        return getSkillsetProvider(c.provider).isConfigValid(c)
+        return getSkillsetProvider(c.provider).isConfigValid(c, settings)
       } catch (error) {
-        captureException(error, { tags: { area: 'skillset-reconcile', op: 'isConfigValid' } })
+        failures.push(error)
         // Fail-open: if the provider check throws, keep the config so we don't
         // mass-delete on a transient error.
         return true
       }
     })
     removed = before.length - kept.length
+    if (removed === 0) return false
     settings.skillsets = kept
   })
+  for (const error of failures) {
+    captureException(error, { tags: { area: 'skillset-reconcile', op: 'isConfigValid' } })
+  }
   return { removed }
 }
 
-function providerCheckInstalled(meta: unknown): boolean {
+function providerCheckInstalled(meta: unknown, settings: SkillsetAuthSettings): boolean {
   if (!meta || typeof meta !== 'object') return true
   const m = meta as Partial<Pick<InstalledSkillMetadata | InstalledAgentMetadata,
     'provider' | 'providerData'>>
   try {
-    return getSkillsetProvider(m.provider).isInstalledValid(m)
+    return getSkillsetProvider(m.provider).isInstalledValid(m, settings)
   } catch (error) {
     captureException(error, { tags: { area: 'skillset-reconcile', op: 'isInstalledValid' } })
     return true
   }
+}
+
+/**
+ * Whether an installed record is still valid, judged against settings read
+ * now: deleting a workspace file rests on this, so it is never decided from a
+ * read taken before a long sweep. Fail-open (keep) when the settings cannot
+ * be read, like a provider check that throws.
+ */
+async function installedStillValid(meta: unknown): Promise<boolean> {
+  let settings: SkillsetAuthSettings
+  try {
+    settings = await getSettings()
+  } catch (error) {
+    captureException(error, { tags: { area: 'skillset-reconcile', op: 'read-settings' } })
+    return true
+  }
+  return providerCheckInstalled(meta, settings)
 }
 
 /**
@@ -89,7 +115,7 @@ export async function pruneInstalledSkillIfInvalid(
   files: FileOps,
   skillDir: string,
 ): Promise<boolean> {
-  if (providerCheckInstalled(meta)) return false
+  if (await installedStillValid(meta)) return false
   try {
     await files.delete(skillDir, { recursive: true })
   } catch (error) {
@@ -107,7 +133,7 @@ export async function pruneInstalledTemplateIfInvalid(
   files: FileOps,
   metaPath: string,
 ): Promise<boolean> {
-  if (providerCheckInstalled(meta)) return false
+  if (await installedStillValid(meta)) return false
   try {
     await files.delete(metaPath)
   } catch (error) {
@@ -161,6 +187,17 @@ export async function reconcileInstalledForCurrentAuth(): Promise<{ skillsRemove
     return { skillsRemoved, templatesRemoved }
   }
 
+  // One read screens every record; the prune helpers read again before each
+  // deletion, so a record is only removed if it is still invalid then (the
+  // org may have switched back while the sweep was running).
+  let screen: SkillsetAuthSettings
+  try {
+    screen = await getSettings()
+  } catch (error) {
+    captureException(error, { tags: { area: 'skillset-reconcile', op: 'read-settings' } })
+    return { skillsRemoved, templatesRemoved }
+  }
+
   for (const agentSlug of agents) {
     const files = agentRegistry.get(agentSlug).files
 
@@ -168,14 +205,14 @@ export async function reconcileInstalledForCurrentAuth(): Promise<{ skillsRemove
     for (const skill of await listSkillDirs(files, agentSlug)) {
       if (skill.kind !== 'directory') continue
       const parsed = await readWorkspaceJson(files, joinWorkspacePath(skill.path, SKILL_METADATA_FILE))
-      if (parsed === null) continue
+      if (parsed === null || providerCheckInstalled(parsed, screen)) continue
       const removed = await pruneInstalledSkillIfInvalid(parsed, files, skill.path)
       if (removed) skillsRemoved += 1
     }
 
     // Agent template metadata
     const parsed = await readWorkspaceJson(files, TEMPLATE_METADATA_PATH)
-    if (parsed === null) continue
+    if (parsed === null || providerCheckInstalled(parsed, screen)) continue
     const removed = await pruneInstalledTemplateIfInvalid(parsed, files, TEMPLATE_METADATA_PATH)
     if (removed) templatesRemoved += 1
   }

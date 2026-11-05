@@ -9,14 +9,14 @@ export class PlatformVoiceProvider extends OpenaiVoiceProvider {
   override readonly id = 'platform' as const
   override readonly name = 'Platform'
 
-  override getApiKeyStatus(): ApiKeyStatus {
-    const token = getPlatformAccessToken()
+  override async getApiKeyStatus(): Promise<ApiKeyStatus> {
+    const token = await getPlatformAccessToken()
     if (token) return { isConfigured: true, source: 'settings' }
     return { isConfigured: false, source: 'none' }
   }
 
-  override getEffectiveApiKey(): string | undefined {
-    return getPlatformAccessToken() ?? undefined
+  override async getEffectiveApiKey(): Promise<string | undefined> {
+    return (await getPlatformAccessToken()) ?? undefined
   }
 
   protected override apiBaseUrl(): string {

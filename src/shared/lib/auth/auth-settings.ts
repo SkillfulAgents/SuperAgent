@@ -18,6 +18,6 @@ export function resolveAuthSettings(auth?: AuthSettings | null): AuthSettings {
   return resolved
 }
 
-export function getAuthSettings(): AuthSettings {
-  return resolveAuthSettings(getSettings().auth)
+export async function getAuthSettings(): Promise<AuthSettings> {
+  return resolveAuthSettings((await getSettings()).auth)
 }

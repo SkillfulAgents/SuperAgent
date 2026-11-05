@@ -119,12 +119,14 @@ class PlatformService {
   async refresh(): Promise<void> {
     try {
       if (this.isProcessing) return
-      if (!getPlatformAuthStatus().connected) {
-        this.clearCache()
-        return
-      }
+      // Claimed before the auth read, so a second refresh() cannot slip in
+      // while it is in flight.
       this.isProcessing = true
       try {
+        if (!(await getPlatformAuthStatus()).connected) {
+          this.clearCache()
+          return
+        }
         await refreshStoredPlatformAccount().catch((error) =>
           captureException(error, { tags: { area: 'platform-service', op: 'refresh-account' } }),
         )

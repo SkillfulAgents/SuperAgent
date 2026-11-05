@@ -90,9 +90,12 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
   fingerprint of the platform credential** it was minted under, is only reused
   while all three still match, is cleared whenever the acting **org OR
   user/member** changes (`savePlatformAuth`) or on disconnect, and the account is
-  re-checked immediately before the write so a refresh still in flight across an
-  account change can't resurrect the old token. A same-user metadata refresh does
-  not churn it.
+  re-checked as part of the write so a refresh still in flight across an
+  account change can't resurrect the old token: `writeCloudWorkspaceRecord` /
+  `clearCloudWorkspaceRecord` take an `onlyIf(settings)` guard that runs inside
+  the settings compare-and-set (see [settings-storage.md](settings-storage.md)),
+  so no account change can commit between the check and the write. A same-user
+  metadata refresh does not churn it.
 - **One account snapshot per cycle.** `getCloudWorkspace` reads the bearer, the
   acting org, and the identity **together, once** (`readAccount`), presents that
   bearer, and re-checks the snapshot after every await — after discovery and
@@ -257,7 +260,7 @@ process** (`main/api-target.ts`). `initApiBaseUrl()` asks for the answer
 prefixes; that single value is what moves the whole UI.
 
 - **The preference is main-owned, not renderer-owned**
-  (`services/api-target-preference.ts`, stored in `settings.json`). The app has
+  (`services/api-target-preference.ts`, stored in settings). The app has
   more than one renderer — the main window and the quick-dispatch launcher are
   separate `BrowserWindow`s — and they must never disagree about which machine
   executes work. Everything the decision rests on (the deployment token, the

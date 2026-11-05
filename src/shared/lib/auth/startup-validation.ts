@@ -24,7 +24,7 @@ export async function validateAuthModeStartup(): Promise<void> {
     if (userCount > 0) {
       // Case 1: Normal start — user table has entries
       validateAuthProviders()
-      getAuth()
+      await getAuth()
       await initEnvManagedPlatformStatus()
       return
     }
@@ -45,7 +45,7 @@ export async function validateAuthModeStartup(): Promise<void> {
 
   // Case 3: Fresh start — no agents, no users
   validateAuthProviders()
-  getAuth()
+  await getAuth()
   await initEnvManagedPlatformStatus()
 }
 

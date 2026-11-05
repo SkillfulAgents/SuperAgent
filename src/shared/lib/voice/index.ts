@@ -28,12 +28,12 @@ export function getVoiceProvider<T extends VoiceProvider>(id: T): typeof provide
  * Returns the configured voice provider if one is set up and has an API key,
  * or null if voice is not configured.
  */
-export function getConfiguredVoiceProvider(): BaseVoiceProvider | null {
-  const voice = getVoiceSettings()
+export async function getConfiguredVoiceProvider(): Promise<BaseVoiceProvider | null> {
+  const voice = await getVoiceSettings()
   if (!voice.sttProvider) return null
   const provider = providers[voice.sttProvider]
   if (!provider) return null
-  const status = provider.getApiKeyStatus()
+  const status = await provider.getApiKeyStatus()
   if (!status.isConfigured) return null
   return provider
 }

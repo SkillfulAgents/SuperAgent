@@ -17,12 +17,12 @@ import {
   llmConnections,
   user,
 } from '../db/schema'
-import { getSettings, mutateSettings } from '../config/settings'
+import { getSettings, mutateSettings, type AppSettings } from '../config/settings'
 import { isAuthMode } from '../auth/mode'
 import {
   createLlmProvider,
   getLlmProvider,
-  resolveModelForProvider,
+  resolveModelForProviderFrom,
 } from './index'
 import { LLM_PROVIDER_IDS, isOAuthProvider } from './provider-types'
 import { type ModelDefinition } from './model-catalog-schema'
@@ -79,9 +79,17 @@ export function connectionModelOverrides(row: Pick<ConnectionRow, 'provider' | '
   )
 }
 
-export function connectionCatalog(row: Pick<ConnectionRow, 'provider' | 'modelOverrides'>): ModelDefinition[] {
+export async function connectionCatalog(row: Pick<ConnectionRow, 'provider' | 'modelOverrides'>): Promise<ModelDefinition[]> {
+  return connectionCatalogFrom(row, await getSettings())
+}
+
+/** {@link connectionCatalog} from global settings already read (for their model prices). */
+export function connectionCatalogFrom(
+  row: Pick<ConnectionRow, 'provider' | 'modelOverrides'>,
+  settings: Pick<AppSettings, 'modelPricing'>,
+): ModelDefinition[] {
   const builtins = getLlmProvider(providerSchema.parse(row.provider)).getBuiltinCatalog()
-  return withGlobalModelPricing(mergeCatalog(builtins, connectionModelOverrides(row)), getSettings().modelPricing)
+  return withGlobalModelPricing(mergeCatalog(builtins, connectionModelOverrides(row)), settings.modelPricing)
 }
 
 // Settings writes are already serialized in the owning app. Keep registry
@@ -117,27 +125,30 @@ export async function listConnections(
   currentId?: string
 ): Promise<ConnectionInfo[]> {
   const rows = await readVisibleConnections(viewer, currentId)
-  return connectionInfos(rows, viewer, await resolveGlobalSelection(readById(rows)))
+  const settings = await getSettings()
+  return connectionInfos(rows, viewer, await resolveGlobalSelection(readById(rows), settings), settings)
 }
 
 /** The connections a viewer sees, with the app default and summarizer, from one read of the connections. */
 export async function listConnectionsWithSelection(viewer: ConnectionViewer): Promise<{ connections: ConnectionInfo[] } & GlobalSelectionState> {
   const rows = await readVisibleConnections(viewer)
   const read = readById(rows)
-  const [root, summarizer] = await Promise.all([resolveGlobalSelection(read), resolveSummarizerSelection(read)])
-  return { connections: connectionInfos(rows, viewer, root), ...selectionState(root, summarizer) }
+  const settings = await getSettings()
+  const [root, summarizer] = await Promise.all([resolveGlobalSelection(read, settings), resolveSummarizerSelection(read, settings)])
+  return { connections: await connectionInfos(rows, viewer, root, settings), ...selectionState(root, summarizer) }
 }
 
-function connectionInfos(
+async function connectionInfos(
   rows: VisibleConnectionRow[],
   viewer: ConnectionViewer,
   defaultSelection: ResolvedConnection | null,
-): ConnectionInfo[] {
-  return rows.map(({ connection: row, ownerName }) => {
+  settings: AppSettings,
+): Promise<ConnectionInfo[]> {
+  return Promise.all(rows.map(async ({ connection: row, ownerName }) => {
     const provider = providerForConnection(row)
     const config = parseConnectionJson(connectionConfigSchema, row.config)
     const canManage = row.userId === null ? viewer.admin : row.userId === viewer.userId
-    const deletionBlockedReason = connectionDeletionReason(row, viewer, defaultSelection)
+    const deletionBlockedReason = connectionDeletionReason(row, viewer, defaultSelection, settings)
     return {
       id: row.id,
       name: row.name,
@@ -146,13 +157,13 @@ function connectionInfos(
       ownerName,
       accountLabel: canManage ? config.oauth?.accountLabel : undefined,
       managed: row.managed,
-      isConfigured: provider.getApiKeyStatus().isConfigured,
+      isConfigured: provider.apiKeyStatusFrom(settings).isConfigured,
       supportsDirectApi: provider.supportsDirectApi,
       supportsUsage: provider.supportsUsage,
       supportsModelAvailability: provider.supportsModelAvailability,
-      modelAvailabilityRevision: provider.getModelAvailabilityRevision(),
-      catalog: connectionCatalog(row),
-      defaultModel: defaultSelectionForConnection(row)?.model ?? null,
+      modelAvailabilityRevision: await provider.getModelAvailabilityRevision(),
+      catalog: connectionCatalogFrom(row, settings),
+      defaultModel: defaultSelectionForConnection(row, 'agent', settings)?.model ?? null,
       modelOverrides: connectionModelOverrides(row),
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,
@@ -165,7 +176,7 @@ function connectionInfos(
       deletionBlockedReason,
       canDelete: deletionBlockedReason === undefined,
     }
-  })
+  }))
 }
 
 export function canSelectConnection(
@@ -308,15 +319,18 @@ export async function deleteConnection(id: string, viewer: ConnectionViewer): Pr
     const row = await getConnection(id)
     if (!row) throw new Error('Connection not found')
     assertManageConnection(row, viewer)
-    const reason = connectionDeletionReason(row, viewer, await resolveGlobalSelection())
+    const settings = await getSettings()
+    const reason = connectionDeletionReason(row, viewer, await resolveGlobalSelection(undefined, settings), settings)
     if (reason) throw new Error(reason)
     await db.delete(llmConnections).where(eq(llmConnections.id, id)).run()
-    if (id === legacyLlmProviderId(providerSchema.parse(row.provider))) {
+    const provider = providerSchema.parse(row.provider)
+    if (id === legacyLlmProviderId(provider)) {
       const config = parseConnectionJson(connectionConfigSchema, row.config)
-      mutateSettings((settings) => {
-        for (const key of providerCredentialFields[providerSchema.parse(row.provider)]) delete settings.apiKeys?.[key]
+      // Only changes the draft: the mutator may run again on a write conflict.
+      await mutateSettings((s) => {
+        for (const key of providerCredentialFields[provider]) delete s.apiKeys?.[key]
         for (const [key, value] of Object.entries(config.runtimeEnv)) {
-          if (settings.customEnvVars?.[key] === value) delete settings.customEnvVars[key]
+          if (s.customEnvVars?.[key] === value) delete s.customEnvVars[key]
         }
       })
     }
@@ -333,7 +347,11 @@ async function applyGlobalSelection(
     throw new Error('Select a model from a global connection')
   if (purpose === 'summarizer' && resolved && !resolved.provider.supportsDirectApi)
     throw new Error('This provider cannot be used as a summarizer. Choose an API-capable provider.')
-  let summarizerSelection = purpose === 'summarizer' ? selection : getSettings().llmSummarizer
+  let summarizerSelection = purpose === 'summarizer' ? selection : (await getSettings()).llmSummarizer
+  // Whether this call decides the summarizer. When it does not, the write
+  // leaves it alone: writing back the value read above would revert a
+  // summarizer another writer chose in the meantime.
+  let decidesSummarizer = purpose === 'summarizer'
   const root = purpose === 'default' ? resolved : await resolveGlobalSelection()
   if (root?.provider.supportsDirectApi === false) {
     const summarizer = purpose === 'summarizer' ? resolved : await resolveSummarizerSelection()
@@ -343,17 +361,22 @@ async function applyGlobalSelection(
       if (!isHelperSelection(inherited))
         throw new Error('Choose a separate API-capable summarizer before using this app default.')
       summarizerSelection = { llmProviderId: inherited.llmProviderId, model: inherited.model }
+      decidesSummarizer = true
     }
   }
-  if (restore) summarizerSelection = restore.summarizerSelection
-  mutateSettings((s) => {
+  if (restore) {
+    summarizerSelection = restore.summarizerSelection
+    decidesSummarizer = true
+  }
+  await mutateSettings((s) => {
     if (purpose === 'default' && selection) s.llmDefault = selection
-    s.llmSummarizer = summarizerSelection
+    if (decidesSummarizer) s.llmSummarizer = summarizerSelection
   })
 }
 
 export async function globalSelectionState(): Promise<GlobalSelectionState> {
-  const [root, summarizer] = await Promise.all([resolveGlobalSelection(), resolveSummarizerSelection()])
+  const settings = await getSettings()
+  const [root, summarizer] = await Promise.all([resolveGlobalSelection(undefined, settings), resolveSummarizerSelection(undefined, settings)])
   return selectionState(root, summarizer)
 }
 
@@ -398,8 +421,8 @@ export async function compareAndSetGlobalDefault(expectedRaw: unknown, restoreRa
 
 type StoredModelSelection = { llmProviderId: string; model?: string }
 
-function defaultSelectionForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer' = 'agent') {
-  const catalog = connectionCatalog(row)
+function defaultSelectionForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer', settings: Pick<AppSettings, 'modelPricing'>) {
+  const catalog = connectionCatalogFrom(row, settings)
   const provider = providerForConnection(row)
   const preferred = resolveSelection(
     { llmProviderId: row.id, model: provider.getDefaultModel(purpose) },
@@ -410,23 +433,26 @@ function defaultSelectionForConnection(row: ConnectionRow, purpose: 'agent' | 's
   return selected ? { ...selected, connection: row, provider } : null
 }
 
+/** `settings`: the global settings when the caller already read them; read here otherwise. */
 export async function resolveConnectionSelection(
   selection: StoredModelSelection | null | undefined,
   allowLegacyPin = false,
   read?: ReadConnections,
+  settings?: AppSettings,
 ) {
   if (!selection) return null
   const row = await connectionRow(selection.llmProviderId, read)
   if (!row) return null
-  if (!selection.model) return defaultSelectionForConnection(row)
+  const current = settings ?? await getSettings()
+  if (!selection.model) return defaultSelectionForConnection(row, 'agent', current)
   const provider = providerForConnection(row)
-  const resolved = resolveSelection({ ...selection, model: selection.model }, [{ id: row.id, catalog: connectionCatalog(row) }])
+  const resolved = resolveSelection({ ...selection, model: selection.model }, [{ id: row.id, catalog: connectionCatalogFrom(row, current) }])
   if (resolved) return { ...resolved, connection: row, provider }
   // Pre-upgrade files and model-only clients could use an arbitrary wire ID.
   // Preserve that request locally; resolving it must never edit a global catalog.
-  if (legacySelections.has(selection) || (allowLegacyPin && row.id === getSettings().llmLegacyProviderId)) {
+  if (legacySelections.has(selection) || (allowLegacyPin && row.id === current.llmLegacyProviderId)) {
     return { ...selection, model: selection.model,
-      wireModel: resolveModelForProvider(selection.model, provider.id, 'agent'),
+      wireModel: resolveModelForProviderFrom(selection.model, provider.id, 'agent', current),
       connection: row, provider }
   }
   return null
@@ -438,12 +464,13 @@ const legacySelections = new WeakSet<StoredModelSelection>()
 type SelectionCandidate = StoredModelSelection | null | undefined
 
 /** Undefined ID is legacy data. Explicit NULL is a cleared/deleted binding. */
-export function storedSelection(
+export async function storedSelection(
   model?: string | null,
   llmProviderId?: string | null
-): StoredModelSelection | null {
+): Promise<StoredModelSelection | null> {
   if (llmProviderId === null || (!model && !llmProviderId)) return null
-  const id = llmProviderId ?? getSettings().llmLegacyProviderId
+  // Settings are read only for legacy data, which names no connection.
+  const id = llmProviderId ?? (await getSettings()).llmLegacyProviderId
   if (!id) return null
   const selection = { llmProviderId: id, ...(model ? { model } : {}) }
   if (llmProviderId === undefined) legacySelections.add(selection)
@@ -454,17 +481,17 @@ export function storedSelection(
  * model falls back within its provider; a lost row falls back to the migrated
  * active global provider, never to a personal account or an ambient API key.
  */
-export async function resolveGlobalSelection(read?: ReadConnections): Promise<ResolvedConnection | null> {
-  const settings = getSettings()
-  const root = settings.llmDefault
-  const selected = await resolveConnectionSelection(root, false, read)
+export async function resolveGlobalSelection(read?: ReadConnections, settings?: AppSettings): Promise<ResolvedConnection | null> {
+  const current = settings ?? await getSettings()
+  const root = current.llmDefault
+  const selected = await resolveConnectionSelection(root, false, read, current)
   if (selected?.connection.userId === null) return selected
-  const ids = new Set([root?.llmProviderId, settings.llmLegacyProviderId, legacyLlmProviderId(settings.llmProvider ?? 'anthropic')])
+  const ids = new Set([root?.llmProviderId, current.llmLegacyProviderId, legacyLlmProviderId(current.llmProvider ?? 'anthropic')])
   for (const id of ids) {
     if (!id) continue
     const row = await connectionRow(id, read)
     if (row?.userId !== null) continue
-    const fallback = defaultSelectionForConnection(row)
+    const fallback = defaultSelectionForConnection(row, 'agent', current)
     if (fallback) return fallback
   }
   return null
@@ -472,22 +499,22 @@ export async function resolveGlobalSelection(read?: ReadConnections): Promise<Re
 
 // Catalog ids the connection's provider says cannot run now (e.g. the acting
 // account's plan excludes them). Execution only: settings show saved values.
-async function unavailableModelIds(row: ConnectionRow): Promise<Set<string>> {
-  const availability = await providerForConnection(row).getModelAvailability(connectionCatalog(row))
+async function unavailableModelIds(row: ConnectionRow, settings: AppSettings): Promise<Set<string>> {
+  const availability = await providerForConnection(row).getModelAvailability(connectionCatalogFrom(row, settings))
   return new Set(availability?.unavailable.map(entry => entry.modelId))
 }
 
-async function isRunnable(resolved: ResolvedConnection): Promise<boolean> {
-  return !(await unavailableModelIds(resolved.connection)).has(resolved.wireModel)
+async function isRunnable(resolved: ResolvedConnection, settings: AppSettings): Promise<boolean> {
+  return !(await unavailableModelIds(resolved.connection, settings)).has(resolved.wireModel)
 }
 
 // The connection's default for this purpose when it can run, else the best
 // model it can run; null when it can run nothing.
-async function runnableDefaultForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer' = 'agent') {
-  const preferred = defaultSelectionForConnection(row, purpose)
-  const unavailable = await unavailableModelIds(row)
+async function runnableDefaultForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer', settings: AppSettings) {
+  const preferred = defaultSelectionForConnection(row, purpose, settings)
+  const unavailable = await unavailableModelIds(row, settings)
   if (!preferred || !unavailable.has(preferred.wireModel)) return preferred
-  const model = bestAllowedModel(connectionCatalog(row), m => unavailable.has(m.id))
+  const model = bestAllowedModel(connectionCatalogFrom(row, settings), m => unavailable.has(m.id))
   return model ? { llmProviderId: row.id, model: model.id, wireModel: model.id, connection: row, provider: preferred.provider } : null
 }
 
@@ -506,14 +533,15 @@ async function runnableDefaultForConnection(row: ConnectionRow, purpose: 'agent'
 export async function resolveSelectionHierarchy(
   ...candidates: (SelectionCandidate | (() => Promise<SelectionCandidate>))[]
 ): Promise<ResolvedConnection> {
+  const settings = await getSettings()
   for (const candidate of candidates) {
-    const resolved = await resolveConnectionSelection(typeof candidate === 'function' ? await candidate() : candidate, true)
-    if (resolved && await isRunnable(resolved)) return resolved
+    const resolved = await resolveConnectionSelection(typeof candidate === 'function' ? await candidate() : candidate, true, undefined, settings)
+    if (resolved && await isRunnable(resolved, settings)) return resolved
   }
-  const root = await resolveGlobalSelection()
+  const root = await resolveGlobalSelection(undefined, settings)
   if (!root) throw new Error('Configure a global default connection and model in Settings → LLM')
-  if (await isRunnable(root)) return root
-  return (await runnableDefaultForConnection(root.connection)) ?? root
+  if (await isRunnable(root, settings)) return root
+  return (await runnableDefaultForConnection(root.connection, 'agent', settings)) ?? root
 }
 
 export const resolveExecutionSelection = resolveSelectionHierarchy
@@ -523,38 +551,40 @@ export function isHelperSelection(selection: ResolvedConnection | null): selecti
 }
 
 /** One reason, in enforcement order, for both the API and the settings tooltip. */
-function connectionDeletionReason(row: ConnectionRow, viewer: ConnectionViewer, root: ResolvedConnection | null): string | undefined {
+function connectionDeletionReason(row: ConnectionRow, viewer: ConnectionViewer, root: ResolvedConnection | null, settings: AppSettings): string | undefined {
   if (row.userId === null ? !viewer.admin : row.userId !== viewer.userId)
     return row.userId ? 'Only the owner can delete this provider.' : 'Only an administrator can delete global providers.'
   if (root?.llmProviderId === row.id) return 'Change the app default before deleting this connection'
-  if (row.managed && providerForConnection(row).getApiKeyStatus().isConfigured)
+  if (row.managed && providerForConnection(row).apiKeyStatusFrom(settings).isConfigured)
     return 'Disconnect Platform before deleting this provider.'
-  if (root?.provider.supportsDirectApi === false && getSettings().llmSummarizer?.llmProviderId === row.id)
+  if (root?.provider.supportsDirectApi === false && settings.llmSummarizer?.llmProviderId === row.id)
     return 'Choose another API-capable summarizer before deleting this connection'
   return undefined
 }
 
 /** A retired/disabled helper model follows the same account's summarizer default. */
-export async function resolveSummarizerSelection(read?: ReadConnections): Promise<ResolvedConnection | null> {
-  const saved = getSettings().llmSummarizer
-  const selected = await resolveConnectionSelection(saved, false, read)
+export async function resolveSummarizerSelection(read?: ReadConnections, settings?: AppSettings): Promise<ResolvedConnection | null> {
+  const current = settings ?? await getSettings()
+  const saved = current.llmSummarizer
+  const selected = await resolveConnectionSelection(saved, false, read, current)
   if (isHelperSelection(selected)) return selected
   const row = saved ? await connectionRow(saved.llmProviderId, read) : null
   if (!row || row.userId !== null || !providerForConnection(row).supportsDirectApi) return null
-  return defaultSelectionForConnection(row, 'summarizer')
+  return defaultSelectionForConnection(row, 'summarizer', current)
 }
 
 // A helper the provider says cannot run now falls back to its connection's summarizer default.
-async function runnableHelper(selection: ResolvedConnection): Promise<ResolvedConnection> {
-  if (await isRunnable(selection)) return selection
-  return (await runnableDefaultForConnection(selection.connection, 'summarizer')) ?? selection
+async function runnableHelper(selection: ResolvedConnection, settings: AppSettings): Promise<ResolvedConnection> {
+  if (await isRunnable(selection, settings)) return selection
+  return (await runnableDefaultForConnection(selection.connection, 'summarizer', settings)) ?? selection
 }
 
 export async function resolveHelperSelection(): Promise<ResolvedConnection> {
-  const override = await resolveSummarizerSelection()
-  if (isHelperSelection(override)) return runnableHelper(override)
-  const root = await resolveGlobalSelection()
-  if (isHelperSelection(root)) return runnableHelper(root)
+  const settings = await getSettings()
+  const override = await resolveSummarizerSelection(undefined, settings)
+  if (isHelperSelection(override)) return runnableHelper(override, settings)
+  const root = await resolveGlobalSelection(undefined, settings)
+  if (isHelperSelection(root)) return runnableHelper(root, settings)
   if (!root) throw new HelperConfigurationError('Configure a global default provider and model in Settings → Model Providers')
   throw new HelperConfigurationError()
 }

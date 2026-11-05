@@ -13,7 +13,7 @@ export interface EmailHistoryPage { threads: EmailMessage[][]; truncated: boolea
 
 export async function workspaceEmailContacts() {
   if (!isAuthMode()) {
-    const auth = getPlatformAuthStatus()
+    const auth = await getPlatformAuthStatus()
     return { items: auth.email ? [{ email: auth.email, name: auth.email }] : [], truncated: false }
   }
   const rows = await db.select({ email: user.email, name: user.name }).from(user)

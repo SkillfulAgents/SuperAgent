@@ -51,8 +51,8 @@ import { getAuth, resetAuth } from './index'
 const BASE = 'http://localhost:47891'
 const signedUpSchema = z.object({ user: z.object({ id: z.string() }) })
 
-function request(endpoint: string, body: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return getAuth().handler(new Request(`${BASE}/api/auth/${endpoint}`, {
+async function request(endpoint: string, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  return (await getAuth()).handler(new Request(`${BASE}/api/auth/${endpoint}`, {
     method: 'POST',
     headers: { origin: BASE, 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),

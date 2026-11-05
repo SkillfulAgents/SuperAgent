@@ -1,12 +1,9 @@
-import path from 'path'
 import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
-import { getDataDir } from '@shared/lib/config/data-dir'
 import { getOrCreateMapping } from './context-map-store'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const BROWSERBASE_API_BASE = 'https://api.browserbase.com/v1'
-const CONTEXTS_FILE = 'browserbase-contexts.json'
 
 interface BrowserbaseSession {
   id: string
@@ -35,9 +32,9 @@ export class BrowserbaseProvider implements HostBrowserProvider {
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
-  detect(): HostBrowserProviderStatus {
-    const apiKey = getEffectiveBrowserbaseApiKey()
-    const projectId = getEffectiveBrowserbaseProjectId()
+  async detect(): Promise<HostBrowserProviderStatus> {
+    const apiKey = await getEffectiveBrowserbaseApiKey()
+    const projectId = await getEffectiveBrowserbaseProjectId()
 
     if (!apiKey || !projectId) {
       return {
@@ -52,8 +49,8 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   }
 
   async launch(instanceId: string, _options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo> {
-    const apiKey = getEffectiveBrowserbaseApiKey()
-    const projectId = getEffectiveBrowserbaseProjectId()
+    const apiKey = await getEffectiveBrowserbaseApiKey()
+    const projectId = await getEffectiveBrowserbaseProjectId()
 
     if (!apiKey || !projectId) {
       throw new Error('Browserbase API key and project ID must be configured')
@@ -85,7 +82,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     const contextId = await this.getOrCreateContext(contextKey, projectId, apiKey)
 
     // Build session creation payload with optional stealth & proxy settings
-    const settings = getSettings()
+    const settings = await getSettings()
     const browserSettings: Record<string, unknown> = {
       context: { id: contextId, persist: true },
     }
@@ -151,7 +148,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return null
 
-    const apiKey = getEffectiveBrowserbaseApiKey()
+    const apiKey = await getEffectiveBrowserbaseApiKey()
     if (!apiKey) return null
 
     const response = await fetch(`${BROWSERBASE_API_BASE}/sessions/${sessionId}/debug`, {
@@ -183,8 +180,8 @@ export class BrowserbaseProvider implements HostBrowserProvider {
 
     this.sessions.delete(instanceId)
 
-    const apiKey = getEffectiveBrowserbaseApiKey()
-    const projectId = getEffectiveBrowserbaseProjectId()
+    const apiKey = await getEffectiveBrowserbaseApiKey()
+    const projectId = await getEffectiveBrowserbaseProjectId()
     if (!apiKey || !projectId) return
 
     try {
@@ -214,16 +211,13 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     return this.sessions.size > 0
   }
 
-  private contextMapPath(): string {
-    return path.join(getDataDir(), CONTEXTS_FILE)
-  }
 
   /** Get or create a Browserbase context for the given instance */
   private async getOrCreateContext(instanceId: string, projectId: string, apiKey: string): Promise<string> {
     // getOrCreateMapping dedups concurrent first-opens for the same instance so
     // we never create (and then orphan/leak) two paid contexts; it re-reads the
-    // map and persists atomically.
-    return getOrCreateMapping(this.contextMapPath(), instanceId, async () => {
+    // mapping and commits it with insert-if-absent.
+    return getOrCreateMapping('browserbase', instanceId, async () => {
       const response = await fetch(`${BROWSERBASE_API_BASE}/contexts`, {
         method: 'POST',
         headers: {

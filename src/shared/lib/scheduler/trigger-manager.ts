@@ -189,7 +189,7 @@ class TriggerManager {
     let memberIds = endpointIds.length > 0 ? await getDistinctPlatformMemberIdsForActiveTriggers() : []
     // An opaque key is bound to one member by the platform, so it claims under
     // the local scope. An org token needs a real member, and has none here.
-    if (endpointIds.length > 0 && memberIds.length === 0 && !attribution.requiresActingMember()) {
+    if (endpointIds.length > 0 && memberIds.length === 0 && !(await attribution.requiresActingMember())) {
       memberIds = [LOCAL_RELAY_SCOPE]
     }
     if (!this.isRunning) return
@@ -319,7 +319,7 @@ class TriggerManager {
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
     // Model/effort/speed preference order: trigger override > agent default > global default.
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
     const agentPrefs = await readAgentPreferences(trigger.agentSlug)
     const resolved = await resolveConnectionRuntimeInherit(
       { model: trigger.model,

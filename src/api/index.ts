@@ -161,7 +161,7 @@ if (isAuthMode()) {
 // settings so the auth page can adapt (hide signup tab, show password policy, etc.)
 if (isAuthMode()) {
   app.get('/api/auth-config', async (c) => {
-    const authSettings = getAuthSettings()
+    const authSettings = await getAuthSettings()
     const publicProviders = getPublicAuthProviders()
 
     // Check if any users exist (first-user signup bypass)

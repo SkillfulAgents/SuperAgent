@@ -53,8 +53,8 @@ import { OrderedSends } from '../ordered-sends'
 
 /** The agent's container runtime, as its sessions need it. */
 export interface SessionsRuntime extends SessionRuntime {
-  /** The agent's current container client. */
-  client(): ContainerClient
+  /** The agent's current container client (for the runner configured now, read from the settings). */
+  client(): Promise<ContainerClient>
 }
 
 export interface LiveSessionsDeps {
@@ -431,7 +431,7 @@ export class LiveSessions {
     this.subscriptions.get(sessionId)?.()
     this.subscriptions.delete(sessionId)
     const prior = this.states.get(sessionId)
-    prior?.dispose()
+    prior?.dispose({ replaced: true })
     const state = this.create(sessionId, prior)
     this.resolveStreamPolicy(sessionId, state, metadata)
     this.clients.set(sessionId, client)
@@ -582,12 +582,14 @@ export class LiveSessions {
   }
 
   /**
-   * The container stopped. Every session's stream goes; a session mid-turn
-   * ends (see `LiveSession.markInactive`); a recovering one is left to its
-   * recovery, or settled with it when the stop ends the recovery too.
+   * The container stopped. Every session's stream goes, and the host runs
+   * its calls were waiting on (see `LiveSession.abandonHostRuns`); a session
+   * mid-turn ends (see `LiveSession.markInactive`); a recovering one is left
+   * to its recovery, or settled with it when the stop ends the recovery too.
    */
   markAllInactive(options?: { settleRecovering?: boolean }): void {
     for (const [sessionId, state] of [...this.states]) {
+      state.abandonHostRuns()
       if (state.isRecovering) {
         if (options?.settleRecovering) this.settleRecovering([sessionId])
         else this.detach(sessionId)
@@ -818,8 +820,9 @@ export class LiveSessions {
    * untracked cannot be settled by a turn stop, so that one stops everything.
    */
   private async interruptContainer(sessionId: string): Promise<{ processKept: boolean }> {
+    const client = await this.deps.runtime.client()
     const scope = this.hasOnlyUntrackedBackgroundWork(sessionId) ? 'all' : 'turn'
-    const response = await this.deps.runtime.client().fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+    const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),

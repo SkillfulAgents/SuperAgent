@@ -12,6 +12,7 @@ import {
   storedSelection,
   resolveSelectionHierarchy,
   connectionCatalog,
+  connectionCatalogFrom,
   getConnection,
   canSelectConnection,
   type ResolvedConnection,
@@ -28,10 +29,10 @@ export async function resolveConnectionRuntimeInherit(
   models: unknown
 ) {
   const knobs = resolveRuntimeInherit(surface, agent, models)
-  if (!getSettings().llmDefault) return knobs
+  if (!(await getSettings()).llmDefault) return knobs
   const resolved = await resolveSelectionHierarchy(
-    storedSelection(surface.model, surface.llmProviderId),
-    storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
+    await storedSelection(surface.model, surface.llmProviderId),
+    await storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
   )
   return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId }
 }
@@ -47,11 +48,11 @@ export async function bindAgentModelChoice(
   model: string | undefined,
   agent: Partial<AgentPreferences> | null | undefined
 ): Promise<{ model?: string; llmProviderId?: string }> {
-  if (!model || !getSettings().llmDefault) return { model }
+  if (!model || !(await getSettings()).llmDefault) return { model }
   const { connection } = await resolveSelectionHierarchy(
-    storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
+    await storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
   )
-  const catalog = connectionCatalog(connection)
+  const catalog = await connectionCatalog(connection)
   const picked = resolveSelection({ llmProviderId: connection.id, model }, [{ id: connection.id, catalog }])
   if (!picked) {
     const ids = catalog.map((m) => m.id)
@@ -112,7 +113,8 @@ export const LLM_ENV_KEYS = [
 
 export async function connectionRuntime(resolved: ResolvedConnection, agentId: string) {
   const { connection, provider, wireModel } = resolved
-  const catalog = connectionCatalog(connection)
+  const settings = await getSettings()
+  const catalog = connectionCatalogFrom(connection, settings)
   // Models the provider says cannot run now (e.g. the plan excludes them) count
   // as unset: a helper model falls back to the main one, and subagents are not offered them.
   const availability = await provider.getModelAvailability(catalog)
@@ -129,7 +131,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
   const runtimeEnv = parseConnectionJson(connectionConfigSchema, connection.config).runtimeEnv
   Object.assign(env, runtimeEnv)
   env.ENABLE_TOOL_SEARCH =
-    getSettings().enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? provider.toolSearchEnv(wireModel))
+    settings.enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? await provider.toolSearchEnv(wireModel))
   const configuredProxy = await provider.getContainerProxyConfig()
   // Static keys rotate with the connection row. Refreshable credentials carry
   // their own generation, which may be newer than this connection snapshot.

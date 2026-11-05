@@ -6,8 +6,8 @@ const mockDbAll = vi.fn()
 const orderByCalls: unknown[][] = []
 
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => mockGetPlatformAccessToken(),
-  getStoredPlatformMemberId: () => mockGetStoredPlatformMemberId(),
+  getPlatformAccessToken: async () => mockGetPlatformAccessToken(),
+  getStoredPlatformMemberId: async () => mockGetStoredPlatformMemberId(),
 }))
 
 const mockGetAgentOwnerUserId = vi.fn((_slug: string): string | null => null)
@@ -87,17 +87,17 @@ describe('decodeOrgIdFromToken', () => {
 describe('attribution.requiresActingMember', () => {
   it('is true for an org-scoped JWT', async () => {
     mockGetPlatformAccessToken.mockReturnValue(ORG_TOKEN)
-    expect(attribution.requiresActingMember()).toBe(true)
+    expect(await attribution.requiresActingMember()).toBe(true)
   })
 
   it('is false for an opaque access key', async () => {
     mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
-    expect(attribution.requiresActingMember()).toBe(false)
+    expect(await attribution.requiresActingMember()).toBe(false)
   })
 
   it('is false when no platform token is configured', async () => {
     mockGetPlatformAccessToken.mockReturnValue(null)
-    expect(attribution.requiresActingMember()).toBe(false)
+    expect(await attribution.requiresActingMember()).toBe(false)
   })
 })
 

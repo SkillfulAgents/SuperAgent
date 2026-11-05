@@ -844,7 +844,7 @@ async function populateSkillsetCache(
 
   await ensureGitInstalled()
   const cloneUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-  const gitEnvironment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+  const gitEnvironment = await hostingProvider.getGitEnvironment(ref, GIT_ENV)
   await gitClone(cloneUrl, repoDir, gitEnvironment)
   return repoDir
 }
@@ -906,7 +906,7 @@ export async function validateSkillsetUrl(
     await ensureGitInstalled()
     const hostingProvider = getSkillsetProvider(provider)
     const cloneUrl = await hostingProvider.resolveCloneUrl(url, ref)
-    const environment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+    const environment = await hostingProvider.getGitEnvironment(ref, GIT_ENV)
     try {
       await execFileAsync('git', ['ls-remote', '--exit-code', cloneUrl, 'HEAD'], {
         timeout: 30000,
@@ -1018,7 +1018,7 @@ async function refreshSkillsetCache(
     // For platform, the URL embeds a short-lived token that needs refreshing.
     // For github, set-url is a cheap no-op when unchanged.
     const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-    const gitEnvironment = hostingProvider.getGitEnvironment(ref, getRepoGitEnv(repoDir))
+    const gitEnvironment = await hostingProvider.getGitEnvironment(ref, getRepoGitEnv(repoDir))
 
     let pullResult: GitPullResult
     try {
@@ -1626,7 +1626,7 @@ async function generatePRSuggestions(
   }
 
   try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+    const model = await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
 
     const text = await createSummarizerText(client, {
       model,
@@ -1850,7 +1850,7 @@ async function generatePublishSuggestions(
   }
 
   try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+    const model = await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
 
     const text = await createSummarizerText(client, {
       model,

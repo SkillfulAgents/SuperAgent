@@ -323,7 +323,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   const context = read.context
   const site = siteOfOrigin(context.origin)
   // This app's own page: the card says nothing can go there.
-  if (!site || isOwnOrigin(context.origin, [])) return ask({ mode: 'new' }, context)
+  if (!site || (await isOwnOrigin(context.origin, []))) return ask({ mode: 'new' }, context)
   if (askUser) {
     const turnedDown = username ? await findGrantedAccount(agentSlug, site, username) : null
     // Only a step that asks for the password can have turned it down: not a wrong code.

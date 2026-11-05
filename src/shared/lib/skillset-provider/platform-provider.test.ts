@@ -23,8 +23,10 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => mockGetPlatformAccessToken(),
-  getPlatformAuthStatus: () => mockGetPlatformAuthStatus(),
+  getPlatformAccessToken: async () => mockGetPlatformAccessToken(),
+  getPlatformAuthStatus: async () => mockGetPlatformAuthStatus(),
+  // The validity checks read the connection from the settings they are handed.
+  platformAuthStatusFrom: () => mockGetPlatformAuthStatus(),
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -417,6 +419,9 @@ describe('PlatformSkillsetProvider.getQueueItemStatuses', () => {
 })
 
 describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
+  /** The settings judged against; the connection in them is what the mock answers. */
+  const SETTINGS = {}
+
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -430,7 +435,7 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
       description: '',
       addedAt: '2026-01-01T00:00:00.000Z',
       provider: 'github',
-    })
+    }, SETTINGS)
     expect(valid).toBe(true)
   })
 
@@ -445,8 +450,8 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
       provider: 'platform' as const,
       providerData: { orgId, repoId: 'r' },
     })
-    expect(provider.isConfigValid(make('org_A'))).toBe(true)
-    expect(provider.isConfigValid(make('org_B'))).toBe(false)
+    expect(provider.isConfigValid(make('org_A'), SETTINGS)).toBe(true)
+    expect(provider.isConfigValid(make('org_B'), SETTINGS)).toBe(false)
   })
 
   it('platform config invalid when disconnected', () => {
@@ -459,7 +464,7 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
       addedAt: '2026-01-01T00:00:00.000Z',
       provider: 'platform',
       providerData: { orgId: 'org_A', repoId: 'r' },
-    })).toBe(false)
+    }, SETTINGS)).toBe(false)
   })
 
   it('isInstalledValid checks orgId match the same way', () => {
@@ -467,12 +472,12 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
     expect(provider.isInstalledValid({
       provider: 'platform',
       providerData: { orgId: 'org_A' },
-    })).toBe(true)
+    }, SETTINGS)).toBe(true)
     expect(provider.isInstalledValid({
       provider: 'platform',
       providerData: { orgId: 'org_B' },
-    })).toBe(false)
-    expect(provider.isInstalledValid({ provider: 'github' })).toBe(true)
+    }, SETTINGS)).toBe(false)
+    expect(provider.isInstalledValid({ provider: 'github' }, SETTINGS)).toBe(true)
   })
 
   it('does not use env-decoded orgId for local isolation decisions', () => {
@@ -486,11 +491,11 @@ describe('PlatformSkillsetProvider.isConfigValid / isInstalledValid', () => {
       addedAt: '2026-01-01T00:00:00.000Z',
       provider: 'platform',
       providerData: { orgId: 'org_B', repoId: 'r' },
-    })).toBe(true)
+    }, SETTINGS)).toBe(true)
 
     expect(provider.isInstalledValid({
       provider: 'platform',
       providerData: { orgId: 'org_B' },
-    })).toBe(true)
+    }, SETTINGS)).toBe(true)
   })
 })
