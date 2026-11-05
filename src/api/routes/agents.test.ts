@@ -821,10 +821,10 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
 }))
 
 const mockStoreUploadChunk = vi.fn()
-/** The coordinator's part once every chunk is stored: hands `finish` the assembled file. */
-function assembleTo(filePath: string, size = 10) {
-  return async (_input: unknown, finish: (assembled: { filePath: string; size: number }) => Promise<unknown>) => (
-    { status: 'finished', response: await finish({ filePath, size }) }
+/** The coordinator's part once every chunk is stored: hands `finish` the upload, here a file at `filePath`. */
+function assembleTo(filePath: string, size = 10, toFile = vi.fn(async () => filePath)) {
+  return async (_input: unknown, finish: (assembled: unknown) => Promise<unknown>) => (
+    { status: 'finished', response: await finish({ size, stream: () => new Blob(['final chunk']).stream(), toFile }) }
   )
 }
 vi.mock('@shared/lib/utils/chunked-upload', () => {
@@ -2481,7 +2481,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
     vi.mocked(importAgentFromTemplate).mockRejectedValue(new Error('not a template'))
     let kept: unknown
     mockStoreUploadChunk.mockImplementation(async (_input, finish) => {
-      kept = await finish({ filePath: '/mock/tmp/uploads/x.assembled', size: 10 })
+      kept = await finish({ size: 10, stream: () => new Blob(['x']).stream(), toFile: async () => '/mock/tmp/uploads/x.assembled' })
       return { status: 'finished', response: kept }
     })
 
@@ -4437,12 +4437,9 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     }
   })
 
-  // The rename is the shortcut of a workspace on this machine; across a wire the
-  // file streams in (copy-into-workspace.test.ts).
-  it.skipIf(underActorTransport)('moves the assembled chunked upload from the host temp file into the workspace', async () => {
-    const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
-    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath, 11))
-    mockFsRename.mockResolvedValue(undefined)
+  it('streams the chunked upload into the workspace, without asking for a file', async () => {
+    const toFile = vi.fn(async () => '/mock/never')
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/never', 11, toFile))
     mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 11 })
 
     const form = new FormData()
@@ -4458,12 +4455,10 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(body.success).toBe(true)
     expect(body.filename).toBe('report.pdf')
     expect(body.size).toBe(11)
-    // The assembled temp file is renamed under the workspace's uploads/, not
-    // read and written again; the rename consumed it, so nothing is copied.
-    expect(mockFsRename).toHaveBeenCalledWith(assembledPath, expect.stringContaining('/mock/workspace/uploads/'))
-    expect(mockCreateReadStream).not.toHaveBeenCalled()
-    expect(mockCreateWriteStream).not.toHaveBeenCalled()
-    expect(mockFsCopyFile).not.toHaveBeenCalled()
+    expect(body.path).toMatch(/^\/workspace\/uploads\/report/)
+    expect(vi.mocked(writeFileAtomicStream)).toHaveBeenCalledWith(expect.stringContaining('/mock/workspace/uploads/report'), expect.anything(), expect.anything())
+    expect(toFile).not.toHaveBeenCalled()
+    expect(mockFsRename).not.toHaveBeenCalled()
     expect(mockStoreUploadChunk).toHaveBeenCalledWith({
       ownerId: 'test-user-id',
       uploadId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',

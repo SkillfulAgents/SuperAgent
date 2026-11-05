@@ -12,9 +12,9 @@
  * record, so a write whose answer was lost settles by deciding again from what
  * is stored (`settle`).
  *
- * The file is assembled and handed to the caller under a renewable lease, which
- * keeps two processes from doing that at once. It does not make the caller's
- * work exactly once: a takeover after a crash runs it again.
+ * The bytes are handed to the caller under a renewable lease, which keeps two
+ * processes from doing that at once. It does not make the caller's work exactly
+ * once: a takeover after a crash runs it again.
  */
 import { randomUUID } from 'node:crypto'
 import * as fs from 'fs'
@@ -58,8 +58,8 @@ export const UPLOAD_RESULT_RETENTION_MS = 60 * 60 * 1000
  */
 export const UPLOAD_RESERVATION_MS = 10 * 60 * 1000
 /**
- * The finalizer's lease, renewed every 40 s while it assembles and while the
- * caller works. How long a retry waits when a finalizer died. A process stalled
+ * The finalizer's lease, renewed every 40 s while the caller reads and works.
+ * How long a retry waits when a finalizer died. A process stalled
  * this long (a sleeping laptop) loses the lease, and can only refuse itself.
  */
 export const UPLOAD_FINALIZER_LEASE_MS = 2 * 60 * 1000
@@ -75,7 +75,7 @@ const MAX_RETAINED_RESPONSE_CHARS = 64 * 1024
 const MAX_DECISIONS = 1024
 const LOST_ANSWER_ATTEMPTS = 3
 const LOST_ANSWER_PAUSE_MS = 100
-/** Below the temp uploads dir: files being assembled and handed to a caller. */
+/** Below the temp uploads dir: files `toFile` wrote for a caller. */
 const ASSEMBLED_DIR = 'assembled'
 
 const uploads = defineNamespace({
@@ -125,14 +125,29 @@ export interface StoreChunkInput {
 }
 
 export interface AssembledUpload {
-  /** The whole file on this machine. The caller may move it; anything left is removed after `finish`. */
-  filePath: string
-  size: number
+  /** The whole upload's size in bytes. */
+  readonly size: number
+  /**
+   * The chunks in order, each opened only when the one before it has been read
+   * through. It closes only after the last chunk proved its size: a chunk that
+   * is missing, unreadable or another size errors it, and so does losing the
+   * lease, so a consumer cannot take part of an upload for the whole. Read it
+   * before `finish` returns: the chunks may go after that.
+   */
+  stream(): ReadableStream<Uint8Array>
+  /**
+   * The whole upload as a file on this machine, for a consumer that needs a
+   * path. Written on the first call, and removed after `finish` unless the
+   * consumer moved it. Nothing is written unless someone asks.
+   */
+  toFile(): Promise<string>
 }
 
 /**
- * Consumes the assembled file. What it returns is the answer a retry gets, so
- * it returns its failures too; a throw leaves the upload for a retry to run again.
+ * Consumes the upload. What it returns is the answer a retry gets, so it returns
+ * its failures too; a throw leaves the upload for a retry to run again. So does a
+ * failed read, even when `finish` made an answer of it: a read that failed says
+ * nothing about the upload, and its chunks are still there to read.
  */
 export type FinishUpload = (assembled: AssembledUpload) => Promise<UploadResponse>
 
@@ -449,24 +464,129 @@ async function writeAndCommit(store: UploadByteStore, attempt: ChunkAttempt, chu
   return outcome.next
 }
 
-async function assemble(store: UploadByteStore, attempt: ChunkAttempt, manifest: UploadManifest, filePath: string, signal: AbortSignal): Promise<number> {
-  await ensureDirectory(path.dirname(filePath))
-  let expected = 0
-  for (let index = 0; index < manifest.totalChunks; index++) {
-    const chunk = manifest.chunks[index]
-    if (!chunk) throw new Error(`Upload chunk ${index} is not in the manifest`)
-    const source = await store.stream(bytesKey(attempt.ownerPart, attempt.uploadId, chunk.attemptId))
-    if (!source) throw new Error(`Upload chunk ${index} is missing`)
-    await pipeline(
-      Readable.fromWeb(source as NodeReadableStream),
-      fs.createWriteStream(filePath, { flags: index === 0 ? 'w' : 'a' }),
-      { signal },
-    )
-    expected += chunk.size
+/**
+ * The committed chunks one after another, read only as they are asked for
+ * (`highWaterMark: 0`), so the next chunk stays closed until the one before it
+ * has been read through and proved the size the manifest says. Every way of not
+ * getting the whole upload errors the stream, and `onFailure` hears of it, since
+ * a consumer may swallow the error. Giving up is the consumer's own: a cancel is
+ * no failure.
+ */
+function readChunksInOrder(
+  store: UploadByteStore,
+  attempt: ChunkAttempt,
+  manifest: UploadManifest,
+  signal: AbortSignal,
+  onFailure: (error: unknown) => void,
+): ReadableStream<Uint8Array> {
+  let index = 0
+  let open: ReadableStreamDefaultReader<Uint8Array> | null = null
+  let sizeOfChunk = 0
+  let readOfChunk = 0
+  let stopped = false
+  let stopWatching = () => {}
+  const stop = async (reason: unknown): Promise<void> => {
+    stopped = true
+    stopWatching()
+    const reader = open
+    open = null
+    await reader?.cancel(reason).catch(() => undefined)
   }
-  const { size } = await fs.promises.stat(filePath)
-  if (size !== expected) throw new Error(`Assembled upload is ${size} bytes, its chunks ${expected}`)
-  return size
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      const onAbort = () => {
+        onFailure(signal.reason)
+        controller.error(signal.reason)
+        background(stop(signal.reason), { name: 'chunked-upload.stop-reading' })
+      }
+      if (signal.aborted) {
+        onAbort()
+        return
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      stopWatching = () => signal.removeEventListener('abort', onAbort)
+    },
+    async pull(controller) {
+      try {
+        for (;;) {
+          if (!open) {
+            if (index === manifest.totalChunks) {
+              stopWatching()
+              controller.close()
+              return
+            }
+            const chunk = manifest.chunks[index]
+            if (!chunk) throw new Error(`Upload chunk ${index} is not in the manifest`)
+            const source = await store.stream(bytesKey(attempt.ownerPart, attempt.uploadId, chunk.attemptId))
+            if (stopped) {
+              await source?.cancel().catch(() => undefined)
+              return
+            }
+            if (!source) throw new Error(`Upload chunk ${index} is missing`)
+            open = source.getReader()
+            sizeOfChunk = chunk.size
+            readOfChunk = 0
+          }
+          const { done, value } = await open.read()
+          if (done) {
+            if (readOfChunk !== sizeOfChunk) throw new Error(`Upload chunk ${index} is ${readOfChunk} bytes, its manifest says ${sizeOfChunk}`)
+            open = null
+            index++
+            continue
+          }
+          readOfChunk += value.byteLength
+          if (readOfChunk > sizeOfChunk) throw new Error(`Upload chunk ${index} is over the ${sizeOfChunk} bytes its manifest says`)
+          controller.enqueue(value)
+          return
+        }
+      } catch (error) {
+        // Late news of a stream that already ended, as a cancel makes a pending read finish.
+        if (stopped) return
+        onFailure(error)
+        await stop(error)
+        throw error
+      }
+    },
+    cancel(reason) {
+      return stop(reason)
+    },
+  }, { highWaterMark: 0 })
+}
+
+/** What one holder gives `finish`, and what it needs to know afterwards. */
+function openAssembled(store: UploadByteStore, attempt: ChunkAttempt, manifest: UploadManifest, filePath: string, signal: AbortSignal) {
+  let failure: { error: unknown } | null = null
+  const failed = (error: unknown) => {
+    failure ??= { error }
+  }
+  const stream = () => readChunksInOrder(store, attempt, manifest, signal, failed)
+  const spool = async (): Promise<string> => {
+    try {
+      await ensureDirectory(path.dirname(filePath))
+      await pipeline(Readable.fromWeb(stream() as NodeReadableStream), fs.createWriteStream(filePath))
+      return filePath
+    } catch (error) {
+      failed(error)
+      throw error
+    }
+  }
+  let spooled: Promise<string> | null = null
+  const assembled: AssembledUpload = {
+    size: Object.values(manifest.chunks).reduce((total, chunk) => total + chunk.size, 0),
+    stream,
+    toFile: () => (spooled ??= spool()),
+  }
+  return {
+    assembled,
+    /** The first failure to read the bytes, if there was one. */
+    readFailure: () => failure,
+    /** Removes the file `toFile` wrote, if it did. */
+    removeFile: async () => {
+      if (!spooled) return
+      await spooled.catch(() => undefined)
+      await fs.promises.unlink(filePath).catch((err: unknown) => ignoreCleanupError(err, 'unlink-assembled', { filePath }))
+    },
+  }
 }
 
 /** Writes the manifest now and then for as long as this holder runs: a touch resets its idle expiry. */
@@ -520,23 +640,23 @@ async function finalize(store: UploadByteStore, attempt: ChunkAttempt, finish: F
     if (taken.kind === 'gone') throw new UploadConflictError(EXPIRED)
 
     const stopTouching = keepManifestAlive(attempt.key, token)
-    const filePath = assembledPath(attempt.ownerPart, attempt.uploadId, token)
+    const opened = openAssembled(store, attempt, taken.manifest, assembledPath(attempt.ownerPart, attempt.uploadId, token), holding.signal)
     try {
-      let size: number
-      try {
-        size = await assemble(store, attempt, taken.manifest, filePath, holding.signal)
-        await holding.confirm({ minRemainingMs: FINALIZER_CONFIRM_MARGIN_MS })
-      } catch (error) {
-        // Nothing has been done with the bytes, so whoever holds the lease next can start over.
-        if (holding.signal.aborted) return { status: 'finalizing' }
-        throw error
-      }
-      const response = await finish({ filePath, size })
+      await holding.confirm({ minRemainingMs: FINALIZER_CONFIRM_MARGIN_MS })
+      const response = await finish(opened.assembled)
+      // Not an answer, even if `finish` made one of it: the chunks are still
+      // there to read, so the upload stays for a retry.
+      const failure = opened.readFailure()
+      if (failure) throw failure.error
       await publishAndDiscard(store, attempt, taken.manifest, token, response)
       return { status: 'finished', response }
+    } catch (error) {
+      // The next holder starts over; this request is told to come back.
+      if (holding.signal.aborted) return { status: 'finalizing' }
+      throw error
     } finally {
       stopTouching()
-      await fs.promises.unlink(filePath).catch((err: unknown) => ignoreCleanupError(err, 'unlink-assembled', { filePath }))
+      await opened.removeFile()
     }
   })
 }

@@ -71,7 +71,7 @@ import {
   type FileStat,
   type SessionSortBy,
 } from '@shared/lib/agent-actor'
-import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
+import { copyHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import {
   sessionDashboardDispatchSchema,
@@ -1094,13 +1094,14 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
     totalChunks: parsed.totalChunks,
     chunk: Buffer.from(await chunk.arrayBuffer()),
     maxTotalBytes: MAX_COMPRESSED_SIZE,
-  }, async ({ filePath, size }) => {
+  }, async (assembled) => {
+    if (assembled.size > MAX_COMPRESSED_SIZE) {
+      return { status: 413, body: { error: formatUploadTooLargeMessage(assembled.size, MAX_COMPRESSED_SIZE) } }
+    }
+    // A ZIP reader seeks, so it needs a file: import from one instead of pinning
+    // the whole (up to 500MB) ZIP in memory.
+    const filePath = await assembled.toFile()
     try {
-      if (size > MAX_COMPRESSED_SIZE) {
-        return { status: 413, body: { error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) } }
-      }
-      // The assembled upload is already on disk — import straight from the file
-      // instead of pinning the whole (up to 500MB) ZIP in memory.
       const imported = await processImport(c, { filePath }, formData)
       return { status: imported.status, body: await imported.json() }
     } catch (error) {
@@ -6448,20 +6449,6 @@ function resolveUploadDestPath(filename: string, relativePath?: string): string 
   return uploadPath
 }
 
-async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
-  const uploadPath = resolveUploadDestPath(filename, relativePath)
-  // `srcPath` is the assembled chunk file in this machine's temp dir, not a
-  // workspace file: it is moved into the workspace, a rename when the two
-  // share a filesystem, so the bytes are not written a second time.
-  const { size } = await moveHostFileIntoWorkspace(agentRegistry.get(agentSlug).files, srcPath, uploadPath)
-  return {
-    success: true,
-    path: `/workspace/${uploadPath}`,
-    filename,
-    size,
-  }
-}
-
 async function handleFileUpload(agentSlug: string, file: File, relativePath?: string) {
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
@@ -6501,11 +6488,14 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
     totalChunks: parsed.totalChunks,
     chunk: Buffer.from(await chunk.arrayBuffer()),
     maxTotalBytes: MAX_UPLOAD_TOTAL_SIZE,
-  }, async ({ filePath }) => {
+  }, async (assembled) => {
     try {
-      const uploaded = await writeUploadedFileFromPath(agentSlug, filename, filePath, relativePath || undefined)
-      await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${uploaded.filename}`, action: 'uploaded' })
-      return { status: 200, body: uploaded }
+      const uploadPath = resolveUploadDestPath(filename, relativePath || undefined)
+      // Straight from the chunks into the workspace. A read that fails fails the
+      // write, which leaves nothing behind.
+      const { size } = await agentRegistry.get(agentSlug).files.write(uploadPath, assembled.stream())
+      await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${filename}`, action: 'uploaded' })
+      return { status: 200, body: { success: true, path: `/workspace/${uploadPath}`, filename, size } }
     } catch (error) {
       return uploadFileFailure(c, error)
     }

@@ -1,8 +1,10 @@
 /**
  * Where a chunked upload's bytes live, and nothing about the upload: AppState
  * holds what they mean (`chunked-upload.ts`). Desktop and web keep them on this
- * machine's disk. A deployment whose file system does not outlive a request
- * passes its blob store to `setUploadByteStore` at boot.
+ * machine's disk, the only store that ships. `UploadByteStore` is the port for
+ * another: a deployment that adds one passes it to `setUploadByteStore` at boot,
+ * and needs a shared AppState too, since every process that takes a chunk must
+ * see the same manifest.
  */
 import * as fs from 'fs'
 import path from 'path'

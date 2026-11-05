@@ -19,6 +19,7 @@ import {
   type StoreChunkInput,
   type UploadResponse,
 } from './chunked-upload'
+import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { localDiskUploadByteStore, setUploadByteStore, type UploadByteStore } from './chunked-upload-bytes'
 import { uploadManifestSchema, type UploadManifest } from './chunked-upload-schema'
 
@@ -44,7 +45,7 @@ const OWNER = 'user-1'
 const UPLOAD_ID = '11111111-1111-1111-1111-111111111111'
 const CAP = 1_000
 
-/** A store in memory: the second adapter, standing in for a deployment's blob store. */
+/** A store in memory: a test stand-in for a store other than disk, none of which ships yet. */
 function memoryByteStore(): UploadByteStore {
   const blobs = new Map<string, Uint8Array>()
   return {
@@ -87,20 +88,22 @@ function chunk(chunkIndex: number, totalChunks: number, data: string, overrides:
   }
 }
 
-/** The usual `finish`: answers with what the assembled file holds. */
+const readAll = (stream: ReadableStream<Uint8Array>) => new Response(stream).text()
+
+/** The usual `finish`: answers with what the upload's stream holds. */
 function finishReading() {
-  return vi.fn(async ({ filePath }: AssembledUpload): Promise<UploadResponse> => ({
+  return vi.fn(async (assembled: AssembledUpload): Promise<UploadResponse> => ({
     status: 200,
-    body: { content: await fs.promises.readFile(filePath, 'utf8') },
+    body: { content: await readAll(assembled.stream()) },
   }))
 }
 
-/** A `finish` that has read the file and then waits for the test. */
+/** A `finish` that has read the upload and then waits for the test. */
 function finishGated() {
   const entered = deferred<AssembledUpload>()
   const gate = deferred()
   const finish = vi.fn(async (assembled: AssembledUpload): Promise<UploadResponse> => {
-    const content = await fs.promises.readFile(assembled.filePath, 'utf8')
+    const content = await readAll(assembled.stream())
     entered.resolve(assembled)
     await gate.promise
     return { status: 200, body: { content, by: finish.mock.calls.length } }
@@ -212,7 +215,7 @@ afterEach(async () => {
 
 describe.each<[string, () => UploadByteStore]>([
   ['the local disk', () => ({ ...localDiskUploadByteStore })],
-  ['a blob store', memoryByteStore],
+  ['an in-memory stand-in', memoryByteStore],
 ])('chunked uploads over %s', (_name, createStore) => {
   let store: UploadByteStore
 
@@ -249,7 +252,7 @@ describe.each<[string, () => UploadByteStore]>([
   }
 
   describe('storing chunks', () => {
-    it('answers received until every chunk has arrived, then hands over the file and removes its bytes', async () => {
+    it('answers received until every chunk has arrived, then hands over the upload and removes its bytes', async () => {
       const finish = finishReading()
       await expect(storeUploadChunk(chunk(1, 3, 'bb'), finish)).resolves.toEqual({ status: 'received' })
       await expect(storeUploadChunk(chunk(0, 3, 'aa'), finish)).resolves.toEqual({ status: 'received' })
@@ -262,35 +265,12 @@ describe.each<[string, () => UploadByteStore]>([
       expect(finish).toHaveBeenCalledOnce()
       expect(finish.mock.calls[0]![0].size).toBe(6)
       expect(await storedKeys()).toEqual([])
-      expect(fs.existsSync(finish.mock.calls[0]![0].filePath)).toBe(false)
       expect((await manifest())?.state).toBe('completed')
     })
 
     it('finishes an upload of one chunk on that chunk', async () => {
       const finish = finishReading()
       await expect(storeUploadChunk(chunk(0, 1, 'only'), finish)).resolves.toMatchObject({ status: 'finished', response: { body: { content: 'only' } } })
-    })
-
-    it('assembles by streaming, without reading a chunk whole', async () => {
-      await storeUploadChunk(chunk(0, 2, 'hello '), neverFinishes())
-      const readFile = vi.spyOn(fs.promises, 'readFile')
-      let readsBeforeFinish = -1
-      const result = await storeUploadChunk(chunk(1, 2, 'world'), vi.fn(async ({ filePath }: AssembledUpload) => {
-        readsBeforeFinish = readFile.mock.calls.length
-        return { status: 200, body: { content: await fs.promises.readFile(filePath, 'utf8') } }
-      }))
-      expect(readsBeforeFinish).toBe(0)
-      expect(result).toMatchObject({ response: { body: { content: 'hello world' } } })
-    })
-
-    it('leaves a file the caller moved alone, and has nothing left to remove', async () => {
-      const moved = path.join(tmpRoot, 'moved')
-      const result = await storeUploadChunk(chunk(0, 1, 'x'), async ({ filePath }) => {
-        await fs.promises.rename(filePath, moved)
-        return { status: 200, body: {} }
-      })
-      expect(result.status).toBe('finished')
-      expect(await fs.promises.readFile(moved, 'utf8')).toBe('x')
     })
 
     it('treats an id in another case as the same upload', async () => {
@@ -314,6 +294,359 @@ describe.each<[string, () => UploadByteStore]>([
       expect(result).toMatchObject({ response: { body: { content: 'mine-1' } } })
       expect((await manifest('user-2'))?.state).toBe('receiving')
       expect(await storedKeys()).toHaveLength(1)
+    })
+  })
+
+  describe('reading the upload', () => {
+    const decoder = new TextDecoder()
+
+    /** Reads to the end, and says what it saw: the text so far, whether it closed, and the error if it did not. */
+    async function drain(stream: ReadableStream<Uint8Array>) {
+      const reader = stream.getReader()
+      let text = ''
+      for (;;) {
+        try {
+          const { done, value } = await reader.read()
+          if (done) return { text, closed: true, error: null }
+          text += decoder.decode(value)
+        } catch (error) {
+          return { text, closed: false, error }
+        }
+      }
+    }
+
+    it('reads the chunks in order, opening each only when the one before it has been read', async () => {
+      await storeUploadChunk(chunk(1, 3, 'bb'), neverFinishes())
+      await storeUploadChunk(chunk(0, 3, 'aa'), neverFinishes())
+      const opened = vi.spyOn(store, 'stream')
+      const seen: { text: string; opened: number; openedAfterAWhile: number }[] = []
+      let openedByTheStreamAlone = -1
+
+      await storeUploadChunk(chunk(2, 3, 'cc'), async ({ stream, size }) => {
+        expect(size).toBe(6)
+        const reader = stream().getReader()
+        await new Promise((resolve) => setImmediate(resolve))
+        openedByTheStreamAlone = opened.mock.calls.length
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) return { status: 200, body: {} }
+          const openedNow = opened.mock.calls.length
+          // Time to read ahead, for a stream that would.
+          await new Promise((resolve) => setImmediate(resolve))
+          seen.push({ text: decoder.decode(value), opened: openedNow, openedAfterAWhile: opened.mock.calls.length })
+        }
+      })
+
+      expect(openedByTheStreamAlone).toBe(0)
+      expect(seen).toEqual([
+        { text: 'aa', opened: 1, openedAfterAWhile: 1 },
+        { text: 'bb', opened: 2, openedAfterAWhile: 2 },
+        { text: 'cc', opened: 3, openedAfterAWhile: 3 },
+      ])
+    })
+
+    it('never reads a chunk whole into memory from the disk', async () => {
+      await storeUploadChunk(chunk(0, 2, 'hello '), neverFinishes())
+      const readFile = vi.spyOn(fs.promises, 'readFile')
+      const result = await storeUploadChunk(chunk(1, 2, 'world'), finishReading())
+      expect(readFile).not.toHaveBeenCalled()
+      expect(result).toMatchObject({ response: { body: { content: 'hello world' } } })
+    })
+
+    it('writes no file when only the stream is used', async () => {
+      const assembledDir = path.join(tempUploadsDir, 'assembled')
+      let duringFinish = true
+      await storeUploadChunk(chunk(0, 1, 'a'), async ({ stream }) => {
+        await readAll(stream())
+        duringFinish = fs.existsSync(assembledDir)
+        return { status: 200, body: {} }
+      })
+      expect(duringFinish).toBe(false)
+      expect(fs.existsSync(assembledDir)).toBe(false)
+    })
+
+    it('writes a file only when asked, once, and removes it after `finish`', async () => {
+      await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+      const opened = vi.spyOn(store, 'stream')
+      let filePath = ''
+      await storeUploadChunk(chunk(1, 2, 'bb'), async ({ toFile }) => {
+        filePath = await toFile()
+        expect(await toFile()).toBe(filePath)
+        expect(await fs.promises.readFile(filePath, 'utf8')).toBe('aabb')
+        return { status: 200, body: {} }
+      })
+      expect(opened).toHaveBeenCalledTimes(2)
+      expect(path.dirname(filePath)).toBe(path.join(tempUploadsDir, 'assembled'))
+      expect(fs.existsSync(filePath)).toBe(false)
+    })
+
+    it('removes the file when `finish` throws, and the upload stays for a retry', async () => {
+      let filePath = ''
+      await expect(storeUploadChunk(chunk(0, 1, 'a'), async ({ toFile }) => {
+        filePath = await toFile()
+        throw new Error('work failed')
+      })).rejects.toThrow('work failed')
+      expect(fs.existsSync(filePath)).toBe(false)
+      expect((await manifest())?.state).toBe('finalizing')
+      await expect(storeUploadChunk(chunk(0, 1, 'a'), finishReading())).resolves.toMatchObject({ response: { body: { content: 'a' } } })
+    })
+
+    it('leaves a file the consumer moved alone', async () => {
+      const moved = path.join(tmpRoot, 'moved')
+      const result = await storeUploadChunk(chunk(0, 1, 'x'), async ({ toFile }) => {
+        await fs.promises.rename(await toFile(), moved)
+        return { status: 200, body: {} }
+      })
+      expect(result.status).toBe('finished')
+      expect(await fs.promises.readFile(moved, 'utf8')).toBe('x')
+    })
+
+    describe.each<[string, number, string]>([
+      ['the first chunk', 0, ''],
+      ['the last chunk', 1, 'aa'],
+    ])('with %s broken', (_where, broken, before) => {
+      const unreadable = () => new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new Error('store went away'))
+        },
+      })
+      const halfThenUnreadable = () => {
+        let sent = false
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) controller.error(new Error('store went away'))
+            else controller.enqueue(new TextEncoder().encode('x'))
+            sent = true
+          },
+        })
+      }
+
+      it.each<[string, () => ReadableStream<Uint8Array> | null, string, string]>([
+        ['shorter than its manifest size', () => new Blob(['x']).stream() as ReadableStream<Uint8Array>, 'its manifest says 2', 'x'],
+        ['empty', () => new Blob([]).stream() as ReadableStream<Uint8Array>, 'its manifest says 2', ''],
+        ['longer than its manifest size', () => new Blob(['xxx']).stream() as ReadableStream<Uint8Array>, 'over the 2 bytes', ''],
+        ['missing', () => null, 'is missing', ''],
+        ['unreadable from the start', unreadable, 'store went away', ''],
+        ['unreadable partway', halfThenUnreadable, 'store went away', 'x'],
+      ])('errors the stream when the chunk is %s, and a retry can run it', async (_how, source, message, partial) => {
+        await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+        const realStream = store.stream.bind(store)
+        let calls = 0
+        const opened = vi.spyOn(store, 'stream').mockImplementation(async (key) => (calls++ === broken ? source() : realStream(key)))
+        let drained: Awaited<ReturnType<typeof drain>> | null = null
+
+        await expect(storeUploadChunk(chunk(1, 2, 'bb'), async ({ stream }) => {
+          drained = await drain(stream())
+          if (drained.error) throw drained.error
+          return { status: 200, body: { took: 'it for the whole upload' } }
+        })).rejects.toThrow(message)
+
+        expect(drained!.closed).toBe(false)
+        expect(drained!.text).toBe(before + partial)
+        expect(String(drained!.error)).toContain(message)
+        // Reading stopped there.
+        expect(calls).toBe(broken + 1)
+        expect(await manifest()).toMatchObject({ state: 'finalizing' })
+        expect(await storedKeys()).toHaveLength(2)
+
+        opened.mockRestore()
+        await expect(storeUploadChunk(chunk(1, 2, 'bb'), finishReading())).resolves.toMatchObject({ response: { body: { content: 'aabb' } } })
+      })
+
+      it('errors the stream when the store cannot open the chunk', async () => {
+        await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+        const realStream = store.stream.bind(store)
+        let calls = 0
+        vi.spyOn(store, 'stream').mockImplementation(async (key) => {
+          if (calls++ === broken) throw new Error('store unavailable')
+          return realStream(key)
+        })
+        const finish = finishReading()
+        await expect(storeUploadChunk(chunk(1, 2, 'bb'), finish)).rejects.toThrow('store unavailable')
+        expect(await manifest()).toMatchObject({ state: 'finalizing' })
+      })
+    })
+
+    it('errors the stream when a chunk really has gone from the store', async () => {
+      await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+      await store.delete((await storedKeys())[0]!)
+      await expect(storeUploadChunk(chunk(1, 2, 'b'), finishReading())).rejects.toThrow('Upload chunk 0 is missing')
+      expect(await manifest()).toMatchObject({ state: 'finalizing' })
+    })
+
+    it('errors `toFile` as well, and removes the part it wrote', async () => {
+      await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+      const realStream = store.stream.bind(store)
+      let calls = 0
+      vi.spyOn(store, 'stream').mockImplementation(async (key) => (calls++ === 1 ? new Blob(['x']).stream() as ReadableStream<Uint8Array> : realStream(key)))
+
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), async ({ toFile }) => {
+        await toFile()
+        return { status: 200, body: {} }
+      })).rejects.toThrow('its manifest says 2')
+
+      expect(await fs.promises.readdir(path.join(tempUploadsDir, 'assembled'))).toEqual([])
+      expect(await manifest()).toMatchObject({ state: 'finalizing' })
+    })
+
+    it('keeps no answer when `finish` makes one of a failed read, as the routes do', async () => {
+      await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+      const realStream = store.stream.bind(store)
+      vi.spyOn(store, 'stream').mockImplementationOnce(async () => null).mockImplementation(realStream)
+
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), async ({ stream }) => {
+        await readAll(stream()).catch(() => undefined)
+        return { status: 500, body: { error: 'Failed to upload file' } }
+      })).rejects.toThrow('Upload chunk 0 is missing')
+
+      expect(await manifest()).toMatchObject({ state: 'finalizing' })
+      expect(await storedKeys()).toHaveLength(2)
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), finishReading())).resolves.toMatchObject({ response: { body: { content: 'aabb' } } })
+    })
+
+    it('keeps no answer when `finish` makes one of a file it could not write', async () => {
+      await fs.promises.writeFile(path.join(tempUploadsDir, 'assembled'), 'in the way')
+
+      await expect(storeUploadChunk(chunk(0, 1, 'a'), async ({ toFile }) => {
+        await toFile().catch(() => undefined)
+        return { status: 500, body: { error: 'Failed' } }
+      })).rejects.toThrow()
+
+      expect(await manifest()).toMatchObject({ state: 'finalizing' })
+      await fs.promises.rm(path.join(tempUploadsDir, 'assembled'))
+      await expect(storeUploadChunk(chunk(0, 1, 'a'), finishReading())).resolves.toMatchObject({ status: 'finished' })
+    })
+
+    it('keeps the answer of a consumer that gave up by itself, and closes what it was reading', async () => {
+      await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+      const cancelled = vi.fn()
+      vi.spyOn(store, 'stream').mockImplementationOnce(async () => new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new TextEncoder().encode('a'))
+        },
+        cancel: cancelled,
+      }))
+      const response = { status: 500, body: { error: 'The destination refused it' } }
+
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), async ({ stream }) => {
+        const reader = stream().getReader()
+        await reader.read()
+        await reader.cancel(new Error('the destination refused it'))
+        return response
+      })).resolves.toEqual({ status: 'finished', response })
+
+      expect(cancelled).toHaveBeenCalledOnce()
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), neverFinishes())).resolves.toEqual({ status: 'finished', response })
+    })
+
+    it('keeps the answer of a consumer that gave up while a read was waiting', async () => {
+      const cancelled = vi.fn()
+      vi.spyOn(store, 'stream').mockImplementationOnce(async () => new ReadableStream<Uint8Array>({ cancel: cancelled }))
+      const response = { status: 500, body: { error: 'The destination refused it' } }
+
+      await expect(storeUploadChunk(chunk(0, 1, 'a'), async ({ stream }) => {
+        const reader = stream().getReader()
+        const waiting = reader.read()
+        // Let it open the chunk it will wait on.
+        await new Promise((resolve) => setImmediate(resolve))
+        await reader.cancel()
+        await waiting
+        // The wait ends short of the chunk's size, which is no failure now.
+        await new Promise((resolve) => setImmediate(resolve))
+        return response
+      })).resolves.toEqual({ status: 'finished', response })
+
+      expect(cancelled).toHaveBeenCalledOnce()
+    })
+
+    it('closes a chunk that opens after the consumer gave up', async () => {
+      await storeUploadChunk(chunk(0, 1, 'a'), async () => {
+        throw new Error('first try fails')
+      }).catch(() => undefined)
+      const opening = deferred()
+      const opens = deferred<ReadableStream<Uint8Array>>()
+      vi.spyOn(store, 'stream').mockImplementationOnce(async () => {
+        opening.resolve()
+        return opens.promise
+      })
+      const cancelled = vi.fn()
+
+      await storeUploadChunk(chunk(0, 1, 'a'), async ({ stream }) => {
+        const reader = stream().getReader()
+        const pending = reader.read()
+        await opening.promise
+        await reader.cancel()
+        await pending
+        opens.resolve(new ReadableStream<Uint8Array>({ cancel: cancelled }))
+        await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce())
+        return { status: 200, body: {} }
+      })
+    })
+
+    it('fails the write of a consumer writing from the stream, leaves nothing at the destination, and a retry can run it', async () => {
+      const workspace = path.join(tmpRoot, 'workspace')
+      const files = new LocalFileOps(() => workspace)
+      await fs.promises.mkdir(path.join(workspace, 'uploads'), { recursive: true })
+      const write = async ({ stream }: AssembledUpload): Promise<UploadResponse> => {
+        const { size } = await files.write('uploads/report.bin', stream())
+        return { status: 200, body: { size } }
+      }
+      await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+      const realStream = store.stream.bind(store)
+      let calls = 0
+      const opened = vi.spyOn(store, 'stream').mockImplementation(async (key) => (calls++ === 1 ? new Blob(['b']).stream() as ReadableStream<Uint8Array> : realStream(key)))
+
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), write)).rejects.toThrow('its manifest says 2')
+
+      expect(await fs.promises.readdir(path.join(workspace, 'uploads'))).toEqual([])
+      expect(await manifest()).toMatchObject({ state: 'finalizing' })
+
+      opened.mockRestore()
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), write)).resolves.toMatchObject({ response: { body: { size: 4 } } })
+      expect(await fs.promises.readFile(path.join(workspace, 'uploads', 'report.bin'), 'utf8')).toBe('aabb')
+    })
+
+    it('keeps what was at the destination when the stream errors', async () => {
+      const workspace = path.join(tmpRoot, 'workspace')
+      const files = new LocalFileOps(() => workspace)
+      await fs.promises.mkdir(path.join(workspace, 'uploads'), { recursive: true })
+      await fs.promises.writeFile(path.join(workspace, 'uploads', 'report.bin'), 'older')
+      vi.spyOn(store, 'stream').mockResolvedValueOnce(new Blob(['aaaa']).stream() as ReadableStream<Uint8Array>)
+
+      await expect(storeUploadChunk(chunk(0, 1, 'aa'), async ({ stream }) => {
+        await files.write('uploads/report.bin', stream())
+        return { status: 200, body: {} }
+      })).rejects.toThrow('over the 2 bytes')
+
+      expect(await fs.promises.readFile(path.join(workspace, 'uploads', 'report.bin'), 'utf8')).toBe('older')
+      expect(await fs.promises.readdir(path.join(workspace, 'uploads'))).toEqual(['report.bin'])
+    })
+
+    it('lets a stale holder read on beside its successor, whose answer stands when the chunks go', async () => {
+      await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+      const firstRead = deferred()
+      const goOn = deferred()
+      const staleFinish = async ({ stream }: AssembledUpload): Promise<UploadResponse> => {
+        const reader = stream().getReader()
+        await reader.read()
+        firstRead.resolve()
+        await goOn.promise
+        for (;;) {
+          const { done } = await reader.read()
+          if (done) return { status: 200, body: { by: 'stale' } }
+        }
+      }
+      const stale = storeUploadChunk(chunk(1, 2, 'bb'), staleFinish)
+      await firstRead.promise
+
+      advance(UPLOAD_FINALIZER_LEASE_MS)
+      const answer = await storeUploadChunk(chunk(1, 2, 'bb'), finishReading())
+      expect(answer).toMatchObject({ response: { body: { content: 'aabb' } } })
+
+      // Its successor kept its answer and removed the chunks, so the stale holder cannot finish reading.
+      goOn.resolve()
+      await expect(stale).rejects.toThrow('Upload chunk 1 is missing')
+      await expect(storeUploadChunk(chunk(1, 2, 'bb'), neverFinishes())).resolves.toEqual(answer)
     })
   })
 
@@ -742,59 +1075,21 @@ describe.each<[string, () => UploadByteStore]>([
       expect(await storedKeys()).toEqual([])
     })
 
-    it('stops before the work when the lease was lost during assembly, and a retry starts over', async () => {
+    it('stops before the work when the lease was lost before it, and a retry starts over', async () => {
       await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
-      const streamGate = deferred()
-      const streamReached = deferred()
-      const realStream = store.stream.bind(store)
-      vi.spyOn(store, 'stream').mockImplementationOnce(async (key) => {
-        streamReached.resolve()
-        await streamGate.promise
-        return realStream(key)
-      })
+      const [write] = holdNamings(1)
       const finish = neverFinishes()
       const request = storeUploadChunk(chunk(1, 2, 'b'), finish)
-      await streamReached.promise
+      await write!.reached.promise
 
       advance(UPLOAD_FINALIZER_LEASE_MS)
-      streamGate.resolve()
+      write!.gate.resolve()
 
       await expect(request).resolves.toEqual({ status: 'finalizing' })
       expect(finish).not.toHaveBeenCalled()
       expect(await storedKeys()).toHaveLength(2)
-      const assembled = path.join(tempUploadsDir, 'assembled')
-      expect(await fs.promises.readdir(assembled)).toEqual([])
 
       await expect(storeUploadChunk(chunk(1, 2, 'b'), finishReading())).resolves.toMatchObject({ response: { body: { content: 'ab' } } })
-    })
-
-    it('keeps the upload for a retry when assembly fails', async () => {
-      await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
-      vi.spyOn(store, 'stream').mockRejectedValueOnce(new Error('store unavailable'))
-      const finish = finishReading()
-
-      await expect(storeUploadChunk(chunk(1, 2, 'b'), finish)).rejects.toThrow('store unavailable')
-      expect(finish).not.toHaveBeenCalled()
-      expect(await storedKeys()).toHaveLength(2)
-      expect(await fs.promises.readdir(path.join(tempUploadsDir, 'assembled'))).toEqual([])
-
-      await expect(storeUploadChunk(chunk(1, 2, 'b'), finish)).resolves.toMatchObject({ response: { body: { content: 'ab' } } })
-      expect(finish).toHaveBeenCalledOnce()
-    })
-
-    it('fails assembly when a chunk has gone missing, rather than hand over a short file', async () => {
-      await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
-      await store.delete((await storedKeys())[0]!)
-      const finish = neverFinishes()
-      await expect(storeUploadChunk(chunk(1, 2, 'b'), finish)).rejects.toThrow('is missing')
-      expect(finish).not.toHaveBeenCalled()
-    })
-
-    it('fails assembly when a chunk came back with another size', async () => {
-      vi.spyOn(store, 'stream').mockResolvedValueOnce(new Blob(['short']).stream() as ReadableStream<Uint8Array>)
-      const finish = neverFinishes()
-      await expect(storeUploadChunk(chunk(0, 1, 'the whole chunk'), finish)).rejects.toThrow('Assembled upload is 5 bytes')
-      expect(finish).not.toHaveBeenCalled()
     })
 
     it('leaves the upload for a retry when `finish` throws', async () => {
@@ -1013,7 +1308,7 @@ describe.each<[string, () => UploadByteStore]>([
         for (let at = 0; at < ms; at += STEP) await vi.advanceTimersByTimeAsync(STEP)
       }
 
-      it('keeps renewing the lease while a slow stream is assembled', async () => {
+      it('keeps renewing the lease while a slow stream is read', async () => {
         const streamGate = deferred()
         const streamReached = deferred()
         const realStream = store.stream.bind(store)
@@ -1030,6 +1325,146 @@ describe.each<[string, () => UploadByteStore]>([
         await expect(storeUploadChunk(chunk(0, 1, 'a'), neverFinishes())).resolves.toEqual({ status: 'finalizing' })
         streamGate.resolve()
         await expect(request).resolves.toMatchObject({ status: 'finished', response: { body: { content: 'a' } } })
+      })
+
+      describe('losing the lease while reading', () => {
+        /** The next renewal cannot reach AppState, so the holder knows it lost the lease. */
+        function failRenewals() {
+          const state = appState()
+          const compareAndSet = state.compareAndSet.bind(state)
+          vi.spyOn(state, 'compareAndSet').mockImplementation(async (key, expected, value, options) => {
+            if (key.path.startsWith('claim:upload-finalize/')) throw new Error('AppState is out of reach')
+            return compareAndSet(key, expected, value, options)
+          })
+        }
+
+        it('errors the stream between reads, stops reading, and leaves the upload for a retry', async () => {
+          await storeUploadChunk(chunk(0, 2, 'aa'), neverFinishes())
+          const opened = vi.spyOn(store, 'stream')
+          const firstRead = deferred()
+          const goOn = deferred()
+          let error: unknown = null
+          const request = storeUploadChunk(chunk(1, 2, 'bb'), async ({ stream }) => {
+            const reader = stream().getReader()
+            await reader.read()
+            firstRead.resolve()
+            await goOn.promise
+            try {
+              await reader.read()
+            } catch (caught) {
+              error = caught
+              throw caught
+            }
+            return { status: 200, body: {} }
+          })
+          await firstRead.promise
+
+          failRenewals()
+          await runFor(2 * STEP)
+          goOn.resolve()
+
+          await expect(request).resolves.toEqual({ status: 'finalizing' })
+          expect(error).toMatchObject({ name: 'LeaseLostError' })
+          expect(opened).toHaveBeenCalledOnce()
+          expect(await manifest()).toMatchObject({ state: 'finalizing' })
+          expect(await storedKeys()).toHaveLength(2)
+
+          vi.restoreAllMocks()
+          await runFor(UPLOAD_FINALIZER_LEASE_MS)
+          await expect(storeUploadChunk(chunk(1, 2, 'bb'), finishReading())).resolves.toMatchObject({ response: { body: { content: 'aabb' } } })
+        })
+
+        it('errors a read that is waiting on a slow chunk, and closes that chunk', async () => {
+          const cancelled = vi.fn()
+          vi.spyOn(store, 'stream').mockImplementationOnce(async () => new ReadableStream<Uint8Array>({ cancel: cancelled }))
+          const reading = deferred()
+          let error: unknown = null
+          const request = storeUploadChunk(chunk(0, 1, 'a'), async ({ stream }) => {
+            const read = stream().getReader().read()
+            reading.resolve()
+            try {
+              await read
+            } catch (caught) {
+              error = caught
+              throw caught
+            }
+            return { status: 200, body: {} }
+          })
+          await reading.promise
+          // Let it open the chunk it will wait on.
+          await new Promise((resolve) => setImmediate(resolve))
+
+          failRenewals()
+          await runFor(2 * STEP)
+
+          await expect(request).resolves.toEqual({ status: 'finalizing' })
+          expect(error).toMatchObject({ name: 'LeaseLostError' })
+          expect(cancelled).toHaveBeenCalledOnce()
+        })
+
+        it('keeps no answer when `finish` makes one of the lost lease', async () => {
+          // A chunk that never comes, so the read is waiting when the lease goes.
+          vi.spyOn(store, 'stream').mockImplementationOnce(async () => new ReadableStream<Uint8Array>())
+          const reading = deferred()
+          const request = storeUploadChunk(chunk(0, 1, 'a'), async ({ stream }) => {
+            const read = stream().getReader().read()
+            reading.resolve()
+            await read.catch(() => undefined)
+            return { status: 500, body: { error: 'Failed to upload file' } }
+          })
+          await reading.promise
+          await new Promise((resolve) => setImmediate(resolve))
+
+          failRenewals()
+          await runFor(2 * STEP)
+
+          await expect(request).resolves.toEqual({ status: 'finalizing' })
+          expect(await manifest()).toMatchObject({ state: 'finalizing' })
+        })
+
+        it('errors a stream asked for after the lease was lost', async () => {
+          const go = deferred()
+          let error: unknown = null
+          const request = storeUploadChunk(chunk(0, 1, 'a'), async ({ stream }) => {
+            await go.promise
+            try {
+              await readAll(stream())
+            } catch (caught) {
+              error = caught
+              throw caught
+            }
+            return { status: 200, body: {} }
+          })
+          await vi.waitFor(async () => expect((await manifest() as { finalizer?: unknown } | undefined)?.finalizer).toEqual(expect.any(String)))
+          await new Promise((resolve) => setImmediate(resolve))
+
+          failRenewals()
+          await runFor(2 * STEP)
+          go.resolve()
+
+          await expect(request).resolves.toEqual({ status: 'finalizing' })
+          expect(error).toMatchObject({ name: 'LeaseLostError' })
+        })
+
+        it('keeps the answer of a consumer that had read everything before the lease was lost', async () => {
+          const readEverything = deferred()
+          const goOn = deferred()
+          const response = { status: 200, body: { done: true } }
+          const request = storeUploadChunk(chunk(0, 1, 'a'), async ({ stream }) => {
+            await readAll(stream())
+            readEverything.resolve()
+            await goOn.promise
+            return response
+          })
+          await readEverything.promise
+
+          failRenewals()
+          await runFor(2 * STEP)
+          goOn.resolve()
+
+          await expect(request).resolves.toEqual({ status: 'finished', response })
+          expect(await manifest()).toMatchObject({ state: 'completed', response })
+        })
       })
 
       it('keeps the manifest and the lease while the work outlasts the idle expiry', async () => {
@@ -1188,10 +1623,22 @@ describe.each<[string, () => UploadByteStore]>([
       await expect(write).resolves.toEqual({ status: 'received' })
     })
 
+    /** A `finish` that had its file written and waits for the test. */
+    function finishSpooled() {
+      const entered = deferred<string>()
+      const gate = deferred()
+      const finish = async ({ toFile }: AssembledUpload): Promise<UploadResponse> => {
+        entered.resolve(await toFile())
+        await gate.promise
+        return { status: 200, body: {} }
+      }
+      return { finish, entered, gate }
+    }
+
     it('keeps the chunks and the file of a running finalizer, however old they look', async () => {
-      const { finish, entered, gate } = finishGated()
+      const { finish, entered, gate } = finishSpooled()
       const request = storeUploadChunk(chunk(0, 1, 'a'), finish)
-      const { filePath } = await entered.promise
+      const filePath = await entered.promise
       const longAgo = new Date(T0 - 2 * HOUR)
       await fs.promises.utimes(filePath, longAgo, longAgo)
 
@@ -1242,10 +1689,10 @@ describe.each<[string, () => UploadByteStore]>([
     })
 
     it('removes the bytes and the file of a finalizer that died, after its manifest idled out', async () => {
-      const { finish, entered, gate } = finishGated()
+      const { finish, entered, gate } = finishSpooled()
       // As good as dead: it does nothing more until the end of this test.
       const dead = storeUploadChunk(chunk(0, 1, 'a'), finish)
-      const { filePath } = await entered.promise
+      const filePath = await entered.promise
       const longAgo = new Date(T0 - 2 * HOUR)
       await fs.promises.utimes(filePath, longAgo, longAgo)
 
