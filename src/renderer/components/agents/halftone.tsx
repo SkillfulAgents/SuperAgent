@@ -39,6 +39,8 @@ interface HalftoneProps {
   dim?: number
   /** Per-card phase offset so cards aren't all animating in sync. */
   seed?: number
+  /** Whether dots near the pointer swell (the cards do). Off for a backdrop. */
+  followPointer?: boolean
   className?: string
 }
 
@@ -92,6 +94,7 @@ export function Halftone({
   speedScale = 1,
   dim,
   seed = 0,
+  followPointer = true,
   className,
 }: HalftoneProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -214,7 +217,7 @@ export function Halftone({
 
     const syncAnimation = () => {
       const active = ready && !reduce && intersecting && !document.hidden && !stopped
-      setPointerListening(active)
+      setPointerListening(active && followPointer)
       if (active && raf === 0) {
         lastDrawTime = 0
         raf = requestAnimationFrame(frame)
@@ -268,7 +271,7 @@ export function Halftone({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       setPointerListening(false)
     }
-  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed])
+  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed, followPointer])
 
   return (
     <div ref={wrapRef} className={cn('h-full w-full', className)} aria-hidden>

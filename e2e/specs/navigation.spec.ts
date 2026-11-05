@@ -20,6 +20,7 @@ import {
   type TestAgent,
   type TestSession,
 } from '../helpers/agents'
+import { openHomeSection, openHomeAdvancedSettings } from '../helpers/agent-home'
 
 interface TestConnectedAccount {
   id: string
@@ -205,6 +206,7 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -222,6 +224,7 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeSection(page, 'Connections')
       await page.locator('[data-testid="home-connections-open-page"]').click()
       await expect(page).toHaveURL(/\/connections$/)
       await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
@@ -255,17 +258,20 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
       await page.locator('[data-testid="api-logs-back-button"]').click()
+      await openHomeSection(page, 'Connections')
       await page.locator('[data-testid="home-connections-open-page"]').click()
       await expect(page).toHaveURL(/\/connections$/)
       await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
       await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
 
       await page.locator('[data-testid="connections-back-button"]').click()
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -282,6 +288,7 @@ test.describe('Navigation - discriminated AgentView', () => {
     try {
       await gotoAgentHome(page, agent)
 
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -290,6 +297,7 @@ test.describe('Navigation - discriminated AgentView', () => {
       await page.locator('[data-testid="api-logs-back-button"]').click()
       await expectAgentHome(page, agent)
 
+      await openHomeSection(page, 'Connections')
       await page.locator('[data-testid="home-connections-open-page"]').click()
       await expect(page).toHaveURL(/\/connections$/)
       await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
@@ -334,6 +342,7 @@ test.describe('Navigation - discriminated AgentView', () => {
 
       await agentPage.selectAgent(agentB.name)
       await expectAgentHome(page, agentB)
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-api-logs-open-page').click()
       await expect(page).toHaveURL(/\/api-logs$/)
       await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()

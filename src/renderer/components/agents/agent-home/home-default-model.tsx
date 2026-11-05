@@ -31,8 +31,10 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
       className="flex items-center justify-between gap-2 py-2 px-4"
       data-testid="home-default-model-card"
     >
-      <span className="text-sm font-medium text-muted-foreground">Agent Default Model</span>
+      <span className="text-[12px]/5 text-muted-foreground">Agent Default Model</span>
       <SettingsModelSelect
+        // The side panel's row style: a muted value and soft chevron, like the section rows above.
+        variant="row"
         agentSlug={agentSlug}
         model={displayModel}
         llmProviderId={prefs?.defaultLlmProviderId}

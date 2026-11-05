@@ -38,6 +38,15 @@ import userEvent from '@testing-library/user-event'
 import { HomeVolumes } from './home-volumes'
 import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 
+// These tests cover the section's content; the collapsed-by-default row itself
+// is covered in home-collapsible.test.tsx, so here it always renders open.
+vi.mock('./home-collapsible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./home-collapsible')>()),
+  HomeCollapsible: ({ title, children }: { title: string; children: import('react').ReactNode }) => (
+    <div><span>{title}</span>{children}</div>
+  ),
+}))
+
 /**
  * Local folder picking/revealing needs this computer. Saved volumes belong to
  * the selected API target and can also be attached from browsers/cloud windows.

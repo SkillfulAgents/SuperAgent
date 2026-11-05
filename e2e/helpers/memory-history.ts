@@ -3,6 +3,7 @@ import { expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AGENT_MEMORY_DIR } from '../../src/shared/lib/agent-actor/memory-schema'
 import { LocalAgentActor, type LocalActorDeps } from '../../src/shared/lib/agent-actor/local-agent-actor'
 import { getAgentWorkspaceDir } from '../../src/shared/lib/utils/file-storage'
+import { openHomeAdvancedSettings, openHomeSection } from './agent-home'
 
 export interface MemoryHistoryContext {
   page: Page
@@ -26,6 +27,7 @@ async function prepareHistory({ page, request, apiBaseUrl, navigate }: MemoryHis
   await actor.files.putDoc(`${AGENT_MEMORY_DIR}/MEMORY.md`, original)
 
   await navigate(`/agents/${agent.slug}`)
+  await openHomeAdvancedSettings(page)
   await expect(page.getByTestId('home-memories-open-page')).toBeVisible()
   // Build actual browser history through UI actions. At the memory entry,
   // both directions have two entries and end at distinct leaf routes:
@@ -36,10 +38,12 @@ async function prepareHistory({ page, request, apiBaseUrl, navigate }: MemoryHis
   await page.getByTestId('home-api-logs-open-page').press('Enter')
   await expect(page).toHaveURL(/\/api-logs$/)
   await page.getByTestId('api-logs-back-button').click()
+  await openHomeAdvancedSettings(page)
   await expect(page.getByTestId('home-memories-open-page')).toBeVisible()
   await page.getByTestId('home-memories-open-page').press('Enter')
   await expect(page).toHaveURL(/\/memories$/)
   await page.getByTestId('agent-breadcrumb').click()
+  await openHomeSection(page, 'Connections')
   await expect(page.getByTestId('home-connections-open-page')).toBeVisible()
   await page.getByTestId('home-connections-open-page').press('Enter')
   await expect(page).toHaveURL(/\/connections$/)

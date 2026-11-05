@@ -104,6 +104,10 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
       onClick={handleToggle}
       disabled={disabled && !active}
       data-testid="voice-input-button"
+      // An outline button like the shared Button's, so surfaces that restyle those (Agent Home's glass) include it,
+      // except while recording, when it is the tinted pill.
+      data-variant="outline"
+      data-active={active || undefined}
       className={cn(
         buttonVariants({ variant: 'outline', size: 'icon' }),
         'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',

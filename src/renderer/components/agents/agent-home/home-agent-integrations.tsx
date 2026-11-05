@@ -57,9 +57,9 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
   const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
-    <HomeCollapsible title="External Integrations" className={className}>
+    <HomeCollapsible title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
       {rows.length > 0 ? (
-        <div className="mt-2 divide-y divide-border/50">
+        <div className="mt-2">
           {rows.map((integration) => {
             // Fall back to the agent's name (matches the connector page title), not
             // "<Provider> Bot" - the provider already shows in the subtitle below.
@@ -67,6 +67,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
             return (
               <IntegrationRow
                 key={integration.id}
+                hoverFill={false}
                 iconSlug={integration.provider}
                 iconFallback="mcp"
                 name={displayName}

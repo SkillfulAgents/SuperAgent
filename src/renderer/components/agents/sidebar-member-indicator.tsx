@@ -9,26 +9,50 @@ import { Button } from '@renderer/components/ui/button'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
-const AVATAR_SIZE = 18
-const OVERFLOW_SIZE = 19
+// Each circle overlaps the one before it. Rather than a ring in the
+// background colour, which had to track the sidebar row's hover and selected
+// fills (and can't match Agent Home's background), the circle underneath has a gap
+// cut out around the next one, so what's behind shows through. Centred on the
+// next circle, which starts `face - overlap` in.
+function cutout(face: number, overlap: number, next: number, gap: number) {
+  const radius = next / 2 + gap
+  return { maskImage: `radial-gradient(circle at ${face - overlap + next / 2}px 50%, transparent ${radius}px, #000 ${radius + 0.5}px)` }
+}
 
-// Each circle overlaps the one before it by 8px (-ml-2). Rather than a ring in
-// the sidebar colour, which had to track the row's hover and selected fills,
-// the circle underneath has a 1px gap cut out around the next one, so the row
-// shows through. Centred on the next circle: it starts 10px in.
-const CUTOUT_BEFORE_FACE = '[mask-image:radial-gradient(circle_at_19px_50%,transparent_9.5px,#000_10px)]'
-const CUTOUT_BEFORE_OVERFLOW = '[mask-image:radial-gradient(circle_at_19.5px_50%,transparent_10px,#000_10.5px)]'
+/**
+ * Sizes and colours per surface. The sidebar's: 18px faces 8px over each other
+ * with a 1px gap. Agent Home's: the same stack a step up, beside its title.
+ */
+const VARIANTS = {
+  sidebar: {
+    face: 18, count: 19, overlap: 8, gap: 0.5,
+    overlapClass: '-ml-2', countText: 'text-[8px]',
+    countFill: 'bg-[color-mix(in_srgb,hsl(var(--sidebar-foreground))_15%,hsl(var(--sidebar-background)))] text-sidebar-foreground',
+    ring: 'focus-visible:ring-sidebar-ring',
+  },
+  page: {
+    face: 24, count: 24, overlap: 10, gap: 1.5,
+    overlapClass: '-ml-2.5', countText: 'text-[10px]',
+    countFill: 'bg-[color-mix(in_srgb,hsl(var(--foreground))_10%,hsl(var(--background)))] text-foreground',
+    ring: 'focus-visible:ring-ring',
+  },
+} as const
 
 /** A compact member stack with roster and invite access, independent of navigation. */
-export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 4, className }: {
+export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 4, variant = 'sidebar', className }: {
   agentSlug: string
   agentName: string
   memberCount: number
   /** Total circle limit, including the overflow circle when needed. */
   maxFaces?: number
+  /** The sidebar's agent rows, or Agent Home's title row (bigger, page colours, roster below). */
+  variant?: keyof typeof VARIANTS
   className?: string
 }) {
   const { data: members, isLoading, isError, refetch } = useAgentMembers(agentSlug, memberCount > 1)
+  const v = VARIANTS[variant]
+  // Test ids keep the sidebar's names there; Agent Home's are its own, as both show at once.
+  const testId = variant === 'sidebar' ? 'sidebar-members' : 'agent-members'
   const isMobile = useIsMobile()
   const { isAuthMode, isAdmin, canAdminAgent } = useUser()
   const canInvite = isAuthMode && (isAdmin || canAdminAgent(agentSlug))
@@ -69,9 +93,9 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
         <button
           ref={triggerRef}
           type="button"
-          className={cn('relative z-10 inline-flex h-6 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring', className)}
+          className={cn('relative z-10 inline-flex shrink-0 items-center justify-center rounded-control outline-none focus-visible:ring-2', variant === 'sidebar' ? 'h-6' : 'h-8', v.ring, className)}
           aria-label={`${count} members of ${agentName}`}
-          data-testid={`sidebar-members-${agentSlug}`}
+          data-testid={`${testId}-${agentSlug}`}
           onPointerDown={event => event.stopPropagation()}
           onKeyDown={event => {
             // Keep the surrounding sortable row from treating roster activation
@@ -103,11 +127,9 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
               <UserAvatar
                 key={member.id}
                 user={member}
-                size={AVATAR_SIZE}
-                className={cn(
-                  '-ml-2 first:ml-0',
-                  i < faces.length - 1 ? CUTOUT_BEFORE_FACE : remaining > 0 && CUTOUT_BEFORE_OVERFLOW,
-                )}
+                size={v.face}
+                className={cn(v.overlapClass, 'first:ml-0')}
+                style={i < faces.length - 1 ? cutout(v.face, v.overlap, v.face, v.gap) : remaining > 0 ? cutout(v.face, v.overlap, v.count, v.gap) : undefined}
               />
             ))}
             {/* When the faces don't fit, the last circle gives the whole
@@ -116,9 +138,9 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
                 cut-out. */}
             {remaining > 0 && (
               <span
-                className="relative -ml-2 first:ml-0 inline-flex shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,hsl(var(--sidebar-foreground))_15%,hsl(var(--sidebar-background)))] px-[3px] text-[8px] font-medium leading-none tabular-nums text-sidebar-foreground"
-                style={{ minWidth: OVERFLOW_SIZE, height: OVERFLOW_SIZE }}
-                data-testid={`sidebar-members-count-${agentSlug}`}
+                className={cn('relative first:ml-0 inline-flex shrink-0 items-center justify-center rounded-full px-[3px] font-medium leading-none tabular-nums', v.overlapClass, v.countText, v.countFill)}
+                style={{ minWidth: v.count, height: v.count }}
+                data-testid={`${testId}-count-${agentSlug}`}
               >{count}</span>
             )}
           </span>
@@ -126,13 +148,13 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
       </PopoverTrigger>
       <PopoverContent
         ref={contentRef}
-        align="start"
-        side={isMobile ? 'bottom' : 'right'}
+        align={variant === 'sidebar' ? 'start' : 'end'}
+        side={isMobile || variant === 'page' ? 'bottom' : 'right'}
         sideOffset={12}
         collisionPadding={12}
         className="w-[304px] max-w-[calc(100vw-24px)] p-2"
         aria-label={`${agentName} members`}
-        data-testid={`sidebar-members-list-${agentSlug}`}
+        data-testid={`${testId}-list-${agentSlug}`}
         onOpenAutoFocus={event => event.preventDefault()}
         onCloseAutoFocus={event => event.preventDefault()}
         onPointerEnter={clearTimer}
@@ -151,7 +173,7 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
                   size="xs"
                   variant="outline"
                   className="h-6 px-2 text-[11px] [&_svg]:size-3"
-                  data-testid={`sidebar-members-invite-${agentSlug}`}
+                  data-testid={`${testId}-invite-${agentSlug}`}
                   // Keep the roster mounted if the press blurs its trigger before click.
                   onPointerDownCapture={() => {
                     clearTimer()

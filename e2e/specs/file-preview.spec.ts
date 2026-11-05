@@ -6,6 +6,7 @@ import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { mockSpeech } from '../helpers/speech'
 import { strToU8, zipSync } from 'fflate'
+import { openHomeAdvancedSettings } from '../helpers/agent-home'
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
 
@@ -127,6 +128,7 @@ test.describe('File Preview', () => {
 
     // The Agent Directory uses the same built-in folder browser on web and
     // Electron; it no longer delegates to an OS-level directory action.
+    await openHomeAdvancedSettings(page)
     await page.getByTestId('home-agent-directory-open-browser').click()
     await expect(page.locator(
       '[data-testid="folder-entry"][data-entry-path="/workspace/reports"]',
