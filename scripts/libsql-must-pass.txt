@@ -94,4 +94,5 @@ src/shared/lib/services/session-defaults.test.ts
 src/shared/lib/config/settings.test.ts
 src/shared/lib/container/host-token-store.test.ts
 src/main/host-browser/context-map-store.test.ts
+src/shared/lib/browser-vault/vault-key-probe.test.ts
 src/shared/lib/agent-integrations/integration-row-version.test.ts
