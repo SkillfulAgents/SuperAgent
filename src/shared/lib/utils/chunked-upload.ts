@@ -177,6 +177,8 @@ interface CommitOutcome {
 
 type TakeOver =
   | { kind: 'mine'; manifest: UploadManifest }
+  /** Someone other than the predecessor is named now: this holder is the stale one, or lost a race to be next. */
+  | { kind: 'superseded' }
   | { kind: 'ended'; response: UploadResponse | null }
   | { kind: 'gone' }
 
@@ -365,10 +367,18 @@ function release(manifest: UploadManifest | null, attemptId: string): RecordChan
   return { result: undefined, value: { ...manifest, reservations: liveReservations(manifest.reservations, Date.now(), attemptId) } }
 }
 
-/** The lease holder names itself in the manifest, which fences whoever held it before. */
-function takeOver(manifest: UploadManifest | null, token: string): RecordChange<UploadManifest, TakeOver> {
+/**
+ * The lease holder names itself in the manifest, which fences whoever held it
+ * before, but only in place of the predecessor it confirmed. Any other name is
+ * newer than this holder's lease, and the name is what fences a publish, so a
+ * stale holder must not be able to erase it. Its own name means an earlier write
+ * landed and its answer was lost.
+ */
+function takeOver(manifest: UploadManifest | null, token: string, predecessor: string | null): RecordChange<UploadManifest, TakeOver> {
   if (manifest?.state === 'completed') return { result: { kind: 'ended', response: manifest.response } }
   if (manifest?.state !== 'finalizing') return { result: { kind: 'gone' } }
+  if (manifest.finalizer === token) return { result: { kind: 'mine', manifest } }
+  if (manifest.finalizer !== predecessor) return { result: { kind: 'superseded' } }
   const next = { ...manifest, finalizer: token }
   return { result: { kind: 'mine', manifest: next }, value: next }
 }
@@ -491,7 +501,21 @@ async function finalize(store: UploadByteStore, attempt: ChunkAttempt, finish: F
   if (!lease) return { status: 'finalizing' }
   return finalizerLease.hold(lease, async (holding) => {
     const token = holding.owner
-    const taken = await settle(attempt.key, (manifest) => takeOver(manifest, token))
+    const seen = await settle(attempt.key, (manifest): RecordChange<UploadManifest, UploadManifest | null> => ({ result: manifest }))
+    if (seen?.state === 'completed') return endedResult(seen.response)
+    if (seen?.state !== 'finalizing') throw new UploadConflictError(EXPIRED)
+    // A renewal that succeeds after that read proves no successor has had the
+    // lease since this holder took it, so the name it read is a predecessor's.
+    // A holder that stalled until a successor came fails here, before it can
+    // mistake that successor for someone to replace.
+    try {
+      await holding.confirm({ minRemainingMs: FINALIZER_CONFIRM_MARGIN_MS })
+    } catch (error) {
+      if (holding.signal.aborted) return { status: 'finalizing' }
+      throw error
+    }
+    const taken = await settle(attempt.key, (manifest) => takeOver(manifest, token, seen.finalizer))
+    if (taken.kind === 'superseded') return { status: 'finalizing' }
     if (taken.kind === 'ended') return endedResult(taken.response)
     if (taken.kind === 'gone') throw new UploadConflictError(EXPIRED)
 

@@ -247,12 +247,20 @@ A manifest moves one way through four states:
 
 **Finishing.** Any request that finds the upload `finalizing` asks for the lease `claim:upload-finalize`, and one gets it. Usually that is the request whose commit made the claim, but a duplicate that gets there first is just as good. A request that does not get it answers 409 with `Retry-After: 5`.
 
-- The holder names itself in the manifest, streams the chunks into a temp file of its own, confirms the lease with a 30 s margin, and hands the file to the route's `finish`.
+- The holder reads the manifest, confirms the lease, and names itself in place of the name it read. Then it streams the chunks into a temp file of its own, confirms the lease again with a 30 s margin, and hands the file to the route's `finish`.
 - What `finish` returns is kept in the `completed` state, failures included, for one hour from when it finished. A retry of a chunk with the same hash gets that answer and runs nothing. A chunk with other bytes is refused (409). An answer over 64 KiB is not kept: a retry is told the upload finished, without it.
 - The lease lasts 2 minutes and renews every 40 s for as long as the holder runs, however slowly the bytes stream. It is also how long a retry waits when a finalizer died. After that the retry takes over and runs everything itself.
 - A failed assembly, a lease lost before `finish`, and a `finish` that throws all leave the upload `finalizing` for a retry.
 
 **The fence.** A successor writes its own name into the manifest before it does anything. A holder's publish is a compare-and-set that requires the manifest to still name it, so a stale holder cannot overwrite the answer. Only a holder whose answer was kept removes the chunks, since a successor may be reading them. A holder whose lease lapsed with no successor still publishes: its answer is true, and keeping it spares a retry from running the work again.
+
+A stale holder must not be able to erase that name, so naming itself takes three steps:
+
+1. **Read** the name in the manifest, the predecessor. An upload that already ended answers here, with no renewal.
+2. **Confirm** the lease. A renewal that succeeds after the read proves no successor has had the lease since this holder took it, so the name it read really is a predecessor's. A holder that stalled until a successor came fails here.
+3. **Write** its name, only while the manifest still holds the predecessor's. Its own name there means an earlier write landed and the answer was lost. Any other name means it is superseded: it writes nothing and its request answers 409 with `Retry-After`. The condition is decided again after a conflict, so this also covers a holder stalled between steps 2 and 3.
+
+If a stalled holder's write lands first, its successor finds a name it did not read and backs out, and the stalled holder's lease stops it at its next confirm, before any work. Neither runs, the name is the stalled holder's, and the next retry replaces it.
 
 **Not exactly once.** A lease fences AppState and nothing else. A holder that stalls or crashes after its `finish` did its work, before its publish landed, leaves a takeover to run the work again: a template imported twice, a file written twice. Only a retry after the answer was kept is safe from that.
 

@@ -132,6 +132,70 @@ function loseAnswerOfWrite(matches: (value: UploadManifest) => boolean) {
   return () => lost
 }
 
+/** Holds the next `count` writes of a holder's own name before they reach the backend. */
+function holdNamings(count: number) {
+  const state = appState()
+  const compareAndSet = state.compareAndSet.bind(state)
+  const holds = Array.from({ length: count }, () => ({ reached: deferred(), gate: deferred() }))
+  let next = 0
+  vi.spyOn(state, 'compareAndSet').mockImplementation(async (key, expected, value, options) => {
+    const written = value as UploadManifest
+    if (next < count && key.path.startsWith('upload/') && written.state === 'finalizing' && written.finalizer !== null) {
+      const hold = holds[next++]!
+      hold.reached.resolve()
+      await hold.gate.promise
+    }
+    return compareAndSet(key, expected, value, options)
+  })
+  return holds
+}
+
+/** Holds the `nth` read of the manifest after the next lease is acquired, before it reaches the backend. */
+function holdManifestReadUnderLease(nth: number) {
+  const state = appState()
+  const insertIfAbsent = state.insertIfAbsent.bind(state)
+  const get = state.get.bind(state)
+  const reached = deferred()
+  const gate = deferred()
+  let reads = -1
+  vi.spyOn(state, 'insertIfAbsent').mockImplementation(async (key, value, options) => {
+    const answer = await insertIfAbsent(key, value, options)
+    if (reads === -1 && key.path.startsWith('claim:upload-finalize/') && answer.inserted) reads = 0
+    return answer
+  })
+  vi.spyOn(state, 'get').mockImplementation((async (key: never) => {
+    if (reads >= 0 && reads < nth && (key as { path: string }).path.startsWith('upload/') && ++reads === nth) {
+      reached.resolve()
+      await gate.promise
+    }
+    return get(key)
+  }) as typeof state.get)
+  return { reached, gate }
+}
+
+/** Holds the next request for the finalizer's lease before it reaches the backend. */
+function holdNextLeaseRequest() {
+  const state = appState()
+  const insertIfAbsent = state.insertIfAbsent.bind(state)
+  const reached = deferred()
+  const gate = deferred()
+  let held = false
+  vi.spyOn(state, 'insertIfAbsent').mockImplementation(async (key, value, options) => {
+    if (!held && key.path.startsWith('claim:upload-finalize/')) {
+      held = true
+      reached.resolve()
+      await gate.promise
+    }
+    return insertIfAbsent(key, value, options)
+  })
+  return { reached, gate }
+}
+
+/** How many times the finalizer's lease was renewed since `compareAndSet` was spied on. */
+function leaseRenewals(): number {
+  return vi.mocked(appState().compareAndSet).mock.calls.filter(([key]) => key.path.startsWith('claim:upload-finalize/')).length
+}
+
 const advance = (ms: number) => vi.setSystemTime(Date.now() + ms)
 
 beforeEach(async () => {
@@ -742,6 +806,202 @@ describe.each<[string, () => UploadByteStore]>([
       await expect(storeUploadChunk(chunk(0, 1, 'a'), finishReading())).resolves.toMatchObject({ status: 'finished' })
     })
 
+    describe('naming itself', () => {
+      const finalizerName = async () => {
+        const stored = await manifest()
+        return stored?.state === 'finalizing' || stored?.state === 'completed' ? stored.finalizer : undefined
+      }
+
+      /** A stale holder has backed out while its successor runs: the successor's name stands and its answer is kept. */
+      async function expectSuccessorKept(successorGate: { resolve(): void }, successorRequest: Promise<unknown>, successorFinish: ReturnType<typeof vi.fn>, name: unknown) {
+        expect(await finalizerName()).toBe(name)
+        successorGate.resolve()
+        const answer = await successorRequest
+        expect(await manifest()).toMatchObject({ state: 'completed', finalizer: name })
+        expect(answer).toMatchObject({ status: 'finished' })
+
+        const retry = neverFinishes()
+        await expect(storeUploadChunk(chunk(1, 2, 'b'), retry)).resolves.toEqual(answer)
+        expect(retry).not.toHaveBeenCalled()
+        expect(successorFinish).toHaveBeenCalledOnce()
+        expect(await storedKeys()).toEqual([])
+      }
+
+      it('keeps the successor\'s name when a holder stalled before its first read resumes', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const stall = holdManifestReadUnderLease(1)
+        const staleFinish = neverFinishes()
+        const stale = storeUploadChunk(chunk(1, 2, 'b'), staleFinish)
+        await stall.reached.promise
+
+        advance(UPLOAD_FINALIZER_LEASE_MS)
+        const successor = finishGated()
+        const successorRequest = storeUploadChunk(chunk(1, 2, 'b'), successor.finish)
+        await successor.entered.promise
+        const name = await finalizerName()
+        expect(name).toEqual(expect.any(String))
+
+        // It reads the successor's name now, and its lease says that name is no predecessor's.
+        stall.gate.resolve()
+        await expect(stale).resolves.toEqual({ status: 'finalizing' })
+        expect(staleFinish).not.toHaveBeenCalled()
+
+        await expectSuccessorKept(successor.gate, successorRequest, successor.finish, name)
+      })
+
+      it('keeps the successor\'s name when a holder stalled at its write decides again after the conflict', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const [stall] = holdNamings(1)
+        const staleFinish = neverFinishes()
+        const stale = storeUploadChunk(chunk(1, 2, 'b'), staleFinish)
+        await stall!.reached.promise
+
+        advance(UPLOAD_FINALIZER_LEASE_MS)
+        const successor = finishGated()
+        const successorRequest = storeUploadChunk(chunk(1, 2, 'b'), successor.finish)
+        await successor.entered.promise
+        const name = await finalizerName()
+        expect(name).toEqual(expect.any(String))
+
+        stall!.gate.resolve()
+        await expect(stale).resolves.toEqual({ status: 'finalizing' })
+        expect(staleFinish).not.toHaveBeenCalled()
+
+        await expectSuccessorKept(successor.gate, successorRequest, successor.finish, name)
+      })
+
+      it('backs both out when a stalled write lands before its successor\'s, and the next retry takes over', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const [staleWrite, successorWrite] = holdNamings(2)
+        const staleFinish = neverFinishes()
+        const stale = storeUploadChunk(chunk(1, 2, 'b'), staleFinish)
+        await staleWrite!.reached.promise
+
+        advance(UPLOAD_FINALIZER_LEASE_MS)
+        const successorFinish = neverFinishes()
+        const successor = storeUploadChunk(chunk(1, 2, 'b'), successorFinish)
+        await successorWrite!.reached.promise
+
+        // The stale write lands, as nothing has changed the manifest; its lease then stops it before any work.
+        staleWrite!.gate.resolve()
+        await expect(stale).resolves.toEqual({ status: 'finalizing' })
+        const staleName = await finalizerName()
+        expect(staleName).toEqual(expect.any(String))
+
+        // The successor read another name than it finds now.
+        successorWrite!.gate.resolve()
+        await expect(successor).resolves.toEqual({ status: 'finalizing' })
+        expect(await finalizerName()).toBe(staleName)
+        expect(staleFinish).not.toHaveBeenCalled()
+        expect(successorFinish).not.toHaveBeenCalled()
+        expect(await storedKeys()).toHaveLength(2)
+
+        const finish = finishReading()
+        await expect(storeUploadChunk(chunk(1, 2, 'b'), finish)).resolves.toMatchObject({ response: { body: { content: 'ab' } } })
+        expect(finish).toHaveBeenCalledOnce()
+        expect(await finalizerName()).not.toBe(staleName)
+      })
+
+      it('takes over from a predecessor that died', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const dead = finishGated()
+        const deadRequest = storeUploadChunk(chunk(1, 2, 'b'), dead.finish)
+        await dead.entered.promise
+        const deadName = await finalizerName()
+        expect(deadName).toEqual(expect.any(String))
+
+        advance(UPLOAD_FINALIZER_LEASE_MS)
+        const finish = finishReading()
+        const answer = await storeUploadChunk(chunk(1, 2, 'b'), finish)
+
+        expect(answer).toMatchObject({ status: 'finished', response: { body: { content: 'ab' } } })
+        expect(finish).toHaveBeenCalledOnce()
+        const name = await finalizerName()
+        expect(name).toEqual(expect.any(String))
+        expect(name).not.toBe(deadName)
+        const retry = neverFinishes()
+        await expect(storeUploadChunk(chunk(1, 2, 'b'), retry)).resolves.toEqual(answer)
+        expect(retry).not.toHaveBeenCalled()
+
+        dead.gate.resolve()
+        await deadRequest
+        expect(await finalizerName()).toBe(name)
+      })
+
+      it('uses the answer a stale holder kept while its successor was about to name itself', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const stale = finishGated()
+        const staleRequest = storeUploadChunk(chunk(1, 2, 'b'), stale.finish)
+        await stale.entered.promise
+
+        advance(UPLOAD_FINALIZER_LEASE_MS)
+        const [write] = holdNamings(1)
+        const successorFinish = neverFinishes()
+        const successor = storeUploadChunk(chunk(1, 2, 'b'), successorFinish)
+        await write!.reached.promise
+
+        stale.gate.resolve()
+        const answer = await staleRequest
+        expect(await manifest()).toMatchObject({ state: 'completed' })
+
+        write!.gate.resolve()
+        await expect(successor).resolves.toEqual(answer)
+        expect(successorFinish).not.toHaveBeenCalled()
+      })
+
+      it('answers from the kept answer without renewing a lease it got after the end', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const running = finishGated()
+        const runningRequest = storeUploadChunk(chunk(1, 2, 'b'), running.finish)
+        await running.entered.promise
+
+        const lease = holdNextLeaseRequest()
+        const late = neverFinishes()
+        const lateRequest = storeUploadChunk(chunk(1, 2, 'b'), late)
+        await lease.reached.promise
+        running.gate.resolve()
+        const kept = await runningRequest
+
+        const compareAndSet = vi.spyOn(appState(), 'compareAndSet')
+        compareAndSet.mockClear()
+        lease.gate.resolve()
+        await expect(lateRequest).resolves.toEqual(kept)
+        expect(late).not.toHaveBeenCalled()
+        expect(leaseRenewals()).toBe(0)
+      })
+
+      it('refuses without renewing the lease when the manifest expired before its first read', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const stall = holdManifestReadUnderLease(1)
+        const finish = neverFinishes()
+        const request = storeUploadChunk(chunk(1, 2, 'b'), finish)
+        await stall.reached.promise
+        advance(UPLOAD_IDLE_EXPIRY_MS)
+
+        const compareAndSet = vi.spyOn(appState(), 'compareAndSet')
+        compareAndSet.mockClear()
+        stall.gate.resolve()
+        await expect(request).rejects.toBeInstanceOf(UploadConflictError)
+        expect(finish).not.toHaveBeenCalled()
+        expect(leaseRenewals()).toBe(0)
+        expect(await manifest()).toBeUndefined()
+      })
+
+      it('refuses and brings nothing back when the manifest expires between its read and its write', async () => {
+        await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
+        const stall = holdManifestReadUnderLease(2)
+        const finish = neverFinishes()
+        const request = storeUploadChunk(chunk(1, 2, 'b'), finish)
+        await stall.reached.promise
+        advance(UPLOAD_IDLE_EXPIRY_MS)
+
+        stall.gate.resolve()
+        await expect(request).rejects.toBeInstanceOf(UploadConflictError)
+        expect(finish).not.toHaveBeenCalled()
+        expect(await manifest()).toBeUndefined()
+      })
+    })
+
     describe('over a long run', () => {
       const STEP = 30_000
 
@@ -826,9 +1086,17 @@ describe.each<[string, () => UploadByteStore]>([
     it('still takes over when the answer to naming itself was lost', async () => {
       const lost = loseAnswerOfWrite((value) => value.state === 'finalizing' && value.finalizer !== null)
       const finish = finishReading()
-      await expect(storeUploadChunk(chunk(0, 1, 'a'), finish)).resolves.toMatchObject({ status: 'finished' })
+      const answer = await storeUploadChunk(chunk(0, 1, 'a'), finish)
+      expect(answer).toMatchObject({ status: 'finished' })
       expect(lost()).toBe(true)
       expect(finish).toHaveBeenCalledOnce()
+      expect(await manifest()).toMatchObject({ state: 'completed' })
+      await expect(storeUploadChunk(chunk(0, 1, 'a'), neverFinishes())).resolves.toEqual(answer)
+      // It found its own name and did not write it again.
+      const namings = vi.mocked(appState().compareAndSet).mock.calls.filter(([, , value]) => (
+        (value as UploadManifest).state === 'finalizing' && (value as { finalizer: string | null }).finalizer !== null
+      ))
+      expect(namings).toHaveLength(1)
     })
 
     it('keeps the answer and removes the chunks when the answer to publishing was lost', async () => {
