@@ -14,7 +14,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import type { CapabilityPolicy } from '@shared/lib/config/settings'
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 interface SettingRowProps {

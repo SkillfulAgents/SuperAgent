@@ -179,7 +179,7 @@ describe('Slack threads fold into their channel', () => {
   const now = Date.now()
   const slack = (): AgentIntegrationRecord => ({
     id: 'int-1', agentSlug: 'a', provider: 'slack', name: null, status: 'active', config: '{}',
-    errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null, createdAt: new Date(now), updatedAt: new Date(now),
+    errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null, createdAt: new Date(now), version: 0, updatedAt: new Date(now),
   })
   const at = (externalChatId: string, displayName: string | null, hoursAgo = 0) => {
     const time = new Date(now - hoursAgo * 60 * 60 * 1000)

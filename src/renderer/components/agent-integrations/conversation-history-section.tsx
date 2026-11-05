@@ -91,7 +91,7 @@ export function ConversationHistorySection({
           ))}
         </div>
       ) : (
-        <div className="mt-3 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        <div className="mt-3 rounded-card border border-dashed p-4 text-sm text-muted-foreground">
           No conversations yet. Send a message from {providerName} to start.
         </div>
       )}

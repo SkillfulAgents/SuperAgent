@@ -146,7 +146,7 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
         <DialogTitle>{source.title}</DialogTitle>
         <DialogDescription>{source.description}</DialogDescription>
       </DialogHeader>
-      <div className="flex min-w-0 items-center gap-1 rounded-md bg-muted px-1 py-1">
+      <div className="flex min-w-0 items-center gap-1 rounded-card bg-muted px-1 py-1">
         <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Parent folder" disabled={parent === null || moving}
           onClick={() => { if (parent !== null) open(parent) }}><ArrowLeft className="h-4 w-4" /></Button>
         <nav aria-label="Folder path" className="min-w-0 flex-1">
@@ -158,7 +158,7 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
                 {here
                   ? <span aria-current="location" className="truncate px-1.5 py-0.5 font-medium">{crumb.name}</span>
                   : <button type="button" disabled={moving} onClick={() => open(crumb.cursor)}
-                    className="truncate rounded px-1.5 py-0.5 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{crumb.name}</button>}
+                    className="truncate rounded-icon px-1.5 py-0.5 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{crumb.name}</button>}
               </li>
             })}
           </ol>
@@ -168,15 +168,15 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
         <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input value={filter} onChange={event => setFilter(event.target.value)} placeholder={`Filter ${noun}s`} aria-label={`Filter ${noun}s`} className="h-9 pl-8 text-sm" />
       </div>
-      <div className="min-h-32 rounded-md border p-1">
+      <div className="min-h-32 rounded-card border p-1">
         <div className="max-h-64 overflow-y-auto">
           {loading ? <p role="status" className="flex items-center gap-2 p-3 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading {noun}s…</p>
             : folders.error ? <div className="p-3"><p role="alert" className="text-sm text-destructive">{folders.error.message}</p><Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => { void folders.refetch() }}>Try again</Button></div>
             : shown.length ? shown.map(folder => {
               const isHighlighted = highlighted?.id === folder.id
-              return <div key={folder.id} className={cn('flex items-center rounded', isHighlighted ? 'bg-accent text-accent-foreground' : 'hover:bg-muted')}>
+              return <div key={folder.id} className={cn('flex items-center rounded-item', isHighlighted ? 'bg-accent text-accent-foreground' : 'hover:bg-muted')}>
                 <button type="button" aria-pressed={isHighlighted} disabled={create.isPending} ref={typeof focusTarget === 'object' && focusTarget?.folderId === folder.id ? focusOnMount : undefined} onClick={() => setHighlighted(isHighlighted ? null : folder)} onDoubleClick={() => { if (source.canOpen?.(folder.cursor) ?? true) open(folder.cursor); else setHighlighted(folder) }}
-                  className="flex min-w-0 flex-1 items-center gap-2 rounded px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-item px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   <Folder className="h-4 w-4 shrink-0" /><span className="min-w-0 flex-1 truncate"><HighlightMatch text={folder.name} query={filter.trim()} /></span>
                 </button>
                 {(source.canOpen?.(folder.cursor) ?? true) && <Button type="button" variant="ghost" size="icon" className="mr-0.5 h-8 w-8 shrink-0" aria-label={`Open ${folder.name}`} disabled={create.isPending} onClick={() => open(folder.cursor)}>

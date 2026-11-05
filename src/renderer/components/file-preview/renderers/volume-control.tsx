@@ -40,7 +40,7 @@ export function VolumeControl({ mediaRef }: { mediaRef: RefObject<HTMLMediaEleme
       <button
         type="button"
         onClick={toggleMute}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
         title={silent ? 'Unmute' : 'Mute'}
         aria-label={silent ? 'Unmute' : 'Mute'}
         data-testid="media-mute"

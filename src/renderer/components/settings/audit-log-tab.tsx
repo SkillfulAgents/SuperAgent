@@ -189,7 +189,7 @@ export function AuditLogTab() {
                   </TableCell>
                 )}
                 <TableCell>
-                  <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium">
+                  <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 text-xs font-medium">
                     {entry.object}
                   </span>
                 </TableCell>

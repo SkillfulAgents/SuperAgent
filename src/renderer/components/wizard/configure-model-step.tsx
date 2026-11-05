@@ -93,7 +93,7 @@ export function ConfigureModelStep() {
           return (
             <div
               key={option.model}
-              className={`rounded-lg border text-left transition-colors ${
+              className={`rounded-card border text-left transition-colors ${
                 isSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
               }`}
             >
@@ -122,7 +122,7 @@ export function ConfigureModelStep() {
         })}
 
         <div
-          className={`rounded-lg border text-left transition-colors ${
+          className={`rounded-card border text-left transition-colors ${
             otherSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
           }`}
         >

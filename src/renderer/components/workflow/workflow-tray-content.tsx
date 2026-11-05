@@ -277,7 +277,7 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
         <WorkflowIcon className="h-4 w-4 shrink-0" />
         <span className="flex-1 text-xs truncate font-medium">{name}</span>
         <button
-          className="p-0.5 rounded hover:bg-muted transition-colors"
+          className="p-0.5 rounded-icon hover:bg-muted transition-colors"
           onClick={onClose}
           title="Hide workflow panel"
         >
@@ -292,7 +292,7 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
           <select
             value={selectedRunId}
             onChange={(e) => selectWorkflow(e.target.value)}
-            className="w-full text-xs rounded border border-border bg-background px-2 py-1"
+            className="w-full text-xs rounded-item border border-border bg-background px-2 py-1"
           >
             {openWorkflows.map((w) => (
               <option key={w.runId} value={w.runId}>
@@ -389,7 +389,7 @@ function WorkflowAgentRow({
   })
 
   return (
-    <div className="border border-border/70 rounded-md overflow-hidden">
+    <div className="border border-border/70 rounded-card overflow-hidden">
       <button
         onClick={onToggle}
         data-testid="workflow-agent-row"

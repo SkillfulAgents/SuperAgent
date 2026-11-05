@@ -140,11 +140,11 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
           {parsed.columnCount} {parsed.columnCount === 1 ? 'column' : 'columns'} ·{' '}
           {rowCount.toLocaleString()} {rowCount === 1 ? 'row' : 'rows'}
         </span>
-        <div className="flex items-center gap-0.5 rounded-md border border-border/60 p-0.5">
+        <div className="flex items-center gap-0.5 rounded-item border border-border/60 p-0.5">
           <button
             onClick={() => setView('table')}
             className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
+              'flex items-center gap-1 rounded-icon px-1.5 py-0.5 transition-colors',
               view === 'table' ? 'bg-muted text-foreground' : 'hover:bg-muted/50',
             )}
             title="Table view"
@@ -155,7 +155,7 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
           <button
             onClick={() => setView('raw')}
             className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
+              'flex items-center gap-1 rounded-icon px-1.5 py-0.5 transition-colors',
               view === 'raw' ? 'bg-muted text-foreground' : 'hover:bg-muted/50',
             )}
             title="Raw text view"

@@ -60,7 +60,7 @@ export function SystemPromptDialog({ agent, open, onOpenChange }: SystemPromptDi
           />
           {locked && (
             <div
-              className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-background/80 backdrop-blur-sm"
+              className="absolute inset-0 z-10 flex items-center justify-center rounded-control bg-background/80 backdrop-blur-sm"
               data-testid="system-prompt-no-permission"
             >
               <div className="space-y-2 text-center">

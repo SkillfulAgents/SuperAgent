@@ -23,7 +23,7 @@ function ValidationResult({ result }: { result: VolumeValidation }) {
         <span>{check.label}{check.message && <span className="mt-0.5 block text-muted-foreground">{check.message}</span>}</span>
       </li>)}
     </ul>
-    {result.warnings.map(warning => <p key={warning} className="break-words rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">{warning}</p>)}
+    {result.warnings.map(warning => <p key={warning} className="break-words rounded-card border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">{warning}</p>)}
     {!result.valid && <p className="text-xs text-muted-foreground">Use a key with list, read, write, delete, and multipart upload access to this bucket and prefix. For Cloudflare R2, choose Object Read &amp; Write.</p>}
   </div>
 }
@@ -93,7 +93,7 @@ function S3VolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, e
             <label className="flex items-center gap-2"><input type="checkbox" checked={config.forcePathStyle} disabled={checking} onChange={event => update({ ...config, forcePathStyle: event.target.checked })} />Use path-style bucket URLs</label>
           </div></details>
         </> : <VolumeDetailsFields value={details} onChange={value => { setDetails(value); clearError() }} disabled={isSaving}>
-          <div className="rounded-md border bg-muted/30 p-3 text-sm"><p className="font-medium">{config.bucket}</p><p className="mt-1 break-all text-xs text-muted-foreground">{config.prefix || 'Entire bucket'} · {config.region}</p></div>
+          <div className="rounded-card border bg-muted/30 p-3 text-sm"><p className="font-medium">{config.bucket}</p><p className="mt-1 break-all text-xs text-muted-foreground">{config.prefix || 'Entire bucket'} · {config.region}</p></div>
         </VolumeDetailsFields>}
         {result && <div ref={resultRef} tabIndex={-1} className="outline-none"><ValidationResult result={result} /></div>}
         {(connectionError || error) && <p role="alert" className="text-sm text-destructive">{connectionError || error}</p>}

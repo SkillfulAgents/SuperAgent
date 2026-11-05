@@ -59,7 +59,7 @@ export function CopyFileButton({ fileUrl, displayName }: CopyFileButtonProps) {
         <button
           type="button"
           onClick={handleCopy}
-          className="p-0.5 rounded hover:bg-muted transition-colors"
+          className="p-0.5 rounded-icon hover:bg-muted transition-colors"
           aria-label="Copy file contents"
           data-testid="file-preview-copy"
         >
