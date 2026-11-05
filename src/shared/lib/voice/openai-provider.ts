@@ -89,8 +89,9 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
 
   /**
    * The project key stays on the host; the renderer receives only an SDP
-   * answer. `credentials`: the settings the request read and the key it will
-   * close the session with, so the session is created with that same key.
+   * answer. `credentials`: the settings the request read (the key and the
+   * summarizer check come from them, read when absent), or a key to use
+   * instead of theirs.
    */
   async createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext, credentials: LiveSessionCredentials = {}): Promise<LiveSessionAnswer> {
     const settings = credentials.settings ?? await getSettings()

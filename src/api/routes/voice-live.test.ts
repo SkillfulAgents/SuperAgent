@@ -28,13 +28,16 @@ const getSettings = vi.hoisted(() => vi.fn())
 vi.mock('@shared/lib/config/settings', () => ({ getSettings }))
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
-    name: { openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
+    id,
+    name:{ openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
     getLiveConversation: () => (id === 'openai' || id === 'platform')
       ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close, getLiveVoices: () => LIVE_VOICES, resolveLiveVoice: () => 'marin' }
       : mocks.alternateEnabled
         ? { createLiveSession: mocks.alternateCreate, mapLiveConversation: mocks.alternateMap, closeLiveSession: mocks.alternateClose, getLiveVoices: () => [], resolveLiveVoice: () => 'other' }
         : null,
     effectiveApiKeyFrom: () => 'session-token',
+    // The hangup's key: the provider's as configured when it hangs up.
+    getEffectiveApiKey: async () => 'session-token',
     apiKeyStatusFrom: () => ({ isConfigured: true }), supportsTts: () => true, getTtsVoices: () => OPENAI_TTS_VOICES, resolveTtsVoice: () => 'marin', getConversationEngine: () => 'openai-live',
   }),
 }))
@@ -89,8 +92,8 @@ beforeEach(() => {
   getSettings.mockReset()
   getSettings.mockImplementation(async () => ({ voice: { sttProvider: mocks.providerName }, agentCapabilities: { subagents: 'block', workflows: 'review' } }))
 })
-// What the route hands the provider with each Live session: the request's settings and the key that will close it.
-const credentials = expect.objectContaining({ apiKey: 'session-token', settings: expect.anything() })
+// What the route hands the provider with each Live session: the settings its request read.
+const credentials = expect.objectContaining({ settings: expect.anything() })
 
 describe('Live voice routes', () => {
   it.each(['openai', 'platform'] as const)('loads authorized agent context on the server for %s', async (provider) => {
@@ -235,9 +238,7 @@ describe('Live voice routes', () => {
     expect(mocks.map).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal), mapSettings)
     expect(mapSettings).toEqual(expect.objectContaining({ voice: { sttProvider: id } }))
     expect(getSettings).toHaveBeenCalledTimes(2)
-    // The session closes with the key it was created with.
     expect(mocks.close).toHaveBeenCalledExactlyOnceWith('live_test', 'session-token')
-    expect(mocks.create.mock.calls[0]?.[3]).toMatchObject({ apiKey: 'session-token' })
   })
   it.each(['openai', 'platform'] as const)('binds cleanup to the initiating user for %s and permits cleanup after switching providers', async (id) => {
     mocks.providerName = id
