@@ -6,10 +6,16 @@ import {
   countLiveSessions,
   liveSessionsKey,
   LIVE_SESSION_RECORD_MAX,
-  removeClosedLiveSession,
+  removeLiveSession,
   reserveLiveSession,
 } from './live-session-admission'
-import { LiveSessionRegistry, LIVE_SESSION_MAX_MS, LIVE_SESSION_PENDING_LEASE_MS, type LiveSessionHangup } from './live-session-registry'
+import {
+  LiveSessionRegistry,
+  LIVE_SESSION_MAX_MS,
+  LIVE_SESSION_PENDING_LEASE_MS,
+  LIVE_SESSION_RETAIN_MS,
+  type LiveSessionHangup,
+} from './live-session-registry'
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
@@ -79,6 +85,57 @@ describe('Live session cleanup', () => {
     expect(opener).not.toHaveBeenCalled()
   })
 
+  it('still hangs up when its deadline timer fires after the entry is past keeping', async () => {
+    const hangup = vi.fn<LiveSessionHangup>(async () => {})
+    const registry = new LiveSessionRegistry(hangup)
+    await open(registry, 'alice', 'rtc-1')
+    // The machine sleeps: the clock jumps past the entry's keeping while the
+    // deadline timer still waits its full hour, so it fires after the record
+    // has expired.
+    vi.setSystemTime(Date.now() + LIVE_SESSION_RETAIN_MS + 60_000)
+    await vi.advanceTimersByTimeAsync(LIVE_SESSION_MAX_MS)
+    expect(hangup).toHaveBeenCalledExactlyOnceWith('openai', 'rtc-1')
+  })
+
+  it('removes the entry of a session whose activation answer was lost, once AppState answers again', async () => {
+    const hangup = vi.fn<LiveSessionHangup>(async () => {})
+    const registry = new LiveSessionRegistry(hangup)
+    const state = appState()
+    const real = { get: state.get.bind(state), compareAndSet: state.compareAndSet.bind(state), consume: state.consume.bind(state) }
+    let outage = false
+    const down = () => { throw new Error('AppState unavailable') }
+    vi.spyOn(state, 'get').mockImplementation(async key => outage ? down() : real.get(key))
+    vi.spyOn(state, 'consume').mockImplementation(async (key, options) => outage ? down() : real.consume(key, options))
+    vi.spyOn(state, 'compareAndSet').mockImplementation(async (key, expected, value, options) => {
+      if (outage) down()
+      const written = await real.compareAndSet(key, expected, value, options)
+      // The activation lands, its answer is lost, and AppState stays down a while.
+      if (JSON.stringify(value).includes('"active"')) {
+        outage = true
+        down()
+      }
+      return written
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const reservation = await registry.reserve('alice', 'openai')
+      await expect(reservation!.start('rtc-1')).rejects.toThrow('Could not record the voice session')
+      await reservation!.end()
+      expect(hangup).toHaveBeenCalledExactlyOnceWith('openai', 'rtc-1')
+      // Still down at the first retry.
+      await vi.advanceTimersByTimeAsync(1000)
+      outage = false
+      expect(await countLiveSessions('alice')).toBe(1)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await countLiveSessions('alice')).toBe(0)
+      expect(await entries('alice')).toEqual([])
+      // Logged once, not at every retry.
+      expect(warning.mock.calls.filter(([message]) => String(message).includes('Could not remove'))).toHaveLength(1)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
   it('hangs up at the deadline a session whose release failed in another process', async () => {
     const opener = vi.fn<LiveSessionHangup>(async () => {})
     const closer = vi.fn<LiveSessionHangup>(async () => { throw new Error('Unavailable') })
@@ -118,10 +175,13 @@ describe('Live session admission record', () => {
     expect(await entries('alice')).toEqual([[reservation!.id, 'pending']])
   })
 
-  it('removes a closed session only while it is closing', async () => {
+  it('removes a created session, and never a pending one', async () => {
     const reservation = await reserveLiveSession('alice', 'openai')
-    await removeClosedLiveSession('alice', reservation!.id)
+    await removeLiveSession('alice', reservation!.id)
     expect(await entries('alice')).toEqual([[reservation!.id, 'pending']])
+    await activateLiveSession('alice', reservation!.id, 'rtc-1')
+    await removeLiveSession('alice', reservation!.id)
+    expect(await entries('alice')).toEqual([])
   })
 
   it('refuses new sessions once the record is full of closing ones', async () => {

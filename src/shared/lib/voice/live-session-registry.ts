@@ -16,15 +16,22 @@ import {
   closeLiveSessionEntry,
   LIVE_SESSION_MAX_MS,
   LIVE_SESSION_PENDING_LEASE_MS,
-  removeClosedLiveSession,
+  LIVE_SESSION_RETAIN_MS,
+  removeLiveSession,
   renewLiveSessionReservation,
   reserveLiveSession,
 } from './live-session-admission'
 import type { VoiceProvider } from './provider-types'
 
-export { LIVE_SESSION_MAX_MS, LIVE_SESSION_PENDING_LEASE_MS } from './live-session-admission'
+export { LIVE_SESSION_MAX_MS, LIVE_SESSION_PENDING_LEASE_MS, LIVE_SESSION_RETAIN_MS } from './live-session-admission'
 
 const RETRY_DELAYS_MS = [1000, 5000, 30_000]
+/**
+ * Between attempts to remove a hung-up session's entry while AppState refuses
+ * the write; the last delay repeats until the session's deadline, when the
+ * entry stops counting by itself.
+ */
+const REMOVAL_RETRY_DELAYS_MS = [1000, 5000, 30_000, 60_000]
 /** How often a start in progress renews its reservation; several renewals fit in one lease. */
 const LIVE_SESSION_RENEW_MS = LIVE_SESSION_PENDING_LEASE_MS / 4
 
@@ -68,7 +75,10 @@ interface LocalSession {
   provider: VoiceProvider
   providerSessionId: string
   expiresAt: number
-  /** False when AppState has no entry for it: its reservation was gone, or recording it failed. */
+  /**
+   * Whether AppState may hold an entry for it, to remove once it is hung up.
+   * False only when its reservation was known to be gone before activation.
+   */
   recorded: boolean
   attempts: number
   timer?: ReturnType<typeof setTimeout>
@@ -104,10 +114,11 @@ export class LiveSessionRegistry {
           if (!ended) active = await activateLiveSession(owner, id, providerSessionId)
         } catch (error) {
           // The client gets no handle, so nobody could release it: hang it up
-          // now rather than let it bill. The write may have landed all the
-          // same, so stop counting it too.
-          const landed = await closeLiveSessionEntry(owner, id).catch(() => null)
-          await this.abandon(owner, id, provider, providerSessionId, landed !== null)
+          // now rather than let it bill. The activation may have landed all
+          // the same (its answer lost), leaving an active entry that counts,
+          // so it is treated as recorded: its entry is removed after the
+          // hangup, retried until that works.
+          await this.abandon(owner, id, provider, providerSessionId, true)
           throw new Error('Could not record the voice session. Try again.', { cause: error })
         }
         if (!active) {
@@ -181,8 +192,10 @@ export class LiveSessionRegistry {
 
   /**
    * The deadline: one last hangup, and the session is forgotten whatever its
-   * outcome. Skipped when the entry is gone from AppState, which means another
-   * process hung it up and removed it.
+   * outcome. Skipped only when the entry is gone from AppState while it would
+   * still be kept, which means another process hung it up and removed it.
+   * Whenever that is not certain, it hangs up: a second hangup of an ended
+   * session does no harm (the provider answers 404, which counts as closed).
    */
   private async expire(handle: string, session: LocalSession): Promise<void> {
     if (session.recorded) {
@@ -190,10 +203,11 @@ export class LiveSessionRegistry {
       try {
         entry = await closeLiveSessionEntry(session.owner, handle)
       } catch (error) {
-        // Not knowing, hang up anyway: a second hangup of an ended session does no harm.
         console.warn('[voice] Could not read a Live session at its deadline; hanging it up anyway:', error)
       }
-      if (entry === null) {
+      // A timer delayed past the entry's keeping (a machine asleep) finds it
+      // gone either way, so its absence says nothing then.
+      if (entry === null && Date.now() < session.expiresAt + LIVE_SESSION_RETAIN_MS) {
         this.drop(handle, session)
         return
       }
@@ -225,19 +239,34 @@ export class LiveSessionRegistry {
     return pending
   }
 
-  /** The session is done with: hung up, or given up at its deadline. */
+  /**
+   * The session is done with: hung up, or given up at its deadline. Its entry
+   * is removed; when AppState refuses, the removal is retried here, since the
+   * entry may still be active and counting (an activation whose answer was
+   * lost), until it works or the deadline ends the entry's count anyway.
+   */
   private async forget(handle: string, session: LocalSession): Promise<void> {
     clearTimeout(session.timer)
     clearTimeout(session.retry)
-    if (session.recorded) {
-      try {
-        await removeClosedLiveSession(session.owner, handle)
-      } catch (error) {
-        // It no longer counts, and it is dropped at its deadline anyway.
-        console.warn('[voice] Could not remove a closed Live session from AppState:', error)
-      }
-    }
+    if (session.recorded && !await this.removeEntry(handle, session, 0)) return
     this.drop(handle, session)
+  }
+
+  /** One removal of the session's entry; on failure, schedules the next one. True once removed. */
+  private async removeEntry(handle: string, session: LocalSession, failures: number): Promise<boolean> {
+    try {
+      await removeLiveSession(session.owner, handle)
+      return true
+    } catch (error) {
+      if (failures === 0) console.warn('[voice] Could not remove a hung-up Live session from AppState; retrying:', error)
+    }
+    const delay = REMOVAL_RETRY_DELAYS_MS[Math.min(failures, REMOVAL_RETRY_DELAYS_MS.length - 1)]
+    session.retry = setTimeout(() => background(async () => {
+      // Past the deadline, the entry no longer counts.
+      if (Date.now() >= session.expiresAt || await this.removeEntry(handle, session, failures + 1)) this.drop(handle, session)
+    }, { name: 'live-session-registry.remove-entry' }), delay)
+    session.retry.unref()
+    return false
   }
 
   private drop(handle: string, session: LocalSession): void {

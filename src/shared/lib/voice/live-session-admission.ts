@@ -193,14 +193,17 @@ export async function closeLiveSessionEntry(owner: string, id: string): Promise<
 }
 
 /**
- * Removes a closing session once its hangup is done (or given up at its
- * deadline). Only that entry, and only while it is closing: nothing else in
+ * Removes a session once its hangup is done (or given up at its deadline).
+ * Only that entry, and only once it was created: a closing one, or an active
+ * one whose activation answer was lost before it could be marked closing.
+ * Never a pending one, which a start in progress still owns. Nothing else in
  * the record changes, whatever was written since the hangup began.
  */
-export async function removeClosedLiveSession(owner: string, id: string): Promise<void> {
+export async function removeLiveSession(owner: string, id: string): Promise<void> {
   await reduceRecord(liveSessionsKey(owner), (record) => {
     const sessions = kept(record, Date.now())
-    if (sessions.find(session => session.id === id)?.state !== 'closing') return { result: undefined }
+    const state = sessions.find(session => session.id === id)?.state
+    if (state !== 'closing' && state !== 'active') return { result: undefined }
     return replace(sessions, id, null, undefined)
   })
 }
