@@ -1,7 +1,6 @@
 import { meetingSpeakerChangesSchema, type MeetingSpeakerChanges } from './transcript-speakers-schema'
 import { appState, defineNamespace, type StateKey } from '../app-state'
 import { getIntegrationSessionBySessionId } from '../agent-integrations/store'
-import type { VoiceSpeechPiece } from '../voice/transcript-schema'
 import type { NamedVoiceSpeech } from '../voice/transcripts'
 import { getMeeting } from './store'
 
@@ -43,11 +42,11 @@ export async function meetingSpeakerStarted(meetingId: string, name: string, at 
 }
 
 /** Optional meeting enrichment of a generic voice transcript, resolved from the authorized session. */
-export async function nameVoiceSpeech(agentSlug: string, sessionId: string, pieces: readonly VoiceSpeechPiece[]): Promise<NamedVoiceSpeech[]> {
+export async function nameMeetingVoiceSpeech(agentSlug: string, sessionId: string, pieces: readonly NamedVoiceSpeech[]): Promise<readonly NamedVoiceSpeech[]> {
   const session = await getIntegrationSessionBySessionId(agentSlug, sessionId)
   const meeting = session ? await getMeeting(session.externalId) : null
   if (!meeting || meeting.agentSlug !== agentSlug || meeting.integrationId !== session?.integrationId) {
-    return pieces.map(piece => ({ ...piece, speaker: piece.role === 'assistant' ? 'Assistant' : 'User' }))
+    return pieces
   }
   const speakers = (await appState().get(meetingSpeakersKey(meeting.id)))?.value ?? []
   return pieces.map(piece => ({ ...piece, speaker: piece.role === 'assistant' ? meeting.botName

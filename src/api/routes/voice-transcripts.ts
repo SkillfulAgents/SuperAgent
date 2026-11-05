@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { appendVoiceTranscript, startVoiceTranscript } from '@shared/lib/voice/transcripts'
+import { appendVoiceTranscript, nameVoiceSpeech, startVoiceTranscript } from '@shared/lib/voice/transcripts'
 import { transcriptSessionIdSchema, voiceSpeechBatchSchema, voiceTranscriptStartSchema } from '@shared/lib/voice/transcript-schema'
-import { nameVoiceSpeech } from '@shared/lib/meeting-integrations/transcript-speakers'
+import { nameMeetingVoiceSpeech } from '@shared/lib/meeting-integrations/transcript-speakers'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middleware/auth'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 
@@ -28,7 +29,11 @@ router.post('/:index/:transcriptId', async c => {
   const agentSlug = getAgentId(c)
   const batch = parsed.data
   const shift = Date.now() - batch.sentAt
-  const pieces = await nameVoiceSpeech(agentSlug, sessionId, batch.pieces.map(piece => ({ ...piece, at: piece.at + shift })))
+  // Use the caller's verified identity even when the agent/session is shared.
+  // Participant credentials identify the meeting initiator; meeting enrichment supplies the actual speakers.
+  const user = isAuthMode() ? c.get('user' as never) as { id: string; name?: string } | undefined : undefined
+  const named = nameVoiceSpeech(batch.pieces.map(piece => ({ ...piece, at: piece.at + shift })), user?.name?.trim() || user?.id || 'user')
+  const pieces = await nameMeetingVoiceSpeech(agentSlug, sessionId, named)
   const result = await appendVoiceTranscript(agentRegistry.get(agentSlug), sessionId, index.data, c.req.param('transcriptId'), pieces)
   if (!result) return c.json({ error: 'Voice transcript not found' }, 404)
   return c.json({ accepted: true })
