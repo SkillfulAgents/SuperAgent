@@ -1,4 +1,10 @@
-import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
+import {
+  getSettings,
+  getEffectiveBrowserbaseApiKey,
+  effectiveBrowserbaseApiKeyFrom,
+  effectiveBrowserbaseProjectIdFrom,
+  type AppSettings,
+} from '@shared/lib/config/settings'
 import { getOrCreateMapping } from './context-map-store'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
@@ -22,6 +28,20 @@ interface BrowserbaseDebugResponse {
   }>
 }
 
+/**
+ * The Browserbase account one operation (a detection, a launch, a stop of
+ * every session) uses, from one settings read. Not kept past it: the next
+ * operation reads again.
+ */
+interface BrowserbaseCredentials {
+  apiKey: string | undefined
+  projectId: string | undefined
+}
+
+function credentialsFrom(settings: Pick<AppSettings, 'apiKeys'>): BrowserbaseCredentials {
+  return { apiKey: effectiveBrowserbaseApiKeyFrom(settings), projectId: effectiveBrowserbaseProjectIdFrom(settings) }
+}
+
 export class BrowserbaseProvider implements HostBrowserProvider {
   readonly id = 'browserbase' as const
   readonly name = 'Browserbase'
@@ -33,8 +53,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   onExternalClose: ((instanceId: string) => void) | null = null
 
   async detect(): Promise<HostBrowserProviderStatus> {
-    const apiKey = await getEffectiveBrowserbaseApiKey()
-    const projectId = await getEffectiveBrowserbaseProjectId()
+    const { apiKey, projectId } = credentialsFrom(await getSettings())
 
     if (!apiKey || !projectId) {
       return {
@@ -49,8 +68,9 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   }
 
   async launch(instanceId: string, _options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo> {
-    const apiKey = await getEffectiveBrowserbaseApiKey()
-    const projectId = await getEffectiveBrowserbaseProjectId()
+    // One read for the account and the stealth / proxy options below.
+    const settings = await getSettings()
+    const { apiKey, projectId } = credentialsFrom(settings)
 
     if (!apiKey || !projectId) {
       throw new Error('Browserbase API key and project ID must be configured')
@@ -82,7 +102,6 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     const contextId = await this.getOrCreateContext(contextKey, projectId, apiKey)
 
     // Build session creation payload with optional stealth & proxy settings
-    const settings = await getSettings()
     const browserSettings: Record<string, unknown> = {
       context: { id: contextId, persist: true },
     }
@@ -174,14 +193,18 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   }
 
   async stop(instanceId: string): Promise<void> {
+    return this.stopWith(instanceId)
+  }
+
+  /** Stop one session, with the account `stopAll` read for every session, else one read now. */
+  private async stopWith(instanceId: string, credentials?: BrowserbaseCredentials): Promise<void> {
     this.passkeyRecovery.stop(instanceId)
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return
 
     this.sessions.delete(instanceId)
 
-    const apiKey = await getEffectiveBrowserbaseApiKey()
-    const projectId = await getEffectiveBrowserbaseProjectId()
+    const { apiKey, projectId } = credentials ?? credentialsFrom(await getSettings())
     if (!apiKey || !projectId) return
 
     try {
@@ -201,7 +224,10 @@ export class BrowserbaseProvider implements HostBrowserProvider {
 
   async stopAll(): Promise<void> {
     const instanceIds = Array.from(this.sessions.keys())
-    await Promise.all(instanceIds.map((id) => this.stop(id)))
+    if (instanceIds.length === 0) return
+    // One read for the whole batch.
+    const credentials = credentialsFrom(await getSettings())
+    await Promise.all(instanceIds.map((id) => this.stopWith(id, credentials)))
   }
 
   isRunning(instanceId?: string): boolean {

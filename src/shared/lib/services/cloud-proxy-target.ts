@@ -1,4 +1,5 @@
-import { readCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
+import type { AppSettings, CloudWorkspaceSettings } from '@shared/lib/config/settings'
+import { cloudWorkspaceRecordFrom, readCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 import { getCloudWorkspace, isDeploymentUrlAllowed } from './cloud-workspace-service'
 
 /** Where the cloud proxy forwards to, and the credential it presents. */
@@ -24,7 +25,15 @@ export interface CloudProxyTarget {
  * them.
  */
 export async function resolveCloudProxyTarget(): Promise<CloudProxyTarget | null> {
-  const record = await readCloudWorkspaceRecord()
+  return targetOf(await readCloudWorkspaceRecord())
+}
+
+/** {@link resolveCloudProxyTarget} from settings already read. */
+export function cloudProxyTargetFrom(settings: Pick<AppSettings, 'cloudWorkspace'>): CloudProxyTarget | null {
+  return targetOf(cloudWorkspaceRecordFrom(settings))
+}
+
+function targetOf(record: CloudWorkspaceSettings | null): CloudProxyTarget | null {
   if (!record?.token || !record.deploymentUrl) return null
   if (!isDeploymentUrlAllowed(record.deploymentUrl)) return null
   return {

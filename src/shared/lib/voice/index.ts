@@ -4,7 +4,7 @@ export { OpenaiVoiceProvider } from './openai-provider'
 export { PlatformVoiceProvider } from './platform-provider'
 
 import type { VoiceProvider } from '../config/settings'
-import { getVoiceSettings } from '../config/settings'
+import { getSettings } from '../config/settings'
 import { BaseVoiceProvider } from './voice-provider'
 import { DeepgramVoiceProvider } from './deepgram-provider'
 import { OpenaiVoiceProvider } from './openai-provider'
@@ -29,11 +29,12 @@ export function getVoiceProvider<T extends VoiceProvider>(id: T): typeof provide
  * or null if voice is not configured.
  */
 export async function getConfiguredVoiceProvider(): Promise<BaseVoiceProvider | null> {
-  const voice = await getVoiceSettings()
-  if (!voice.sttProvider) return null
-  const provider = providers[voice.sttProvider]
+  // One read: the selection and its key status come from the same settings.
+  const settings = await getSettings()
+  const selected = settings.voice?.sttProvider
+  if (!selected) return null
+  const provider = providers[selected]
   if (!provider) return null
-  const status = await provider.getApiKeyStatus()
-  if (!status.isConfigured) return null
+  if (!provider.apiKeyStatusFrom(settings).isConfigured) return null
   return provider
 }

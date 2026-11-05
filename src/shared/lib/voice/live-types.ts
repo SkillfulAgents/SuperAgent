@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { AgentCapabilitySettings } from '../config/capability-policy-schema'
+import type { AppSettings } from '../config/settings'
 
 import { voiceHistorySchema, type VoiceHistory } from './conversation-types'
 import type { TtsVoiceInfo } from './tts-preferences'
@@ -68,10 +69,21 @@ export interface LiveAgentContext {
   setting?: LiveConversationSetting
 }
 
+/**
+ * What the request creating a Live session already resolved: the settings it
+ * read, and the key it keeps to close the session with. The session is
+ * created with that same key, so cleanup never uses a different credential.
+ */
+export interface LiveSessionCredentials {
+  settings?: AppSettings
+  apiKey?: string
+}
+
 /** Optional provider capability for delegated WebRTC conversations. */
 export interface LiveConversationProvider {
-  createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext): Promise<LiveSessionAnswer>
-  mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal): Promise<LiveRequest | { text: string }>
+  createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext, credentials?: LiveSessionCredentials): Promise<LiveSessionAnswer>
+  /** `settings`: the request's settings, for the summarizer; read when absent. */
+  mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal, settings?: AppSettings): Promise<LiveRequest | { text: string }>
   closeLiveSession(id: string, apiKey?: string): Promise<void>
   /** The voices a Live session can speak with; the first is the default. Distinct from read-aloud voices. */
   getLiveVoices(): readonly TtsVoiceInfo[]

@@ -5,9 +5,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const state = vi.hoisted(() => ({ nangoKey: undefined as string | undefined, preferred: 'nango' as 'nango' | 'composio' }))
+const state = vi.hoisted(() => ({ nangoKey: undefined as string | undefined, preferred: 'nango' as 'nango' | 'composio', keyReads: 0 }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getNangoSecretKey: async () => state.nangoKey,
+  getNangoSecretKey: async () => {
+    state.keyReads++
+    return state.nangoKey
+  },
+  // From settings a caller already read (here, the stored key).
+  nangoSecretKeyFrom: () => state.nangoKey,
   getDefaultAccountProviderType: async () => state.preferred,
 }))
 vi.mock('@shared/lib/composio/client', () => ({}))
@@ -29,6 +34,7 @@ function bearers(): string[] {
 beforeEach(() => {
   state.nangoKey = 'nango-key-1'
   state.preferred = 'nango'
+  state.keyReads = 0
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -108,6 +114,30 @@ describe('NangoAccountProvider across a key change', () => {
 
     const upstream = bearers().filter((_, index) => String(fetchMock.mock.calls[index][0]).startsWith('https://api.github.com'))
     expect(upstream.at(-1)).toBe('Bearer token-from-account-2')
+  })
+})
+
+describe('secret key reads for one proxied request', () => {
+  const call = { providerConnectionId: 'conn', toolkitSlug: 'github', targetUrl: 'https://api.github.com/user', method: 'GET', headers: new Headers(), body: null }
+  const respond = () => fetchMock.mockImplementation(async (url) => String(url).startsWith('https://api.nango.dev')
+    ? connection('token-1')
+    : new Response('ok'))
+
+  it('reads the key once for a token lookup and its fetch', async () => {
+    respond()
+    await new NangoAccountProvider().makeApiCall(call)
+    expect(state.keyReads).toBe(1)
+  })
+
+  it('reads nothing for the status check and the forward when the request took the key', async () => {
+    respond()
+    const provider = new NangoAccountProvider()
+    const credentials = provider.credentialsFrom({})
+    await provider.getConnection('conn', 'github', credentials)
+    await provider.makeApiCall({ ...call, credentials })
+    expect(state.keyReads).toBe(0)
+    expect(bearers().filter((_, i) => String(fetchMock.mock.calls[i][0]).startsWith('https://api.nango.dev')))
+      .toEqual(['Bearer nango-key-1', 'Bearer nango-key-1'])
   })
 })
 

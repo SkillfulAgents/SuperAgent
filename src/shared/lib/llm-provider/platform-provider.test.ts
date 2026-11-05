@@ -15,6 +15,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
     forAgent: (slug: string) => forAgentAttribution(slug),
     requiresActingMember: () => requiresActingMember(),
   },
+  runWithAttribution: (_attribution: unknown, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/error-reporting', () => ({
   captureMessage: (...args: unknown[]) => captureMessage(...args),
@@ -23,20 +24,22 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: async () => platformAccessToken(),
   platformAccessTokenFrom: () => platformAccessToken(),
   getPlatformAuthStatus: async () => platformAuthStatus(),
+  platformAuthStatusFrom: () => platformAuthStatus(),
   getStoredPlatformMemberId: async () => null,
+  storedPlatformMemberIdFrom: () => null,
   fetchActingPlatformAccount: () => fetchActingAccount(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.example/v1',
   getPlatformBaseUrl: () => 'https://platform.example.com',
 }))
-vi.mock('../config/settings', () => ({
-  getSettings: async () => ({}),
-}))
+const getSettings = vi.hoisted(() => vi.fn(async () => ({})))
+vi.mock('../config/settings', () => ({ getSettings }))
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
 import { platformPlanCache } from './platform-plan-cache'
+import { actingAttributionOnce } from './platform-plan-account'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 
 const provider = new PlatformLlmProvider()
@@ -49,7 +52,49 @@ beforeEach(() => {
   platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
   fetchActingAccount.mockReset()
+  getSettings.mockClear()
   platformPlanCache.clear()
+})
+
+// SUP-1507: given the settings its operation read, the provider reads none itself.
+describe('settings the operation already read', () => {
+  const catalog = provider.getBuiltinCatalog()
+  const settings = { platformAuth: undefined }
+
+  it('reads the settings once per availability check, and none when given them', async () => {
+    currentAttribution.mockReturnValue({ actingMemberId: () => 'member_a' })
+    fetchActingAccount.mockResolvedValue({ memberId: 'member_a', orgId: 'org_123', userId: 'u', orgName: null, orgIconUrl: null, role: null, email: null, plan: null, deniedModels: null })
+    await provider.getModelAvailability(catalog)
+    expect(getSettings).toHaveBeenCalledTimes(1)
+    getSettings.mockClear()
+    await provider.getModelAvailability(catalog, { settings })
+    await provider.getModelAvailabilityRevision(settings)
+    await provider.presentationForTurnError(429, { error: { type: 'rate_limit_error', message: 'spend cap' } }, 'rate_limit', settings)
+    expect(getSettings).not.toHaveBeenCalled()
+  })
+
+  it('resolves the acting attribution through the operation\'s resolver', async () => {
+    const acting = vi.fn(async () => ({ actingMemberId: () => 'member_b' }) as never)
+    fetchActingAccount.mockResolvedValue({ memberId: 'member_b', orgId: 'org_123', userId: 'u', orgName: null, orgIconUrl: null, role: null, email: null, plan: null, deniedModels: null })
+    await provider.getModelAvailability(catalog, { settings, acting })
+    expect(acting).toHaveBeenCalledOnce()
+    expect(currentAttribution).not.toHaveBeenCalled()
+  })
+
+  it('shares one attribution resolution across one operation, and resolves again for the next', async () => {
+    const operation = actingAttributionOnce()
+    await Promise.all([operation(), operation(), operation()])
+    expect(currentAttribution).toHaveBeenCalledTimes(1)
+    await actingAttributionOnce()()
+    expect(currentAttribution).toHaveBeenCalledTimes(2)
+  })
+
+  it('builds the container env from the given settings', async () => {
+    forAgentAttribution.mockReturnValue({ bearerToken: () => 'platform-token::member_a' })
+    const env = await provider.getContainerEnvVars({ id: 'agent-1' }, settings)
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token::member_a')
+    expect(getSettings).not.toHaveBeenCalled()
+  })
 })
 
 describe('getModelAvailability', () => {

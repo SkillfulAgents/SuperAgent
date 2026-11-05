@@ -1,5 +1,5 @@
 import { listAgents } from '@shared/lib/services/agent-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { readStoredAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveApiLogAutoDeleteDays } from '@shared/lib/config/api-log-auto-delete'
 import { pruneExpiredApiLogsForAgent } from '@shared/lib/services/api-log-auto-delete'
@@ -67,7 +67,7 @@ class ApiLogAutoDeleteMonitor {
 
       for (const agent of agents) {
         try {
-          const agentPrefs = await readAgentPreferences(agent.slug)
+          const agentPrefs = await readStoredAgentPreferences(agent.slug)
           const effectiveDays = resolveApiLogAutoDeleteDays(
             agentPrefs.apiLogAutoDeleteDays,
             appDays,

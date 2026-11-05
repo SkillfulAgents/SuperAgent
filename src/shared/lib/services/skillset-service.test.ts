@@ -92,6 +92,7 @@ vi.mock('@shared/lib/config/settings', () => ({
     apiKeys: mockGetApiKey() ? { anthropicApiKey: mockGetApiKey() } : {},
   })),
   getEffectiveModels: mockGetModels,
+  effectiveModelsFrom: () => mockGetModels(),
   getModelCatalogSettings: () => ({}),
 }))
 
@@ -160,6 +161,7 @@ import {
   importSkillFromZip,
 } from './skillset-service'
 import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
+import { getSettings } from '@shared/lib/config/settings'
 
 // ============================================================================
 // Test Suite
@@ -520,6 +522,20 @@ describe('skillset-service', () => {
         sourceLabel: 'Test Skillset',
         openPrUrl: prUrl,
       })
+    })
+
+    it('screens every installed skill\'s metadata with one settings read', async () => {
+      const readsFor = async (agentSlug: string, skills: number) => {
+        for (let i = 0; i < skills; i++) {
+          await createSkillDir(agentSlug, `skill-${i}`, SKILL_MD_PLAIN, buildMetadata({ skillName: `Skill ${i}` }))
+        }
+        vi.mocked(getSettings).mockClear()
+        expect(await getAgentSkillsWithStatus(agentSlug, [])).toHaveLength(skills)
+        return vi.mocked(getSettings).mock.calls.length
+      }
+
+      expect(await readsFor('one-skill-agent', 1)).toBe(1)
+      expect(await readsFor('many-skills-agent', 6)).toBe(1)
     })
 
     it('returns results sorted alphabetically by name', async () => {

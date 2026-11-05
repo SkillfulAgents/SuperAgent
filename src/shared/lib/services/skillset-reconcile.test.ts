@@ -7,6 +7,8 @@ const state = vi.hoisted(() => ({
   // provider → whether an installed record is still valid; a thrown error
   // is the provider failing, which the reconcile treats as "keep".
   isInstalledValid: vi.fn((_provider: string | undefined, _meta: unknown): boolean => true),
+  // provider → whether a skillset config is still valid, and the auth state it was judged against.
+  isConfigValid: vi.fn((_provider: string | undefined, _config: unknown, _auth: unknown): boolean => true),
   captureException: vi.fn(),
 }))
 
@@ -21,7 +23,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/skillset-provider', () => ({
   getSkillsetProvider: (provider?: string) => ({
-    isConfigValid: () => true,
+    isConfigValid: (config: unknown, auth: unknown) => state.isConfigValid(provider, config, auth),
     isInstalledValid: (meta: unknown) => state.isInstalledValid(provider, meta),
   }),
 }))
@@ -51,10 +53,13 @@ vi.mock('@shared/lib/agent-actor', async () => {
 })
 
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import {
   pruneInstalledSkillIfInvalid,
   pruneInstalledTemplateIfInvalid,
+  readSkillsetAuthScreen,
   reconcileInstalledForCurrentAuth,
+  reconcileSkillsetConfigsForCurrentAuth,
 } from './skillset-reconcile'
 
 function workspaceOf(slug: string): InMemoryFileOps {
@@ -78,7 +83,93 @@ describe('skillset-reconcile', () => {
     state.files.clear()
     state.isInstalledValid.mockReset()
     state.isInstalledValid.mockReturnValue(true)
+    state.isConfigValid.mockReset()
+    state.isConfigValid.mockReturnValue(true)
     state.captureException.mockReset()
+    vi.mocked(getSettings).mockClear()
+  })
+
+  describe('reconcileSkillsetConfigsForCurrentAuth', () => {
+    /** Runs the mutator like the compare-and-set does: `retries` discarded attempts, then the committed one. */
+    function writeAttempts(configs: number, retries: number) {
+      const settings = () => ({
+        skillsets: Array.from({ length: configs }, (_, i) => ({ id: `platform--r--${i}`, provider: 'platform' })),
+      })
+      vi.mocked(mutateSettings).mockImplementation(async (mutator) => {
+        for (let attempt = 0; attempt < retries; attempt++) mutator(settings() as never)
+        const draft = settings() as never
+        mutator(draft)
+        return draft
+      })
+    }
+
+    const authStatesJudged = () => new Set(state.isConfigValid.mock.calls.map(([, , auth]) => auth)).size
+
+    it('judges every config against one auth state per attempt, from that attempt\'s settings', async () => {
+      writeAttempts(1, 0)
+      await reconcileSkillsetConfigsForCurrentAuth()
+      expect(authStatesJudged()).toBe(1)
+
+      state.isConfigValid.mockClear()
+      writeAttempts(6, 0)
+      await reconcileSkillsetConfigsForCurrentAuth()
+      expect(state.isConfigValid).toHaveBeenCalledTimes(6)
+      expect(authStatesJudged()).toBe(1)
+
+      state.isConfigValid.mockClear()
+      writeAttempts(6, 2)
+      await reconcileSkillsetConfigsForCurrentAuth()
+      expect(authStatesJudged()).toBe(3)
+    })
+
+    it('reads no settings of its own: the write\'s draft is the only read', async () => {
+      writeAttempts(6, 0)
+      state.isConfigValid.mockReturnValue(false)
+      expect(await reconcileSkillsetConfigsForCurrentAuth()).toEqual({ removed: 6 })
+      expect(getSettings).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('screening many records with one read', () => {
+    it('keeps a record the screen clears without reading settings', async () => {
+      const screen = (await readSkillsetAuthScreen())!
+      vi.mocked(getSettings).mockClear()
+      const files = workspaceOf('agent')
+      await seedSkill('agent', 'keep', platformMeta('org-1'))
+
+      expect(await pruneInstalledSkillIfInvalid(platformMeta('org-1'), files, '.claude/skills/keep', screen)).toBe(false)
+      expect(getSettings).not.toHaveBeenCalled()
+    })
+
+    it('reads settings afresh before deleting a record the screen did not clear', async () => {
+      const screen = (await readSkillsetAuthScreen())!
+      vi.mocked(getSettings).mockClear()
+      const files = workspaceOf('agent')
+      await seedSkill('agent', 'stale', platformMeta('old-org'))
+      // The screen says stale; by the time of the deletion the org switched back.
+      state.isInstalledValid.mockReturnValueOnce(false).mockReturnValueOnce(true)
+
+      expect(await pruneInstalledSkillIfInvalid(platformMeta('old-org'), files, '.claude/skills/stale', screen)).toBe(false)
+      expect(getSettings).toHaveBeenCalledOnce()
+      expect(Object.keys(files.snapshot())).toContain('.claude/skills/stale/SKILL.md')
+    })
+
+    it('a sweep reads once to screen and once more per deletion, however many records it keeps', async () => {
+      const readsFor = async (kept: number) => {
+        state.slugs = ['a']
+        state.files.clear()
+        state.isInstalledValid.mockImplementation((_provider, meta) =>
+          (meta as { providerData?: { orgId?: string } }).providerData?.orgId === 'current-org')
+        for (let i = 0; i < kept; i++) await seedSkill('a', `good-${i}`, platformMeta('current-org'))
+        await seedSkill('a', 'stale', platformMeta('old-org'))
+        vi.mocked(getSettings).mockClear()
+        expect(await reconcileInstalledForCurrentAuth()).toEqual({ skillsRemoved: 1, templatesRemoved: 0 })
+        return vi.mocked(getSettings).mock.calls.length
+      }
+
+      expect(await readsFor(1)).toBe(2)
+      expect(await readsFor(8)).toBe(2)
+    })
   })
 
   describe('pruneInstalledSkillIfInvalid', () => {

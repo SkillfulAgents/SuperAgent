@@ -6,7 +6,10 @@ import { getAgentIntegration, listAgentIntegrations } from '@shared/lib/services
 let testDb: AppDatabase, handle: TestDatabase
 const state = vi.hoisted(() => ({ connected: true, role: 'owner', send: vi.fn(), calls: [] as { url: string; body: Record<string, unknown> | null; method: string; key: string | null }[] }))
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
-vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: () => state.connected ? 'platform-test-token' : null }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAccessToken: () => state.connected ? 'platform-test-token' : null,
+  platformAccessTokenFrom: () => state.connected ? 'platform-test-token' : null,
+}))
 vi.mock('@shared/lib/platform-attribution', () => ({ attribution: { requiresActingMember: () => false, fromUserId: async () => ({ bearerToken: () => 'platform-test-token' }) } }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: { addIntegration: vi.fn(), removeIntegration: vi.fn(), pauseIntegration: vi.fn(), resumeIntegration: vi.fn(), reconcileAccess: vi.fn(), integrationCreated: vi.fn(), getConnector: () => ({ getTools: () => [{ name: 'send_email', execute: state.send }] }), ensureSession: vi.fn(async () => { throw new Error('No active session') }) } }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => 'owner-1' }))

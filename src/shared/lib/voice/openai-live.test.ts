@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  summarize: vi.fn(), client: {}, resolve: vi.fn(() => 'resolved-summary-model'),
+  summarize: vi.fn(), client: {}, resolve: vi.fn((_settings: unknown) => 'resolved-summary-model'),
   settings: { apiKeys: { openaiApiKey: 'byok-test-key' } },
 }))
 vi.mock('../config/settings', () => ({
   getSettings: () => mocks.settings,
-  getEffectiveModels: () => ({ summarizerModel: 'configured-summary-model' }),
 }))
-vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: () => mocks.client, createSummarizerText: mocks.summarize }))
-vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: mocks.resolve }))
+// The summarizer's client and model, set up from the settings the call read.
+vi.mock('../llm-provider/helpers', () => ({
+  configuredLlmClientFrom: async (settings: unknown) => ({ client: mocks.client, model: mocks.resolve(settings) }),
+  createSummarizerText: mocks.summarize,
+}))
 import { OpenaiVoiceProvider } from './openai-provider'
 import type { VoiceHistory } from './conversation-types'
 
@@ -73,7 +75,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     mocks.summarize.mockResolvedValue('{"action":"message","text":"Check Thursday instead of Friday."}')
     expect(await provider.mapLiveConversation({ kind: 'request', transcript: 'user: Actually Thursday.', history: [], previousRequest: 'Check Friday.', agentBusy: true }))
       .toEqual({ action: 'message', text: 'Check Thursday instead of Friday.' })
-    expect(mocks.resolve).toHaveBeenCalledWith('configured-summary-model', 'summarizer')
+    expect(mocks.resolve).toHaveBeenCalledWith(mocks.settings)
     expect(mocks.summarize).toHaveBeenCalledWith(mocks.client, expect.objectContaining({ model: 'resolved-summary-model', output_config: { format: expect.objectContaining({ type: 'json_schema', schema: expect.objectContaining({ required: ['action', 'text'], additionalProperties: false }) }) } }), expect.any(AbortSignal))
   })
 

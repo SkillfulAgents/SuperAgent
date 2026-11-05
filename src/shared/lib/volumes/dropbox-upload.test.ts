@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { proxy, token } = vi.hoisted(() => ({ proxy: vi.fn(), token: vi.fn() }))
 vi.mock('@shared/lib/composio/client', () => ({
   getConnectionToken: token, proxyExecute: proxy,
+  resolveComposioAuth: async () => ({ localApiKey: null, platformToken: 'platform-token', userId: null }),
   ComposioRedactedTokenError: class extends Error {},
 }))
 vi.mock('@shared/lib/db', () => ({ db: {
