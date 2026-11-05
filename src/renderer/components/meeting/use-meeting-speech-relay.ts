@@ -14,17 +14,21 @@ interface SpeechPiece extends VoiceTranscriptEntry { at: number }
  * transcribes: what the room said and what the bot said aloud, stamped with
  * when it was heard, so the host can keep the meeting's transcript file.
  * Pieces go in order, about once a second. A batch the host could not be
- * reached for is sent again; one it refused is dropped.
+ * reached for is sent again; one it refused is dropped. When the page goes
+ * away (closed, or the call page unmounted), whatever no request carries yet
+ * goes in one last request that outlives the page.
  */
 export function useMeetingSpeechRelay(meetingId: string, token: string): (piece: VoiceTranscriptEntry) => void {
   const pending = useRef<SpeechPiece[]>([])
   useEffect(() => {
-    let sending = false
-    // `last`: the page is going away (the call ended), so the request must outlive it.
+    // Pieces a request is carrying now; they stay pending until it succeeds.
+    const inFlight = new Set<SpeechPiece>()
     const send = async (last = false) => {
-      if (sending || pending.current.length === 0) return
-      sending = true
-      const pieces = pending.current.slice(0, SPEECH_PIECES_PER_REQUEST)
+      // One regular request at a time keeps the pieces in order; the last one goes regardless.
+      if (!last && inFlight.size > 0) return
+      const pieces = pending.current.filter(piece => !inFlight.has(piece)).slice(0, SPEECH_PIECES_PER_REQUEST)
+      if (pieces.length === 0) return
+      for (const piece of pieces) inFlight.add(piece)
       try {
         const response = await apiFetch(`/api/meeting-participant/${encodeURIComponent(meetingId)}/speech?token=${encodeURIComponent(token)}`, {
           method: 'POST',
@@ -32,15 +36,25 @@ export function useMeetingSpeechRelay(meetingId: string, token: string): (piece:
           keepalive: last,
           body: JSON.stringify({ sentAt: Date.now(), pieces }),
         })
-        if (response.status < 500) pending.current.splice(0, pieces.length)
+        if (response.status < 500) {
+          const sent = new Set(pieces)
+          pending.current = pending.current.filter(piece => !sent.has(piece))
+        }
       } catch {
         // The host is unreachable for now; the pieces wait for the next send.
       } finally {
-        sending = false
+        for (const piece of pieces) inFlight.delete(piece)
       }
     }
     const timer = setInterval(() => { void send() }, SPEECH_RELAY_INTERVAL_MS)
-    return () => { clearInterval(timer); void send(true) }
+    // Closing the page does not unmount it, so its going away is heard here.
+    const onPageHide = () => { void send(true) }
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener('pagehide', onPageHide)
+      void send(true)
+    }
   }, [meetingId, token])
   return useCallback((piece: VoiceTranscriptEntry) => { pending.current.push({ at: Date.now(), role: piece.role, text: piece.text }) }, [])
 }

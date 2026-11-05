@@ -24,6 +24,18 @@ export async function receiveMeetingBotEvent(meeting: MeetingRecord, body: unkno
   if (isTerminalMeetingStatus(meeting.status)) return true
   await meetingRoster.apply(meeting.id, event, meeting.botName)
   // The bot's own transcript pieces are already named; only room speech changes the speaker.
-  if (event.kind === 'speech_on' && !isMeetingBot(event.participant, meeting.botName)) meetingTranscripts.speakerStarted(meeting, event.participant.name)
+  if (event.kind === 'speech_on' && !isMeetingBot(event.participant, meeting.botName)) await meetingTranscripts.speakerStarted(meeting, event.participant.name)
   return true
+}
+
+/**
+ * The call's speech as the bot's voice engine transcribed it, for the
+ * meeting's transcript file: what the room said ('user') and what the bot
+ * said aloud ('assistant'), with when it was heard on this host's clock. Like
+ * a bot event it needs no live connector, so speech that reaches any process
+ * is kept. The route has already checked the meeting's token.
+ */
+export function receiveMeetingSpeech(meeting: MeetingRecord, pieces: ReadonlyArray<{ role: 'user' | 'assistant'; text: string; at: number }>): void {
+  if (isTerminalMeetingStatus(meeting.status)) return
+  for (const { role, text, at } of pieces) meetingTranscripts.append(meeting, { text, at, speaker: role === 'assistant' ? meeting.botName : undefined })
 }

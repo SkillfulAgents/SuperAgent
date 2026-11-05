@@ -16,11 +16,10 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { agentCatalog } from '@shared/lib/agent-actor'
 import { background } from '@shared/lib/background'
-import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getIntegrationSession } from '@shared/lib/agent-integrations/store'
 import { getAgentIntegration } from '@shared/lib/services/agent-integration-service'
-import { receiveMeetingBotEvent } from '@shared/lib/meeting-integrations/bot-events'
-import { MeetingAgentIntegration, MAX_MEETING_AGE_MS } from '@shared/lib/meeting-integrations/meeting-agent-integration'
+import { receiveMeetingBotEvent, receiveMeetingSpeech } from '@shared/lib/meeting-integrations/bot-events'
+import { MAX_MEETING_AGE_MS } from '@shared/lib/meeting-integrations/meeting-agent-integration'
 import { participantCookieHeader, participantCookieValue } from '@shared/lib/meeting-integrations/participant-credential'
 import { meetingRoster } from '@shared/lib/meeting-integrations/roster'
 import { isTerminalMeetingStatus, type MeetingRoster } from '@shared/lib/meeting-integrations/schemas'
@@ -126,10 +125,8 @@ router.post('/:meetingId/speech', limitJsonBody(SPEECH_BODY_MAX_BYTES), async (c
   if ('error' in auth) return c.json({ error: auth.error }, auth.status)
   const batch = speechBatch.safeParse(c.get('limitedJsonBody'))
   if (!batch.success) return c.json({ error: 'Invalid speech batch' }, 400)
-  const connector = agentIntegrationManager.getConnector(auth.meeting.integrationId)
-  if (!(connector instanceof MeetingAgentIntegration)) return c.json({ accepted: false, reason: 'integration not connected' })
   const shift = receivedAt - batch.data.sentAt
-  await connector.receiveSpeech(auth.meeting.id, batch.data.pieces.map(piece => ({ ...piece, at: piece.at + shift })))
+  receiveMeetingSpeech(auth.meeting, batch.data.pieces.map(piece => ({ ...piece, at: piece.at + shift })))
   return c.json({ accepted: true })
 })
 

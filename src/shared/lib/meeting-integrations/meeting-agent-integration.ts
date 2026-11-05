@@ -296,19 +296,6 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
   }
 
   /**
-   * The call's speech as the bot's voice engine transcribed it, for the
-   * meeting's transcript file: what the room said ('user') and what the bot
-   * said aloud ('assistant'), which goes under the bot's meeting name. The
-   * route has already checked the meeting's token and put the times on this
-   * host's clock. Speech after the call ended is dropped.
-   */
-  async receiveSpeech(meetingId: string, pieces: ReadonlyArray<{ role: 'user' | 'assistant'; text: string; at: number }>): Promise<void> {
-    const meeting = await getMeeting(meetingId)
-    if (!meeting || isTerminalMeetingStatus(meeting.status)) return
-    for (const { role, text, at } of pieces) meetingTranscripts.append(meeting, { text, at, speaker: role === 'assistant' ? meeting.botName : undefined })
-  }
-
-  /**
    * One message from the bot host's frames socket. The socket checked the
    * meeting's token when it opened; frames arrive several times a second, so
    * the meeting is not looked up again for each one. Camera frames are dropped
