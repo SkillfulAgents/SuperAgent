@@ -104,6 +104,7 @@ const mockGetEffectiveModels = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: async (...args: unknown[]) => mockGetEffectiveModels(...args),
+  effectiveModelsFrom: (...args: unknown[]) => mockGetEffectiveModels(...args),
   // resolveActiveProviderModel (host-direct summarizer resolution) reads the
   // active provider via getSettings; default to anthropic for the catalog.
   getSettings: async () => ({ llmProvider: 'anthropic' }),
@@ -132,6 +133,11 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
     messages: {
       create: (...args: unknown[]) => mockMessagesCreate(...args),
     },
+  }),
+  getConfiguredLlmClientAndModel: async () => ({
+    client: { messages: { create: (...args: unknown[]) => mockMessagesCreate(...args) } },
+    // The helper resolves the summarizer alias to the provider's wire id (covered in helpers.test.ts).
+    model: 'claude-haiku-4-5',
   }),
   extractTextFromLlmResponse: (...args: unknown[]) => mockExtractTextFromLlmResponse(...args),
   createSummarizerText: async (_client: unknown, request: unknown) =>
@@ -432,7 +438,8 @@ describe('scheduled-tasks route', () => {
     it('falls back to the agent default over the global default', async () => {
       mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
       const args = await runNow()
-      expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one')
+      // With the settings the start read once, not a read of its own.
+      expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one', expect.objectContaining({}))
       expect(args.model).toBe('opus')
       expect(args.effort).toBe('high')
       expect(args.speed).toBe('slow')

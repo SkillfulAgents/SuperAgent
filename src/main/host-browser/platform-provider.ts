@@ -1,5 +1,5 @@
 import { getSettings } from '@shared/lib/config/settings'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getOrCreateMapping } from './context-map-store'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
@@ -54,7 +54,9 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
   }
 
   async launch(instanceId: string, _options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo> {
-    const token = await getPlatformAccessToken()
+    // One read for the token and the stealth / proxy options below.
+    const settings = await getSettings()
+    const token = platformAccessTokenFrom(settings)
     if (!token) {
       throw new Error('Not signed in to Platform — cannot use platform-managed Browserbase')
     }
@@ -82,7 +84,6 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     const contextKey = agentId || instanceId
     const contextId = await this.getOrCreateContext(contextKey, token)
 
-    const settings = await getSettings()
     const browserSettings: Record<string, unknown> = {
       context: { id: contextId, persist: true },
     }
@@ -162,13 +163,18 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
   }
 
   async stop(instanceId: string): Promise<void> {
+    return this.stopWith(instanceId)
+  }
+
+  /** Stop one session, with the token `stopAll` read for every session, else one read now. */
+  private async stopWith(instanceId: string, token?: string | null): Promise<void> {
     this.passkeyRecovery.stop(instanceId)
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return
 
     this.sessions.delete(instanceId)
 
-    const token = await getPlatformAccessToken()
+    if (token === undefined) token = await getPlatformAccessToken()
     if (!token) return
 
     try {
@@ -185,7 +191,10 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
 
   async stopAll(): Promise<void> {
     const instanceIds = Array.from(this.sessions.keys())
-    await Promise.all(instanceIds.map((id) => this.stop(id)))
+    if (instanceIds.length === 0) return
+    // One read for the whole batch.
+    const token = await getPlatformAccessToken()
+    await Promise.all(instanceIds.map((id) => this.stopWith(id, token)))
   }
 
   isRunning(instanceId?: string): boolean {

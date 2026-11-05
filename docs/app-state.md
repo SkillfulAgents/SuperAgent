@@ -182,3 +182,22 @@ What the user typed for a later sign-in step, and the username the last step wen
 - The identity is a plain `set` with `reset`: 30 minutes from the latest remember, and the latest remember wins.
 
 Who may use what (the agent's grants, the page's origin, whether a saved account is still theirs) is decided by the callers at the host boundary, in `login-host.ts` and the sign-in routes. AppState only scopes the records; a read for a named account returns nothing held for another.
+## MCP OAuth pending flows
+
+A remote MCP sign-in is stored from its start until its callback is answered (`src/shared/lib/mcp/oauth-pending-flows.ts`), so the callback can reach any process. The ticket's `oauth:mcp:H(state)` is the strong namespace `oauth:mcp`, with the key part `digestKeyPart(state)`. The record is created with `insertIfAbsent`. It expires 15 minutes after creation (`keep`), and it moves through three states:
+
+- `pending` holds the descriptor: the issuer check, the desktop delivery context, the token request's parts (PKCE verifier and client secret included, stored plainly until sealing lands), and where the credentials go. That is the server being re-authorized, or the new server with the user who started the flow. The descriptor holds no clients or closures. The process that answers the callback rebuilds the request from it.
+- `claimed` means one callback is exchanging the code. The claim is a compare-and-set from `pending`, so of any number of callbacks on any processes, one gets it. The claim keeps the issuer check and delivery context but drops the secrets. It sets the record to expire 60 s later. A holder that dies therefore ends the flow at that point, and does not hold it for the rest of the 15 minutes. Until then, a duplicate callback is told the sign-in is already being completed. After that, it is told the sign-in has expired or was already used.
+- `finished` is a tombstone with no secrets. It is kept 15 minutes from the finish, so a late duplicate is told the link was already used.
+
+A callback is checked against the stored record, its state and then its issuer, before anything is written. A callback with the wrong issuer changes nothing, so the legitimate callback still completes.
+
+Around the token exchange:
+
+- The exchange runs only inside the claim. The claim is held for 60 s by the holder's own clock, counted from when the claim was sent. The exchange is cut off after 30 s, which leaves 10 s for the finishing write. If the claim is answered too late for that, it is given back unspent to `pending`, at the flow's original expiry, and this callback fails with "try again".
+- Once the code has gone to the provider, the flow is finished whatever the answer. An authorization code is single-use, and a provider may already have spent a code whose answer was lost. RFC 6749 §4.1.2 also lets a provider revoke the tokens of a code presented twice. Releasing the flow would only let the same code be sent again. Starting the connection again gets a fresh state, verifier and code.
+- The finishing write is a compare-and-set against the claim. Only the claim's holder writes a claimed record, so the write fails only when the claim lapsed first, as with a machine asleep mid-exchange. The holder then drops the tokens rather than overwrite whatever the user did since.
+- The credentials are written to the `remote_mcp_servers` row only after the finish lands.
+- A lost answer to the claim or the finish is settled by reading the record back. The claim's owner id is random per callback, so the holder can tell its own write from anyone else's.
+
+An authorization error response (`?error=…`) with a valid issuer ends a `pending` flow. It leaves a claimed or finished one alone. Nothing is published: the callback page carries the result to the client, and the route does its own follow-up after the database write. Logs name the step that failed, never the state, the code, the verifier, the client secret or a token. A failed write is logged by its driver cause, because drizzle's own message quotes the statement's parameters.

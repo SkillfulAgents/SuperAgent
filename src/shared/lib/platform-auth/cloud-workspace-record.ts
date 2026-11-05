@@ -23,7 +23,12 @@ export interface CloudWorkspaceRecordWriteOptions {
 }
 
 export async function readCloudWorkspaceRecord(): Promise<CloudWorkspaceSettings | null> {
-  const raw = (await getSettings()).cloudWorkspace
+  return cloudWorkspaceRecordFrom(await getSettings())
+}
+
+/** {@link readCloudWorkspaceRecord} from settings already read. */
+export function cloudWorkspaceRecordFrom(settings: Pick<AppSettings, 'cloudWorkspace'>): CloudWorkspaceSettings | null {
+  const raw = settings.cloudWorkspace
   if (!raw) return null
   // Validate at the boundary; a corrupt stored record shouldn't crash callers,
   // but we do want it visible in Sentry.

@@ -11,7 +11,6 @@
 import { background } from '@shared/lib/background'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import type { ContainerClient, ContainerSession, SendMessageOptions, SendMessageResult } from '@shared/lib/container/types'
-import { getSettings } from '@shared/lib/config/settings'
 import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-holds'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import { DeliveryError, StartError, type DeliveryErrorCode } from './delivery-errors'
@@ -45,7 +44,8 @@ export function createSessionDelivery(
   deps: Pick<LocalActorDeps, 'containerHost' | 'sessionService' | 'recordSessionActivity' | 'reviewManager' | 'host'>,
 ): SessionDelivery {
   const runtime = () => deps.containerHost.runtime(slug)
-  // The client for the runner configured now: getClient reads it from the settings.
+  // The client running the container, or, while it is not running, the one
+  // for the runner configured now (getClient reads it then).
   const client = async (): Promise<ContainerClient> => runtime().getClient()
 
   const attach: SessionDelivery['attach'] = async (sessionId, options = {}) => {
@@ -77,8 +77,10 @@ export function createSessionDelivery(
     try {
       const updates: Partial<SessionMetadata> = { ...fields }
       // The container client resolves the pair, inherited fallback after a
-      // deletion included: a stale request pair must not overwrite it.
-      const effective = (await getSettings()).llmDefault ? (sent.selection ?? metadata) : null
+      // deletion included: a stale request pair must not overwrite it. Whether
+      // an app default names the connection comes from the settings the send
+      // itself read, not from another read.
+      const effective = sent.llmDefault ? (sent.selection ?? metadata) : null
       if (!queued && effective?.model) {
         updates.model = effective.model
         updates.llmProviderId = effective.llmProviderId

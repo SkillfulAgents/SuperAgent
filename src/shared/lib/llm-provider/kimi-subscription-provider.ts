@@ -73,7 +73,7 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
     }
     return response
   }
-  async createClient(): Promise<Anthropic> {
+  async createClientFrom(): Promise<Anthropic> {
     return new Anthropic({ authToken: 'app-managed', baseURL: this.apiBase, fetch: (input, init) => this.fetch(input, init) })
   }
   override async getUsage() {

@@ -52,7 +52,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
       longContextPriceCliff: undefined, blurb: 'Uses your ChatGPT subscription', supportsWebSearch: true,
     }))
   }
-  async createClient(): Promise<Anthropic> {
+  async createClientFrom(): Promise<Anthropic> {
     throw new Error('Codex Subscription supports agent sessions only. Choose an API-capable global summarizer in Settings → Model Providers.')
   }
   async getContainerEnvVars() { return {} }

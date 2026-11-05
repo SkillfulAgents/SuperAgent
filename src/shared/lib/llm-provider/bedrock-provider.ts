@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import { type ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider, type ProviderSettings } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ProviderSettings } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { BEDROCK_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { BEDROCK_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -52,8 +52,8 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     return { isConfigured: false, source: 'none' }
   }
 
-  async createClient(): Promise<Anthropic> {
-    const settings = await this.ambientSettings()
+  async createClientFrom(given?: ProviderSettings): Promise<Anthropic> {
+    const settings = await this.ambientSettings(given)
     const keys = this.keysFrom(settings)
     const region = this.regionFrom(settings)
 
@@ -86,8 +86,8 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     return BEDROCK_CATALOG
   }
 
-  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
-    const settings = await this.ambientSettings()
+  async getContainerEnvVars(_agent?: AgentIdentity, given?: ProviderSettings): Promise<Record<string, string | undefined>> {
+    const settings = await this.ambientSettings(given)
     const keys = this.keysFrom(settings)
     const region = this.regionFrom(settings)
     const bearerToken = this.effectiveApiKeyFrom(settings)

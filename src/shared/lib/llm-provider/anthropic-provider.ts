@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider, type ProviderSettings } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ProviderSettings } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { CLAUDE_BARE_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { ANTHROPIC_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -39,8 +39,8 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
       ? { isConfigured: true, source: 'env' } : super.apiKeyStatusFrom(settings)
   }
 
-  async createClient(): Promise<Anthropic> {
-    const apiKey = await this.getEffectiveApiKey()
+  async createClientFrom(settings?: ProviderSettings): Promise<Anthropic> {
+    const apiKey = this.effectiveApiKeyFrom(await this.ambientSettings(settings))
     const authToken = this.envValue('ANTHROPIC_AUTH_TOKEN') || null
     if (!apiKey && !authToken) throw new Error('Anthropic API key not configured')
     return anthropicApiClient({
@@ -54,9 +54,9 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
     return CLAUDE_BARE_CATALOG
   }
 
-  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
+  async getContainerEnvVars(_agent?: AgentIdentity, settings?: ProviderSettings): Promise<Record<string, string | undefined>> {
     return {
-      ANTHROPIC_API_KEY: await this.getEffectiveApiKey(),
+      ANTHROPIC_API_KEY: this.effectiveApiKeyFrom(await this.ambientSettings(settings)),
       ANTHROPIC_BASE_URL: this.envValue('ANTHROPIC_BASE_URL'),
       ANTHROPIC_AUTH_TOKEN: this.envValue('ANTHROPIC_AUTH_TOKEN'),
     }

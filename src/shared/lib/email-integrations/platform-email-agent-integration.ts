@@ -125,8 +125,10 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     return current ? parseEmailConfig(current.config).eventCursor : -1
   }
   private async poll() {
+    // One bearer for the whole poll: the mailbox check, every events page and every message.
+    const client = this.client.forOperation()
     if (!this.connected) {
-      const box = await this.client.json(this.base, mailboxSchema)
+      const box = await client.json(this.base, mailboxSchema)
       if (box.domain?.status !== 'ready') return
       this.connected = true
     }
@@ -134,11 +136,11 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     if (!current) return
     let cursor = parseEmailConfig(current.config).eventCursor
     for (let page = 0; page < 10 && !this.stopped; page++) {
-      const result = await this.client.json(`/events?mailboxIds=${this.config.mailboxId}&after=${cursor}&limit=100`, emailEventsSchema)
+      const result = await client.json(`/events?mailboxIds=${this.config.mailboxId}&after=${cursor}&limit=100`, emailEventsSchema)
       for (const event of result.data) {
         if (this.stopped) return
         if (event.type === 'message.received' && event.messageId) {
-          const message = await this.getMessage(event.messageId)
+          const message = await client.message(this.config.mailboxId, event.messageId)
           if (this.stopped) return
           const handoff = await this.emitEvent({ type: 'input', id: message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
           // Not taken: this connection was replaced or stopped while it polled.
@@ -173,14 +175,16 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   protected getMessage(id: string) { return this.client.message(this.config.mailboxId, id) }
   protected getThread(id: string) { return this.client.thread(this.config.mailboxId, id) }
   protected async recentHistory() {
-    const page = await this.client.json(`${this.base}/threads?limit=${EMAIL_HISTORY_THREAD_LIMIT + 1}`, z.object({ data: z.array(z.object({ id: z.string() })) }))
+    // One bearer for the thread list and every thread read.
+    const client = this.client.forOperation()
+    const page = await client.json(`${this.base}/threads?limit=${EMAIL_HISTORY_THREAD_LIMIT + 1}`, z.object({ data: z.array(z.object({ id: z.string() })) }))
     const threads = []
     let truncated = page.data.length > EMAIL_HISTORY_THREAD_LIMIT
     const selected = page.data.slice(0, EMAIL_HISTORY_THREAD_LIMIT)
     for (let offset = 0; offset < selected.length; offset += 5) {
       // Bound gateway concurrency and history; do not fetch entire large archives.
       const results = await Promise.all(selected.slice(offset, offset + 5).map(thread =>
-        this.client.json(`${this.base}/threads/${encodeURIComponent(thread.id)}?after=0`, z.object({ messages: z.array(emailMessageSchema), hasMore: z.boolean() }))))
+        client.json(`${this.base}/threads/${encodeURIComponent(thread.id)}?after=0`, z.object({ messages: z.array(emailMessageSchema), hasMore: z.boolean() }))))
       for (const result of results) {
         truncated ||= result.hasMore
         threads.push(result.messages)

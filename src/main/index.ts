@@ -133,8 +133,8 @@ import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
-import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
-import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
+import { cloudProxyTargetFrom, resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { preferredApiTargetFrom } from '@shared/lib/services/api-target-preference'
 import { coerceApiTarget, resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
 import { desktopClientFacts, factsForRenderer } from './facts'
@@ -1792,18 +1792,23 @@ app.whenReady().then(() => {
   // Installed here, not with the main window: a dashboard link queued at cold
   // start opens its popout before the main window exists.
   // Read fresh per request, so a switch to local, a disconnect or a re-mint
-  // applies to the next request with nothing to reset.
+  // applies to the next request with nothing to reset: the record and the
+  // preferred target from one settings read. Requests to the local API are
+  // never workspace requests and read nothing.
   installCloudDashboardAuth(
     session.defaultSession,
     () => mainWindow?.webContents.id ?? null,
     async () => {
-      const target = await cloudProxyTarget()
-      const workspace = resolveApiTarget(await readPreferredApiTarget(), target?.deploymentUrl ?? null).target === 'cloud' ? target : null
+      if (!isCloudProxyEnabled()) return null
+      const settings = await getSettings()
+      const target = cloudProxyTargetFrom(settings)
+      const workspace = resolveApiTarget(preferredApiTargetFrom(settings), target?.deploymentUrl ?? null).target === 'cloud' ? target : null
       // The record's URL passed `isDeploymentUrlAllowed`, which parses it. Compare
       // by origin, the form Chromium reports frames in.
       // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- validated on read
       return workspace && { token: workspace.token, deploymentUrl: new URL(workspace.deploymentUrl).origin }
     },
+    () => [`http://localhost:${actualApiPort}`, `http://127.0.0.1:${actualApiPort}`],
   )
 
   app.on('activate', () => {

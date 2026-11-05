@@ -37,6 +37,10 @@ vi.mock('@shared/lib/config/settings', () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+  }),
 }))
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({

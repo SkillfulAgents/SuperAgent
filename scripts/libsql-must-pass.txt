@@ -90,8 +90,12 @@ src/shared/lib/app-records/records.test.ts
 src/shared/lib/app-records/host-records.test.ts
 src/shared/lib/config/settings-store.test.ts
 src/shared/lib/db/data-migrations/0009-import-host-records.test.ts
+src/shared/lib/llm-provider/settings-reads.test.ts
+src/shared/lib/services/session-defaults.test.ts
 src/shared/lib/config/settings.test.ts
 src/shared/lib/container/host-token-store.test.ts
 src/main/host-browser/context-map-store.test.ts
 src/shared/lib/browser-vault/vault-key-probe.test.ts
 src/shared/lib/agent-integrations/integration-row-version.test.ts
+src/api/routes/meeting-participant.test.ts
+src/shared/lib/meeting-integrations/meeting-agent-integration.test.ts

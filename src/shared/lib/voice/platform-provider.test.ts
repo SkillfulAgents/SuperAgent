@@ -3,12 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({ token: 'platform-token' as string | null, summarize: vi.fn() }))
 vi.mock('../config/settings', () => ({
   getSettings: async () => ({ apiKeys: { openaiApiKey: 'byok-key-must-not-be-used' } }),
-  getEffectiveModels: async () => ({ summarizerModel: 'summary-model' }),
 }))
-vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccessToken: async () => mocks.token }))
+vi.mock('@shared/lib/services/platform-auth-service', () => ({ platformAccessTokenFrom: () => mocks.token }))
 vi.mock('@shared/lib/platform-auth/config', () => ({ getPlatformProxyBaseUrl: () => 'https://proxy.test' }))
-vi.mock('../llm-provider/helpers', () => ({ getConfiguredLlmClient: () => ({}), createSummarizerText: mocks.summarize }))
-vi.mock('../llm-provider', () => ({ resolveActiveProviderModel: async () => 'summary-model' }))
+vi.mock('../llm-provider/helpers', () => ({ configuredLlmClientFrom: async () => ({ client: {}, model: 'summary-model' }), createSummarizerText: mocks.summarize }))
 import { PlatformVoiceProvider } from './platform-provider'
 
 const provider = new PlatformVoiceProvider()

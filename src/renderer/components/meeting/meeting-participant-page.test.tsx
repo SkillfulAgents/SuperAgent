@@ -68,6 +68,12 @@ beforeEach(() => {
 })
 
 describe('MeetingParticipantPage', () => {
+  it('uses the shared voice lifecycle without a meeting-specific speech relay', async () => {
+    renderWithProviders(<MeetingParticipantPage meetingId="m1" token="t" />)
+    await waitFor(() => expect(state.voiceArgs.length).toBeGreaterThan(0))
+    expect(state.voiceArgs.at(-1)).not.toHaveProperty('onSpeech')
+  })
+
   it('asks for the token and names a refused meeting', async () => {
     renderWithProviders(<MeetingParticipantPage meetingId="m1" token="" />)
     expect(screen.getByText('Missing participant token')).toBeInTheDocument()

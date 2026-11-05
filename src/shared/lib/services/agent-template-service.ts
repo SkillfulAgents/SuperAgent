@@ -40,9 +40,7 @@ import {
   type FileOps,
 } from '@shared/lib/agent-actor'
 import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   readIndexJson,
   ensureSkillsetCached,
@@ -74,7 +72,8 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
+import { pruneInstalledTemplateIfInvalid, readSkillsetAuthScreen } from './skillset-reconcile'
+import type { SkillsetAuthContext } from '@shared/lib/skillset-provider/base-skillset-provider'
 
 // ============================================================================
 // Constants
@@ -997,10 +996,13 @@ function findInstructionsEntry<T extends { fileName: string }>(entries: T[], str
  * Lazy-cleanup backstop: if the provider reports this template is no longer
  * valid for the current auth (e.g. a platform template from a previous org),
  * the metadata file is removed and we return null so the agent reverts to
- * looking "local".
+ * looking "local". A caller reading many agents' records passes one `screen`
+ * ({@link readSkillsetAuthScreen}); a record it clears is kept without a
+ * settings read.
  */
 export async function getInstalledAgentMetadata(
   agentSlug: string,
+  screen?: SkillsetAuthContext,
 ): Promise<InstalledAgentMetadata | null> {
   const actor = agentRegistry.get(agentSlug)
 
@@ -1016,7 +1018,7 @@ export async function getInstalledAgentMetadata(
   }
   if (!meta) return null
 
-  const pruned = await pruneInstalledTemplateIfInvalid(meta, actor.files, SKILLSET_METADATA_PATH)
+  const pruned = await pruneInstalledTemplateIfInvalid(meta, actor.files, SKILLSET_METADATA_PATH, screen)
   if (pruned) return null
 
   return meta
@@ -1320,8 +1322,10 @@ export async function refreshAgentTemplates(
   // one fetch per installed template.
   const metaByAgent = new Map<string, InstalledAgentMetadata>()
   const pendingByProvider = new Map<SkillProvider, string[]>()
+  // One settings read screens every agent's template metadata.
+  const screen = await readSkillsetAuthScreen()
   for (const agent of agents) {
-    const meta = await getInstalledAgentMetadata(agent.slug)
+    const meta = await getInstalledAgentMetadata(agent.slug, screen)
     if (!meta) continue
     metaByAgent.set(agent.slug, meta)
     if (meta.pendingQueueItemId) {
@@ -1431,16 +1435,17 @@ async function generateAgentPRSuggestions(
   const modifiedContent = await agentRegistry.get(agentSlug).config.get('instructions')
   if (!modifiedContent) return fallback
 
-  let client
+  let setup: Awaited<ReturnType<typeof getConfiguredLlmClientAndModel>>
   try {
-    client = await getConfiguredLlmClient()
+    // One settings read for the client and the model it runs.
+    setup = await getConfiguredLlmClientAndModel()
   } catch {
     return fallback
   }
 
-  try {
-    const model = await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
+  const { client, model } = setup
 
+  try {
     const text = await createSummarizerText(client, {
       model,
       messages: [
@@ -1500,16 +1505,17 @@ async function generateAgentPublishSuggestions(
     suggestedVersion: '1.0.0',
   }
 
-  let client
+  let setup: Awaited<ReturnType<typeof getConfiguredLlmClientAndModel>>
   try {
-    client = await getConfiguredLlmClient()
+    // One settings read for the client and the model it runs.
+    setup = await getConfiguredLlmClientAndModel()
   } catch {
     return fallback
   }
 
-  try {
-    const model = await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
+  const { client, model } = setup
 
+  try {
     const text = await createSummarizerText(client, {
       model,
       messages: [

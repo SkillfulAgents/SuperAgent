@@ -1,11 +1,9 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getEffectiveModels } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createSummarizerText,
-  getConfiguredLlmClient,
+  getConfiguredLlmClientAndModel,
 } from '@shared/lib/llm-provider/helpers'
-import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
 import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { userRequestText } from '@shared/lib/utils/user-request-text'
@@ -99,11 +97,7 @@ async function summarizeResponse(
   if (process.env.E2E_MOCK === 'true') return null
 
   try {
-    const client = await getConfiguredLlmClient()
-    const model = await resolveActiveProviderModel(
-      (await getEffectiveModels()).summarizerModel,
-      'summarizer',
-    )
+    const { client, model } = await getConfiguredLlmClientAndModel()
     const text = await createSummarizerText(
       client,
       {

@@ -29,7 +29,7 @@ export class ClaudeSubscriptionLlmProvider extends BaseLlmProvider {
       : { isConfigured: false, source: 'none' as const }
   }
 
-  async createClient(): Promise<Anthropic> {
+  async createClientFrom(): Promise<Anthropic> {
     throw new Error('Claude Subscription supports agent sessions only. Choose an API-capable global summarizer in Settings → Model Providers.')
   }
 

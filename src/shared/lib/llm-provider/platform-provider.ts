@@ -3,7 +3,7 @@ import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '../services/p
 import { usageSnapshot, type UsageLimit } from './usage-schema'
 import Anthropic from '@anthropic-ai/sdk'
 import { createHash } from 'node:crypto'
-import { BaseLlmProvider, type AgentIdentity, type ProviderSettings } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ModelAvailabilityOptions, type ProviderSettings } from './base-llm-provider'
 import { orgBillingUrl, parsePlatformErrorResponse } from './platform-error-presentation'
 import type { ProviderErrorPresentation } from './error-presentation'
 import { rewriteLoopbackForContainer } from './container-url'
@@ -15,9 +15,9 @@ import { parseModelNotInPlan, platformModelAvailability } from './platform-plan-
 import { actingPlanPolicy } from './platform-plan-account'
 import { platformPlanCache } from './platform-plan-cache'
 import { getPlatformContainerToken } from '@shared/lib/platform-attribution/container-token'
-import { getPlatformAuthStatus, platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
+import { platformAccessTokenFrom, platformAuthStatusFrom } from '@shared/lib/services/platform-auth-service'
 import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import type { ApiKeyStatus } from '../config/settings'
+import { getSettings, type ApiKeyStatus } from '../config/settings'
 
 // Display names are user-controlled free text headed for an HTTP header via
 // an env file: collapse control chars (the env-file writer drops \r\n outright,
@@ -82,8 +82,8 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     return usageSnapshot(limits)
   }
 
-  async createClient(): Promise<Anthropic> {
-    const apiKey = await this.getEffectiveApiKey()
+  async createClientFrom(settings?: ProviderSettings): Promise<Anthropic> {
+    const apiKey = this.effectiveApiKeyFrom(await this.globalSettings(settings))
     if (!apiKey) throw new Error('Platform token not configured. Please log in to the platform.')
     return new Anthropic({
       baseURL: getPlatformProxyBaseUrl(),
@@ -95,20 +95,32 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     return PLATFORM_CATALOG
   }
 
-  override async getModelAvailabilityRevision(): Promise<string | null> {
-    const auth = await getPlatformAuthStatus()
+  override async getModelAvailabilityRevision(settings?: ProviderSettings): Promise<string | null> {
+    const auth = await this.authStatus(settings)
     if (!auth.connected) return null
     return createHash('sha256')
       .update(JSON.stringify([getPlatformBaseUrl(), auth.orgId, auth.userId, auth.memberId, auth.updatedAt]))
       .digest('hex')
   }
 
+  // Never bound to a connection: the global settings the operation already
+  // read, else read here.
+  private async globalSettings(given?: ProviderSettings): Promise<ProviderSettings> {
+    return given ?? await getSettings()
+  }
+
+  private async authStatus(settings?: ProviderSettings) {
+    return platformAuthStatusFrom(await this.globalSettings(settings))
+  }
+
   // The acting account's plan policy, cached per account and read with its
   // identity from `/v1/account`; model selection reads it on every turn.
-  override async getModelAvailability(catalog: ModelDefinition[], options: { fresh?: boolean } = {}): Promise<ModelAvailability | null> {
-    const auth = await getPlatformAuthStatus()
+  override async getModelAvailability(catalog: ModelDefinition[], options: ModelAvailabilityOptions = {}): Promise<ModelAvailability | null> {
+    const settings = await this.globalSettings(options.settings)
+    const auth = platformAuthStatusFrom(settings)
     if (!auth.connected) return null
-    return platformModelAvailability(await actingPlanPolicy(options), catalog, orgBillingUrl(getPlatformBaseUrl(), auth.orgId))
+    const policy = await actingPlanPolicy({ fresh: options.fresh, settings, acting: options.acting })
+    return platformModelAvailability(policy, catalog, orgBillingUrl(getPlatformBaseUrl(), auth.orgId))
   }
 
   // A plan refusal proves a cached policy stale (a downgrade, or a policy read
@@ -117,11 +129,12 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     if (parseModelNotInPlan(body)) platformPlanCache.clear()
   }
 
-  async getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>> {
+  async getContainerEnvVars(agent?: AgentIdentity, given?: ProviderSettings): Promise<Record<string, string | undefined>> {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = rewriteLoopbackForContainer(proxyUrl)
 
-    const authToken = await getPlatformContainerToken(agent?.id) ?? await this.getEffectiveApiKey()
+    const settings = await this.globalSettings(given)
+    const authToken = await getPlatformContainerToken(agent?.id, settings) ?? this.effectiveApiKeyFrom(settings)
 
     // Agent identity rides into the container as plain env vars; the container
     // folds them into ANTHROPIC_CUSTOM_HEADERS itself (see agent-container/src/
@@ -143,8 +156,10 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   protected override async parseErrorResponseOverride(
     status: number | undefined,
     body: unknown,
+    _apiErrorCode?: string,
+    settings?: ProviderSettings,
   ): Promise<ProviderErrorPresentation | null> {
-    const auth = await getPlatformAuthStatus()
+    const auth = await this.authStatus(settings)
     const billingUrl = auth.connected ? orgBillingUrl(getPlatformBaseUrl(), auth.orgId) : null
     return parsePlatformErrorResponse(status, body, billingUrl)
   }

@@ -1,6 +1,5 @@
 import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Scheduled Tasks API Routes
  *
@@ -9,8 +8,7 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
  */
 
 import { Hono } from 'hono'
-import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   getScheduledTask,
   cancelScheduledTask,
@@ -30,8 +28,8 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { withSessionStatus } from '@shared/lib/session-status'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { getSettings } from '@shared/lib/config/settings'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -307,15 +305,10 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     const actor = agentRegistry.get(task.agentSlug)
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
-    // Model/effort/speed preference order: task override > agent default > global default.
-    const models = await getEffectiveModels()
-    const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = await resolveConnectionRuntimeInherit(
-      { model: task.model,
-      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
-      agentPrefs,
-      models,
-    )
+    // One read of the settings for this run. Model/effort/speed preference
+    // order: task override > agent default > global default.
+    const { models, resolve } = await resolveSessionDefaults(await getSettings(), task.agentSlug)
+    const resolved = await resolve({ model: task.model, llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed })
 
     const { id: sessionId } = await actor.sessions.start({
       create: {
@@ -364,9 +357,9 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
       return c.json({ error: 'Task is not a recurring cron task' }, 400)
     }
 
-    const client = await getConfiguredLlmClient()
+    const { client, model } = await getConfiguredLlmClientAndModel()
     const description = await createSummarizerText(client, {
-      model: await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer'),
+      model,
       messages: [
         {
           role: 'user',
@@ -406,9 +399,9 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
       return c.json({ error: 'description is required' }, 400)
     }
 
-    const client = await getConfiguredLlmClient()
+    const { client, model } = await getConfiguredLlmClientAndModel()
     const expression = await createSummarizerText(client, {
-      model: await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer'),
+      model,
       messages: [
         {
           role: 'user',

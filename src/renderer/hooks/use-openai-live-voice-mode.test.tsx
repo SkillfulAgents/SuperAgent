@@ -5,6 +5,14 @@ import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outc
 import type { LiveRequest, VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
+vi.mock('@renderer/lib/voice/services/transcript-relay', () => ({ VoiceTranscriptRelay: class {
+  start = vi.fn(async () => ({ path: '/workspace/sessions/s1/transcript-0.md' }))
+  flush = vi.fn(async () => {})
+  append = vi.fn()
+  attach = () => () => {}
+} }))
+vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn(async () => new Response('{}')) }))
+
 interface Callbacks {
   onRequest: (request: LiveRequest) => Promise<boolean>
   onReady: () => void
