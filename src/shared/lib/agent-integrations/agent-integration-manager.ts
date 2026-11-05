@@ -299,9 +299,14 @@ export class AgentIntegrationManager {
     const generation = this.generationOf(change.integrationId)
     const row = await getIntegration(change.integrationId)
     if (!this.isRunning || !row || !['disconnected', 'paused'].includes(row.status) || this.generationOf(row.id) !== generation) return
-    // The lifecycle write already fenced the rejected credential. Unrelated
-    // config writes must not suppress teardown; status and manager generation
-    // protect replacement authorization instead.
+    // The lifecycle write already fenced the rejected credential. What runs the
+    // lost authorization is what was read from the row up to the loss: the
+    // connection's copy, or with none, the row a connect in flight read. A copy
+    // from a later write may hold replacement credentials (a config edit leaves
+    // the row `disconnected`), and a late hint must not tear those down. An
+    // unrelated write after the loss does not spare a connection read before it.
+    const read = this.connections.get(row.id)?.integration ?? row
+    if (read.updatedAt.getTime() > change.revokedAt) return
     this.bumpGeneration(row.id)
     await this.deliveries.cancel(row.id)
     this.disconnectedSince.delete(row.id)

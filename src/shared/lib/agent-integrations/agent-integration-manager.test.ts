@@ -145,6 +145,8 @@ function record(id: string): AgentIntegrationRecord {
   return { id, agentSlug: id, provider: 'test-objects', name: null, config: '{}', status: 'active', errorMessage: null,
     model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
 }
+/** The loss hint for installation-a, for the loss written at `revokedAt` (by default, now). */
+const loseAuthorization = (revokedAt = Date.now()) => publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a', revokedAt })
 
 let manager: AgentIntegrationManager
 let adapter: ObjectIntegration
@@ -1085,7 +1087,7 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
   await manager.start()
   state.syncMcp.mockClear(); vi.mocked(captureException).mockClear()
   state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
-  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await loseAuthorization()
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
   await vi.waitFor(() => expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a']))
   expect(captureException).not.toHaveBeenCalled()
@@ -1093,14 +1095,14 @@ it('stops a revoked connector and refreshes its MCP projection without classifyi
 it('does not tear down replacement authorization on a late revocation notification', async () => {
   await manager.start()
   state.rows[0].config = '{"replacement":true}'
-  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await loseAuthorization()
   await backgroundSettled()
   expect(adapter.connected).toBe(true)
 })
 it('lets neither a repeated nor a late loss hint tear down the authorization that replaced the revoked one', async () => {
   await manager.start()
   state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
-  const loss = { type: 'authorization_lost', integrationId: 'installation-a' } as const
+  const loss = { type: 'authorization_lost', integrationId: 'installation-a', revokedAt: Date.now() } as const
   await publishIntegrationAuthorization(loss)
   await backgroundSettled()
   expect(adapter.connected).toBe(false)
@@ -1115,13 +1117,37 @@ it('lets neither a repeated nor a late loss hint tear down the authorization tha
   expect(adapter.connected).toBe(true)
   expect(manager.isIntegrationConnected('installation-a')).toBe(true)
 })
+it('does not cancel the connect of credentials written after the loss when the late hint arrives mid-connect', async () => {
+  let release!: () => void, reached!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const making = new Promise<void>(resolve => { reached = resolve })
+  let gated = false
+  manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => {
+    if (gated) { reached(); await gate }
+    return adapter
+  } }]))
+  await manager.start()
+  const revokedAt = Date.now()
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true}', updatedAt: new Date(revokedAt) }
+  // A config edit: replacement credentials with the row still `disconnected`, then remove + add.
+  state.rows[0] = { ...state.rows[0], config: '{"replacement":true}', updatedAt: new Date(revokedAt + 1) }
+  await manager.removeIntegration('installation-a')
+  gated = true
+  const adding = manager.addIntegration('installation-a')
+  // The hint arrives while the replacement's connector is still being made.
+  await making
+  await loseAuthorization(revokedAt)
+  await backgroundSettled()
+  release(); await adding
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})
 it('stops hearing an integration once it is removed, and hears it again once it is connected', async () => {
   (adapter.definition.capabilities as string[]).push('mcp')
   await manager.start()
   await manager.removeIntegration('installation-a')
   state.syncMcp.mockClear()
   state.rows[0].status = 'disconnected'
-  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await loseAuthorization()
   await backgroundSettled()
   expect(state.syncMcp).not.toHaveBeenCalled()
 
@@ -1129,7 +1155,7 @@ it('stops hearing an integration once it is removed, and hears it again once it 
   await manager.addIntegration('installation-a')
   state.syncMcp.mockClear()
   state.rows[0].status = 'disconnected'
-  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await loseAuthorization()
   await backgroundSettled()
   expect(adapter.connected).toBe(false)
   expect(state.syncMcp).toHaveBeenCalledExactlyOnceWith(['installation-a'])
@@ -1138,11 +1164,11 @@ it('hears nothing once stopped, and again once started', async () => {
   const heard = vi.spyOn(manager as unknown as { authorizationLost: (change: unknown) => Promise<void> }, 'authorizationLost')
   await manager.start()
   manager.stop()
-  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await loseAuthorization()
   await backgroundSettled()
   expect(heard).not.toHaveBeenCalled()
   await manager.start()
-  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  await loseAuthorization()
   await backgroundSettled()
   expect(heard).toHaveBeenCalledOnce()
 })
@@ -1203,8 +1229,9 @@ it('delivers stream output by its routing alone, reading the session only for a 
 
 it('tears down revoked authorization even if an unrelated config write followed the revocation', async () => {
   await manager.start()
-  state.rows[0].status = 'disconnected'
-  state.rows[0].config = '{"revoked":true,"transportHealth":"offline"}'
-  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a' })
+  const revokedAt = Date.now()
+  // The loss, then a write that moved `updatedAt` past it; the connection was read before both.
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true,"transportHealth":"offline"}', updatedAt: new Date(revokedAt + 5) }
+  await loseAuthorization(revokedAt)
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
 })

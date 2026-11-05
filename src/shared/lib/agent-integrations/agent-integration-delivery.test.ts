@@ -9,7 +9,8 @@ import { MockChatAgentIntegration } from '../chat-integrations/mock-connector'
 import { TaskManagerAgentIntegration } from '../task-manager-integrations/task-manager-agent-integration'
 import type { TaskEvent } from '../task-manager-integrations/types'
 import type { AgentIntegrationRecord } from './types'
-import { getAgentIntegration } from '../services/agent-integration-service'
+import { getAgentIntegration, updateAgentIntegration } from '../services/agent-integration-service'
+import { backgroundSettled } from '../background'
 import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../services/agent-integration-session-service'
 import { requireIntegrationReconnect } from './lifecycle'
 import { appState } from '../app-state'
@@ -218,6 +219,27 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ initialMessage: expect.stringContaining('first') }))
     expect(runtime.send.mock.calls[0][0]).toBe('session-1')
     if (adapter instanceof Chat) expect(adapter.acknowledgeInput).toHaveBeenCalledTimes(2)
+  })
+  it('keeps credentials a config edit put in place when the loss hint arrives after it reconnected', async () => {
+    await start('telegram')
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+    // The loss is written; its hint is held back, as by a slow backend.
+    const state = appState()
+    const publish = state.publish.bind(state)
+    const held: Array<() => Promise<void>> = []
+    vi.spyOn(state, 'publish').mockImplementation(async (channel, event) => { held.push(() => publish(channel, event)) })
+    expect(await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: { revoked: true }, message: 'Reconnect' })).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 2))
+    // PATCH with replacement credentials: saved with the row still `disconnected`, then remove + add.
+    expect(await updateAgentIntegration('integration', { config: { botToken: '123:replacement' } })).toBe(true)
+    await manager.removeIntegration('integration')
+    await manager.addIntegration('integration')
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+    expect((await getAgentIntegration('integration'))?.status).toBe('disconnected')
+    // The late hint.
+    await Promise.all(held.map(send => send()))
+    await backgroundSettled()
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
   })
   it('recovers locally accepted input after a manager restart', async () => {
     await start(); await adapter.disconnect()

@@ -17,7 +17,18 @@ export const integrationAuthorizationEventSchema = z.discriminatedUnion('type', 
    * A terminal rejection cleared the credential and stopped the installation
    * (`requireIntegrationReconnect`). A credential refresh sends nothing.
    */
-  z.object({ type: z.literal('authorization_lost'), integrationId: z.string().min(1) }),
+  z.object({
+    type: z.literal('authorization_lost'),
+    integrationId: z.string().min(1),
+    /**
+     * Which authorization was lost: the row's `updatedAt` (epoch ms) that the
+     * loss wrote. A copy of the row read up to then runs the lost authorization;
+     * one read after a later write does not, since every credential write moves
+     * `updatedAt` (a config edit leaves the row `disconnected` while it puts
+     * replacement credentials in place).
+     */
+    revokedAt: z.number().int().nonnegative(),
+  }),
 ])
 export type IntegrationAuthorizationEvent = z.infer<typeof integrationAuthorizationEventSchema>
 
