@@ -15,7 +15,8 @@ export interface PendingMessagesContextValue {
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
   onPendingMessageAppeared: (localId: string) => void
   /** `voiceMode` opens the new session's composer listening, with no ghost for the notice that started it. */
-  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean; replace?: boolean }) => void
+  /** `transition`: navigate with a view transition, Agent Home's composer morphing into the session's. */
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean; replace?: boolean; transition?: boolean }) => void
   clearPendingMessagesForSession: (sessionId: string) => void
   streamContextUsage: SessionUsage | null
 }

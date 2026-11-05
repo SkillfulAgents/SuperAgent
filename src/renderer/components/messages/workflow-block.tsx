@@ -1,5 +1,4 @@
 import { Workflow } from 'lucide-react'
-import { cn } from '@shared/lib/utils/cn'
 import { StatusIndicator } from './tool-call-item'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import { useWorkflow } from '@renderer/context/workflow-context'
@@ -132,13 +131,13 @@ export function WorkflowBlock({
   )
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+    <div className="text-sm transcript-card rounded-icon overflow-hidden">
       {resolvedRunId ? (
         <button
           type="button"
           onClick={() => openWorkflow(resolvedRunId, label)}
           title="View workflow agents"
-          className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors text-left cursor-pointer"
+          className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group transition-colors text-left cursor-pointer"
         >
           {rowInner}
         </button>
@@ -146,7 +145,7 @@ export function WorkflowBlock({
         <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group">{rowInner}</div>
       )}
       {isRunning && usage && (usage.total_tokens > 0 || usage.duration_ms > 0) && (
-        <div className={cn('border-t border-border/70 bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground italic')}>
+        <div className="border-t border-foreground/[0.06] px-3 py-1.5 text-xs text-muted-foreground italic">
           {formatElapsed(usage.duration_ms)}
           {' · '}{formatTokens(usage.total_tokens)} tokens
         </div>

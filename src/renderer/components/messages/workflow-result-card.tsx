@@ -28,18 +28,18 @@ export function WorkflowResultCard({ notification, agentSlug }: { notification: 
   )
 
   return (
-    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+    <div className="text-sm transcript-card rounded-icon overflow-hidden">
       {runId ? (
         <button
           type="button"
           onClick={() => openWorkflow(runId, notification.title)}
           title="View workflow agents"
-          className="flex w-full items-center gap-2 px-2 py-1.5 bg-muted/40 hover:bg-muted/70 transition-colors text-left cursor-pointer"
+          className="flex w-full items-center gap-2 px-2 py-1.5 transition-colors text-left cursor-pointer"
         >
           {header}
         </button>
       ) : (
-        <div className="flex items-center gap-2 px-2 py-1.5 bg-muted/40">{header}</div>
+        <div className="flex items-center gap-2 px-2 py-1.5">{header}</div>
       )}
       <div className="px-3 py-2 prose prose-sm max-w-none min-w-0 break-words dark:prose-invert prose-strong:font-medium">
         <AgentMarkdown text={notification.result} mode="settled" agentSlug={agentSlug} />

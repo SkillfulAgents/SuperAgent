@@ -745,7 +745,8 @@ describe('AgentHome', () => {
     // The uuid is server-assigned: never sent in the request, and the one
     // from the response is forwarded to onSessionCreated.
     expect(mockCreateSession.mutateAsync.mock.calls[0][0]).not.toHaveProperty('messageUuid')
-    expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent', 'srv-msg-uuid')
+    // …and asks for the view transition into the session (its composer morphs into the session's).
+    expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent', 'srv-msg-uuid', { transition: true })
   })
 
   // --- Attachment picker ---

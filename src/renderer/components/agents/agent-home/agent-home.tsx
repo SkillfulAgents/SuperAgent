@@ -73,7 +73,7 @@ import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-t
 
 interface AgentHomeProps {
   agent: ApiAgent
-  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => void
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean; transition?: boolean }) => void
 }
 
 /** Recent sessions shows the latest few, as Team Brain's home does; See all sessions opens the rest in place. */
@@ -200,8 +200,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     submitDisabled: !isRuntimeReady,
     agentRuntimeErrorsShownInline: true,
     onSessionCreated: ({ session, content }) => {
-      // Preserve the server's message identity for the optimistic pending copy.
-      onSessionCreated(session.id, content, session.initialMessageUuid)
+      // Preserve the server's message identity for the optimistic pending copy, and ask for the view transition into
+      // the session: this composer morphs into the session's.
+      onSessionCreated(session.id, content, session.initialMessageUuid, { transition: true })
       // This mutation survives navigation because its query client is app-scoped.
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0) {
         renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
@@ -254,7 +255,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         inputMode: 'voice',
         ...composerOptions.toRuntimeOptions(),
       })
-      onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
+      onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true, transition: true })
       track('voice_mode_entered', { origin })
     } catch (error) {
       console.error('Failed to start a voice session:', error)
@@ -554,6 +555,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                     <ChatComposerBox
                       // The session composer's glass with the panels' glass edge: the sessions pass under it once it docks.
                       className={HOME_GLASS_COMPOSER_CLASS}
+                      // Sending morphs it into the session's composer (globals.css, 'agent-session').
+                      transitionName="agent-composer"
                       textareaRef={composerTextareaRef}
                       attachments={composer.attachments}
                       onRemoveAttachment={composer.removeAttachment}

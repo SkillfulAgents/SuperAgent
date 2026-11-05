@@ -12,6 +12,8 @@ interface SessionThreadProps {
   footer: ReactNode
   /** Classes for the footer wrapper — callers set their own max-width/background. */
   footerClassName?: string
+  /** Drawn behind the transcript and the footer (not the side tray), and held still as the transcript scrolls: the agent's halftone background. */
+  backdrop?: ReactNode
   /** Let transcript content scroll beneath the pinned footer while reserving
    *  enough live-edge clearance to keep the newest content readable. */
   overlayFooter?: boolean
@@ -40,6 +42,7 @@ export function SessionThread({
   agentSlug,
   footer,
   footerClassName = 'bg-background',
+  backdrop,
   overlayFooter = false,
   browserActive = false,
   readOnly,
@@ -85,9 +88,12 @@ export function SessionThread({
         className={cn(
           'flex-1 min-w-0 min-h-0',
           overlayFooter ? 'relative flex' : 'grid grid-rows-[1fr_auto]',
+          // Its own stacking context, so a backdrop below its content stays above the page.
+          backdrop && 'relative isolate',
         )}
         data-testid="session-thread-main"
       >
+        {backdrop && <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">{backdrop}</div>}
         {sessionId && (
           <MessageList
             key={sessionId}

@@ -629,6 +629,8 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       />
       <ChatComposerBox
         className={`${FLOATING_COMPOSER_CLASS} composer-enter-contents`}
+        // Agent Home's composer morphs into this one when sending from there starts the session (globals.css).
+        transitionName="agent-composer"
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
         onRetryAttachment={composer.retryAttachment}

@@ -22,7 +22,8 @@ export function HomeHalftoneBackdrop({ agent }: { agent: Pick<ApiAgent, 'slug' |
     <div
       aria-hidden="true"
       className={cn('pointer-events-none absolute inset-0 overflow-hidden', !ink && 'text-muted-foreground/50')}
-      style={ink ? { color: ink.color, opacity: ink.opacity } : undefined}
+      // One name on Agent Home's and the session's, so it holds still through the transition between them.
+      style={ink ? { color: ink.color, opacity: ink.opacity, viewTransitionName: 'agent-backdrop' } : { viewTransitionName: 'agent-backdrop' }}
       data-testid="agent-home-halftone"
     >
       <Halftone
