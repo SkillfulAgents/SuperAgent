@@ -339,7 +339,7 @@ describe('MeetingAgentIntegration', () => {
       { role: 'assistant', text: 'Noted, $30 per seat.', at: Date.now() + 1000 },
     ])
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
-    expect(await read()).toBe('[18:05:12] Mike: Our price is $30 per seat.\n[18:05:13] Ada: Noted, $30 per seat.\n')
+    expect(await read()).toBe('[2026-11-02 18:05:12 UTC] Mike: Our price is $30 per seat.\n[2026-11-02 18:05:13 UTC] Ada: Noted, $30 per seat.\n')
 
     // Speech heard just before the call ends is written before the 'ended' input is emitted.
     const atEnd: Array<Promise<Uint8Array | null>> = []
