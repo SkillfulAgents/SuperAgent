@@ -54,4 +54,20 @@ describe('RelatedSessions', () => {
     expect(screen.getAllByRole('button', { name: /Chat / })).toHaveLength(3)
     expect(screen.queryByText(/^Page /)).toBeNull()
   })
+
+  it('draws participants only when asked, in order, and names them', () => {
+    const shared: SessionItem[] = [
+      { id: 'a', name: 'Chat A', createdAt: '2026-10-02', participants: [{ id: 'u1', name: 'Ann Lee' }, { id: 'u2', name: 'Bob Roy' }] },
+      { id: 'b', name: 'Chat B', createdAt: '2026-10-01' },
+    ]
+    const { rerender } = render(<RelatedSessions sessions={shared} formatDate={formatDate} agentSlug="agent-a" />)
+    expect(screen.queryByTestId('session-participants-a')).toBeNull()
+
+    rerender(<RelatedSessions sessions={shared} formatDate={formatDate} agentSlug="agent-a" showParticipants />)
+    const faces = screen.getByTestId('session-participants-a')
+    expect(faces).toHaveAttribute('title', 'Ann Lee, Bob Roy')
+    expect(faces.querySelectorAll('[role="img"]')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /Chat A.*with Ann Lee, Bob Roy/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('session-participants-b')).toBeNull()
+  })
 })
