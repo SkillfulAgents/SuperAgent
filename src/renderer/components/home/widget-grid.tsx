@@ -131,6 +131,8 @@ interface WidgetBoardProps {
   arranging?: boolean
   /** Suppress native/synthetic context menus while touch arrange mode is active. */
   disableContextMenu?: boolean
+  /** The board's width as laid out (px): the columns its cards use, for a header that should match it. */
+  onWidthChange?: (width: number) => void
 }
 
 interface DragState {
@@ -150,13 +152,16 @@ export function WidgetBoard({
   dragEnabled = true,
   arranging = false,
   disableContextMenu = false,
+  onWidthChange,
 }: WidgetBoardProps) {
+  // The space the board has (measured for the column count) and the board itself, inside it.
+  const spaceRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const [cols, setCols] = useState(4)
   const [cellW, setCellW] = useState(216)
 
   useLayoutEffect(() => {
-    const el = wrapRef.current
+    const el = spaceRef.current
     if (!el) return
     const measure = () => {
       const wpx = el.clientWidth
@@ -198,6 +203,17 @@ export function WidgetBoard({
     const map = new Map(resolved.map((p) => [p.id, p]))
     return items.map((it) => map.get(it.id)!).filter(Boolean)
   }, [items, cols])
+
+  // The board is as wide as the columns its cards use, centred in its space: a saved layout can leave the last column
+  // or two empty, and the board would otherwise end short of the header above it. A drag can still reach every
+  // column (it lays out past the board's edge until it's dropped).
+  const usedCols = placed.length > 0 ? Math.min(cols, Math.max(...placed.map((g) => g.x + g.w))) : cols
+  const boardW = usedCols * cellW + (usedCols - 1) * GAP
+  const onWidthChangeRef = useRef(onWidthChange)
+  onWidthChangeRef.current = onWidthChange
+  useLayoutEffect(() => {
+    onWidthChangeRef.current?.(Math.round(boardW))
+  }, [boardW])
 
   const cellH = cellW + CELL_EXTRA_H
   const unitX = cellW + GAP
@@ -321,10 +337,11 @@ export function WidgetBoard({
   const boardH = rows * unitY - GAP + (drag ? unitY : 0)
 
   return (
+    <div ref={spaceRef} className="w-full">
     <div
       ref={wrapRef}
-      className="relative w-full transition-[height] duration-200 ease-out"
-      style={{ height: Math.max(boardH, unitY) }}
+      className="relative mx-auto transition-[height] duration-200 ease-out"
+      style={{ width: boardW, height: Math.max(boardH, unitY) }}
     >
       {drag && (
         <div
@@ -401,6 +418,7 @@ export function WidgetBoard({
           </div>
         )
       })}
+    </div>
     </div>
   )
 }
