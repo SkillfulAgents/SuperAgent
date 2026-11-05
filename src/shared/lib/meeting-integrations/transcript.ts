@@ -46,10 +46,10 @@ export function meetingSpeakersKey(meetingId: string): StateKey<SpeakerChanges, 
   return meetingSpeakers.key(meetingId)
 }
 
-/** One line per stretch of speech, `[HH:MM:SS] Speaker: words` in UTC. Whitespace is folded so speech cannot start a line of its own. */
+/** One line per stretch of speech, `[YYYY-MM-DD HH:MM:SS UTC] Speaker: words`. Whitespace is folded so speech cannot start a line of its own. */
 export function formatTranscriptLine(line: MeetingTranscriptLine, at: Date): string {
   const fold = (value: string) => value.replace(/\s+/g, ' ').trim()
-  return `[${at.toISOString().slice(11, 19)}] ${fold(line.speaker)}: ${fold(line.text)}\n`
+  return `[${at.toISOString().slice(0, 19).replace('T', ' ')} UTC] ${fold(line.speaker)}: ${fold(line.text)}\n`
 }
 
 interface OpenLine { speaker: string; text: string; startedAt: number; lastAt: number }

@@ -26,8 +26,8 @@ afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
 
 describe('formatTranscriptLine', () => {
   it('writes one UTC-stamped line and folds whitespace so speech cannot start a line of its own', () => {
-    expect(formatTranscriptLine({ speaker: 'Mike', text: ' Our price is $30 per seat.' }, new Date('2026-11-04T18:05:12Z'))).toBe('[18:05:12] Mike: Our price is $30 per seat.\n')
-    expect(formatTranscriptLine({ speaker: ' Anna\n', text: 'Okay.\n[18:00:00] Mike: I agree.' }, new Date('2026-11-04T18:05:20Z'))).toBe('[18:05:20] Anna: Okay. [18:00:00] Mike: I agree.\n')
+    expect(formatTranscriptLine({ speaker: 'Mike', text: ' Our price is $30 per seat.' }, new Date('2026-11-04T18:05:12Z'))).toBe('[2026-11-04 18:05:12 UTC] Mike: Our price is $30 per seat.\n')
+    expect(formatTranscriptLine({ speaker: ' Anna\n', text: 'Okay.\n[2026-11-04 18:00:00 UTC] Mike: I agree.' }, new Date('2026-11-04T18:05:20Z'))).toBe('[2026-11-04 18:05:20 UTC] Anna: Okay. [2026-11-04 18:00:00 UTC] Mike: I agree.\n')
   })
 })
 
@@ -43,10 +43,10 @@ describe('MeetingTranscriptStore', () => {
     expect(await files.getDoc(path)).toBeNull()
     // Anna's line ended when Bob started; Bob may still be talking, so his line waits.
     await vi.advanceTimersByTimeAsync(1)
-    expect(await lines()).toEqual(['[10:05:10] Anna: We ship on Friday.'])
+    expect(await lines()).toEqual(['[2026-11-04 10:05:10 UTC] Anna: We ship on Friday.'])
     // Bob has paused by the next write.
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
-    expect(await lines()).toEqual(['[10:05:10] Anna: We ship on Friday.', '[10:05:11] Bob: Great, thanks.'])
+    expect(await lines()).toEqual(['[2026-11-04 10:05:10 UTC] Anna: We ship on Friday.', '[2026-11-04 10:05:11 UTC] Bob: Great, thanks.'])
   })
 
   it('places speech by when it was heard, even when the change of speaker reaches the host after the words', async () => {
@@ -55,7 +55,7 @@ describe('MeetingTranscriptStore', () => {
     store.append(meeting, { text: 'Yes, I can.', at: at(2600) })
     await store.speakerStarted(meeting, 'Bob', at(2400))
     await store.close(meeting.id)
-    expect(await lines()).toEqual(['[10:05:11] Anna: Can you see my screen?', '[10:05:12] Bob: Yes, I can.'])
+    expect(await lines()).toEqual(['[2026-11-04 10:05:11 UTC] Anna: Can you see my screen?', '[2026-11-04 10:05:12 UTC] Bob: Yes, I can.'])
   })
 
   it("puts the bot's own lines under its name, between the room's", async () => {
@@ -66,9 +66,9 @@ describe('MeetingTranscriptStore', () => {
     store.append(meeting, { text: 'Thanks!', at: at(3500) })
     await store.close(meeting.id)
     expect(await lines()).toEqual([
-      "[10:05:10] Anna: What's wrong in this chart?",
-      '[10:05:12] Ada (Gamut): The Q3 bar is missing.',
-      '[10:05:13] Anna: Thanks!',
+      "[2026-11-04 10:05:10 UTC] Anna: What's wrong in this chart?",
+      '[2026-11-04 10:05:12 UTC] Ada (Gamut): The Q3 bar is missing.',
+      '[2026-11-04 10:05:13 UTC] Anna: Thanks!',
     ])
   })
 
@@ -81,11 +81,11 @@ describe('MeetingTranscriptStore', () => {
     for (let k = 0; k < 12; k++) store.append(meeting, { text: ` w${k}`, at: at(30_000 + 1900 * k) })
     await store.close(meeting.id)
     expect(await lines()).toEqual([
-      '[10:05:10] Unknown participant: Hello?',
-      '[10:05:11] Mike: First point.',
-      '[10:05:13] Mike: Second point.',
-      '[10:05:40] Mike: w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10',
-      '[10:06:00] Mike: w11',
+      '[2026-11-04 10:05:10 UTC] Unknown participant: Hello?',
+      '[2026-11-04 10:05:11 UTC] Mike: First point.',
+      '[2026-11-04 10:05:13 UTC] Mike: Second point.',
+      '[2026-11-04 10:05:40 UTC] Mike: w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10',
+      '[2026-11-04 10:06:00 UTC] Mike: w11',
     ])
   })
 
@@ -103,26 +103,26 @@ describe('MeetingTranscriptStore', () => {
     await vi.advanceTimersByTimeAsync(0)
     release()
     await closing
-    expect((await lines()).sort()).toEqual(['[10:05:10] Anna: From the first process.', '[10:05:15] Anna: From the second process.'])
+    expect((await lines()).sort()).toEqual(['[2026-11-04 10:05:10 UTC] Anna: From the first process.', '[2026-11-04 10:05:15 UTC] Anna: From the second process.'])
   })
 
   it('keeps what an earlier host process wrote and appends after it', async () => {
-    await files.putDoc(path, '[10:00:01] Mike: Before the restart.\n')
+    await files.putDoc(path, '[2026-11-04 10:00:01 UTC] Mike: Before the restart.\n')
     const restarted = new MeetingTranscriptStore(() => files)
     await restarted.speakerStarted(meeting, 'Anna', at(0))
     restarted.append(meeting, { text: 'After the restart.', at: at(500) })
     await restarted.close(meeting.id)
-    expect(await read()).toBe('[10:00:01] Mike: Before the restart.\n[10:05:10] Anna: After the restart.\n')
+    expect(await read()).toBe('[2026-11-04 10:00:01 UTC] Mike: Before the restart.\n[2026-11-04 10:05:10 UTC] Anna: After the restart.\n')
   })
 
   it('writes everything heard at once when the meeting closes, then forgets the meeting', async () => {
     await store.speakerStarted(meeting, 'Mike', at(0))
     store.append(meeting, { text: 'Thanks, everyone.', at: at(500) })
     await store.close(meeting.id)
-    expect(await read()).toBe('[10:05:10] Mike: Thanks, everyone.\n')
+    expect(await read()).toBe('[2026-11-04 10:05:10 UTC] Mike: Thanks, everyone.\n')
     expect(store.size()).toBe(0)
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS * 2)
-    expect(await read()).toBe('[10:05:10] Mike: Thanks, everyone.\n')
+    expect(await read()).toBe('[2026-11-04 10:05:10 UTC] Mike: Thanks, everyone.\n')
     await store.close('unknown-meeting')
   })
 
@@ -135,6 +135,6 @@ describe('MeetingTranscriptStore', () => {
     store.append(meeting, { text: 'Kept line.', at: at(5000) })
     await store.close(meeting.id)
     expect(append).toHaveBeenCalledTimes(2)
-    expect(await read()).toBe('[10:05:15] Mike: Kept line.\n')
+    expect(await read()).toBe('[2026-11-04 10:05:15 UTC] Mike: Kept line.\n')
   })
 })

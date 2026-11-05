@@ -40,6 +40,7 @@ describe('meeting prompts', () => {
     expect(setting.instructions).toContain('Zoom call under the name "Ada (Gamut)"')
     expect(setting.instructions).toContain('"Take notes and answer deck questions"')
     expect(setting.instructions).toContain('in the call now: Iddo (host), Maya. Group setting')
+    expect(setting.instructions).toContain('When you need to know who said something, ask the backend agent')
     expect(setting.instructions).not.toContain('zoom.us')
     expect(setting.voice).toBeUndefined()
     // Through the generic prompt it replaces the one-on-one rules.
