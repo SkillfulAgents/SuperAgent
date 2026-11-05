@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the QA-20261105-171605-gkuh agent can open a browser via browser tools, navigate to https://example.com, retrieve the page title \"Example Domain\", and respond correctly.",
+  "reason": "Agent successfully opened browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result correctly.",
   "steps": [
-    "Step 1 - Navigate to http://localhost:47891 — SUCCESS: App loaded successfully showing Gamut interface with sidebar containing agents",
-    "Step 2 - Click on \"QA-20261105-171605-gkuh\" agent in sidebar — SUCCESS: Agent page opened, showing chat interface and agent configuration options",
-    "Step 3 - Type and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — SUCCESS: Message was typed into textbox and sent via Send button",
-    "Step 4 - Wait up to 3 minutes for response — SUCCESS: Agent responded within 5 seconds with the correct page title",
-    "Step 5 - Verify response mentions \"Example Domain\" — SUCCESS: Response states \"The page title is \"Example Domain\". The page loaded normally, and I closed the browser afterwards.\" Agent worked for 9 seconds using 3 tool calls and 160,361 tokens."
+    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut interface and sidebar showing agents including \"QA-20261105-174144-vm8z\"",
+    "Clicked on the \"QA-20261105-174144-vm8z\" agent in the sidebar — Page navigated to agent detail view with message input interface",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in chat and agent status changed to \"working\"",
+    "Waited up to 3 minutes for agent response — Agent completed work within 10 seconds and returned response",
+    "Verified response contains \"Example Domain\" and took screenshot — Response displays: \"The page title is \"Example Domain\". The page loaded normally (HTTP 200), and I've closed the browser.\" Screenshot saved as qa-test-response.png"
   ],
   "bugs": [],
-  "durationMs": 75912,
-  "sessionId": "9e8f912d-270e-4060-b569-b080949d3b06",
+  "durationMs": 63207,
+  "sessionId": "b75a4afa-488e-409c-956e-2f9239e4ca10",
   "cost": {
-    "inputTokens": 314,
-    "outputTokens": 11517,
-    "cacheCreationTokens": 78152,
-    "cacheReadTokens": 904682,
+    "inputTokens": 364,
+    "outputTokens": 11705,
+    "cacheCreationTokens": 78423,
+    "cacheReadTokens": 1079858,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.246057
+    "totalCostUsd": 0.264904
   }
 }
