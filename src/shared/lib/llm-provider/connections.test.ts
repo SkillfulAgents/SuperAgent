@@ -22,6 +22,8 @@ const state = vi.hoisted(() => ({
   settings: {} as AppSettings,
   db: null as TestDatabase['db'] | null,
   platformToken: undefined as string | undefined,
+  /** Another writer's commit, landing once between a settings read and the next write (that write's retry sees it). */
+  beforeNextWrite: undefined as (() => void) | undefined,
 }))
 vi.mock('../db', () => ({
   get db() {
@@ -36,6 +38,9 @@ vi.mock('../config/settings', async (importOriginal) => ({
   // The same defaults the import migration computes from the settings it read.
   getEffectiveModels: async () => (await import('./provider-settings')).effectiveModelsFrom(state.settings),
   mutateSettings: async (work: (s: AppSettings) => void | false) => {
+    const interleaved = state.beforeNextWrite
+    state.beforeNextWrite = undefined
+    interleaved?.()
     work(state.settings)
     return state.settings
   },
@@ -485,6 +490,56 @@ it('a legacy browser-only settings edit preserves the app and summarizer selecti
   await syncProviderSettings({ providers: ['anthropic'], models: ['browserModel'] })
   expect(state.settings.llmDefault).toEqual(root)
   expect(state.settings.llmSummarizer).toEqual({ llmProviderId: helper, model: 'a' })
+})
+
+it('a legacy agent-model edit leaves a default another writer moved to another connection meanwhile', async () => {
+  state.settings.llmLegacyProviderId = undefined
+  state.settings.apiKeys = { anthropicApiKey: 'saved' }
+  await runDataMigrations(handle.db, [importLlmConnections])
+  expect(state.settings.llmDefault?.llmProviderId).toBe('legacy-anthropic')
+  const other = await add('Other')
+  // Committed after the sync read the settings, before its write: a fresh
+  // object, as every read of the store returns.
+  state.beforeNextWrite = () => {
+    state.settings = { ...state.settings, llmDefault: { llmProviderId: other, model: 'a' } }
+  }
+  await syncProviderSettings({ providers: ['anthropic'], models: ['agentModel'] })
+  expect(state.beforeNextWrite).toBeUndefined()
+  expect(state.settings.llmDefault).toEqual({ llmProviderId: other, model: 'a' })
+})
+
+it('changing the app default leaves a summarizer another writer chose meanwhile', async () => {
+  const first = await add('First')
+  const second = await add('Second')
+  const helper = await add('Helper')
+  await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+  await setGlobalSelection('summarizer', { llmProviderId: first, model: 'a' })
+  state.beforeNextWrite = () => {
+    state.settings = { ...state.settings, llmSummarizer: { llmProviderId: helper, model: 'a' } }
+  }
+  await setGlobalSelection('default', { llmProviderId: second, model: 'a' })
+  expect(state.beforeNextWrite).toBeUndefined()
+  expect(state.settings.llmDefault).toEqual({ llmProviderId: second, model: 'a' })
+  expect(state.settings.llmSummarizer).toEqual({ llmProviderId: helper, model: 'a' })
+})
+
+it('a first key save leaves the default and summarizer another writer chose meanwhile', async () => {
+  state.settings.llmLegacyProviderId = undefined
+  await runDataMigrations(handle.db, [importLlmConnections])
+  const other = await add('Other')
+  state.settings.apiKeys = { anthropicApiKey: 'first-key' }
+  expect(state.settings.llmDefault).toBeUndefined()
+  state.beforeNextWrite = () => {
+    state.settings = {
+      ...state.settings,
+      llmDefault: { llmProviderId: other, model: 'a' },
+      llmSummarizer: { llmProviderId: other, model: 'a' },
+    }
+  }
+  await syncProviderSettings({ providers: ['anthropic'], apiKeys: state.settings.apiKeys })
+  expect(state.beforeNextWrite).toBeUndefined()
+  expect(state.settings.llmDefault).toEqual({ llmProviderId: other, model: 'a' })
+  expect(state.settings.llmSummarizer).toEqual({ llmProviderId: other, model: 'a' })
 })
 
 it('legacy model updates preserve explicit pins without replacing connection-local catalog edits', async () => {

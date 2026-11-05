@@ -1004,6 +1004,39 @@ describe('platform-auth-service', () => {
       expect(await readCloudWorkspaceRecord()).toBeNull()
     })
 
+    it('clears the old principal\'s token in the auth write, never one minted for the new principal after it', async () => {
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+      })
+      await seedCloudToken()
+
+      // A refresh mints for the new member while the save is still finishing its follow-up work.
+      mockEnsureManagedPlatformConnection.mockImplementationOnce(async () => {
+        expect(await readCloudWorkspaceRecord()).toBeNull()
+        await writeCloudWorkspaceRecord({
+          deploymentUrl: 'https://ws.example.com',
+          orgId: 'org_x',
+          token: 'deploy_session_token_for_b',
+          tokenPreview: 'deploy...or_b',
+          expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+          updatedAt: new Date().toISOString(),
+          userId: 'user_b',
+          memberId: 'sub_b',
+          tokenFingerprint: 'fingerprint_b',
+        })
+      })
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_b_1111111111111111',
+        orgId: 'org_x',
+        userId: 'user_b',
+        memberId: 'sub_b',
+      })
+      expect((await readCloudWorkspaceRecord())?.token).toBe('deploy_session_token_for_b')
+    })
+
     it('keeps the deployment token on a same-identity metadata refresh', async () => {
       await savePlatformAuth('local', {
         token: 'plat_sa_member_a_0000000000000000',

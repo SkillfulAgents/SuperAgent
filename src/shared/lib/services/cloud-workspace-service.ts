@@ -256,6 +256,11 @@ function stillActingAs(account: CloudWorkspaceAccount): (settings: Readonly<AppS
   return (settings) => sameAccount(account, accountIn(settings, { report: false }))
 }
 
+/** A record write guard: the settings hold no connected account. */
+function stillDisconnected(settings: Readonly<AppSettings>): boolean {
+  return !accountIn(settings, { report: false }).connected
+}
+
 /**
  * True only for two *known, live* snapshots of the same account. An
  * unidentifiable one (disconnected, or no credential to fingerprint) is never
@@ -383,7 +388,9 @@ export async function getCloudWorkspace(
   // filter by, and the identity we'd record must all be the same account.
   const account = await readAccount()
   if (!account.connected || !account.token) {
-    await clearCloudWorkspaceRecord()
+    // Cleared only while still disconnected: a connection completed since the
+    // read above may already hold a freshly minted record.
+    await clearCloudWorkspaceRecord({ onlyIf: stillDisconnected })
     return NOT_AVAILABLE
   }
 

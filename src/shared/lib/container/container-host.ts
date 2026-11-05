@@ -595,12 +595,17 @@ export class ContainerHost {
         const alternativeRunner = allAvailability.find((r) => r.available && r.runner !== configuredRunner)
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
+          const unavailableRunner = configuredRunner
           configuredRunner = alternativeRunner.runner as ContainerRunner
-          // Compare-and-set write. Each runtime's getClient() reads the runner
-          // fresh and replaces a client built for another one on its next use.
-          await mutateSettings((s) => {
+          // Switch only away from the runner found unavailable: one the user
+          // picked during the availability check above stands. Each runtime's
+          // getClient() reads the runner and replaces a client built for
+          // another one once its container is no longer running.
+          const switched = await mutateSettings((s) => {
+            if (s.container.containerRunner !== unavailableRunner) return false
             s.container.containerRunner = configuredRunner
           })
+          configuredRunner = switched.container.containerRunner as ContainerRunner
         } else {
           const displayName = getRunnerDisplayName(configuredRunner)
           const detail = !runnerStatus?.installed

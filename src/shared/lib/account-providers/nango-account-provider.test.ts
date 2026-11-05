@@ -77,6 +77,40 @@ describe('NangoAccountProvider', () => {
   })
 })
 
+describe('NangoAccountProvider across a key change', () => {
+  it('never caches a token fetched under the previous key once the new key was seen', async () => {
+    const isTokenFetch = (url: unknown) => String(url).startsWith('https://api.nango.dev/connections/conn?')
+    let landOldTokenFetch!: () => void
+    fetchMock.mockImplementation(async (url, init) => {
+      const bearer = new Headers(init?.headers).get('Authorization')
+      if (isTokenFetch(url) && bearer === 'Bearer nango-key-1') {
+        // The fetch made under the old key is slow to answer.
+        await new Promise<void>((resolve) => { landOldTokenFetch = resolve })
+        return connection('token-from-account-1')
+      }
+      if (isTokenFetch(url)) return connection('token-from-account-2')
+      if (String(url).startsWith('https://api.nango.dev')) return Response.json({ connections: [] })
+      return new Response('ok')
+    })
+    const provider = new NangoAccountProvider()
+    const call = { providerConnectionId: 'conn', toolkitSlug: 'github', targetUrl: 'https://api.github.com/user', method: 'GET', headers: new Headers(), body: null }
+
+    // A request under key 1 is fetching its token when another process saves key 2…
+    const first = provider.makeApiCall(call)
+    await vi.waitFor(() => expect(landOldTokenFetch).toBeTypeOf('function'))
+    state.nangoKey = 'nango-key-2'
+    // …and this one sees key 2 first.
+    await provider.listConnections()
+    landOldTokenFetch()
+    await first
+
+    await provider.makeApiCall(call)
+
+    const upstream = bearers().filter((_, index) => String(fetchMock.mock.calls[index][0]).startsWith('https://api.github.com'))
+    expect(upstream.at(-1)).toBe('Bearer token-from-account-2')
+  })
+})
+
 describe('account provider registration', () => {
   it('follows the stored key without re-registering', async () => {
     registerAllAccountProviders()

@@ -190,18 +190,40 @@ export class ToolCalls {
    * attachment), and never cleared: an id never recurs.
    */
   private readonly hostToolsRun: Set<string>
+  /**
+   * Host scripts and computer-use commands whose grant check (a settings
+   * read, and for a grab by ref a question to the machine) is in flight, by
+   * the subagent call that made them, if any. Nothing is registered or run
+   * until the check lands, so a Stop meanwhile finds nothing to cancel: it
+   * drops the stopped turn's entries instead, as do the call's result, the
+   * session going away and that subagent ending, and the check then
+   * registers and runs nothing. A second delivery of a call already being
+   * checked does nothing either. Carried across a reattach, like the checks.
+   */
+  private readonly hostRunChecks: Map<string, string | undefined>
 
   /** `prior`: the tool calls of the attachment this one replaces. */
   constructor(private readonly ctx: ToolCallContext, prior?: ToolCalls) {
     this.cancelledReviews = prior?.cancelledReviews ?? new Set()
     this.loginDecisions = prior?.loginDecisions ?? new Map()
     this.hostToolsRun = prior?.hostToolsRun ?? new Set()
+    this.hostRunChecks = prior?.hostRunChecks ?? new Map()
   }
 
   /** Stop waiting on the host's sign-in decisions: all of them, or those of the subagent call `parentToolId`. */
   dropLoginDecisions(parentToolId?: string): void {
     for (const [toolUseId, parent] of this.loginDecisions) {
       if (parentToolId === undefined || parent === parentToolId) this.loginDecisions.delete(toolUseId)
+    }
+  }
+
+  /**
+   * Abandon the host-run grant checks in flight whose caller `dropped`
+   * selects (`undefined`: the main agent); all of them by default.
+   */
+  dropHostRunChecks(dropped: (parentToolUseId: string | undefined) => boolean = () => true): void {
+    for (const [toolUseId, parent] of this.hostRunChecks) {
+      if (dropped(parent)) this.hostRunChecks.delete(toolUseId)
     }
   }
 
@@ -254,6 +276,7 @@ export class ToolCalls {
     for (const block of blocks as Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
       this.loginDecisions.delete(block.tool_use_id)
+      this.hostRunChecks.delete(block.tool_use_id)
       // Its result is in: replaying it to a client that connects later would
       // resurrect a decided card.
       this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')
@@ -285,6 +308,7 @@ export class ToolCalls {
     for (const block of blocks as Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
       this.loginDecisions.delete(block.tool_use_id)
+      this.hostRunChecks.delete(block.tool_use_id)
       if (!this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')) continue
       // Every other tab drops the card off this (the resolving tab already did).
       this.ctx.emit({ type: 'tool_result', toolUseId: block.tool_use_id, result: block.content, isError: block.is_error || false })
@@ -512,7 +536,10 @@ export class ToolCalls {
     // Registered either way, flagged when a grant covers it: the client then
     // suppresses any fallback prompt for the brief window before the result.
     // The persisted grants are a settings read.
-    const autoApproved = (await this.ctx.computerUse.check('use_host_shell')) === 'granted'
+    const check = await this.checkGrant(toolUse.id, parentToolUseId, async () =>
+      (await this.ctx.computerUse.check('use_host_shell')) === 'granted')
+    if (check === 'dropped') return
+    const autoApproved = check.granted
     this.register('script_run', toolUse.id, { script: input.script, explanation: input.explanation, scriptType: input.scriptType }, {
       parentToolUseId,
       autoApproved,
@@ -558,18 +585,22 @@ export class ToolCalls {
 
       const permissionLevel = getRequiredPermissionLevel(method)
       let appName = resolveTargetApp(method, params, this.ctx.computerUse.grabbed())
-      // Grab by window ref: the owning app, from the machine, before the
-      // permission check, so a failure here leaves nothing parked.
-      if (method === 'grab' && !appName && typeof params.ref === 'string' && params.ref) {
-        try {
-          appName = await this.ctx.host.call('computerUseWindowApp', { ref: params.ref })
-        } catch {
-          // Proceed without the app name.
+      const check = await this.checkGrant(toolUse.id, parentToolUseId, async () => {
+        // Grab by window ref: the owning app, from the machine, before the
+        // permission check, so a failure here leaves nothing parked.
+        if (method === 'grab' && !appName && typeof params.ref === 'string' && params.ref) {
+          try {
+            appName = await this.ctx.host.call('computerUseWindowApp', { ref: params.ref })
+          } catch {
+            // Proceed without the app name.
+          }
         }
-      }
+        return (await this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId)) === 'granted'
+      })
+      if (check === 'dropped') return
 
       const payload = { method, params, permissionLevel, appName }
-      if ((await this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId)) === 'granted') {
+      if (check.granted) {
         // Registered anyway, flagged so no projection reads it as a wait: the
         // run claims the request it settles, as a decision in the app does.
         this.register('computer_use', toolUse.id, payload, { parentToolUseId, autoApproved: true })
@@ -640,6 +671,28 @@ export class ToolCalls {
     } catch (error) {
       console.error('[LiveSession] Error handling capability review:', error)
     }
+  }
+
+  /**
+   * A host run's grant check, held in `hostRunChecks` while it is in flight.
+   * 'dropped' when the call was abandoned meanwhile (see `hostRunChecks`), or
+   * is a second delivery of a call already being checked.
+   */
+  private async checkGrant(
+    toolUseId: string,
+    parentToolUseId: string | undefined,
+    check: () => Promise<boolean>,
+  ): Promise<{ granted: boolean } | 'dropped'> {
+    if (this.hostRunChecks.has(toolUseId)) return 'dropped'
+    this.hostRunChecks.set(toolUseId, parentToolUseId)
+    let granted: boolean
+    try {
+      granted = await check()
+    } catch (error) {
+      this.hostRunChecks.delete(toolUseId)
+      throw error
+    }
+    return this.hostRunChecks.delete(toolUseId) ? { granted } : 'dropped'
   }
 
   private rememberDelivery(toolUse: ToolUse): void {

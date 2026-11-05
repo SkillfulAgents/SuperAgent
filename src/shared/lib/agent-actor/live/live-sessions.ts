@@ -426,7 +426,7 @@ export class LiveSessions {
     this.subscriptions.get(sessionId)?.()
     this.subscriptions.delete(sessionId)
     const prior = this.states.get(sessionId)
-    prior?.dispose()
+    prior?.dispose({ replaced: true })
     const state = this.create(sessionId, prior)
     this.resolveStreamPolicy(sessionId, state, metadata)
     this.clients.set(sessionId, client)

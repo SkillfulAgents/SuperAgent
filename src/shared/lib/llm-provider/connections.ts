@@ -348,6 +348,10 @@ async function applyGlobalSelection(
   if (purpose === 'summarizer' && resolved && !resolved.provider.supportsDirectApi)
     throw new Error('This provider cannot be used as a summarizer. Choose an API-capable provider.')
   let summarizerSelection = purpose === 'summarizer' ? selection : (await getSettings()).llmSummarizer
+  // Whether this call decides the summarizer. When it does not, the write
+  // leaves it alone: writing back the value read above would revert a
+  // summarizer another writer chose in the meantime.
+  let decidesSummarizer = purpose === 'summarizer'
   const root = purpose === 'default' ? resolved : await resolveGlobalSelection()
   if (root?.provider.supportsDirectApi === false) {
     const summarizer = purpose === 'summarizer' ? resolved : await resolveSummarizerSelection()
@@ -357,12 +361,16 @@ async function applyGlobalSelection(
       if (!isHelperSelection(inherited))
         throw new Error('Choose a separate API-capable summarizer before using this app default.')
       summarizerSelection = { llmProviderId: inherited.llmProviderId, model: inherited.model }
+      decidesSummarizer = true
     }
   }
-  if (restore) summarizerSelection = restore.summarizerSelection
+  if (restore) {
+    summarizerSelection = restore.summarizerSelection
+    decidesSummarizer = true
+  }
   await mutateSettings((s) => {
     if (purpose === 'default' && selection) s.llmDefault = selection
-    s.llmSummarizer = summarizerSelection
+    if (decidesSummarizer) s.llmSummarizer = summarizerSelection
   })
 }
 

@@ -184,11 +184,17 @@ export class ContainerRuntime {
    * process, or a write here that did not clear the runtimes) takes effect on
    * the next use: a client built for another runner is replaced. A start in
    * flight keeps the client it was handed, as it does after `resetClient`.
+   *
+   * Except while that client's container is up, coming up or going down:
+   * only that client can reach and stop it, so the runtime keeps it until
+   * the container is stopped, and the new runner applies from the next start.
    */
   async getClient(): Promise<ContainerClient> {
+    if (this.client && this.holdsContainer()) return this.client
     const read = ++this.clientReads
     const runner = (await getSettings()).container.containerRunner as ContainerRunner
-    if (this.client && (runner === this.clientRunner || read < this.clientDecidedBy)) {
+    // Reading was an await: the container may have started on the client meanwhile.
+    if (this.client && (runner === this.clientRunner || read < this.clientDecidedBy || this.holdsContainer())) {
       this.clientDecidedBy = Math.max(this.clientDecidedBy, read)
       return this.client
     }
@@ -199,6 +205,11 @@ export class ContainerRuntime {
     this.clientRunner = runner
     this.clientDecidedBy = read
     return this.client
+  }
+
+  /** The client's container is (or may be) running: starting, stopping, or last seen running. */
+  private holdsContainer(): boolean {
+    return this.starting !== null || this.stopping || this.cached?.status === 'running'
   }
 
   private clientConfig(): ContainerConfig {

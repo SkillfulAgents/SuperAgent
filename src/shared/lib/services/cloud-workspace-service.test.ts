@@ -197,6 +197,23 @@ describe('getCloudWorkspace', () => {
     expect(mockFetchDeployments).not.toHaveBeenCalled()
   })
 
+  it('clears a disconnected app’s record only while it is still disconnected inside the write', async () => {
+    // A connection (and its first mint) can commit between the read that saw
+    // no account and the clear: the clear's guard re-checks the settings it
+    // replaces, so it never wipes the new account's record.
+    mockGetToken.mockReturnValue(null)
+    mockAuthStatus.mockReturnValue(DISCONNECTED)
+
+    await getCloudWorkspace()
+
+    const onlyIf = mockClearRecord.mock.calls[0]?.[0]?.onlyIf
+    expect(onlyIf).toBeTypeOf('function')
+    expect(onlyIf?.({} as never)).toBe(true)
+    mockAuthStatus.mockReturnValue(connectedAs(PRINCIPAL))
+    mockGetToken.mockReturnValue(TOKEN)
+    expect(onlyIf?.({} as never)).toBe(false)
+  })
+
   it('sends the raw token and, on discovery failure, reports it as unknown — not absent', async () => {
     mockFetchDeployments.mockRejectedValue(new Error('401'))
     const status = await getCloudWorkspace()

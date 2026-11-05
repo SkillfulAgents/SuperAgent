@@ -169,6 +169,28 @@ describe('ContainerRuntime client for the configured runner', () => {
     expect(await runtime.getClient()).toBe(fresh)
   })
 
+  it('keeps the client of a running container through every use after the runner changed, until the container stops', async () => {
+    const runtime = containerHost.runtime(SLUG)
+    const docker = await runtime.ensureRunning()
+    const starter = built[0].client
+
+    storedRunner = 'podman'
+    // A message send and a status sync while the container runs: both reach
+    // it through the client that started it, not an unstarted Podman one.
+    expect(await runtime.ensureRunning()).toBe(docker)
+    expect(await runtime.getClient()).toBe(docker)
+    await runtime.syncAgentStatus()
+    expect(built).toHaveLength(1)
+
+    await runtime.stopContainer()
+    expect(starter.stop).toHaveBeenCalledTimes(1)
+
+    // Stopped: the next start builds and starts a client for the runner configured now.
+    await runtime.ensureRunning()
+    expect(built.map((b) => b.runner)).toEqual(['docker', 'podman'])
+    expect((built[1].client as unknown as { start: ReturnType<typeof vi.fn> }).start).toHaveBeenCalledTimes(1)
+  })
+
   it('a stop goes through the client that started the container, even after the runner changed', async () => {
     const runtime = containerHost.runtime(SLUG)
     await runtime.ensureRunning()

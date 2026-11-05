@@ -586,14 +586,17 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     })
+    // The cloud-workspace deployment token is principal-scoped (a session for
+    // a specific user on the deployment). Drop it in this same write whenever
+    // the acting org OR the acting user/member changes, so a different
+    // principal never reuses it, and a token minted for the new principal
+    // after this write is never cleared by it. The next refresh re-mints.
+    if (previous?.orgId !== newOrgId || previous?.userId !== newUserId || previous?.memberId !== newMemberId) {
+      draft.cloudWorkspace = undefined
+    }
   })
   const existing = recordFrom(before)
   const orgChanged = existing?.orgId !== newOrgId
-  // The acting principal changed if the global user or the per-org membership
-  // differs — even within the same org. A same-user metadata refresh (email,
-  // role) leaves both untouched.
-  const identityChanged =
-    existing?.userId !== newUserId || existing?.memberId !== newMemberId
   const { ensureManagedPlatformConnection } = await import('@shared/lib/llm-provider/connection-settings')
   await ensureManagedPlatformConnection()
 
@@ -614,14 +617,6 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     // previous org. Runs *after* writing the new record so the polymorphic
     // reconcile sees the current auth.
     await reconcileAfterAuthChange()
-  }
-
-  if (orgChanged || identityChanged) {
-    // The cloud-workspace deployment token is principal-scoped (a session for a
-    // specific user on the deployment). Drop it whenever the acting org OR the
-    // acting user/member changes, so a different principal never reuses it; the
-    // next refresh re-mints for the new principal.
-    await clearCloudWorkspaceRecord()
   }
 
   notifyPlatformServiceAuthChanged(true)

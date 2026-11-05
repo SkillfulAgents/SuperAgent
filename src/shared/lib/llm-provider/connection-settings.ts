@@ -85,8 +85,9 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
     // Agent-only defaults are selected through Model Providers, where a separate
     // summarizer can be chosen. The legacy settings path only selects API defaults.
     if (!configured || !getLlmProvider(active).supportsDirectApi) return
-    const initialSetup = !settings.llmDefault
-    if (initialSetup || sync.selectDefault || (sync.models?.length && settings.llmDefault?.llmProviderId === configured.id)) {
+    // Read before the awaits above, so only a hint: the write decides again on
+    // the settings it replaces.
+    if (!settings.llmDefault || sync.selectDefault || (sync.models?.length && settings.llmDefault?.llmProviderId === configured.id)) {
       const catalog = connectionCatalogFrom(configured, settings)
       const selection = (model: string, purpose: 'agent' | 'summarizer') => ({
         llmProviderId: configured.id,
@@ -96,7 +97,10 @@ export async function syncProviderSettings(sync: ProviderSettingsSync): Promise<
       const agentSelection = selection(models.agentModel, 'agent')
       const summarizerSelection = selection(models.summarizerModel, 'summarizer')
       await mutateSettings((s) => {
-        if (initialSetup || sync.selectDefault || (sync.models?.includes('agentModel') && settings.llmDefault?.llmProviderId === configured.id)) {
+        // Decided on the settings this write replaces, not the ones read
+        // above: a default another writer chose or moved since stands.
+        const initialSetup = !s.llmDefault
+        if (initialSetup || sync.selectDefault || (sync.models?.includes('agentModel') && s.llmDefault?.llmProviderId === configured.id)) {
           s.llmDefault = { ...agentSelection }
         }
         if (initialSetup || sync.selectDefault || sync.models?.includes('summarizerModel')) {
