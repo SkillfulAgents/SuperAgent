@@ -259,7 +259,15 @@ export function createSessionDelivery(
     if (request.grantComputerUse) live.grantComputerUse(sessionId)
 
     const commands = session.slashCommands?.length ? session.slashCommands : undefined
-    const metadata: Partial<SessionMetadata> = { ...request.metadata }
+    // The runtime the first turn runs with is session state: without it a
+    // later turn (or the composer) falls back to the default connection.
+    const { model, llmProviderId, effort, speed } = request.create
+    const metadata: Partial<SessionMetadata> = {
+      ...(model ? { model, llmProviderId } : {}),
+      ...(effort ? { effort } : {}),
+      ...(speed ? { speed } : {}),
+      ...request.metadata,
+    }
     // Create started the turn. Marked first, so a result replayed during the
     // attach lands on an active session instead of reading as settled.
     live.markActive(sessionId)
