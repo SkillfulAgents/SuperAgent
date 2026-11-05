@@ -1,5 +1,6 @@
 vi.mock('../agent-integrations/delivery-store', async () => ({ deliveryStore: (await import('../agent-integrations/testing/memory-delivery-store')).memoryDeliveryStore() }))
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { TaskManagerAgentIntegration } from './task-manager-agent-integration'
 import { AgentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { AgentIntegrationRegistry } from '../agent-integrations/registry'
@@ -54,6 +55,7 @@ describe('task inputs through the shared integration manager', () => {
     runtime.mapping = undefined
     const tasks = new Tasks()
     manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: tasks.definition, policy: tasks, create: async () => tasks }]))
+    registerTasks(manager)
     await manager.start()
     await tasks.input('first-thread')
     await vi.waitFor(() => expect(runtime.mapping?.sessionId).toBe('session'))

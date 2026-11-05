@@ -1,6 +1,7 @@
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import {
   getPlatformAuthStatus,
   refreshStoredPlatformAccount,
@@ -27,9 +28,9 @@ import { billingPlanPolicy } from '@shared/lib/llm-provider/platform-plan-policy
  * per-user and served live per request; caching it in this shared singleton
  * would leak one user's seat balance to another.
  */
-class PlatformService {
-  private startupTimeoutId: ReturnType<typeof setTimeout> | null = null
-  private cloudWorkspaceTimer: ReturnType<typeof setInterval> | null = null
+class PlatformService implements Service {
+  readonly id = 'platform'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private startupDelayMs = 10_000
@@ -39,36 +40,28 @@ class PlatformService {
   private cloudWorkspaceIntervalMs = 30 * 60_000
   private cachedBilling: ParsedPlatformBillingInfo | null = null
   private lastRefreshedAt: string | null = null
+  // refresh() is self-guarding (no-op when disconnected) and never rejects.
+  private readonly refreshTask = new PassTask('platform.refresh', () => this.refresh())
+  // Self-gates (Electron + connected) and never throws.
+  private readonly cloudWorkspaceTask = new PassTask('platform.cloud-workspace', () => refreshCloudWorkspace())
+  readonly tasks = [this.refreshTask, this.cloudWorkspaceTask]
 
   start(): void {
     if (this.isRunning) return
     this.isRunning = true
     // Defer the first refresh so we don't compete with the rest of boot.
-    // refresh() is self-guarding (no-op when disconnected) and never rejects.
-    this.startupTimeoutId = setTimeout(() => {
-      this.startupTimeoutId = null
-      background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
-    }, this.startupDelayMs)
+    background(taskManager().at(Date.now() + this.startupDelayMs, this.refreshTask.type, this.refreshTask.spec), { name: 'platform-service.schedule-refresh' })
     // Keep the cloud-workspace deployment token fresh even when the app is left
-    // running and the Account tab is never opened. Self-gates (Electron +
-    // connected) and never throws.
-    this.cloudWorkspaceTimer = setInterval(() => {
-      background(refreshCloudWorkspace(), { name: 'platform-service.refresh-cloud-workspace' })
-    }, this.cloudWorkspaceIntervalMs)
+    // running and the Account tab is never opened.
+    background(taskManager().ensureEvery(this.cloudWorkspaceTask.type, this.cloudWorkspaceTask.spec, { intervalMs: this.cloudWorkspaceIntervalMs }), { name: 'platform-service.schedule-cloud-workspace' })
     // Positive start signal — every service launched by startup.ts logs one
     // so a silent-dead service is distinguishable from a healthy idle one.
     console.log(`[PlatformService] Started (first refresh in ${Math.round(this.startupDelayMs / 1000)}s)`)
   }
 
   stop(): void {
-    if (this.startupTimeoutId) {
-      clearTimeout(this.startupTimeoutId)
-      this.startupTimeoutId = null
-    }
-    if (this.cloudWorkspaceTimer) {
-      clearInterval(this.cloudWorkspaceTimer)
-      this.cloudWorkspaceTimer = null
-    }
+    background(taskManager().cancel(this.refreshTask.type), { name: 'platform-service.cancel-refresh' })
+    background(taskManager().cancel(this.cloudWorkspaceTask.type), { name: 'platform-service.cancel-cloud-workspace' })
     this.isRunning = false
   }
 

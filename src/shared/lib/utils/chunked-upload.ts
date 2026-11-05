@@ -27,6 +27,7 @@ import {
   type StateKey,
 } from '@shared/lib/app-state'
 import { background } from '@shared/lib/background'
+import { PassTask, taskManager } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
 import { LOCAL_CHUNKS_DIR, UPLOAD_BYTES_PREFIX, uploadByteStore, type UploadByteStore } from './chunked-upload-bytes'
 import {
@@ -560,11 +561,14 @@ export async function cleanupStaleTempUploads(maxAgeMs: number, nowMs: number = 
   await removeStaleAssembledFiles(maxAgeMs, nowMs)
 }
 
-let staleUploadSweeps: ReturnType<typeof setInterval> | null = null
+let staleUploadSweeps = false
 
 function sweepStaleUploads(): void {
   background(cleanupStaleTempUploads(STALE_UPLOAD_AGE_MS), { name: 'chunked-upload.sweep-stale' })
 }
+
+// Sets a sweep going and returns, so a slow sweep does not hold up the next.
+const staleUploadSweepTask = new PassTask('uploads.stale-sweep', async () => sweepStaleUploads())
 
 /**
  * Sweeps now and then every 30 minutes, until `stopStaleUploadCleanup`. Called
@@ -573,13 +577,15 @@ function sweepStaleUploads(): void {
  */
 export function startStaleUploadCleanup(): void {
   if (staleUploadSweeps) return
+  staleUploadSweeps = true
   sweepStaleUploads()
-  staleUploadSweeps = setInterval(sweepStaleUploads, STALE_UPLOAD_SWEEP_EVERY_MS)
-  staleUploadSweeps.unref?.()
+  taskManager().register(staleUploadSweepTask)
+  background(taskManager().ensureEvery(staleUploadSweepTask.type, staleUploadSweepTask.spec, { intervalMs: STALE_UPLOAD_SWEEP_EVERY_MS }), { name: 'chunked-upload.schedule-sweep' })
 }
 
-/** Stops the timer (shutdown). A sweep in flight finishes. */
+/** Stops the sweeps (shutdown). A sweep in flight finishes. */
 export function stopStaleUploadCleanup(): void {
-  if (staleUploadSweeps) clearInterval(staleUploadSweeps)
-  staleUploadSweeps = null
+  if (!staleUploadSweeps) return
+  staleUploadSweeps = false
+  background(taskManager().cancel(staleUploadSweepTask.type), { name: 'chunked-upload.cancel-sweep' })
 }

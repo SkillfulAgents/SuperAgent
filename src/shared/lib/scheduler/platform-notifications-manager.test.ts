@@ -88,6 +88,9 @@ vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
 }))
 
 import { platformNotificationsManager } from './platform-notifications-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(platformNotificationsManager))
 import { claimPlatformNotificationBroadcast } from './platform-notification-seen'
 import { backgroundSettled } from '@shared/lib/background'
 import { closeAppState, createLocalAppState, initializeAppState, LocalAppStateBackend } from '@shared/lib/app-state'

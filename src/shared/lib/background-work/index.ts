@@ -4,8 +4,8 @@
  * Service. A backend is not exported here: an entry point imports the one it picks
  * from its own file.
  */
-export { Task, TaskManager } from './task'
-export type { PeriodicOptions, RetryPolicy, TaskContext, TaskResult, TaskSpec } from './task'
+export { emptyPayloadSchema, PassTask, Task, TaskManager } from './task'
+export type { EmptyPayload, PeriodicOptions, RetryPolicy, TaskContext, TaskResult, TaskSpec } from './task'
 export { ServiceHost } from './service-host'
 export type { Service, ServiceHostOptions, ServicePhase, ServiceState } from './service-host'
 export {

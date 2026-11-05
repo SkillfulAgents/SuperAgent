@@ -110,6 +110,8 @@ export default defineConfig({
           if (!isBackgroundWorkInitialized()) {
             await initializeBackgroundWork(new LocalTaskManager())
           }
+          const { registerBackgroundWork } = await server.ssrLoadModule(startupModule)
+          registerBackgroundWork()
         }
         server.middlewares.use((req, res, next) => {
           if (!req.url?.startsWith('/api')) return next()
