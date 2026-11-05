@@ -190,6 +190,8 @@ export function meetingLiveSetting(
     `You are in a ${MEETING_PLATFORM_LABELS[meeting.platform]} call under the name "${meeting.botName.slice(0, 100)}". People address you by that name or by the agent's name.`,
     ...(standing ? [`Standing instructions from the agent's owner for every meeting: ${JSON.stringify(standing.slice(0, MEETING_INSTRUCTIONS_MAX_CHARS))}`] : []),
     ...(meeting.context ? [`The person who brought you in asked for this meeting: ${JSON.stringify(meeting.context.slice(0, 1500))}`] : []),
+    // The voice model gets audio only; screenshots of a shared screen go to the backend agent.
+    'You cannot see video. When someone shares their screen, the backend agent receives screenshots of it. Any question about what is on the screen goes to the backend agent; never say you cannot see the screen.',
     meetingRosterInstruction(participants.slice(0, 50), meeting.mode),
   ]
   return { policy: meetingLivePolicy(meeting.mode), instructions: lines.join('\n'), ...(settings.voice ? { voice: settings.voice } : {}) }

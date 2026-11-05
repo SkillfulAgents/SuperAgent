@@ -117,6 +117,12 @@ describe('meeting prompts', () => {
     expect(listen).toContain('Flag numbers that sound off.')
   })
 
+  it('tells the voice model to hand questions about a shared screen to the backend agent', () => {
+    const live = meetingLiveSetting({ platform: 'zoom', botName: 'Ada', context: null, mode: 'voice' }, []).instructions
+    expect(live).toContain('Any question about what is on the screen goes to the backend agent')
+    expect(live).toContain('never say you cannot see the screen')
+  })
+
   it('tells the room what joined, how it takes part, that audio is kept and that shared screens are captured', () => {
     const line = meetingRecordingDisclosure('Ada (Gamut)')
     expect(line).toContain("I'm Ada (Gamut), an AI assistant")
