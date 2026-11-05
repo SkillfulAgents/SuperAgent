@@ -145,6 +145,104 @@ export interface Lease {
   acquireWhenFree<R = never>(key: StateKey<LeaseRecord, 'strong'>, wait: LeaseWait<R>): Promise<LeaseWaitResult<R>>
 }
 
+/**
+ * How `holdRenewing` keeps a record held. `renew` writes the renewal and says
+ * how long it holds now, or null when it is lost. `release` gives the record up;
+ * it can be called twice, when a confirm gives up early.
+ */
+export interface RenewableHold<H extends { readonly heldUntil: number }> {
+  readonly owner: string
+  /** Names the record in errors. */
+  readonly label: string
+  readonly renewEveryMs: number
+  renew(current: H): Promise<H | null>
+  release(current: H): Promise<unknown>
+}
+
+/**
+ * `Lease.hold`, for a helper whose record is not one lease per key: runs `work`
+ * while the record stays held. Renews every `renewEveryMs`, one renewal at a
+ * time, aborts the holding's signal once the record is lost or `heldUntil`
+ * passes unrenewed, and releases it when the work settles. The work's result or
+ * error is returned as is.
+ */
+export async function holdRenewing<H extends { readonly heldUntil: number }, T>(
+  initial: H,
+  hold: RenewableHold<H>,
+  work: (holding: LeaseHolding) => Promise<T>,
+): Promise<T> {
+  const { label, renewEveryMs } = hold
+  const controller = new AbortController()
+  let current = initial
+  const lose = (error: LeaseLostError) => {
+    if (!controller.signal.aborted) controller.abort(error)
+  }
+  // Lost at the latest when the lease runs out unrenewed, even if a
+  // renewal never answers.
+  let runsOut: ReturnType<typeof setTimeout> | undefined
+  const watchDeadline = () => {
+    clearTimeout(runsOut)
+    runsOut = setTimeout(() => lose(new LeaseLostError(`${label}: the lease ran out unrenewed`)), Math.max(0, current.heldUntil - Date.now()))
+    runsOut.unref?.()
+  }
+  watchDeadline()
+  // One renewal at a time: two renewals racing from the same revision would
+  // see the second fail against the first's write and report a false loss.
+  let renewals: Promise<boolean> = Promise.resolve(true)
+  const renewNow = (): Promise<boolean> => {
+    renewals = renewals.then(async () => {
+      if (controller.signal.aborted) return false
+      try {
+        const renewed = await hold.renew(current)
+        if (renewed) {
+          // Kept even when the deadline passed meanwhile, so the release
+          // at the end frees this write instead of leaving it to lapse.
+          current = renewed
+          if (controller.signal.aborted) return false
+          watchDeadline()
+          return true
+        }
+        lose(new LeaseLostError(`${label}: the lease lapsed, was taken, or was renewed too late to rely on`))
+      } catch (error) {
+        // Unconfirmed is lost: the holder stops rather than act on a lease
+        // it cannot vouch for.
+        lose(new LeaseLostError(`${label}: the lease could not be renewed`, { cause: error }))
+      }
+      return false
+    })
+    return renewals
+  }
+  // renewNow never rejects: a failed renewal aborts the holding's signal.
+  const timer = setInterval(() => background(renewNow(), { name: 'app-state.lease-renew' }), renewEveryMs)
+  timer.unref?.()
+  const holding: LeaseHolding = {
+    owner: hold.owner,
+    signal: controller.signal,
+    async confirm(options = {}) {
+      const minRemainingMs = options.minRemainingMs ?? 0
+      if (!(await renewNow())) throw controller.signal.reason
+      const remaining = current.heldUntil - Date.now()
+      if (remaining <= 0 || remaining < minRemainingMs) {
+        lose(new LeaseLostError(`${label}: ${remaining} ms of the lease left, ${minRemainingMs} ms needed`))
+        // Given up at once rather than when the work settles, so whoever
+        // takes over (this process's own retry, too) need not wait it out.
+        await hold.release(current).catch(() => false)
+        throw controller.signal.reason
+      }
+    },
+  }
+  try {
+    return await work(holding)
+  } finally {
+    clearInterval(timer)
+    clearTimeout(runsOut)
+    await renewals
+    // Owner-checked by each helper, so a successor's lease is never touched.
+    // A failed release leaves the lease to lapse on its own.
+    await hold.release(current).catch(() => false)
+  }
+}
+
 const FIRST_POLL_MS = 50
 const LAST_POLL_MS = 1_000
 
@@ -209,75 +307,7 @@ export function defineLease(definition: LeaseDefinition): Lease {
 
     async hold(initial, work) {
       assertOwn(initial.key)
-      const controller = new AbortController()
-      let current = initial
-      const lose = (error: LeaseLostError) => {
-        if (!controller.signal.aborted) controller.abort(error)
-      }
-      // Lost at the latest when the lease runs out unrenewed, even if a
-      // renewal never answers.
-      let runsOut: ReturnType<typeof setTimeout> | undefined
-      const watchDeadline = () => {
-        clearTimeout(runsOut)
-        runsOut = setTimeout(() => lose(new LeaseLostError(`${current.key.path}: the lease ran out unrenewed`)), Math.max(0, current.heldUntil - Date.now()))
-        runsOut.unref?.()
-      }
-      watchDeadline()
-      // One renewal at a time: two renewals racing from the same revision would
-      // see the second fail against the first's write and report a false loss.
-      let renewals: Promise<boolean> = Promise.resolve(true)
-      const renewNow = (): Promise<boolean> => {
-        renewals = renewals.then(async () => {
-          if (controller.signal.aborted) return false
-          try {
-            const renewed = await lease.renew(current)
-            if (renewed) {
-              // Kept even when the deadline passed meanwhile, so the release
-              // at the end frees this write instead of leaving it to lapse.
-              current = renewed
-              if (controller.signal.aborted) return false
-              watchDeadline()
-              return true
-            }
-            lose(new LeaseLostError(`${current.key.path}: the lease lapsed, was taken, or was renewed too late to rely on`))
-          } catch (error) {
-            // Unconfirmed is lost: the holder stops rather than act on a lease
-            // it cannot vouch for.
-            lose(new LeaseLostError(`${current.key.path}: the lease could not be renewed`, { cause: error }))
-          }
-          return false
-        })
-        return renewals
-      }
-      // renewNow never rejects: a failed renewal aborts the holding's signal.
-      const timer = setInterval(() => background(renewNow(), { name: 'app-state.lease-renew' }), renewEveryMs)
-      timer.unref?.()
-      const holding: LeaseHolding = {
-        owner: initial.owner,
-        signal: controller.signal,
-        async confirm(options = {}) {
-          const minRemainingMs = options.minRemainingMs ?? 0
-          if (!(await renewNow())) throw controller.signal.reason
-          const remaining = current.heldUntil - Date.now()
-          if (remaining <= 0 || remaining < minRemainingMs) {
-            lose(new LeaseLostError(`${current.key.path}: ${remaining} ms of the lease left, ${minRemainingMs} ms needed`))
-            // Given up at once rather than when the work settles, so whoever
-            // takes over (this process's own retry, too) need not wait it out.
-            await lease.release(current).catch(() => false)
-            throw controller.signal.reason
-          }
-        },
-      }
-      try {
-        return await work(holding)
-      } finally {
-        clearInterval(timer)
-        clearTimeout(runsOut)
-        await renewals
-        // Conditional on this holder's last write, so a successor's lease is
-        // never touched. A failed release leaves the lease to lapse on its own.
-        await lease.release(current).catch(() => false)
-      }
+      return await holdRenewing(initial, { owner: initial.owner, label: initial.key.path, renewEveryMs, renew: lease.renew, release: lease.release }, work)
     },
 
     async acquireWhenFree(key, wait) {

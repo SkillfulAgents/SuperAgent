@@ -9,3 +9,4 @@ export { createLocalAppState, LocalAppStateBackend, LOCAL_APP_STATE_SCOPE } from
 export { defineLease, LeaseLostError, LeaseWaitTimeoutError } from './lease'
 export type { ConfirmOptions, HeldLease, Lease, LeaseDefinition, LeaseHolding, LeaseRecord, LeaseWait, LeaseWaitResult } from './lease'
 export { reduceRecord, type RecordChange, type ReduceRecordOptions } from './reduce-record'
+export { holdRenewing, type RenewableHold } from './lease'
