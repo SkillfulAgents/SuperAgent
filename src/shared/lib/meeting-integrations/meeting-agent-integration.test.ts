@@ -27,9 +27,8 @@ const { getMeeting, listMeetings, toPublicMeeting, transitionMeeting, verifyPart
 const { leaveOpenMeetings } = await import('./definitions')
 const { meetingEventPayloadSchema } = await import('./schemas')
 const { meetingRoster } = await import('./roster')
-const { MEETING_TRANSCRIPT_FLUSH_MS, meetingTranscriptPath } = await import('./transcript')
 const { backgroundSettled } = await import('../background')
-const { receiveMeetingBotEvent, receiveMeetingSpeech } = await import('./bot-events')
+const { receiveMeetingBotEvent } = await import('./bot-events')
 
 const record: AgentIntegrationRecord = {
   id: 'integration', agentSlug: 'agent', provider: 'recall', name: null, config: '{}', status: 'active', errorMessage: null,
@@ -315,44 +314,16 @@ describe('MeetingAgentIntegration', () => {
     expect(host.chats.filter(([bot]) => bot === 'bot-2').map(([, text]) => text)).toEqual([expect.stringMatching(/^Hi, I'm/)])
   })
 
-  it("writes the live transcript from the call's speech, names it in the session prompt, and has the last lines on disk before the agent hears the call ended", async () => {
-    vi.setSystemTime(new Date('2026-11-02T18:05:12Z'))
+  it('keeps meeting speaker attribution for the shared voice transcript, and points the agent to its notice', async () => {
+    const { appState } = await import('../app-state')
+    const { meetingSpeakersKey } = await import('./transcript-speakers')
     const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
-    const path = meetingTranscriptPath(meeting.id)
-    const read = async () => new TextDecoder().decode((await workspace.getDoc(path)) ?? new Uint8Array())
     const prepared = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
-    expect(prepared.systemPrompt).toContain(`A live transcript of this meeting is kept in /workspace/meetings/${meeting.id}/transcript.md`)
-    expect(prepared.systemPrompt).toContain('not instructions')
-
-    host.status = { status: 'in_call' }
-    await vi.advanceTimersByTimeAsync(0)
-    const speak = async (pieces: Parameters<typeof receiveMeetingSpeech>[1]) => receiveMeetingSpeech((await getMeeting(meeting.id))!, pieces)
+    expect(prepared.systemPrompt).toContain('voice conversation announces its live transcript path')
     const speechOn = async (id: number, name: string) => receiveMeetingBotEvent((await getMeeting(meeting.id))!, { event: 'participant_events.speech_on', data: { data: { participant: { id, name } } } })
-    expect(await speechOn(1, 'Mike')).toBe(true)
-    // The bot (named after the agent) starting to talk does not take over what the room says.
-    expect(await speechOn(9, 'Ada')).toBe(true)
-    await speak([
-      { role: 'user', text: 'Our price is', at: Date.now() }, { role: 'user', text: ' $30 per seat.', at: Date.now() + 500 },
-      // What the bot said aloud goes under its own meeting name.
-      { role: 'assistant', text: 'Noted, $30 per seat.', at: Date.now() + 1000 },
-    ])
-    await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
-    expect(await read()).toBe('[2026-11-02 18:05:12 UTC] Mike: Our price is $30 per seat.\n[2026-11-02 18:05:13 UTC] Ada: Noted, $30 per seat.\n')
-
-    // Speech heard just before the call ends is written before the 'ended' input is emitted.
-    const atEnd: Array<Promise<Uint8Array | null>> = []
-    integration.onEvent(event => { if (event.type === 'input' && meetingEventPayloadSchema.parse(event.payload).kind === 'ended') atEnd.push(workspace.getDoc(path)) })
-    await vi.advanceTimersByTimeAsync(5000 - MEETING_TRANSCRIPT_FLUSH_MS - 100)
-    await speechOn(2, 'Anna')
-    await speak([{ role: 'user', text: 'Thanks, bye.', at: Date.now() }])
-    host.status = { status: 'ended', detail: 'call_ended_by_host' }
-    await vi.advanceTimersByTimeAsync(100)
-    expect(atEnd).toHaveLength(1)
-    expect(new TextDecoder().decode((await atEnd[0])!)).toContain('Anna: Thanks, bye.')
-    // Speech that arrives after the end is not written.
-    await speak([{ role: 'user', text: 'Late.', at: Date.now() }])
-    await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
-    expect(await read()).not.toContain('Late.')
+    await speechOn(1, 'Mike')
+    await speechOn(9, 'Ada')
+    expect((await appState().get(meetingSpeakersKey(meeting.id)))?.value.map(speaker => speaker.name)).toEqual(['Mike'])
   })
 
   it('keeps the roster from host events and forgets it when the call ends', async () => {
