@@ -1,4 +1,4 @@
-import { credentialsFromLogin, consumeOAuthLogin } from './oauth-login'
+import { claimOAuthLogin, completedOAuthLogin, consumeOAuthLogin, releaseOAuthLoginClaim, type CompletedOAuthLogin } from './oauth-login'
 import { resolveConnectionCredential, waitForConnectionRefresh } from './connection-credentials'
 import { HelperConfigurationError } from './helper-error'
 import { withGlobalModelPricing } from './global-pricing'
@@ -230,9 +230,11 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
     oldConfig = parseConnectionJson(connectionConfigSchema, previous.config)
   }
   const config = mergeConnectionConfig(oldConfig, input.config)
+  let oauthLogin: CompletedOAuthLogin | undefined
   if (input.oauthLoginId) {
     if (!isOAuthProvider(input.provider)) throw new Error('Invalid subscription sign-in')
-    config.oauth = credentialsFromLogin(input.oauthLoginId, viewer, input.userId, id, input.provider)
+    oauthLogin = await completedOAuthLogin(input.oauthLoginId, viewer, input.userId, id, input.provider)
+    config.oauth = oauthLogin.credential
   }
   if (isOAuthProvider(input.provider)) {
     if (!config.oauth) throw new Error('Sign in before saving this subscription connection')
@@ -263,7 +265,7 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
     input.modelOverrides ?? (previous ? connectionModelOverrides(previous) : []),
   )
   const catalog = mergeCatalog(builtins, modelOverrides)
-  return { input, previous, config, catalog, modelOverrides }
+  return { input, previous, config, catalog, modelOverrides, oauthLogin }
 }
 
 export async function saveConnection(
@@ -272,7 +274,7 @@ export async function saveConnection(
   id?: string
 ): Promise<string> {
   return mutateConnections(async () => {
-    const { input, previous, config, catalog, modelOverrides } = await prepareConnection(raw, viewer, id)
+    const { input, previous, config, catalog, modelOverrides, oauthLogin } = await prepareConnection(raw, viewer, id)
     const llmProviderId = id ?? randomUUID()
     const root = await resolveGlobalSelection()
     if (
@@ -291,23 +293,32 @@ export async function saveConnection(
       dashboardModel: input.dashboardModel ?? null,
       updatedAt: new Date(),
     }
-    if (previous) {
-      const updated = await db
-        .update(llmConnections)
-        .set({
-          ...values,
-          generation: sql`${llmConnections.generation} + 1`,
-        })
-        .where(and(eq(llmConnections.id, llmProviderId), eq(llmConnections.config, previous.config), eq(llmConnections.generation, previous.generation)))
-        .run()
-      if (!changesOf(updated)) throw new Error('Connection changed while saving. Please retry.')
-    } else {
-      await db
-        .insert(llmConnections)
-        .values({ ...values, id: llmProviderId, createdAt: new Date() })
-        .run()
+    // Taken right before the write, from the sign-in as it was read: of two
+    // saves of one sign-in only one writes its credential, and a cancel or
+    // expiry since the read refuses this save.
+    const claim = oauthLogin ? await claimOAuthLogin(oauthLogin) : null
+    try {
+      if (previous) {
+        const updated = await db
+          .update(llmConnections)
+          .set({
+            ...values,
+            generation: sql`${llmConnections.generation} + 1`,
+          })
+          .where(and(eq(llmConnections.id, llmProviderId), eq(llmConnections.config, previous.config), eq(llmConnections.generation, previous.generation)))
+          .run()
+        if (!changesOf(updated)) throw new Error('Connection changed while saving. Please retry.')
+      } else {
+        await db
+          .insert(llmConnections)
+          .values({ ...values, id: llmProviderId, createdAt: new Date() })
+          .run()
+      }
+    } catch (error) {
+      if (claim) await releaseOAuthLoginClaim(claim)
+      throw error
     }
-    if (input.oauthLoginId) consumeOAuthLogin(input.oauthLoginId)
+    if (claim) await consumeOAuthLogin(claim)
     return llmProviderId
   })
 }

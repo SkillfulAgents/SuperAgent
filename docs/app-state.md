@@ -169,6 +169,29 @@ A user may hold four Live voice sessions at once, counting the ones a provider i
 
 Hangup retries (1 s, 5 s, 30 s), removal retries and the deadline hangup run on timers in the process that created the session, or that was asked to close it. If that process goes away, its sessions stop counting at their deadlines and nobody hangs them up. A durable owner that recovers provider cleanup is a follow-up.
 
+## LLM device sign-in
+
+A subscription provider's device sign-in (Grok, Codex, Kimi, MiniMax) can be started, polled, saved and cancelled by any process that serves the tenant (`src/shared/lib/llm-provider/oauth-login.ts`). The ticket's `oauth:llm:{loginId}` is the strong namespace `oauth:llm` with key part `loginId`: one record per sign-in.
+
+- The record holds the provider's device data, what polling that provider needs (Grok's token and userinfo endpoints, the Kimi or MiniMax region, MiniMax's PKCE verifier), the user who started it, the connection's owner and id, the provider's device expiry, the poll schedule (interval, next poll allowed, the `slow_down` backoff) and a status: `pending`, `completed` with the credential, `saving`, or `failed` with the provider's message. It holds no functions: the process that polls rebuilds the provider call from it.
+- Every write passes the device expiry as `{ at }`, so neither a poll nor the credential extends it. The record expires then, and so does the credential a sign-in completed but nobody saved.
+- Only the user who started a sign-in may poll, save or cancel it, and a global connection's sign-in also takes an admin. Anyone else gets the same answer as for a sign-in that expired.
+- Secret-bearing fields are stored as they are for now; sealing them through KeyManager is a separate change.
+
+**The limit.** The tenant may have 100 sign-ins pending at once, as before. One strong record (`oauth:llm:pending`) lists them, changed only through `reduceRecord`. A start reserves a place for 60 s before it asks the provider for a device code, then the place counts until the device expiry. A save or a cancel frees it; a sign-in the provider failed keeps it until its expiry, as every started sign-in did before. A place whose process went away stops counting at its `expiresAt`, so the limit heals by itself.
+
+**Polling.** A poll that is due takes the lease `claim:llm-oauth-poll` for the sign-in (60 s). A poll that finds it taken answers `pending`; the holder writes what it hears.
+
+- The holder reads the record again once it holds the lease, and decides from that.
+- It confirms the lease with 45 s, the longest provider poll (Codex's two 20 s requests), right before asking, so no other process asks the provider while it waits.
+- It writes the answer with a compare-and-set against the record it decided from. If its lease is lost by then, it writes only a credential, and only over that same record; a pending answer or a failure is dropped, since another holder may be asking now.
+- A provider's own failure (declined, expired) is written as `failed`, and later polls in any process report it without asking again. Any other error (network, parse) is written as a generic failure, since its message may say more than it should.
+
+**Saving.** The connection save reads the completed sign-in, then claims it right before its database write: a compare-and-set from that read to `saving`. Of two saves only one claims it, and a save after a cancel or the expiry is refused. A failed database write hands the credential back (`completed`), so a corrected save can use it. After the write the sign-in is removed (`consume` against the claim). A removal whose answer was lost is tried again; one that never lands leaves the sign-in `saving`, which no save takes again.
+
+**Cancelling.** `DELETE /api/llm-connections/oauth/:id` removes a sign-in that is not `saving` and frees its place. A poll's answer that arrives afterwards is dropped. The settings screen does not call it yet.
+
+**Lost answers.** Each write carries a fresh `writeId`. When a compare-and-set's answer is lost, the writer reads the record back: its own `writeId` means the write landed, the revision it decided from means it did not and it tries again, anything else means the sign-in moved on. A start whose writes cannot land removes what it may have written and frees its place.
 ## Browser Vault handoffs
 
 What the user typed for a later sign-in step, and the username the last step went in with (`src/shared/lib/browser-vault/held-values.ts`; [docs/browser-vault.md](browser-vault.md#steps) has the flow). The ticket's `vault:held:{agentSlug}:{sessionId}:H(site)` and `vault:identity:{agentSlug}:{sessionId}:H(site)` are the strong namespaces `vault:held` and `vault:identity`, with key parts agent slug, session id and `digestKeyPart(site)`.
