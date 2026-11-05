@@ -368,27 +368,24 @@ export function useBrowserStream({
     const canvas = canvasRef.current
     if (!connected || !canvas || typeof ResizeObserver === 'undefined') return
     let timer: ReturnType<typeof setTimeout> | undefined
-    const report = (devicePixels: number) => {
-      const width = Math.round(devicePixels)
-      const sent = sentWidthRef.current
-      if (sent !== undefined && Math.abs(width - sent) < VIEWPORT_WIDTH_HYSTERESIS) return
+    const report = (width: number | undefined) => {
+      // The latest size decides: a drag that ends back near the sent width sends nothing.
       if (timer) clearTimeout(timer)
+      const sent = sentWidthRef.current
+      if (!width || (sent !== undefined && Math.abs(width - sent) < VIEWPORT_WIDTH_HYSTERESIS)) return
       timer = setTimeout(() => {
         sentWidthRef.current = width
         sendMessage({ type: 'viewport', width })
       }, VIEWPORT_DEBOUNCE_MS)
     }
     const observer = new ResizeObserver(([entry]) => {
-      report(entry.devicePixelContentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width * window.devicePixelRatio)
+      report(entry.devicePixelContentBoxSize?.[0]?.inlineSize ?? canvasDeviceWidth(canvas))
     })
     let pixelRatioQuery: MediaQueryList | undefined
-    const onPixelRatioChange = () => {
-      report(canvas.getBoundingClientRect().width * window.devicePixelRatio)
-      watchPixelRatio()
-    }
     const watchPixelRatio = () => {
+      report(canvasDeviceWidth(canvas))
       pixelRatioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
-      pixelRatioQuery.addEventListener('change', onPixelRatioChange, { once: true })
+      pixelRatioQuery.addEventListener('change', watchPixelRatio, { once: true })
     }
     try {
       // This box also fires when the window moves to a screen with another pixel ratio.
@@ -401,7 +398,7 @@ export function useBrowserStream({
     return () => {
       if (timer) clearTimeout(timer)
       observer.disconnect()
-      pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)
+      pixelRatioQuery?.removeEventListener('change', watchPixelRatio)
     }
   }, [connected, canvasRef, sendMessage])
 

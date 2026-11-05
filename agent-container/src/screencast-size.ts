@@ -1,6 +1,11 @@
 /** Largest frame edge streamed, so a 5K full-screen preview can't push multi-MB frames through the container. */
-export const MAX_SCREENCAST_EDGE = 2560;
+const MAX_SCREENCAST_EDGE = 2560;
 const MIN_VIEWER_WIDTH = 64;
+
+export interface ScreencastSize {
+  maxWidth: number;
+  maxHeight: number;
+}
 
 /** A viewer-reported width as a bounded integer, or undefined when it isn't a usable number. */
 export function clampViewerWidth(value: unknown): number | undefined {
@@ -14,18 +19,21 @@ export function clampViewerWidth(value: unknown): number | undefined {
  * so a page rendered at 1x stays at its own width and a Retina host Chrome can send up to 2x.
  * The page itself is never touched: its pixel ratio must not change with the viewer's size.
  */
-export function screencastSize(viewerWidth: number | undefined): { maxWidth: number; maxHeight: number } {
+export function screencastSize(viewerWidth: number | undefined): ScreencastSize {
   return viewerWidth
     ? { maxWidth: viewerWidth, maxHeight: MAX_SCREENCAST_EDGE }
     : { maxWidth: 1280, maxHeight: 720 };
 }
 
 /**
- * Whether moving the width cap from `oldWidth` to `newWidth` leaves frames unchanged.
- * A frame narrower than its cap is the page's raw width, and a cap at or above that can't change it.
+ * Whether a screencast running at `running` already sends the frames `wanted` would.
+ * A frame narrower than the running cap wasn't limited by it, and Chrome only scales down,
+ * so any width cap at or above that frame leaves it unchanged.
  */
-export function sameFrameWidth(oldWidth: number, newWidth: number, frameWidth: number | undefined): boolean {
-  return frameWidth !== undefined && frameWidth < oldWidth && frameWidth <= newWidth;
+export function sameFrames(running: ScreencastSize, wanted: ScreencastSize, frameWidth: number | undefined): boolean {
+  if (running.maxHeight !== wanted.maxHeight) return false;
+  if (running.maxWidth === wanted.maxWidth) return true;
+  return frameWidth !== undefined && frameWidth < running.maxWidth && frameWidth <= wanted.maxWidth;
 }
 
 /** Pixel width from a JPEG's start-of-frame header, or undefined if none is found. */

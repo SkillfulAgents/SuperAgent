@@ -41,6 +41,9 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         return
       }
       ;(request as any)._agentId = agentSlug
+      // The canvas width comes with the connection: messages sent before upstream opens are dropped.
+      const width = url.searchParams.get('width')
+      ;(request as any)._upstreamSearch = width && /^\d+$/.test(width) ? `?width=${width}` : ''
 
       // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
       authenticateAgentWebSocket(request, agentSlug, 'viewer').then((allowed) => {
@@ -73,11 +76,8 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     try {
         // Cached status only — no runtime query
         const actor = agentRegistry.get(agentSlug)
-        // The canvas width comes with the connection: messages sent before upstream opens are dropped.
-        // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
-        const width = new URL(request.url || '', 'http://localhost').searchParams.get('width')
         const target = await actor.container.webSocketTarget('/browser/stream', {
-          search: width && /^\d+$/.test(width) ? `?width=${width}` : '',
+          search: (request as any)._upstreamSearch as string,
         })
         if (!target) {
           ws.close(1011, 'Agent container is not running')

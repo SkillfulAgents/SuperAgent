@@ -448,7 +448,8 @@ describe('useBrowserStream viewport width', () => {
     observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: devicePixels }], contentRect: { width: devicePixels / 2 } })
 
   it('puts the canvas width in device pixels on the stream URL', async () => {
-    const hook = renderHook(() => useBrowserStream(baseOpts(canvasOfCssWidth(420.5))))
+    const canvasRef = canvasOfCssWidth(420.5)
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
     await settle()
     expect(new URL(FakeWebSocket.instances[0].url).search).toBe('?width=841')
     hook.unmount()
@@ -480,5 +481,73 @@ describe('useBrowserStream viewport width', () => {
     act(() => vi.advanceTimersByTime(200))
     expect(ws.sent).toHaveLength(1)
     hook.unmount()
+  })
+
+  it('drops a pending report when the width settles back near the one already sent', async () => {
+    const canvasRef = canvasOfCssWidth(420.5)
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => ws.completeHandshake())
+
+    act(() => resize(1000))
+    act(() => resize(845))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toEqual([])
+    hook.unmount()
+  })
+
+  it('ignores a hidden canvas, then reports the width it comes back at', async () => {
+    const canvasRef = canvasOfCssWidth(420.5)
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => ws.completeHandshake())
+
+    act(() => resize(0))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toEqual([])
+
+    act(() => resize(1200))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toEqual([{ type: 'viewport', width: 1200 }])
+    hook.unmount()
+  })
+
+  it('without device-pixel-content-box, re-measures whenever the pixel ratio changes', async () => {
+    const queries: Array<{ query: string; removeEventListener: ReturnType<typeof vi.fn>; fire: () => void }> = []
+    vi.stubGlobal('matchMedia', (query: string) => {
+      const listeners: Array<() => void> = []
+      const entry = {
+        query,
+        addEventListener: (_type: string, listener: () => void) => { listeners.push(listener) },
+        removeEventListener: vi.fn(),
+        fire: () => listeners.splice(0).forEach((listener) => listener()),
+      }
+      queries.push(entry)
+      return entry
+    })
+    vi.stubGlobal('ResizeObserver', class {
+      observe(_target: Element, options?: ResizeObserverOptions) {
+        if (options?.box) throw new TypeError('unsupported box')
+      }
+      disconnect() {}
+    })
+    const canvasRef = canvasOfCssWidth(420.5)
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => ws.completeHandshake())
+    expect(queries.map((entry) => entry.query)).toEqual(['(resolution: 2dppx)'])
+
+    // Dragged to a 1x screen; the CSS width is unchanged, so only the media query can tell.
+    vi.stubGlobal('devicePixelRatio', 1)
+    act(() => queries[0].fire())
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toEqual([{ type: 'viewport', width: 421 }])
+    expect(queries.map((entry) => entry.query)).toEqual(['(resolution: 2dppx)', '(resolution: 1dppx)'])
+
+    hook.unmount()
+    expect(queries[1].removeEventListener).toHaveBeenCalled()
   })
 })

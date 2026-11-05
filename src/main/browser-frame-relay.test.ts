@@ -5,8 +5,8 @@ class FakeSocket implements FrameSink {
   readyState = WEBSOCKET_OPEN
   bufferedAmount = 0
   sent: Array<{ data: string; binary: boolean }> = []
-  send(data: Buffer | ArrayBuffer | Buffer[], options: { binary: boolean }) {
-    this.sent.push({ data: Buffer.isBuffer(data) ? data.toString() : String(data), binary: options.binary })
+  send(data: Buffer, options: { binary: boolean }) {
+    this.sent.push({ data: data.toString(), binary: options.binary })
   }
 }
 
@@ -38,6 +38,21 @@ describe('BrowserFrameRelay', () => {
     vi.advanceTimersByTime(FRAME_DRAIN_POLL_MS)
     expect(socket.sent.at(-1)).toEqual({ data: 'frame-2', binary: true })
     expect(socket.sent.filter(entry => entry.binary)).toHaveLength(1)
+  })
+
+  it('leaves room for two frames of any size, without raising the limit for small ones', () => {
+    const socket = new FakeSocket()
+    const relay = new BrowserFrameRelay(socket, 100)
+    socket.bufferedAmount = 150
+    relay.forward(Buffer.from('small'), true)
+    expect(socket.sent).toEqual([])
+    const large = 'x'.repeat(80)
+    relay.forward(Buffer.from(large), true)
+    expect(socket.sent).toEqual([{ data: large, binary: true }])
+    socket.bufferedAmount = 200
+    relay.forward(Buffer.from(large), true)
+    expect(socket.sent).toHaveLength(1)
+    relay.close()
   })
 
   it('discards a held frame when a newer one gets through or the viewer leaves', () => {
