@@ -73,10 +73,11 @@ class PlatformService {
   }
 
   /** Connect → refresh; disconnect → clear the cache. Either way the account changed. */
-  onAuthChanged(connected: boolean): void {
-    platformPlanCache.clear()
+  async onAuthChanged(connected: boolean): Promise<void> {
+    if (!connected) this.clearCache()
+    // Before the refresh, so what the refresh reads is not forgotten with the rest.
+    await platformPlanCache.clear()
     if (connected) background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
-    else this.clearCache()
   }
 
   /** Last warmed billing snapshot (non-auth only); null otherwise. */
@@ -99,6 +100,10 @@ class PlatformService {
    * uses the stored/env token. Caches the result only in non-auth mode.
    */
   async refreshBilling(): Promise<ParsedPlatformBillingInfo> {
+    // Taken before the request: a connection switched during it must not get
+    // this account's policy.
+    const actingKey = await actingPlanCacheKey()
+    const planRead = await platformPlanCache.beginRead()
     const billing = await fetchPlatformBillingInfo()
     if (!isAuthMode()) {
       this.cachedBilling = billing
@@ -107,7 +112,7 @@ class PlatformService {
     // The snapshot carries the acting account's plan policy too: a billing
     // view after an upgrade unlocks models without waiting for the cache.
     const policy = billingPlanPolicy(billing)
-    if (policy) platformPlanCache.remember(await actingPlanCacheKey(), policy)
+    if (policy) await platformPlanCache.remember(actingKey, policy, planRead)
     return billing
   }
 

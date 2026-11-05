@@ -7,7 +7,7 @@ import {
 } from '@shared/lib/services/platform-auth-service'
 import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 
-import { platformPlanCache, type PlatformPlanPolicy } from './platform-plan-cache'
+import { platformPlanCache, type PlatformPlanKey, type PlatformPlanPolicy } from './platform-plan-cache'
 import { accountPlanPolicy } from './platform-plan-policy'
 
 /** What an operation already read, so a chain of availability checks reads it once. */
@@ -34,7 +34,7 @@ export function actingAttributionOnce(): () => Promise<Attribution | null> {
  * same member the fetch interceptor puts on its platform calls (an org token's
  * acting member), else the connected account's own member.
  */
-export async function actingPlanCacheKey(context: ActingPlanContext = {}): Promise<string> {
+export async function actingPlanCacheKey(context: ActingPlanContext = {}): Promise<PlatformPlanKey> {
   return (await actingAccount(context)).key
 }
 
@@ -44,8 +44,9 @@ async function actingAccount(context: ActingPlanContext) {
   const acting = context.acting ? await context.acting() : await attribution.current()
   // A corrupt stored record is reported once, by the status read.
   const orgId = platformAuthStatusFrom(settings).orgId
-  const key = platformPlanCache.key(orgId, acting?.actingMemberId() ?? storedPlatformMemberIdFrom(settings, { report: false }))
-  return { settings, acting, key }
+  const token = platformAccessTokenFrom(settings, { report: false })
+  const key = platformPlanCache.key(orgId, acting?.actingMemberId() ?? storedPlatformMemberIdFrom(settings, { report: false }), token)
+  return { acting, key, token }
 }
 
 /**
@@ -56,11 +57,11 @@ async function actingAccount(context: ActingPlanContext) {
  * the old account's key.
  */
 export async function actingPlanPolicy(options: { fresh?: boolean } & ActingPlanContext = {}): Promise<PlatformPlanPolicy | null> {
-  const { settings, acting, key } = await actingAccount(options)
+  const { acting, key, token } = await actingAccount(options)
   return platformPlanCache.get(
     key,
     async () => accountPlanPolicy(await runWithAttribution(acting, () =>
-      fetchActingPlatformAccount(platformAccessTokenFrom(settings, { report: false })))),
+      fetchActingPlatformAccount(token))),
     { fresh: options.fresh },
   )
 }

@@ -1457,7 +1457,7 @@ export class LiveSession {
     let errorPresentation: ProviderErrorPresentation | null = null
     try {
       const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : await getActiveLlmProvider()
-      turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
+      await turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
       errorPresentation = await turnProvider.presentationForTurnError(apiErrorStatus ?? undefined, errorMessage, apiErrorCode)
     } catch (error) {
       console.error(`[LiveSession] Could not present the error of session ${this.ctx.sessionId}:`, error)

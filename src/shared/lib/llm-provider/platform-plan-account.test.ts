@@ -33,7 +33,7 @@ function record(token: string, orgId: string, memberId: string): PlatformAuthSet
 beforeEach(async () => {
   handle = await createTestDatabase()
   testDb = handle.db
-  platformPlanCache.clear()
+  await platformPlanCache.clear()
   fetchAccount.mockReset()
   fetchAccount.mockImplementation(async (token?: string | null) => accounts[(token === undefined ? state.currentToken : token) ?? ''])
 })
@@ -58,5 +58,19 @@ it('reads the policy with the connection the operation keyed on, not one switche
   expect(await actingPlanPolicy({ settings: operationSettings, acting })).toEqual(policy)
   expect(fetchAccount).not.toHaveBeenCalled()
   expect(await actingPlanCacheKey({ settings: operationSettings, acting }))
-    .not.toBe(await actingPlanCacheKey({ settings: { platformAuth: record('plat_token_b', 'org_b', 'sub_b') }, acting }))
+    .not.toEqual(await actingPlanCacheKey({ settings: { platformAuth: record('plat_token_b', 'org_b', 'sub_b') }, acting }))
+})
+
+it('keys a new connection of the same account apart, with no clear in between', async () => {
+  const acting = async () => null
+  const before = { platformAuth: record('plat_token_a', 'org_a', 'sub_a') }
+  const after = { platformAuth: record('plat_token_b', 'org_a', 'sub_a') }
+
+  await actingPlanPolicy({ settings: before, acting })
+  expect(fetchAccount).toHaveBeenCalledTimes(1)
+  await actingPlanPolicy({ settings: after, acting })
+
+  expect(fetchAccount).toHaveBeenCalledTimes(2)
+  expect(fetchAccount).toHaveBeenLastCalledWith('plat_token_b')
+  expect(JSON.stringify(await actingPlanCacheKey({ settings: after, acting }))).not.toContain('plat_token_b')
 })

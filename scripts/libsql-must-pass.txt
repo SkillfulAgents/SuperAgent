@@ -101,3 +101,4 @@ src/shared/lib/agent-integrations/integration-row-version.test.ts
 src/shared/lib/services/notification-service-changes.test.ts
 src/api/routes/meeting-participant.test.ts
 src/shared/lib/meeting-integrations/meeting-agent-integration.test.ts
+src/shared/lib/proxy/rules/store.test.ts
