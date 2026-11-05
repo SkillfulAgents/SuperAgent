@@ -11,7 +11,8 @@ let handle: TestDatabase
 let testDb: AppDatabase
 vi.mock('../../db', () => ({ get db() { return testDb } }))
 vi.mock('../../error-reporting', () => ({ captureException: vi.fn() }))
-import { appState, closeAppState, createLocalAppState, initializeAppState, LocalAppStateBackend } from '../../app-state'
+import { z } from 'zod'
+import { appState, closeAppState, createLocalAppState, defineNamespace, digestKeyPart, initializeAppState, LocalAppStateBackend } from '../../app-state'
 import { createAgentIntegration, getAgentIntegration } from '../../services/agent-integration-service'
 import { getLinearConfig, updateLinearConfig } from './store'
 import type { LinearTokens } from './config'
@@ -26,6 +27,8 @@ async function instance(): Promise<{ client: ClientModule; store: StoreModule }>
   return { client, store }
 }
 const authorize = (module: ClientModule) => new module.LinearClient(id).authorization()
+/** The client's unresolved-exchange records, read as another process's copy of the module would. */
+const unresolvedExchanges = defineNamespace({ name: 'linear:unresolved-exchange', consistency: 'strong', schema: z.object({ owner: z.string() }), expiry: { ttlMs: 60_000, onUpdate: 'keep' } })
 
 const scopes = 'read write app:mentionable app:assignable'
 const tokens = (n: number | string, expiresAt: number): LinearTokens => ({ accessToken: `access-${n}`, refreshToken: `refresh-${n}`, expiresAt, scope: scopes })
@@ -175,6 +178,27 @@ describe('Linear token renewal across processes', () => {
     await expect(authorize(a.client)).rejects.toThrow('changed during renewal')
     expect(exchanges).toEqual(['refresh-0', 'refresh-0'])
     expect((await getLinearConfig(id)).tokens?.refreshToken).toBe('refresh-2')
+  })
+
+  it('does not send an exchange once the claim was lost while recording it', async () => {
+    const a = await instance()
+    const b = await instance()
+    answers = [async () => granted(1)]
+    const state = appState()
+    const compareAndSet = state.compareAndSet.bind(state)
+    // A stalls writing its unresolved-exchange record (its first conditional
+    // write: no renewal has run yet). Its lease lapses, and B renews in full.
+    vi.spyOn(state, 'compareAndSet').mockImplementationOnce(async (key, expected, value, options) => {
+      clock += 31_000
+      await expect(authorize(b.client)).resolves.toMatchObject({ accessToken: 'access-1' })
+      return compareAndSet(key, expected, value, options)
+    })
+    await expect(authorize(a.client)).rejects.toMatchObject({ name: 'LeaseLostError' })
+    expect(exchanges).toEqual(['refresh-0'])
+    expect((await getLinearConfig(id)).tokens?.refreshToken).toBe('refresh-1')
+    // Nothing was sent, so A leaves no record that would make a later refusal
+    // of that token look uncertain.
+    expect(await appState().get(unresolvedExchanges.key(id, 'v1', digestKeyPart('refresh-0')))).toBeNull()
   })
 
   it('revokes when Linear refuses a token that no earlier exchange spent', async () => {

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { appState, defineLease, defineNamespace, digestKeyPart, type LeaseHolding } from '../../app-state'
+import { appState, defineLease, defineNamespace, digestKeyPart, type LeaseHolding, type Revision } from '../../app-state'
 import { LINEAR_SCOPES, linearTokensSchema, type LinearConfig, type LinearTokens, type LinearIdentity } from './config'
 import { getLinearConfig, updateLinearConfig, revokeLinearAuthorization } from './store'
 
@@ -108,8 +108,9 @@ async function underClaim(id: string, version: string | undefined, work: (holdin
 }
 
 /**
- * The exchange, by the claim's holder. A holder writes only while it holds the
- * claim: it confirms the lease right before each write. The row's conditional
+ * The exchange, by the claim's holder. A holder sends the exchange and writes
+ * only while it holds the claim: it confirms the lease (renews it) right before
+ * sending and right before each write. The row's conditional
  * update (same refresh token, same authorization) is what keeps a write that
  * lands late anyway from overwriting newer credentials.
  *
@@ -140,10 +141,26 @@ async function exchangeUnderClaim(id: string, version: string | undefined, holdi
   // between the read and this one (a holder that has since lost the claim);
   // it is an earlier exchange of the same token too, so decide from it.
   let earlier = await appState().get(unresolved)
+  let record: Revision
   for (;;) {
     const recorded = await appState().compareAndSet(unresolved, earlier?.revision ?? null, { owner: holding.owner })
-    if (recorded.ok) break
+    if (recorded.ok) {
+      record = recorded.entry.revision
+      break
+    }
     earlier = recorded.current
+  }
+  // A renewal, not the abort flag: the reads and writes above can stall past
+  // the lease while another process takes the claim and spends this token.
+  // Nothing is awaited between this confirmation and the send.
+  try {
+    await holding.confirm()
+  } catch (lost) {
+    // Nothing was sent. A record this attempt created would make a later
+    // refusal look uncertain; one it took over still stands for the earlier
+    // exchange. Conditional: a successor's record is left alone.
+    if (!earlier) await appState().consume(unresolved, { revision: record }).catch(() => undefined)
+    throw lost
   }
   let tokens: LinearTokens
   try {
