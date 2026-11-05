@@ -423,7 +423,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
   const iss = c.req.query('iss')
 
   if (error) {
-    const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
+    const issuerValidation = await validateAndConsumeOAuthErrorResponse(state, iss)
     if (!issuerValidation.valid) {
       return c.html(mcpOAuthCallbackBody(
         { type: 'mcp-oauth-callback', state, success: false, error: 'OAuth callback validation failed' },
@@ -451,9 +451,10 @@ remoteMcps.get('/oauth-callback', async (c) => {
   }
 
   if (!result.success || !result.mcpId) {
+    // A refused callback (an expired or already used sign-in) says why.
     return c.html(mcpOAuthCallbackBody(
-      { type: 'mcp-oauth-callback', state, success: false, error: 'Token exchange failed' },
-      'OAuth failed. You can close this window.',
+      { type: 'mcp-oauth-callback', state, success: false, error: result.error ?? 'Token exchange failed' },
+      result.error ? `OAuth failed: ${result.error}. You can close this window.` : 'OAuth failed. You can close this window.',
       delivery,
     ))
   }
