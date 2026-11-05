@@ -404,3 +404,88 @@ describe('DesktopKeyManager: two processes on one data folder', () => {
     expect((await bytesOf(manager())).equals(sealedBy!)).toBe(true)
   })
 })
+
+describe('DesktopKeyManager: an OS store whose own key is written late (Windows)', () => {
+  const lateManager = (osKeyOnDisk: () => Promise<boolean>, storage: SafeStorageLike = safeStorage) =>
+    new DesktopKeyManager({ dataDir, safeStorage: storage, platform: 'win32', probes: data.probes, log, osKeyOnDisk, osKeyWaitMs: 400 })
+  const onDisk = async () => true
+  const notOnDisk = async () => false
+
+  it('keeps the plaintext key until the store\'s own key is on disk, and the next start finishes the move', async () => {
+    const key = crypto.randomBytes(32)
+    writeLegacy(key)
+    data.sealedUnder = key
+
+    expect((await bytesOf(lateManager(notOnDisk))).equals(key)).toBe(true)
+    expect(files()).toEqual(['.vault-key', '.vault-key.wrapped'])
+
+    expect((await bytesOf(lateManager(onDisk))).equals(key)).toBe(true)
+    expect(files()).toEqual(['.vault-key.wrapped'])
+  })
+
+  it('deletes the plaintext key at once when the store\'s own key is already on disk', async () => {
+    const key = crypto.randomBytes(32)
+    writeLegacy(key)
+    data.sealedUnder = key
+
+    expect((await bytesOf(lateManager(onDisk))).equals(key)).toBe(true)
+    expect(files()).toEqual(['.vault-key.wrapped'])
+  })
+
+  it('recovers from a crash before the write: the store has a new key, the plaintext key is wrapped again', async () => {
+    const key = crypto.randomBytes(32)
+    writeLegacy(key)
+    data.sealedUnder = key
+    await bytesOf(lateManager(notOnDisk))
+    const orphaned = fs.readFileSync(wrappedFile(), 'utf-8')
+
+    const restarted = new FakeSafeStorage()
+    expect((await bytesOf(lateManager(onDisk, restarted))).equals(key)).toBe(true)
+    expect(fs.readFileSync(wrappedFile(), 'utf-8')).not.toBe(orphaned)
+    expect(files()).toEqual(['.vault-key', '.vault-key.wrapped'])
+
+    expect((await bytesOf(lateManager(onDisk, restarted))).equals(key)).toBe(true)
+    expect(files()).toEqual(['.vault-key.wrapped'])
+  })
+
+  it('keeps the plaintext key when a wrap that did not open is replaced, even with a key in Local State', async () => {
+    // A copied folder: the key on disk is the other computer's until Chromium writes its new one.
+    const key = crypto.randomBytes(32)
+    writeLegacy(key)
+    data.sealedUnder = key
+    await bytesOf(lateManager(onDisk, new FakeSafeStorage()))
+    writeLegacy(key)
+
+    expect((await bytesOf(lateManager(onDisk))).equals(key)).toBe(true)
+    expect(files()).toEqual(['.vault-key', '.vault-key.wrapped'])
+    expect((await bytesOf(lateManager(onDisk))).equals(key)).toBe(true)
+    expect(files()).toEqual(['.vault-key.wrapped'])
+  })
+
+  it('makes a new key only once the store\'s own key is on disk', async () => {
+    let asked = 0
+    const key = await bytesOf(lateManager(async () => ++asked >= 3))
+    expect(asked).toBe(3)
+    expect(files()).toEqual(['.vault-key.wrapped'])
+    expect((await bytesOf(lateManager(onDisk))).equals(key)).toBe(true)
+  })
+
+  it('makes no key and says to retry when it never appears, then works on the next call', async () => {
+    let written = false
+    const m = lateManager(async () => written)
+    await expect(m.key('browser-vault')).rejects.toMatchObject({
+      reason: 'secure-storage-unavailable',
+      userMessage: expect.stringContaining('Try again in a moment'),
+    })
+    expect(files()).toEqual([])
+
+    written = true
+    await bytesOf(m)
+    expect(files()).toEqual(['.vault-key.wrapped'])
+  })
+
+  it('does not hold up a start that finds nothing to move', async () => {
+    await installKeyManager(lateManager(notOnDisk))
+    expect(files()).toEqual([])
+  })
+})

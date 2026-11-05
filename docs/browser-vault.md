@@ -214,7 +214,13 @@ anything is written, the OS must give the wrapped key back as the same bytes,
 and those bytes must open the sealed data. Then the wrap is written. Once
 written, it is never deleted: another process may already be using it.
 `.vault-key` is deleted only after the wrap on disk reads back as the same key.
-A move cut short finishes on the next start: if the wrap was written, the
+On Windows the OS store's own key is a DPAPI-wrapped value in `Local State` in
+Electron's `userData` folder, which Chromium writes about ten seconds after it
+makes the key; a crash before that loses the key, and every wrap made with it.
+So `.vault-key` also stays until `Local State` holds a key, and a wrap replaced
+because it did not open keeps `.vault-key` until the next start opens the new
+wrap from disk. A brand-new key waits for `Local State` before it is made, and
+the call fails with a retry message if it never appears. A move cut short finishes on the next start: if the wrap was written, the
 leftover copy holding the same key is deleted; if the wrap was cut off
 mid-write, the move runs again from `.vault-key`. If the wrap can't be opened
 on this computer (it came from another computer, or the keyring can't open it)

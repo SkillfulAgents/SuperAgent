@@ -3,6 +3,7 @@ import { getDataDir } from '@shared/lib/config/data-dir'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { installKeyManager, isKeyManagerInstalled, keyManager } from '@shared/lib/keys/key-manager'
 import { DesktopKeyManager } from './desktop-key-manager'
+import { localStateHasOsKey } from './os-key-on-disk'
 
 /**
  * Electron main's key-custody boot step, after `openDatabase()` and before
@@ -16,6 +17,7 @@ export async function installDesktopKeyManager(): Promise<DesktopKeyManager> {
     safeStorage,
     platform: process.platform,
     probes: appKeyProbes,
+    osKeyOnDisk: process.platform === 'win32' ? () => localStateHasOsKey(app.getPath('userData')) : undefined,
   })
   await installKeyManager(manager)
   return manager

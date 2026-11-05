@@ -53,6 +53,14 @@ export interface DesktopKeyManagerOptions {
   platform: NodeJS.Platform
   probes: KeyProbes
   log?: KeyLog
+  /**
+   * Where the OS store's own key is a file Chromium writes late (Windows, see
+   * localStateHasOsKey): whether that key is on disk yet. Unset where the OS
+   * holds the key itself.
+   */
+  osKeyOnDisk?: () => Promise<boolean>
+  /** How long a new key waits for osKeyOnDisk before the call is reported and retried. */
+  osKeyWaitMs?: number
 }
 
 interface PurposeFiles {
@@ -76,10 +84,15 @@ type Unwrapped = { bytes: Buffer; shouldReEncrypt: boolean } | { failed: 'decryp
 
 const RETRY = Symbol('retry')
 
+/** Chromium writes Local State about ten seconds after a change. */
+const OS_KEY_WAIT_MS = 15_000
+const OS_KEY_POLL_MS = 250
+
 const MISMATCH = 'The vault key on this computer does not open the saved logins. Restore the key they were saved with (an exported vault key file), or delete those logins in Settings → Logins.'
 const MISSING = 'Saved logins on this computer were sealed with a vault key it does not have. Restore that key (an exported vault key file), or delete those logins in Settings → Logins.'
 const CORRUPT = 'The Browser Vault key on this computer is damaged, so saved logins cannot be opened. Restore it from an exported vault key file.'
 const IO = 'The Browser Vault key could not be read or saved on this computer. Check that the Gamut data folder can be written to, then try again.'
+const OS_KEY_NOT_SAVED = 'The Browser Vault is not ready to save logins yet. Try again in a moment.'
 
 function storeName(backend: string): string {
   switch (backend) {
@@ -107,12 +120,16 @@ export class DesktopKeyManager extends BaseKeyManager {
   private readonly dataDir: string
   private readonly safeStorage: SafeStorageLike
   private readonly platform: NodeJS.Platform
+  private readonly osKeyOnDisk?: () => Promise<boolean>
+  private readonly osKeyWaitMs: number
 
   constructor(options: DesktopKeyManagerOptions) {
     super(options.probes, options.log ?? consoleKeyLog)
     this.dataDir = path.resolve(options.dataDir)
     this.safeStorage = options.safeStorage
     this.platform = options.platform
+    this.osKeyOnDisk = options.osKeyOnDisk
+    this.osKeyWaitMs = options.osKeyWaitMs ?? OS_KEY_WAIT_MS
   }
 
   private wrappedPath(purpose: KeyPurpose): string {
@@ -254,6 +271,10 @@ export class DesktopKeyManager extends BaseKeyManager {
         ? { bytes: candidate, custody: 'plaintext-file' }
         : RETRY
     }
+    // A login sealed under a wrap the next start cannot open would be lost.
+    if (!(await this.waitForOsKeyOnDisk())) {
+      throw new KeyUnavailableError(purpose, 'secure-storage-unavailable', `${storeName(store.backend)}'s own key is not on disk yet, so no new ${purpose} key was made`, OS_KEY_NOT_SAVED)
+    }
     // Checked before it is written: once on disk another process may use it,
     // so a wrapped key is never taken back.
     const wrap = await this.checkedWrap(purpose, candidate, store.backend)
@@ -274,8 +295,9 @@ export class DesktopKeyManager extends BaseKeyManager {
    * written, the OS store has given the wrapped key back as the same bytes and
    * those bytes open what is sealed. Once written, the wrapped key stays —
    * another process may already use it — and the plaintext file goes only
-   * after the wrapped one on disk reads back as the same key. Anything short
-   * of that leaves the plaintext key in use, as before, for the next start.
+   * after the wrapped one on disk reads back as the same key, and the OS
+   * store's own key is on disk to open it after a crash. Anything short of that
+   * leaves the plaintext key in use, as before, for the next start.
    */
   private async migrate(
     purpose: KeyPurpose,
@@ -307,8 +329,34 @@ export class DesktopKeyManager extends BaseKeyManager {
       this.log.warn(`[keys] ${wrappedPath} did not read back as the ${purpose} key; ${legacyPath} is kept and the next start checks again`)
       return { bytes: legacyBytes, custody: 'plaintext-file' }
     }
+    if (!(await this.osKeyProvenForMove(mode))) {
+      this.log.warn(`[keys] ${storeName(store.backend)}'s own key may not be on disk yet; ${legacyPath} is kept and the next start finishes the move`)
+      return { bytes: readBack, custody: 'plaintext-file' }
+    }
     await this.retireLegacy(purpose, store)
     return { bytes: readBack, custody: 'os-secure-storage' }
+  }
+
+  /**
+   * Whether the OS store's key that made this wrap would survive a crash now.
+   * Replacing a wrap that did not open proves nothing from the file: the key
+   * there may be the one that failed (another computer's), with a new one still
+   * to be written. The next start proves it, by opening the wrap from disk.
+   * Never waits: a move runs before the API binds.
+   */
+  private async osKeyProvenForMove(mode: 'create' | 'replace'): Promise<boolean> {
+    if (!this.osKeyOnDisk) return true
+    return mode === 'create' && this.osKeyOnDisk()
+  }
+
+  private async waitForOsKeyOnDisk(): Promise<boolean> {
+    if (!this.osKeyOnDisk) return true
+    const deadline = Date.now() + this.osKeyWaitMs
+    while (!(await this.osKeyOnDisk())) {
+      if (Date.now() >= deadline) return false
+      await new Promise((resolve) => setTimeout(resolve, OS_KEY_POLL_MS))
+    }
+    return true
   }
 
   /** The plaintext key, as before, while the OS store cannot hold it; checked against the sealed data unless the caller just did. */
