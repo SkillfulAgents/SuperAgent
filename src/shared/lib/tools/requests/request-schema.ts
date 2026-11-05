@@ -230,6 +230,7 @@ export type PendingUserInputRequestInput = z.input<typeof pendingUserInputReques
  */
 export const PARKED_CALL_KINDS: ReadonlySet<PendingUserInputRequest['kind']> = new Set([
   'proxy_review',
+  'x_agent_review',
   'account_reauth_required',
   'mcp_reauth_required',
 ])

@@ -205,7 +205,7 @@ describe('proxy review session awaiting', () => {
       await expect(promise).resolves.toMatchObject({ decision: 'deny' })
     })
 
-    it('scopes an x-agent review to the session that made the call', async () => {
+    it.each(['allow', 'deny'] as const)('keeps a scoped x-agent review awaiting after idle until %s', async decision => {
       const reviews = live.agents.get(AGENT_SLUG).reviews
       const promise = reviews.requestXAgent(
         { targetAgentSlug: 'research', targetAgentName: 'Research', operation: 'invoke', callerSessionId: SESSION_ID },
@@ -215,8 +215,14 @@ describe('proxy review session awaiting', () => {
       expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'x-agent-review-1')?.scope).toEqual({ agentSlug: AGENT_SLUG, sessionId: SESSION_ID })
       expect(sessions().isAwaitingInput(OTHER_SESSION_ID)).toBe(false)
 
-      manager.submitDecision(AGENT_SLUG, 'x-agent-review-1', 'allow')
-      await expect(promise).resolves.toBe('allow')
+      sessions().markIdle(SESSION_ID)
+      expect(sessions().isActive(SESSION_ID)).toBe(false)
+      expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
+      expect(sessions().isAwaitingInput(OTHER_SESSION_ID)).toBe(false)
+
+      manager.submitDecision(AGENT_SLUG, 'x-agent-review-1', decision)
+      await expect(promise).resolves.toBe(decision)
+      expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     })
 
     it('deleting the session denies the call parked on its review', async () => {

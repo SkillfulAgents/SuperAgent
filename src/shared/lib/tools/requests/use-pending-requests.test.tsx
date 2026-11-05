@@ -263,6 +263,10 @@ describe('usePendingRequests', () => {
       unified('proxy_review', 'review-bg', {
         accountId: 'acct-gh', toolkit: 'github', method: 'GET', targetPath: '/user', matchedScopes: [], scopeDescriptions: {},
       }),
+      unified('x_agent_review', 'invoke-bg', {
+        accountId: 'x-agent', toolkit: 'agents', method: 'POST', targetPath: '/invoke', matchedScopes: [],
+        xAgent: { targetAgentSlug: 'research', targetAgentName: 'Research', operation: 'invoke' },
+      }),
       unified('account_reauth_required', 'reauth-bg', {
         accountId: 'acct-slack', toolkit: 'slack', accountStatus: 'expired', proxyRequestId: 'proxy-request-bg',
       }),
@@ -273,11 +277,12 @@ describe('usePendingRequests', () => {
 
     mockStreamState.isActive = true
     const { result, rerender } = renderHook(() => usePendingRequests(defaultArgs))
-    expect(result.current.count).toBe(3)
+    expect(result.current.count).toBe(4)
 
     mockStreamState.isActive = false
     rerender()
     expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(1)
+    expect(ofKind(result.current.items, 'x_agent_review')).toHaveLength(1)
     expect(ofKind(result.current.items, 'account_reauth_required')).toHaveLength(1)
     expect(ofKind(result.current.items, 'mcp_reauth_required')).toHaveLength(1)
   })
