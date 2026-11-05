@@ -1,8 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
 const capabilities = vi.hoisted(() => ({ directApi: true }))
 const mockGetApiKeyStatus = vi.fn()
 const mockCreateClient = vi.fn()
+
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 vi.mock('./index', () => ({
   activeLlmProviderFrom: () => ({
@@ -23,8 +28,14 @@ import { getConfiguredLlmClient, extractTextFromLlmResponse, createSummarizerTex
 import type Anthropic from '@anthropic-ai/sdk'
 
 describe('getConfiguredLlmClient', () => {
-  // Empty settings: no global default selected, so the active provider answers.
-  beforeEach(() => { vi.clearAllMocks(); capabilities.directApi = true })
+  // Empty settings (a fresh test database): no global default selected, so the active provider answers.
+  beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
+    vi.clearAllMocks()
+    capabilities.directApi = true
+  })
+  afterEach(async () => { await handle.close() })
 
   it('returns client when API key is configured', async () => {
     const fakeClient = { messages: {} }

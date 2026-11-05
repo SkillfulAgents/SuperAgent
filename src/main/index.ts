@@ -126,8 +126,6 @@ registerUpdateHandlers()
 import { serve } from '@hono/node-server'
 import api from '../api'
 import { openDatabase } from '@shared/lib/db'
-import { dbAppRecordStore } from '@shared/lib/app-records/record-store'
-import { installAppRecordStore } from '@shared/lib/app-records/records'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
@@ -1583,10 +1581,7 @@ async function startApp() {
   // A failure here is fatal and already reported; the app cannot run on an
   // unmigrated database, so it quits instead of serving errors.
   try {
-    const database = await openDatabase()
-    // Settings and the other host records live in the database: install
-    // their store before anything reads them.
-    installAppRecordStore(dbAppRecordStore(database))
+    await openDatabase()
   } catch (error) {
     console.error('Failed to open the database:', error)
     // The fatal report was captured in openDatabase(); let it send before quitting.

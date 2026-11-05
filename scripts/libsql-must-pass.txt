@@ -85,8 +85,11 @@ src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts
 src/shared/lib/services/notification-read-state.test.ts
-src/shared/lib/app-records/record-store.test.ts
+src/shared/lib/app-records/records.test.ts
 src/shared/lib/app-records/host-records.test.ts
 src/shared/lib/config/settings-store.test.ts
 src/shared/lib/db/data-migrations/0009-import-host-records.test.ts
+src/shared/lib/config/settings.test.ts
+src/shared/lib/container/host-token-store.test.ts
+src/main/host-browser/context-map-store.test.ts
 src/shared/lib/agent-integrations/integration-row-version.test.ts

@@ -32,12 +32,10 @@ async function main(): Promise<void> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gamut-private-skillset-e2e-'))
   process.env.SUPERAGENT_DATA_DIR = dataDir
 
-  // Settings live in the app database: open it (in the temp data dir) and
-  // install the record store before anything reads them.
+  // Settings live in the app database: open it (in the temp data dir) before
+  // anything reads them.
   const { openDatabase, closeDatabase } = await import('../src/shared/lib/db')
-  const { dbAppRecordStore } = await import('../src/shared/lib/app-records/record-store')
-  const { installAppRecordStore } = await import('../src/shared/lib/app-records/records')
-  installAppRecordStore(dbAppRecordStore(await openDatabase()))
+  await openDatabase()
 
   try {
     const settings = await import('../src/shared/lib/config/settings')

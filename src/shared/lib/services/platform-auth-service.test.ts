@@ -40,24 +40,15 @@ vi.mock('@shared/lib/llm-provider/connection-settings', () => ({
   ensureManagedPlatformConnection: () => mockEnsureManagedPlatformConnection(),
 }))
 
-const mockDbGet = vi.fn()
-vi.mock('@shared/lib/db', () => ({
-  db: {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () => ({
-            limit: () => ({
-              get: mockDbGet,
-            }),
-          }),
-        }),
-      }),
-    }),
-  },
-}))
+// Settings, host records and the platform OIDC account (`account` table) are
+// in the app database: a fresh test database per test.
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { authAccount, user } from '@shared/lib/db/schema'
 import { getAgentsDir } from '@shared/lib/utils/file-storage'
 import type { SkillsetConfig, InstalledSkillMetadata, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
@@ -125,7 +116,9 @@ beforeAll(async () => {
 describe('platform-auth-service', () => {
   let tempDir: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superagent-platform-auth-'))
     process.env.SUPERAGENT_DATA_DIR = tempDir
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
@@ -138,7 +131,6 @@ describe('platform-auth-service', () => {
     ])
     _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
     _resetEnvManagedPlatformStatusForTest()
-    mockDbGet.mockReturnValue(null)
     mockEnsureManagedPlatformConnection.mockClear()
   })
 
@@ -155,6 +147,7 @@ describe('platform-auth-service', () => {
     _setOidcJwksResolverForTest(null)
     _resetEnvManagedPlatformStatusForTest()
     vi.restoreAllMocks()
+    await handle.close()
   })
 
   it('falls back to PLATFORM_TOKEN env in auth mode when settings have no record', async () => {
@@ -492,17 +485,24 @@ describe('platform-auth-service', () => {
     return `${header}.${payload}.fake-signature`
   }
 
+  /** A Better Auth user signed in through the platform OIDC provider, with the ID token it stored. */
+  async function seedPlatformAccount(userId: string, idToken: string | null): Promise<void> {
+    const now = new Date()
+    await testDb.insert(user).values({ id: userId, name: 'Member', email: `${userId}@example.test`, createdAt: now, updatedAt: now }).run()
+    await testDb.insert(authAccount).values({
+      id: `account-${userId}`, accountId: 'sub_member_123', providerId: 'platform', userId, idToken, createdAt: now, updatedAt: now,
+    }).run()
+  }
+
   it('env-managed status returns userId from OIDC id_token when user_id claim is present', async () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     await initEnvManagedPlatformStatus()
 
-    mockDbGet.mockReturnValue({
-      idToken: makeIdToken({
-        sub: 'sub_member_123',
-        'https://platform.skillfulagents.dev/claims/user_id': 'uuid-platform-user',
-      }),
-    })
+    await seedPlatformAccount('ba-user-id', makeIdToken({
+      sub: 'sub_member_123',
+      'https://platform.skillfulagents.dev/claims/user_id': 'uuid-platform-user',
+    }))
 
     const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBe('uuid-platform-user')
@@ -514,9 +514,7 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     await initEnvManagedPlatformStatus()
 
-    mockDbGet.mockReturnValue({
-      idToken: makeIdToken({ sub: 'sub_member_123' }),
-    })
+    await seedPlatformAccount('ba-user-id', makeIdToken({ sub: 'sub_member_123' }))
 
     const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBeNull()
@@ -527,7 +525,6 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     await initEnvManagedPlatformStatus()
 
-    mockDbGet.mockReturnValue(null)
     mockEnsureManagedPlatformConnection.mockClear()
 
     const status = (await getPlatformAuthStatusForUser('ba-user-id'))
@@ -539,7 +536,7 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     await initEnvManagedPlatformStatus()
 
-    mockDbGet.mockReturnValue({ idToken: null })
+    await seedPlatformAccount('ba-user-id', null)
 
     const status = (await getPlatformAuthStatusForUser('ba-user-id'))
     expect(status.userId).toBeNull()
@@ -550,10 +547,10 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     await initEnvManagedPlatformStatus()
 
-    mockDbGet.mockClear()
+    const select = vi.spyOn(testDb, 'select')
     const status = await getPlatformAuthStatus()
     expect(status.userId).toBeNull()
-    expect(mockDbGet).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalledWith({ idToken: authAccount.idToken })
   })
 
   // ---------------------------------------------------------------------------

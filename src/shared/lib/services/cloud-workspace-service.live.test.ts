@@ -73,10 +73,10 @@ d('SUP-362 live cloud-workspace chain', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'sup362-live-'))
     mkdirSync(dataDir, { recursive: true })
     process.env.SUPERAGENT_DATA_DIR = dataDir
-    // Settings (the platform account, the deployment token) are app records.
-    // One store for the whole file: what beforeAll seeds (the auth secret) must last.
-    const { keepAppRecordStoreAcrossTests } = await import('@shared/lib/app-records/testing/memory-record-store')
-    keepAppRecordStoreAcrossTests()
+    // Settings (the platform account, the deployment token) live in the app
+    // database: the real one, opened in the data dir like an entry point does.
+    const { openDatabase } = await import('@shared/lib/db')
+    await openDatabase()
 
     // Seed the connected platform account.
     const { mutateSettings } = await import('@shared/lib/config/settings')
@@ -98,8 +98,10 @@ d('SUP-362 live cloud-workspace chain', () => {
     })
   })
 
-  afterAll(() => {
+  afterAll(async () => {
     ;(process as { type?: string }).type = undefined
+    const { closeDatabase } = await import('@shared/lib/db')
+    await closeDatabase()
   })
 
   it('has the required harness env', () => {

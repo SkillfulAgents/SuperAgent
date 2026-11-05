@@ -30,7 +30,7 @@ vi.mock('../db', () => ({
     return state.db
   },
 }))
-// The data migration passes its own record store; these settings stand in for it too.
+// The data migration passes its own database handle; these settings stand in for it too.
 vi.mock('../config/settings', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config/settings')>()),
   getSettings: async () => state.settings,

@@ -9,8 +9,7 @@
  * never touches another's, and a stored id that cannot be read throws instead
  * of being treated as absent (which would create, and bill, a new context).
  */
-import type { AppRecordStore } from '@shared/lib/app-records/record-store'
-import { appRecordStore, readRecord, serializeRecordValue } from '@shared/lib/app-records/records'
+import { insertRecordIfAbsent, readRecord, serializeRecordValue, type RecordDb } from '@shared/lib/app-records/records'
 import {
   browserContextIdRecordSchema,
   browserContextKey,
@@ -24,9 +23,9 @@ export type { BrowserContextProvider }
 export async function readContextMapping(
   provider: BrowserContextProvider,
   key: string,
-  store: AppRecordStore = appRecordStore(),
+  db?: RecordDb,
 ): Promise<string | null> {
-  return (await readRecord(store, browserContextKey(provider, key), browserContextIdRecordSchema))?.value ?? null
+  return (await readRecord(browserContextKey(provider, key), browserContextIdRecordSchema, db))?.value ?? null
 }
 
 // In-flight context creations, keyed by `${provider}::${key}`. Dedups
@@ -49,9 +48,9 @@ export async function getOrCreateMapping(
   provider: BrowserContextProvider,
   key: string,
   create: () => Promise<string>,
-  store: AppRecordStore = appRecordStore(),
+  db?: RecordDb,
 ): Promise<string> {
-  const existing = await readContextMapping(provider, key, store)
+  const existing = await readContextMapping(provider, key, db)
   if (existing) return existing
 
   const inflightKey = `${provider}::${key}`
@@ -61,14 +60,14 @@ export async function getOrCreateMapping(
   const p = (async () => {
     // Re-check inside the in-flight guard: a create for this key may have landed
     // between the read above and us claiming the slot.
-    const fresh = await readContextMapping(provider, key, store)
+    const fresh = await readContextMapping(provider, key, db)
     if (fresh) return fresh
     const contextId = await create()
     const recordKey = browserContextKey(provider, key)
     let committed: string | null
     try {
-      await store.insertIfAbsent(recordKey, serializeRecordValue(recordKey, contextId, browserContextIdRecordSchema))
-      committed = await readContextMapping(provider, key, store)
+      await insertRecordIfAbsent(recordKey, serializeRecordValue(recordKey, contextId, browserContextIdRecordSchema), db)
+      committed = await readContextMapping(provider, key, db)
     } catch (err) {
       // The remote context was created and BILLED, but persisting it failed.
       // Surface the orphaned id so it can be reclaimed out-of-band instead of

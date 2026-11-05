@@ -3,8 +3,7 @@ import { createTestDatabase, type TestDatabase } from '../db/testing/create-test
 import { dataMigrations, llmConnections } from '../db/schema'
 import { getSettings, mutateSettings } from '../config/settings'
 import { SETTINGS_RECORD_KEY } from '../app-records/record-schemas'
-import { installTestAppRecordStore, MemoryAppRecordStore } from '../app-records/testing/memory-record-store'
-import { uninstallAppRecordStore } from '../app-records/records'
+import { insertRecordIfAbsent } from '../app-records/records'
 import { ensureManagedPlatformConnection, syncProviderSettings } from './connection-settings'
 import { getConnection, listConnections, providerForConnection, resolveExecutionSelection, resolveHelperSelection, saveConnection, setGlobalSelection } from './connections'
 
@@ -12,37 +11,33 @@ const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null }))
 vi.mock('../db', () => ({ get db() { return state.db } }))
 
 let handle: TestDatabase
-let records: MemoryAppRecordStore
 beforeEach(async () => {
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('PLATFORM_TOKEN', 'platform-bootstrap-test-token')
   // Provisioning is local and must not call a paid service.
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Unexpected network request') }))
-  records = new MemoryAppRecordStore()
-  installTestAppRecordStore(records)
   // Schema only: deliberately never run legacy data migrations in this suite.
   handle = await createTestDatabase()
   state.db = handle.db
 })
 afterEach(async () => {
   await handle.close()
-  uninstallAppRecordStore()
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
 })
 
-function seedHostedSettings() {
+async function seedHostedSettings() {
   // Provider-related seed used by gamut-infra, before the first app boot.
-  records.rows.set(SETTINGS_RECORD_KEY, { revision: 1, value: JSON.stringify({
+  await insertRecordIfAbsent(SETTINGS_RECORD_KEY, JSON.stringify({
     llmProvider: 'platform',
     app: { hostBrowserProvider: 'platform', setupCompleted: true },
     voice: { sttProvider: 'platform' },
     container: { containerRunner: 'lambda-microvm' },
-  }) })
+  }))
 }
 
 it('provisions a hosted install without any legacy data migration', async () => {
-  seedHostedSettings()
+  await seedHostedSettings()
   await ensureManagedPlatformConnection()
 
   const rows = await handle.db.select().from(llmConnections).all()
@@ -64,7 +59,7 @@ it('provisions a hosted install without any legacy data migration', async () => 
 })
 
 it('preserves edited providers and defaults on subsequent startup and picks up rotated tokens', async () => {
-  seedHostedSettings()
+  await seedHostedSettings()
   await ensureManagedPlatformConnection()
   await saveConnection({ name: 'Our Platform', provider: 'platform', config: {}, browserModel: 'opus' },
     { userId: null, admin: true }, 'legacy-platform')
@@ -82,7 +77,7 @@ it('preserves edited providers and defaults on subsequent startup and picks up r
 })
 
 it('does not provision without credentials and supports credentials supplied after first boot', async () => {
-  seedHostedSettings()
+  await seedHostedSettings()
   vi.stubEnv('PLATFORM_TOKEN', '')
   await ensureManagedPlatformConnection()
   expect(await handle.db.select().from(llmConnections).all()).toEqual([])

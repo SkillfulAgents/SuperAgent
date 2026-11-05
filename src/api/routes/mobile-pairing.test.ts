@@ -137,9 +137,6 @@ beforeAll(async () => {
 
   dbModule = await import('@shared/lib/db')
   await dbModule.openDatabase()
-  // One store for the whole file: what beforeAll seeds (the auth secret) must last.
-  const { keepAppRecordStoreAcrossTests } = await import('@shared/lib/app-records/testing/memory-record-store')
-  keepAppRecordStoreAcrossTests()
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(tmpDir, 'superagent.db'))
 

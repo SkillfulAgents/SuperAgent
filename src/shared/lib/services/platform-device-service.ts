@@ -2,8 +2,7 @@ import { execSync } from 'child_process'
 import crypto from 'crypto'
 import os from 'os'
 
-import type { AppRecordStore } from '@shared/lib/app-records/record-store'
-import { appRecordStore, getOrCreateRecord } from '@shared/lib/app-records/records'
+import { getOrCreateRecord, type RecordDb } from '@shared/lib/app-records/records'
 import {
   PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY,
   platformClientInstanceIdRecordSchema,
@@ -26,9 +25,8 @@ export function getPlatformDeviceName(): string {
  * `.platform-auth/client-instance-id` by data migration 9.
  */
 export async function getOrCreatePlatformClientInstanceId(
-  store: AppRecordStore = appRecordStore(),
+  db?: RecordDb,
 ): Promise<string> {
-  return getOrCreateRecord(store, PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY, platformClientInstanceIdRecordSchema, () =>
-    crypto.randomUUID(),
-  )
+  return getOrCreateRecord(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY, platformClientInstanceIdRecordSchema, () =>
+    crypto.randomUUID(), db)
 }

@@ -6,13 +6,24 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({ getPlatformAccess
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }))
 
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { getActiveWebProvider, resolveEffectiveWebVendor } from '@shared/lib/web-provider'
 import webSearch from './web-search'
 
-beforeEach(() => {
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
+beforeEach(async () => {
   for (const name of ['PARALLEL_API_KEY', 'PLATFORM_TOKEN', 'EXA_API_KEY']) vi.stubEnv(name, '')
+  handle = await createTestDatabase()
+  testDb = handle.db
 })
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })
+afterEach(async () => {
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+  await handle.close()
+})
 
 it('serves a saved keyless choice through the authenticated host route with the operator policy applied', async () => {
   await mutateSettings((s) => {

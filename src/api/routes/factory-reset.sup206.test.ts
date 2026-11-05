@@ -32,9 +32,7 @@ vi.mock('@shared/lib/db', () => ({
 const mockDeletedRecords: string[] = []
 
 vi.mock('@shared/lib/app-records/records', () => ({
-  appRecordStore: () => ({
-    delete: async (key: string) => { mockDeletedRecords.push(key) },
-  }),
+  deleteRecord: async (key: string) => { mockDeletedRecords.push(key) },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({

@@ -1,6 +1,7 @@
 import { IMessageConnector } from './imessage-connector'
 import { MockChatAgentIntegration } from './mock-connector'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
 // ---------------------------------------------------------------------------
 // `integrationCreated` is fire-and-forget from two create routes, so its guarantees
@@ -9,6 +10,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // it passes an EMPTY chatId — the gateway's create-a-chat fallback is what lets
 // the card arrive before the user has ever messaged the agent.
 // ---------------------------------------------------------------------------
+
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 vi.mock('@shared/lib/services/agent-integration-service', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/services/agent-integration-service')>()),
@@ -54,9 +59,11 @@ function mockAgent(): void {
   vi.mocked(getAgentRecord).mockResolvedValue({ name: 'Ada', description: 'Triages inbox' } as never)
 }
 
-// Settings and host records are app records: a fresh in-memory store per test.
+// Settings and host records are in the app database: a fresh test database per test.
 describe('integrationCreated', () => {
   beforeEach(async () => {
+    handle = await createTestDatabase()
+    testDb = handle.db
     vi.clearAllMocks()
     mgr.connections.delete(INT)
     sendFile.mockResolvedValue('file-1')
@@ -64,6 +71,7 @@ describe('integrationCreated', () => {
   })
 
   afterEach(async () => {
+    await handle.close()
     if (originalHostPublicUrl === undefined) delete process.env.HOST_PUBLIC_URL
     else process.env.HOST_PUBLIC_URL = originalHostPublicUrl
   })

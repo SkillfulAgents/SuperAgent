@@ -37,7 +37,7 @@ vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
 
-// The host token is an app record; these tests have no record store.
+// The host token is an app record; these tests have no database.
 vi.mock('./host-token-store', () => ({ getOrCreateHostToken: async () => 'hostc_test' }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)

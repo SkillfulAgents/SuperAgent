@@ -1,5 +1,5 @@
 import type { DataMigration } from './index'
-import { legacyRecordStore } from './0009-import-host-records'
+import { importLegacyRecords } from './0009-import-host-records'
 
 export const globalModelPricing: DataMigration = {
   id: 2,
@@ -9,11 +9,11 @@ export const globalModelPricing: DataMigration = {
     const { extractCatalogPricing } = await import('../../llm-provider/global-pricing')
     // The settings on this migration's handle, legacy settings.json imported
     // first: an install that skips versions has its prices still in the file.
-    const store = await legacyRecordStore(db)
+    await importLegacyRecords(db)
     // Strict, not getSettings(): that one answers invalid stored settings with
     // defaults, which would look like "nothing to move" and get this migration
     // recorded as done with the legacy prices still in the catalog.
-    const settings = await loadSettingsStrict(store)
+    const settings = await loadSettingsStrict(db)
     const legacy = settings.modelCatalog ?? {}
     // Nothing left to move: a fresh install, or a retry after the settings write.
     const hasLegacyPrices = Object.values(legacy).some((provider) =>
@@ -27,6 +27,6 @@ export const globalModelPricing: DataMigration = {
       s.modelCatalog = catalog
       // Preserve a completed settings write when retrying before ledger commit.
       s.modelPricing = { ...pricing, ...s.modelPricing }
-    }, store)
+    }, db)
   },
 }

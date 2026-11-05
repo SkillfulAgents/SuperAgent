@@ -2,7 +2,7 @@ import { isProviderEnvVar } from '../../llm-provider/provider-env'
 import { and, eq, isNull, isNotNull } from 'drizzle-orm'
 import { llmConnections, scheduledTasks, webhookTriggers, chatIntegrations } from '../schema'
 import type { DataMigration } from './index'
-import { legacyRecordStore } from './0009-import-host-records'
+import { importLegacyRecords } from './0009-import-host-records'
 
 /** Import the former global provider settings once, before the database opens.
  * Stable IDs, insert-if-absent and nullable-reference updates tolerate a crash
@@ -20,9 +20,9 @@ export const importLlmConnections: DataMigration = {
     const { resolveSelection } = await import('../../llm-provider/connection-schema')
     const { connectionCatalogFrom } = await import('../../llm-provider/connections')
     // The settings on this migration's handle, legacy settings.json imported
-    // first; nothing below reads the global store, which is not installed yet.
-    const store = await legacyRecordStore(db)
-    const settings = await getSettings(store)
+    // first; nothing below reads the global database, which is not open yet.
+    await importLegacyRecords(db)
+    const settings = await getSettings(db)
     const active = settings.llmProvider ?? 'anthropic'
     const models = effectiveModelsFrom(settings)
     const legacyModels = new Set<string>()
@@ -66,6 +66,6 @@ export const importLlmConnections: DataMigration = {
       s.llmDefault ??= { ...defaultSelection }
       // An explicit null already means inherit the app default.
       if (s.llmSummarizer === undefined) s.llmSummarizer = { ...summarizerSelection }
-    }, store)
+    }, db)
   },
 }

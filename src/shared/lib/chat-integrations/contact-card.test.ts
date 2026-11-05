@@ -1,18 +1,29 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
+
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 const base = { slug: 'ada', name: 'Ada', appUrl: null }
 const originalHostPublicUrl = process.env.HOST_PUBLIC_URL
 const originalType = (process as { type?: string }).type
 
-afterEach(() => {
+// Settings and host records are in the app database: a fresh test database per test.
+beforeEach(async () => {
+  handle = await createTestDatabase()
+  testDb = handle.db
+})
+
+afterEach(async () => {
+  await handle.close()
   if (originalHostPublicUrl === undefined) delete process.env.HOST_PUBLIC_URL
   else process.env.HOST_PUBLIC_URL = originalHostPublicUrl
   if (originalType === undefined) delete (process as { type?: string }).type
   else (process as { type?: string }).type = originalType
 })
 
-// Settings and host records are app records: a fresh in-memory store per test.
 describe('buildAgentContactCard', () => {
   it('escapes backslashes, commas, semicolons, and newlines in the note', () => {
     const vcf = buildAgentContactCard({

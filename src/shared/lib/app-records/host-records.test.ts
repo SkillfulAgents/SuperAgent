@@ -9,8 +9,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { dbAppRecordStore, type AppRecordStore } from './record-store'
-import { InvalidAppRecordError } from './records'
+import { insertRecordIfAbsent, InvalidAppRecordError, readStoredRecord } from './records'
 import { AUTH_SECRET_RECORD_KEY, TENANT_ID_RECORD_KEY, hostContainerTokenKey } from './record-schemas'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
@@ -20,8 +19,6 @@ import { getOrCreatePlatformClientInstanceId } from '@shared/lib/services/platfo
 let dir: string
 let a: TestDatabase
 let b: TestDatabase
-let storeA: AppRecordStore
-let storeB: AppRecordStore
 
 beforeEach(async () => {
   vi.stubEnv('BETTER_AUTH_SECRET', '')
@@ -29,8 +26,6 @@ beforeEach(async () => {
   const file = path.join(dir, 'shared.db')
   a = await createTestDatabase({ file })
   b = await createTestDatabase({ file })
-  storeA = dbAppRecordStore(a.db)
-  storeB = dbAppRecordStore(b.db)
 })
 afterEach(async () => {
   await a.close()
@@ -40,54 +35,53 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-/** Calls alternating between the two processes' stores, all at once. */
-function fromBoth<T>(n: number, call: (store: AppRecordStore) => Promise<T>): Promise<T[]> {
-  return Promise.all(Array.from({ length: n }, (_, i) => call(i % 2 ? storeA : storeB)))
+/** Calls alternating between the two processes' database handles, all at once. */
+function fromBoth<T>(n: number, call: (db: TestDatabase['db']) => Promise<T>): Promise<T[]> {
+  return Promise.all(Array.from({ length: n }, (_, i) => call(i % 2 ? a.db : b.db)))
 }
 
 describe('simultaneous first use on an empty database', () => {
   it('agrees on one tenant id', async () => {
-    const ids = await fromBoth(10, (store) => getTenantId(store))
+    const ids = await fromBoth(10, (db) => getTenantId(db))
     expect(new Set(ids).size).toBe(1)
     expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('agrees on one auth secret', async () => {
-    const secrets = await fromBoth(10, (store) => getOrCreateAuthSecret(store))
+    const secrets = await fromBoth(10, (db) => getOrCreateAuthSecret(db))
     expect(new Set(secrets).size).toBe(1)
     expect(secrets[0].length).toBeGreaterThanOrEqual(32)
   })
 
   it('agrees on one token per agent and keeps every agent’s token', async () => {
     const [sameAgent, other] = await Promise.all([
-      fromBoth(10, (store) => getOrCreateHostToken('alpha', store)),
-      fromBoth(10, (store) => getOrCreateHostToken('beta', store)),
+      fromBoth(10, (db) => getOrCreateHostToken('alpha', db)),
+      fromBoth(10, (db) => getOrCreateHostToken('beta', db)),
     ])
     expect(new Set(sameAgent).size).toBe(1)
     expect(new Set(other).size).toBe(1)
     expect(sameAgent[0]).not.toBe(other[0])
-    expect(await getOrCreateHostToken('alpha', storeA)).toBe(sameAgent[0])
-    expect(await getOrCreateHostToken('beta', storeB)).toBe(other[0])
+    expect(await getOrCreateHostToken('alpha', a.db)).toBe(sameAgent[0])
+    expect(await getOrCreateHostToken('beta', b.db)).toBe(other[0])
   })
 
   it('agrees on one platform client instance id', async () => {
-    const ids = await fromBoth(6, (store) => getOrCreatePlatformClientInstanceId(store))
+    const ids = await fromBoth(6, (db) => getOrCreatePlatformClientInstanceId(db))
     expect(new Set(ids).size).toBe(1)
   })
 })
 
 describe('an existing deployment', () => {
   it('a process starting on a populated database reads the records, never regenerates them', async () => {
-    const tenant = await getTenantId(storeA)
-    const secret = await getOrCreateAuthSecret(storeA)
-    const token = await getOrCreateHostToken('alpha', storeA)
+    const tenant = await getTenantId(a.db)
+    const secret = await getOrCreateAuthSecret(a.db)
+    const token = await getOrCreateHostToken('alpha', a.db)
     // A new process (fresh handle, nothing in memory) on the same database.
     const cold = await createTestDatabase({ file: path.join(dir, 'shared.db') })
     try {
-      const coldStore = dbAppRecordStore(cold.db)
-      expect(await getTenantId(coldStore)).toBe(tenant)
-      expect(await getOrCreateAuthSecret(coldStore)).toBe(secret)
-      expect(await getOrCreateHostToken('alpha', coldStore)).toBe(token)
+      expect(await getTenantId(cold.db)).toBe(tenant)
+      expect(await getOrCreateAuthSecret(cold.db)).toBe(secret)
+      expect(await getOrCreateHostToken('alpha', cold.db)).toBe(token)
     } finally {
       await cold.close()
     }
@@ -95,25 +89,28 @@ describe('an existing deployment', () => {
 
   it('BETTER_AUTH_SECRET wins over the stored secret and creates nothing', async () => {
     vi.stubEnv('BETTER_AUTH_SECRET', 'from-the-environment-and-long-enough-0000')
-    expect(await getOrCreateAuthSecret(storeA)).toBe('from-the-environment-and-long-enough-0000')
-    expect(await storeA.read(AUTH_SECRET_RECORD_KEY)).toBeNull()
+    expect(await getOrCreateAuthSecret(a.db)).toBe('from-the-environment-and-long-enough-0000')
+    expect(await readStoredRecord(AUTH_SECRET_RECORD_KEY, a.db)).toBeNull()
   })
 
   it('an invalid stored identity throws and is not replaced', async () => {
-    await storeA.insertIfAbsent(AUTH_SECRET_RECORD_KEY, JSON.stringify('too-short'))
-    await storeA.insertIfAbsent(TENANT_ID_RECORD_KEY, JSON.stringify(''))
-    await storeA.insertIfAbsent(hostContainerTokenKey('alpha'), '{not json')
-    await expect(getOrCreateAuthSecret(storeA)).rejects.toThrow(InvalidAppRecordError)
-    await expect(getTenantId(storeA)).rejects.toThrow(InvalidAppRecordError)
-    await expect(getOrCreateHostToken('alpha', storeA)).rejects.toThrow(InvalidAppRecordError)
-    expect((await storeA.read(AUTH_SECRET_RECORD_KEY))?.value).toBe(JSON.stringify('too-short'))
+    await insertRecordIfAbsent(AUTH_SECRET_RECORD_KEY, JSON.stringify('too-short'), a.db)
+    await insertRecordIfAbsent(TENANT_ID_RECORD_KEY, JSON.stringify(''), a.db)
+    await insertRecordIfAbsent(hostContainerTokenKey('alpha'), '{not json', a.db)
+    await expect(getOrCreateAuthSecret(a.db)).rejects.toThrow(InvalidAppRecordError)
+    await expect(getTenantId(a.db)).rejects.toThrow(InvalidAppRecordError)
+    await expect(getOrCreateHostToken('alpha', a.db)).rejects.toThrow(InvalidAppRecordError)
+    expect((await readStoredRecord(AUTH_SECRET_RECORD_KEY, a.db))?.value).toBe(JSON.stringify('too-short'))
   })
 
   it('a database error is not absence: nothing is generated', async () => {
-    vi.spyOn(storeA, 'read').mockRejectedValue(new Error('SQLITE_BUSY'))
-    const insert = vi.spyOn(storeA, 'insertIfAbsent')
-    await expect(getTenantId(storeA)).rejects.toThrow('SQLITE_BUSY')
-    await expect(getOrCreateHostToken('alpha', storeA)).rejects.toThrow('SQLITE_BUSY')
+    // Every read on this process's handle fails.
+    vi.spyOn(a.db, 'select').mockImplementation(() => {
+      throw new Error('SQLITE_BUSY')
+    })
+    const insert = vi.spyOn(a.db, 'insert')
+    await expect(getTenantId(a.db)).rejects.toThrow('SQLITE_BUSY')
+    await expect(getOrCreateHostToken('alpha', a.db)).rejects.toThrow('SQLITE_BUSY')
     expect(insert).not.toHaveBeenCalled()
   })
 })

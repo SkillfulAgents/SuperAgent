@@ -27,7 +27,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
-    setupFiles: ['src/renderer/test/setup.ts', 'src/shared/lib/app-records/testing/vitest-setup.ts'],
+    setupFiles: ['src/renderer/test/setup.ts'],
     testTimeout: 15_000,
     // Many suites import the app (db, auth, routes) in beforeAll, after stubbing
     // env: ~3 s alone, past the 10 s default on a loaded CI runner with coverage.

@@ -7,13 +7,16 @@ import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
-import type { AppRecordStore } from '@shared/lib/app-records/record-store'
 import {
-  appRecordStore,
-  InvalidAppRecordError,
+  compareAndSetRecord,
+  insertRecordIfAbsent,
   parseRecordValue,
+  readStoredRecord,
   serializeRecordValue,
+  type RecordDb,
 } from '@shared/lib/app-records/records'
+// From the leaf module: this file extends it at load time (see errors.ts).
+import { InvalidAppRecordError } from '@shared/lib/app-records/errors'
 import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { globalInstructionsSchema } from './global-instructions-schema'
 import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
@@ -724,16 +727,16 @@ export class InvalidSettingsError extends InvalidAppRecordError {
  * abort the write instead of being replaced by defaults (which would wipe API
  * keys, auth policy, skillsets, …).
  */
-export async function readSettingsSnapshot(store: AppRecordStore = appRecordStore()): Promise<SettingsSnapshot> {
-  const stored = await store.read(SETTINGS_RECORD_KEY)
+export async function readSettingsSnapshot(db?: RecordDb): Promise<SettingsSnapshot> {
+  const stored = await readStoredRecord(SETTINGS_RECORD_KEY, db)
   // Deep-clone the defaults: callers mutate nested objects in place.
   if (!stored) return { settings: structuredClone(DEFAULT_SETTINGS), revision: 0 }
   return { settings: parseStoredSettings(stored.value, stored.revision), revision: stored.revision }
 }
 
 /** The settings, read strictly (see {@link readSettingsSnapshot}). */
-export async function loadSettingsStrict(store: AppRecordStore = appRecordStore()): Promise<AppSettings> {
-  return (await readSettingsSnapshot(store)).settings
+export async function loadSettingsStrict(db?: RecordDb): Promise<AppSettings> {
+  return (await readSettingsSnapshot(db)).settings
 }
 
 /**
@@ -747,9 +750,9 @@ export async function loadSettingsStrict(store: AppRecordStore = appRecordStore(
  * Read once per operation and pass the value on, rather than calling this
  * from every helper an operation reaches.
  */
-export async function getSettings(store: AppRecordStore = appRecordStore()): Promise<AppSettings> {
+export async function getSettings(db?: RecordDb): Promise<AppSettings> {
   try {
-    return await loadSettingsStrict(store)
+    return await loadSettingsStrict(db)
   } catch (error) {
     if (!(error instanceof InvalidAppRecordError)) throw error
     // Every read hits the bad value; report each stored value once.
@@ -799,16 +802,16 @@ export interface SettingsUpdate {
  */
 export async function updateSettings(
   update: (draft: AppSettings, before: Readonly<AppSettings>) => void | false,
-  store: AppRecordStore = appRecordStore(),
+  db?: RecordDb,
 ): Promise<SettingsUpdate> {
   for (let attempt = 1; attempt <= MAX_SETTINGS_WRITE_ATTEMPTS; attempt++) {
-    const { settings: before, revision } = await readSettingsSnapshot(store)
+    const { settings: before, revision } = await readSettingsSnapshot(db)
     const draft = structuredClone(before)
     if (update(draft, before) === false) return { before, after: before, written: false }
     const value = serializeRecordValue(SETTINGS_RECORD_KEY, draft as unknown as Record<string, unknown>, persistedSettingsSchema)
     const written = revision === 0
-      ? await store.insertIfAbsent(SETTINGS_RECORD_KEY, value)
-      : await store.compareAndSet(SETTINGS_RECORD_KEY, revision, value)
+      ? await insertRecordIfAbsent(SETTINGS_RECORD_KEY, value, db)
+      : await compareAndSetRecord(SETTINGS_RECORD_KEY, revision, value, db)
     if (written) return { before, after: draft, written: true }
   }
   throw new SettingsWriteConflictError()
@@ -821,9 +824,9 @@ export async function updateSettings(
  */
 export async function mutateSettings(
   mutator: (settings: AppSettings) => void | false,
-  store: AppRecordStore = appRecordStore(),
+  db?: RecordDb,
 ): Promise<AppSettings> {
-  return (await updateSettings((draft) => mutator(draft), store)).after
+  return (await updateSettings((draft) => mutator(draft), db)).after
 }
 
 // TODO - following function are very repetitive - consider refactor to a single generic function that takes the API key name as parameter
