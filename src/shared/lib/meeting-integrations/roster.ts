@@ -48,10 +48,10 @@ const meetingRosters = defineNamespace({
   expiry: { ttlMs: MEETING_ROSTER_IDLE_TTL_MS, onUpdate: 'reset' },
 })
 
-/** "Look again": names the change count of the roster that was just written. */
+/** "Look again": names the roster state that was just written. */
 const meetingRosterHints = defineTopic({
   name: 'events:meeting:roster',
-  schema: z.object({ revision: z.number().int().nonnegative() }),
+  schema: z.object({ incarnation: z.string().min(1).max(64), revision: z.number().int().nonnegative() }),
 })
 type MeetingRosterHint = z.infer<typeof meetingRosterHints.schema>
 
@@ -64,10 +64,22 @@ export function meetingRosterChannel(meetingId: string): Channel<MeetingRosterHi
   return meetingRosterHints.channel(meetingId)
 }
 
-const EMPTY_ROSTER: StoredMeetingRoster = { participantsById: {}, speakingIds: [], touchedAt: 0, revision: 0, ended: false }
+/** What a new roster starts from: no one, and an incarnation of its own. */
+function newRoster(): StoredMeetingRoster {
+  return { participantsById: {}, speakingIds: [], touchedAt: 0, revision: 0, incarnation: crypto.randomUUID(), ended: false }
+}
 
-function viewOf(roster: StoredMeetingRoster): MeetingRoster {
+function viewOf(roster: StoredMeetingRoster | undefined): MeetingRoster {
+  if (!roster) return { participants: [], speaking: [] }
   return { participants: Object.values(roster.participantsById), speaking: [...roster.speakingIds] }
+}
+
+/**
+ * Names one roster state for a watcher. The change count alone does not: it
+ * starts again when a roster that expired is created again.
+ */
+function stateOf(roster: Pick<StoredMeetingRoster, 'incarnation' | 'revision'> | undefined): string {
+  return roster ? `${roster.incarnation}/${roster.revision}` : 'absent'
 }
 
 /** The roster after one host event, or null when the event changes nothing. The bot itself is never a participant. */
@@ -87,7 +99,7 @@ function reduce(roster: StoredMeetingRoster, event: MeetingParticipantEvent, bot
   const speakingIds = [...speaking]
   // A Map keeps the position of a key it already had, so an event that changed nothing serializes the same.
   if (JSON.stringify([participantsById, speakingIds]) === JSON.stringify([roster.participantsById, roster.speakingIds])) return null
-  return { participantsById, speakingIds, touchedAt: Date.now(), revision: roster.revision + 1, ended: false }
+  return { participantsById, speakingIds, touchedAt: Date.now(), revision: roster.revision + 1, incarnation: roster.incarnation, ended: false }
 }
 
 /**
@@ -99,11 +111,11 @@ async function update(meetingId: string, change: (roster: StoredMeetingRoster) =
   const key = meetingRosterKey(meetingId)
   let current = await appState().get(key)
   for (let attempt = 0; attempt < MAX_ROSTER_UPDATE_ATTEMPTS; attempt++) {
-    const next = change(current?.value ?? EMPTY_ROSTER)
+    const next = change(current?.value ?? newRoster())
     if (!next) return
     const written = await appState().compareAndSet(key, current?.revision ?? null, next, options)
     if (written.ok) {
-      await appState().publish(meetingRosterChannel(meetingId), { revision: next.revision })
+      await appState().publish(meetingRosterChannel(meetingId), { incarnation: next.incarnation, revision: next.revision })
       return
     }
     current = written.current
@@ -130,7 +142,7 @@ export interface MeetingRosterWatch {
  */
 export const meetingRoster = {
   async get(meetingId: string): Promise<MeetingRoster> {
-    return viewOf((await appState().get(meetingRosterKey(meetingId)))?.value ?? EMPTY_ROSTER)
+    return viewOf((await appState().get(meetingRosterKey(meetingId)))?.value)
   },
 
   /** Apply a host event. The bot itself is not a participant; it is filtered by name. A call that has ended takes no more. */
@@ -139,14 +151,15 @@ export const meetingRoster = {
   },
 
   /**
-   * The call is over: the roster becomes empty and ended, so a callback that
-   * was already on its way cannot start it again. The ended roster is kept
-   * for `MEETING_ROSTER_ENDED_TTL_MS`, then forgotten like any other.
+   * The call is over: the roster becomes empty and ended, with an incarnation
+   * of its own, so a callback that was already on its way cannot start it
+   * again. The ended roster is kept for `MEETING_ROSTER_ENDED_TTL_MS`, then
+   * forgotten like any other.
    */
   async clear(meetingId: string): Promise<void> {
     await update(
       meetingId,
-      roster => roster.ended ? null : { participantsById: {}, speakingIds: [], touchedAt: Date.now(), revision: roster.revision + 1, ended: true },
+      roster => roster.ended ? null : { participantsById: {}, speakingIds: [], touchedAt: Date.now(), revision: roster.revision + 1, incarnation: crypto.randomUUID(), ended: true },
       { expiry: { ttlMs: MEETING_ROSTER_ENDED_TTL_MS } },
     )
   },
@@ -161,14 +174,14 @@ export const meetingRoster = {
   async watch(meetingId: string, onRoster: (roster: MeetingRoster) => void): Promise<MeetingRosterWatch> {
     const key = meetingRosterKey(meetingId)
     let stopped = false
-    // The change count of the roster last handed over; null before the first.
-    let shown: number | null = null
+    // The state (`stateOf`) of the roster last handed over; null before the first.
+    let shown: string | null = null
     let reading: Promise<void> | null = null
     let readAgain = false
     const read = async () => {
-      const roster = (await appState().get(key))?.value ?? EMPTY_ROSTER
-      if (stopped || roster.revision === shown) return
-      shown = roster.revision
+      const roster = (await appState().get(key))?.value
+      if (stopped || stateOf(roster) === shown) return
+      shown = stateOf(roster)
       onRoster(viewOf(roster))
     }
     // One read at a time, and one more when asked during it. Reads are
@@ -183,10 +196,9 @@ export const meetingRoster = {
       return reading
     }
     // Subscribed before the first read, so a change made while it runs is heard.
-    // A hint for the roster already shown is dropped; any other one is read
-    // again rather than ordered, since a roster that expired and came back
-    // counts its changes from zero.
-    const subscription = await appState().subscribe([meetingRosterChannel(meetingId)], hint => hint.revision === shown ? undefined : refresh())
+    // A hint for the roster state already shown is dropped; any other one is
+    // read again rather than ordered.
+    const subscription = await appState().subscribe([meetingRosterChannel(meetingId)], hint => stateOf(hint) === shown ? undefined : refresh())
     const heartbeat = setInterval(() => background(async () => { await touch(key); await refresh() }, { name: 'meeting-roster.heartbeat' }), MEETING_ROSTER_HEARTBEAT_MS)
     const stop = async () => {
       stopped = true

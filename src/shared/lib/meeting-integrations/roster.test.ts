@@ -111,7 +111,7 @@ describe('meetingRoster', () => {
       return entry
     }) as typeof state.get)
     // Any hint for a roster it does not show starts the slow read.
-    await appState().publish(meetingRosterChannel('m'), { revision: 99 })
+    await appState().publish(meetingRosterChannel('m'), { incarnation: 'another', revision: 99 })
     await vi.waitFor(() => expect(seen).toEqual([['Iddo'], ['Iddo', 'Maya']]))
     await backgroundSettled()
     expect(seen).toEqual([['Iddo'], ['Iddo', 'Maya']])
@@ -125,7 +125,7 @@ describe('meetingRoster', () => {
     const watch = await meetingRoster.watch('m', roster => seen.push(names(roster)))
     const key = meetingRosterKey('m')
     const stored = (await appState().get(key))!
-    await appState().publish(meetingRosterChannel('m'), { revision: stored.value.revision })
+    await appState().publish(meetingRosterChannel('m'), { incarnation: stored.value.incarnation, revision: stored.value.revision })
     await backgroundSettled()
     expect(seen).toEqual([['Iddo']])
     // A change whose hint never arrives (written here without one).
@@ -135,6 +135,30 @@ describe('meetingRoster', () => {
     await vi.advanceTimersByTimeAsync(MEETING_ROSTER_HEARTBEAT_MS)
     await backgroundSettled()
     expect(seen).toEqual([['Iddo'], ['Iddo', 'Maya']])
+    await watch.stop()
+  })
+
+  it('shows a roster that expired while its watcher was suspended and came back counting from the start again', async () => {
+    vi.useFakeTimers()
+    await meetingRoster.apply('m', join(iddo), 'Ada')
+    const seen: string[][] = []
+    const watch = await meetingRoster.watch('m', roster => seen.push(names(roster)))
+    expect(seen).toEqual([['Iddo']])
+    // The process sleeps through its heartbeats (a suspended laptop): the clock jumps, no timer runs.
+    vi.setSystemTime(Date.now() + MEETING_ROSTER_IDLE_TTL_MS + 1)
+    expect(await appState().get(meetingRosterKey('m'))).toBeNull()
+    // A callback starts a new roster, whose first change has the same count as the one shown.
+    await meetingRoster.apply('m', join(maya), 'Ada')
+    expect((await appState().get(meetingRosterKey('m')))?.value.revision).toBe(1)
+    await backgroundSettled()
+    expect(seen).toEqual([['Iddo'], ['Maya']])
+    // Again, with the new roster's hint lost: the next heartbeat's read catches it.
+    vi.setSystemTime(Date.now() + MEETING_ROSTER_IDLE_TTL_MS + 1)
+    const restarted = { participantsById: { [iddo.id]: iddo }, speakingIds: [], touchedAt: Date.now(), revision: 1, incarnation: 'restarted', ended: false }
+    expect((await appState().compareAndSet(meetingRosterKey('m'), null, restarted)).ok).toBe(true)
+    await vi.advanceTimersByTimeAsync(MEETING_ROSTER_HEARTBEAT_MS)
+    await backgroundSettled()
+    expect(seen).toEqual([['Iddo'], ['Maya'], ['Iddo']])
     await watch.stop()
   })
 
@@ -185,6 +209,7 @@ describe('meetingRoster', () => {
   it('ends the roster when the call ends: watchers see it empty and a late callback does not bring it back', async () => {
     vi.useFakeTimers()
     await meetingRoster.apply('m', join(iddo), 'Ada')
+    const live = await appState().get(meetingRosterKey('m'))
     const seen: string[][] = []
     const watch = await meetingRoster.watch('m', roster => seen.push(names(roster)))
     await meetingRoster.clear('m')
@@ -198,6 +223,7 @@ describe('meetingRoster', () => {
     expect(seen).toEqual([['Iddo'], []])
     const ended = await appState().get(meetingRosterKey('m'))
     expect(ended?.value.ended).toBe(true)
+    expect(ended?.value.incarnation).not.toBe(live?.value.incarnation)
     expect(ended?.expiresAt).toBe(Date.now() + MEETING_ROSTER_ENDED_TTL_MS)
     // The ended roster expires though a watcher is still there: its heartbeat keeps live calls only.
     await vi.advanceTimersByTimeAsync(MEETING_ROSTER_ENDED_TTL_MS)
