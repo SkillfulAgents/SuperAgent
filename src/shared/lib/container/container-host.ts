@@ -52,6 +52,7 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
 ) * 1000
 
 export class ContainerHost {
+  readonly statusSyncIntervalMs = STATUS_SYNC_INTERVAL_MS
   private runtimes: Map<string, ContainerRuntime> = new Map()
   private syncIntervalId: NodeJS.Timeout | null = null
   private isSyncing = false

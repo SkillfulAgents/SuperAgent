@@ -145,6 +145,7 @@ export class ContainerRuntime {
    * read is out share it) and at every fire.
    */
   readonly idleAlarm = new IdleAlarm({
+    agentSlug: () => this.slug,
     timeoutMs: async () => autoSleepTimeoutMsFrom(await getSettings()),
     lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
