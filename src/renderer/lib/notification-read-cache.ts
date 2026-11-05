@@ -1,11 +1,12 @@
 import { notifyManager, replaceEqualDeep, type Query, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
+import { NOTIFICATION_TYPES, type NotificationCounts } from '@shared/lib/notifications/notification-filters'
 import { notificationReadResponseSchema, type NotificationReadState, type NotificationReadTarget } from '@shared/lib/notifications/read-state-schema'
 import { apiFetch } from './api'
 
 type Page = { items: ApiNotification[]; total: number }
-type Counts = { count: number; mentions?: number }
+type Counts = NotificationCounts
 type CacheData = ApiAgent[] | ApiAgent | ApiSession[] | ApiSession | Page | Counts
 const families = new Set(['agents', 'sessions', 'session', 'notifications'])
 const revisions = new WeakMap<QueryClient, { count: number; agents: Map<string, number> }>()
@@ -25,6 +26,32 @@ const matches = (target: NotificationReadTarget, notification: Pick<ApiNotificat
   target.kind === 'all'
     ? !target.types || (notification.type !== undefined && target.types.includes(notification.type))
     : target.kind === 'notification' ? notification.id === target.id : notification.sessionId === target.sessionId
+
+function optimisticCounts(counts: Counts, target: NotificationReadTarget, matched: ApiNotification[]): Counts {
+  const types = counts.types && { ...counts.types }
+  if (types) {
+    for (const type of NOTIFICATION_TYPES) {
+      types[type] = {
+        ...types[type],
+        unread: target.kind === 'all' && (!target.types || target.types.includes(type))
+          ? 0
+          : Math.max(0, types[type].unread - matched.filter(row => row.type === type).length),
+      }
+    }
+  }
+  const actionable = matched.filter(row => USER_ACTIONABLE_NOTIFICATION_TYPES.some(type => type === row.type))
+  return {
+    ...counts,
+    ...(types && { types }),
+    count: types
+      ? USER_ACTIONABLE_NOTIFICATION_TYPES.reduce((sum, type) => sum + types[type].unread, 0)
+      : readsEverything(target) ? 0 : Math.max(0, counts.count - actionable.length),
+    ...(counts.mentions === undefined ? {} : {
+      mentions: target.kind === 'all' && (!target.types || target.types.includes('session_mention'))
+        ? 0 : Math.max(0, counts.mentions - matched.filter(row => row.type === 'session_mention').length),
+    }),
+  }
+}
 
 function mapCache(key: QueryKey, data: CacheData, maps: {
   agent: (row: ApiAgent) => ApiAgent
@@ -122,17 +149,13 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
       for (const row of data.items) if (!row.isRead && matches(target, row)) notifications.set(row.id, row)
     }
   }
-  const unread = [...notifications.values()].filter(n => USER_ACTIONABLE_NOTIFICATION_TYPES.some(type => type === n.type))
+  const unread = [...notifications.values()]
   const readAt = new Date()
   const snapshots = entries.map(query => {
     const before = query.state.data as CacheData
     const next = mapCache(query.queryKey, before, {
       notification: row => !row.isRead && matches(target, row) ? { ...row, isRead: true, readAt } : row,
-      counts: counts => ({
-        ...counts,
-        count: readsEverything(target) ? 0 : Math.max(0, counts.count - unread.length),
-        ...(counts.mentions === undefined ? {} : { mentions: readsEverything(target) ? 0 : Math.max(0, counts.mentions - unread.filter(n => n.type === 'session_mention').length) }),
-      }),
+      counts: counts => optimisticCounts(counts, target, unread),
       agent: agent => {
         const clearPreview = readsEverything(target) || (target.kind !== 'all' && agent.notificationPreviewSource && matches(target, agent.notificationPreviewSource))
         if (!clearPreview) return agent
@@ -185,7 +208,7 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
         patchCache(client, query, current && mapCache(query.queryKey, current, {
           notification: row => row,
           counts: counts => query.state.dataUpdateCount === updateCount && (revisions.get(client)?.count ?? 0) === countRevision
-            ? { count: state.count, mentions: state.mentions } : counts,
+            ? { ...counts, count: state.count, mentions: state.mentions, ...(state.types && { types: state.types }) } : counts,
           agent: agent => {
             const prior = previousAgents.find(a => a.slug === agent.slug)
             const summary = state.agents.find(a => a.slug === agent.slug)
@@ -253,10 +276,6 @@ export function readNotifications(client: QueryClient, target: NotificationReadT
         : { method: 'POST' })
       if (!response.ok) throw new Error('Failed to mark notifications as read')
       const result = notificationReadResponseSchema.parse(await response.json())
-      // Reads also originate in sessions and notification toasts. Refresh the
-      // tab totals here so every entry point updates the same projection.
-      const typeCounts = client.getQueryCache().find({ queryKey: ['notifications', 'type-counts'], exact: true })
-      if (typeCounts) toRefresh.add(typeCounts)
       if (result.readState) optimistic.confirm(result.readState)
       else {
         await optimistic.refresh()
@@ -268,7 +287,7 @@ export function readNotifications(client: QueryClient, target: NotificationReadT
       throw error
     } finally {
       if (!refreshed && toRefresh.size && isCurrentWorkspace()) {
-        // Refresh tab totals and interrupted queries still in this cache after the POST
+        // Refresh interrupted queries still in this cache after the POST
         // has settled so an old unread projection cannot undo the write. Active
         // queries reload now; inactive ones remain stale until next observed.
         // Serialize a bounded recovery before the next write. On timeout its

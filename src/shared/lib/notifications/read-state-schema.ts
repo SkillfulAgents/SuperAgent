@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { NotificationTypeName } from './notification-filters'
+import { notificationCountsSchema, type NotificationTypeName } from './notification-filters'
 
 export const notificationPreviewSourceSchema = z.object({
   id: z.string(),
@@ -17,8 +17,7 @@ export const agentNotificationReadStateSchema = z.object({
   mentionedSessionIds: z.array(z.string()),
 })
 
-export const notificationReadStateSchema = z.object({
-  count: z.number().int().nonnegative(),
+export const notificationReadStateSchema = notificationCountsSchema.extend({
   mentions: z.number().int().nonnegative(),
   agents: z.array(agentNotificationReadStateSchema),
 })

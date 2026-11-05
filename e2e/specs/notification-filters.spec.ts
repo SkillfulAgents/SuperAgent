@@ -18,14 +18,11 @@ for (const width of [390, 1280]) {
     await page.route('**/api/notifications**', async route => {
       const url = URL.parse(route.request().url())!
       if (url.pathname.endsWith('/stream')) return route.abort()
-      if (url.pathname.endsWith('/type-counts')) {
-        return route.fulfill({ json: { types: Object.fromEntries(NOTIFICATION_TYPES.map(type => [type, {
+      if (url.pathname.endsWith('/unread-count')) {
+        return route.fulfill({ json: { count: notifications.filter(n => !n.isRead && n.type !== 'session_scheduled').length, mentions: 1, types: Object.fromEntries(NOTIFICATION_TYPES.map(type => [type, {
           total: notifications.filter(n => n.type === type).length,
           unread: notifications.filter(n => n.type === type && !n.isRead).length,
         }])) } })
-      }
-      if (url.pathname.endsWith('/unread-count')) {
-        return route.fulfill({ json: { count: notifications.filter(n => !n.isRead).length, mentions: 1 } })
       }
       if (url.pathname.endsWith('/read-all')) {
         const body = route.request().postDataJSON() as { types: string[] }

@@ -3,8 +3,8 @@ import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiNotification } from '@shared/lib/types/api'
 import {
-  notificationTypeCountsSchema,
-  type NotificationTypeCounts,
+  notificationCountsSchema,
+  type NotificationCounts,
   type NotificationTypeName,
 } from '@shared/lib/notifications/notification-filters'
 
@@ -41,30 +41,15 @@ export function useNotifications(
   })
 }
 
-/** Total and unread rows per notification type, for the Notifications page's filter tabs. */
-export function useNotificationTypeCounts() {
-  return useQuery<NotificationTypeCounts>({
-    queryKey: ['notifications', 'type-counts'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/notifications/type-counts')
-      if (!res.ok) throw new Error('Failed to fetch notification type counts')
-      return notificationTypeCountsSchema.parse(await res.json())
-    },
-    refetchInterval: 30000,
-  })
-}
-
-/**
- * Fetch unread notification count (for badge)
- */
+/** Badge counts and per-type totals share one query for every notification surface. */
 export function useUnreadNotificationCount() {
   // `mentions`: the unread ones that tag you, drawn as an @ (auth mode).
-  return useQuery<{ count: number; mentions?: number }>({
+  return useQuery<NotificationCounts>({
     queryKey: ['notifications', 'unread-count'],
     queryFn: async () => {
       const res = await apiFetch('/api/notifications/unread-count')
       if (!res.ok) throw new Error('Failed to fetch unread count')
-      return res.json()
+      return notificationCountsSchema.parse(await res.json())
     },
     refetchInterval: 10000, // Poll more frequently for badge
   })

@@ -20,7 +20,7 @@ import {
   createNotification,
   listNotifications,
   countNotifications,
-  countNotificationsByType,
+  getNotificationCounts,
   markAllAsRead,
   markAsRead,
   type NotificationType,
@@ -103,14 +103,33 @@ describe('notification type filters', () => {
     expect(new Set([...firstPage, ...secondPage].map(n => n.id)).size).toBe(3)
   })
 
-  describe('countNotificationsByType', () => {
+  describe('getNotificationCounts', () => {
+    it.each([[undefined, 5, 0], [MIKE, 4, 1], [SARA, 3, 1]] as const)('preserves badge and mention semantics for viewer %s', async (viewer, count, mentions) => {
+      await notify('session_complete')
+      await notify('session_complete', { agentSlug: OTHER_AGENT })
+      await notify('session_scheduled')
+      await notify('session_webhook')
+      await notify('session_chat_integration')
+      await notify('session_mention', { recipientUserId: MIKE })
+      await notify('session_mention', { recipientUserId: SARA })
+      // Untargeted legacy rows appear in history, but do not tag a recipient.
+      await notify('session_mention')
+      await markAsRead(await notify('session_waiting'))
+
+      const counts = await getNotificationCounts(viewer)
+      expect(counts.count).toBe(count)
+      expect(counts.mentions).toBe(mentions)
+      expect(counts.types.session_scheduled).toEqual({ total: 1, unread: 1 })
+      expect(counts.types.session_waiting).toEqual({ total: 1, unread: 0 })
+    })
+
     it('returns every type, zero-filled, with totals and unread', async () => {
       const read = await notify('session_waiting', { id: 'a' })
       await notify('session_waiting', { id: 'b' })
       await notify('session_scheduled')
       await markAsRead(read)
 
-      const counts = await countNotificationsByType()
+      const { types: counts } = await getNotificationCounts()
       expect(counts.session_waiting).toEqual({ total: 2, unread: 1 })
       // Non-actionable types still count unread: the tab shows them unread.
       expect(counts.session_scheduled).toEqual({ total: 1, unread: 1 })
@@ -128,10 +147,10 @@ describe('notification type filters', () => {
     it('counts only what the viewer can see', async () => {
       await notify('session_complete', { agentSlug: OTHER_AGENT })
       await notify('session_mention', { recipientUserId: MIKE })
-      const sara = await countNotificationsByType(SARA)
+      const { types: sara } = await getNotificationCounts(SARA)
       expect(sara.session_complete.total).toBe(0)
       expect(sara.session_mention.total).toBe(0)
-      const mike = await countNotificationsByType(MIKE)
+      const { types: mike } = await getNotificationCounts(MIKE)
       expect(mike.session_complete.total).toBe(1)
       expect(mike.session_mention).toEqual({ total: 1, unread: 1 })
     })
@@ -144,7 +163,7 @@ describe('notification type filters', () => {
       await notify('session_scheduled')
 
       expect(await markAllAsRead(undefined, ['session_complete'])).toBe(1)
-      const counts = await countNotificationsByType()
+      const { types: counts } = await getNotificationCounts()
       expect(counts.session_complete.unread).toBe(0)
       expect(counts.session_waiting.unread).toBe(1)
       expect(counts.session_scheduled.unread).toBe(1)
@@ -154,7 +173,7 @@ describe('notification type filters', () => {
       await notify('session_complete', { agentSlug: OTHER_AGENT })
       await notify('session_complete')
       expect(await markAllAsRead(SARA, ['session_complete'])).toBe(1)
-      expect((await countNotificationsByType(MIKE)).session_complete.unread).toBe(1)
+      expect((await getNotificationCounts(MIKE)).types.session_complete.unread).toBe(1)
     })
 
     it('reads everything without types', async () => {

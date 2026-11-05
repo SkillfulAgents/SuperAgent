@@ -60,11 +60,8 @@ vi.mock('@renderer/hooks/use-notifications', () => ({
       isLoading: mockNotificationsLoading,
     }
   },
-  useNotificationTypeCounts: () => ({
-    data: { types: { ...ZERO_TYPE_COUNTS, ...mockTypeCounts } },
-  }),
   useUnreadNotificationCount: () => ({
-    data: { count: mockUnreadCount },
+    data: { count: mockUnreadCount, types: { ...ZERO_TYPE_COUNTS, ...mockTypeCounts } },
   }),
   useMarkNotificationRead: () => ({
     mutate: mockMarkReadMutate,

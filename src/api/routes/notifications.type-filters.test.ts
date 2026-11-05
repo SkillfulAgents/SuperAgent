@@ -21,14 +21,12 @@ vi.mock('@shared/lib/services/notification-read-state', () => ({
 vi.mock('@shared/lib/services/notification-service', () => ({
   listNotifications: vi.fn().mockResolvedValue([]),
   countNotifications: vi.fn().mockResolvedValue(0),
-  countNotificationsByType: vi.fn().mockResolvedValue({}),
-  getUnreadCount: vi.fn(),
+  getNotificationCounts: vi.fn().mockResolvedValue({ count: 3, mentions: 1, types: {} }),
   markAsRead: vi.fn(),
   markAllAsRead: vi.fn().mockResolvedValue(0),
   markSessionNotificationsRead: vi.fn(),
   deleteNotification: vi.fn(),
   getAccessibleAgentSlugs: vi.fn().mockResolvedValue([]),
-  getUnreadMentionCount: vi.fn(),
 }))
 
 import notificationsRouter from './notifications'
@@ -58,10 +56,10 @@ describe('notification type filters (routes)', () => {
     expect(listNotifications).not.toHaveBeenCalled()
   })
 
-  it('serves per-type counts', async () => {
-    const res = await notificationsRouter.request('/type-counts')
+  it('serves badge and per-type counts together', async () => {
+    const res = await notificationsRouter.request('/unread-count')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ types: {} })
+    expect(await res.json()).toEqual({ count: 3, mentions: 1, types: {} })
   })
 
   it('read-all narrows to the body types', async () => {

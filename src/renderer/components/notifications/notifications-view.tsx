@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/u
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import {
   useNotifications,
-  useNotificationTypeCounts,
+  useUnreadNotificationCount,
   useMarkNotificationRead,
   useMarkAllNotificationsRead,
   type ApiNotification,
@@ -309,7 +309,7 @@ const ALWAYS_SHOWN = new Set<NotificationFilter>(['all', 'needs-you', 'completed
 /** Total and unread rows a filter covers, including non-actionable types. */
 function filterTally(
   filter: NotificationFilter,
-  typeCounts: NotificationTypeCounts['types'] | undefined,
+  typeCounts: NotificationTypeCounts | undefined,
   platform: { total: number; unread: number },
 ): { total: number; unread: number } {
   if (filter === 'announcements') return platform
@@ -398,7 +398,7 @@ export function NotificationsView() {
     showsPlatform ? Math.min(fetchWindow, PLATFORM_FETCH_CAP) : 1,
   )
   const { data: platformCountData } = usePlatformUnreadCount()
-  const { data: typeCountsData } = useNotificationTypeCounts()
+  const { data: countData } = useUnreadNotificationCount()
   const { data: agents } = useAgents()
   const markAllRead = useMarkAllNotificationsRead()
   const markAllPlatformRead = useMarkAllPlatformNotificationsRead()
@@ -408,7 +408,7 @@ export function NotificationsView() {
     unread: platformCountData?.count ?? 0,
   }
   const tallies = Object.fromEntries(
-    NOTIFICATION_FILTERS.map((f) => [f, filterTally(f, typeCountsData?.types, platformTally)]),
+    NOTIFICATION_FILTERS.map((f) => [f, filterTally(f, countData?.types, platformTally)]),
   ) as Record<NotificationFilter, { total: number; unread: number }>
 
   const agentItems = useMemo(() => (showsAgent ? (data?.items ?? []) : []), [showsAgent, data?.items])

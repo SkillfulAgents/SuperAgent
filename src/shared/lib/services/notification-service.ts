@@ -16,7 +16,7 @@ import { notifications, agentAcl, type Notification, type NewNotification } from
 import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
-import { NOTIFICATION_TYPES, type NotificationTypeName } from '@shared/lib/notifications/notification-filters'
+import { NOTIFICATION_TYPES, type NotificationCounts, type NotificationTypeCounts, type NotificationTypeName } from '@shared/lib/notifications/notification-filters'
 
 // Re-export types for external use
 export type { Notification, NewNotification }
@@ -148,23 +148,29 @@ export async function countNotifications(userId?: string, types?: readonly Notif
 }
 
 /**
- * Total and unread rows per notification type, every type present (zero-filled).
- * One grouped query: the Notifications page's tab counts and empty-tab hiding.
- * Unread here counts every type, actionable or not — it is what each tab shows unread.
+ * One grouped query supplies the badge and per-type tab totals. The badge
+ * counts actionable types; tabs include unread automation notifications too.
  */
-export async function countNotificationsByType(userId?: string): Promise<Record<NotificationType, { total: number; unread: number }>> {
+export async function getNotificationCounts(userId?: string): Promise<Required<NotificationCounts>> {
   const rows = await db
     .select({
       type: notifications.type,
       total: count(),
       unread: sql<number>`coalesce(sum(case when ${notifications.isRead} = 0 then 1 else 0 end), 0)`,
+      mentions: userId
+        ? sql<number>`coalesce(sum(case when ${unreadMentionsOf(userId)} then 1 else 0 end), 0)`
+        : sql<number>`0`,
     })
     .from(notifications)
     .where(visibleRows(userId))
     .groupBy(notifications.type)
-  const result = Object.fromEntries(NOTIFICATION_TYPES.map((type) => [type, { total: 0, unread: 0 }])) as Record<NotificationType, { total: number; unread: number }>
-  for (const row of rows) result[row.type] = { total: Number(row.total), unread: Number(row.unread) }
-  return result
+  const types = Object.fromEntries(NOTIFICATION_TYPES.map((type) => [type, { total: 0, unread: 0 }])) as NotificationTypeCounts
+  for (const row of rows) types[row.type] = { total: Number(row.total), unread: Number(row.unread) }
+  return {
+    count: USER_ACTIONABLE_NOTIFICATION_TYPES.reduce((sum, type) => sum + types[type].unread, 0),
+    mentions: rows.reduce((sum, row) => sum + Number(row.mentions), 0),
+    types,
+  }
 }
 
 /**
@@ -300,18 +306,6 @@ export async function getUnreadMentionsByAgents(agentSlugs: string[], viewerId: 
 }
 
 /**
- * The viewer's unread mentions, on agents they can still open (a lost share
- * hides them like any other row).
- */
-export async function getUnreadMentionCount(userId: string): Promise<number> {
-  const result = await db
-    .select({ count: count() })
-    .from(notifications)
-    .where(and(inArray(notifications.agentSlug, accessibleAgents(userId)), unreadMentionsOf(userId)))
-  return result[0]?.count ?? 0
-}
-
-/**
  * List unread notifications.
  * When userId is provided, only returns notifications for agents the user has access to.
  */
@@ -330,27 +324,6 @@ export async function listUnreadNotifications(limit: number = 50, userId?: strin
     .where(eq(notifications.isRead, false))
     .orderBy(desc(notifications.createdAt))
     .limit(limit)
-}
-
-/**
- * Get unread notification count.
- * When userId is provided, only counts notifications for agents the user has access to.
- */
-export async function getUnreadCount(userId?: string): Promise<number> {
-  const actionable = inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES])
-  if (userId) {
-    const result = await db
-      .select({ count: count() })
-      .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, accessibleAgents(userId)), actionable, visibleTo(userId)))
-    return result[0]?.count ?? 0
-  }
-  const result = await db
-    .select({ count: count() })
-    .from(notifications)
-    .where(and(eq(notifications.isRead, false), actionable))
-
-  return result[0]?.count ?? 0
 }
 
 /**

@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
 import type { NotificationReadState } from '@shared/lib/notifications/read-state-schema'
+import { NOTIFICATION_TYPES, type NotificationCounts, type NotificationTypeCounts } from '@shared/lib/notifications/notification-filters'
 import { readNotifications, noteNotificationChange } from './notification-read-cache'
 import { apiFetch } from './api'
 
@@ -50,28 +51,86 @@ function state(preview?: string): NotificationReadState {
   }] }
 }
 
+function typeCounts(overrides: Partial<NotificationTypeCounts> = {}): NotificationTypeCounts {
+  return { ...Object.fromEntries(NOTIFICATION_TYPES.map(type => [type, { total: 0, unread: 0 }])), ...overrides } as NotificationTypeCounts
+}
+
 describe('optimistic notification reads', () => {
   it.each([
     { kind: 'session', sessionId: 's1' },
     { kind: 'notification', id: 'n1' },
     { kind: 'all', types: ['session_complete'] },
-  ] as const)('refreshes type counts after a $kind read from any entry point', async target => {
+  ] as const)('updates badge and tab counts together after a $kind read without refetching', async target => {
     const { client } = seed()
-    const key = ['notifications', 'type-counts']
-    client.setQueryData(key, { types: { session_complete: { total: 1, unread: 1 } } })
-    const updated = { types: { session_complete: { total: 1, unread: 0 } } }
+    const key = ['notifications', 'unread-count']
+    client.setQueryData(key, { count: 1, mentions: 0, types: typeCounts({ session_complete: { total: 1, unread: 1 } }) })
+    const updated = { count: 0, mentions: 0, types: typeCounts({ session_complete: { total: 1, unread: 0 } }) }
     const fetchCounts = vi.fn().mockResolvedValue(updated)
     const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchCounts, staleTime: Infinity })
     const unsubscribe = observer.subscribe(() => {})
     try {
-      vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
-      await readNotifications(client, target)
-      expect(fetchCounts).toHaveBeenCalledTimes(1)
+      const pending = deferred()
+      vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+      const operation = readNotifications(client, target)
+      await waitFor(() => expect(client.getQueryData(key)).toEqual(updated))
+      pending.resolve(response({ ...state(), types: updated.types }))
+      await operation
+      expect(fetchCounts).not.toHaveBeenCalled()
       expect(client.getQueryData(key)).toEqual(updated)
     } finally {
       unsubscribe()
       client.clear()
     }
+  })
+
+  it('clears a filtered tab including uncached rows and restores its counts on failure', async () => {
+    const { client } = seed()
+    const key = ['notifications', 'unread-count']
+    const counts: NotificationCounts = { count: 22, mentions: 0, types: typeCounts({
+      session_complete: { total: 25, unread: 20 },
+      session_waiting: { total: 2, unread: 2 },
+      session_scheduled: { total: 3, unread: 3 },
+    }) }
+    client.setQueryData(key, counts)
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all', types: ['session_complete'] })
+    const rejected = expect(operation).rejects.toThrow('offline')
+    await waitFor(() => expect(client.getQueryData(key)).toEqual({ ...counts, count: 2, types: {
+      ...counts.types, session_complete: { total: 25, unread: 0 },
+    } }))
+    pending.reject(new Error('offline'))
+    await rejected
+    expect(client.getQueryData(key)).toEqual(counts)
+  })
+
+  it('confirms uncached automation counts without adding them to the badge', async () => {
+    const { client, invalidate } = seed()
+    const key = ['notifications', 'unread-count']
+    client.setQueryData(key, { count: 1, mentions: 0, types: typeCounts({
+      session_complete: { total: 1, unread: 1 }, session_scheduled: { total: 2, unread: 2 },
+    }) })
+    const updated = typeCounts({ session_complete: { total: 1, unread: 1 }, session_scheduled: { total: 2, unread: 1 } })
+    vi.mocked(apiFetch).mockResolvedValueOnce(response({ ...state('n1'), types: updated }))
+    await readNotifications(client, { kind: 'notification', id: 'uncached-automation' })
+    expect(client.getQueryData(key)).toEqual({ count: 1, mentions: 0, types: updated })
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('preserves newer badge and type counts when an event arrives during a read', async () => {
+    const { client } = seed()
+    const key = ['notifications', 'unread-count']
+    client.setQueryData(key, { count: 1, mentions: 0, types: typeCounts({ session_complete: { total: 1, unread: 1 } }) })
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all' })
+    await waitFor(() => expect(client.getQueryData<NotificationCounts>(key)?.count).toBe(0))
+    noteNotificationChange(client, 'a')
+    const newer = { count: 1, mentions: 0, types: typeCounts({ session_complete: { total: 2, unread: 1 } }) }
+    client.setQueryData(key, newer)
+    pending.resolve(response({ ...state(), types: typeCounts({ session_complete: { total: 1, unread: 0 } }) }))
+    await operation
+    expect(client.getQueryData(key)).toEqual(newer)
   })
 
   it('clears previews, pages and counts before the POST completes, preserving input and manual reminders', async () => {

@@ -11,13 +11,11 @@ import { streamSSE } from 'hono/streaming'
 import {
   listNotifications,
   countNotifications,
-  countNotificationsByType,
-  getUnreadCount,
+  getNotificationCounts,
   markAsRead,
   markAllAsRead,
   markSessionNotificationsRead,
   deleteNotification,
-  getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
 import { notificationTypesQuerySchema, readAllNotificationsBodySchema } from '@shared/lib/notifications/notification-filters'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -132,29 +130,13 @@ notificationsRouter.get('/', async (c) => {
   }
 })
 
-// GET /api/notifications/unread-count - Get unread notification count
+// GET /api/notifications/unread-count - Badge counts and per-type tab totals
 notificationsRouter.get('/unread-count', async (c) => {
   try {
-    const userId = getScopedUserId(c)
-    const [count, mentions] = await Promise.all([
-      getUnreadCount(userId),
-      // Mentions exist in auth mode only, for a signed-in recipient.
-      userId ? getUnreadMentionCount(userId) : 0,
-    ])
-    return c.json({ count, mentions })
+    return c.json(await getNotificationCounts(getScopedUserId(c)))
   } catch (error) {
     console.error('Failed to fetch unread count:', error)
     return c.json({ error: 'Failed to fetch unread count' }, 500)
-  }
-})
-
-// GET /api/notifications/type-counts - Total and unread rows per type (the page's filter tabs)
-notificationsRouter.get('/type-counts', async (c) => {
-  try {
-    return c.json({ types: await countNotificationsByType(getScopedUserId(c)) })
-  } catch (error) {
-    console.error('Failed to fetch notification type counts:', error)
-    return c.json({ error: 'Failed to fetch notification type counts' }, 500)
   }
 })
 

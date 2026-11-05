@@ -72,7 +72,13 @@ const typeCountSchema = z.object({
 })
 
 /** Per-type totals (every type present, zero-filled) for tab counts and hiding empty tabs. */
-export const notificationTypeCountsSchema = z.object({
-  types: z.record(notificationTypeSchema, typeCountSchema),
-})
+export const notificationTypeCountsSchema = z.record(notificationTypeSchema, typeCountSchema)
 export type NotificationTypeCounts = z.infer<typeof notificationTypeCountsSchema>
+
+/** Badge and tab counts share one response/cache; older servers omit the newer fields. */
+export const notificationCountsSchema = z.object({
+  count: z.number().int().nonnegative(),
+  mentions: z.number().int().nonnegative().optional(),
+  types: notificationTypeCountsSchema.optional(),
+})
+export type NotificationCounts = z.infer<typeof notificationCountsSchema>
