@@ -404,6 +404,7 @@ function OverviewBody({
             <TeamBrainSyncSummaries
               syncs={syncs}
               unreadable={syncsUnreadable}
+              agentSlug={agentSlug}
               onOpenFile={openPage}
               onOpenSession={(sessionId) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })}
             />
