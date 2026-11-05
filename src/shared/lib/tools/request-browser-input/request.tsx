@@ -75,7 +75,7 @@ export function BrowserInputRequestItem({
     >
       {safeRequirements.length > 0 && (
         <div className="pt-4">
-          <div className="rounded-md border border-border bg-white p-3 dark:bg-background">
+          <div className="rounded-card border border-border bg-white p-3 dark:bg-background">
             <ul className="space-y-1.5">
               {safeRequirements.map((req, i) => (
                 <li key={i} className="flex items-start gap-2 text-foreground">

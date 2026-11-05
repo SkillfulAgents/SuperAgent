@@ -40,7 +40,7 @@ export function PrivacyStep() {
       <div className="space-y-3">
         <label
           htmlFor="privacy-error-reports"
-          className="rounded-lg border p-3 cursor-pointer block"
+          className="rounded-card border p-3 cursor-pointer block"
         >
           <div className="flex items-center justify-between">
             <span className="font-medium text-sm">Share error reports</span>
@@ -57,7 +57,7 @@ export function PrivacyStep() {
 
         <label
           htmlFor="privacy-analytics"
-          className="rounded-lg border p-3 cursor-pointer block"
+          className="rounded-card border p-3 cursor-pointer block"
         >
           <div className="flex items-center justify-between">
             <span className="font-medium text-sm">Share anonymous analytics</span>

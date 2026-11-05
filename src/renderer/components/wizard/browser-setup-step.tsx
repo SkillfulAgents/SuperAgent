@@ -161,7 +161,7 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
           return (
             <div
               key={option.id}
-              className={`rounded-lg border text-left transition-colors ${
+              className={`rounded-card border text-left transition-colors ${
                 isDisabled ? 'opacity-40' : isSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
               }`}
             >

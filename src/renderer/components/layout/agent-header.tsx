@@ -451,7 +451,7 @@ function AgentHeaderMobileMenu({
         {isRunning ? (
           <button
             type="button"
-            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
+            className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
             onClick={() => stopAgent.mutate(slug)}
             disabled={stopAgent.isPending}
           >
@@ -462,7 +462,7 @@ function AgentHeaderMobileMenu({
           <>
             <button
               type="button"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
+              className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
               onClick={() => startAgent.mutate(slug)}
               disabled={startDisabled}
             >

@@ -278,7 +278,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
         <PopoverContent align="end" className="w-44 p-1">
           {isRecurring && (
             <button
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors"
+              className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted transition-colors"
               onClick={() => {
                 setSettingsOpen(false)
                 handleOpenEditSchedule()
@@ -289,7 +289,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </button>
           )}
           <button
-            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+            className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
             onClick={() => {
               setSettingsOpen(false)
               setDeleteDialogOpen(true)
@@ -569,9 +569,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
             </Button>
 
             {parsedExpression && (
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
+              <div className="rounded-card border bg-muted/30 p-3 space-y-1">
                 <div className="text-sm font-medium">New cron expression:</div>
-                <code className="text-sm bg-muted px-2 py-1 rounded block">{parsedExpression}</code>
+                <code className="text-sm bg-muted px-2 py-1 rounded-item block">{parsedExpression}</code>
               </div>
             )}
 

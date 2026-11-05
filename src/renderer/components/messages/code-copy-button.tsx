@@ -16,7 +16,7 @@ export function CodeCopyButton({ getText }: { getText: () => string }) {
     <button
       onClick={handleCopy}
       className={cn(
-        'absolute top-2 right-2 p-1 rounded',
+        'absolute top-2 right-2 p-1 rounded-icon',
         'opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity',
         'hover:bg-black/[0.1] dark:hover:bg-white/[0.15]',
         'text-muted-foreground'

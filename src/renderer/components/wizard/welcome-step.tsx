@@ -99,7 +99,7 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
       <div className="flex flex-col gap-8">
         {isPlatformAvailable && (
           <div className="space-y-3">
-            <div ref={launchAreaRef} tabIndex={-1} className="flex items-center gap-3 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <div ref={launchAreaRef} tabIndex={-1} className="flex items-center gap-3 rounded-item focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               {nonceEmail ? (
                 <Button
                   type="button"

@@ -191,7 +191,7 @@ function SparkTooltipCard({ title, rows, anchor }: SparkTooltipContent & { ancho
       // past the row's edge — the title says which column it is. Right-aligned
       // because these charts sit at the right of every row they appear in, so
       // the card can only ever grow inwards.
-      className="pointer-events-none fixed z-50 rounded-lg border bg-popover px-2.5 py-2 text-popover-foreground shadow-lg"
+      className="pointer-events-none fixed z-50 rounded-popover border bg-popover px-2.5 py-2 text-popover-foreground shadow-lg"
       style={style}
     >
       <span className="mb-1.5 block whitespace-nowrap text-xs font-medium">{title}</span>
