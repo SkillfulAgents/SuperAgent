@@ -357,7 +357,7 @@ async function buildSettingsResponse(
     accountProviderUserId: accountProviderUserIdFrom(appSettings),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: await detectAllProviders() },
-    runtimeReadiness: containerHost.getReadiness(),
+    runtimeReadiness: containerHost.getReadiness(appSettings),
     auth: appSettings.auth,
     voice: appSettings.voice ?? {},
     tenantId: await getTenantId(),

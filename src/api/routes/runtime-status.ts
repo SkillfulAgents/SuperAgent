@@ -17,7 +17,7 @@ runtimeStatus.get('/', async (c) => {
   const settings = await getSettings()
   const root = await resolveGlobalSelection(undefined, settings)
   return c.json({
-    runtimeReadiness: containerHost.getReadiness(),
+    runtimeReadiness: containerHost.getReadiness(settings),
     hasRunningAgents: containerHost.hasRunningAgents(),
     apiKeyConfigured: (root?.provider ?? activeLlmProviderFrom(settings)).apiKeyStatusFrom(settings).isConfigured,
     servicesInitError: getServicesInitError(),

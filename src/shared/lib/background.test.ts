@@ -5,7 +5,7 @@ import { runInNewContext } from 'vm'
 const captureException = vi.hoisted(() => vi.fn())
 vi.mock('./error-reporting', () => ({ captureException }))
 
-import { background, backgroundInFlight, backgroundSettled } from './background'
+import { background, backgroundInFlight, backgroundSettled, runWithRequestLifetime } from './background'
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void
@@ -114,5 +114,22 @@ describe('background', () => {
     expect(backgroundInFlight()).toEqual([])
     expect(settled).toBe(true)
     await settling
+  })
+})
+
+describe('background work in a request', () => {
+  afterEach(() => backgroundSettled())
+
+  it('hands work that outlives the response to the request lifetime', async () => {
+    const kept: Array<Promise<unknown>> = []
+    let finish!: () => void
+    runWithRequestLifetime((work) => kept.push(work), () => {
+      background(new Promise<void>((resolve) => { finish = resolve }), { name: 'test.generate-session-name' })
+    })
+    background(Promise.resolve(), { name: 'test.outside-a-request' })
+
+    expect(kept).toHaveLength(1)
+    finish()
+    await kept[0]
   })
 })
