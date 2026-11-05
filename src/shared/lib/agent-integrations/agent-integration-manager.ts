@@ -171,6 +171,11 @@ export class AgentIntegrationManager {
   // paused integration or restoring pre-update credentials — and clobber the
   // status the user's operation just wrote.
   private generations: Map<string, number> = new Map()
+  // The row version of the copy each connect in flight holds, from the moment
+  // it starts until its connector lands in `connections` or it gives up.
+  private connecting = new Map<string, { version: number }>()
+  // The newest authorization loss heard per integration, by row version.
+  private lostVersions = new Map<string, number>()
   // Invalidate connects immediately, then serialize status writes so an already
   // executing resume/error write cannot land after a completed pause.
   private pausedIds = new Set<string>()
@@ -232,6 +237,8 @@ export class AgentIntegrationManager {
 
     await this.deliveries.start()
     const integrations = await listStartupIntegrations()
+    // Before any connect: the rows were all read now, and are connected one at a time.
+    for (const integration of integrations) this.authorization?.watch(integration.id)
 
     for (const integration of integrations) {
       const generation = this.bumpGeneration(integration.id)
@@ -288,6 +295,8 @@ export class AgentIntegrationManager {
     this.consecutiveFailures.clear()
     this.reconcilingIds.clear()
     this.generations.clear()
+    this.connecting.clear()
+    this.lostVersions.clear()
     this.pausedIds.clear()
     this.sessionClears = 0
     this.clearedSessionRows.clear()
@@ -296,18 +305,24 @@ export class AgentIntegrationManager {
   }
 
   private async authorizationLost(change: IntegrationAuthorizationEvent): Promise<void> {
+    if (!this.isRunning) return
+    // A copy of the row read at or before the loss's version holds the lost
+    // authorization, whatever happened since: a connect that starts from one
+    // now stands down (see connectIntegration).
+    this.lostVersions.set(change.integrationId, Math.max(this.lostVersions.get(change.integrationId) ?? 0, change.version))
     const generation = this.generationOf(change.integrationId)
     const row = await getIntegration(change.integrationId)
     if (!this.isRunning || !row || !['disconnected', 'paused'].includes(row.status) || this.generationOf(row.id) !== generation) return
     // The lifecycle write already fenced the rejected credential. What runs the
-    // lost authorization is what was read from the row up to the loss: the
-    // connection's copy, or with none, the row a connect in flight read. A copy
-    // from a later write may hold replacement credentials (a config edit leaves
-    // the row `disconnected`), and a late hint must not tear those down. An
-    // unrelated write after the loss does not spare a connection read before it.
-    const read = this.connections.get(row.id)?.integration ?? row
-    if (read.updatedAt.getTime() > change.revokedAt) return
-    this.bumpGeneration(row.id)
+    // lost authorization here is the copy this owner holds: its connection's,
+    // or a connect's still in flight. One read after any later write (a config
+    // edit leaves the row `disconnected` while it puts replacement credentials
+    // in place) is not this loss's; one read before it is, even if an unrelated
+    // write followed.
+    const held = this.connections.get(row.id)?.integration.version ?? this.connecting.get(row.id)?.version
+    if (held !== undefined && held > change.version) return
+    // Ends the connection, and makes a connect in flight stand down.
+    if (held !== undefined) this.bumpGeneration(row.id)
     await this.deliveries.cancel(row.id)
     this.disconnectedSince.delete(row.id)
     this.consecutiveFailures.delete(row.id)
@@ -592,8 +607,21 @@ export class AgentIntegrationManager {
    * `expectedGeneration` is passed by callers that claimed the integration
    * before their own reads (add, resume, rebuild); a call that omits it takes
    * ownership here via a bump.
+   *
+   * A copy of the row read at or before an authorization loss already heard
+   * holds the lost authorization, so it is not connected at all. From here
+   * until its connector lands, the copy's version is in `connecting`, where a
+   * loss heard meanwhile finds it.
    */
   private async connectIntegration(integration: AgentIntegrationRecord, expectedGeneration?: number): Promise<boolean> {
+    if (integration.version <= (this.lostVersions.get(integration.id) ?? -1)) return false
+    const pending = { version: integration.version }
+    this.connecting.set(integration.id, pending)
+    try { return await this.connectCopy(integration, pending, expectedGeneration) }
+    finally { if (this.connecting.get(integration.id) === pending) this.connecting.delete(integration.id) }
+  }
+
+  private async connectCopy(integration: AgentIntegrationRecord, pending: { version: number }, expectedGeneration?: number): Promise<boolean> {
     const id = integration.id
     const generation = expectedGeneration ?? this.bumpGeneration(id)
     if (this.generationOf(id) !== generation || this.pausedIds.has(id)) return false
@@ -661,6 +689,7 @@ export class AgentIntegrationManager {
     conn.errorUnsubscribe = () => { errorUnsubscribe(); recoveredUnsubscribe() }
 
     this.connections.set(integration.id, conn)
+    if (this.connecting.get(id) === pending) this.connecting.delete(id)
 
     try {
       await connector.connect()

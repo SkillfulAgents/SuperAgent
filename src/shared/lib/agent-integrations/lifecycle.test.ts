@@ -38,7 +38,7 @@ describe('terminal integration authorization loss', () => {
     const after = (await getAgentIntegration(id))!
     expect(after).toMatchObject({ config: '{}', status: status === 'paused' ? 'paused' : 'disconnected', errorMessage: 'Reconnect this account' })
     await backgroundSettled()
-    expect(observed).toEqual([{ type: 'authorization_lost', integrationId: id, revokedAt: after.updatedAt.getTime() }])
+    expect(observed).toEqual([{ type: 'authorization_lost', integrationId: id, version: after.version }])
     if (status === 'active') {
       expect(await updateAgentIntegrationStatus(id, 'error', 'Late transport failure')).toBe(false)
       expect(await updateAgentIntegrationStatus(id, 'active', null, { unlessDisconnected: true })).toBe(false)
@@ -63,7 +63,7 @@ describe('terminal integration authorization loss', () => {
     const before = (await getAgentIntegration(id))!
     await requireIntegrationReconnect({ integrationId: id, expectedConfig: before.config, config: { botToken: 'next-secret-5678' }, message: 'Reconnect' })
     expect(sent).toHaveBeenCalledOnce()
-    expect(sent.mock.calls[0][1]).toEqual({ type: 'authorization_lost', integrationId: id, revokedAt: (await getAgentIntegration(id))!.updatedAt.getTime() })
+    expect(sent.mock.calls[0][1]).toEqual({ type: 'authorization_lost', integrationId: id, version: (await getAgentIntegration(id))!.version })
     expect(JSON.stringify(sent.mock.calls[0])).not.toMatch(/secret/)
   })
 
@@ -112,7 +112,7 @@ describe('terminal integration authorization loss', () => {
     expect(observed).toEqual([])
     await revokeLinearAuthorization(id, { accessToken: 'access-2', authorizationVersion: 'v1' })
     await backgroundSettled()
-    expect(observed).toEqual([{ type: 'authorization_lost', integrationId: id, revokedAt: (await getAgentIntegration(id))!.updatedAt.getTime() }])
+    expect(observed).toEqual([{ type: 'authorization_lost', integrationId: id, version: (await getAgentIntegration(id))!.version }])
     expect((await getAgentIntegration(id))?.status).toBe('disconnected')
   })
 })

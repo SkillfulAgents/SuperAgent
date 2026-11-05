@@ -220,26 +220,54 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.send.mock.calls[0][0]).toBe('session-1')
     if (adapter instanceof Chat) expect(adapter.acknowledgeInput).toHaveBeenCalledTimes(2)
   })
-  it('keeps credentials a config edit put in place when the loss hint arrives after it reconnected', async () => {
-    await start('telegram')
-    expect(manager.isIntegrationConnected('integration')).toBe(true)
-    // The loss is written; its hint is held back, as by a slow backend.
+  /** Holds every hint back, as a slow backend would; `deliver` sends them. */
+  function holdHints() {
     const state = appState()
     const publish = state.publish.bind(state)
     const held: Array<() => Promise<void>> = []
     vi.spyOn(state, 'publish').mockImplementation(async (channel, event) => { held.push(() => publish(channel, event)) })
+    return { deliver: async () => { await Promise.all(held.map(send => send())); await backgroundSettled() } }
+  }
+  it.each(['a later millisecond', 'the same millisecond'] as const)('keeps credentials a config edit put in place in %s when the loss hint arrives after it reconnected', async when => {
+    await start('telegram')
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+    const hints = holdHints()
+    if (when === 'the same millisecond') vi.useFakeTimers({ toFake: ['Date'], now: Date.now() })
+    try {
+      expect(await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: { revoked: true }, message: 'Reconnect' })).toBe(true)
+      const revoked = (await getAgentIntegration('integration'))!
+      if (when === 'a later millisecond') await new Promise(resolve => setTimeout(resolve, 2))
+      // PATCH with replacement credentials: saved with the row still `disconnected`, then remove + add.
+      expect(await updateAgentIntegration('integration', { config: { botToken: '123:replacement' } })).toBe(true)
+      const replaced = (await getAgentIntegration('integration'))!
+      expect(replaced.updatedAt.getTime() === revoked.updatedAt.getTime()).toBe(when === 'the same millisecond')
+      await manager.removeIntegration('integration')
+      await manager.addIntegration('integration')
+      expect(manager.isIntegrationConnected('integration')).toBe(true)
+      expect(replaced.status).toBe('disconnected')
+      await hints.deliver()
+      expect(manager.isIntegrationConnected('integration')).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
+  it('stops a connect that read the row before the loss, even after an unrelated write moved the row on', async () => {
+    await start('telegram')
+    manager.stop()
+    // A fresh owner whose startup connect is parked while it makes the connector.
+    let release!: () => void, reached!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const parked = new Promise<void>(resolve => { reached = resolve })
+    manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter,
+      create: async () => { reached(); await gate; return adapter } }]))
+    const starting = manager.start()
+    await parked
+    const hints = holdHints()
     expect(await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: { revoked: true }, message: 'Reconnect' })).toBe(true)
     await new Promise(resolve => setTimeout(resolve, 2))
-    // PATCH with replacement credentials: saved with the row still `disconnected`, then remove + add.
-    expect(await updateAgentIntegration('integration', { config: { botToken: '123:replacement' } })).toBe(true)
-    await manager.removeIntegration('integration')
-    await manager.addIntegration('integration')
-    expect(manager.isIntegrationConnected('integration')).toBe(true)
-    expect((await getAgentIntegration('integration'))?.status).toBe('disconnected')
-    // The late hint.
-    await Promise.all(held.map(send => send()))
-    await backgroundSettled()
-    expect(manager.isIntegrationConnected('integration')).toBe(true)
+    expect(await updateAgentIntegration('integration', { name: 'Renamed' })).toBe(true)
+    await hints.deliver()
+    release(); await starting
+    expect(manager.getActiveIntegrationIds()).toEqual([])
+    expect(adapter.isConnected()).toBe(false)
   })
   it('recovers locally accepted input after a manager restart', async () => {
     await start(); await adapter.disconnect()

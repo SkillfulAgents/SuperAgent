@@ -143,10 +143,10 @@ class ObjectIntegration extends AgentIntegration {
 
 function record(id: string): AgentIntegrationRecord {
   return { id, agentSlug: id, provider: 'test-objects', name: null, config: '{}', status: 'active', errorMessage: null,
-    model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+    model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date(), version: 0 }
 }
-/** The loss hint for installation-a, for the loss written at `revokedAt` (by default, now). */
-const loseAuthorization = (revokedAt = Date.now()) => publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a', revokedAt })
+/** The loss hint for installation-a, for the loss that wrote row version `version` (rows start at 0). */
+const loseAuthorization = (version = 1) => publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-a', version })
 
 let manager: AgentIntegrationManager
 let adapter: ObjectIntegration
@@ -1102,12 +1102,12 @@ it('does not tear down replacement authorization on a late revocation notificati
 it('lets neither a repeated nor a late loss hint tear down the authorization that replaced the revoked one', async () => {
   await manager.start()
   state.rows[0].status = 'disconnected'; state.rows[0].config = '{"revoked":true}'
-  const loss = { type: 'authorization_lost', integrationId: 'installation-a', revokedAt: Date.now() } as const
+  const loss = { type: 'authorization_lost', integrationId: 'installation-a', version: 1 } as const
   await publishIntegrationAuthorization(loss)
   await backgroundSettled()
   expect(adapter.connected).toBe(false)
   // Re-authorized: new credentials, active again, connected by the owner.
-  state.rows[0].status = 'active'; state.rows[0].config = '{"replacement":true}'
+  state.rows[0].status = 'active'; state.rows[0].config = '{"replacement":true}'; state.rows[0].version = 2
   await manager.addIntegration('installation-a')
   expect(adapter.connected).toBe(true)
   // The same hint again, and once more after other work: the row says active.
@@ -1127,19 +1127,51 @@ it('does not cancel the connect of credentials written after the loss when the l
     return adapter
   } }]))
   await manager.start()
-  const revokedAt = Date.now()
-  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true}', updatedAt: new Date(revokedAt) }
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true}', version: 1 }
   // A config edit: replacement credentials with the row still `disconnected`, then remove + add.
-  state.rows[0] = { ...state.rows[0], config: '{"replacement":true}', updatedAt: new Date(revokedAt + 1) }
+  state.rows[0] = { ...state.rows[0], config: '{"replacement":true}', version: 2 }
   await manager.removeIntegration('installation-a')
   gated = true
   const adding = manager.addIntegration('installation-a')
   // The hint arrives while the replacement's connector is still being made.
   await making
-  await loseAuthorization(revokedAt)
+  await loseAuthorization(1)
   await backgroundSettled()
   release(); await adding
   expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+})
+it('treats a copy read at the loss version itself as holding the lost authorization', async () => {
+  await manager.start()
+  await manager.removeIntegration('installation-a')
+  // The loss is written (version 1), and a connect reads that row before its hint arrives.
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true}', version: 1 }
+  await manager.addIntegration('installation-a')
+  expect(manager.isIntegrationConnected('installation-a')).toBe(true)
+  await loseAuthorization(1)
+  await backgroundSettled()
+  expect(manager.isIntegrationConnected('installation-a')).toBe(false)
+  // Heard now: no connect is made from that copy again.
+  await manager.addIntegration('installation-a')
+  expect(manager.getActiveIntegrationIds()).toEqual([])
+})
+it('does not connect a copy of the row read before a loss it has already heard', async () => {
+  // Startup reads every row first, then connects them one at a time.
+  state.rows = [record('installation-a'), record('installation-b')]
+  let release!: () => void, reached!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const parked = new Promise<void>(resolve => { reached = resolve })
+  manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async row => {
+    if (row.id === 'installation-a') { reached(); await gate }
+    return adapter
+  } }]))
+  const starting = manager.start()
+  await parked
+  // installation-b loses its authorization while installation-a is still connecting.
+  state.rows[1] = { ...state.rows[1], status: 'disconnected', config: '{"revoked":true}', version: 1 }
+  await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: 'installation-b', version: 1 })
+  await backgroundSettled()
+  release(); await starting
+  expect(manager.getActiveIntegrationIds()).toEqual(['installation-a'])
 })
 it('stops hearing an integration once it is removed, and hears it again once it is connected', async () => {
   (adapter.definition.capabilities as string[]).push('mcp')
@@ -1229,9 +1261,8 @@ it('delivers stream output by its routing alone, reading the session only for a 
 
 it('tears down revoked authorization even if an unrelated config write followed the revocation', async () => {
   await manager.start()
-  const revokedAt = Date.now()
-  // The loss, then a write that moved `updatedAt` past it; the connection was read before both.
-  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true,"transportHealth":"offline"}', updatedAt: new Date(revokedAt + 5) }
-  await loseAuthorization(revokedAt)
+  // The loss (version 1), then another write (version 2); the connection was read before both.
+  state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true,"transportHealth":"offline"}', version: 2 }
+  await loseAuthorization(1)
   await vi.waitFor(() => expect(adapter.connected).toBe(false))
 })

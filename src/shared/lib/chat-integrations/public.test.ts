@@ -22,6 +22,7 @@ function integration(provider: ChatIntegration['provider'], config: Record<strin
     createdByUserId: 'owner-1',
     createdAt: new Date('2026-07-17T00:00:00Z'),
     updatedAt: new Date('2026-07-17T00:00:00Z'),
+    version: 0,
   }
 }
 

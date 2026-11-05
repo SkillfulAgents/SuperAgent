@@ -62,6 +62,7 @@ const INTEGRATION: ListItem = {
   createdByUserId: null,
   createdAt: NOW,
   updatedAt: NOW,
+  version: 0,
   connected: true,
 }
 

@@ -21,13 +21,13 @@ export const integrationAuthorizationEventSchema = z.discriminatedUnion('type', 
     type: z.literal('authorization_lost'),
     integrationId: z.string().min(1),
     /**
-     * Which authorization was lost: the row's `updatedAt` (epoch ms) that the
-     * loss wrote. A copy of the row read up to then runs the lost authorization;
-     * one read after a later write does not, since every credential write moves
-     * `updatedAt` (a config edit leaves the row `disconnected` while it puts
-     * replacement credentials in place).
+     * Which authorization was lost: the row version the loss wrote. Every write
+     * to the row raises its version, so a copy read at this version or before
+     * holds the lost authorization (or none), and one read after any later
+     * write, such as a config edit that puts replacement credentials in place
+     * while the row stays `disconnected`, does not.
      */
-    revokedAt: z.number().int().nonnegative(),
+    version: z.number().int().nonnegative(),
   }),
 ])
 export type IntegrationAuthorizationEvent = z.infer<typeof integrationAuthorizationEventSchema>

@@ -8,7 +8,7 @@ import { IntegrationAuthorizationWatch, integrationAuthorization, publishIntegra
 
 afterEach(() => { vi.restoreAllMocks(); reported.mockClear() })
 
-const lost = (integrationId: string): IntegrationAuthorizationEvent => ({ type: 'authorization_lost', integrationId, revokedAt: 1_700_000_000_000 })
+const lost = (integrationId: string): IntegrationAuthorizationEvent => ({ type: 'authorization_lost', integrationId, version: 1 })
 function recorder() {
   const heard: string[] = []
   return { heard, watch: new IntegrationAuthorizationWatch(async event => { heard.push(event.integrationId) }) }

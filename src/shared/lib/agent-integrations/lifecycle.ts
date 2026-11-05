@@ -25,13 +25,15 @@ export async function requireIntegrationReconnect(change: IntegrationReconnectRe
   const changed = await db.update(chatIntegrations).set({ config,
     status: sql`case when ${chatIntegrations.status} = 'paused' then 'paused' else 'disconnected' end`,
     errorMessage: change.message, updatedAt: new Date(),
+    // Raised here rather than by the row's trigger, so RETURNING reports the version this write produced.
+    version: sql`${chatIntegrations.version} + 1`,
   }).where(and(eq(chatIntegrations.id, change.integrationId), eq(chatIntegrations.config, change.expectedConfig)))
-    .returning({ updatedAt: chatIntegrations.updatedAt }).get()
+    .returning({ version: chatIntegrations.version }).get()
   if (!changed) return false
   // Not left to the hint, which can be missed: input accepted under the rejected
   // credential must not run once the installation is authorized again.
   await deliveryStore.cancelStopped(change.integrationId)
-  try { await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: change.integrationId, revokedAt: changed.updatedAt.getTime() }) }
+  try { await publishIntegrationAuthorization({ type: 'authorization_lost', integrationId: change.integrationId, version: changed.version }) }
   catch (error) { captureException(error, { tags: { component: 'agent-integration', operation: 'authorization-lost' } }) }
   return true
 }
