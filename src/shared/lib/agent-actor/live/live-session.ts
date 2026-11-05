@@ -87,6 +87,8 @@ export interface LiveSessionContext {
   emit(event: SessionEvent): void
   /** Still the live state for its session (not replaced by a reattach, not torn down). */
   isCurrent(): boolean
+  /** A stop of the session is on its way to the container (see `LiveSessions.stopping`). */
+  stopInFlight(): boolean
   /** The model runtime the session's turns run on, when the container's callback has resolved it. */
   modelRuntime(): SessionModelRuntime | undefined
   /** The client the stream is attached through, when it is. */
@@ -160,6 +162,13 @@ const RUNTIME_FRAME_TYPES: ReadonlySet<string> = new Set([
   'connection_closed',
   'context_usage',
 ])
+
+/** A frame that shows a turn ran: the model's output, a tool's result, a result that ran the model or failed. */
+function showsTurnOutput(content: FrameContent): boolean {
+  if (content?.type === 'assistant' || content?.type === 'user' || content?.type === 'stream_event') return true
+  if (content?.type !== 'result') return false
+  return content.num_turns !== 0 || classifyResult(content).isError
+}
 
 // How long a stopped task's wake turn gets to announce itself (`running`)
 // before the session settles on its own. A subagent's wake came ~20ms after
@@ -240,6 +249,12 @@ export class LiveSession {
    * them.
    */
   private pendingError: PendingError | null
+  /**
+   * A turn the runtime started on its own right after a stop, not announced
+   * yet: it is announced at its first output, and one that ends with none was
+   * no turn at all (see `runtimeStateChanged`).
+   */
+  private quietTurn = false
 
   // ---- Automation stream policy ------------------------------------------------
   /** An unpromoted automation: its stream is released once the session settles. */
@@ -430,6 +445,7 @@ export class LiveSession {
     const wasActive = this.isActive
     this.activityGeneration += 1
     this.isActive = true
+    this.quietTurn = false
     // Message-scoped: a queued message clears these as much as a new turn does.
     this.isInterrupted = false
     this.waitingBackground = false
@@ -587,6 +603,7 @@ export class LiveSession {
 
     // The flag first: frames already in the pipe are the stopped turn's.
     this.isInterrupted = true
+    this.quietTurn = false
     this.stream.stop()
     this.isAwaitingInput = false
     this.lastResultCleanSuccess = false
@@ -630,13 +647,21 @@ export class LiveSession {
     this.publish({ type: 'session_idle', isActive: false })
   }
 
+  /** Its container is being stopped on purpose: the turn ends as stopped, but an automation's run did not finish. */
+  markContainerStopped(): void {
+    if (!this.isInterrupted) this.persistAutomationStatus('failed')
+    this.markInterrupted()
+  }
+
   /**
    * The runtime is gone (its container stopped or died). A session that was
    * mid-turn and not stopped didn't finish: that is an error, not an idle,
    * which would read as the turn ending with no explanation.
    */
   markInactive(): void {
-    const diedMidTurn = this.isActive && !this.isInterrupted
+    const wasActive = this.isActive
+    const diedMidTurn = wasActive && !this.isInterrupted
+    this.quietTurn = false
     this.abandonHostRuns()
     this.stream.stop()
     this.isAwaitingInput = false
@@ -644,6 +669,11 @@ export class LiveSession {
     // Its background tasks went with it.
     this.background.forgetAll()
     this.ctx.workflows.stopAll()
+    if (!wasActive) {
+      // It settled before (a stop, say): its viewers heard so then.
+      this.ctx.releaseTransportIfIdle()
+      return
+    }
     if (!diedMidTurn) {
       this.finalizeIdle()
       return
@@ -765,7 +795,9 @@ export class LiveSession {
       if (openBackgroundWork > 0) {
         // Not settled: Bash run in the background and dynamic workflows go
         // idle at TURN end while still running, then wake the agent when
-        // they finish. The session stays active, waiting on them.
+        // they finish. The session stays active, waiting on them. Clients
+        // heard so already when the turn's result or the stop said it.
+        if (this.waitingBackground) return
         this.waitingBackground = true
         this.ctx.emit({
           type: 'session_waiting_background',
@@ -795,9 +827,23 @@ export class LiveSession {
       this.settleAfterStopTimer = null
       if (!this.ctx.isCurrent()) return
       if (!this.isActive || this.runtimeState !== 'idle' || this.background.openCount() > 0) return
+      // A stop of the session on its way killed the task: the stop ends the
+      // session, as cancelled (see `stopReturned` for one that does not).
+      if (this.ctx.stopInFlight()) return
       console.log(`[LiveSession] Session ${this.ctx.sessionId}: last background task stopped while idle — settling`)
       this.finalizeIdle()
     }, SETTLE_AFTER_STOP_GRACE_MS)
+  }
+
+  /**
+   * The session's stops are back. One that marked nothing (a stop that asked
+   * for a confirmation that never came) left the session as the runtime has
+   * it: a stopped task's settle it held back gets its grace again.
+   */
+  stopReturned(): void {
+    if (this.isActive && this.runtimeState === 'idle' && this.lastResultSubtype !== null && this.background.openCount() === 0) {
+      this.scheduleSettleAfterStop()
+    }
   }
 
   private cancelSettleAfterStop(): void {
@@ -875,14 +921,10 @@ export class LiveSession {
     const settled = this.ctx.requests.resolveIfInStore(toolUseId, 'stream', outcome)
     if (settled) {
       this.settledInputRequests.set(toolUseId, outcome)
-      // The tool_result path's frame: the resolving tab removed its card,
-      // every other tab drops it off this (removal is idempotent).
-      this.ctx.emit({
-        type: 'tool_result',
-        toolUseId,
-        result: outcome === 'answered' ? 'User provided input' : 'User declined the request',
-        isError: outcome !== 'answered',
-      })
+      // Every tab drops the card off the resolution, and refetches the
+      // transcript, which the messages route now stamps decided. The call's
+      // tool_result is the container's own, with the answer, when it comes.
+      this.ctx.emit({ type: 'messages_updated' })
     }
     this.syncAwaiting()
   }
@@ -966,8 +1008,17 @@ export class LiveSession {
     // lifecycle frame (a kept process's background tasks finish, and their
     // wake turn's `running` clears the flag), and the frames of background
     // subagents the stop spared (their requests still wait on the user).
-    if (this.isInterrupted && !RUNTIME_FRAME_TYPES.has(content?.type) && !this.subagents.isSparedFrame(content?.parent_tool_use_id)) {
+    if (
+      this.isInterrupted && !RUNTIME_FRAME_TYPES.has(content?.type) &&
+      !this.subagents.isSparedFrame(content?.parent_tool_use_id, content?.agent_id ?? content?.agentId)
+    ) {
       return
+    }
+    // A turn the runtime started on its own after a stop shows itself with
+    // its first output. Its result without one ran no model turn: no turn to report.
+    if (this.quietTurn) {
+      if (showsTurnOutput(content)) this.announceTurn()
+      else if (content?.type === 'result') return
     }
     if (!content.replayed && ['assistant', 'user', 'result', 'stream_event'].includes(content.type)) {
       this.outputGeneration += 1
@@ -1174,6 +1225,8 @@ export class LiveSession {
             this.slashCommands,
           )
         }
+        // Not announced (yet): announcing it starts its response.
+        if (this.quietTurn) return
         this.response.beginStreamedText()
         this.ctx.emit({ type: 'stream_start', slashCommands: this.slashCommands.length > 0 ? this.slashCommands : undefined })
         return
@@ -1279,11 +1332,14 @@ export class LiveSession {
     this.stateEventsAuthority = true
     if (state === 'idle' || state === 'running') this.runtimeState = state
     if (state === 'idle') {
+      // A quiet turn that ends here showed nothing: there was no turn.
+      this.quietTurn = false
       this.settledResultGeneration = this.resultGeneration
       this.runtimeIdle()
       return
     }
     if (state !== 'running') return
+    const afterStop = this.isInterrupted
     this.turnGeneration += 1
     // A turn runs again: the stopped turn's frames can't still be in the pipe.
     // (After a soft stop the process lives on, and its next turn is the
@@ -1293,10 +1349,24 @@ export class LiveSession {
     // The wake a stopped task was waiting for: the runtime settles it now.
     this.cancelSettleAfterStop()
     if (this.isActive) return
-    // A turn we didn't start (a queued message picked up after an
-    // out-of-order idle): heal. The prior result guard stays: some runtimes
-    // emit a stray running → idle pair with no new result, and clearing it
-    // would leave the session active until disconnect.
+    // A turn the runtime starts on its own after a stop: the process a full
+    // stop replaced reports the old one's tasks in a turn that calls no model
+    // and shows nothing. Announced at its first output, if it has any.
+    if (afterStop) {
+      this.quietTurn = true
+      return
+    }
+    this.announceTurn()
+  }
+
+  /**
+   * A turn we didn't start (a queued message picked up after an out-of-order
+   * idle, a quiet turn that showed output): heal. The prior result guard
+   * stays: some runtimes emit a stray running → idle pair with no new result,
+   * and clearing it would leave the session active until disconnect.
+   */
+  private announceTurn(): void {
+    this.quietTurn = false
     this.isActive = true
     this.response.newTurn()
     this.response.beginStreamedText()

@@ -21,7 +21,10 @@ import { createRecordingHostPort } from './testing/recording-host-port'
 // they are the actor's own and are what the tests below exercise.
 vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {} } }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
-vi.mock('@shared/lib/services/session-service', () => ({}))
+vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(async () => null),
+  readAgentSlashCommands: vi.fn(async () => []),
+}))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(),
   appendAssistantEntry: vi.fn(),
@@ -167,6 +170,7 @@ function fakeDeps() {
     containerHost,
     runtimes,
     client,
+    host,
     reviewManager,
     inputManager,
     transitions,
@@ -826,6 +830,39 @@ describe('createAgentRegistry', () => {
         'unsubscribe s2', 'release s2', 'delete-batch s2', 'forget s2',
         'unsubscribe s3', 'release s3', 'delete-batch s3', 'forget s3',
       ])
+    })
+
+    it('deleting a session mid-turn tells its viewers and the feed the turn ended, then ends their wires', async () => {
+      const sessionService = fake.deps.sessionService as unknown as Record<string, unknown>
+      sessionService.deleteSession = vi.fn(async () => true)
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      actor.state.sessions.markActive('s1')
+      const wire = (await actor.messages.follow('s1', {})).getReader()
+      fake.host.sends.length = 0
+
+      await actor.sessions.delete('s1')
+
+      expect(fake.client.releaseSession).toHaveBeenCalledExactlyOnceWith('s1')
+      const frames: Array<Record<string, unknown>> = []
+      for (let next = await wire.read(); !next.done; next = await wire.read()) frames.push(JSON.parse(next.value.data))
+      expect(frames.map((frame) => frame.type)).toEqual(['connected', 'session_idle'])
+      expect(frames[1]).toMatchObject({ isActive: false, outcome: 'cancelled' })
+      expect(fake.host.sent('global')).toContainEqual(expect.objectContaining({ type: 'session_idle', sessionId: 's1' }))
+      expect(actor.state.sessions.isActive('s1')).toBe(false)
+    })
+
+    it('a delete the container refused says nothing: the session stays', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      actor.state.sessions.markActive('s1')
+      const wire = (await actor.messages.follow('s1', {})).getReader()
+      await wire.read()
+      fake.host.sends.length = 0
+      fake.client.releaseSession.mockRejectedValueOnce(new Error('unreachable'))
+
+      await expect(actor.sessions.delete('s1')).rejects.toThrow('Container did not drop')
+
+      expect(fake.host.sent('global')).toEqual([])
+      await wire.cancel()
     })
   })
 })

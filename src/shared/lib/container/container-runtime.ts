@@ -459,6 +459,9 @@ export class ContainerRuntime {
     this.stopping = true
     this.lifecycle++
     this.starting = null
+    // A stop on purpose: a session mid-turn ends now, as stopped, before the
+    // container goes and drops its socket, which would read as a crash.
+    if (!options?.afterFatalError) this.sessions().markAllStopped()
 
     let forceStopUsed = false
     // Default true: if stop() throws, preserve prior behavior of marking the

@@ -617,6 +617,60 @@ describe('stop', () => {
     consoleError.mockRestore()
   })
 
+  it('ends a full stop with one cancelled idle, and keeps the restarted process\'s report on the dead task out of view', async () => {
+    // The frames as captured live: a background Bash runs while the
+    // foreground turn is stopped with scope 'all'.
+    client.emit({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'p1' })
+    client.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+    client.emit({
+      type: 'user',
+      tool_use_result: { backgroundTaskId: 'bg-1' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool-bg', content: 'Running' }] },
+    })
+    const events = live.collect(SLUG, SESSION).events
+    vi.useFakeTimers()
+    try {
+      vi.mocked(client.interruptSession).mockImplementationOnce(async () => {
+        // The aborted turn ends and the runtime idles; the abort kills the task.
+        client.emit({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', num_turns: 4 })
+        client.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        client.emit({ type: 'system', subtype: 'task_updated', task_id: 'bg-1', patch: { status: 'killed' } })
+        client.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', tool_use_id: 'tool-bg', status: 'stopped' })
+        client.emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+        // Restarting the query outlasts the grace a stopped task's wake gets.
+        await vi.advanceTimersByTimeAsync(1600)
+        client.emit({ type: 'system', subtype: 'process_restarted', process_instance: 'p2' })
+        return { interrupted: true, processKept: false }
+      })
+
+      await delivery().stop(SESSION, { scope: 'all' })
+      // The restarted process reports the task the old one left, in a turn
+      // that never calls the model.
+      client.emit({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'bg-1',
+        tool_use_id: 'tool-bg',
+        status: 'stopped',
+        summary: 'Background shell command didn\'t finish before the previous session ended',
+      })
+      client.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      client.emit({ type: 'system', subtype: 'init', slash_commands: [] })
+      client.emit({ type: 'result', subtype: 'success', is_error: false, num_turns: 0, result: '' })
+      client.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      await vi.runAllTimersAsync()
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(events.filter((event) => ['session_active', 'session_idle', 'session_error', 'stream_start'].includes(event.type as string)))
+      .toEqual([expect.objectContaining({ type: 'session_idle', outcome: 'cancelled' })])
+    expect(sessions().isActive(SESSION)).toBe(false)
+    expect(sessions().turnOutcome(SESSION)).toMatchObject({ status: 'cancelled' })
+    expect(live.host.sends.filter(([name]) => name === 'notification')).toEqual([])
+    expect(live.host.sends.filter(([name, event]) => name === 'global' && (event as { type: string }).type === 'session_idle')).toHaveLength(1)
+  })
+
   it('stops everything when only untracked background work would be left', async () => {
     vi.spyOn(sessions(), 'hasOnlyUntrackedBackgroundWork').mockReturnValue(true)
     expect(await delivery().stop(SESSION, { scope: 'turn', escalateUntracked: true })).toMatchObject({ escalated: true })

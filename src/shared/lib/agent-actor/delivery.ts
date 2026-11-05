@@ -343,6 +343,8 @@ export function createSessionDelivery(
     // Read just before the interrupt: the session tells from it whether the
     // turn running afterwards is still the stopped one.
     const turnGenerationBefore = live.turnGeneration(sessionId)
+    // The stop owns the session's end until it is back (see `LiveSessions.stopping`).
+    const back = live.stopping(sessionId)
     try {
       const { interrupted, processKept } = await current.interruptSession(sessionId, { scope })
       // processKept is the container's word, not the scope asked for: a turn
@@ -351,6 +353,8 @@ export function createSessionDelivery(
       return finish({ path: 'interrupted', interrupted, processKept, escalated })
     } catch (error) {
       return interruptFailed(error)
+    } finally {
+      back()
     }
   }
 

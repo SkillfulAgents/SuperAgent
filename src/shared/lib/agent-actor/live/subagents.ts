@@ -127,10 +127,12 @@ export class Subagents {
    * A frame from a subagent that survived a soft interrupt. Foreground
    * subagents leave the map when the turn is stopped and a restart clears it,
    * so a frame that still resolves to an entry belongs to work that is running.
+   * It resolves as `routeFrame` does: a resumed run's frames name the call
+   * that first launched the agent, which the stop may have dropped.
    */
-  isSparedFrame(parentToolUseId: unknown): boolean {
+  isSparedFrame(parentToolUseId: unknown, agentId?: unknown): boolean {
     if (typeof parentToolUseId !== 'string') return false
-    const sub = this.entries.get(parentToolUseId)
+    const sub = this.entries.get(this.liveRunFor(parentToolUseId, typeof agentId === 'string' ? agentId : undefined))
     return !!sub && (sub.isBackground || sub.isResumed)
   }
 
