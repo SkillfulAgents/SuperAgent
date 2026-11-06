@@ -23,7 +23,7 @@ import {
 } from './spotlight'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
-import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
+import { registerUpdateHandlers, initAutoUpdater, scheduleAutomaticUpdateChecks, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
@@ -128,7 +128,7 @@ import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { installDesktopKeyManager } from './keys/install-desktop-key-manager'
-import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
+import { afterBindInitialize, prepareBackgroundWork, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -1605,6 +1605,9 @@ async function startApp() {
     console.error('Failed to set up key custody:', error)
     captureException(error, { tags: { component: 'keys', operation: 'install' } })
   }
+  // Then task dispatch: a request can schedule work as soon as the bind below lands.
+  await prepareBackgroundWork()
+  scheduleAutomaticUpdateChecks()
 
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the

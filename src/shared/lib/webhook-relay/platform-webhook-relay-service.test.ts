@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
@@ -152,6 +153,7 @@ function deps(overrides: Partial<PlatformWebhookRelayDeps> = {}): PlatformWebhoo
 
 function createRelay(options: PlatformWebhookRelayOptions = {}, overrides: Partial<PlatformWebhookRelayDeps> = {}) {
   relay = new PlatformWebhookRelayService(deps(overrides), options)
+  registerTasks(relay)
   return relay
 }
 
