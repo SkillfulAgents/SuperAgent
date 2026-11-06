@@ -38,6 +38,7 @@ import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
 import { configureUploadTimeouts } from './streaming-upload-timeout'
+import { startStaleUploadCleanup, stopStaleUploadCleanup } from './utils/chunked-upload'
 
 const STARTUP_IO_CONCURRENCY = 3
 const startupIoLimit = pLimit(STARTUP_IO_CONCURRENCY)
@@ -94,6 +95,9 @@ export type AfterBindInitOptions = {
 /** Mark bound → init services → emit boot_timing. Shared by web / Electron / Vite. */
 export async function afterBindInitialize(options: AfterBindInitOptions = {}): Promise<void> {
   markBoot('bound')
+  // Ahead of the services and outside their try: a failed auth gate or discovery
+  // leaves a server still taking uploads, whose abandoned bytes must still go.
+  startStaleUploadCleanup()
   try {
     await initializeServices()
   } catch (error) {
@@ -305,6 +309,7 @@ export function setupServerHandlers(server: ServerType): void {
  */
 export async function shutdownServices() {
   servicesShuttingDown = true
+  stopStaleUploadCleanup()
   stopBrowserProfileCleanup()
   agentIntegrationManager.stop()
   await credentialBroker.shutdown()

@@ -109,6 +109,8 @@ it('rejects outdated email tool calls with actionable instructions before sendin
   const invalid = await sendRequest({ integration_id: created.id, message: 'Hello', email: { to: ['owner@example.com'] } })
   expect(invalid.status).toBe(400)
   expect((await invalid.json()).error).toContain('idempotency_key')
+  const flagged = await sendRequest({ integration_id: created.id, message: 'Hello', email: { to: ['owner@example.com'], subject: 'Hi', idempotency_key: 'k1' }, also_send_to_channel: true })
+  expect(flagged.status).toBe(400)
   expect(state.send).not.toHaveBeenCalled()
 })
 it('sends the structured email tool payload with no prior conversation and preserves its retry identity', async () => {

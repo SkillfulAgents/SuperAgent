@@ -172,6 +172,7 @@ async function connectionInfos(
       userId: row.userId,
       ownerName,
       accountLabel: canManage ? config.oauth?.accountLabel : undefined,
+      reconnectRequired: config.oauth?.refreshFailure?.reconnectRequired === true,
       managed: row.managed,
       isConfigured: provider.apiKeyStatusFrom(settings).isConfigured,
       supportsDirectApi: provider.supportsDirectApi,

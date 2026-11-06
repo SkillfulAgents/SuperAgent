@@ -128,6 +128,7 @@ const mockSettingsState = {
   containerRunner: 'docker' as string,
   chromeProfileId: undefined as string | undefined,
   hostBrowserProvider: undefined as string | undefined,
+  containerBrowserHighDpi: false,
 }
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -136,6 +137,7 @@ vi.mock('@shared/lib/config/settings', () => ({
     app: {
       chromeProfileId: mockSettingsState.chromeProfileId,
       hostBrowserProvider: mockSettingsState.hostBrowserProvider,
+      containerBrowserHighDpi: mockSettingsState.containerBrowserHighDpi,
     },
   }),
   updateSettings: vi.fn(),
@@ -212,6 +214,7 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
     containerHost.dropRuntime('test-agent')
     mockSettingsState.chromeProfileId = undefined
     mockSettingsState.hostBrowserProvider = undefined
+    mockSettingsState.containerBrowserHighDpi = false
 
     mockGetOrCreateProxyToken.mockResolvedValue('synth-token-123')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
@@ -345,6 +348,26 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
 
       expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
       expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
+    })
+
+    it('asks for 2x rendering only when the setting is on and the agent uses the container browser', async () => {
+      setupAccountMocks([])
+      mockSettingsState.containerBrowserHighDpi = true
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockStart.mock.calls[0][0].envVars.BROWSER_HIGH_DPI).toBe('1')
+
+      containerHost.dropRuntime('test-agent')
+      mockStart.mockClear()
+      mockSettingsState.hostBrowserProvider = 'chrome'
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockStart.mock.calls[0][0].envVars.BROWSER_HIGH_DPI).toBeUndefined()
+
+      containerHost.dropRuntime('test-agent')
+      mockStart.mockClear()
+      mockSettingsState.hostBrowserProvider = undefined
+      mockSettingsState.containerBrowserHighDpi = false
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockStart.mock.calls[0][0].envVars.BROWSER_HIGH_DPI).toBeUndefined()
     })
 
     it('hands the display name from the instructions to the start, and starts without one when reading fails', async () => {

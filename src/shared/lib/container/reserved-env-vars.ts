@@ -41,6 +41,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'AGENT_BROWSER_USE_HOST',
   'HOST_APP_URL',
   'AGENT_ID',
+  'BROWSER_HIGH_DPI',
   // Runtime environment
   'TZ',
   'HOST_PLATFORM',

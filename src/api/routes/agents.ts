@@ -16,6 +16,7 @@ import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
@@ -154,12 +155,10 @@ import {
   UploadConflictError,
   UploadOutcomeUnknownError,
   UploadTooLargeError,
-  cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
 import { MAX_UPLOAD_CHUNKS, uploadIdSchema } from '@shared/lib/utils/chunked-upload-schema'
-import { isAppStateInitialized } from '@shared/lib/app-state'
 import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary, resolveMountPath } from '@shared/lib/services/mount-service'
 import { isMountPath } from '@shared/lib/utils/workspace-path'
 import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
@@ -2030,14 +2029,19 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
-    const live = await actor.live()
+    const [live, participants] = await Promise.all([
+      actor.live(),
+      isAuthMode() ? sessionParticipantsBestEffort(slug, sessionList.map((s) => s.id)) : undefined,
+    ])
     const sessionsWithStatus = withSessionStatus(sessionList, live).map((session) => {
       const wake = wakesBySession.get(session.id)
+      const people = participants?.get(session.id)
       return {
         ...session,
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         hasUnreadMention: mentionedSessionIds.has(session.id),
+        ...(people ? { participants: people } : {}),
         ...(wake
           ? {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
@@ -2318,6 +2322,16 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
 }
 
 /** Rows authored by a person; an integration's rows carry its card instead (see annotateIntegrationMessages). */
+// The faces on a session row are decoration: a lookup failure leaves the list without them.
+async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: string[]) {
+  try {
+    return await getSessionParticipants(agentSlug, sessionIds)
+  } catch (error) {
+    captureException(error, { tags: { component: 'agents', operation: 'session-participants' }, level: 'warning' })
+    return undefined
+  }
+}
+
 function userAuthors(rows: { messageId: string; userId: string | null }[]): { messageId: string; userId: string }[] {
   return rows.flatMap(row => row.userId ? [{ messageId: row.messageId, userId: row.userId }] : [])
 }
@@ -7869,31 +7883,6 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
     return c.json({ error: error.message || 'Failed to proxy browser action' }, 500)
   }
 })
-
-// ============================================================================
-// Cleanup stale chunked uploads (older than 1 hour)
-// ============================================================================
-const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
-
-async function cleanupStaleUploads() {
-  try {
-    await cleanupStaleTempUploads(STALE_UPLOAD_MS)
-  } catch (err) {
-    console.warn('[agents] stale upload cleanup failed:', err)
-    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
-  }
-}
-
-// Run cleanup on startup and every 30 minutes. The routes load before the entry
-// point initializes AppState, and the sweep needs it to tell a live upload's
-// bytes from an abandoned one's, so the startup run waits for it.
-const startupUploadCleanup = setInterval(() => {
-  if (!isAppStateInitialized()) return
-  clearInterval(startupUploadCleanup)
-  background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' })
-}, 1000)
-startupUploadCleanup.unref()
-setInterval(() => background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' }), 30 * 60 * 1000).unref()
 
 // =============================================================================
 // Pending user-input requests (unified wire)

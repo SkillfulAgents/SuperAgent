@@ -347,7 +347,7 @@ A manifest moves one way through three states:
 
 **Expiry.** A manifest expires an hour after its last write (`reset`), judged by the backend. That is also the deadline of the write slot, so no process compares clocks: a writer that stalls holds the slot until then, and every other chunk is refused, and a commit after it is refused. There is no lease and nothing renews the manifest while `finish` runs, so a `finish` that runs past the hour is not protected. Once the sweep has been, its stream errors on the next chunk it opens, and the request fails. A `finish` that outlives its manifest also brings nothing back, and an upload that started again under the same id is another upload it cannot touch.
 
-**The sweep.** Expiry deletes no bytes, so `cleanupStaleTempUploads` runs at startup (once AppState is initialized) and every 30 minutes, and removes bytes older than an hour that no manifest refers to.
+**The sweep.** Expiry deletes no bytes, so `startStaleUploadCleanup` sweeps once when `afterBindInitialize` runs and then every 30 minutes, and removes bytes older than an hour that no manifest refers to. Importing the routes starts no timers, and the perf harness runs no sweep, as it skips that startup.
 
 - A chunk, or the attempt in the write slot, stays at any age while its manifest is live.
 - Bytes the manifest does not name stay dead whatever happens after the read, since a commit needs the slot and an attempt takes it before it writes.

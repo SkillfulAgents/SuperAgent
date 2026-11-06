@@ -98,6 +98,7 @@ export const appSettingsPatchSchema = z.object({
     },
   ),
   maxBrowserTabs: z.number(),
+  containerBrowserHighDpi: z.boolean(),
   faviconDataUrl: faviconDataUrlPatchSchema,
   browserbaseAdvancedStealth: z.boolean(),
   browserbaseStealthOs: z.enum(['linux', 'windows', 'mac', 'mobile', 'tablet']),
