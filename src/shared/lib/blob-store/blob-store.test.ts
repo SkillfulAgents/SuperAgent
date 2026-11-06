@@ -50,5 +50,6 @@ describe('hostFiles', () => {
 
     await expect(files.write('../settings.json', Buffer.from('{}'))).rejects.toThrow('Invalid file name')
     await expect(files.read('nested/icon.svg')).rejects.toThrow('Invalid file name')
+    await expect(files.read('.')).rejects.toThrow('Invalid file name')
   })
 })
