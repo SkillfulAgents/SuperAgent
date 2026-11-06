@@ -14,7 +14,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
-import { closeDatabase, getDb, isDatabaseOpen, MIGRATIONS_TABLE, openDatabase } from './open-database'
+import { closeDatabase, getDb, isDatabaseOpen, MIGRATIONS_TABLE, migrateFromBundle, openDatabase } from './open-database'
 import { betterSqlite3 } from './drivers/better-sqlite3'
 import { runDataMigrations } from './data-migrations'
 import { captureException } from '@shared/lib/error-reporting'
@@ -146,6 +146,22 @@ describe('openDatabase', () => {
     expect(tables.map((t) => t.name)).not.toContain(MIGRATIONS_TABLE)
     expect(runDataMigrations).not.toHaveBeenCalled()
     expect(getDb()).toBe(db)
+  })
+
+  it("migrates the schema with the driver's own migrator when it has one, then runs the data migrations", async () => {
+    const driver = betterSqlite3(process.env.SUPERAGENT_DB_PATH!)
+    fs.mkdirSync(path.dirname(process.env.SUPERAGENT_DB_PATH!), { recursive: true })
+    const migrateSchema = vi.fn(async (db: Parameters<typeof migrateFromBundle>[0], migrations: Parameters<typeof migrateFromBundle>[1]) => {
+      await migrateFromBundle(db, migrations)
+    })
+
+    const db = await openDatabase({ driver: { ...driver, open: () => driver.open(), migrateSchema } })
+
+    expect(migrateSchema).toHaveBeenCalledTimes(1)
+    expect(migrateSchema.mock.calls[0][1]?.length).toBe(readMigrationFiles({ migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') }).length)
+    const tables = await db.all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE type = 'table'`)
+    expect(tables.map((t) => t.name)).toContain(MIGRATIONS_TABLE)
+    expect(runDataMigrations).toHaveBeenCalledTimes(1)
   })
 
   it('opens once when two callers race', async () => {
