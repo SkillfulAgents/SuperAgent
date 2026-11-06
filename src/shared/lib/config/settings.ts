@@ -141,6 +141,8 @@ export interface AppPreferences {
    */
   globalDispatchShortcut?: string
   maxBrowserTabs?: number
+  /** Render the container's built-in browser at 2x. Applies the next time an agent starts. */
+  containerBrowserHighDpi?: boolean
   /** Password-manager providers the user has chosen in Browser Use settings. */
   configuredPasswordManagers?: string[]
   faviconDataUrl?: string
