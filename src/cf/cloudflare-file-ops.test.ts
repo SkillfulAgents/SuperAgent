@@ -89,7 +89,7 @@ function fakeSleeping(initial: Record<string, string> = {}) {
     },
     async write(path, bytes) {
       if (refused()) return false
-      files.set(path, bytes)
+      files.set(path, new Uint8Array(bytes))
       return true
     },
     async remove(path) {
