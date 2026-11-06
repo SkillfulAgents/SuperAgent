@@ -31,7 +31,7 @@ import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
 import { setupMeetingFramesSocket } from '../../main/meeting-frames-socket'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
-import { shutdownAC } from './computer-use/executor'
+import { shutdownComputerUse } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { attachErrorReportingIdentity, initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
@@ -321,5 +321,5 @@ export async function shutdownServices() {
   // lets go of what it holds, its parked reviews and re-auth waits included.
   await agentRegistry.evictAll()
   await shutdownActiveRunner()
-  await shutdownAC()
+  await shutdownComputerUse()
 }

@@ -62,6 +62,7 @@
     "build:container": "docker build -t superagent-container ./agent-container",
     "icons:download": "tsx scripts/download-service-icons.ts",
     "icons:optimize": "tsx scripts/optimize-service-icons.ts",
+    "docs:computer-use": "tsx scripts/generate-computer-use-docs.ts",
     "test:perf": "vitest run --config vitest.perf.config.ts",
     "test:libsql": "node scripts/run-libsql-tests.mjs",
     "test:actor-transport": "node scripts/run-actor-transport-tests.mjs"
@@ -74,9 +75,9 @@
     "@hono/node-server": "^2.1.5",
     "@hono/zod-validator": "^0.9.1",
     "@sentry/node": "^10.48.0",
-    "@skillful-agents/agent-computer": "^0.0.15",
     "@slack/bolt": "^4.7.0",
     "@smithy/node-http-handler": "^4.12.1",
+    "agent-desktop": "1.1.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^13.0.3",
     "chrono-node": "^2.10.3",
@@ -263,12 +264,10 @@
     ],
     "files": [
       "dist/**/*",
-      "!node_modules/better-sqlite3/{build,deps,src,binding.gyp}"
+      "!node_modules/better-sqlite3/{build,deps,src,binding.gyp}",
+      "!node_modules/agent-desktop/bin/**"
     ],
     "npmRebuild": false,
-    "asarUnpack": [
-      "node_modules/@skillful-agents/agent-computer/bin/**"
-    ],
     "extraResources": [
       {
         "from": "build",
@@ -328,6 +327,14 @@
             "agent-image.tar",
             "agent-image.json"
           ]
+        },
+        {
+          "from": "node_modules/agent-desktop/bin/agent-desktop-darwin-${arch}",
+          "to": "agent-desktop/agent-desktop"
+        },
+        {
+          "from": "node_modules/agent-desktop/bin/agent-desktop-macos-helper-darwin-${arch}",
+          "to": "agent-desktop/agent-desktop-macos-helper"
         }
       ],
       "artifactName": "Gamut-${version}-${arch}.${ext}",
@@ -362,7 +369,6 @@
         ]
       },
       "files": [
-        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-*",
         "!node_modules/better-sqlite3/prebuilds/{linux,linuxmusl,win32}-*"
       ]
     },
@@ -446,10 +452,14 @@
         "publisherName": "Datawizz Inc."
       },
       "files": [
-        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-darwin-*",
-        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-!(${arch}).exe",
         "!node_modules/better-sqlite3/prebuilds/{darwin,linux,linuxmusl}-*",
         "!node_modules/better-sqlite3/prebuilds/win32-!(${arch}).node"
+      ],
+      "extraResources": [
+        {
+          "from": "node_modules/agent-desktop/bin/agent-desktop-win32-${arch}.exe",
+          "to": "agent-desktop/agent-desktop.exe"
+        }
       ]
     },
     "nsis": {

@@ -94,9 +94,9 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
   copyChromeProfileData: vi.fn().mockReturnValue(false),
 }))
 
-vi.mock('@shared/lib/computer-use/executor', () => ({ ungrabAC: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('@shared/lib/computer-use/executor', () => ({ endComputerUseSessions: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
-  computerUsePermissionManager: { getGrabbedApp: () => null, clearGrabbedApp: vi.fn() },
+  computerUsePermissionManager: { getActiveApp: () => null, clearActiveApp: vi.fn() },
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false }))

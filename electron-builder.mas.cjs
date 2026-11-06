@@ -17,7 +17,15 @@ const TEAM_ID = 'HL9SP7TJ3J'
 // Extra resources the Store build leaves out:
 // - mediaremote-adapter drives the music player through a private framework;
 // - spotlight-bridge (Spotlight search) is not part of the Store build yet.
-const LEFT_OUT_RESOURCES = new Set(['mediaremote-adapter', 'spotlight-bridge'])
+// Computer use's agent-desktop binary and helper are left out too: they control
+// other apps, which the sandbox forbids, and the Store build doesn't offer
+// computer use.
+const LEFT_OUT_RESOURCES = new Set([
+  'mediaremote-adapter',
+  'spotlight-bridge',
+  'agent-desktop/agent-desktop',
+  'agent-desktop/agent-desktop-macos-helper',
+])
 
 // Info.plist keys the Store build leaves out. CFBundleAlternateNames lists
 // other companies' products (Claude, Codex, ChatGPT) as names for the app.
@@ -51,9 +59,6 @@ module.exports = {
   mac: {
     ...base.mac,
     extraResources: base.mac.extraResources.filter((resource) => !LEFT_OUT_RESOURCES.has(resource.to)),
-    // Computer use's native binary: it controls other apps, which the sandbox
-    // forbids, and the Store build doesn't offer computer use.
-    files: [...base.mac.files, '!node_modules/@skillful-agents/agent-computer/bin/ac-core-darwin-*'],
     bundleShortVersion: STORE_VERSION,
     bundleVersion: STORE_BUILD_NUMBER,
     extendInfo: {

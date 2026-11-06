@@ -35,7 +35,7 @@ describe('createFakeAgentActor', () => {
     await expect(actor.sessions.exists('s1')).resolves.toBe(true)
     expect(actor.inputs.reviews.submit('r1', 'allow')).toBe(true)
     // Sibling groups and untouched methods are still plain mocks.
-    expect(actor.inputs.computerUse.setGrabbedApp('Calculator')).toBeUndefined()
+    expect(actor.inputs.computerUse.setActiveApp('s1', 'Calculator')).toBeUndefined()
     expect(actor.inputs.get('r1')).toBeUndefined()
   })
 })

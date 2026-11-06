@@ -5,9 +5,9 @@ function handlers(events: Partial<HostEventHandlers> = {}, calls: Partial<HostCa
   return {
     calls: {
       hostTool: vi.fn(async () => ({ status: 'resolved' as const, value: 'done' })),
-      computerUse: vi.fn(async () => 'ok'),
+      computerUse: vi.fn(async () => ({ output: 'ok' })),
       computerUsePermissions: vi.fn(async () => null),
-      computerUseWindowApp: vi.fn(async () => undefined),
+      computerUseTargetApp: vi.fn(async () => undefined),
       computerUseAppIcon: vi.fn(async () => null),
       hostScript: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
       loginRequest: vi.fn(async () => ({ action: 'none' as const })),
@@ -34,7 +34,7 @@ describe('createLocalHostPort', () => {
 
   it('passes a call\'s failure back to the caller', async () => {
     const port = createLocalHostPort(handlers({}, { computerUse: async () => { throw new Error('no window') } }))
-    await expect(port.call('computerUse', { method: 'click', params: {} })).rejects.toThrow('no window')
+    await expect(port.call('computerUse', { method: 'click', params: {}, caller: { sessionId: 's', agentSlug: 'a' } })).rejects.toThrow('no window')
   })
 
   it('runs each send before returning, in the order sent', () => {

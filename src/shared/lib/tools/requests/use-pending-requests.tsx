@@ -10,7 +10,9 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingUserRequests } from './use-pending-user-requests'
 import { isTurnStartingUserMessage, type PendingMessage } from '@renderer/components/messages/pending-message'
-import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
+import { getRequiredPermissionLevel } from '@shared/lib/computer-use/types'
+import { callTargets } from '@shared/lib/computer-use/commands'
+import { commandLineOf, computerUseMethodFromToolName, isComputerUseToolName } from '@shared/lib/computer-use/command-line'
 import { askUserQuestionDef } from '../ask-user-question/definition'
 import { PARKED_CALL_KINDS, type PendingUserInputRequest } from './request-schema'
 import { loginVaultPayloadSchema, summarizeLoginFields, type LoginFieldSummary, type LoginVaultPayload } from '../request-login/login-request'
@@ -184,14 +186,22 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         scriptType: input.scriptType,
       })
     }
-  } else if (toolCall.name.startsWith('mcp__computer-use__computer_')) {
-    const method = computerUseMethodFromToolName(toolCall.name)
+  } else if (isComputerUseToolName(toolCall.name)) {
+    const { method, params } = commandLineOf(computerUseMethodFromToolName(toolCall.name), input)
+    // Only an app the call names: a ref's app is known to the host, which
+    // sends it with the request it registers.
+    let appName: string | undefined
+    try {
+      appName = callTargets(method, params).app
+    } catch {
+      appName = undefined
+    }
     buckets.computerUseRequests.push({
       toolUseId: toolCall.id,
       method,
-      params: input,
-      permissionLevel: getRequiredPermissionLevel(method),
-      appName: resolveTargetApp(method, input),
+      params,
+      permissionLevel: getRequiredPermissionLevel(method, params),
+      appName,
     })
   }
 }
@@ -727,10 +737,12 @@ export function usePendingRequests({
             ? suppressedComputerUseIds
             : undefined
       // A sign-in request has no card until the host decides it needs the
-      // user (it may sign in from the vault instead): its fallbacks only
-      // fill in requests the server holds, such as one recovered after a
-      // restart, which carries no payload.
-      const fallback = (requests: PendingRequestBuckets[typeof kind]) => (kind === 'loginRequests'
+      // user (it may sign in from the vault instead), and a computer-use call
+      // none until the host has placed and checked it (it may wait its turn
+      // behind the session's earlier calls, then run under a grant): their
+      // fallbacks only fill in requests the server holds, such as one
+      // recovered after a restart, which carries no payload.
+      const fallback = (requests: PendingRequestBuckets[typeof kind]) => (kind === 'loginRequests' || kind === 'computerUseRequests'
         ? (requests as Array<{ toolUseId: string }>).filter((request) => openRequestIds.has(request.toolUseId))
         : requests) as PendingRequestBuckets[typeof kind]
       mergeBucket(

@@ -8,8 +8,8 @@ import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { apiFetch } from '@renderer/lib/api'
 import { AgentAvatar } from './agent-avatar'
 import { AgentAvatarPicker } from './agent-avatar-picker'
-import { OFFERED_ORBS } from './avatar-orbs'
-import { ORB_SHAPES } from './orb-shapes'
+import { OFFERED_ORBS } from '@shared/lib/types/agent-avatar-orbs'
+import { ORB_SHAPES } from '@shared/lib/types/agent-avatar-shapes'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 

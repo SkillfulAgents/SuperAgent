@@ -1,8 +1,8 @@
 /**
  * Running an approved computer-use command or host script for one of the
  * agent's requests. The agent's half of the work happens here: its grants,
- * the request's settlement, the container's pending input and the session's
- * grabbed app. The machine work itself (driving apps, running the script) is
+ * the request's settlement, the container's pending input and the app its
+ * commands act in. The machine work itself (driving apps, running the script) is
  * the host's, through the host port.
  *
  * A request gets approved in one of two ways, and both come through here: the
@@ -14,13 +14,16 @@
 import type { HostPort, HostScriptOutput, ComputerUsePermissionStatus } from './host-port'
 import type { ComputerUseOps, ContainerOps, InputOps, MessageOps } from './types'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
-import { resolveTargetApp, type ComputerUsePermissionLevel, type PermissionGrantType } from '@shared/lib/computer-use/types'
+import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
+import { isSystemTarget } from '@shared/lib/computer-use/commands'
 import { background } from '@shared/lib/background'
 
 /** The parts of the agent's actor a run uses. */
 export interface HostRunActor {
+  /** The agent the runs are for: its computer-use commands run in its sessions, under its cursor. */
+  readonly slug: string
   readonly inputs: Pick<InputOps, 'claim' | 'releaseClaim' | 'resolve' | 'complete'> & {
-    readonly computerUse: Pick<ComputerUseOps, 'grant' | 'consumeOnce' | 'setGrabbedApp' | 'clearGrabbedApp' | 'clearPending'>
+    readonly computerUse: Pick<ComputerUseOps, 'grant' | 'consumeOnce' | 'setActiveApp' | 'clearActiveApp' | 'clearPending'>
   }
   readonly container: Pick<ContainerOps, 'fetch'>
   readonly messages: Pick<MessageOps, 'broadcastEvent'>
@@ -35,6 +38,12 @@ export interface ComputerUseRun {
   appName?: string
   /** What the user granted with this approval; absent when a grant the agent holds covered it. */
   grantType?: PermissionGrantType
+  /**
+   * The latest time (epoch ms) the command may start. One still queued behind
+   * the session's earlier commands by then is dropped unrun, so the agent can
+   * safely try again; a command that started runs to its own end.
+   */
+  startBy?: number
 }
 
 export interface ScriptRun {
@@ -54,6 +63,8 @@ export interface HostRunGuard {
    * nothing.
    */
   stillWanted?: () => boolean
+  /** Called once the machine work has ended (or was never started), before the result is delivered. */
+  machineDone?: () => void
 }
 
 export type HostRunOutcome =
@@ -71,19 +82,27 @@ export type HostRunOutcome =
   | { status: 'undeliverable'; detail: string }
 
 export async function runComputerUse(actor: HostRunActor, host: HostPort, run: ComputerUseRun, guard: HostRunGuard = {}): Promise<HostRunOutcome> {
-  const { sessionId, toolUseId, method, params, permissionLevel, appName, grantType } = run
+  const { sessionId, toolUseId, method, params, permissionLevel, appName, grantType, startBy } = run
   const { computerUse } = actor.inputs
   return withClaim(actor, toolUseId, async () => {
     const permissions = await host.call('computerUsePermissions', {})
     if (permissions) return { status: 'missing_permissions', permissions }
 
-    if (grantType) await computerUse.grant(permissionLevel, grantType, appName)
+    // "Once" approves this call alone, which the run does not check again: kept
+    // as a grant, it would cover the agent's other calls while this one runs.
+    if (grantType && grantType !== 'once') await computerUse.grant(permissionLevel, grantType, appName)
 
-    let output: string
+    let result: { output: string; app?: string }
     try {
       // Checked in the same step as the command starts: nothing in between.
       if (guard.stillWanted && !guard.stillWanted()) return { status: 'abandoned' }
-      output = await host.call('computerUse', { method, params })
+      result = await host.call('computerUse', {
+        method,
+        params,
+        caller: { sessionId, agentSlug: actor.slug },
+        ...(startBy !== undefined && { startBy }),
+        ...(appName !== undefined && { app: appName }),
+      }).finally(() => guard.machineDone?.())
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       // The agent sees the failure as its tool's error.
@@ -92,24 +111,23 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
       await computerUse.clearPending(sessionId, toolUseId, 'invalidated')
       return { status: 'failed', error: message }
     }
+    const output = result.output
 
-    // Launching grabs the app, so it counts as a grab.
-    if (method === 'grab' || method === 'launch') {
-      const targetApp = appName || resolveTargetApp(method, params)
-      if (targetApp) {
-        await computerUse.setGrabbedApp(targetApp)
-        // The name now; the icon when the host has found it.
-        await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
-        background(host.call('computerUseAppIcon', { app: targetApp }).then(async (icon) => {
-          if (icon) await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
-        }).catch(() => {}), { name: 'host-runs.broadcast-app-icon' })
-      }
-    } else if (method === 'ungrab' || method === 'quit') {
-      await computerUse.clearGrabbedApp()
-      await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
+    // The app the command acted in is what the session's viewers see the agent
+    // working in; closing it ends that. The clipboard or the whole screen is
+    // not an app the agent works in.
+    const acted = result.app ?? appName
+    const targetApp = acted && !isSystemTarget(acted) ? acted : undefined
+    if (method === 'close-app') {
+      await computerUse.clearActiveApp(sessionId)
+      await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_app_changed', app: null })
+    } else if (targetApp && (await computerUse.setActiveApp(sessionId, targetApp))) {
+      // The name now; the icon when the host has found it.
+      await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_app_changed', app: targetApp })
+      background(host.call('computerUseAppIcon', { app: targetApp }).then(async (icon) => {
+        if (icon) await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_app_changed', app: targetApp, appIcon: icon })
+      }).catch(() => {}), { name: 'host-runs.broadcast-app-icon' })
     }
-
-    if (grantType === 'once') await computerUse.consumeOnce(permissionLevel, appName)
 
     const undelivered = await resolveInput(actor, toolUseId, output)
     if (undelivered !== null) return { status: 'undeliverable', detail: undelivered }
@@ -123,16 +141,15 @@ export async function runScript(actor: HostRunActor, host: HostPort, run: Script
   const { sessionId, toolUseId, script, scriptType, grantType } = run
   // An "always" grant is a settings write. Saved before the claim, a Stop
   // meanwhile cancels the request and the claim then finds nothing to run; a
-  // run that already held the claim would not see that. The in-memory grants
-  // wait for the claim: a once-grant left behind by a decision that ran
-  // nothing would approve the agent's next script.
+  // run that already held the claim would not see that. A timed grant waits
+  // for the claim. "Once" approves this script alone and is kept nowhere: as a
+  // grant it would approve the agent's other scripts while this one runs.
   if (grantType === 'always') await actor.inputs.computerUse.grant('use_host_shell', 'always')
   return withClaim(actor, toolUseId, async (request) => {
-    if (grantType && grantType !== 'always') await actor.inputs.computerUse.grant('use_host_shell', grantType)
+    if (grantType === 'timed') await actor.inputs.computerUse.grant('use_host_shell', 'timed')
     // Checked in the same step as the script starts: nothing in between.
     if (guard.stillWanted && !guard.stillWanted()) return { status: 'abandoned' }
     const result = await host.call('hostScript', { script, scriptType })
-    if (grantType === 'once') await actor.inputs.computerUse.consumeOnce('use_host_shell')
 
     const undelivered = await resolveInput(actor, toolUseId, formatScriptOutput(result))
     if (undelivered !== null) return { status: 'undeliverable', detail: undelivered }
@@ -147,9 +164,15 @@ export async function runScript(actor: HostRunActor, host: HostPort, run: Script
   })
 }
 
-// A command or script nobody is watching gets this long before the agent's
-// call fails instead of staying parked.
-const AUTO_RUN_TIMEOUT_MS = { computerUse: 30_000, script: 35_000 }
+// A computer-use command nobody is watching must start within this long, or it
+// is dropped unrun (and the agent told so). Once started, it runs to its own
+// end: the executor stops one that outlives the budget its flags give it, and
+// reports that as a result whose delivery is unknown, never as a failure that
+// invites a second try while the first still runs.
+const AUTO_RUN_START_MS = 50_000
+// A backstop past the executor's longest command (5 minutes) for a host that
+// never answers; a script gets this long in all.
+const AUTO_RUN_TIMEOUT_MS = { computerUse: AUTO_RUN_START_MS + 6 * 60_000, script: 35_000 }
 
 export type AutoApprovedRun = ({ kind: 'computerUse' } & ComputerUseRun) | ({ kind: 'script' } & ScriptRun)
 
@@ -177,7 +200,9 @@ export async function runAutoApproved(actor: HostRunActor, host: HostPort, run: 
   })
   try {
     const outcome = await Promise.race([
-      run.kind === 'computerUse' ? runComputerUse(actor, host, run, guard) : runScript(actor, host, run, guard),
+      run.kind === 'computerUse'
+        ? runComputerUse(actor, host, { ...run, startBy: run.startBy ?? Date.now() + AUTO_RUN_START_MS }, guard)
+        : runScript(actor, host, run, guard),
       timedOut,
     ])
     if (outcome === 'timed_out') {

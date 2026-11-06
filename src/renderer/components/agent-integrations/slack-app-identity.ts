@@ -1,7 +1,7 @@
 import type { SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
-import { hexMix, type OrbAppearance } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { hexMix, type OrbAppearance } from '@shared/lib/types/agent-avatar-orbs'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { orbSvg, svgToPng } from '@renderer/components/agents/agent-avatar/orb-image'
 
