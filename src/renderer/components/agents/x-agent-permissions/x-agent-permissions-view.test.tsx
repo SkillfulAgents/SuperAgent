@@ -223,6 +223,21 @@ describe('XAgentPermissionsView', () => {
     })
   })
 
+  it('the own-sessions card saves an invoke policy targeting the agent itself', async () => {
+    renderView()
+    const card = await screen.findByTestId('x-agent-policy-self-invoke')
+    fireEvent.click(within(card).getByTestId('policy-dropdown-trigger'))
+    fireEvent.click(await screen.findByTestId('policy-menu-allow'))
+
+    await waitFor(() => {
+      expect(lastPatchBody()).toEqual({
+        operation: 'invoke',
+        targetSlug: 'caller',
+        decision: 'allow',
+      })
+    })
+  })
+
   it('badges an explicitly blocked agent in the list', async () => {
     policies = [policy('invoke', 'target', 'block')]
     renderView()

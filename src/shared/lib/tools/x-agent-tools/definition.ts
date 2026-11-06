@@ -88,8 +88,9 @@ export const invokeAgentDef = {
   parseInput: parseInvokeAgentInput,
   getSummary: (i: unknown) => {
     const { slug, session_id, sync, prompt, attachments } = parseInvokeAgentInput(i)
-    if (!slug) return 'Invoke agent'
-    const action = session_id ? `${slug}/${session_id.slice(0, 8)}…` : `${slug} (new session)`
+    if (!slug && !prompt) return 'Invoke agent'
+    const target = slug ?? 'this agent'
+    const action = session_id ? `${target}/${session_id.slice(0, 8)}…` : `${target} (new session)`
     const preview = truncate(prompt, 50)
     const syncLabel = sync ? ' [sync]' : ''
     const fileCount = attachments?.length ?? 0
