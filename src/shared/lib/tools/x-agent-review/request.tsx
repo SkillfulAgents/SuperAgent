@@ -68,8 +68,6 @@ export function XAgentReviewRequestItem({
   const isCreate = xAgent.operation === 'create'
   const isFileDownload = xAgent.fileTransfer?.kind === 'download'
   const attachments = xAgentReviewAttachments(xAgent)
-  // File paths are reviewed per invocation so a pre-existing message grant can
-  // never silently expand into file disclosure.
   const hasAttachments = attachments.length > 0
   const canRemember = !requiresOneTimeXAgentReview(xAgent)
 
@@ -356,7 +354,7 @@ export function XAgentReviewRequestItem({
                         <span className="flex flex-col items-start text-left">
                           <span>Always allow reading <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
-                            Lets this agent read sessions and transcripts. File downloads require one-time approval.
+                            Lets this agent read sessions, transcripts, and delivered files.
                           </span>
                         </span>
                       </Button>
@@ -390,7 +388,7 @@ export function XAgentReviewRequestItem({
                         <span className="flex flex-col items-start text-left">
                           <span>Always allow messaging <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
-                            Send-only — sync responses are returned, but browsing history still prompts
+                            Send-only, attachments included. Browsing history still prompts.
                           </span>
                         </span>
                       </Button>

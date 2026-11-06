@@ -1,6 +1,5 @@
 import { z } from 'zod'
 
-/** File disclosure is approved for one operation, independently of saved text permissions. */
 export const xAgentFileTransferSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('send'), paths: z.array(z.string()).min(1) }),
   z.object({ kind: z.literal('download'), filename: z.string().min(1) }),
@@ -17,8 +16,8 @@ export type XAgentReview = {
   attachments?: string[]
 }
 
-export function requiresOneTimeXAgentReview(review: Pick<XAgentReview, 'operation' | 'fileTransfer' | 'attachments'> | undefined): boolean {
-  return !!review && (review.operation === 'create' || !!review.fileTransfer || !!review.attachments?.length)
+export function requiresOneTimeXAgentReview(review: Pick<XAgentReview, 'operation'> | undefined): boolean {
+  return review?.operation === 'create'
 }
 
 export function xAgentReviewAttachments(review: Pick<XAgentReview, 'fileTransfer' | 'attachments'>): string[] {
