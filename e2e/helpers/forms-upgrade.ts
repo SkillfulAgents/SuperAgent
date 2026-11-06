@@ -1,4 +1,4 @@
-import { expect, request as playwrightRequest, type APIRequestContext, type Locator, type Page, type Route } from '@playwright/test'
+import { expect, request as playwrightRequest, type APIRequestContext, type Locator, type Page, type Request, type Route } from '@playwright/test'
 import { z } from 'zod'
 
 export interface FormsContext {
@@ -408,25 +408,61 @@ async function checkForcedPassword(context: FormsContext) {
     await expect(page.getByText('Passwords do not match', { exact: true })).toBeVisible()
     await page.getByLabel('Confirm New Password', { exact: true }).fill(nextPassword)
     await page.getByLabel('Temporary Password', { exact: true }).fill('Wrong-temporary-2026!')
-    await activate(context, page.getByRole('button', { name: 'Change Password', exact: true }))
-    await expect(page.getByText('Invalid password', { exact: true })).toBeVisible()
-    await expect(page.getByLabel('New Password', { exact: true })).toHaveValue(nextPassword)
-    await page.getByLabel('Temporary Password', { exact: true }).fill(user.password)
+    const changePasswordUrl = `${context.apiBaseUrl}/api/auth/change-password`
+    // Exercise pending state and duplicate submission on the real rejected
+    // request, then remove interception before the successful native reload.
     const held = await holdRequest(page, '/api/auth/change-password')
     await held.check(async () => {
       await activate(context, page.getByRole('button', { name: 'Change Password', exact: true }))
       await expect.poll(held.calls).toBe(1)
       await expect(page.getByRole('button', { name: 'Changing password...', exact: true })).toBeDisabled()
       await page.getByLabel('Confirm New Password', { exact: true }).press('Enter')
+      const rejected = page.waitForResponse((response) => response.url() === changePasswordUrl && response.request().method() === 'POST', { timeout: 10_000 })
       held.release()
-      await expect(page.getByRole('heading', { name: 'Change Your Password', exact: true })).toHaveCount(0)
-      await expect.poll(async () => (await session(context))?.user.mustChangePassword).toBe(false)
-      const revoked = await otherSession.get('/api/auth/get-session')
-      expect(revoked.ok()).toBe(true)
-      expect(sessionSchema.parse(await revoked.json())).toBeNull()
+      expect((await rejected).status()).toBe(400)
+      await expect(page.getByText('Invalid password', { exact: true })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Change Password', exact: true })).toBeEnabled()
+      await expect(page.getByLabel('New Password', { exact: true })).toHaveValue(nextPassword)
       expect(held.calls()).toBe(1)
     })
-    await ready(context)
+    await page.getByLabel('Temporary Password', { exact: true }).fill(user.password)
+    // Observe the successful request, automatic reload, and a session fetched
+    // by the NEW renderer, without intercepting any navigation or API request.
+    const reloadUrl = page.url()
+    let committed = false
+    let successfulSubmissions = 0
+    const rendererRequests = new Set<Request>()
+    const onCommit = (frame: ReturnType<Page['mainFrame']>) => {
+      if (frame === page.mainFrame() && frame.url() === reloadUrl) committed = true
+    }
+    const onRequest = (request: Request) => {
+      if (request.method() === 'POST' && request.url() === changePasswordUrl) successfulSubmissions += 1
+      if (committed && request.frame() === page.mainFrame() && request.method() === 'GET' && request.url() === `${context.apiBaseUrl}/api/auth/get-session`) rendererRequests.add(request)
+    }
+    page.on('framenavigated', onCommit)
+    page.on('request', onRequest)
+    const changed = page.waitForResponse((response) => response.url() === changePasswordUrl && response.request().method() === 'POST', { timeout: 30_000 })
+    const reload = page.waitForEvent('framenavigated', { predicate: (frame) => frame === page.mainFrame() && frame.url() === reloadUrl, timeout: 30_000 })
+    const rendererSession = page.waitForResponse((response) => rendererRequests.has(response.request()), { timeout: 30_000 })
+    try {
+      const [changedResponse, , response] = await Promise.all([changed, reload, rendererSession, activate(context, page.getByRole('button', { name: 'Change Password', exact: true }))])
+      expect(changedResponse.status()).toBe(200)
+      expect(response.status(), 'The reloaded renderer fetches its real session').toBe(200)
+      const refreshed = sessionSchema.parse(await response.json())
+      expect(refreshed?.user.id).toBe(user.id)
+      expect(refreshed?.user.mustChangePassword).toBe(false)
+      // Document teardown alone does not prove the app recovered.
+      await ready(context)
+      expect(successfulSubmissions).toBe(1)
+    } finally {
+      page.off('framenavigated', onCommit)
+      page.off('request', onRequest)
+    }
+    await expect(page.getByRole('heading', { name: 'Change Your Password', exact: true })).toHaveCount(0)
+    await expect.poll(async () => (await session(context))?.user.mustChangePassword).toBe(false)
+    const revoked = await otherSession.get('/api/auth/get-session')
+    expect(revoked.ok()).toBe(true)
+    expect(sessionSchema.parse(await revoked.json())).toBeNull()
     await page.context().clearCookies()
     await signIn(context, { ...user, password: nextPassword })
     await expect(page.getByRole('heading', { name: 'Change Your Password', exact: true })).toHaveCount(0)
