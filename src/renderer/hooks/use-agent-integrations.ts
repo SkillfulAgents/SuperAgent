@@ -46,6 +46,7 @@ export const agentIntegrationKeys = {
   status: (id: string | null) => ['chat-integration-status', id] as const,
   sessions: (integrationId: string | null) => ['chat-integration-sessions', integrationId] as const,
   access: (integrationId: string) => ['chat-integration-access', integrationId] as const,
+  sessionOwner: (agentSlug: string, sessionId: string | null) => ['chat-integration-session-owner', agentSlug, sessionId] as const,
 }
 
 /** Host owns the decision; capability changes only invalidate discovery. */
@@ -136,6 +137,21 @@ export function useAgentIntegrationStatus(id: string | null) {
 }
 
 // ── Sessions hook ──────────────────────────────────────────────────────
+
+/** The integration an agent session belongs to, or null for an ordinary session. */
+export function useSessionAgentIntegrationId(agentSlug: string, sessionId: string | null) {
+  return useQuery<string | null>({
+    queryKey: agentIntegrationKeys.sessionOwner(agentSlug, sessionId),
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agent-integrations/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId!)}`)
+      if (!res.ok) throw new Error('Failed to resolve session integration')
+      return (await res.json()).integrationId
+    },
+    enabled: !!sessionId,
+    // A session's owning integration never changes.
+    staleTime: Infinity,
+  })
+}
 
 export function useAgentIntegrationSessions(integrationId: string | null) {
   return useQuery<AgentIntegrationSession[]>({

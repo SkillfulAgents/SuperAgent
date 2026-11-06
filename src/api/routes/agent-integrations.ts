@@ -29,7 +29,7 @@ import {
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
-import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
+import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, getAgentIntegrationSessionBySessionId, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
@@ -109,6 +109,17 @@ agentIntegrationsRouter.get('/providers', async c => {
   return c.json(await agentIntegrationRegistry.listAvailableDefinitions())
 })
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
+
+// GET /api/agent-integrations/agents/:id/sessions/:sessionId - Which integration (if any) owns an agent session
+agentIntegrationsRouter.get('/agents/:id/sessions/:sessionId', ResolveAgent(), AgentRead(), async (c) => {
+  try {
+    const mapping = await getAgentIntegrationSessionBySessionId(getAgentId(c), c.req.param('sessionId'))
+    return c.json({ integrationId: mapping?.integrationId ?? null })
+  } catch (error) {
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'session-integration' }, extra: { sessionId: c.req.param('sessionId') } })
+    return c.json({ error: 'Failed to resolve session integration' }, 500)
+  }
+})
 
 const IntegrationAgentRole = EntityAgentRole({
   paramName: 'integrationId',
