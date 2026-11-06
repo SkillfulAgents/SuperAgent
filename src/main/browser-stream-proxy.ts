@@ -8,15 +8,19 @@
 import type { IncomingMessage } from 'http'
 import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
-import { WebSocketServer, WebSocket } from 'ws'
+import { WebSocketServer, WebSocket, type RawData } from 'ws'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
 import { BrowserFrameRelay } from './browser-frame-relay'
+import type { BrowserViewportCommand } from '@shared/lib/browser-stream-protocol'
 
 const browserWss = new WebSocketServer({ noServer: true })
+
+/** A real viewport command is tiny, so a view-only client can't make this event loop parse anything large. */
+const MAX_VIEWPORT_COMMAND_BYTES = 256
 
 export function setupBrowserStreamProxy(server: ServerType): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -40,6 +44,9 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         return
       }
       ;(request as any)._agentId = agentSlug
+      // Only the width goes on to the container, not the rest of the viewer's URL.
+      const width = url.searchParams.get('width')
+      ;(request as any)._upstreamSearch = width && /^\d+$/.test(width) ? `?width=${width}` : ''
 
       // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
       authenticateAgentWebSocket(request, agentSlug, 'viewer').then((allowed) => {
@@ -69,10 +76,28 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     if (!agentSlug) { ws.close(1011, 'Invalid path'); return }
     const canInput = (request as any)._canInput === true
 
+    // Upstream can take seconds to open (a Lambda microVM). Input from before then is stale, but the
+    // renderer reports the canvas width only when it changes, so the latest one waits for upstream.
+    let openUpstream: WebSocket | undefined
+    let pendingViewport: RawData | undefined
+    ws.on('message', (data, isBinary) => {
+      const upstream = openUpstream?.readyState === WebSocket.OPEN ? openUpstream : undefined
+      if (upstream && canInput) {
+        upstream.send(data, { binary: isBinary })
+        return
+      }
+      // Viewers can watch but not send input; their canvas width only sizes the frames.
+      if (isBinary || !isViewportCommand(data as Buffer)) return
+      if (upstream) upstream.send(data, { binary: false })
+      else pendingViewport = data
+    })
+
     try {
         // Cached status only — no runtime query
         const actor = agentRegistry.get(agentSlug)
-        const target = await actor.container.webSocketTarget('/browser/stream')
+        const target = await actor.container.webSocketTarget('/browser/stream', {
+          search: (request as any)._upstreamSearch as string,
+        })
         if (!target) {
           ws.close(1011, 'Agent container is not running')
           return
@@ -83,6 +108,8 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)
+          openUpstream = upstream
+          if (pendingViewport) upstream.send(pendingViewport, { binary: false })
           getSettings()
             .then((settings) => {
               trackServerEvent('browser_opened', { using: settings.app?.hostBrowserProvider ?? 'container' })
@@ -97,14 +124,6 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         // link is congested and sends the newest once it drains (see its doc).
         const relay = new BrowserFrameRelay(ws)
         upstream.on('message', (data, isBinary) => relay.forward(data as Buffer, isBinary))
-
-        // Forward input events from client to container (only if user has 'user' role)
-        ws.on('message', (data, isBinary) => {
-          if (!canInput) return // Viewers can watch but not send input
-          if (upstream.readyState === WebSocket.OPEN) {
-            upstream.send(data, { binary: isBinary })
-          }
-        })
 
         upstream.on('close', () => {
           trackServerEvent('browser_closed')
@@ -159,4 +178,13 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         ws.close(1011, 'Failed to connect to browser stream')
       }
   })
+}
+
+function isViewportCommand(data: Buffer): boolean {
+  if (data.length > MAX_VIEWPORT_COMMAND_BYTES) return false
+  try {
+    return (JSON.parse(data.toString()) as Partial<BrowserViewportCommand> | null)?.type === 'viewport'
+  } catch {
+    return false
+  }
 }
