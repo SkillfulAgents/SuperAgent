@@ -38,7 +38,7 @@ export interface HostFiles {
 /** `prefix` names the folder in the blob store; `dir` is where the same files live on disk. */
 export function hostFiles(prefix: string, dir: () => string): HostFiles {
   const checked = (name: string): string => {
-    if (!name || name !== path.basename(name) || name === '..') throw new Error(`Invalid file name: ${name}`)
+    if (!name || name !== path.basename(name) || name === '.' || name === '..') throw new Error(`Invalid file name: ${name}`)
     return name
   }
   const key = (name: string) => `${prefix}/${checked(name)}`

@@ -8663,6 +8663,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(getAgentWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), { includeSummary: false })
     expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
+
   it('keeps the listing order in auth mode: the catalog sorts, the route does not', async () => {
     mockIsAuthMode.mockReturnValue(true)
     // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e. by
