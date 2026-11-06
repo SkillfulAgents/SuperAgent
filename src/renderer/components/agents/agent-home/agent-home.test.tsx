@@ -567,14 +567,14 @@ describe('AgentHome', () => {
     )
 
     const editor = screen.getByTestId('home-message-input')
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
     expect(editor.style.minHeight).toBe('')
 
     await user.click(screen.getByRole('button', { name: 'Expand input' }))
     expect(editor.className).toContain('min-h-[50vh]')
 
     await user.click(screen.getByRole('button', { name: 'Shrink input' }))
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
   })
 
   it('auto-expands to full view when the editor overflows its max-height', async () => {

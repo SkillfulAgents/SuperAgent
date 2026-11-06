@@ -100,7 +100,7 @@ export function TeamBrainHomeComposer({ agent, reference, onDismissReference }: 
             onSecure: composer.securePotentialSecret,
           }}
           chipContext={composer.chipContext}
-          textareaClassName="min-h-[60px] max-h-[120px]"
+          textareaClassName="min-h-[40px] max-h-[120px]"
           leftActions={(
             <>
               <AttachmentPicker

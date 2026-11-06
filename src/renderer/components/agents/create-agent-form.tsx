@@ -474,12 +474,12 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           onKeyDown={handleKeyDown}
           placeholder={displayedPlaceholder}
           disabled={isDisabled}
-          rows={3}
+          rows={2}
           autoFocus={!templateToInstall && !handoffTemplateSlug}
           dataTestId="create-agent-prompt"
-          // One line taller on phones: the typewriter placeholder wraps to
-          // three lines in a narrow composer, which reads as already full.
-          textareaClassName="min-h-[80px] sm:min-h-[60px]"
+          // Two lines, one taller on phones: there the typewriter placeholder
+          // wraps to three lines, which would otherwise fill it.
+          textareaClassName="min-h-[60px] sm:min-h-[40px]"
           leftActions={(
             <ComposerOptions state={composerOptions} disabled={isDisabled} size="sm" />
           )}

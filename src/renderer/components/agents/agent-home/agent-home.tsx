@@ -574,7 +574,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onSecure: composer.securePotentialSecret,
                       }}
                       chipContext={composer.chipContext}
-                      textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
+                      textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[40px] max-h-[120px]'}`}
                       leftActions={(
                         <>
                           <AttachmentPicker
