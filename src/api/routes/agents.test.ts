@@ -855,7 +855,6 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
     UploadOutcomeUnknownError,
     UploadTooLargeError,
     storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
-    cleanupStaleTempUploads: vi.fn(async () => undefined),
   }
 })
 

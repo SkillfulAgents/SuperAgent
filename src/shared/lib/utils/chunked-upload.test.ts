@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { appState, closeAppState, digestKeyPart } from '@shared/lib/app-state'
+import { appState, digestKeyPart } from '@shared/lib/app-state'
+import { backgroundSettled } from '@shared/lib/background'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -12,6 +13,8 @@ import {
   UploadTooLargeError,
   cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
+  startStaleUploadCleanup,
+  stopStaleUploadCleanup,
   storeUploadChunk,
   uploadManifestKey,
   type AssembledUpload,
@@ -143,6 +146,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.useRealTimers()
   vi.restoreAllMocks()
+  stopStaleUploadCleanup()
   setUploadByteStore(null)
   await fs.promises.rm(tmpRoot, { recursive: true, force: true })
 })
@@ -1118,16 +1122,6 @@ describe.each<[string, () => UploadByteStore]>([
       expect(await storedKeys()).toHaveLength(1)
     })
 
-    it('leaves bytes alone until AppState is initialized', async () => {
-      await storeUploadChunk(chunk(0, 2, 'a'), neverFinishes())
-      await closeAppState()
-      advance(2 * HOUR)
-
-      await expect(cleanupStaleTempUploads(HOUR)).resolves.toBeUndefined()
-
-      expect(await storedKeys()).toHaveLength(1)
-    })
-
     it('ignores keys it did not write', async () => {
       await store.put('uploads/not-an-upload', new Uint8Array(1))
       advance(2 * HOUR)
@@ -1235,17 +1229,62 @@ describe('cleanupStaleTempUploads, for the layout before manifests', () => {
     expect(fs.existsSync(chunksDir)).toBe(true)
     expect(fs.existsSync(assembledDir)).toBe(true)
   })
+})
 
-  it('cleans it up without AppState', async () => {
-    await closeAppState()
-    const staleDir = path.join(tempUploadsDir, '11111111-1111-1111-1111-111111111111')
-    await fs.promises.mkdir(staleDir)
-    const old = new Date(T0 - 2 * HOUR)
-    await fs.promises.utimes(staleDir, old, old)
+describe('startStaleUploadCleanup', () => {
+  it('sweeps now and every 30 minutes until stopped, and a second start adds nothing', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: T0 })
+    const store = memoryByteStore()
+    const list = vi.spyOn(store, 'list')
+    setUploadByteStore(store)
 
-    await cleanupStaleTempUploads(HOUR)
+    startStaleUploadCleanup()
+    startStaleUploadCleanup()
+    await backgroundSettled()
+    expect(list).toHaveBeenCalledOnce()
 
-    expect(fs.existsSync(staleDir)).toBe(false)
+    await vi.advanceTimersByTimeAsync(30 * MINUTE - 1)
+    await backgroundSettled()
+    expect(list).toHaveBeenCalledOnce()
+
+    await vi.advanceTimersByTimeAsync(1)
+    await backgroundSettled()
+    expect(list).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(30 * MINUTE)
+    await backgroundSettled()
+    expect(list).toHaveBeenCalledTimes(3)
+
+    stopStaleUploadCleanup()
+    await vi.advanceTimersByTimeAsync(2 * HOUR)
+    await backgroundSettled()
+    expect(list).toHaveBeenCalledTimes(3)
+  })
+
+  it('removes bytes older than an hour, and keeps younger ones', async () => {
+    const store = memoryByteStore()
+    setUploadByteStore(store)
+    const part = digestKeyPart(OWNER)
+    const old = `uploads/${part}/${UPLOAD_ID}/${T0 - HOUR - 1}-11111111-1111-1111-1111-111111111111`
+    const young = `uploads/${part}/${UPLOAD_ID}/${T0 - HOUR}-22222222-2222-2222-2222-222222222222`
+    await store.put(old, new Uint8Array(1))
+    await store.put(young, new Uint8Array(1))
+
+    startStaleUploadCleanup()
+    await backgroundSettled()
+
+    expect((await store.list('uploads/')).map(({ key }) => key)).toEqual([young])
+  })
+
+  it('holds no process open', async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+    setUploadByteStore(memoryByteStore())
+
+    startStaleUploadCleanup()
+    await backgroundSettled()
+
+    const timer = setIntervalSpy.mock.results[0]!.value as NodeJS.Timeout
+    expect(timer.hasRef()).toBe(false)
   })
 })
 

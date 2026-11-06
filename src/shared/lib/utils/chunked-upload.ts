@@ -22,11 +22,11 @@ import {
   appState,
   defineNamespace,
   digestKeyPart,
-  isAppStateInitialized,
   reduceRecord,
   type RecordChange,
   type StateKey,
 } from '@shared/lib/app-state'
+import { background } from '@shared/lib/background'
 import { captureException } from '@shared/lib/error-reporting'
 import { LOCAL_CHUNKS_DIR, UPLOAD_BYTES_PREFIX, uploadByteStore, type UploadByteStore } from './chunked-upload-bytes'
 import {
@@ -49,6 +49,9 @@ export const MAX_UPLOAD_TOTAL_SIZE = 2 * 1024 * 1024 * 1024
 export const UPLOAD_IDLE_EXPIRY_MS = 60 * 60 * 1000
 /** Below the temp uploads dir: files `toFile` wrote for a caller. */
 const ASSEMBLED_DIR = 'assembled'
+/** How old bytes nothing refers to must be before the sweep removes them. */
+const STALE_UPLOAD_AGE_MS = 60 * 60 * 1000
+const STALE_UPLOAD_SWEEP_EVERY_MS = 30 * 60 * 1000
 
 const uploads = defineNamespace({
   name: 'upload',
@@ -550,14 +553,33 @@ async function removeStaleLegacyEntries(maxAgeMs: number, nowMs: number): Promis
   }
 }
 
-/**
- * Expiring a manifest deletes no bytes, so this finds what is left. Without
- * AppState it cannot tell a live upload's bytes from an abandoned one's, and
- * leaves them to the next sweep.
- */
+/** Expiring a manifest deletes no bytes, so this finds what is left. */
 export async function cleanupStaleTempUploads(maxAgeMs: number, nowMs: number = Date.now()): Promise<void> {
   await removeStaleLegacyEntries(maxAgeMs, nowMs)
-  if (!isAppStateInitialized()) return
   await removeStaleBytes(maxAgeMs, nowMs)
   await removeStaleAssembledFiles(maxAgeMs, nowMs)
+}
+
+let staleUploadSweeps: ReturnType<typeof setInterval> | null = null
+
+function sweepStaleUploads(): void {
+  background(cleanupStaleTempUploads(STALE_UPLOAD_AGE_MS), { name: 'chunked-upload.sweep-stale' })
+}
+
+/**
+ * Sweeps now and then every 30 minutes, until `stopStaleUploadCleanup`. Called
+ * from `afterBindInitialize`, once AppState is initialized, so that importing the
+ * routes starts no timers. A second start changes nothing.
+ */
+export function startStaleUploadCleanup(): void {
+  if (staleUploadSweeps) return
+  sweepStaleUploads()
+  staleUploadSweeps = setInterval(sweepStaleUploads, STALE_UPLOAD_SWEEP_EVERY_MS)
+  staleUploadSweeps.unref?.()
+}
+
+/** Stops the timer (shutdown). A sweep in flight finishes. */
+export function stopStaleUploadCleanup(): void {
+  if (staleUploadSweeps) clearInterval(staleUploadSweeps)
+  staleUploadSweeps = null
 }

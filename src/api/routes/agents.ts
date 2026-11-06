@@ -154,12 +154,10 @@ import {
   UploadConflictError,
   UploadOutcomeUnknownError,
   UploadTooLargeError,
-  cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
 import { MAX_UPLOAD_CHUNKS, uploadIdSchema } from '@shared/lib/utils/chunked-upload-schema'
-import { isAppStateInitialized } from '@shared/lib/app-state'
 import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary, resolveMountPath } from '@shared/lib/services/mount-service'
 import { isMountPath } from '@shared/lib/utils/workspace-path'
 import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
@@ -7869,31 +7867,6 @@ agents.post('/:id/browser/:action', AgentUser(), async (c) => {
     return c.json({ error: error.message || 'Failed to proxy browser action' }, 500)
   }
 })
-
-// ============================================================================
-// Cleanup stale chunked uploads (older than 1 hour)
-// ============================================================================
-const STALE_UPLOAD_MS = 60 * 60 * 1000 // 1 hour
-
-async function cleanupStaleUploads() {
-  try {
-    await cleanupStaleTempUploads(STALE_UPLOAD_MS)
-  } catch (err) {
-    console.warn('[agents] stale upload cleanup failed:', err)
-    captureException(err, { tags: { component: 'agents', operation: 'cleanup-stale-uploads' } })
-  }
-}
-
-// Run cleanup on startup and every 30 minutes. The routes load before the entry
-// point initializes AppState, and the sweep needs it to tell a live upload's
-// bytes from an abandoned one's, so the startup run waits for it.
-const startupUploadCleanup = setInterval(() => {
-  if (!isAppStateInitialized()) return
-  clearInterval(startupUploadCleanup)
-  background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' })
-}, 1000)
-startupUploadCleanup.unref()
-setInterval(() => background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' }), 30 * 60 * 1000).unref()
 
 // =============================================================================
 // Pending user-input requests (unified wire)
