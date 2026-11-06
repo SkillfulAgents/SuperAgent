@@ -193,10 +193,14 @@ function wireAgents(env: Env): void {
 function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionStore, 'onActivity'>): SessionStore {
   // Through the agent's object, which knows whether its container runs and answers asleep when it does not:
   // the container status this isolate caches is only ever set in that object.
-  const files = createCloudflareFileOps((path, init) => {
-    const object = servingAgentObject(slug) ?? env.AGENT_ACTOR.getByName(slug)
+  const files = createCloudflareFileOps(async (path, init) => {
+    // The container's API takes the agent's host token, as the container client sends it.
+    const auth = await (await containerHost.runtime(slug).getClient()).getHostAuthHeaders()
+    const headers = new Headers(init?.headers)
+    for (const [name, value] of Object.entries(auth)) headers.set(name, value)
     const streamed = init?.body instanceof ReadableStream
-    return object.fetch(new Request(`http://container${path}`, streamed ? { ...init, duplex: 'half' } as RequestInit : init))
+    const object = servingAgentObject(slug) ?? env.AGENT_ACTOR.getByName(slug)
+    return object.fetch(new Request(`http://container${path}`, { ...init, headers, ...(streamed ? { duplex: 'half' } : {}) } as RequestInit))
   }, agentSleepingStore(env, slug))
   return {
     slug,
