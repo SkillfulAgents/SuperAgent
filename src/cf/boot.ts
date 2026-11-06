@@ -24,6 +24,7 @@ import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
+import { routeContainerFetch } from './cloudflare-container-control'
 import { errorOnRedirect } from './workers-shims/fetch-redirect'
 import type { Env } from './index'
 
@@ -44,6 +45,11 @@ export function serve(request: Request, env: Env, ctx: ExecutionContext): Promis
   return runWithBackground(ctx, async () => api.fetch(request, env, ctx))
 }
 
+/** A container's call to the host, from the library's outbound proxy, which holds the request lifetime. */
+export function serveContainerRequest(request: Request, env: Env): Promise<Response> {
+  return Promise.resolve(api.fetch(request, env))
+}
+
 /** The background services, minus the ones that watch local containers: each agent's object watches its own. */
 export function startBackgroundServices(): Promise<void> {
   return initializeServices({ localContainers: false })
@@ -54,6 +60,8 @@ export function stopBackgroundServices(): Promise<void> {
 }
 
 async function start(env: Env): Promise<void> {
+  // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
+  routeContainerFetch(env.AGENT_ACTOR)
   // D1 refuses main's migrator, which runs every pending migration in one transaction: migrateD1 runs them as one batch.
   await openDatabase({ driver: d1(env.DB), migrate: false })
   await migrateD1(env.DB)
@@ -89,6 +97,7 @@ async function seedSettings(origin: string): Promise<void> {
     settings.app = { ...settings.app, hostBrowserProvider: 'platform', setupCompleted: true }
     settings.shareAnalytics = true
     settings.shareErrorReports = true
+    settings.container = { ...settings.container, containerRunner: 'cloudflare-container' }
     settings.auth = {
       ...settings.auth,
       requireAdminApproval: false,
