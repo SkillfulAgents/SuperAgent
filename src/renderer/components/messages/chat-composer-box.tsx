@@ -24,10 +24,13 @@ export const COMPOSER_ACTIONS_ROW_CLASS = 'mt-1 flex min-w-0 flex-wrap items-cen
 
 /**
  * The row's left group takes the width the right group leaves, and is the size container the
- * model picker collapses on. 76px holds the paperclip and the picker's icon, so the row wraps
+ * model picker collapses on. 56px holds the paperclip and the picker's icon, so the row wraps
  * before they would overlap the right group.
+ *
+ * The groups have no gap: their buttons are plain (globals.css) and 28px with their content 6px
+ * in, so every visible gap is that padding, 12px; a filled button (send) adds 6px of its own.
  */
-export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[76px] flex-1 items-center gap-2 [container-type:inline-size]'
+export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[56px] flex-1 items-center [container-type:inline-size]'
 
 /**
  * The floating translucent treatment for a composer that sits over content —
@@ -147,8 +150,9 @@ export function ChatComposerBox({
         />
       )}
       <div className={COMPOSER_ACTIONS_ROW_CLASS}>
-        <div className={COMPOSER_LEFT_ACTIONS_CLASS}>{leftActions}</div>
-        <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
+        {/* data-composer-actions: its outline buttons drop to plain ones (globals.css). */}
+        <div className={COMPOSER_LEFT_ACTIONS_CLASS} data-composer-actions="left">{leftActions}</div>
+        <div className="flex shrink-0 items-center" data-composer-actions="right">{rightActions}</div>
       </div>
       {footer}
     </div>

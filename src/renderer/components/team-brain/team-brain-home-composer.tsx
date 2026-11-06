@@ -104,6 +104,7 @@ export function TeamBrainHomeComposer({ agent, reference, onDismissReference }: 
           leftActions={(
             <>
               <AttachmentPicker
+                buttonClassName="h-7 w-7 shrink-0 p-0"
                 onFileSelect={composer.handleFileSelect}
                 onFolderSelect={composer.handleFolderSelect}
                 onRecentFileAttach={(file) => composer.addFiles([{ file }])}
@@ -112,17 +113,18 @@ export function TeamBrainHomeComposer({ agent, reference, onDismissReference }: 
               <ComposerOptions
                 state={composerOptions}
                 disabled={isDisabled}
+                size="sm"
                 footer={<AgentDefaultFooter agentSlug={agent.slug} state={composerOptions} agentHomeLink={false} />}
               />
             </>
           )}
           rightActions={(
             <>
-              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
               <Button
                 type="submit"
                 size="icon"
-                className="h-[34px] w-[34px]"
+                className="ml-1.5 h-7 w-7"
                 disabled={!composer.canSubmit}
                 data-testid="team-brain-send-button"
                 aria-label="Send message"

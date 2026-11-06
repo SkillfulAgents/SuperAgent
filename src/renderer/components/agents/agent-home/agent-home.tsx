@@ -435,7 +435,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         >
           <div className="mx-auto w-full max-w-[720px] space-y-6">
             <div>
-            <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
+            <ScrollAwarePageTitle className="home-title-row flex items-center justify-between gap-2 intro-step intro-step-1">
               {isOwner
                 ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
                 : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
@@ -578,6 +578,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                       leftActions={(
                         <>
                           <AttachmentPicker
+                            buttonClassName="h-7 w-7 shrink-0 p-0"
                             onFileSelect={composer.handleFileSelect}
                             onFolderSelect={composer.handleFolderSelect}
                             onRecentFileAttach={(file) => composer.addFiles([{ file }])}
@@ -586,6 +587,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                           <ComposerOptions
                             state={composerOptions}
                             disabled={isDisabled}
+                            size="sm"
                             footer={
                               <AgentDefaultFooter
                                 agentSlug={agent.slug}
@@ -615,14 +617,15 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                       )}
                       rightActions={(
                         <>
-                          <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+                          <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
                           {!isFreshUntitled && (
-                            <VoiceModeButton onClick={() => void startVoiceSession('home')} disabled={isDisabled} />
+                            <VoiceModeButton onClick={() => void startVoiceSession('home')} disabled={isDisabled} className="h-7 w-7" />
                           )}
                           {isFreshUntitled ? (
                             <Button
                               type="submit"
                               size="sm"
+                              className="ml-1.5 h-7"
                               disabled={!composer.canSubmit}
                               data-testid="home-send-button"
                             >
@@ -639,7 +642,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                             <Button
                               type="submit"
                               size="icon"
-                              className="h-[34px] w-[34px]"
+                              // 6px before it: the plain buttons' own 6px padding is the rest of the gap (chat-composer-box.tsx).
+                              className="ml-1.5 h-7 w-7"
                               disabled={!composer.canSubmit}
                               data-testid="home-send-button"
                               aria-label="Send message"

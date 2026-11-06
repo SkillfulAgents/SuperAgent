@@ -34,8 +34,7 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
             Shorter than a panel row (min-h-8) so it stays close to the panel, and lighter text so it
             reads below the sections. */}
         <button type="button" className={cn(HOME_SECTION_HEADER_CLASS, 'min-h-8 justify-start gap-1')} data-testid="home-advanced-settings-toggle">
-          {/* It sits on the page's dot background, not a panel: a light blur and wash behind it (globals.css). */}
-          <span className="soft-backdrop relative text-[12px]/5 text-muted-foreground/70 [--soft-backdrop-blur:4px] [--soft-backdrop-wash:0.4]">{open ? 'Show less' : 'Show more'}</span>
+          <span className="text-[12px]/5 text-muted-foreground/70">{open ? 'Show less' : 'Show more'}</span>
           <ChevronDown className="h-4 w-4 text-muted-foreground/50 transition-transform [[data-state=closed]>&]:rotate-[-90deg]" aria-hidden="true" />
         </button>
       </CollapsibleTrigger>

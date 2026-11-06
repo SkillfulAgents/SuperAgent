@@ -481,14 +481,16 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           // three lines in a narrow composer, which reads as already full.
           textareaClassName="min-h-[80px] sm:min-h-[60px]"
           leftActions={(
-            <ComposerOptions state={composerOptions} disabled={isDisabled} />
+            <ComposerOptions state={composerOptions} disabled={isDisabled} size="sm" />
           )}
           rightActions={(
             <>
-              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
               <Button
                 type="submit"
                 size="sm"
+                // The composer's 28px row, 6px off the plain mic (chat-composer-box.tsx).
+                className="ml-1.5 h-7"
                 data-testid="create-agent-submit"
               >
                 {isDisabled ? (
