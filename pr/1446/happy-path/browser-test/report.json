@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it in the response.",
+  "reason": "Agent successfully executed browser task and returned correct page title \"Example Domain\" from https://example.com",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut home page with list of agents in sidebar.",
-    "Clicked on the \"QA-20261022-182841-va7b\" agent card in main content area — Successfully opened the agent page with chat interface and agent configuration options visible.",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input box — Message appeared in the input field with proper formatting.",
-    "Clicked the \"Send message\" button — Message was sent successfully and created a new session titled \"Browser Page Title Check\" with agent status changing to \"working\".",
-    "Waited for agent response (5+ seconds) — Agent completed its work in 9 seconds with 3 tool calls and 155,532 tokens used.",
-    "Verified the response content — Agent response clearly stated: \"The page title is 'Example Domain'. The browser loaded https://example.com without errors, and I've closed it.\" The response successfully mentions \"Example Domain\" as required."
+    "Navigated to http://localhost:47891 — Successfully loaded Gamut home page with agent list visible",
+    "Found and clicked the \"QA-20261106-004624-p10k\" agent in the sidebar — Successfully opened agent page and chat interface",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent to agent",
+    "Waited up to 3 minutes for agent response — Agent completed task in 9 seconds with 3 tool calls using 160,354 tokens",
+    "Verified response mentions \"Example Domain\" — Response clearly displays: \"The page title is \"Example Domain\". The page loaded normally, and I've closed the browser.\""
   ],
   "bugs": [],
-  "durationMs": 100586,
-  "sessionId": "203559aa-765a-4860-94ee-ac05081a7807",
+  "durationMs": 280142,
+  "sessionId": "2ffa6f45-5ec7-4193-adb0-22ac156a9017",
   "cost": {
-    "inputTokens": 464,
-    "outputTokens": 15230,
-    "cacheCreationTokens": 96525,
-    "cacheReadTokens": 1507041,
+    "inputTokens": 524,
+    "outputTokens": 14182,
+    "cacheCreationTokens": 99565,
+    "cacheReadTokens": 1713179,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.347974
+    "totalCostUsd": 0.367208
   }
 }
