@@ -141,6 +141,8 @@ export const connectionInfoSchema = z.object({
   userId: z.string().nullable(),
   ownerName: z.string().nullable(),
   accountLabel: z.string().optional(),
+  // The provider rejected the saved sign-in; only signing in again fixes it.
+  reconnectRequired: z.boolean().optional(),
   managed: z.boolean(),
   isConfigured: z.boolean(),
   supportsDirectApi: z.boolean().optional(),
