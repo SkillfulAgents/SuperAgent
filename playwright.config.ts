@@ -83,6 +83,11 @@ function buildWebServerCommand() {
   return `${inlineVars} node e2e/setup-e2e-data.js && ${inlineVars} npm run dev:web`
 }
 
+// CI's Mac VMs occasionally run about 4x slower than usual, from `npm ci` onward,
+// and the WebKit suites run with retries off. At the 30s default those Macs fail
+// tests that are only slow, so give these projects 3x that budget.
+const webkitTestTimeout = 90_000
+
 export default defineConfig({
   testDir: './e2e',
   // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
@@ -114,6 +119,7 @@ export default defineConfig({
     {
       name: 'web-webkit',
       testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts', '**/pdf-preview.spec.ts'],
+      timeout: webkitTestTimeout,
       use: { ...devices['Desktop Safari'] },
     },
     // Deterministic navigation contracts run once on macOS per PR. Keep the
@@ -122,6 +128,7 @@ export default defineConfig({
       name: 'web-webkit-navigation',
       testMatch: ['**/navigation.spec.ts', '**/router-upgrade.spec.ts', '**/memory-history.spec.ts', '**/router-response-guard.spec.ts'],
       fullyParallel: false,
+      timeout: webkitTestTimeout,
       use: { ...devices['Desktop Safari'] },
     },
     // Section drag-and-drop and persistence, on their own server/data dir.

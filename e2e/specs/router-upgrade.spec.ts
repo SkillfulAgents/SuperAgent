@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { isWebKitTeardownFetchError } from '../helpers/page-errors'
 import { isExpectedRouterScenarioError, routerNavigationScenarios } from '../helpers/router-navigation'
 
 for (const [name, scenario] of routerNavigationScenarios) {
@@ -7,7 +8,7 @@ for (const [name, scenario] of routerNavigationScenarios) {
     const diagnostics: Array<{ at: string; kind: string; url?: string; message?: string }> = []
     const record = (event: Omit<typeof diagnostics[number], 'at'>) => diagnostics.push({ at: new Date().toISOString(), ...event })
     page.on('pageerror', error => {
-      errors.push(error.message)
+      if (!isWebKitTeardownFetchError(page, error)) errors.push(error.message)
       record({ kind: 'pageerror', url: page.url(), message: error.message })
     })
     page.on('console', message => {
