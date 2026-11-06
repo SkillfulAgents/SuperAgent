@@ -6,7 +6,7 @@ import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { assignAgentToFolder } from '@renderer/lib/agent-folders'
 import { holdAgentRequestsUntilCreated } from '@renderer/lib/api'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { randomAgentAvatar } from '@shared/lib/types/agent-avatar'
@@ -38,6 +38,7 @@ export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
   const updateSettings = useUpdateUserSettings()
   const queryClient = useQueryClient()
+  const router = useRouter()
   // Morph tag lives in NavTransientContext; set it BEFORE navigate so
   // AgentHome's first-mount initializer reads it and plays the intro once.
   const { setJustCreatedSlug } = useNavTransient()
@@ -88,6 +89,12 @@ export function useCreateUntitledAgent() {
     // update, so AgentHome captures the pre-set `null` and the intro never plays.
     flushSync(() => setJustCreatedSlug(id))
     void navigate({ to: '/agents/$slug', params: { slug: pending.displaySlug } })
+    // The user may leave the new agent's page before its create answers; then they stay where they went.
+    const onPendingPage = () => {
+      const { pathname } = router.state.location
+      const page = `/agents/${pending.displaySlug}`
+      return pathname === page || pathname.startsWith(`${page}/`)
+    }
 
     let agent: ApiAgent
     try {
@@ -99,14 +106,15 @@ export function useCreateUntitledAgent() {
       toast.error('Failed to create agent', {
         description: error instanceof Error ? error.message : 'Please try again.',
       })
-      void navigate({ to: '/' })
+      if (onPendingPage()) void navigate({ to: '/' })
       return null
     }
 
     // A host from before caller-chosen ids mints its own: open the agent it made.
     if (agent.slug !== id) {
+      const stayed = onPendingPage()
       forgetPending()
-      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug }, replace: true })
+      if (stayed) void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug }, replace: true })
     }
 
     track('agent_created', {
@@ -136,7 +144,7 @@ export function useCreateUntitledAgent() {
     }
 
     return agent
-  }, [createAgent, updateSettings, queryClient, setJustCreatedSlug, navigate, track])
+  }, [createAgent, updateSettings, queryClient, router, setJustCreatedSlug, navigate, track])
 
   return {
     createUntitledAgent,
