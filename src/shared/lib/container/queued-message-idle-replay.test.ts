@@ -48,21 +48,18 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: {
     checkPermission: vi.fn(() => 'prompt_needed'),
-    getGrabbedApp: vi.fn(() => undefined),
-    setGrabbedApp: vi.fn(),
-    clearGrabbedApp: vi.fn(),
+    getActiveApp: vi.fn(() => undefined),
+    setActiveApp: vi.fn(),
+    clearActiveApp: vi.fn(),
     consumeOnceGrant: vi.fn(),
   },
 }))
-vi.mock('@shared/lib/computer-use/types', () => ({
+vi.mock('@shared/lib/computer-use/types', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/computer-use/types')>()),
   getRequiredPermissionLevel: vi.fn(() => 'use_application'),
-  resolveTargetApp: vi.fn(() => undefined),
-  READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
-  TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
-vi.mock('@shared/lib/computer-use/executor', () => ({
-  resolveAppFromWindowRef: vi.fn(() => undefined),
-}))
+// Replays drive no machine.
+vi.mock('@shared/lib/computer-use/executor', () => ({}))
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: vi.fn(() => Promise.resolve('trigger_new_id')),
   listActiveWebhookTriggers: vi.fn(() => Promise.resolve([])),

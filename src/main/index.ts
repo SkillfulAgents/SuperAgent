@@ -144,6 +144,8 @@ import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/l
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
+import { registerComputerUseCursorRenderer } from './computer-use-cursor'
+import { registerComputerUseScreenshotDecoder } from './computer-use-screenshots'
 import { isAllowedRendererPermission } from './renderer-permissions'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -1789,6 +1791,11 @@ function focusMainWindowOnSession(agentSlug: string, sessionId: string): void {
 }
 
 app.whenReady().then(() => {
+  // Agents' computer-use cursors (their colour, orb and name) are drawn in
+  // offscreen windows of this process.
+  registerComputerUseCursorRenderer()
+  // Their screenshots are decoded and shrunk with Electron's native image code.
+  registerComputerUseScreenshotDecoder()
   // Installed here, not with the main window: a dashboard link queued at cold
   // start opens its popout before the main window exists.
   // Read fresh per request, so a switch to local, a disconnect or a re-mint

@@ -10,7 +10,7 @@ import { MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/sr
 
 const mocks = vi.hoisted(() => ({
   capabilities: { subagents: 'allow', workflows: 'review' } as { subagents: string; workflows: string },
-  runAutoApproved: vi.fn(async () => {}),
+  runAutoApproved: vi.fn(async (..._args: unknown[]) => {}),
 }))
 
 vi.mock('@shared/lib/config/settings', async (importOriginal) => ({
@@ -63,13 +63,15 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 function harness(options: { route?: Route; client?: false; answers?: HostCallAnswers } = {}) {
   const requests = new AgentInputRequests(SLUG, { report: () => {} })
   const granted = new Set<string>()
-  let grabbedApp: string | undefined
   const computerUse = {
     check: async (level: string, appName?: string) =>
       granted.has(level) || granted.has(`${level}:${appName}`) ? 'granted' : 'prompt_needed',
-    grabbed: () => grabbedApp,
   } as unknown as AgentComputerUse
-  const host = createRecordingHostPort(options.answers ?? {})
+  // The machine places a command by the app it names unless a test says otherwise.
+  const host = createRecordingHostPort({
+    computerUseTargetApp: ({ params }) => (typeof params.app === 'string' ? params.app : undefined),
+    ...options.answers,
+  })
   const runs = { name: 'the actor' } as unknown as HostRunActor
   const events: SessionEvent[] = []
   const answered: Array<{ toolUseId: string; how: 'resolve' | 'reject'; value: string }> = []
@@ -131,9 +133,6 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
     capabilityGrants,
     launches,
     grant: (level: string) => granted.add(level),
-    grab: (app: string) => {
-      grabbedApp = app
-    },
     failResolves: () => {
       resolveFails = true
     },
@@ -156,7 +155,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   mocks.capabilities = { subagents: 'allow', workflows: 'review' }
-  mocks.runAutoApproved.mockClear()
+  mocks.runAutoApproved.mockReset().mockImplementation(async () => {})
   onPlatform('darwin')
   vi.stubEnv('E2E_MOCK', '')
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -659,13 +658,13 @@ describe('ToolCalls', () => {
     it('parks a command no grant covers on an approval card', async () => {
       const h = harness()
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_click', { app: 'Safari', ref: '@e1' }))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_snapshot', { app: 'Safari' }))
       await settle()
 
       expect(h.open('t_cu')).toMatchObject({
         kind: 'computer_use',
         autoApproved: false,
-        payload: { method: 'click', params: { app: 'Safari', ref: '@e1' }, permissionLevel: 'use_application', appName: 'Safari' },
+        payload: { method: 'snapshot', params: { argv: ['--app=Safari'] }, permissionLevel: 'use_application', appName: 'Safari' },
       })
       expect(h.awaitingSyncs()).toBe(1)
       expect(mocks.runAutoApproved).not.toHaveBeenCalled()
@@ -675,7 +674,7 @@ describe('ToolCalls', () => {
       const h = harness()
       h.grant('use_application:Safari')
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_click', { app: 'Safari', ref: '@e1' }))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_snapshot', { app: 'Safari' }))
       await settle()
 
       expect(h.open('t_cu')).toMatchObject({ kind: 'computer_use', autoApproved: true })
@@ -684,69 +683,99 @@ describe('ToolCalls', () => {
         kind: 'computerUse',
         sessionId: SESSION,
         toolUseId: 't_cu',
-        method: 'click',
-        params: { app: 'Safari', ref: '@e1' },
+        method: 'snapshot',
+        params: { argv: ['--app=Safari'] },
         permissionLevel: 'use_application',
         appName: 'Safari',
-      }, { stillWanted: expect.any(Function) })
+      }, { stillWanted: expect.any(Function), machineDone: expect.any(Function) })
     })
 
-    it('targets the grabbed app when the command names none', async () => {
-      const h = harness()
-      h.grab('Notes')
+    it('asks the machine which app a ref belongs to before judging the command', async () => {
+      const h = harness({ answers: { computerUseTargetApp: 'Notes' } })
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_type', { text: 'hello' }))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_type', { ref: '@s1:e2', text: 'hello' }))
       await settle()
 
+      expect(h.host.calls).toEqual([['computerUseTargetApp', { method: 'type', params: { argv: ['--', '@s1:e2', 'hello'] } }]])
       expect(h.open('t_cu')?.payload).toMatchObject({ method: 'type', appName: 'Notes' })
+    })
+
+    it('asks the machine which app is on top at a screen point a command acts at', async () => {
+      const h = harness({ answers: { computerUseTargetApp: 'Spotify' } })
+
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_mouse_click', { xy: '980,977', headed: true }))
+      await settle()
+
+      expect(h.host.calls).toEqual([['computerUseTargetApp', { method: 'mouse-click', params: { argv: ['--xy=980,977', '--headed'] } }]])
+      expect(h.open('t_cu')?.payload).toMatchObject({ method: 'mouse-click', appName: 'Spotify' })
     })
 
     it('takes a command with no input as one with no params', async () => {
       const h = harness()
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', ''))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_list_apps', ''))
       await settle()
 
-      expect(h.open('t_cu')?.payload).toMatchObject({ method: 'apps', params: {}, permissionLevel: 'list_apps_windows' })
+      expect(h.open('t_cu')?.payload).toMatchObject({ method: 'list-apps', params: { argv: [] }, permissionLevel: 'list_apps_windows' })
+      // A listing names no app, so the machine is not asked.
+      expect(h.host.calls).toEqual([])
     })
 
-    it('judges a computer_run by the command it wraps', async () => {
+    it('judges agent_desktop by the command it runs', async () => {
       const h = harness()
       h.grant('list_apps_windows')
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_run', { command: 'apps', args: {} }))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__agent_desktop', { args: ['list-windows', '--app', 'Finder'] }))
       await settle()
 
       expect(mocks.runAutoApproved).toHaveBeenCalledWith(h.runs, h.host.port, expect.objectContaining({
-        method: 'apps',
-        params: {},
+        method: 'list-windows',
+        params: { argv: ['--app', 'Finder'] },
         permissionLevel: 'list_apps_windows',
-      }), { stillWanted: expect.any(Function) })
+      }), { stillWanted: expect.any(Function), machineDone: expect.any(Function) })
     })
 
-    it('asks the machine which app owns a window before judging a grab by ref', async () => {
-      const h = harness({ answers: { computerUseWindowApp: 'Finder' } })
+    // A grant for the first app it names would have let the rest act unasked.
+    it('refuses a batch across apps at once, with the reason, before any card or run', async () => {
+      const h = harness()
+      h.grant('use_application:Notes')
+      const batch = JSON.stringify([
+        { command: 'snapshot', args: { app: 'Notes' } },
+        { command: 'snapshot', args: { app: '1Password' } },
+      ])
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_grab', { ref: 'w-17' }))
+      h.calls.mainToolUse(use('t_cu', 'mcp__agent-desktop__agent_desktop', { args: ['batch', batch] }))
       await settle()
 
-      expect(h.host.calls).toEqual([['computerUseWindowApp', { ref: 'w-17' }]])
-      expect(h.open('t_cu')?.payload).toMatchObject({ method: 'grab', appName: 'Finder' })
+      expect(h.open('t_cu')).toBeNull()
+      expect(mocks.runAutoApproved).not.toHaveBeenCalled()
+      expect(h.answered).toEqual([{ toolUseId: 't_cu', how: 'reject', value: expect.stringMatching(/names Notes, 1Password.*one call \(or batch\) per app/) }])
     })
 
-    it('judges a grab without its app when the machine cannot say', async () => {
+    it('has the machine place a batch whose entries act in the focused app', async () => {
+      const h = harness({ answers: { computerUseTargetApp: 'Notes' } })
+      h.grant('use_application:Notes')
+
+      h.calls.mainToolUse(use('t_cu', 'mcp__agent-desktop__agent_desktop', { args: ['batch', JSON.stringify([{ command: 'press', args: { combo: 'return' } }])] }))
+      await settle()
+
+      expect(h.host.calls.map(([name]) => name)).toContain('computerUseTargetApp')
+      expect(mocks.runAutoApproved).toHaveBeenCalledWith(h.runs, h.host.port, expect.objectContaining({ appName: 'Notes' }), expect.anything())
+    })
+
+    it('judges a command without its app when the machine cannot say', async () => {
       const h = harness({
         answers: {
-          computerUseWindowApp: () => {
-            throw new Error('no such window')
+          computerUseTargetApp: () => {
+            throw new Error('no such snapshot')
           },
         },
       })
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_grab', { ref: 'w-17' }))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_click', { ref: '@gone:e1' }))
       await settle()
 
-      expect(h.open('t_cu')).toMatchObject({ kind: 'computer_use', payload: { method: 'grab' } })
+      expect(h.open('t_cu')).toMatchObject({ kind: 'computer_use', payload: { method: 'click' } })
       expect(h.open('t_cu')?.payload).not.toHaveProperty('appName', expect.any(String))
     })
 
@@ -754,7 +783,7 @@ describe('ToolCalls', () => {
       onPlatform('linux')
       const h = harness()
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', {}))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_list_apps', {}))
       await settle()
 
       expect(h.answered).toEqual([{
@@ -769,7 +798,7 @@ describe('ToolCalls', () => {
       inAppSandbox()
       const h = harness()
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', {}))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_list_apps', {}))
       await settle()
 
       expect(h.answered).toEqual([{
@@ -785,7 +814,7 @@ describe('ToolCalls', () => {
       vi.stubEnv('E2E_MOCK', 'true')
       const h = harness()
 
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', {}))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_list_apps', {}))
       await settle()
 
       expect(h.open('t_cu')).toMatchObject({ kind: 'computer_use' })
@@ -801,15 +830,138 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([])
     })
 
+    it('runs calls sent together in the order they came, even when the first takes longer to place', async () => {
+      let placed!: (app: string) => void
+      const h = harness({ answers: { computerUseTargetApp: () => new Promise<string>((resolve) => { placed = resolve }) } })
+      h.grant('use_application:Notes')
+      h.grant('use_application:Safari')
+      let ran!: () => void
+      const order: string[] = []
+      mocks.runAutoApproved.mockImplementation(async (...args: unknown[]) => {
+        const run = args[2] as { toolUseId: string }
+        order.push(run.toolUseId)
+        if (run.toolUseId === 't_click') await new Promise<void>((resolve) => { ran = resolve })
+      })
+
+      // The click names a ref, so the machine places it; the screenshot names its app.
+      h.calls.mainToolUse(use('t_click', 'mcp__computer-use__computer_click', { ref: '@s1:e2' }))
+      h.calls.mainToolUse(use('t_shot', 'mcp__computer-use__computer_screenshot', { app: 'Safari' }))
+      await settle()
+      expect(order).toEqual([])
+
+      placed('Notes')
+      await settle()
+      // The screenshot waits for the click to have run, not just to start.
+      expect(order).toEqual(['t_click'])
+      ran()
+      await settle()
+      expect(order).toEqual(['t_click', 't_shot'])
+    })
+
+    // Run first, the screenshot would show the screen from before the click
+    // the user is still deciding on, and the agent would read it as after.
+    it('holds the next call until one parked on an approval is decided', async () => {
+      const h = harness()
+      h.grant('use_application:Safari')
+
+      h.calls.mainToolUse(use('t_notes', 'mcp__agent-desktop__computer_snapshot', { app: 'Notes' }))
+      h.calls.mainToolUse(use('t_safari', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+
+      expect(h.open('t_notes')).toMatchObject({ autoApproved: false })
+      expect(mocks.runAutoApproved).not.toHaveBeenCalled()
+
+      // The decision ran (or was a denial): the request settles.
+      h.requests.resolve('t_notes', 'answered')
+      await settle()
+      expect(mocks.runAutoApproved).toHaveBeenCalledWith(h.runs, h.host.port, expect.objectContaining({ toolUseId: 't_safari' }), expect.anything())
+    })
+
+    it('lets the next call go once a parked call\'s result comes in, or a Stop drops it', async () => {
+      const h = harness()
+      h.grant('use_application:Safari')
+
+      h.calls.mainToolUse(use('t_notes', 'mcp__agent-desktop__computer_snapshot', { app: 'Notes' }))
+      h.calls.mainToolUse(use('t_safari', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+      // The container stopped waiting on it (its own timeout): the card may stay, the line moves.
+      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_notes', is_error: true, content: 'timed out' }] } })
+      await settle()
+      expect(mocks.runAutoApproved).toHaveBeenCalledTimes(1)
+
+      h.calls.mainToolUse(use('t_mail', 'mcp__agent-desktop__computer_snapshot', { app: 'Mail' }))
+      h.calls.mainToolUse(use('t_safari2', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+      expect(mocks.runAutoApproved).toHaveBeenCalledTimes(1)
+      // A Stop drops the call queued behind the parked one with it, and frees the line.
+      h.calls.dropHostRunChecks()
+      await settle()
+      expect(mocks.runAutoApproved).toHaveBeenCalledTimes(1)
+      h.calls.mainToolUse(use('t_safari3', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+      expect(mocks.runAutoApproved).toHaveBeenLastCalledWith(h.runs, h.host.port, expect.objectContaining({ toolUseId: 't_safari3' }), expect.anything())
+    })
+
+    it('moves the line on once an auto-run\'s machine work ends, before its result is delivered', async () => {
+      const h = harness()
+      h.grant('use_application:Safari')
+      let deliver = () => {}
+      mocks.runAutoApproved.mockImplementationOnce(async (..._args: unknown[]) => {
+        const guard = _args[3] as { machineDone?: () => void }
+        guard.machineDone?.()
+        await new Promise<void>((resolve) => { deliver = resolve })
+      })
+
+      h.calls.mainToolUse(use('t_one', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      h.calls.mainToolUse(use('t_two', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+
+      expect(mocks.runAutoApproved).toHaveBeenCalledTimes(2)
+      deliver()
+    })
+
+    it('handles a subagent\'s call once, though it arrives streamed and again in the message', async () => {
+      const h = harness({ answers: { computerUseTargetApp: 'Notes' } })
+      h.grant('use_application:Notes')
+
+      h.calls.subagentStreamedToolUse(use('t_cu', 'mcp__computer-use__computer_click', { ref: '@s1:e2' }), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_cu', 'mcp__computer-use__computer_click', { ref: '@s1:e2' }), 'toolu_parent')
+      await settle()
+
+      expect(mocks.runAutoApproved).toHaveBeenCalledTimes(1)
+      expect(h.host.calls).toHaveLength(1)
+    })
+
     it('parks a subagent\'s command under the subagent, from either path', async () => {
       const h = harness()
 
-      h.calls.subagentStreamedToolUse(use('t_cu1', 'mcp__computer-use__computer_apps', {}), 'toolu_parent')
-      h.calls.subagentMessageToolUse(use('t_cu2', 'mcp__computer-use__computer_apps', {}), 'toolu_parent')
+      h.calls.subagentStreamedToolUse(use('t_cu1', 'mcp__computer-use__computer_list_apps', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_cu2', 'mcp__computer-use__computer_list_apps', {}), 'toolu_parent')
       await settle()
 
       expect(h.open('t_cu1')).toMatchObject({ parentToolUseId: 'toolu_parent' })
+      // The second waits its turn behind the first's decision.
+      expect(h.open('t_cu2')).toBeNull()
+      h.requests.resolve('t_cu1', 'declined')
+      await settle()
       expect(h.open('t_cu2')).toMatchObject({ parentToolUseId: 'toolu_parent' })
+    })
+
+    it('releases a subagent\'s parked call when the Stop that ends the subagent drops it, and keeps a spared one\'s', async () => {
+      const h = harness()
+      h.grant('use_application:Safari')
+
+      h.calls.subagentStreamedToolUse(use('t_sub', 'mcp__agent-desktop__computer_snapshot', { app: 'Notes' }), 'toolu_spared')
+      h.calls.mainToolUse(use('t_main', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+
+      h.calls.dropHostRunChecks((parent) => parent !== 'toolu_spared')
+      await settle()
+      expect(mocks.runAutoApproved).not.toHaveBeenCalled()
+      h.calls.dropHostRunChecks()
+      await settle()
+      // The main call was dropped with its caller: it runs nothing either.
+      expect(mocks.runAutoApproved).not.toHaveBeenCalled()
     })
   })
 
@@ -1047,7 +1199,7 @@ describe('ToolCalls', () => {
 
     it('leaves a computer-use request to its own store', async () => {
       const h = harness()
-      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', {}))
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_list_apps', {}))
       await settle()
 
       h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_cu', content: 'apps' }] } })

@@ -1804,11 +1804,11 @@ describe('Computer use request detection', () => {
     process.env.E2E_MOCK = 'true'
     grantComputerUse()
     sseEvents.length = 0
-    live.host.answer('computerUse', 'Calculator, Finder')
+    live.host.answer('computerUse', { output: 'Calculator, Finder' })
 
     try {
-      simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted', {
-        includeHidden: false,
+      simulateToolUse('mcp__computer-use__computer_list_apps', 'tool-cu-granted', {
+        app: 'Calculator',
       })
 
       await vi.waitFor(() => {
@@ -1818,7 +1818,13 @@ describe('Computer use request detection', () => {
       })
       expect(live.host.calls).toEqual([
         ['computerUsePermissions', {}],
-        ['computerUse', { method: 'apps', params: { includeHidden: false } }],
+        ['computerUse', {
+          method: 'list-apps',
+          params: { argv: ['--app=Calculator'] },
+          caller: { sessionId: SESSION_ID, agentSlug: AGENT_SLUG },
+          // Nobody watches an auto-run, so it must start in time or be dropped unrun.
+          startBy: expect.any(Number),
+        }],
       ])
 
       const computerUseEvents = requestCards('computer_use')
@@ -1828,8 +1834,8 @@ describe('Computer use request detection', () => {
         autoApproved: true,
         scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
         payload: {
-          method: 'apps',
-          params: { includeHidden: false },
+          method: 'list-apps',
+          params: { argv: ['--app=Calculator'] },
           permissionLevel: 'list_apps_windows',
         },
       })
@@ -1849,7 +1855,7 @@ describe('Computer use request detection', () => {
     const originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'
     sessions().grantComputerUse(SESSION_ID)
-    live.host.answer('computerUse', 'launched')
+    live.host.answer('computerUse', { output: 'launched' })
 
     try {
       simulateToolUse('mcp__computer-use__computer_launch', 'tool-cu-session', { name: 'Safari' })
@@ -1876,17 +1882,17 @@ describe('Computer use request detection', () => {
     const originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'
     grantComputerUse()
-    let finishCommand!: (output: string) => void
-    live.host.answer('computerUse', () => new Promise<string>((resolve) => {
+    let finishCommand!: (result: { output: string }) => void
+    live.host.answer('computerUse', () => new Promise<{ output: string }>((resolve) => {
       finishCommand = resolve
     }))
     try {
       // A subagent's tool call arrives on its stream events and again in its
       // complete message; the second delivery finds the first run holding it.
-      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
-      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
+      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@s1:e1' })
+      simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@s1:e1' })
       await vi.waitFor(() => expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1))
-      finishCommand('clicked')
+      finishCommand({ output: 'clicked' })
       await vi.waitFor(() => expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-twice')).toBeNull())
       expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1)
       expect(live.runtime.containerFetch.mock.calls.filter(([path]) => String(path).includes('tool-cu-twice'))).toEqual([
@@ -1906,7 +1912,7 @@ describe('Computer use request detection', () => {
     vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
       landCheck = resolve
     }))
-    live.host.answer('computerUse', 'clicked')
+    live.host.answer('computerUse', { output: 'clicked' })
     try {
       simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-stopped', { ref: '@b1' })
       await new Promise((resolve) => setTimeout(resolve, 0))
@@ -1931,7 +1937,7 @@ describe('Computer use request detection', () => {
     vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
       landCheck = resolve
     }))
-    live.host.answer('computerUse', 'clicked')
+    live.host.answer('computerUse', { output: 'clicked' })
     const commands = () => live.host.calls.filter(([name]) => name === 'computerUse').length
     try {
       simulateToolUse('mcp__computer-use__computer_click', `tool-cu-handoff-${ticks}`, { ref: '@b1' })
@@ -1957,7 +1963,7 @@ describe('Computer use request detection', () => {
     vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockImplementation(() => new Promise((resolve) => {
       landCheck = resolve
     }))
-    live.host.answer('computerUse', 'clicked')
+    live.host.answer('computerUse', { output: 'clicked' })
     try {
       simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-container-stopped', { ref: '@b1' })
       await new Promise((resolve) => setTimeout(resolve, 0))
@@ -1989,7 +1995,7 @@ describe('Computer use request detection', () => {
     live.host.answer('computerUse', () => new Promise(() => {}))
 
     try {
-      simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted-reg', {
+      simulateToolUse('mcp__computer-use__computer_list_apps', 'tool-cu-granted-reg', {
         includeHidden: false,
       })
 

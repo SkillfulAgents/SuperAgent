@@ -814,18 +814,18 @@ export interface ReviewOps {
   takeDenyReason(id: string): Promise<string | undefined>
 }
 
-/** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
+/** Computer-use permission grants and the active app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
   /**
-   * The user let go of the app the agent had grabbed: forget the grab, revoke
-   * the agent's grant for that app and the session's any-app grant, and tell
-   * the session's viewers, in one turn.
+   * The user took back the app the agent is acting in: forget it, revoke the
+   * agent's grant for that app and the session's any-app grant, and tell the
+   * session's viewers, in one turn.
    */
-  releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
-  /** `AgentComputerUse.setGrabbed` */
-  setGrabbedApp(appName: string): Promise<void>
-  /** `AgentComputerUse.clearGrabbed` */
-  clearGrabbedApp(): Promise<void>
+  releaseApp(sessionId: string): Promise<{ appName: string | undefined }>
+  /** `AgentComputerUse.setActiveApp`: true when the session's app changed. */
+  setActiveApp(sessionId: string, appName: string): Promise<boolean>
+  /** `AgentComputerUse.clearActiveApp`, for one session. */
+  clearActiveApp(sessionId: string): Promise<void>
   /** `AgentComputerUse.grant` */
   grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): Promise<void>
   /** `AgentComputerUse.consumeOnce` */
@@ -834,7 +834,7 @@ export interface ComputerUseOps {
   clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): Promise<void>
   /**
    * Run an approved computer-use request: claim it, run the command on the
-   * host, record the grab, deliver the result and settle it. See `host-runs`.
+   * host, record the app it acted in, deliver the result and settle it. See `host-runs`.
    */
   run(run: ComputerUseRun): Promise<HostRunOutcome>
   /** Run an approved host-script request the same way. */

@@ -10,6 +10,10 @@ import { resolveProviderError } from '@renderer/components/provider-error/provid
 import { isProviderFacingError } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { useCallback, useMemo, useState } from 'react'
+import { useAgent } from '@renderer/hooks/use-agents'
+import { useSettings } from '@renderer/hooks/use-settings'
+import { agentAvatarAccent } from '@shared/lib/types/agent-avatar-orbs'
+import { computerUsePreferences, type ComputerUseSettings } from '@shared/lib/computer-use/types'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityCard, ActivityErrorCard, type ActivitySubagentItem } from './activity-card'
@@ -30,6 +34,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     'completedSubagents', 'apiRetry', 'computerUseApp', 'computerUseAppIcon', 'backgroundTasks', 'isThinking',
   ])
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
+  // The agent's cursor colour, shown beside the app while cursors are on.
+  const { data: agent } = useAgent(computerUseApp ? agentSlug : null)
+  const { data: settings } = useSettings()
+  const cursorColor = computerUseApp && agent?.avatar
+    && computerUsePreferences(settings?.computerUse as ComputerUseSettings | undefined).showCursor
+    ? agentAvatarAccent(agent.avatar.color)
+    : null
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -250,6 +261,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       computerUse={computerUseApp ? {
         app: computerUseApp,
         iconBase64: computerUseAppIcon,
+        cursorColor,
         revoking,
         revokeError,
         onRevoke: handleRevokeComputerUse,

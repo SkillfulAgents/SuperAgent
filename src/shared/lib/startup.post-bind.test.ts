@@ -141,7 +141,7 @@ vi.mock('./container/client-factory', () => ({
   shutdownActiveRunner: () => Promise.resolve(),
 }))
 vi.mock('./computer-use/executor', () => ({
-  shutdownAC: () => Promise.resolve(),
+  shutdownComputerUse: () => Promise.resolve(),
 }))
 
 describe('initializeServices post-bind critical path', () => {

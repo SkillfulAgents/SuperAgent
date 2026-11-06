@@ -22,12 +22,30 @@ import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request
 export interface HostCalls {
   /** Run a host tool for a session. The actor delivers the outcome to the container. */
   hostTool: { request: HostToolRequest; response: HostToolResult }
-  /** Run one computer-use command on this machine; resolves to its output, rejects with its error. */
-  computerUse: { request: { method: string; params: Record<string, unknown> }; response: string }
+  /**
+   * Run one computer-use command on this machine for one of the agent's
+   * sessions; resolves to what the agent reads and the app it acted in,
+   * rejects when it could not run.
+   */
+  computerUse: {
+    /**
+     * `startBy`: the latest time (epoch ms) the command may start; later, it is dropped unrun.
+     * `app`: the app the call was placed in and approved for, so the machine need not place it again.
+     */
+    request: { method: string; params: Record<string, unknown>; caller: ComputerUseCaller; startBy?: number; app?: string }
+    response: { output: string; app?: string }
+  }
   /** The macOS permissions computer use needs on this machine, or null when it has them all. */
   computerUsePermissions: { request: Record<string, never>; response: ComputerUsePermissionStatus | null }
-  /** The app that owns a window ref, resolved on this machine; undefined when it cannot be. */
-  computerUseWindowApp: { request: { ref: string }; response: string | undefined }
+  /**
+   * The app a computer-use command targets, from its `--app`, the window it
+   * names, the snapshot its ref came from, or the window on top at a point it
+   * acts at, resolved on this machine; undefined when it cannot be.
+   */
+  computerUseTargetApp: {
+    request: { method: string; params: Record<string, unknown> }
+    response: string | undefined
+  }
   /** An app's icon as base64 PNG, from this machine; null when it has none. */
   computerUseAppIcon: { request: { app: string }; response: string | null }
   /** Run a script on this machine. A script that fails still resolves, with its exit code. */
@@ -122,6 +140,12 @@ export type HostToolResult =
 export interface ComputerUsePermissionStatus {
   accessibility: boolean
   screen_recording: boolean
+}
+
+/** The agent session a computer-use command runs for: its refs and its cursor are this session's. */
+export interface ComputerUseCaller {
+  sessionId: string
+  agentSlug: string
 }
 
 export interface HostScriptOutput {

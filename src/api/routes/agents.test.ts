@@ -11247,7 +11247,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
       if (name === 'computerUsePermissions') return answers.permissions ?? null
       if (name === 'computerUse') {
         if (answers.error) throw answers.error
-        return answers.output ?? ''
+        return { output: answers.output ?? '' }
       }
       throw new Error(`unexpected host call ${name}`)
     }) as typeof localHostPort.call)
@@ -11258,12 +11258,12 @@ describe('run-script and computer-use decisions run through the actor', () => {
     park('cu-ok', 'computer_use')
 
     const res = await postJson(app, CU_URL, {
-      toolUseId: 'cu-ok', method: 'apps', params: {}, permissionLevel: 'list_apps_windows', grantType: 'timed',
+      toolUseId: 'cu-ok', method: 'list-apps', params: {}, permissionLevel: 'list_apps_windows', grantType: 'timed',
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true })
-    expect(host).toHaveBeenCalledWith('computerUse', { method: 'apps', params: {} })
+    expect(host).toHaveBeenCalledWith('computerUse', { method: 'list-apps', params: {}, caller: { sessionId: 'sess-1', agentSlug: 'test-agent' } })
     expect(mockContainerFetch).toHaveBeenCalledWith('/inputs/cu-ok/resolve', expect.objectContaining({
       body: JSON.stringify({ value: 'Calculator, Finder' }),
     }))
@@ -11276,7 +11276,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
     const host = machine({ permissions })
     park('cu-perm', 'computer_use')
 
-    const res = await postJson(app, CU_URL, { toolUseId: 'cu-perm', method: 'apps', params: {} })
+    const res = await postJson(app, CU_URL, { toolUseId: 'cu-perm', method: 'list-apps', params: {} })
 
     expect(res.status).toBe(428)
     expect(await res.json()).toEqual({ success: false, missingPermissions: permissions })

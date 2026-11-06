@@ -9,7 +9,7 @@
  * (`phi`) are degrees with 0 = right, 90 = down, as in Math.atan2 on screen.
  */
 
-import type { AgentAvatarShape } from '@shared/lib/types/agent-avatar'
+import type { AgentAvatarShape } from './agent-avatar'
 
 type Point = readonly [number, number]
 
