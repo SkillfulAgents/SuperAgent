@@ -33,6 +33,7 @@ const fixed = defineNamespace({ name: 'conformance:fixed', consistency: 'strong'
 const sliding = defineNamespace({ name: 'conformance:sliding', consistency: 'strong', schema: z.string(), expiry: { ttlMs: TTL, onUpdate: 'reset' } })
 const lasting = defineNamespace({ name: 'conformance:lasting', consistency: 'strong', schema: z.string(), expiry: { ttlMs: null, onUpdate: 'keep' } })
 const counter = defineNamespace({ name: 'conformance:counter', consistency: 'strong', schema: z.number().int(), expiry: { ttlMs: TTL, onUpdate: 'keep' } })
+const stock = defineNamespace({ name: 'conformance:stock', consistency: 'strong', schema: z.number().int().min(0), expiry: { ttlMs: TTL, onUpdate: 'keep' } })
 const cache = defineNamespace({ name: 'conformance:cache', consistency: 'eventual', schema: record, expiry: { ttlMs: TTL, onUpdate: 'reset' } })
 const pings = defineTopic({ name: 'events:conformance:ping', schema: z.object({ seq: z.number(), tags: z.array(z.string()) }) })
 // One name extends the other, and their key parts spell the same text: still different keys.
@@ -244,6 +245,16 @@ export function describeAppStateConformance(name: string, createBackend: () => C
         expect(await a.decrement(counter.key('floor'), 1, { min: 0 })).toEqual({ applied: false, current: null })
         expect(await a.get(counter.key('floor'))).toBeNull()
         await expect(a.increment(key, 0.5)).rejects.toThrow(RangeError)
+      })
+
+      it('refuses a change its counter schema rejects and stores nothing', async () => {
+        const key = stock.key('left')
+        await expect(a.decrement(key)).rejects.toThrow()
+        expect(await a.get(key)).toBeNull()
+
+        await a.increment(key, 2)
+        await expect(a2.decrement(key, 3)).rejects.toThrow()
+        expect((await a.get(key))?.value).toBe(2)
       })
 
       it('lets exactly one of competing consumes take the entry', async () => {
