@@ -44,6 +44,7 @@ import {
   type ChipPickerHandle,
   type ComposerChipTrigger,
 } from './composer-chips'
+import { useAutoHideScrollbar } from '@renderer/hooks/use-auto-hide-scrollbar'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -897,11 +898,13 @@ export function MarkdownComposerEditor({
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
-    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-item bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
+    // auto-hide-scrollbar: a thin bar shown only while the text scrolls, as the transcript's.
+    'markdown-composer-editor auto-hide-scrollbar relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-item bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
     className
   )
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const markScrolling = useAutoHideScrollbar()
   const managedClassNameRef = useRef(managedClassName)
   const latestRef = useRef({
     onChange,
@@ -996,6 +999,10 @@ export function MarkdownComposerEditor({
         class: managedClassNameRef.current,
       },
       handleDOMEvents: {
+        scroll: (editorView) => {
+          markScrolling(editorView.dom)
+          return false
+        },
         mousedown: () => typeof document.elementFromPoint !== 'function',
         blur: () => {
           setPick(null)

@@ -52,6 +52,7 @@ import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational,
 import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
+import { useAutoHideScrollbar } from '@renderer/hooks/use-auto-hide-scrollbar'
 import {
   collectEmbeddedImageAliases,
   reuseEqualEmbeddedImageAliases,
@@ -798,6 +799,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // new-turn reading-line reserve, windowed rendering of long histories. The
   // domain values passed through exist so the hook re-syncs its reserve on
   // the commits that change transcript layout.
+  const markScrolling = useAutoHideScrollbar()
   const {
     scrollRef,
     contentRef,
@@ -1068,10 +1070,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       {/* eslint-disable jsx-a11y/no-noninteractive-tabindex */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
       <div
-        className="overflow-y-auto overscroll-contain h-full"
+        // The bar shows only while the transcript scrolls (useAutoHideScrollbar).
+        className="auto-hide-scrollbar overflow-y-auto overscroll-contain h-full"
         style={{ overflowAnchor: 'none' }}
         ref={scrollRef}
-        onScroll={handleScroll}
+        onScroll={(event) => {
+          handleScroll(event)
+          markScrolling(event.currentTarget)
+        }}
         onWheel={handleWheelGesture}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
