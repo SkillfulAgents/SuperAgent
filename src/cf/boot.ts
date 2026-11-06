@@ -44,7 +44,7 @@ export function boot(env: Env): Promise<void> {
 
 /** One API request; the work it leaves running keeps the invocation alive until it settles. */
 export function serve(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  return runWithBackground(ctx, () => api.fetch(request, env, ctx))
+  return runWithBackground(ctx, async () => api.fetch(request, env, ctx))
 }
 
 /** This isolate's TaskManager, whose handlers the org's task manager object runs jobs through. */
