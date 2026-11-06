@@ -812,19 +812,19 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(types.indexOf('Run')).toBeGreaterThan(types.indexOf('Terminate'))
   })
 
-  it('start keeps a RUNNING VM when /health answers on the third try', async () => {
+  it('start keeps a RUNNING VM when /health answers on the second try', async () => {
     const client = newClient()
     await client.start()
     let probes = 0
     vi.stubGlobal('fetch', vi.fn(async () => {
       probes += 1
-      if (probes < 3) throw new Error('The operation was aborted due to timeout')
+      if (probes === 1) throw new Error('The operation was aborted due to timeout')
       return { ok: true } as Response
     }))
     sendMock.mockClear()
 
     expect((await client.start()).status).toBe('running')
-    expect(probes).toBe(3)
+    expect(probes).toBe(2)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
   })
@@ -1692,6 +1692,31 @@ describe('LocalAuthForwardProxy', () => {
     expect(first.body).toBe('UPSTREAM_OK')
     expect(second.body).toBe('UPSTREAM_OK')
     expect(http2ConnectCalls).toBe(1)
+  })
+
+  it('answers /health on its own HTTP/2 session while other requests are stuck', async () => {
+    const sessions: string[][] = []
+    http2ConnectImpl = () => {
+      const paths: string[] = []
+      sessions.push(paths)
+      return mockH2Session((headers, stream) => {
+        const path = String(headers[':path'])
+        paths.push(path)
+        // A stalled media download never answers; /health must not wait behind it.
+        if (path !== '/health') return
+        h2Respond(stream, 200, 'HEALTHY')
+      })
+    }
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const stuck = http.get({ host: '127.0.0.1', port, path: '/artifacts/studio/media/final/video.mp4' })
+    stuck.on('error', () => {})
+    await new Promise((r) => setTimeout(r, 20))
+
+    const res = await httpGet(port, '/health')
+    stuck.destroy()
+
+    expect(res.body).toBe('HEALTHY')
+    expect(sessions).toEqual([['/artifacts/studio/media/final/video.mp4'], ['/health']])
   })
 
   it('keeps HTTP/2 streams flowing while a WebSocket is open', async () => {

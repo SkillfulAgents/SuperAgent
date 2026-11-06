@@ -1229,8 +1229,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return false
   }
 
-  async isHealthy(knownPort?: number, timeoutMs = HEALTH_PROBE_TIMEOUT_MS): Promise<boolean> {
-    return (await this.probeHealth(knownPort, timeoutMs))?.ok ?? false
+  async isHealthy(knownPort?: number): Promise<boolean> {
+    return (await this.probeHealth(knownPort))?.ok ?? false
   }
 
   async health(knownPort?: number): Promise<unknown> {
@@ -1238,7 +1238,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response?.ok ? response.json() : null
   }
 
-  private async probeHealth(knownPort?: number, timeoutMs = HEALTH_PROBE_TIMEOUT_MS): Promise<Response | null> {
+  private async probeHealth(knownPort?: number): Promise<Response | null> {
     const port = knownPort ?? (await this.getInfo()).port
     if (!port) return null
     // Outside the try: a failed token read is not an unhealthy container.
@@ -1249,7 +1249,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // forward left half-open would accept the TCP connect but never respond,
       // hanging the fetch — and the caller — indefinitely without this.
       return await fetch(`${this.getBaseUrl(port)}/health`, {
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
         headers,
       })
     } catch {
