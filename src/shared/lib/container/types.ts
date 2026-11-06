@@ -222,6 +222,11 @@ export interface HealthCheckResult {
 }
 
 export interface StopOptions {
+  /**
+   * A session's fatal error (OOM, say) is taking the container down: no one
+   * stopped the sessions on it, so one mid-turn reads it as the crash it is.
+   */
+  afterFatalError?: boolean
   stopTimeoutMs?: number
   killTimeoutMs?: number
   /**

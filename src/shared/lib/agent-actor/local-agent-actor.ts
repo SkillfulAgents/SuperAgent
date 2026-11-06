@@ -229,6 +229,7 @@ function createSessionOps(
   const release = async (sessionId: string) => {
     // Settle the calls parked on the session's own cards before the stream drops them.
     releaseSessionState(state, sessionId)
+    const running = live.isActive(sessionId)
     // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
     live.unsubscribe(sessionId)
     state.deferredNaming.delete(sessionId)
@@ -239,9 +240,12 @@ function createSessionOps(
         return false
       })) || (await client().then((container) => container.isDefinitelyStopped()).catch(() => false))
     if (!dropped) console.warn(`[sessions.delete] container kept ${sessionId}:`, cause)
+    // Its turn ended with its process: its viewers and the global feed hear so, as after a stop.
+    else if (running) live.markInterrupted(sessionId)
     return dropped
   }
   const forget = async (sessionId: string) => {
+    live.endStreams(sessionId)
     // The files are gone. A lost cleanup response must not turn a successful
     // delete into a failure; the container refuses to resume a released
     // record whose transcript is absent, including after a container restart.
@@ -511,7 +515,7 @@ function createSessionsRuntime(slug: AgentSlug, deps: LocalActorDeps): SessionsR
       console.log(`[LocalAgentActor] Stopping container for ${slug} after a fatal error`)
       background(
         runtime()
-          .stopContainer()
+          .stopContainer({ afterFatalError: true })
           .catch((err) => console.error(`[LocalAgentActor] Failed to stop container for ${slug}:`, err)),
         { name: 'local-agent-actor.stop-after-fatal-error' },
       )
