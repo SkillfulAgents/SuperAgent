@@ -8,6 +8,7 @@
  */
 import type { DurableObjectNamespace } from 'cloudflare:workers'
 import type { CloudflareAgentActor } from './cloudflare-agent-actor'
+import { servingAgentObject } from './agent-objects'
 
 const CONTAINER_HOST = 'agent-container.internal'
 const CONTAINER_PORT = 3000
@@ -55,9 +56,12 @@ export function routeContainerFetch(actors: AgentActors): void {
   process.env.CLOUDFLARE_CONTAINER_HOST_URL = 'http://host.internal'
   process.env.CLOUDFLARE_CONTAINER_TOKEN = token
 
+  // The agent's own object, serving this request, is called directly: a call through its stub would come back to it.
+  const actorFor = (agentId: string) => servingAgentObject(agentId) ?? actors.getByName(agentId)
+
   const control = async (request: Request, agentId: string, action: string): Promise<Response> => {
     if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })
-    const actor = actors.getByName(agentId)
+    const actor = actorFor(agentId)
     if (request.method === 'GET' && action === '') return Response.json({ running: await actor.agentRunning() })
     if (request.method === 'POST' && action === 'start') {
       const { env } = (await request.json()) as { env: Record<string, string> }
@@ -78,6 +82,6 @@ export function routeContainerFetch(actors: AgentActors): void {
     const [, first, ...rest] = url.pathname.split('/')
     if (first === '_control') return control(new Request(input, init), decodeURIComponent(rest[0] ?? ''), rest[1] ?? '')
     const target = `http://127.0.0.1:${CONTAINER_PORT}/${rest.join('/')}${url.search}`
-    return actors.getByName(decodeURIComponent(first)).fetch(new Request(target, new Request(input, init)))
+    return actorFor(decodeURIComponent(first)).fetch(new Request(target, new Request(input, init)))
   }
 }
