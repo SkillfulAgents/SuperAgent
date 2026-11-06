@@ -21,6 +21,15 @@ export function initErrorReporting(options: ErrorReportingInitOptions): void {
   }
 }
 
+/**
+ * Uses the error reporter a deployment brings instead of the Sentry Node one, for a runtime
+ * `@sentry/node` cannot start in (Cloudflare Workers). Call before startup: initErrorReporting
+ * then keeps it.
+ */
+export function setErrorReportingProvider(reporter: ErrorReportingProvider): void {
+  provider = reporter
+}
+
 export function getErrorReporter(): ErrorReportingProvider | null {
   return provider
 }
