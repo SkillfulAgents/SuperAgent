@@ -1905,19 +1905,21 @@ describe('ContainerHost.getReadiness before this process has checked', () => {
     mockSettingsState.containerRunner = 'docker'
   })
 
-  it('reads as ready when a runner that needs no local image is set up here, without a check', () => {
+  it('reads as ready for a configured runner that needs no local image, without a check', () => {
+    mockSettingsState.containerRunner = 'lambda-microvm'
     const freshProcess = new ContainerHost()
 
     expect(freshProcess.getReadiness()).toEqual({ status: 'READY', message: 'Ready (lambda-microvm)', pullProgress: null })
     expect(checkAllRunnersAvailability).not.toHaveBeenCalled()
   })
 
-  it('stays checking when every runner set up here pulls an image', () => {
-    mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: true, isEligible: () => true }))
+  it('stays checking for a runner that pulls an image', () => {
+    mockSettingsState.containerRunner = 'docker'
     expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
   })
 
-  it('stays checking for a runner that needs no image but is not set up here', () => {
+  it('stays checking for a runner that needs no image but is not configured in this process', () => {
+    mockSettingsState.containerRunner = 'lambda-microvm'
     mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: false, isEligible: () => false }))
     expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
   })
