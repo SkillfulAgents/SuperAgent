@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can open a browser, navigate to https://example.com, and return the page title \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with the agent sidebar visible",
+    "Clicked on \"QA-20261106-232001-5r18\" agent in the sidebar — Successfully navigated to the agent's main page at http://localhost:47891/agents/qa-20261106-232001-5r18-w4em61q697",
+    "Clicked on the message input field — Input field became active and ready for text entry",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully filled into the input field",
+    "Sent message by pressing Cmd+Enter — Message was sent successfully and a new session was created at http://localhost:47891/agents/qa-20261106-232001-5r18-w4em61q697/sessions/69649b24-1996-4dd6-acce-cb10768e5ec2",
+    "Waited for agent response (up to 3 minutes) — Agent responded within the timeout period with text containing \"Example Domain\"",
+    "Verified response mentions \"Example Domain\" and took screenshot — Screenshot confirms the agent's response states: \"The page title of https://example.com is \"Example Domain\". I've closed the browser.\""
+  ],
+  "bugs": [],
+  "durationMs": 54773,
+  "sessionId": "7a6e45ed-3b99-455b-b614-7c1b069e8823",
+  "cost": {
+    "inputTokens": 290,
+    "outputTokens": 8413,
+    "cacheCreationTokens": 57417,
+    "cacheReadTokens": 754401,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.189566
+  }
+}
