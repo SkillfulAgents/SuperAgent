@@ -157,10 +157,10 @@ describe('MessageItem', () => {
       const bubble = screen.getByTestId('message-user')
       expect(bubble).not.toHaveTextContent('Mentioned')
       expect(screen.getByTestId('agent-mention')).toHaveTextContent('@Billing Agent')
-      // The avatar's initials and then the name.
-      expect(screen.getByTestId('user-mention')).toHaveTextContent('MS@Mike Smith')
+      // A teammate's chip is just their name, with no avatar.
+      expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
       expect(screen.getByTestId('user-mention').previousSibling?.textContent).toBe(', then ping ')
-      expect(screen.queryByTestId('mention-notified')).toBeNull()
+      expect(screen.getByTestId('message-user').querySelector('[data-notify-only]')).toBeNull()
     })
 
     it('leaves a name inside code as typed', () => {
@@ -175,8 +175,11 @@ describe('MessageItem', () => {
       const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
       render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
 
-      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Notified Mike Smith')
-      expect(screen.getByTestId('user-mention').closest('.border-dashed')).not.toBeNull()
+      // Drawn like any message: no dashed bubble, no separate "Notified" line.
+      const bubble = screen.getByTestId('user-mention').closest('[data-notify-only]')
+      expect(bubble).not.toBeNull()
+      expect(bubble).not.toHaveClass('border-dashed')
+      expect(screen.queryByText(/Notified/)).toBeNull()
     })
   })
 
