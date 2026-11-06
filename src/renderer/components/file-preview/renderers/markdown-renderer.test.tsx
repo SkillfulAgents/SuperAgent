@@ -26,6 +26,12 @@ vi.mock('@renderer/context/file-preview-context', () => ({
 describe('MarkdownRenderer', () => {
   beforeEach(() => { comments.length = 0 })
 
+  it('resolves a relative image from the previewed file\'s folder', () => {
+    text = '![chart](shots/chart.png)'
+    render(<MarkdownRenderer url="/doc.md" filePath="/workspace/blog/draft.md" agentSlug="test-agent" />)
+    expect(screen.getByRole('img', { name: 'chart' }).getAttribute('src')).toMatch(/\/api\/agents\/test-agent\/files\/blog\/shots\/chart\.png\?inline=true$/)
+  })
+
   it('folds the frontmatter into a closed Properties row and draws only what follows', () => {
     text = '---\ntitle: Overview\n---\n# Overview'
     render(<MarkdownRenderer url="/doc.md" filePath="/doc.md" agentSlug="test-agent" />)

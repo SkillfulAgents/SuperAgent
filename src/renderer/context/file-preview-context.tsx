@@ -96,7 +96,7 @@ interface FilePreviewContextType {
   clearComments: (filePath: string, agentSlug: string) => void
 }
 
-const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
+export const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
 
 /** Tab and title label for a path. */
 function getDisplayName(filePath: string): string {
@@ -172,8 +172,10 @@ export function FilePreviewProvider({
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => {
     const version = nextFileVersion()
+    // A delivery may name a file relative to the workspace, a link names it absolutely: one file, one tab.
+    const path = filePath.startsWith('/') ? filePath : `/workspace/${filePath}`
     openTab({
-      kind: 'file', filePath, agentSlug, displayName: getDisplayName(filePath),
+      kind: 'file', filePath: path, agentSlug, displayName: getDisplayName(path),
       description, version, pdfPage: 1, source,
     }, existing => ({ ...existing, version, source }))
     setIsOpen(true)
