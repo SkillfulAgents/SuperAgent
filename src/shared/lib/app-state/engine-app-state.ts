@@ -178,7 +178,7 @@ class EngineAppState implements AppState {
     this.assertOpen()
     if (channels.length === 0) throw new TypeError('AppState subscribe needs at least one channel')
     const { signal } = options
-    const onAbort = () => void subscription.end()
+    const onAbort = () => background(subscription.end(), { name: 'app-state.unsubscribe-on-abort' })
     const subscription = new EngineSubscription<E>(
       new Map(channels.map((channel) => [this.prefix + channel.path, channel])),
       listener,
