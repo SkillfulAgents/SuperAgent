@@ -340,13 +340,16 @@ jobs:
       # suite's top flake source).
       - name: Run graph E2E suite
         id: graph_e2e
-        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' }}
+        if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure') }}
         env:
           PORT: '3000'
           SUPERAGENT_DATA_DIR: .e2e-data/graph
           PLAYWRIGHT_OUTPUT_DIR: test-results/graph
           PLAYWRIGHT_HTML_REPORT: playwright-report/graph
-        run: npm run test:e2e:graph
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          npm run test:e2e:graph 2>&1 | tee test-results/graph.log
 
       # Section drag targets must stay still while the pointer crosses them.
       # Other specs creating agents used to move those targets mid-gesture.
@@ -478,6 +481,18 @@ jobs:
           set -o pipefail
           mkdir -p test-results
           E2E_MOCK=true npx playwright test --config=playwright.radix.config.ts --project=radix-webkit --project=radix-webkit-touch --retries=0 2>&1 | tee test-results/radix-webkit.log
+
+      - name: Run graph WebKit interaction and touch suites
+        if: ${{ matrix.repeat == 1 && !cancelled() && steps.webkit_setup.outcome == 'success' }}
+        env:
+          E2E_PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/graph-webkit
+          PLAYWRIGHT_OUTPUT_DIR: test-results/graph-webkit
+          PLAYWRIGHT_HTML_REPORT: playwright-report/graph-webkit
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --config=playwright.graph.config.ts --project=graph-webkit --project=graph-webkit-touch 2>&1 | tee test-results/graph-webkit.log
 
       - name: Upload Playwright artifacts
         if: always()
@@ -623,6 +638,24 @@ jobs:
       - name: Run the cloud-workspace app suite
         if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
         run: xvfb-run --auto-servernum node e2e/live/cloud-electron/ci.mjs
+
+      - name: Validate built Electron graph interactions
+        if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/graph/run.ts 2>&1 | tee test-results/electron-graph.log
+
+      - name: Upload Electron graph artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-graph-artifacts
+          path: |
+            test-results/electron-graph/
+            test-results/electron-graph.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Electron interaction artifacts
         if: always()

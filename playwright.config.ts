@@ -37,9 +37,10 @@ const webTestIgnore = [
   '**/safari-follow.spec.ts',
   // Canvas mouse gestures need a still layout: sibling specs' agent churn on
   // the shared server re-solves the graph under the cursor, which made this
-  // the suite's top flake. Runs under the web-graph project on its own server
-  // and data dir (see test:e2e:graph).
+  // the suite's top flake. Runs in playwright.graph.config.ts on its own
+  // server/data dir (test:e2e:graph); web-graph below remains a legacy entry.
   '**/home-graph.spec.ts',
+  '**/graph-upgrade.spec.ts',
   // Section drags also need a stable list; sibling specs create/delete agents
   // mid-gesture. Run on a fresh server through test:e2e:sidebar.
   '**/agent-folders.spec.ts',
@@ -132,7 +133,8 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
     // Home connections graph — canvas mouse gestures (hover-fade, edge draw,
-    // node drag) against react-flow. Run with `npm run test:e2e:graph` and a
+    // node drag) against react-flow. Legacy desktop-only entry; the expanded
+    // `npm run test:e2e:graph` uses playwright.graph.config.ts. Use a
     // dedicated SUPERAGENT_DATA_DIR: the only agents on the board are the
     // spec's own, so the layout stays still and fitView never bottoms out at
     // minZoom. Not fullyParallel — the file's own tests would otherwise churn
