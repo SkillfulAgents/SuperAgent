@@ -369,7 +369,7 @@ export function XAgentReviewRequestItem({
                         <span className="flex flex-col items-start text-left">
                           <span>Always allow reading <span className="font-medium">all agents</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
-                            Skip read prompts for every agent in this workspace
+                            Skip read prompts, file downloads included, for every agent in this workspace
                           </span>
                         </span>
                       </Button>
@@ -403,7 +403,7 @@ export function XAgentReviewRequestItem({
                         <span className="flex flex-col items-start text-left">
                           <span>Always allow messaging <span className="font-medium">all agents</span></span>
                           <span className="text-xs font-normal text-muted-foreground/80">
-                            Skip send prompts for every agent in this workspace
+                            Skip send prompts, attachments included, for every agent in this workspace
                           </span>
                         </span>
                       </Button>
@@ -418,7 +418,7 @@ export function XAgentReviewRequestItem({
                         <span className="flex flex-col items-start text-left">
                           <span>Always allow reading <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span> (this time only)</span>
                           <span className="text-xs font-normal text-muted-foreground/80">
-                            View-only access to history; future <code className="font-mono">invoke</code> calls still prompt
+                            View-only access to history and delivered files. Future messages still prompt.
                           </span>
                         </span>
                       </Button>
