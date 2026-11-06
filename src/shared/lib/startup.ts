@@ -211,29 +211,17 @@ export function getServicesInitError(): string | null {
  * request can schedule work as soon as the API is bound. Checked and installed
  * in one step, so the dev server can repeat it for each request.
  */
-export async function prepareBackgroundWork(options: BackgroundWorkOptions = {}): Promise<void> {
+export async function prepareBackgroundWork(): Promise<void> {
   if (!isBackgroundWorkInitialized()) await initializeLocalBackgroundWork()
   const host = serviceHost()
   for (const service of backgroundServices()) {
-    if (options.localContainers === false && LOCAL_CONTAINER_SERVICES.has(service.id)) continue
     if (!host.isRegistered(service.id)) host.register(service)
   }
 }
 
-export interface BackgroundWorkOptions {
-  /**
-   * False when this process watches no containers, because each agent's container is watched
-   * where that agent runs: the container-host and container-image services are not registered.
-   */
-  localContainers?: boolean
-}
-
-/** The services that watch this process's containers: the initial agent sync, status sync, health monitor and image check. */
-const LOCAL_CONTAINER_SERVICES = new Set(['container-host', 'container-image'])
-
-/** Idempotent: the first call's options apply. Called via afterBindInitialize, or by a process that only runs the services. */
-export function initializeServices(options: BackgroundWorkOptions = {}): Promise<void> {
-  servicesInitPromise ??= initializeServicesInner(options)
+/** Idempotent; call only via afterBindInitialize (or tests). */
+export function initializeServices(): Promise<void> {
+  servicesInitPromise ??= initializeServicesInner()
   return servicesInitPromise
 }
 
@@ -261,8 +249,8 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
   }
 }
 
-async function initializeServicesInner(options: BackgroundWorkOptions) {
-  await prepareBackgroundWork(options)
+async function initializeServicesInner() {
+  await prepareBackgroundWork()
 
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
