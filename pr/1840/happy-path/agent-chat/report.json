@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  the complete conversation with timestamps.\n\n**Additional observations:**\n- Session was automatically created and named \"Simple Arithmetic Question\"\n- Response displayed at \"Today at 3:53 AM\" timestamp\n- Agent model: Opus 5.5 with Medium effort setting\n- No errors or unexpected behavior encountered\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 63193,
+  "sessionId": "b0f1211a-2f81-4eb1-b966-3e13f857cefd",
+  "cost": {
+    "inputTokens": 290,
+    "outputTokens": 9417,
+    "cacheCreationTokens": 113749,
+    "cacheReadTokens": 747783,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.26434
+  }
+}
