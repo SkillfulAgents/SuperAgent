@@ -309,17 +309,17 @@ describe('connection lost mid-turn', () => {
     expect(errors[0].terminalReason).toBe('connection_lost')
   })
 
-  it('settles quietly with session_idle when the connection drops while idle', async () => {
+  it('says nothing when the connection drops while idle: the session settled before', async () => {
     // No active turn — e.g. the container auto-slept between turns.
     sseEvents.length = 0
 
     await dropConnection()
 
     expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
-    expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(1)
+    expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
   })
 
-  it('does not report an error when the connection drops after a user interrupt', async () => {
+  it('does not report an error, or settle again, when the connection drops after a user interrupt', async () => {
     sessions(AGENT_SLUG).markActive(SESSION_ID)
     sessions(AGENT_SLUG).markInterrupted(SESSION_ID)
     sseEvents.length = 0
@@ -327,6 +327,8 @@ describe('connection lost mid-turn', () => {
     await dropConnection()
 
     expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
+    expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
+    expect(sessions(AGENT_SLUG).turnOutcome(SESSION_ID)).toMatchObject({ status: 'cancelled' })
   })
 })
 

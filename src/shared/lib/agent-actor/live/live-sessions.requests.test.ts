@@ -1188,13 +1188,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
           ?.outcome,
       ).toBe('declined')
 
-      // Other tabs drop the card off the same broadcast the tool_result path
-      // emits.
-      const toolResults = sseEvents.filter(
-        (e) => e.type === 'tool_result' && e.toolUseId === 'par-secret-1',
-      )
-      expect(toolResults).toHaveLength(1)
-      expect(toolResults[0].isError).toBe(true)
+      // Other tabs drop the card off the resolution, and refetch the
+      // transcript, which now shows the call decided. Its tool_result is the
+      // container's, still held back.
+      expect(sseEvents.filter((e) => e.type === 'user_request_resolved' && e.requestId === 'par-secret-1')).toHaveLength(1)
+      expect(sseEvents.at(-1)).toEqual({ type: 'messages_updated' })
+      expect(sseEvents.filter((e) => e.type === 'tool_result' && e.toolUseId === 'par-secret-1')).toEqual([])
 
       // When the CLI finally releases the parallel siblings' results, the
       // already-settled ask is a no-op — no double resolution.
@@ -1202,9 +1201,26 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(
         userInputRequestManager.stats.recentResolutions.filter((r) => r.id === 'par-secret-1'),
       ).toHaveLength(1)
+      expect(sseEvents.filter((e) => e.type === 'tool_result' && e.toolUseId === 'par-secret-1')).toHaveLength(1)
 
       sendToolResult('par-question-1')
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('an answered ask gets one tool_result: the container\'s, with the answer', () => {
+      simulateToolUse('AskUserQuestion', 'solo-question-1', {
+        questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+      })
+
+      sessions().completeRequest(SESSION_ID, 'solo-question-1', 'answered')
+      client.emit({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'solo-question-1', content: 'Your questions have been answered' }] },
+      })
+
+      expect(sseEvents.filter((e) => e.type === 'tool_result' && e.toolUseId === 'solo-question-1')).toEqual([
+        expect.objectContaining({ result: 'Your questions have been answered', isError: false }),
+      ])
     })
 
     it('the settled outcome is stamped for the messages route until the turn boundary clears it', async () => {

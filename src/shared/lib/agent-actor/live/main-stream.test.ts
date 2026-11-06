@@ -283,6 +283,18 @@ describe('MainStream', () => {
       expect(events.at(-1)).toEqual({ type: 'thinking_delta', thinkingId: 'msg_1:2', text: 'still thinking' })
     })
 
+    it('reads thinking from a delta whose block start was missed, and ends that block at its stop', () => {
+      const { stream, events } = recordingStream()
+      stream.event(messageStart('msg_1'))
+
+      stream.event(thinkingDelta('still thinking', 2))
+      expect(stream.isThinking).toBe(true)
+
+      stream.event(blockStop(2))
+      expect(stream.isThinking).toBe(false)
+      expect(events.at(-1)).toEqual({ type: 'thinking_stop', thinkingId: 'msg_1:2' })
+    })
+
     it('has no id for a block whose message start was missed', () => {
       const { stream, events } = recordingStream()
 

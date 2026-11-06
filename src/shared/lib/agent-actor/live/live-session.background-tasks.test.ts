@@ -326,6 +326,21 @@ describe('stopping the turn while background tasks run', () => {
     expect(sseEvents.some((e) => e.type === 'stream_delta')).toBe(false)
   })
 
+  it('tells clients once that the stopped turn waits on its spared task, when the idle follows the stop', async () => {
+    sessions().markActive(SESSION_ID)
+    runtime('running')
+    startBackgroundTask('bg-1')
+    abortedResult()
+    sseEvents.length = 0
+
+    sessions().markInterrupted(SESSION_ID, { processKept: true })
+    runtime('idle')
+
+    const waiting = sseEvents.filter((e) => e.type === 'session_waiting_background')
+    expect(waiting).toHaveLength(1)
+    expect(waiting[0]).toMatchObject({ interrupted: true, backgroundTaskCount: 1 })
+  })
+
   it('lets a spared background subagent raise an input request after the stop', async () => {
     sessions().markActive(SESSION_ID)
     for (const toolId of ['task-fg', 'task-bg']) {
@@ -501,6 +516,23 @@ describe('background Bash task tracking', () => {
     expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
   })
 
+  it('tells clients once that the turn waits on background work, when the runtime idles after the result', () => {
+    mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({
+      type: 'user',
+      tool_use_result: { backgroundTaskId: 'bg-1' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+    })
+    sseEvents.length = 0
+
+    mockClient.emit({ type: 'result', subtype: 'success' })
+    mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+    expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(1)
+    expect(sessions().isWaitingBackground(SESSION_ID)).toBe(true)
+  })
+
   it('clears background task on system task-completion and goes idle', () => {
     sessions().markActive(SESSION_ID)
 
@@ -622,16 +654,16 @@ describe('background Bash task tracking', () => {
       tool_use_result: { backgroundTaskId: 'bg-running' },
       message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
     })
+    sseEvents.length = 0
     // Turn ends with the task still tracked → session stays active (waiting).
     mockClient.emit({ type: 'result', subtype: 'success' })
     expect(sessions().isActive(SESSION_ID)).toBe(true)
 
-    sseEvents.length = 0
-
     // Turn-end idle arrives WHILE the bash is still running.
     mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
 
-    // Not cleared, not finalized — surfaced as waiting-on-background instead.
+    // Not cleared, not finalized — surfaced as waiting-on-background instead,
+    // once (the result said so; the idle does not repeat it).
     expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
     expect(sessions().backgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-running')
     expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
@@ -692,8 +724,7 @@ describe('background Bash task tracking', () => {
       ['background_task_started', ['bg-1']],
       ['background_task_started', ['bg-1', 'bg-2']],
       ['background_task_updated', ['bg-1', 'bg-2']],
-      // Once when the turn's output ends, again when the runtime reports idle.
-      ['session_waiting_background', ['bg-1', 'bg-2']],
+      // When the turn's output ends (the runtime's idle does not repeat it).
       ['session_waiting_background', ['bg-1', 'bg-2']],
       ['background_task_completed', ['bg-2']],
     ])
@@ -757,8 +788,8 @@ describe('background Bash task tracking', () => {
       subtype: 'background_tasks_changed',
       tasks: [{ task_id: 'bg-early', task_type: 'local_bash', description: 'Sleep' }],
     })
-    mockClient.emit({ type: 'result', subtype: 'success' })
     sseEvents.length = 0
+    mockClient.emit({ type: 'result', subtype: 'success' })
 
     mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
     expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
@@ -809,8 +840,8 @@ describe('background Bash task tracking', () => {
       ])
 
       // The subagent finishes; the lead's turn ends; the runtime reports idle.
-      mockClient.emit({ type: 'result', subtype: 'success' })
       sseEvents.length = 0
+      mockClient.emit({ type: 'result', subtype: 'success' })
       mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
 
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
