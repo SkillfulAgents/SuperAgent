@@ -173,11 +173,11 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
 
 /**
  * Classify a Slack (effective) chat id by shape: `channel|threadTs` composites
- * are threads, and top-level conversation ids encode their type in the prefix
+ * of a channel are threads, and top-level conversation ids encode their type in the prefix
  * (D* = DM, G* = private group/mpim, C* = channel).
  */
 export function classifySlackChatId(chatId: string): ChatConversationType | undefined {
-  if (chatId.indexOf('|') > 0) return 'thread'
+  if (/^[CG][^|]*\|\d+\.\d+$/.test(chatId)) return 'thread'
   if (chatId.startsWith('D')) return 'dm'
   if (chatId.startsWith('G')) return 'group'
   if (chatId.startsWith('C')) return 'channel'
@@ -452,6 +452,11 @@ function relayOnlyReceiver(): Receiver {
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
+
+function inThread<T extends object>(args: T, threadTs: string | undefined, alsoSendToChannel: boolean) {
+  if (!threadTs) return args
+  return alsoSendToChannel ? { ...args, thread_ts: threadTs, reply_broadcast: true } : { ...args, thread_ts: threadTs }
+}
 
 export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
@@ -956,7 +961,7 @@ export class SlackConnector extends ChatAgentIntegration {
 
     let lastTs = ''
     for (const chunk of splitChatMessage(tablesToMonospace(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
-      lastTs = await this.postText(chatId, chunk)
+      lastTs = await this.postText(chatId, chunk, message.alsoSendToChannel)
     }
 
     return lastTs
@@ -991,7 +996,7 @@ export class SlackConnector extends ChatAgentIntegration {
       : md) || ':hourglass_flowing_sand: Thinking...'
 
     if (!existingMessageId) {
-      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), () => [markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH))])
+      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), false, () => [markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH))])
     }
 
     // Edit existing message
@@ -1037,30 +1042,31 @@ export class SlackConnector extends ChatAgentIntegration {
   private async postText(
     chatId: string,
     md: string,
+    alsoSendToChannel = false,
     converted = () => splitChatMessage(markdownToSlackMrkdwn(md), MAX_MESSAGE_LENGTH),
   ): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     try {
-      const result = await this.app.client.chat.postMessage({ channel, markdown_text: md, ...(threadTs ? { thread_ts: threadTs } : {}) })
+      const result = await this.app.client.chat.postMessage(inThread({ channel, markdown_text: md }, threadTs, alsoSendToChannel))
       this.posted(chatId)
       return result.ts || ''
     } catch (err: unknown) {
       if (!isSlackBlocksRejection(err)) throw err
       console.warn('[SlackConnector] Slack refused the markdown blocks, sending converted text')
-      const ts = await this.postConverted(chatId, converted())
+      const ts = await this.postConverted(chatId, converted(), alsoSendToChannel)
       this.convertedMessages.add(ts)
       return ts
     }
   }
 
   /** Post chunks of today's converted text. Returns the last ts. */
-  private async postConverted(chatId: string, chunks: string[]): Promise<string> {
+  private async postConverted(chatId: string, chunks: string[], alsoSendToChannel = false): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     let ts = ''
     for (const chunk of chunks) {
-      ts = (await this.app.client.chat.postMessage({ channel, text: chunk, mrkdwn: true, ...(threadTs ? { thread_ts: threadTs } : {}) })).ts || ''
+      ts = (await this.app.client.chat.postMessage(inThread({ channel, text: chunk, mrkdwn: true }, threadTs, alsoSendToChannel))).ts || ''
       this.posted(chatId)
     }
     return ts

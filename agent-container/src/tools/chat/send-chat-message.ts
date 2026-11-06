@@ -22,7 +22,7 @@ export function makeSendChatMessageTool(getCallerSessionId: () => string) {
 
 Use this ONLY to initiate contact outside the current conversation — e.g. a scheduled or background run notifying someone, or messaging a DIFFERENT chat than the one this session is responding in (like DMing a specific person while working a channel thread).
 
-If this session was started by an incoming chat message, do NOT use this tool to reply to that conversation: everything you write in your response is already delivered to it automatically, and sending it here too would post it twice.
+If this session was started by an incoming chat message, do NOT use this tool to reply to that conversation: everything you write in your response is already delivered to it automatically, and sending it here too would post it twice. The one exception is also_send_to_channel, like Slack's "Also send to channel": it posts into a channel thread (this session's own thread when chat_id is omitted) and also shows the message in the channel. Use it for a short takeaway the whole channel should see; your full answer stays in the thread. It is supported only where the integration's capabilities include thread_broadcast.
 
 The destination is either a chat_id (an existing conversation or channel — see list_agent_integrations and list_chat_channels) or a user_id (a person from list_chat_users; the 1:1 conversation is opened automatically, so this works even if they never messaged the bot). Pass one or the other, never both. Omitting both works only when the integration has exactly one active chat. user_id is supported only where the integration's capabilities include dm_by_user_id.
 
@@ -36,8 +36,9 @@ Use the optional context parameter to attach internal notes that help the receiv
       user_id: z.string().optional().describe('Provider user ID of a person to DM (from list_chat_users). Opens or reuses the 1:1 conversation. Mutually exclusive with chat_id.'),
       email: z.object({ to: z.array(z.string()).optional(), cc: z.array(z.string()).optional(), bcc: z.array(z.string()).optional(), subject: z.string().optional(), reply_to_message_id: z.string().optional(), reply_all: z.boolean().optional(), attachment_paths: z.array(z.string()).optional(), idempotency_key: z.string() }).optional().describe('Structured email send; required for Email integrations. A unique stable key per logical send: letters, numbers, dots, underscores, colons or hyphens.'),
       context: z.string().optional().describe('Internal context for session continuity. Not sent to the user — only recorded in the session log.'),
+      also_send_to_channel: z.boolean().optional().describe('Post into a channel thread and also show the message in the channel. Threads only.'),
     },
-    async ({ integration_id, message, chat_id, user_id, context, email }) => {
+    async ({ integration_id, message, chat_id, user_id, context, email, also_send_to_channel }) => {
       try {
         const data = await callChatHost<SendResult>('send', {
           integration_id,
@@ -46,6 +47,7 @@ Use the optional context parameter to attach internal notes that help the receiv
           user_id,
           context,
           email,
+          also_send_to_channel,
           session_id: getCallerSessionId(),
         })
         return textResult(`Message accepted via ${data.provider} to chat ${data.chatId}.${data.messageId ? ` Message ID: ${data.messageId}. Status: ${data.status ?? 'queued'}.` : ''}`)

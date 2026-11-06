@@ -24,9 +24,11 @@ describe('classifySlackChatId', () => {
     expect(classifySlackChatId('G0CCC333')).toBe('group')
   })
 
-  it('classifies composite thread ids as threads regardless of prefix', () => {
+  it('classifies composite channel thread ids as threads', () => {
     expect(classifySlackChatId('C0BBB222|1784571878.344849')).toBe('thread')
     expect(classifySlackChatId('G0CCC333|1784571878.344849')).toBe('thread')
+    expect(classifySlackChatId('C0BBB222|')).toBe('channel')
+    expect(classifySlackChatId('D0AAA111|1784571878.344849')).toBe('dm')
   })
 
   it('returns undefined for unrecognized shapes', () => {

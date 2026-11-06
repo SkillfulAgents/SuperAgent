@@ -633,6 +633,18 @@ describe('SlackConnector text', () => {
     expect(postMessage.mock.calls[0][0].markdown_text).toBeUndefined()
   })
 
+  it('also sends a thread reply to the channel, on the converted fallback too', async () => {
+    const { connector, postMessage } = makeConnector()
+    await connector.sendMessage('C1|100.1', { text: 'Takeaway', alsoSendToChannel: true })
+    postMessage.mockRejectedValueOnce(rejected)
+    await connector.sendMessage('C1|100.1', { text: '## Takeaway', alsoSendToChannel: true })
+    await connector.sendMessage('C1|100.1', { text: 'Thread only' })
+
+    expect(postMessage.mock.calls.map(([args]) => [args.thread_ts, args.reply_broadcast])).toEqual([
+      ['100.1', true], ['100.1', true], ['100.1', true], ['100.1', undefined],
+    ])
+  })
+
   it('a table followed by prose keeps the closing fence on its own line', async () => {
     const { connector, postMessage } = makeConnector()
     await connector.sendMessage('D1', { text: '| A | B |\n|---|---|\n| 1 | 2 |\nNext paragraph' })
