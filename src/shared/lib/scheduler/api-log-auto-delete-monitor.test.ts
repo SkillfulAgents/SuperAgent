@@ -36,6 +36,9 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import { apiLogAutoDeleteMonitor } from './api-log-auto-delete-monitor'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(apiLogAutoDeleteMonitor))
 
 function makeAgent(slug: string): AgentConfig {
   return {

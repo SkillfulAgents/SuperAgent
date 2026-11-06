@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The web entry's boot order: error reporting first, then the database (and
-// the tenant identity that lives in it), then AppState, then the bind. A failed open is the first thing
+// the tenant identity that lives in it), then AppState, then task dispatch, then the bind. A failed open is the first thing
 // that can end the process, and its fatal report must have a provider to reach
 // and time to send.
 const calls: string[] = []
@@ -21,6 +21,9 @@ const attachErrorReportingIdentity = vi.fn(async () => {
 const initializeLocalAppState = vi.fn(async () => {
   calls.push('initializeLocalAppState')
 })
+const prepareBackgroundWork = vi.fn(async () => {
+  calls.push('prepareBackgroundWork')
+})
 const bindServerWithRetry = vi.fn(async () => {
   calls.push('bind')
   return { server: { close: vi.fn() }, port: 47891 }
@@ -39,6 +42,7 @@ vi.mock('@shared/lib/app-state', () => ({ initializeLocalAppState }))
 vi.mock('@shared/lib/server-bind', () => ({ bindServerWithRetry }))
 vi.mock('@shared/lib/startup', () => ({
   afterBindInitialize,
+  prepareBackgroundWork,
   setupServerHandlers: vi.fn(),
   shutdownServices: vi.fn(),
 }))
@@ -73,7 +77,7 @@ afterEach(() => {
 })
 
 describe('web server boot order', () => {
-  it('initialises error reporting before opening the database, then AppState, then binds', async () => {
+  it('initialises error reporting before opening the database, then AppState, then task dispatch, then binds', async () => {
     process.env.NODE_ENV = 'production'
     await boot()
     expect(calls).toEqual([
@@ -81,6 +85,7 @@ describe('web server boot order', () => {
       'openDatabase',
       'attachErrorReportingIdentity',
       'initializeLocalAppState',
+      'prepareBackgroundWork',
       'bind',
       'afterBindInitialize',
     ])
@@ -89,7 +94,7 @@ describe('web server boot order', () => {
   it('skips error reporting outside production, as afterBindInitialize does', async () => {
     process.env.NODE_ENV = 'test'
     await boot()
-    expect(calls).toEqual(['openDatabase', 'attachErrorReportingIdentity', 'initializeLocalAppState', 'bind', 'afterBindInitialize'])
+    expect(calls).toEqual(['openDatabase', 'attachErrorReportingIdentity', 'initializeLocalAppState', 'prepareBackgroundWork', 'bind', 'afterBindInitialize'])
   })
 
   it('flushes error reporting before exiting when the database fails to open', async () => {

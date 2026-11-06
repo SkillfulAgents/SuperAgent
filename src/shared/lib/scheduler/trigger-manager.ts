@@ -10,6 +10,7 @@
 
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { PassTask, taskManager } from '@shared/lib/background-work'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
@@ -115,8 +116,10 @@ class TriggerManager {
   private isRunning = false
   private readonly registrations = new Map<string, MemberRegistration>()
   private syncQueue: Promise<void> = Promise.resolve()
-  private resyncTimer: NodeJS.Timeout | null = null
   private failedSyncs = 0
+  // A failure schedules its own retry.
+  private readonly resyncTask = new PassTask('webhook-triggers.resync', () => this.syncRegistrations().catch(() => {}))
+  readonly tasks = [this.resyncTask]
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -137,8 +140,7 @@ class TriggerManager {
 
   stop(): void {
     this.isRunning = false
-    if (this.resyncTimer) clearTimeout(this.resyncTimer)
-    this.resyncTimer = null
+    background(taskManager().cancel(this.resyncTask.type), { name: 'trigger-manager.cancel-resync' })
     this.failedSyncs = 0
     for (const registration of this.registrations.values()) registration.handle.dispose()
     this.registrations.clear()
@@ -167,16 +169,10 @@ class TriggerManager {
     return run
   }
 
+  /** Each sync, however it was asked for, replaces the next one: the delay counts from the last. */
   private scheduleResync(delayMs: number): void {
-    if (this.resyncTimer) clearTimeout(this.resyncTimer)
-    this.resyncTimer = null
     if (!this.isRunning) return
-    this.resyncTimer = setTimeout(() => {
-      this.resyncTimer = null
-      // A failure schedules its own retry.
-      background(this.syncRegistrations().catch(() => {}), { name: 'trigger-manager.sync-registrations' })
-    }, delayMs)
-    this.resyncTimer.unref?.()
+    background(taskManager().at(Date.now() + delayMs, this.resyncTask.type, this.resyncTask.spec), { name: 'trigger-manager.schedule-resync' })
   }
 
   private async syncOnce(): Promise<void> {

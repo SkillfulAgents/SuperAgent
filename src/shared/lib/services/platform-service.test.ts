@@ -26,6 +26,9 @@ const mockFetchBilling = vi.fn()
 const mockRefreshCloudWorkspace = vi.fn(async () => undefined)
 
 import { platformService } from './platform-service'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(platformService))
 import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
 import { backgroundSettled } from '@shared/lib/background'
 
@@ -51,15 +54,15 @@ describe('PlatformService', () => {
     platformService.stop()
   })
 
-  it('maintains the cloud-workspace token on a recurring interval (not just once)', () => {
+  it('maintains the cloud-workspace token on a recurring interval (not just once)', async () => {
     vi.useFakeTimers()
     try {
       platformService.start()
-      vi.advanceTimersByTime(30 * 60_000)
+      await vi.advanceTimersByTimeAsync(30 * 60_000)
       const afterFirst = mockRefreshCloudWorkspace.mock.calls.length
       expect(afterFirst).toBeGreaterThanOrEqual(1)
       // A second interval must fire again — proves it's periodic, not one-shot.
-      vi.advanceTimersByTime(30 * 60_000)
+      await vi.advanceTimersByTimeAsync(30 * 60_000)
       expect(mockRefreshCloudWorkspace.mock.calls.length).toBeGreaterThan(afterFirst)
     } finally {
       platformService.stop()

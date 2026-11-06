@@ -206,6 +206,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { ContainerHost, containerHost } from './container-host'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 describe('ContainerRuntime.ensureRunning — env var construction', () => {
   beforeEach(() => {
@@ -1931,5 +1932,94 @@ describe('ContainerHost.getReadiness before this process has checked', () => {
     await freshProcess.ensureImageReady()
 
     expect(freshProcess.getReadiness().status).toBe('RUNTIME_UNAVAILABLE')
+  })
+})
+
+describe('ContainerHost periodic passes', () => {
+  const STATUS_SYNC_MS = 300_000
+  const HEALTH_CHECK_MS = 30_000
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    registerTasks(containerHost)
+  })
+
+  afterEach(() => {
+    containerHost.stopStatusSync()
+    containerHost.stopHealthMonitor()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('syncs statuses on its interval, with no sync at the start, until stopped', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS - 1)
+    expect(sync).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sync).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS)
+    expect(sync).toHaveBeenCalledTimes(2)
+
+    containerHost.stopStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS * 2)
+    expect(sync).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('can start the status sync again after it stopped', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.stopStatusSync()
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS)
+    expect(sync).toHaveBeenCalledTimes(1)
+  })
+
+  it('logs a failed status sync and goes on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockRejectedValue(new Error('runtime gone'))
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS * 2)
+    expect(sync).toHaveBeenCalledTimes(2)
+    expect(error).toHaveBeenCalledWith('[ContainerHost] Periodic sync failed:', expect.objectContaining({ message: 'runtime gone' }))
+  })
+
+  it('checks health on its own interval, past a pass that hangs, until stopped', async () => {
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks')
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockResolvedValue(undefined)
+    containerHost.startHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS - 1)
+    expect(check).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(check).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 2)
+    expect(check).toHaveBeenCalledTimes(3)
+
+    containerHost.stopHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 3)
+    expect(check).toHaveBeenCalledTimes(3)
+  })
+
+  it('logs a failed health check and goes on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks').mockRejectedValue(new Error('runtime gone'))
+    containerHost.startHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 2)
+    expect(check).toHaveBeenCalledTimes(2)
+    expect(error).toHaveBeenCalledWith('[ContainerHost] Health check failed:', expect.objectContaining({ message: 'runtime gone' }))
+  })
+
+  it('runs the status sync and the health check as separate jobs', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.startHealthMonitor()
+    containerHost.stopStatusSync()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS)
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(sync).not.toHaveBeenCalled()
   })
 })

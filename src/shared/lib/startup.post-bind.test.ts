@@ -7,11 +7,13 @@ const initializeAgents = vi.fn().mockResolvedValue(undefined)
 const watchWebhookRelay = vi.fn((_relay: { snapshot(): { available: boolean } }) => () => {})
 // A relay that reports whether startup has started it.
 const relayState = vi.hoisted(() => ({ started: false }))
+// What shutdown released, in order.
+const released = vi.hoisted(() => [] as string[])
 vi.mock('./webhook-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./webhook-relay')>()),
   getWebhookRelay: () => ({
     start: () => { relayState.started = true },
-    stop: () => { relayState.started = false },
+    stop: () => { relayState.started = false; released.push('webhook-relay') },
     snapshot: () => ({ available: relayState.started, unavailableReason: relayState.started ? null : 'stopped' }),
   }),
 }))
@@ -64,9 +66,10 @@ vi.mock('./container/container-host', async () => {
       startStatusSync: vi.fn(),
       startHealthMonitor: vi.fn(),
       onBeforeContainerStop: null,
-      stopStatusSync: vi.fn(),
-      stopHealthMonitor: vi.fn(),
-      stopAll: () => Promise.resolve(),
+      stopStatusSync: () => { released.push('status-sync') },
+      stopHealthMonitor: () => { released.push('health-monitor') },
+      stopAll: async () => { released.push('containers') },
+      clearClients: vi.fn(),
     }),
   }
 })
@@ -100,13 +103,16 @@ vi.mock('./boot-timing', () => ({
 }))
 vi.mock('../../main/host-browser', () => ({
   getActiveProvider: () => null,
-  stopAllProviders: () => Promise.resolve(),
+  stopAllProviders: async () => { released.push('browser-providers') },
 }))
 const staleUploads = vi.hoisted(() => ({ startStaleUploadCleanup: vi.fn(), stopStaleUploadCleanup: vi.fn() }))
 vi.mock('./utils/chunked-upload', () => staleUploads)
 vi.mock('../../main/host-browser/profile-maintenance', () => ({
   startBrowserProfileCleanup: vi.fn(),
-  stopBrowserProfileCleanup: vi.fn(),
+  stopBrowserProfileCleanup: () => { released.push('browser-profile-cleanup') },
+}))
+vi.mock('../../api/credentials/credential-broker', () => ({
+  credentialBroker: { shutdown: async () => { released.push('credential-broker') } },
 }))
 vi.mock('../../main/browser-stream-proxy', () => ({ setupBrowserStreamProxy: vi.fn() }))
 vi.mock('../../main/cloud-stream-proxy', () => ({ setupCloudStreamProxy: vi.fn() }))
@@ -114,34 +120,34 @@ vi.mock('./proxy/review-manager', () => ({ reviewManager: { rejectAll: vi.fn() }
 vi.mock('./proxy/account-reauth-manager', () => ({ accountReauthManager: { rejectAll: vi.fn() } }))
 vi.mock('./proxy/mcp-reauth-manager', () => ({ mcpReauthManager: { rejectAll: vi.fn() } }))
 vi.mock('./scheduler/task-scheduler', () => ({
-  taskScheduler: { start: () => taskSchedulerStart(), stop: vi.fn() },
+  taskScheduler: { start: () => taskSchedulerStart(), stop: () => { released.push('task-scheduler') } },
 }))
 vi.mock('./scheduler/trigger-manager', () => ({
-  triggerManager: { start: () => triggerManagerStart(), stop: vi.fn() },
+  triggerManager: { start: () => triggerManagerStart(), stop: () => { released.push('trigger-manager') } },
 }))
 vi.mock('./scheduler/platform-notifications-manager', () => ({
-  platformNotificationsManager: { start: () => platformNotificationsStart(), stop: vi.fn() },
+  platformNotificationsManager: { start: () => platformNotificationsStart(), stop: () => { released.push('platform-notifications') } },
 }))
 vi.mock('./agent-integrations/agent-integration-manager', () => ({
-  agentIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
+  agentIntegrationManager: { start: () => chatIntegrationStart(), stop: () => { released.push('agent-integrations') } },
 }))
 vi.mock('./scheduler/session-auto-delete-monitor', () => ({
-  sessionAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
+  sessionAutoDeleteMonitor: { start: () => Promise.resolve(), stop: () => { released.push('session-auto-delete') } },
 }))
 vi.mock('./scheduler/api-log-auto-delete-monitor', () => ({
-  apiLogAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
+  apiLogAutoDeleteMonitor: { start: () => Promise.resolve(), stop: () => { released.push('api-log-auto-delete') } },
 }))
 vi.mock('./scheduler/account-sync-service', () => ({
-  accountSyncService: { start: () => Promise.resolve(), stop: vi.fn() },
+  accountSyncService: { start: () => Promise.resolve(), stop: () => { released.push('account-sync') } },
 }))
 vi.mock('./services/platform-service', () => ({
-  platformService: { start: vi.fn(), stop: vi.fn() },
+  platformService: { start: vi.fn(), stop: () => { released.push('platform') } },
 }))
 vi.mock('./container/client-factory', () => ({
-  shutdownActiveRunner: () => Promise.resolve(),
+  shutdownActiveRunner: async () => { released.push('active-runner') },
 }))
 vi.mock('./computer-use/executor', () => ({
-  shutdownAC: () => Promise.resolve(),
+  shutdownAC: async () => { released.push('computer-use') },
 }))
 
 describe('initializeServices post-bind critical path', () => {
@@ -153,6 +159,7 @@ describe('initializeServices post-bind critical path', () => {
     initializeAgents.mockReset().mockResolvedValue(undefined)
     watchWebhookRelay.mockReset().mockReturnValue(() => {})
     relayState.started = false
+    released.length = 0
     ensureImageReady.mockReset().mockResolvedValue(undefined)
     taskSchedulerStart.mockReset().mockResolvedValue(undefined)
     triggerManagerStart.mockReset().mockResolvedValue(undefined)
@@ -332,6 +339,154 @@ describe('initializeServices post-bind critical path', () => {
     // The rest of shutdown reaches services this file does not fake in full.
     await shutdownServices().catch(() => undefined)
     expect(staleUploads.stopStaleUploadCleanup).toHaveBeenCalledOnce()
+  })
+
+  describe('the service catalog', () => {
+    // Dispatch has stopped before any of this. Services stop last registered
+    // first, so what others use goes after them: browsers before the containers
+    // they talk to, the relay before the long container stop, the agents after
+    // their containers, and the runner after the agents.
+    const SHUTDOWN_ORDER = [
+      'browser-profile-cleanup',
+      'platform',
+      'account-sync',
+      'api-log-auto-delete',
+      'session-auto-delete',
+      'trigger-manager',
+      'task-scheduler',
+      'agent-integrations',
+      'platform-notifications',
+      'credential-broker',
+      'browser-providers',
+      'relay-watcher',
+      'status-sync',
+      'health-monitor',
+      'webhook-relay',
+      'containers',
+      'agents',
+      'active-runner',
+      'computer-use',
+    ]
+
+    /** Records the two releases startup's own mocks cannot see. */
+    async function recordAgentsAndWatcher() {
+      const { agentRegistry } = await import('./agent-actor')
+      vi.spyOn(agentRegistry, 'evictAll').mockImplementation(async () => { released.push('agents') })
+      watchWebhookRelay.mockReturnValue(() => { released.push('relay-watcher') })
+    }
+
+    it('registers every service and starts nothing, however often it is prepared', async () => {
+      const { prepareBackgroundWork } = await import('./startup')
+      const { serviceHost, taskManager } = await import('./background-work')
+      await prepareBackgroundWork()
+      await prepareBackgroundWork()
+
+      expect(Object.keys(serviceHost().states())).toEqual([
+        'computer-use', 'active-runner', 'agent-registry', 'containers',
+        'webhook-relay', 'container-host', 'host-browser',
+        'platform-notifications', 'agent-integrations', 'container-image', 'task-scheduler', 'webhook-triggers',
+        'session-auto-delete', 'api-log-auto-delete', 'account-sync', 'platform',
+      ])
+      expect(new Set(Object.values(serviceHost().states()))).toEqual(new Set(['registered']))
+      expect((taskManager() as import('./background-work').LocalTaskManager).scheduled()).toEqual([])
+      expect(relayState.started).toBe(false)
+      expect(initializeAgents).not.toHaveBeenCalled()
+      expect(ensureImageReady).not.toHaveBeenCalled()
+      expect(listAgents).not.toHaveBeenCalled()
+    })
+
+    it('shuts down in dependency order', async () => {
+      const { initializeServices, shutdownServices } = await import('./startup')
+      await recordAgentsAndWatcher()
+      await initializeServices()
+      await vi.waitFor(() => expect(triggerManagerStart).toHaveBeenCalledTimes(1))
+      await shutdownServices()
+      expect(released).toEqual(SHUTDOWN_ORDER)
+    })
+
+    it('has stopped dispatch before it releases anything', async () => {
+      const { initializeServices, shutdownServices } = await import('./startup')
+      const { taskManager } = await import('./background-work')
+      await initializeServices()
+      const stop = vi.spyOn(taskManager(), 'stop').mockImplementation(async () => { released.push('dispatch') })
+      await shutdownServices()
+      expect(released.slice(0, 2)).toEqual(['browser-profile-cleanup', 'dispatch'])
+      stop.mockRestore()
+    })
+
+    it('releases everything even when initialization failed partway', async () => {
+      validateAuth.mockRejectedValueOnce(new Error('platform unreachable'))
+      const { afterBindInitialize, shutdownServices } = await import('./startup')
+      await recordAgentsAndWatcher()
+      await afterBindInitialize({ degradedOnFailure: true })
+      await shutdownServices()
+      // The relay watcher never started: nothing to stop there.
+      expect(released).toEqual(SHUTDOWN_ORDER.filter(name => name !== 'relay-watcher'))
+    })
+
+    it('leaves the rest unstarted when the container host fails to initialize', async () => {
+      initializeAgents.mockRejectedValueOnce(new Error('runtime down'))
+      const { afterBindInitialize, getServicesInitError } = await import('./startup')
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      await afterBindInitialize({ degradedOnFailure: true })
+      expect(getServicesInitError()).toBe('runtime down')
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(watchWebhookRelay).not.toHaveBeenCalled()
+      expect(chatIntegrationStart).not.toHaveBeenCalled()
+      expect(taskSchedulerStart).not.toHaveBeenCalled()
+      error.mockRestore()
+    })
+
+    it('keeps other services running when one background service fails to start', async () => {
+      chatIntegrationStart.mockRejectedValueOnce(new Error('no integrations'))
+      const { captureException } = await import('./error-reporting')
+      const { initializeServices } = await import('./startup')
+      const { serviceHost } = await import('./background-work')
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      await initializeServices()
+      await vi.waitFor(() => expect(serviceHost().states()['webhook-triggers']).toBe('started'))
+      expect(serviceHost().states()['agent-integrations']).toBe('failed')
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'no integrations' }), { tags: { component: 'chat-integration', operation: 'startup' } })
+      error.mockRestore()
+    })
+
+    it('starts nothing still queued once shutdown begins, and stops again what was in flight', async () => {
+      const holds: Array<() => void> = []
+      const hold = () => new Promise<void>((resolve) => { holds.push(resolve) })
+      platformNotificationsStart.mockImplementation(hold)
+      chatIntegrationStart.mockImplementation(hold)
+      ensureImageReady.mockImplementation(hold)
+      const { initializeServices, shutdownServices } = await import('./startup')
+      await initializeServices()
+      await vi.waitFor(() => expect(holds).toHaveLength(3))
+
+      await shutdownServices()
+      released.length = 0
+      holds.forEach(resolve => resolve())
+      await vi.waitFor(() => expect(released).toEqual(expect.arrayContaining(['platform-notifications', 'agent-integrations'])))
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(taskSchedulerStart).not.toHaveBeenCalled()
+      expect(triggerManagerStart).not.toHaveBeenCalled()
+    })
+
+    it('stays shut down when it comes before the entry point installed background work', async () => {
+      const { closeBackgroundWork } = await import('./background-work')
+      await closeBackgroundWork()
+      const { afterBindInitialize, prepareBackgroundWork, shutdownServices } = await import('./startup')
+      await recordAgentsAndWatcher()
+      await shutdownServices()
+      // The relay watcher never started: nothing to stop there.
+      expect(released).toEqual(SHUTDOWN_ORDER.filter(name => name !== 'relay-watcher'))
+
+      // The entry point was still on its way there, and carries on.
+      await prepareBackgroundWork()
+      await afterBindInitialize({ degradedOnFailure: true })
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(relayState.started).toBe(false)
+      expect(initializeAgents).not.toHaveBeenCalled()
+      expect(ensureImageReady).not.toHaveBeenCalled()
+      expect(taskSchedulerStart).not.toHaveBeenCalled()
+    })
   })
 
   it('records the init error for runtime-status when init fails degraded', async () => {

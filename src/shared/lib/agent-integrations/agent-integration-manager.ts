@@ -34,8 +34,11 @@ import {
   getLastDisplayName,
 } from './store'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
+import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { PassTask, Task, taskManager, type TaskResult } from '@shared/lib/background-work'
+import { restoreStreamPayloadSchema, type RestoreStreamPayload } from './restore-stream-schema'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
 import { continuationPrompt } from './continuation-prompt'
@@ -87,13 +90,29 @@ interface ManagedSession {
   recovered?: boolean
   recoveryClears?: number
   recoveryReported?: boolean
-  recoveryTimer?: ReturnType<typeof setTimeout>
+  /** The job of a recovery retry that is scheduled. */
+  recoveryWake?: string
 }
 
 /** A context's routing fields, with `update` applied: what a connector delivers by. */
 function routing(source: IntegrationSessionContext, update: Partial<Pick<IntegrationSessionContext, 'integration' | 'sessionId'>> = {}): IntegrationSessionContext {
   const { integration, externalId, sessionId, interactionId, replyTarget } = source
   return { integration, externalId, sessionId, interactionId, replyTarget, ...update }
+}
+
+/** Another go at reattaching a chat's session, after one failed. Process-local, like the session it restores. */
+class RestoreStreamTask extends Task<RestoreStreamPayload> {
+  readonly type = 'agent-integrations.restore-stream'
+  readonly payloadSchema = restoreStreamPayloadSchema
+
+  constructor(private readonly restore: (payload: RestoreStreamPayload) => Promise<unknown>) {
+    super()
+  }
+
+  async execute(payload: RestoreStreamPayload): Promise<TaskResult<RestoreStreamPayload>> {
+    await runWithOptionalUser(payload.actingUserId, () => this.restore(payload))
+    return { kind: 'done' }
+  }
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────
@@ -123,6 +142,20 @@ export class AgentIntegrationManager {
     notice: (row, beforeSend) => this.deliverFailureNotice(row, beforeSend),
   })
 
+  // Not waited for, so a pass does not count as running until it settles: a
+  // connect that hangs holds up its own integration (`reconcilingIds`), never
+  // the later passes that look after all the others.
+  private readonly healthCheckTask = new PassTask('agent-integrations.health-check', async () => {
+    background(this.runHealthChecks().catch((err) => {
+      console.error('[AgentIntegrationManager] Health check error:', err)
+      reportError(err, 'health-check')
+    }), { name: 'integration-manager.health-check' })
+  })
+  private readonly restoreStreamTask = new RestoreStreamTask(({ integrationId, externalId, generation, sessionId }) =>
+    this.recoverSessionContext(integrationId, externalId, generation, sessionId)
+      .catch(error => reportError(error, 'restore-stream', { integrationId })))
+  readonly tasks = [this.healthCheckTask, this.restoreStreamTask, ...this.deliveries.tasks]
+
   private async deliverFailureNotice(row: DeliveryRecord, beforeSend: () => Promise<void>): Promise<void> {
     const { route } = parseDeliveryEnvelope(row.envelope)
     const integration = await getIntegration(row.integrationId)
@@ -151,7 +184,6 @@ export class AgentIntegrationManager {
   private isRunning = false
   // Authorization hints for each integration from its first connect attempt until it is removed or the manager stops.
   private authorization?: IntegrationAuthorizationWatch
-  private healthCheckInterval: ReturnType<typeof setInterval> | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
   // Integrations with a rebuild in flight. Reconcile passes (5-min tick, resume,
@@ -251,12 +283,7 @@ export class AgentIntegrationManager {
       }
     }
 
-    this.healthCheckInterval = setInterval(() => {
-      background(this.runHealthChecks().catch((err) => {
-        console.error('[AgentIntegrationManager] Health check error:', err)
-        reportError(err, 'health-check')
-      }), { name: 'integration-manager.health-check' })
-    }, HEALTH_CHECK_INTERVAL_MS)
+    await taskManager().ensureEvery(this.healthCheckTask.type, this.healthCheckTask.spec, { intervalMs: HEALTH_CHECK_INTERVAL_MS })
 
     // Positive start signal: startup.ts only logs start() FAILURES, so without
     // this a dead manager is indistinguishable from a healthy idle one.
@@ -267,10 +294,7 @@ export class AgentIntegrationManager {
     this.deliveries.stop()
     this.authorization?.close()
     this.authorization = undefined
-    if (this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval)
-      this.healthCheckInterval = null
-    }
+    background(taskManager().cancel(this.healthCheckTask.type), { name: 'integration-manager.cancel-health-check' })
 
     // Clean up all chat session SSE subscriptions
     for (const [, session] of this.chatSessions) {
@@ -806,8 +830,7 @@ export class AgentIntegrationManager {
     session.sseUnsubscribe?.()
     if (session.sessionId && session.sessionId !== sessionId) {
       session.connector.releaseSession(session.context)
-      clearTimeout(session.recoveryTimer)
-      session.recoveryTimer = undefined
+      this.cancelRecoveryWake(session)
       session.recovery = undefined
       session.recovered = false
       session.recoveryReported = false
@@ -922,8 +945,7 @@ export class AgentIntegrationManager {
         if (!current()) return
         session.recovered = true
         session.recoveryReported = false
-        clearTimeout(session.recoveryTimer)
-        session.recoveryTimer = undefined
+        this.cancelRecoveryWake(session)
         await this.observe(session)
       })().catch(async error => {
         if (!current()) return
@@ -939,13 +961,11 @@ export class AgentIntegrationManager {
         }
         if (!session.recoveryReported) reportError(error, 'restore-stream', { integrationId, sessionId: row.sessionId })
         session.recoveryReported = true
-        clearTimeout(session.recoveryTimer)
-        session.recoveryTimer = setTimeout(() => {
-          session.recoveryTimer = undefined
-          background(this.recoverSessionContext(integrationId, externalId, generation, row.sessionId)
-            .catch(error => reportError(error, 'restore-stream', { integrationId })), { name: 'integration-manager.restore-stream' })
-        }, 30_000)
-        session.recoveryTimer.unref()
+        session.recoveryWake = `${this.restoreStreamTask.type}:${this.getChatSessionKey(integrationId, externalId)}`
+        background(taskManager().at(Date.now() + 30_000, session.recoveryWake, {
+          taskType: this.restoreStreamTask.type,
+          payload: { integrationId, externalId, generation, sessionId: row.sessionId, actingUserId: getRequestUserId() },
+        }), { name: 'integration-manager.schedule-restore-stream' })
       }).finally(() => { if (session.sessionId === row.sessionId) session.recovery = undefined })
     }
     await session.recovery
@@ -1421,9 +1441,15 @@ export class AgentIntegrationManager {
 
   /** Stop a chat session's live streaming: drop the SSE subscription, the tick, and the indicator. */
   private stopSession(session: ManagedSession): void {
-    clearTimeout(session.recoveryTimer)
+    this.cancelRecoveryWake(session)
     session.sseUnsubscribe?.()
     session.connector.releaseSession(session.context)
+  }
+
+  private cancelRecoveryWake(session: ManagedSession): void {
+    if (!session.recoveryWake) return
+    background(taskManager().cancel(session.recoveryWake), { name: 'integration-manager.cancel-restore-stream' })
+    session.recoveryWake = undefined
   }
 
   private async teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): Promise<void> {
