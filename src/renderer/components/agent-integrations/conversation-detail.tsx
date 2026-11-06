@@ -6,7 +6,6 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { ArrowUpRight } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
 import { DialogTitle } from '@renderer/components/ui/dialog'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
@@ -139,10 +138,14 @@ export function ConversationDetail({
             </Select>
           )}
           {!blank && (
-            <Button variant="outline" size="sm" onClick={() => onOpenSession(openWindowId as string)}>
+            <button
+              type="button"
+              className="inline-flex items-center gap-0.5 rounded-sm text-sm text-blue-500 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onClick={() => onOpenSession(openWindowId as string)}
+            >
               Open Session
               <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </Button>
+            </button>
           )}
         </div>
       </div>
