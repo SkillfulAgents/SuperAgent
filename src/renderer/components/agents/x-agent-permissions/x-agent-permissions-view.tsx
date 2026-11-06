@@ -16,6 +16,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { LinkLinesFixture, linkFixtureOn } from './link-lines-fixture'
 
 type Operation = 'list' | 'read' | 'invoke'
 type Decision = 'allow' | 'review' | 'block'
@@ -392,8 +393,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             </div>
           )}
 
-          {/* Global toggles (apply to every agent in the workspace) */}
-          <div className="space-y-2">
+          {/* Global toggles (apply to every agent in the workspace). EXPERIMENT: the fixture's "Every agent" row replaces them. */}
+          <div className={linkFixtureOn() ? 'hidden' : 'space-y-2'}>
             <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
             <div className="rounded-card border p-3">
               <div className="flex items-center justify-between gap-3">
@@ -433,8 +434,10 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             </div>
           </div>
 
-          {/* Per-agent connections */}
-          {agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
+          {/* Per-agent connections. EXPERIMENT: the link-row fixture replaces them when its flag is set. */}
+          {linkFixtureOn() ? (
+            <LinkLinesFixture self={agentsQuery.data?.find((a) => a.slug === agentSlug) ?? { slug: agentSlug, name: 'This agent' }} />
+          ) : agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
             <p className="text-sm text-muted-foreground">No other agents in this workspace yet.</p>
           ) : (
             <>
