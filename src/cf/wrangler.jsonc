@@ -1,0 +1,42 @@
+// SuperAgent for one org as one Cloudflare Worker. From the repository root, after
+// `AUTH_MODE=true npm run build:web`:
+//   npx wrangler d1 create superagent          (put its id below)
+//   npx wrangler secret put SUPERAGENT_VAULT_KEY --config src/cf/wrangler.jsonc   (openssl rand -base64 32)
+//   npx wrangler deploy --config src/cf/wrangler.jsonc
+// The org's sign-in and platform secrets (BETTER_AUTH_SECRET, AUTH_PROVIDERS_JSON, PLATFORM_TOKEN)
+// are set the same way.
+{
+  "name": "superagent",
+  "main": "index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "minify": true,
+  // What Workers lacks, bundled in place of the package (workers-shims/).
+  "alias": {
+    "ws": "./workers-shims/ws.ts",
+    "express": "./workers-shims/express.ts",
+    "raw-body": "./workers-shims/raw-body.ts",
+    "undici": "./workers-shims/undici.ts",
+    "@skillful-agents/agent-computer": "./workers-shims/agent-computer.ts"
+  },
+  "vars": {
+    "AUTH_MODE": "true",
+    "APP_ORIGIN": "https://superagent.example.com"
+  },
+  "assets": {
+    "directory": "../../dist/renderer",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // The HTML entry and service worker carry the server's facts (index.ts): everything but the hashed bundles and icons.
+    "run_worker_first": ["/*", "!/assets/*", "!/model-icons/*", "!/provider-icons/*", "!/service-icons/*"]
+  },
+  "d1_databases": [{ "binding": "DB", "database_name": "superagent", "database_id": "00000000-0000-0000-0000-000000000000" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "APP_STATE", "class_name": "AppStateDurableObject" },
+      { "name": "TASK_MANAGER", "class_name": "TaskManagerDurableObject" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject"] }],
+  "observability": { "enabled": true }
+}

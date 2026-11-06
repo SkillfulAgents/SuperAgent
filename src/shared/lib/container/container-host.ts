@@ -30,7 +30,7 @@ import {
   type ContainerRunner,
 } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
-import type { ImagePullProgress, RuntimeReadiness } from './types'
+import { CONTAINER_RUNNER_IDS, type ImagePullProgress, type RuntimeReadiness } from './types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings, type AppSettings } from '@shared/lib/config/settings'
@@ -463,9 +463,27 @@ export class ContainerHost {
     }), { name: 'container-host.ensure-image-ready' })
   }
 
-  /** Get the current runtime readiness state. */
+  /**
+   * Get the current runtime readiness state. Before this process has checked, a runner
+   * that needs no local image reads as ready once its deployment set it up (its
+   * environment configures it): that is all the check would find. A deployment that
+   * serves each request from a fresh process (one org's API on many isolates) then never
+   * shows "Checking runtime availability" forever.
+   */
   getReadiness(): RuntimeReadiness {
+    if (!this.readinessChecked) return this.derivedReadiness() ?? this._readiness
     return this._readiness
+  }
+
+  /** Set once this process has run a readiness check; until then readiness is derived. */
+  private readinessChecked = false
+
+  private derivedReadiness(): RuntimeReadiness | null {
+    const runner = CONTAINER_RUNNER_IDS.find((id) => {
+      const client = getContainerClientClass(id)
+      return !client.requiresLocalImage && client.isEligible()
+    })
+    return runner ? { status: 'READY', message: `Ready (${getRunnerDisplayName(runner)})`, pullProgress: null } : null
   }
 
   /** Reset readiness to CHECKING state and broadcast. Used when restarting a runtime.
@@ -523,6 +541,7 @@ export class ContainerHost {
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
+    this.readinessChecked = true
     globalFeed.publish({
       type: 'runtime_readiness_changed',
       readiness,
