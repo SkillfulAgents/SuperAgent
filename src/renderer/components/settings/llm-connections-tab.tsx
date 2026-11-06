@@ -26,6 +26,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
 import { ProviderModelPickerPopover, SettingsModelSelect } from './settings-model-select'
+import { ReconnectRequiredIcon } from './provider-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
 import type { CatalogOverrideEntry } from '@shared/lib/llm-provider/model-catalog-schema'
@@ -91,6 +92,7 @@ export function LlmConnectionsTab() {
   const mutation = useConnectionMutation()
   // 'pick' shows the provider cards; picking one opens the editor for a new connection with that provider.
   const [editing, setEditing] = useState<ConnectionInfo | 'pick' | { provider: LlmProviderId } | null>(null)
+  const [reconnecting, setReconnecting] = useState<ConnectionInfo | null>(null)
   const defaultRequiresSummarizer = data?.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false
   const summarizerSelection = data?.summarizerSelection ?? (defaultRequiresSummarizer ? null : data?.defaultSelection)
   const changeDefault = (purpose: string, selection: ModelSelection | null) =>
@@ -113,15 +115,28 @@ export function LlmConnectionsTab() {
           {data?.connections.map((connection) => (
             <div key={connection.id} className={cn(CONNECTION_ROW, 'gap-3')}>
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium truncate">{connection.name}</div>
+                <div className="flex items-center gap-1.5 text-xs font-medium">
+                  <span className="truncate">{connection.name}</span>
+                  {connection.reconnectRequired && <ReconnectRequiredIcon />}
+                </div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">
                   {connection.userId ? (connection.ownerName ?? 'Personal') : 'Global'}
                   {connection.accountLabel ? ` · ${connection.accountLabel}` : ''}
                   {connection.managed ? ' · Managed by your Platform login' : ''}
                   {!connection.isConfigured ? ' · Not configured' : ''}
+                  {connection.reconnectRequired && (
+                    <span className="text-destructive">
+                      {' · '}Sign-in expired{connection.canManage ? '' : '. Ask an admin to reconnect.'}
+                    </span>
+                  )}
                 </div>
-                <ProviderUsage connection={connection} />
+                {!connection.reconnectRequired && <ProviderUsage connection={connection} />}
               </div>
+              {connection.reconnectRequired && connection.canManage && isOAuthProvider(connection.provider) && (
+                <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => setReconnecting(connection)}>
+                  Reconnect
+                </Button>
+              )}
               <ConnectionRowMenu
                 connection={connection}
                 deleting={mutation.isPending}
@@ -162,6 +177,11 @@ export function LlmConnectionsTab() {
                 onClose={() => setEditing(null)}
               />
             )}
+          </DialogContent>
+        </Dialog>
+        <Dialog open={reconnecting !== null} onOpenChange={(open) => { if (!open) setReconnecting(null) }}>
+          <DialogContent className="gap-6 p-10 sm:max-w-lg" aria-describedby={undefined}>
+            {reconnecting && <ReconnectConnection key={reconnecting.id} connection={reconnecting} onClose={() => setReconnecting(null)} />}
           </DialogContent>
         </Dialog>
       </div>
@@ -233,6 +253,56 @@ export function LlmConnectionsTab() {
         </div>
       )}
     </div>
+  )
+}
+// Signs in again on the same connection, so defaults and agents that reference it keep working.
+function ReconnectConnection({ connection, onClose }: { connection: ConnectionInfo; onClose: () => void }) {
+  const { mutate, isPending } = useConnectionMutation()
+  const provider = connection.provider as OAuthProvider
+  // The sign-in poller restarts whenever its callback changes, so it reads the latest props through a ref.
+  const latest = useRef({ connection, onClose })
+  latest.current = { connection, onClose }
+  const connected = useCallback((oauthLoginId: string) => {
+    const { connection, onClose } = latest.current
+    mutate(
+      {
+        path: `/${connection.id}`,
+        method: 'PUT',
+        body: {
+          name: connection.name,
+          provider: connection.provider,
+          userId: connection.userId,
+          oauthLoginId,
+          config: { apiKeys: {} },
+          browserModel: connection.browserModel,
+          dashboardModel: connection.dashboardModel,
+        },
+      },
+      {
+        onSuccess: () => { toast.success(`Reconnected ${connection.name}`); onClose() },
+        onError: (e) => toast.error(e.message),
+      }
+    )
+  }, [mutate])
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Reconnect {connection.name}</DialogTitle>
+      </DialogHeader>
+      <p className="text-sm text-muted-foreground">
+        Sign in again to get a new token. This connection, its models and every default that uses it stay as they are.
+      </p>
+      <SubscriptionSignIn
+        provider={SIGN_IN_PROVIDER[provider]}
+        connectionId={connection.id}
+        userId={connection.userId}
+        accountLabel={connection.accountLabel}
+        expired
+        region={connection.region}
+        onConnected={connected}
+      />
+      {isPending && <p role="status" className="text-sm text-muted-foreground">Saving…</p>}
+    </>
   )
 }
 function ConnectionRowMenu({
@@ -545,7 +615,7 @@ export function ConnectionEditor({
         </div>
       )}
       {provider === 'claude-subscription' && <ClaudeSetupTokenSteps />}
-      {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} region={existing?.region} onConnected={connected} onSetupEvent={onSetupEvent} />}
+      {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} expired={!!existing?.reconnectRequired && !oauthLoginId} region={existing?.region} onConnected={connected} onSetupEvent={onSetupEvent} />}
       {provider === 'generic' && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiFormat`}>API format</label>
