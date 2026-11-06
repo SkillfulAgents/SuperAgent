@@ -11,7 +11,7 @@
  * Working indicator via Slack's status line under the user's message (assistant.threads.setStatus).
  */
 
-import { App as SlackApp, SocketModeReceiver, type Receiver, type types as SlackTypes } from '@slack/bolt'
+import { App as SlackApp, SocketModeReceiver, type BlockAction, type Receiver, type types as SlackTypes } from '@slack/bolt'
 import { z } from 'zod'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
@@ -392,7 +392,10 @@ export function statusNeedsSend(status: SlackStatus | undefined, label: string, 
 const slackAnswerSchema = z.object({ t: z.string().min(1), c: z.string(), q: z.string(), a: z.string(), n: z.number().int().positive() })
 export type SlackAnswer = z.infer<typeof slackAnswerSchema>
 
-const ANSWER_ACTION = /^answer_\d+$/
+const ANSWER_ACTION = /^answer_/
+const OTHER_ACTION = 'answer_other'
+const PICK_ACTION = 'answer_pick'
+const SUBMIT_ACTION = 'answer_submit'
 const MAX_BUTTON_VALUE = 2000
 
 /** A button value, within Slack's limit: a question too long to fit is shortened. */
@@ -413,6 +416,37 @@ export function decodeSlackAnswer(value: unknown): SlackAnswer | null {
   } catch {
     return null
   }
+}
+
+type SlackStateValues = NonNullable<BlockAction['state']>['values']
+
+/** An approval card stays Allow or Deny: typed text would decide it. */
+const isApproval = (requestId: string) => requestId.startsWith('review:')
+
+/**
+ * The answer an action on a question card gives, or null when it gives none
+ * yet (a box ticked, an empty field). As in the app, typed text wins over
+ * ticked boxes. A typed answer takes the card's identity from an option button
+ * on the same message: a text field has no value of its own.
+ */
+export function slackAnswerFromAction(
+  action: { action_id?: string; value?: string | null },
+  blocks: Array<{ type: string; elements?: Array<{ value?: string }> }>,
+  state: SlackStateValues = {},
+): SlackAnswer | null {
+  const field = (actionId: string) => Object.values(state).map((block) => block[actionId]).find(Boolean)
+  if (action.action_id === OTHER_ACTION) {
+    const card = blocks.flatMap((b) => (b.type === 'actions' ? b.elements ?? [] : [])).map((e) => decodeSlackAnswer(e.value)).find(Boolean)
+    const typed = action.value?.trim()
+    return card && typed && !isApproval(card.t) ? { ...card, a: typed } : null
+  }
+  const answer = decodeSlackAnswer(action.value)
+  if (!answer || action.action_id !== SUBMIT_ACTION) return answer
+  if (isApproval(answer.t)) return null
+  const typed = field(OTHER_ACTION)?.value?.trim()
+  const picked = field(PICK_ACTION)?.selected_options?.map((o) => o.value).join(', ')
+  const a = typed || picked
+  return a ? { ...answer, a } : null
 }
 
 // ── Installation state ──────────────────────────────────────────────────
@@ -709,10 +743,10 @@ export class SlackConnector extends ChatAgentIntegration {
     // Buttons on cards from before answers rode in the button: their requests are gone.
     app.action(/^cb_\d+$/, async ({ ack }: { ack: any }) => { await ack() })
 
-    // Answer buttons on request cards
+    // Answers from request cards. A checkbox tick is acknowledged and gives none.
     app.action(ANSWER_ACTION, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
       await ack()
-      const answer = decodeSlackAnswer(action?.value)
+      const answer = slackAnswerFromAction(action ?? {}, body?.message?.blocks ?? [], body?.state?.values)
       if (!answer) return
 
       // Update the message to show the selected answer
@@ -721,14 +755,15 @@ export class SlackConnector extends ChatAgentIntegration {
         const messageTs = body?.message?.ts
         if (channel && messageTs) {
           const originalText = body.message.text || ''
-          // Preserve non-action blocks, only remove the buttons
+          // Keep the question, replace the controls with the answer
           const existingBlocks = (body.message.blocks || []) as Array<{ type: string }>
-          const preserved = existingBlocks.filter((b) => b.type !== 'actions')
+          const preserved = existingBlocks.filter((b) => b.type !== 'actions' && b.type !== 'input')
+          const shown = isApproval(answer.t) ? answer.a : `✅ ${answer.a}`
           await app.client.chat.update({
             channel,
             ts: messageTs,
-            text: `${originalText}\n\n:white_check_mark: *${answer.a}*`,
-            blocks: preserved,
+            text: `${originalText}\n\n${shown}`,
+            blocks: [...preserved, { type: 'section', text: { type: 'plain_text', text: shown } }],
           })
         }
       } catch {
@@ -1240,17 +1275,34 @@ export class SlackConnector extends ChatAgentIntegration {
             text: { type: 'mrkdwn', text: q.question },
           })
 
+          const answer = (a: string) => encodeSlackAnswer({ t: event.toolUseId, c: chatId, q: q.question, a, n: event.questions.length })
           if (q.options && q.options.length > 0) {
-            const buttons = q.options.map((opt, i) => ({
-              type: 'button' as const,
-              text: { type: 'plain_text' as const, text: opt.label },
-              action_id: `answer_${i}`,
-              value: encodeSlackAnswer({ t: event.toolUseId, c: chatId, q: q.question, a: opt.label, n: event.questions.length }),
-            }))
+            const options = q.multiSelect
+              ? [{ type: 'checkboxes', action_id: PICK_ACTION, options: q.options.map((opt) => ({ text: { type: 'plain_text', text: opt.label }, value: opt.label })) }]
+              : q.options.map((opt, i) => ({
+                type: 'button' as const,
+                text: { type: 'plain_text' as const, text: opt.label },
+                action_id: `answer_${i}`,
+                value: answer(opt.label),
+              }))
             blocks.push({
               type: 'actions',
-              elements: buttons,
+              elements: options,
             })
+            if (!isApproval(event.toolUseId)) {
+              blocks.push({
+                type: 'input',
+                dispatch_action: !q.multiSelect,
+                label: { type: 'plain_text', text: 'Other' },
+                element: { type: 'plain_text_input', action_id: OTHER_ACTION, max_length: 2000, placeholder: { type: 'plain_text', text: 'Type something else' } },
+              })
+            }
+            if (q.multiSelect) {
+              blocks.push({
+                type: 'actions',
+                elements: [{ type: 'button', action_id: SUBMIT_ACTION, style: 'primary', text: { type: 'plain_text', text: 'Submit' }, value: answer('') }],
+              })
+            }
           }
 
           const result = await this.app.client.chat.postMessage({

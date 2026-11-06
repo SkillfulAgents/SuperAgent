@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, type SlackMessageRoutingParams } from './slack-connector'
+import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, slackAnswerFromAction, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -662,5 +662,44 @@ describe('SlackConnector text', () => {
     expect(update.mock.calls.map(([args]) => Object.keys(args).includes('markdown_text') ? 'markdown' : args.text)).toEqual([
       'markdown', '*Many headings*', '*Many headings, more*', '*Many headings, done*',
     ])
+  })
+})
+
+describe('SlackConnector question cards', () => {
+  async function posted(event: Parameters<SlackConnector['sendUserRequestCard']>[1]) {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '200.1' })
+    ;(connector as any).app = { client: { chat: { postMessage } } }
+    await connector.sendUserRequestCard('D1', event)
+    return postMessage.mock.calls[0][0].blocks as any[]
+  }
+  const controls = async (event: Parameters<typeof posted>[0]) =>
+    (await posted(event)).flatMap((b) => b.type === 'actions' ? b.elements.map((e: any) => e.type) : [b.type])
+  const options = [{ label: 'A' }, { label: 'B' }]
+
+  it('gives a single-select card option buttons and an Other field', async () => {
+    expect(await controls({ type: 'question_request', toolUseId: 'q1', questions: [{ question: 'One?', options }] }))
+      .toEqual(['section', 'button', 'button', 'input'])
+  })
+
+  it('gives a multi-select card checkboxes, an Other field and Submit', async () => {
+    expect(await controls({ type: 'question_request', toolUseId: 'q1', questions: [{ question: 'Some?', options, multiSelect: true }] }))
+      .toEqual(['section', 'checkboxes', 'input', 'button'])
+  })
+
+  it('answers through the controls it rendered', async () => {
+    const single = await posted({ type: 'question_request', toolUseId: 'q1', questions: [{ question: 'One?', options }] })
+    const other = single.find((b) => b.type === 'input').element
+    expect(slackAnswerFromAction({ action_id: other.action_id, value: 'typed' }, single)).toMatchObject({ t: 'q1', q: 'One?', a: 'typed' })
+
+    const multi = await posted({ type: 'question_request', toolUseId: 'q2', questions: [{ question: 'Some?', options, multiSelect: true }] })
+    const [pick, submit] = multi.filter((b) => b.type === 'actions').map((b) => b.elements[0])
+    const state = { p: { [pick.action_id]: { type: 'checkboxes', selected_options: ['A', 'B'].map((value) => ({ text: { type: 'plain_text' as const, text: value }, value })) } } }
+    expect(slackAnswerFromAction(submit, multi, state)).toMatchObject({ t: 'q2', q: 'Some?', a: 'A, B' })
+  })
+
+  it('keeps an approval card to Allow and Deny, with no field to type a decision in', async () => {
+    expect(await controls({ type: 'question_request', toolUseId: 'review:r1:agent', questions: [{ question: 'Allow?', options }] }))
+      .toEqual(['section', 'button', 'button'])
   })
 })
