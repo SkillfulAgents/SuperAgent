@@ -67,8 +67,8 @@ export class ReviewManager {
     this.agents.peek(agentSlug)?.resolveMatchingByLabel(label, decision)
   }
 
-  resolveMatchingXAgentByOperation(agentSlug: string, operation: XAgentOperation, decision: ReviewDecision): void {
-    this.agents.peek(agentSlug)?.resolveMatchingXAgent(operation, decision)
+  resolveMatchingXAgentByOperation(agentSlug: string, operation: XAgentOperation, decision: ReviewDecision, targetSlug: string | null): void {
+    this.agents.peek(agentSlug)?.resolveMatchingXAgent(operation, decision, targetSlug)
   }
 
   getPendingReviewsForAgent(agentSlug: string): Array<{ id: string; displayText: string } & ReviewDetails> {

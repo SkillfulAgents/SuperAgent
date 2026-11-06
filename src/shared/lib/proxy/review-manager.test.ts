@@ -827,23 +827,46 @@ describe('ReviewManager', () => {
         { kind: 'send', paths: ['/workspace/report.pdf'] },
       )
 
-      manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
+      manager.resolveMatchingXAgentByOperation('caller', 'invoke', 'allow', 'target')
 
       await expect(plain).resolves.toEqual({ decision: 'allow' })
       await expect(attachment).resolves.toEqual({ decision: 'allow' })
       expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
     })
 
-    it.each(['scope', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {
+    it.each(['target', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {
       const sent = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'files', { kind: 'send', paths: ['/workspace/a'] })
       const downloaded = manager.requestXAgentReview('caller', 'target', 'Target', 'read', undefined, { kind: 'download', filename: 'b.pdf' })
       for (const operation of ['invoke', 'read'] as const) {
-        if (sweep === 'scope') manager.resolveMatchingPending('caller', `${operation}:target`, 'deny')
-        else manager.resolveMatchingXAgentByOperation('caller', operation, 'deny')
+        if (sweep === 'target') manager.resolveMatchingXAgentByOperation('caller', operation, 'deny', 'target')
+        else manager.resolveMatchingXAgentByOperation('caller', operation, 'deny', null)
       }
       await expect(sent).resolves.toEqual({ decision: 'deny' })
       await expect(downloaded).resolves.toEqual({ decision: 'deny' })
       expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
+    })
+
+    it.each(['scope', 'label'] as const)('E5 an account or MCP %s sweep leaves agent cards pending, whatever their scopes', async (sweep) => {
+      const scopes = ['invoke:target', 'gmail.send']
+      const agentCard = manager.requestReview({ agentSlug: 'caller', accountId: 'target', toolkit: 'gmail', method: 'invoke', targetPath: 'agents:invoke:target', matchedScopes: scopes, scopeDescriptions: {}, xAgent: { targetAgentSlug: 'target', targetAgentName: 'Target', operation: 'invoke' } })
+      const accountCard = manager.requestReview({ agentSlug: 'caller', accountId: 'acc-1', toolkit: 'gmail', method: 'POST', targetPath: '/send', matchedScopes: scopes, scopeDescriptions: {} })
+      if (sweep === 'scope') manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
+      else manager.resolveMatchingPendingByLabel('caller', 'write', 'allow')
+      await expect(accountCard).resolves.toEqual({ decision: 'allow' })
+      expect(manager.getPendingReviewsForAgent('caller').map((r) => r.xAgent?.operation)).toEqual(['invoke'])
+      manager.rejectAll()
+      await agentCard.catch(() => {})
+    })
+
+    it('an agent sweep toward one target leaves other targets and account cards with the same scope pending', async () => {
+      const toTarget = manager.requestXAgentReview('caller', 'target', 'Target', 'read')
+      const toOther = manager.requestXAgentReview('caller', 'other', 'Other', 'read')
+      const account = manager.requestReview({ agentSlug: 'caller', accountId: 'acc-1', toolkit: 'm', method: 'GET', targetPath: '/x', matchedScopes: ['read:target'], scopeDescriptions: {} })
+      manager.resolveMatchingXAgentByOperation('caller', 'read', 'allow', 'target')
+      await expect(toTarget).resolves.toEqual({ decision: 'allow' })
+      expect(manager.getPendingReviewsForAgent('caller').map((r) => r.xAgent?.targetAgentSlug ?? r.accountId)).toEqual(['other', 'acc-1'])
+      manager.rejectAll()
+      await Promise.allSettled([toOther, account])
     })
 
     it('non-x-agent reviews do NOT carry xAgent in the envelope', () => {

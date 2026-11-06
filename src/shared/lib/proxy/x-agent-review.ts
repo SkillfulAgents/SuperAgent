@@ -20,6 +20,18 @@ export function requiresOneTimeXAgentReview(review: Pick<XAgentReview, 'operatio
   return review?.operation === 'create'
 }
 
+/** The links an agent card's "Always allow" menu offers. A list card names no target. */
+export function xAgentAlwaysChoices(review: Pick<XAgentReview, 'operation' | 'targetAgentSlug'>): Array<{ operation: 'list' | 'read' | 'invoke'; targetSlug: string | null }> {
+  if (requiresOneTimeXAgentReview(review)) return []
+  const target = review.targetAgentSlug
+  switch (review.operation) {
+    case 'list': return [{ operation: 'list', targetSlug: null }]
+    case 'read': return [{ operation: 'read', targetSlug: target }, { operation: 'read', targetSlug: null }]
+    case 'invoke': return [{ operation: 'invoke', targetSlug: target }, { operation: 'invoke', targetSlug: null }, { operation: 'read', targetSlug: target }]
+    case 'create': return []
+  }
+}
+
 export function xAgentReviewAttachments(review: Pick<XAgentReview, 'fileTransfer' | 'attachments'>): string[] {
   return review.fileTransfer?.kind === 'send' ? review.fileTransfer.paths : review.attachments ?? []
 }

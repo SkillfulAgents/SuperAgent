@@ -5,7 +5,7 @@ import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-p
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
-import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { requiresOneTimeXAgentReview, xAgentAlwaysChoices } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
@@ -8059,10 +8059,18 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
   }
-  // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
-  const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
-  const checkTarget = pendingReview?.xAgent ? pendingReview.xAgent.targetAgentSlug || null : body.xAgent?.targetSlug ?? null
-  if (body.decision === 'allow' && body.reviewType === 'xagent' && body.xAgent && await evaluateXAgentPolicy(slug, body.xAgent.operation, checkTarget) === 'block') {
+  // An agent card saves only an Allow its menu offers. A 400, not a 404: the card reads 404 as already resolved and shows it allowed.
+  const xAgentCard = pendingReview?.xAgent
+  if (body.reviewType === 'xagent' && !pendingReview) {
+    return c.json({ error: 'This request already ended. Nothing was saved.' }, 400)
+  }
+  const link = xAgentCard && xAgentAlwaysChoices(xAgentCard).find((choice) => choice.operation === body.xAgent?.operation && choice.targetSlug === body.xAgent.targetSlug)
+  if ((xAgentCard || body.reviewType === 'xagent') && (!link || body.decision !== 'allow')) {
+    return c.json({ error: 'This request does not offer that choice' }, 400)
+  }
+  // "Always allow" never overwrites a Block, checked on the card's own link.
+  const blockedResponse = () => c.json({ error: 'This connection is blocked.', blocked: true }, 403)
+  if (link && await evaluateXAgentPolicy(slug, link.operation, xAgentCard?.targetAgentSlug || null) === 'block') {
     return blockedResponse()
   }
 
@@ -8078,9 +8086,9 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   // the MCP server's id, and failed apiScopePolicies' FOREIGN KEY against
   // connected_accounts.
   const reviewType: 'api' | 'mcp' | 'xagent' =
-    body.reviewType === 'xagent' && body.xAgent
-      ? 'xagent'
-      : pendingReview?.reviewType ?? (body.reviewType === 'mcp' ? 'mcp' : 'api')
+    link ? 'xagent' : pendingReview?.reviewType ?? (body.reviewType === 'mcp' ? 'mcp' : 'api')
+  // A policy lands on the card's own account or MCP server. The request only picks the scope.
+  const accountId = pendingReview?.accountId || body.accountId
 
   // Persist the policy FIRST. The review is only resolved after the write commits,
   // so any concurrent /invoke (or other gated call) that runs after this point
@@ -8088,13 +8096,13 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   // If the write fails, surface the error instead of silently degrading to "Allow Once" —
   // the user thinks they enabled "always" and would otherwise have no idea it didn't stick.
   try {
-    if (reviewType === 'xagent' && body.xAgent) {
+    if (link) {
       // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
       // review is attached to (slug), not the target.
       const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-      const saved = await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision, { keepBlock: policyDecision === 'allow' })
+      const saved = await setAgentPolicy(slug, link.operation, link.targetSlug, 'allow', { keepBlock: true })
       // A Block written after the check above still wins.
-      if (policyDecision === 'allow' && saved.previousDecision === 'block') {
+      if (saved.previousDecision === 'block') {
         return blockedResponse()
       }
     } else if (reviewType === 'mcp') {
@@ -8105,13 +8113,13 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       // rather than letting SQLite's bare "FOREIGN KEY constraint failed"
       // surface. A 4xx other than 404 on purpose: the card reads 404 as
       // "already resolved elsewhere" and would dismiss itself as allowed.
-      if (!body.accountId) {
+      if (!accountId) {
         return c.json({ error: 'Missing MCP server id' }, 400)
       }
       const [mcpServer] = await db
         .select({ userId: remoteMcpServers.userId })
         .from(remoteMcpServers)
-        .where(eq(remoteMcpServers.id, body.accountId))
+        .where(eq(remoteMcpServers.id, accountId))
         .limit(1)
       if (!mcpServer) {
         return c.json({ error: 'MCP server no longer exists; the policy was not saved' }, 400)
@@ -8126,7 +8134,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
       await db.insert(mcpToolPolicies).values({
         id: randomUUID(),
-        mcpId: body.accountId,
+        mcpId: accountId,
         toolName: body.scope,
         decision: policyDecision,
         createdAt: now,
@@ -8139,13 +8147,13 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       // API scope review — save to apiScopePolicies.
       // Look up the account once: we need its owner (to enforce the auth-mode
       // ownership check) and its toolkit (to validate the scope below).
-      if (!body.accountId) {
+      if (!accountId) {
         return c.json({ error: 'Missing connected account id' }, 400)
       }
       const [acct] = await db
         .select({ userId: connectedAccounts.userId, toolkitSlug: connectedAccounts.toolkitSlug })
         .from(connectedAccounts)
-        .where(eq(connectedAccounts.id, body.accountId))
+        .where(eq(connectedAccounts.id, accountId))
         .limit(1)
       // Same FOREIGN KEY reasoning as the MCP branch: say what is missing
       // instead of letting the insert fail.
@@ -8169,7 +8177,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
       await db.insert(apiScopePolicies).values({
         id: randomUUID(),
-        accountId: body.accountId,
+        accountId,
         scope: body.scope,
         decision: policyDecision,
         createdAt: now,
@@ -8187,7 +8195,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     // from screenshots.
     captureException(err, {
       tags: { component: 'proxy-review', operation: 'save-policy', reviewType },
-      extra: { agentSlug: slug, reviewId, scope: body.scope, accountId: body.accountId },
+      extra: { agentSlug: slug, reviewId, scope: body.scope, accountId },
     })
     return c.json(
       { error: `Failed to save policy: ${err instanceof Error ? err.message : 'unknown error'}` },
@@ -8198,6 +8206,11 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   // Submit decision for this review (and any others matching the same scope).
   // Pass slug so submitDecision rejects cross-agent attempts (see B1).
   await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  // An agent card settles the agent cards its link covers. An account or MCP card never settles an agent card.
+  if (link) {
+    await agentRegistry.get(slug).inputs.reviews.resolveMatchingXAgent(link.operation, 'allow', link.targetSlug)
+    return c.json({ ok: true })
+  }
   await agentRegistry.get(slug).inputs.reviews.resolveMatching(body.scope, body.decision)
 
   // "Allow all <label>" saves a label sentinel ('*read'/'*write'/'*destructive'),
@@ -8206,15 +8219,6 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   // instead of timing out.
   if (isLabelDefaultKey(body.scope)) {
     await agentRegistry.get(slug).inputs.reviews.resolveMatchingByLabel(body.scope.slice(1) as ScopeLabel, body.decision)
-  }
-
-  // For x-agent "always allow for all agents" (targetSlug=null on read/invoke),
-  // the per-scope match above only resolves prompts for the same exact target.
-  // Sweep every pending review of the same operation so sibling prompts
-  // (e.g. an in-flight read:bob when the user just allowed read:* globally)
-  // also resolve immediately instead of timing out.
-  if (body.reviewType === 'xagent' && body.xAgent && body.xAgent.targetSlug === null) {
-    await agentRegistry.get(slug).inputs.reviews.resolveMatchingXAgent(body.xAgent.operation, body.decision)
   }
 
   return c.json({ ok: true })

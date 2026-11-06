@@ -86,7 +86,7 @@ describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
     vi.useFakeTimers()
     try {
       vi.mocked(apiFetch).mockReset()
-      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Forbidden: this agent link is blocked', blocked: true }), { status: 403 }))
+      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'This connection is blocked.', blocked: true }), { status: 403 }))
       vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
       const onComplete = vi.fn()
       render(<XAgentReviewRequestItem reviewId="review-9" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke' }} onComplete={onComplete} />)
@@ -112,7 +112,7 @@ describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
     vi.useFakeTimers()
     try {
       vi.mocked(apiFetch).mockReset()
-      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Forbidden: this agent link is blocked', blocked: true }), { status: 403 }))
+      vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'This connection is blocked.', blocked: true }), { status: 403 }))
       vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
       const { unmount } = card()
       await clickAlways()
@@ -134,7 +134,7 @@ describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
     fireEvent.click(screen.getByTestId('xagent-review-allow-menu'))
     fireEvent.click(screen.getByTestId('xagent-review-always-invoke'))
     unmount()
-    await act(async () => { answer(new Response(JSON.stringify({ error: 'Forbidden: this agent link is blocked', blocked: true }), { status: 403 })) })
+    await act(async () => { answer(new Response(JSON.stringify({ error: 'This connection is blocked.', blocked: true }), { status: 403 })) })
     expect(apiFetch).toHaveBeenCalledTimes(2)
     expect(vi.mocked(apiFetch).mock.calls[1]).toEqual(['/api/agents/caller/proxy-review/review-9', expect.objectContaining({ body: JSON.stringify({ decision: 'allow' }) })])
   })

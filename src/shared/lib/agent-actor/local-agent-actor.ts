@@ -470,8 +470,8 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
-    resolveMatchingXAgent: async (operation, decision) =>
-      deps.reviewManager.resolveMatchingXAgentByOperation(slug, operation, decision),
+    resolveMatchingXAgent: async (operation, decision, targetSlug) =>
+      deps.reviewManager.resolveMatchingXAgentByOperation(slug, operation, decision, targetSlug),
     request: (details, options) => deps.reviewManager.request(slug, details, options),
     requestXAgent: (request, options) => deps.reviewManager.requestXAgent(slug, request, options),
     withdraw: async (id) => deps.reviewManager.withdraw(slug, id),

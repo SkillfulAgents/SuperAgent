@@ -361,10 +361,11 @@ export class AgentReviews {
     return Promise.resolve(reason)
   }
 
+  /** Account and MCP reviews only: an agent review is settled through `resolveMatchingXAgent`. */
   resolveMatching(scope: string, decision: ReviewDecision): void {
     for (const entry of this.entries()) {
       const details = detailsOf(entry)
-      if (decision === 'allow' && requiresOneTimeXAgentReview(details.xAgent)) continue
+      if (details.xAgent) continue
       if (!details.matchedScopes.includes(scope)) continue
       this.settleSwept(entry, decision)
     }
@@ -382,7 +383,7 @@ export class AgentReviews {
   resolveMatchingByLabel(label: ScopeLabel, decision: ReviewDecision): void {
     for (const entry of this.entries()) {
       const details = detailsOf(entry)
-      if (decision === 'allow' && requiresOneTimeXAgentReview(details.xAgent)) continue
+      if (details.xAgent) continue
       const hasLabel = details.matchedScopes.some((s) => getScopeLabel(details.toolkit, s) === label)
       if (!hasLabel) continue
       this.settleSwept(entry, decision)
@@ -391,17 +392,12 @@ export class AgentReviews {
     this.syncAwaiting()
   }
 
-  /**
-   * Resolve every pending x-agent review whose operation matches. Used when
-   * the user picks "always allow for all agents" — the saved policy has
-   * targetSlug=null, so the per-target scope match in `resolveMatching`
-   * wouldn't catch sibling pending prompts (e.g. read:bob while saving global
-   * read).
-   */
-  resolveMatchingXAgent(operation: XAgentOperation, decision: ReviewDecision): void {
+  /** Resolve pending x-agent reviews of one operation toward one target, or toward any target when `targetSlug` is null. */
+  resolveMatchingXAgent(operation: XAgentOperation, decision: ReviewDecision, targetSlug: string | null): void {
     for (const entry of this.entries()) {
       const xAgent = detailsOf(entry).xAgent
       if (xAgent?.operation !== operation) continue
+      if (targetSlug !== null && xAgent.targetAgentSlug !== targetSlug) continue
       if (decision === 'allow' && requiresOneTimeXAgentReview(xAgent)) continue
       this.settleDecided(entry, decision)
     }

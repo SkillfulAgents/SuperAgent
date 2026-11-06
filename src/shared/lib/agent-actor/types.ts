@@ -785,7 +785,7 @@ export interface ReviewOps {
   /** `AgentReviews.resolveMatchingByLabel` */
   resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingXAgent` */
-  resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): Promise<void>
+  resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny', targetSlug: string | null): Promise<void>
   /**
    * `AgentReviews.request`: park a call on a review card of this agent until
    * its outcome. The caller names the review (`options.id`) to withdraw it

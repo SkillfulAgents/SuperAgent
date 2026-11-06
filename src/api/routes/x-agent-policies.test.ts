@@ -14,6 +14,7 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
+import type { ReviewDetails } from '@shared/lib/proxy/review-display'
 
 // ----------------------------------------------------------------------------
 // DB
@@ -550,17 +551,27 @@ describe('atomic single invoke policy endpoints', () => {
   })
 })
 
+const card = (operation: 'list' | 'read' | 'invoke', target: string) =>
+  ({ id: 'card-1', agentSlug: CALLER, accountId: target, toolkit: 'agents', method: operation, targetPath: `agents:${operation}:${target}`, matchedScopes: [operation === 'list' ? 'list' : `${operation}:${target}`], scopeDescriptions: {}, displayText: '', xAgent: { targetAgentSlug: target, targetAgentName: target, operation } })
+
 describe('"Always allow" never overwrites a Block', () => {
-  const always = (operation: 'read' | 'invoke', targetSlug: string | null) =>
-    app.request(`/api/agents/${CALLER}/proxy-review/review-1/always`, {
+  const always = async (operation: 'read' | 'invoke', targetSlug: string | null) => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReturnValue([{ ...card(operation, TARGET_A), id: 'review-1' }])
+    return app.request(`/api/agents/${CALLER}/proxy-review/review-1/always`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision: 'allow', scope: `${operation}:${targetSlug ?? '*'}`, accountId: targetSlug, reviewType: 'xagent', xAgent: { operation, targetSlug } }),
     })
+  }
 
   beforeEach(async () => {
     const { reviewManager } = await import('@shared/lib/proxy/review-manager')
     Object.assign(reviewManager, { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() })
+  })
+  afterEach(async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReset()
   })
 
   it.each([
@@ -570,7 +581,7 @@ describe('"Always allow" never overwrites a Block', () => {
     await setPolicy(CALLER, 'read', blockTarget, 'block')
     const res = await always('read', TARGET_A)
     expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: 'Forbidden: this agent link is blocked', blocked: true })
+    expect(await res.json()).toEqual({ error: 'This connection is blocked.', blocked: true })
     expect((await listPoliciesForCaller(CALLER)).map((p) => [p.targetAgentSlug, p.decision])).toEqual([[blockTarget, 'block']])
   })
 
@@ -582,8 +593,6 @@ describe('"Always allow" never overwrites a Block', () => {
   })
 
   it('checks the card\'s own link, so "all agents" cannot pass a Block on the card\'s target', async () => {
-    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
-    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReturnValueOnce([{ id: 'review-1', agentSlug: CALLER, xAgent: { targetAgentSlug: TARGET_A, targetAgentName: TARGET_A, operation: 'read' } }] as never)
     await setPolicy(CALLER, 'read', TARGET_A, 'block')
     expect((await always('read', null)).status).toBe(403)
     expect(await getPolicy(CALLER, 'read', null)).toBeNull()
@@ -599,5 +608,83 @@ describe('"Always allow" never overwrites a Block', () => {
   it('still saves when no Block is set', async () => {
     expect((await always('invoke', TARGET_A)).status).toBe(200)
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+})
+
+describe('"Always allow" acts on the card, not the request', () => {
+  const mcpCard = { id: 'card-1', agentSlug: CALLER, accountId: 'mcp-1', reviewType: 'mcp' as const, toolkit: 'mcp', method: 'tools/call', targetPath: 'tools/call', matchedScopes: ['search'], scopeDescriptions: {}, displayText: '' }
+  const always = (body: Record<string, unknown>) =>
+    app.request(`/api/agents/${CALLER}/proxy-review/card-1/always`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow', ...body }),
+    })
+  const xagent = (operation: 'list' | 'read' | 'invoke', targetSlug: string | null, scope = operation === 'list' ? 'list' : `${operation}:${targetSlug ?? '*'}`) =>
+    ({ scope, accountId: targetSlug, reviewType: 'xagent', xAgent: { operation, targetSlug } })
+  const pending = async (reviews: Array<{ id: string; displayText: string } & ReviewDetails>) => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    const sweeps = { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingPendingByLabel: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() }
+    Object.assign(reviewManager, sweeps)
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReturnValue(reviews)
+    return sweeps
+  }
+  afterEach(async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReset()
+  })
+
+  it('E1 saves no link when no card is waiting', async () => {
+    await pending([])
+    expect((await always(xagent('invoke', TARGET_B))).status).toBe(400)
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
+  it.each([
+    ['another target', xagent('read', TARGET_B)],
+    ['another operation', xagent('invoke', TARGET_A)],
+    ['list', xagent('list', null)],
+  ])('E2 a read card cannot save %s', async (_name, body) => {
+    await pending([card('read', TARGET_A)])
+    expect((await always(body)).status).toBe(400)
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
+  it.each([['this agent', TARGET_A], ['all agents', null]])('E7 a read card cannot save a Block on %s', async (_name, target) => {
+    const rm = await pending([card('read', TARGET_A)])
+    expect((await always({ ...xagent('read', target), decision: 'deny' })).status).toBe(400)
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+    expect(rm.resolveMatchingXAgentByOperation).not.toHaveBeenCalled()
+  })
+
+  it('E3 an MCP card cannot save an agent link', async () => {
+    await pending([mcpCard])
+    expect((await always(xagent('invoke', TARGET_B))).status).toBe(400)
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
+  it('E4 an agent card sweeps only the link it saved, whatever scope the request names', async () => {
+    const rm = await pending([card('read', TARGET_A)])
+    expect((await always(xagent('read', TARGET_A, `invoke:${TARGET_B}`))).status).toBe(200)
+    expect(rm.resolveMatchingXAgentByOperation.mock.calls).toEqual([[CALLER, 'read', 'allow', TARGET_A]])
+    expect(rm.resolveMatchingPending).not.toHaveBeenCalled()
+  })
+
+  it('E6 an MCP card saves on its own server, whatever server the request names', async () => {
+    for (const id of ['mcp-1', 'mcp-2']) testDb.insert(schema.remoteMcpServers).values({ id, name: id, url: `https://${id}.example`, createdAt: new Date(), updatedAt: new Date() }).run()
+    await pending([mcpCard])
+    expect((await always({ scope: '*', accountId: 'mcp-2', reviewType: 'mcp' })).status).toBe(200)
+    expect(testDb.select().from(schema.mcpToolPolicies).all().map((p) => [p.mcpId, p.toolName])).toEqual([['mcp-1', '*']])
+  })
+
+  it.each([
+    ['list', card('list', ''), xagent('list', null), ['list', null]],
+    ['read: all agents', card('read', TARGET_A), xagent('read', null), ['read', null]],
+    ['invoke: reading this agent', card('invoke', TARGET_A), xagent('read', TARGET_A), ['read', TARGET_A]],
+  ] as const)('L keeps the card option %s', async (_name, review, body, [operation, target]) => {
+    const rm = await pending([review])
+    expect((await always(body)).status).toBe(200)
+    expect((await getPolicy(CALLER, operation, target))?.decision).toBe('allow')
+    expect(rm.resolveMatchingXAgentByOperation.mock.calls).toEqual([[CALLER, operation, 'allow', target]])
+    expect(rm.resolveMatchingPending).not.toHaveBeenCalled()
   })
 })
