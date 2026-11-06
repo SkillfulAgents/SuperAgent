@@ -39,7 +39,7 @@ import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './cloudflare-task-manager'
-import { routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
+import { withAgentObject, routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
 import { createCloudflareFileOps } from './cloudflare-file-ops'
 import { ownedHere, servingAgentObject } from './agent-objects'
 import { errorOnRedirect } from './workers-shims/fetch-redirect'
@@ -71,7 +71,7 @@ export function serve(request: Request, env: Env, ctx: ExecutionContext): Promis
     if (deleted) mkdirSync(getAgentDir(deleted), { recursive: true })
     const response = await api.fetch(request, env, ctx)
     if (deleted && response.ok) {
-      await env.AGENT_ACTOR.getByName(deleted).purgeWorkspace().catch((error: unknown) => {
+      await withAgentObject(env.AGENT_ACTOR, deleted, env.VERSION?.timestamp, (agent) => agent.purgeWorkspace()).catch((error: unknown) => {
         console.error(`[cloudflare] purging the saved workspace of ${deleted} failed:`, error)
       })
     }
@@ -118,18 +118,18 @@ export function stopBackgroundServices(): Promise<void> {
 
 async function start(env: Env): Promise<void> {
   // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
-  routeContainerFetch(env.AGENT_ACTOR)
+  routeContainerFetch(env.AGENT_ACTOR, env.VERSION?.timestamp)
   wireAgents(env)
   // D1 refuses main's migrator, which runs every pending migration in one transaction: migrateD1 runs them as one batch.
   await openDatabase({ driver: d1(env.DB), migrate: false })
   await migrateD1(env.DB)
   // A boot retried after a later step failed finds AppState installed.
-  if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE))
+  if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE, { version: env.VERSION?.timestamp }))
   await ensureKeyManager(() => new CloudflareKeyManager({ env, probes: appKeyProbes }))
   // Then task dispatch, before anything is served: a request can schedule work. Every isolate registers
   // the services' Tasks; only TaskManagerDurableObject starts the services and runs the jobs.
   if (!isBackgroundWorkInitialized()) {
-    tasks = new CloudflareTaskManager(env.TASK_MANAGER)
+    tasks = new CloudflareTaskManager(env.TASK_MANAGER, env.VERSION?.timestamp)
     await initializeBackgroundWork(tasks)
   }
   await prepareBackgroundWork({ localContainers: false })
@@ -178,7 +178,7 @@ async function seedSettings(origin: string): Promise<void> {
 /** Where each agent runs: its actor in its own object, its files in its container or, asleep, in R2. */
 function wireAgents(env: Env): void {
   // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
-  useActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => env.AGENT_ACTOR.getByName(slug).fetch(request) })))
+  useActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT_ACTOR, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
   useSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
   setIdleAlarmTimers((slug, ring) => {
     idleRings.set(slug, ring)
@@ -199,8 +199,7 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
     const headers = new Headers(init?.headers)
     for (const [name, value] of Object.entries(auth)) headers.set(name, value)
     const streamed = init?.body instanceof ReadableStream
-    const object = servingAgentObject(slug) ?? env.AGENT_ACTOR.getByName(slug)
-    return object.fetch(new Request(`http://container${path}`, { ...init, headers, ...(streamed ? { duplex: 'half' } : {}) } as RequestInit))
+    return withAgentObject(env.AGENT_ACTOR, slug, env.VERSION?.timestamp, (agent) => agent.fetch(new Request(`http://container${path}`, { ...init, headers, ...(streamed ? { duplex: 'half' } : {}) } as RequestInit)))
   }, agentSleepingStore(env, slug))
   return {
     slug,
@@ -215,7 +214,7 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
 
 /** The saved workspace: from the agent's own object directly, from anywhere else through its stub. */
 function agentSleepingStore(env: Env, slug: AgentSlug): SleepingStore {
-  const viaStub = sleepingStore(env.AGENT_ACTOR, slug)
+  const viaStub = sleepingStore(env.AGENT_ACTOR, slug, env.VERSION?.timestamp)
   const side = (): SleepingStore => {
     const own = servingAgentObject(slug)
     if (!own) return viaStub

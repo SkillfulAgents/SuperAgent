@@ -17,6 +17,7 @@ import { Container, type StopParams } from '@cloudflare/containers'
 import type { DurableObjectState } from 'cloudflare:workers'
 import { ASLEEP_HEADER, type StoredEntry } from './cloudflare-container-control'
 import { runAsAgentObject } from './agent-objects'
+import { restartIfOlder } from './object-version'
 import type { Env } from './index'
 
 // The agent server's port: the image's PORT, SuperAgent's CONTAINER_INTERNAL_PORT. Not imported:
@@ -183,6 +184,10 @@ export class CloudflareAgentActor extends Container<Env> {
   override onStop(params: StopParams): void {
     this.launched = false
     console.log(`[CloudflareAgentActor ${this.agentName()}] container exited (code ${params.exitCode}, ${params.reason})`)
+  }
+
+  checkVersion(callerVersion: string): boolean {
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
   }
 
   startAgent(envVars: Record<string, string>): Promise<void> {

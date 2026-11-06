@@ -27,6 +27,7 @@ import type {
 } from '@shared/lib/app-state'
 import { assertStrong, decodeValue, encodeValue, scopePrefix } from '@shared/lib/app-state/definitions'
 import { background } from '@shared/lib/background'
+import { reachCurrentCode } from './object-version'
 import { SUBSCRIBE_PATH, type AppStateDurableObject, type HubMessage, type KeyPolicy, type StoredEntry } from './app-state-durable-object'
 
 /** One org per Worker: the scope names the deployment, and the org is its only tenant. */
@@ -52,6 +53,8 @@ export interface CloudflareAppStateOptions {
   scope?: AppStateScope
   /** The org's object by default. */
   hub?: EventHub
+  /** This deploy's time: the org's object restarts onto it if it runs older code (object-version.ts). */
+  version?: string
 }
 
 type AppStateObject = DurableObjectStub<AppStateDurableObject>
@@ -62,6 +65,7 @@ export class CloudflareAppState implements AppState {
   readonly scope: AppStateScope
   private readonly prefix: string
   private readonly hub: EventHub
+  private readonly version: string | undefined
   private readonly subscriptions = new Set<HubSubscription<unknown>>()
   private closed = false
 
@@ -71,37 +75,38 @@ export class CloudflareAppState implements AppState {
   ) {
     this.scope = options.scope ?? ORG_SCOPE
     this.prefix = scopePrefix(this.scope)
-    this.hub = options.hub ?? objectHub(() => this.object())
+    this.version = options.version
+    this.hub = options.hub ?? objectHub((use) => this.call(use))
   }
 
   async get<T>(key: StateKey<T>): Promise<Entry<T> | null> {
     this.assertOpen()
-    return this.entryOf(key, await this.object().get(this.full(key)))
+    return this.entryOf(key, await await this.call((object) => object.get(this.full(key))))
   }
 
   async getMany<T>(keys: readonly StateKey<T>[]): Promise<(Entry<T> | null)[]> {
     this.assertOpen()
     if (keys.length === 0) return []
-    const stored = await this.object().getMany(keys.map((key) => this.full(key)))
+    const stored = await await this.call((object) => object.getMany(keys.map((key) => this.full(key))))
     return Promise.all(keys.map((key, index) => this.entryOf(key, stored[index])))
   }
 
   async set<T>(key: StateKey<T>, value: T, options?: WriteOptions): Promise<Entry<T>> {
     this.assertOpen()
     const json = encodeValue(key.namespace.schema, value, key.path)
-    return this.decoded(key, await this.object().set(this.full(key), json, policyOf(key.namespace), options?.expiry))
+    return this.decoded(key, await await this.call((object) => object.set(this.full(key), json, policyOf(key.namespace), options?.expiry)))
   }
 
   async delete<T>(key: StateKey<T>): Promise<void> {
     this.assertOpen()
-    await this.object().delete(this.full(key))
+    await await this.call((object) => object.delete(this.full(key)))
   }
 
   async insertIfAbsent<T>(key: StateKey<T, 'strong'>, value: T, options?: WriteOptions): Promise<InsertResult<T>> {
     this.assertOpen()
     assertStrong(key, 'insertIfAbsent')
     const json = encodeValue(key.namespace.schema, value, key.path)
-    const answer = await this.object().insertIfAbsent(this.full(key), json, policyOf(key.namespace), options?.expiry)
+    const answer = await await this.call((object) => object.insertIfAbsent(this.full(key), json, policyOf(key.namespace), options?.expiry))
     return answer.inserted ? { inserted: true, entry: this.decoded(key, answer.entry) } : { inserted: false, current: this.decoded(key, answer.current) }
   }
 
@@ -109,7 +114,7 @@ export class CloudflareAppState implements AppState {
     this.assertOpen()
     assertStrong(key, 'compareAndSet')
     const json = encodeValue(key.namespace.schema, value, key.path)
-    const answer = await this.object().compareAndSet(this.full(key), expected, json, policyOf(key.namespace), options?.expiry)
+    const answer = await await this.call((object) => object.compareAndSet(this.full(key), expected, json, policyOf(key.namespace), options?.expiry))
     return answer.ok ? { ok: true, entry: this.decoded(key, answer.entry) } : { ok: false, current: answer.current && this.decoded(key, answer.current) }
   }
 
@@ -117,7 +122,7 @@ export class CloudflareAppState implements AppState {
     this.assertOpen()
     assertStrong(key, 'increment')
     if (!Number.isSafeInteger(delta)) throw new RangeError(`AppState increment of ${key.path}: the delta is a safe integer`)
-    const answer = await this.object().increment(this.full(key), delta, { min: options.min, max: options.max }, policyOf(key.namespace), options.expiry)
+    const answer = await await this.call((object) => object.increment(this.full(key), delta, { min: options.min, max: options.max }, policyOf(key.namespace), options.expiry))
     return answer.applied ? { applied: true, entry: this.decoded(key, answer.entry) } : { applied: false, current: answer.current && this.decoded(key, answer.current) }
   }
 
@@ -128,7 +133,7 @@ export class CloudflareAppState implements AppState {
   async consume<T>(key: StateKey<T, 'strong'>, options: ConsumeOptions = {}): Promise<ConsumeResult<T>> {
     this.assertOpen()
     assertStrong(key, 'consume')
-    const answer = await this.object().consume(this.full(key), options.revision)
+    const answer = await await this.call((object) => object.consume(this.full(key), options.revision))
     return answer.consumed ? { consumed: true, entry: this.decoded(key, answer.entry) } : { consumed: false, current: answer.current && this.decoded(key, answer.current) }
   }
 
@@ -172,8 +177,9 @@ export class CloudflareAppState implements AppState {
   }
 
   /** A new stub for each call: a Worker invocation cannot use an I/O object that another one made. */
-  private object(): AppStateObject {
-    return this.objects.getByName(OBJECT_NAME)
+  private async call<R>(use: (object: AppStateObject) => R | Promise<R>): Promise<R> {
+    await reachCurrentCode(this.objects, OBJECT_NAME, this.version)
+    return use(this.objects.getByName(OBJECT_NAME))
   }
 
   private assertOpen(): void {
@@ -198,7 +204,7 @@ export class CloudflareAppState implements AppState {
       return this.decoded(key, stored)
     } catch (error) {
       if (key.namespace.consistency === 'strong') throw new Error(`AppState ${key.path} holds a value its schema rejects`, { cause: error })
-      await this.object().delete(this.full(key))
+      await await this.call((object) => object.delete(this.full(key)))
       return null
     }
   }
@@ -270,15 +276,15 @@ class HubSubscription<E> implements Subscription {
 }
 
 /** The org's object as the hub: a publish is one call, and each subscription holds its own socket there. */
-function objectHub(object: () => AppStateObject): EventHub {
+function objectHub(call: <R>(use: (object: AppStateObject) => R | Promise<R>) => Promise<R>): EventHub {
   return {
     async publish(fullChannel, json) {
-      await object().publish(fullChannel, json)
+      await await call((object) => object.publish(fullChannel, json))
     },
     async connect(fullChannels, onEvent, onLost) {
       const url = new URL(`https://app-state${SUBSCRIBE_PATH}`)
       for (const channel of fullChannels) url.searchParams.append('channel', channel)
-      const response = await object().fetch(new Request(url, { headers: { Upgrade: 'websocket' } }))
+      const response = await await call((object) => object.fetch(new Request(url, { headers: { Upgrade: 'websocket' } })))
       const socket = (response as Response & { webSocket?: WorkerWebSocket | null }).webSocket
       if (!socket) throw new Error(`The AppState object refused the subscription (${response.status})`)
       socket.accept()

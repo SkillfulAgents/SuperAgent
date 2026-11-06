@@ -8,6 +8,7 @@
 import type { DurableObjectNamespace } from 'cloudflare:workers'
 import { Task, TaskManager, type PeriodicOptions, type RetryPolicy, type TaskContext, type TaskSpec } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
+import { reachCurrentCode } from './object-version'
 import { servingTaskManager, type ExecutionOutcome, type TaskManagerDurableObject } from './task-manager-durable-object'
 
 /** The name of the org's one task manager object. */
@@ -27,7 +28,10 @@ export class CloudflareTaskManager extends TaskManager {
   private queue: Promise<unknown> = Promise.resolve()
   private stopped = false
 
-  constructor(private readonly objects: DurableObjectNamespace<TaskManagerDurableObject>) {
+  constructor(
+    private readonly objects: DurableObjectNamespace<TaskManagerDurableObject>,
+    private readonly version?: string,
+  ) {
     super()
   }
 
@@ -96,7 +100,12 @@ export class CloudflareTaskManager extends TaskManager {
 
   private inOrder(call: (schedule: Schedule) => Promise<unknown> | unknown): Promise<unknown> {
     // Inside the object itself (a task scheduling more work), the call goes to it directly: through its stub it would come back to it.
-    const run = () => call(servingTaskManager() ?? this.objects.getByName(OBJECT_NAME))
+    const run = async () => {
+      const own = servingTaskManager()
+      if (own) return call(own)
+      await reachCurrentCode(this.objects, OBJECT_NAME, this.version)
+      return call(this.objects.getByName(OBJECT_NAME))
+    }
     const next = this.queue.then(run, run)
     this.queue = next.catch(() => {})
     return next

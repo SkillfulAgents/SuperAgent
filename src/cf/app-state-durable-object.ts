@@ -14,6 +14,7 @@ import type { DurableObjectState, SqlStorage, WorkerWebSocket } from 'cloudflare
 import type { Consistency, Expiry, ExpiryPolicy, Namespace } from '@shared/lib/app-state/contract'
 import { resolveExpiry } from '@shared/lib/app-state/definitions'
 import type { Env } from './index'
+import { restartIfOlder } from './object-version'
 
 /** What a write needs of its key's namespace; the client sends it with each write. */
 export interface KeyPolicy {
@@ -65,6 +66,10 @@ export class AppStateDurableObject extends DurableObject<Env> {
     super(ctx, env)
     this.sql = ctx.storage.sql
     this.sql.exec('CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, json TEXT NOT NULL, revision TEXT NOT NULL, expires_at INTEGER)')
+  }
+
+  checkVersion(callerVersion: string): boolean {
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
   }
 
   get(key: string): StoredEntry | null {
