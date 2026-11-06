@@ -155,12 +155,12 @@ let sessionStoreFactory: LocalActorDeps['createSessionStore']
  * another process. Called once at boot, before the first `get`: a handle
  * already handed out keeps what it was made with.
  */
-export function useActorTransport(make: (slug: AgentSlug, local: AgentActor) => AgentActor): void {
+export function setActorTransport(make: (slug: AgentSlug, local: AgentActor) => AgentActor): void {
   actorTransport = make
 }
 
 /** Where each agent's files are, when the deployment keeps them somewhere other than this machine (see `LocalActorDeps.createSessionStore`). */
-export function useSessionStore(make: NonNullable<LocalActorDeps['createSessionStore']>): void {
+export function setSessionStore(make: NonNullable<LocalActorDeps['createSessionStore']>): void {
   sessionStoreFactory = make
 }
 

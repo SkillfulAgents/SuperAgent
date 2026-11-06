@@ -17,7 +17,7 @@ import { mutateSettings } from '@shared/lib/config/settings'
 import { initializeServices, prepareBackgroundWork, prepareProcess, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
-import { useActorTransport, useSessionStore } from '@shared/lib/agent-actor/registry'
+import { setActorTransport, setSessionStore } from '@shared/lib/agent-actor/registry'
 import { remoteActor, serveActor } from '@shared/lib/agent-actor/network-actor'
 import { createConfigOps } from '@shared/lib/agent-actor/config-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/session-store'
@@ -177,8 +177,8 @@ function errorOnRedirect(fetch: typeof globalThis.fetch): typeof globalThis.fetc
 /** Where each agent runs: its actor in its own object, its files in its container or, asleep, in R2. */
 function wireAgents(env: Env): void {
   // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
-  useActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
-  useSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
+  setActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
+  setSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
   setIdleAlarmTimers((slug, ring) => {
     idleRings.set(slug, ring)
     // Armed from the actor, which runs only in the agent's own object.

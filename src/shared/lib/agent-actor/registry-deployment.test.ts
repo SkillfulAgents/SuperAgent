@@ -49,9 +49,9 @@ afterEach(async () => {
 
 describe('agentRegistry in a deployment', () => {
   it("keeps the agent's files in the session store the deployment supplies", async () => {
-    const { agentRegistry, useSessionStore } = await freshRegistry()
+    const { agentRegistry, setSessionStore } = await freshRegistry()
     const store = createInMemorySessionStore('sales-agent')
-    useSessionStore(() => store)
+    setSessionStore(() => store)
 
     await agentRegistry.get('sales-agent').files.putDoc('notes/q3.md', 'Pipeline review on Friday')
 
@@ -59,11 +59,11 @@ describe('agentRegistry in a deployment', () => {
   })
 
   it("hands callers the agent through the deployment's transport, made once per agent", async () => {
-    const { agentRegistry, useActorTransport, useSessionStore } = await freshRegistry()
+    const { agentRegistry, setActorTransport, setSessionStore } = await freshRegistry()
     const store = createInMemorySessionStore('sales-agent')
-    useSessionStore(() => store)
+    setSessionStore(() => store)
     const make = vi.fn((_slug: string, local: AgentActor) => loopbackActor(local))
-    useActorTransport(make)
+    setActorTransport(make)
 
     const actor = agentRegistry.get('sales-agent')
     await actor.files.putDoc('notes/q3.md', 'Pipeline review on Friday')
