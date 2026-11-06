@@ -1,0 +1,127 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e102]:
+            - link "Discover New Agents" [ref=e103] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e104]
+              - generic [ref=e107]: Discover New Agents
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e108]:
+            - button "Your Agents" [ref=e109] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e110]:
+                - generic [ref=e111]: Your Agents
+                - img [ref=e113]
+            - button "New agent in Your Agents" [ref=e115] [cursor=pointer]:
+              - img [ref=e116]
+            - list [ref=e118]:
+              - button "QA-20261106-213503-84fl , idle. Never active Options for QA-20261106-213503-84fl Open QA-20261106-213503-84fl New session with QA-20261106-213503-84fl" [ref=e119] [cursor=pointer]:
+                - generic [ref=e120]:
+                  - link "QA-20261106-213503-84fl , idle. Never active" [ref=e121]:
+                    - /url: /agents/qa-20261106-213503-84fl-j1wg9fl5o8
+                    - generic [ref=e122]: QA-20261106-213503-84fl
+                    - generic [ref=e123]: ", idle."
+                    - generic [ref=e124]: Never active
+                  - generic:
+                    - button "Options for QA-20261106-213503-84fl"
+                    - generic:
+                      - link "Open QA-20261106-213503-84fl":
+                        - /url: /agents/qa-20261106-213503-84fl-j1wg9fl5o8
+                      - link "New session with QA-20261106-213503-84fl":
+                        - /url: /agents/qa-20261106-213503-84fl-j1wg9fl5o8/sessions/new
+                        - img
+              - button "QA-20261106-213502-3d7k , idle. Never active Options for QA-20261106-213502-3d7k Open QA-20261106-213502-3d7k New session with QA-20261106-213502-3d7k" [ref=e125] [cursor=pointer]:
+                - generic [ref=e126]:
+                  - link "QA-20261106-213502-3d7k , idle. Never active" [ref=e127]:
+                    - /url: /agents/qa-20261106-213502-3d7k-nbjzbv03hf
+                    - generic [ref=e128]: QA-20261106-213502-3d7k
+                    - generic [ref=e129]: ", idle."
+                    - generic [ref=e130]: Never active
+                  - generic:
+                    - button "Options for QA-20261106-213502-3d7k"
+                    - generic:
+                      - link "Open QA-20261106-213502-3d7k":
+                        - /url: /agents/qa-20261106-213502-3d7k-nbjzbv03hf
+                      - link "New session with QA-20261106-213502-3d7k":
+                        - /url: /agents/qa-20261106-213502-3d7k-nbjzbv03hf/sessions/new
+                        - img
+          - status [ref=e131]
+          - listitem [ref=e132]:
+            - button "Add section" [ref=e133] [cursor=pointer]:
+              - img [ref=e135]
+              - generic [ref=e136]: Add section
+      - generic [ref=e50]:
+        - button "Settings" [ref=e51] [cursor=pointer]:
+          - img [ref=e52]
+          - generic [ref=e55]: Settings
+        - button "0.6.6" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]: 0.6.6
+      - button "Toggle Sidebar" [ref=e58]
+    - main [ref=e59]:
+      - generic [ref=e61]:
+        - generic [ref=e62]:
+          - button "Toggle Sidebar" [ref=e63] [cursor=pointer]:
+            - img
+            - generic [ref=e64]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e66] [cursor=pointer]:
+            - img [ref=e67]
+            - generic [ref=e70]: Search agents and sessions...
+            - generic [ref=e71]: Ctrl+K
+          - generic [ref=e72]:
+            - button "Card view" [pressed] [ref=e73] [cursor=pointer]:
+              - img [ref=e74]
+            - button "Graph view" [ref=e79] [cursor=pointer]:
+              - img [ref=e80]
+        - generic [ref=e89]:
+          - generic [ref=e90]:
+            - heading "Your Agents" [level=2] [ref=e91]
+            - generic [ref=e92]:
+              - button "New Agent" [ref=e93] [cursor=pointer]:
+                - img
+                - text: New Agent
+              - button "Home options" [ref=e94] [cursor=pointer]:
+                - img [ref=e95]
+          - generic [ref=e137]:
+            - generic [ref=e140]:
+              - link "Open QA-20261106-213503-84fl" [ref=e141] [cursor=pointer]:
+                - /url: /agents/qa-20261106-213503-84fl-j1wg9fl5o8
+              - generic [ref=e143]:
+                - generic [ref=e144]: Idle
+                - button "Stop agent" [ref=e145] [cursor=pointer]:
+                  - img [ref=e146]
+              - generic:
+                - generic:
+                  - generic: QA-20261106-213503-84fl
+                  - generic: Never active
+            - generic [ref=e155]:
+              - link "Open QA-20261106-213502-3d7k" [ref=e156] [cursor=pointer]:
+                - /url: /agents/qa-20261106-213502-3d7k-nbjzbv03hf
+              - generic [ref=e158]:
+                - generic [ref=e159]: Idle
+                - button "Stop agent" [ref=e160] [cursor=pointer]:
+                  - img [ref=e161]
+              - generic:
+                - generic:
+                  - generic: QA-20261106-213502-3d7k
+                  - generic: Never active
+  - region "Notifications alt+T"
