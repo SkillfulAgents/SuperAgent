@@ -103,6 +103,45 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
   }
 }
 
+let processPrepared: Promise<void> | null = null
+
+/**
+ * The setup that requests read from this process's memory: account providers,
+ * the auth gate, platform attribution and the managed platform connection.
+ * Runs once per process. Service startup runs it alongside agent discovery and
+ * joins both before any container starts; a
+ * host that serves requests from processes that start no services (one per
+ * request, or many short-lived ones) calls it after AppState and KeyManager.
+ * A failure is not remembered, so the next call tries again.
+ */
+export function prepareProcess(): Promise<void> {
+  processPrepared ??= prepareProcessInner().catch((error: unknown) => {
+    processPrepared = null
+    throw error
+  })
+  return processPrepared
+}
+
+async function prepareProcessInner(): Promise<void> {
+  setServerAnalyticsVersion(APP_VERSION)
+  // Account providers (Composio, Nango if configured)
+  registerAllAccountProviders()
+  if (isAuthMode()) await validateAuthModeStartup()
+  // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
+  try {
+    const platformToken = await getPlatformAccessToken()
+    if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
+      installPlatformFetchInterceptor()
+    }
+  } catch (error) {
+    captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
+  }
+  // Provision hosted Platform installs and later logins independently of legacy
+  // data migrations, before any agent or helper resolves its initial model.
+  const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
+  await ensureManagedPlatformConnection()
+}
+
 async function initializeServicesInner() {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
@@ -128,50 +167,25 @@ async function initializeServicesInner() {
     markBoot('settingsRead')
   }
 
-  // Initialize server-side analytics version
-  setServerAnalyticsVersion(APP_VERSION)
-
-  // Register account providers (Composio, Nango if configured)
-  registerAllAccountProviders()
-
   try {
     await reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
 
-  // Auth validation and agent discovery are independent reads. Run them
+  // The process setup and agent discovery are independent reads. Run them
   // together, then join before container initialization so a failed auth gate
   // still prevents any runtime side effects.
-  const [, agents] = await Promise.all([
-    (async () => {
-      if (isAuthMode()) {
-        await validateAuthModeStartup()
-        try {
-          await clearPendingApprovalBans()
-        } catch (error) {
-          captureException(error, {
-            tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
-          })
-        }
-      }
-
-      // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
-      try {
-        const platformToken = await getPlatformAccessToken()
-        if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
-          installPlatformFetchInterceptor()
-        }
-      } catch (error) {
-        captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
-      }
-    })(),
-    listAgents(),
-  ])
-  // Provision hosted Platform installs and later logins independently of legacy
-  // data migrations, before any agent or helper resolves its initial model.
-  const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
-  await ensureManagedPlatformConnection()
+  const [, agents] = await Promise.all([prepareProcess(), listAgents()])
+  if (isAuthMode()) {
+    try {
+      await clearPendingApprovalBans()
+    } catch (error) {
+      captureException(error, {
+        tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
+      })
+    }
+  }
   markBoot('dbReady')
 
   // The host's one connection to the platform webhook queue, shared by every
