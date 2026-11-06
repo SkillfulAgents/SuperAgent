@@ -278,7 +278,16 @@ async function writeNewAgent(
     if (!(await agentCatalog.available(identity.id))) throw new AgentIdError('taken', 'That agent id is already in use')
   }
   const createdAt = new Date()
-  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt, avatar: identity.avatar })
+  let record: AgentRecord
+  try {
+    record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt, avatar: identity.avatar })
+  } catch (error) {
+    // A create with the same id that won the race between the check above and this insert.
+    if (identity.id !== undefined && await agentCatalog.exists(identity.id)) {
+      throw new AgentIdError('taken', 'That agent id is already in use')
+    }
+    throw error
+  }
 
   const frontmatter: AgentFrontmatter = { name: identity.name, createdAt: createdAt.toISOString() }
   if (identity.description) {

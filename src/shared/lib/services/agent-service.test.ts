@@ -446,6 +446,16 @@ Instructions`
       expect((await getAgentRecord('k3v9qm2x7a'))?.name).toBe('Sales')
     })
 
+    it('creates one agent when two creates race for the same caller-chosen id', async () => {
+      const results = await Promise.allSettled([
+        createAgent({ name: 'Sales', id: 'r7m2xk9p4c' }),
+        createAgent({ name: 'Support', id: 'r7m2xk9p4c' }),
+      ])
+
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      expect(results.find((r) => r.status === 'rejected')).toMatchObject({ reason: { name: 'AgentIdError', code: 'taken' } })
+    })
+
     it('refuses a caller-chosen id that is not a minted id', async () => {
       for (const id of ['../escape00', 'Sales00Agnt', 'short']) {
         await expect(createAgent({ name: 'Untitled', id })).rejects.toMatchObject({ name: 'AgentIdError', code: 'invalid' })
