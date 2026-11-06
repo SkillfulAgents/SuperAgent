@@ -13,6 +13,8 @@ const { mockMutateAsync, mockUpdateMutateAsync, mockNavigate, mockTrack, mockSet
     mockSetJustCreatedSlug: vi.fn(),
     mockHold: vi.fn(),
   }))
+// Where the router is: the last navigate's page, unless a test moves the user on.
+const location = { pathname: '/' }
 
 vi.mock('@renderer/hooks/use-agents', () => ({
   useCreateAgent: () => ({ mutateAsync: mockMutateAsync, isPending: false }),
@@ -23,6 +25,7 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
 vi.mock('@renderer/lib/api', () => ({ holdAgentRequestsUntilCreated: mockHold }))
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
+  useRouter: () => ({ state: { location } }),
 }))
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({ setJustCreatedSlug: mockSetJustCreatedSlug }),
@@ -67,6 +70,10 @@ beforeEach(() => {
     slug: input.id, displaySlug: DISPLAY_SLUG, name: input.name, avatar: input.avatar, createdAt: new Date(), status: 'stopped', containerPort: null,
   }))
   mockUpdateMutateAsync.mockResolvedValue({})
+  location.pathname = '/'
+  mockNavigate.mockImplementation((options: { to: string; params?: { slug: string } }) => {
+    location.pathname = options.params ? options.to.replace('$slug', options.params.slug) : options.to
+  })
 })
 
 describe('useCreateUntitledAgent', () => {
@@ -126,6 +133,23 @@ describe('useCreateUntitledAgent', () => {
     expect(mockNavigate).toHaveBeenLastCalledWith({ to: '/' })
     expect(mockTrack).not.toHaveBeenCalled()
     expect(mockUpdateMutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('leaves a user who moved on where they are when the create fails', async () => {
+    const create = heldCreate()
+    const { result } = render()
+    let creation!: Promise<unknown>
+    await act(async () => {
+      creation = result.current.createUntitledAgent({ surface: 'nav' })
+    })
+    location.pathname = '/agents/sales-sales00agnt'
+
+    await act(async () => {
+      create.fail(new Error('Agent limit reached'))
+      expect(await creation).toBeNull()
+    })
+    expect(mockNavigate).toHaveBeenCalledOnce()
+    expect(location.pathname).toBe('/agents/sales-sales00agnt')
   })
 
   it('lets the creator use the new agent before its create answers', async () => {
