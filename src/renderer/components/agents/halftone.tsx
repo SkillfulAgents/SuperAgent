@@ -160,7 +160,6 @@ export function Halftone({
       ctx!.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
       renderer.resize(W, H)
       ready = true
-      lastDrawTime = 0
       return true
     }
 
@@ -229,7 +228,9 @@ export function Halftone({
 
     const ro = new ResizeObserver(() => {
       const measured = setup()
-      if (measured && reduce && intersecting) draw()
+      // Resizing clears the bitmap after RAF callbacks have run. Repaint before
+      // the browser presents it, without advancing the animation or cursor easing.
+      if (measured && intersecting && !document.hidden) draw(0)
       syncAnimation()
     })
     ro.observe(wrap)
