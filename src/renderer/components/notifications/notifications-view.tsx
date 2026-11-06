@@ -302,10 +302,6 @@ const EMPTY_MESSAGES: Record<NotificationFilter, string> = {
   announcements: 'No announcements yet.',
 }
 
-// Always offered; the rest appear only once they have something in them, so a
-// local install never shows an empty Mentions tab.
-const ALWAYS_SHOWN = new Set<NotificationFilter>(['all', 'needs-you', 'completed'])
-
 /** Total and unread rows a filter covers, including non-actionable types. */
 function filterTally(
   filter: NotificationFilter,
@@ -331,8 +327,10 @@ function NotificationFilterTabs({
   active: NotificationFilter
   tallies: Record<NotificationFilter, { total: number; unread: number }>
 }) {
+  // Every agent tab always shows; Announcements only once there is one (or
+  // while it is selected, e.g. from a link), since many installs never get any.
   const shown = NOTIFICATION_FILTERS.filter(
-    (filter) => ALWAYS_SHOWN.has(filter) || filter === active || tallies[filter].total > 0,
+    (filter) => filter !== 'announcements' || filter === active || tallies.announcements.total > 0,
   )
   return (
     <TabsList aria-label="Filter notifications" className="h-8 max-w-full justify-start overflow-x-auto p-0.5">

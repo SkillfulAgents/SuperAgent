@@ -104,6 +104,8 @@ describe('openWidgetRepairSession', () => {
       isWidgetRepair: true,
       widgetRepairSlug: 'weather',
       automationStatus: 'running',
+      model: 'claude-x',
+      effort: 'medium',
     })
     expect(mocks.subscribe).toHaveBeenCalled()
     expect(mocks.markActive).toHaveBeenCalledWith(AGENT, 'session-new')

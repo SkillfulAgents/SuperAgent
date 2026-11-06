@@ -7,6 +7,7 @@ import {
 } from '@shared/lib/config/settings'
 import { getOrCreateMapping } from './context-map-store'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
+import { pageWsUrlFromDebuggerUrl } from './browserbase-live-view'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const BROWSERBASE_API_BASE = 'https://api.browserbase.com/v1'
@@ -182,12 +183,10 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     const debug = await response.json() as BrowserbaseDebugResponse
     if (!debug.pages || debug.pages.length === 0) return null
 
-    // Build page-level debug WebSocket URLs
-    const pages = debug.pages.map((page) => ({
-      id: page.id,
-      url: page.url,
-      wsUrl: `wss://connect.browserbase.com/debug/${sessionId}/devtools/page/${page.id}`,
-    }))
+    const pages = debug.pages.flatMap((page) => {
+      const wsUrl = pageWsUrlFromDebuggerUrl(page.debuggerUrl)
+      return wsUrl ? [{ id: page.id, url: page.url, wsUrl }] : []
+    })
 
     return { pages }
   }

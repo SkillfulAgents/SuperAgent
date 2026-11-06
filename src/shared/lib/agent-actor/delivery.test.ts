@@ -387,6 +387,20 @@ describe('start', () => {
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
+  it('stores the runtime the session was created with', async () => {
+    await delivery().start({
+      ...request,
+      create: { initialMessage: 'go', model: 'claude-haiku-5-5', llmProviderId: 'conn-claude-subscription', effort: 'low' as const },
+    })
+
+    expect(await sessionService.getSessionMetadata(store(), 'new-session')).toMatchObject({
+      model: 'claude-haiku-5-5',
+      llmProviderId: 'conn-claude-subscription',
+      effort: 'low',
+      isScheduledExecution: true,
+    })
+  })
+
   it('lets a session started with computer use use any app before its stream attaches', async () => {
     const computerUse = live.agents.get(SLUG).computerUse
     let atAttach: Promise<string> | undefined
