@@ -118,14 +118,16 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
     throw err
   }
 
-  if (options.migrate !== false) await migrate(handle, driver.name, dbPath)
+  if (options.migrate !== false) await migrate(handle, driver, dbPath)
   opened = handle
   return handle.db
 }
 
-async function migrate(handle: OpenedDatabase, driverName: string, dbPath: string | undefined): Promise<void> {
+async function migrate(handle: OpenedDatabase, driver: DatabaseDriver, dbPath: string | undefined): Promise<void> {
+  const driverName = driver.name
   try {
-    await migrateFromBundle(handle.db)
+    if (driver.migrateSchema) await driver.migrateSchema(handle.db, migrationBundle)
+    else await migrateFromBundle(handle.db)
   } catch (err) {
     captureException(err, {
       tags: { component: 'database', operation: 'migrate', driver: driverName },
