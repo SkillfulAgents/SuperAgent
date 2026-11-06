@@ -72,9 +72,17 @@ export function getServicesInitError(): string | null {
   return servicesInitError
 }
 
-/** Idempotent; call only via afterBindInitialize (or tests). */
-export function initializeServices(): Promise<void> {
-  servicesInitPromise ??= initializeServicesInner()
+export interface InitializeServicesOptions {
+  /**
+   * False when this process watches no containers, because each agent's container is watched
+   * where that agent runs: no initial agent sync, image check, status sync or health monitor.
+   */
+  localContainers?: boolean
+}
+
+/** Idempotent: the first call's options apply. Called via afterBindInitialize, or by a process that only runs the services. */
+export function initializeServices(options: InitializeServicesOptions = {}): Promise<void> {
+  servicesInitPromise ??= initializeServicesInner(options)
   return servicesInitPromise
 }
 
@@ -99,7 +107,7 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
   }
 }
 
-async function initializeServicesInner() {
+async function initializeServicesInner({ localContainers = true }: InitializeServicesOptions) {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.
@@ -182,7 +190,7 @@ async function initializeServicesInner() {
   relay.start()
 
   const slugs = agents.map((a) => a.slug)
-  await containerHost.initializeAgents(slugs)
+  if (localContainers) await containerHost.initializeAgents(slugs)
   stopWatchingWebhookRelay = containerHost.watchWebhookRelay(relay)
 
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
@@ -229,14 +237,16 @@ async function initializeServicesInner() {
     captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
   }), { name: 'startup.start-integration-manager' })
 
-  // Check/pull container image (non-blocking, bounded with other startup I/O)
-  background(scheduleStartupIo(() => containerHost.ensureImageReady()).catch((error) => {
-    console.error('Failed to ensure image ready:', error)
-  }), { name: 'startup.ensure-image-ready' })
+  if (localContainers) {
+    // Check/pull container image (non-blocking, bounded with other startup I/O)
+    background(scheduleStartupIo(() => containerHost.ensureImageReady()).catch((error) => {
+      console.error('Failed to ensure image ready:', error)
+    }), { name: 'startup.ensure-image-ready' })
 
-  // Start container status sync and health monitor
-  containerHost.startStatusSync()
-  containerHost.startHealthMonitor()
+    // Start container status sync and health monitor
+    containerHost.startStatusSync()
+    containerHost.startHealthMonitor()
+  }
 
   // Start task scheduler
   background(scheduleStartupIo(
