@@ -1,4 +1,5 @@
 import type { IntegrationMessageSource } from '@shared/lib/agent-integrations/message-display-schema'
+import { InlineCode } from '@renderer/components/ui/inline-code'
 import { cn } from '@shared/lib/utils/cn'
 import { IntegrationEventLine, IntegrationMessageFooter, PersonAvatar, formatSentAt, sentAtOf } from './message-parts'
 import type { IntegrationMessageProps } from './types'
@@ -60,13 +61,6 @@ export function LinearPriorityIcon({ level, className }: { level: number; classN
       ))}
     </svg>
   )
-}
-
-/** An excerpt of Linear Markdown: inline `code` spans styled, everything else plain text. */
-function InlineCode({ text }: { text: string }) {
-  return text.split(/`([^`\n]+)`/).map((part, index) => index % 2
-    ? <code key={index} className="rounded bg-muted px-1 py-px font-mono text-[12px] text-foreground/80">{part}</code>
-    : part)
 }
 
 /**
