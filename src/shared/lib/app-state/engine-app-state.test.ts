@@ -17,7 +17,7 @@ function answeringLater(engine: LocalAppStateBackend): AppStateEngine {
     remove: later((key) => engine.remove(key)),
     insertIfAbsent: later((key, json, policy, expiry) => engine.insertIfAbsent(key, json, policy, expiry)),
     compareAndSet: later((key, expected, json, policy, expiry) => engine.compareAndSet(key, expected, json, policy, expiry)),
-    increment: later((key, delta, bounds, policy, expiry) => engine.increment(key, delta, bounds, policy, expiry)),
+    increment: later((key, delta, bounds, limits, policy, expiry) => engine.increment(key, delta, bounds, limits, policy, expiry)),
     consume: later((key, revision) => engine.consume(key, revision)),
     publish: later((channel, json) => engine.publish(channel, json)),
     subscribe: later((channels, subscriber) => {

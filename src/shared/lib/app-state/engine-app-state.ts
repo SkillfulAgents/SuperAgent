@@ -23,7 +23,7 @@ import type {
   Subscription,
   WriteOptions,
 } from './contract'
-import { assertStrong, decodeValue, encodeValue, scopePrefix } from './definitions'
+import { assertStrong, counterLimits, decodeValue, encodeValue, scopePrefix } from './definitions'
 import type { AppStateEngine, EngineSubscriber, StoredEntry } from './engine'
 
 export interface EngineAppStateOptions {
@@ -152,7 +152,8 @@ class EngineAppState implements AppState {
     this.assertOpen()
     assertStrong(key, 'increment')
     const bounds = { min: options.min, max: options.max }
-    const answer = await this.engine.increment(this.full(key), delta, bounds, key.namespace, options.expiry)
+    const limits = counterLimits(key.namespace.schema)
+    const answer = await this.engine.increment(this.full(key), delta, bounds, limits, key.namespace, options.expiry)
     if (answer.applied) return { applied: true, entry: this.decoded(key, answer.entry) }
     return { applied: false, current: await this.entryOf(key, answer.current) }
   }

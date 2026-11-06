@@ -46,8 +46,19 @@ export interface AppStateEngine {
   remove(fullKey: string): Answer<void>
   insertIfAbsent(fullKey: string, json: string, policy: KeyPolicy, expiry?: Expiry): Answer<InsertAnswer>
   compareAndSet(fullKey: string, expected: Revision | null, json: string, policy: KeyPolicy, expiry?: Expiry): Answer<CompareAndSetAnswer>
-  /** Adds `delta` to the number stored under the key (0 when missing), within the bounds. */
-  increment(fullKey: string, delta: number, bounds: IncrementBounds, policy: KeyPolicy, expiry?: Expiry): Answer<IncrementAnswer>
+  /**
+   * Adds `delta` to the number stored under the key (0 when missing). A result past
+   * `bounds` is refused; one past `limits`, what the namespace schema accepts, throws.
+   * Either way nothing is stored.
+   */
+  increment(
+    fullKey: string,
+    delta: number,
+    bounds: IncrementBounds,
+    limits: IncrementBounds,
+    policy: KeyPolicy,
+    expiry?: Expiry,
+  ): Answer<IncrementAnswer>
   /** Removes the entry if it is live (and, given a revision, still that revision). */
   consume(fullKey: string, revision?: Revision): Answer<ConsumeAnswer>
   /** Hands the event to every subscriber of the channel; resolves before any of them acts on it. */

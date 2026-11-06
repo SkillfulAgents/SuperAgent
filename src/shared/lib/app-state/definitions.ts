@@ -14,6 +14,7 @@ import type {
   StateKey,
   Topic,
 } from './contract'
+import type { IncrementBounds } from './engine'
 
 const SEGMENT = '[a-z][a-z0-9-]*'
 const NAMESPACE_NAME = new RegExp(`^${SEGMENT}(?::${SEGMENT})*$`)
@@ -124,6 +125,23 @@ export function decodeValue<T>(schema: z.ZodType<T>, json: string): T {
     throw new Error('An AppState value is not JSON', { cause: error })
   }
   return schema.parse(parsed)
+}
+
+/**
+ * The integers at the ends of what a counter's schema accepts, so an engine can
+ * refuse a result past them before it writes. Rules other than a number schema's
+ * bounds are checked only when the value is read.
+ */
+export function counterLimits(schema: z.ZodType<number>): IncrementBounds {
+  const { minValue, maxValue } = schema as Partial<Pick<z.ZodNumber, 'minValue' | 'maxValue'>>
+  return { min: limitOf(schema, minValue, 1), max: limitOf(schema, maxValue, -1) }
+}
+
+function limitOf(schema: z.ZodType<number>, bound: number | null | undefined, inward: 1 | -1): number | undefined {
+  if (typeof bound !== 'number' || !Number.isFinite(bound)) return undefined
+  const limit = inward > 0 ? Math.ceil(bound) : Math.floor(bound)
+  // An exclusive bound (`positive()`, `lt(n)`) reports the value it excludes.
+  return schema.safeParse(limit).success ? limit : limit + inward
 }
 
 /** Throws unless the key's namespace is strong; the conditional operations need one. */

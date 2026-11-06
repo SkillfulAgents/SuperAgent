@@ -133,7 +133,14 @@ export class LocalAppStateBackend implements AppStateEngine {
     return { ok: true, entry: this.put(fullKey, json, policy, expiry, current) }
   }
 
-  increment(fullKey: string, delta: number, bounds: IncrementBounds, policy: KeyPolicy, expiry?: Expiry): IncrementAnswer {
+  increment(
+    fullKey: string,
+    delta: number,
+    bounds: IncrementBounds,
+    limits: IncrementBounds,
+    policy: KeyPolicy,
+    expiry?: Expiry,
+  ): IncrementAnswer {
     if (!Number.isSafeInteger(delta)) throw new RangeError(`AppState increment of ${fullKey}: the delta is a safe integer`)
     const current = this.read(fullKey)
     const value = current ? (JSON.parse(current.json) as unknown) : 0
@@ -142,6 +149,9 @@ export class LocalAppStateBackend implements AppStateEngine {
     if (!Number.isSafeInteger(next)) throw new RangeError(`AppState counter ${fullKey} would leave the safe integers`)
     if ((bounds.min !== undefined && next < bounds.min) || (bounds.max !== undefined && next > bounds.max)) {
       return { applied: false, current }
+    }
+    if ((limits.min !== undefined && next < limits.min) || (limits.max !== undefined && next > limits.max)) {
+      throw new RangeError(`AppState counter ${fullKey}: ${next} is outside what its schema accepts`)
     }
     return { applied: true, entry: this.put(fullKey, JSON.stringify(next), policy, expiry, current) }
   }
