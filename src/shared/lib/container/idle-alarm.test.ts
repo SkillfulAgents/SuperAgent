@@ -19,6 +19,7 @@ function fakeContainer(options: { timeoutMs?: number; stopCompletes?: boolean } 
   // The timeout is a settings read: asynchronous, and read fresh every time.
   const timeoutMs = vi.fn(async () => state.timeoutMs)
   const alarm = new IdleAlarm({
+    agentSlug: () => 'support-agent',
     timeoutMs,
     lastActivityAt: () => state.lastActivityAt,
     isBusy: () => state.busy,

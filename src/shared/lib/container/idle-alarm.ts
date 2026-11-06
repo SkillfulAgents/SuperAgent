@@ -36,7 +36,7 @@ import { background } from '../background'
 
 export interface IdleAlarmDeps {
   /** The agent this alarm belongs to: what a host timer keys its alarm by. */
-  agentSlug?(): string
+  agentSlug(): string
   /**
    * How long the container may be idle before it sleeps, in ms; zero or less
    * disables. Read for every arm (one read shared by the marks made while it
@@ -287,7 +287,7 @@ export class IdleAlarm {
   }
 
   private armIn(ms: number): void {
-    this.timer ??= timerFactory(this.deps.agentSlug?.() ?? '', () => {
+    this.timer ??= timerFactory(this.deps.agentSlug(), () => {
       this.armed = false
       return this.fire()
     })

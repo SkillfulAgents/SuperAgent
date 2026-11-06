@@ -31,8 +31,8 @@ import { getAuth, resetAuth } from './index'
 
 const BASE = 'http://localhost:47892'
 
-function request(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return getAuth().handler(new Request(`${BASE}/api/auth/${endpoint}`, {
+async function request(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
+  return (await getAuth()).handler(new Request(`${BASE}/api/auth/${endpoint}`, {
     method: body ? 'POST' : 'GET',
     headers: { origin: BASE, 'content-type': 'application/json', ...headers },
     ...(body ? { body: JSON.stringify(body) } : {}),

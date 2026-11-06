@@ -89,6 +89,29 @@ describe('skillset cache in the blob store', () => {
     expect(skillText(dir)).toBe('# Lead research\nFind the budget owner.\n')
   })
 
+  it('reads the folder once when two saves raced and the marker names the other save', async () => {
+    const store = memoryStore()
+    const reads: string[] = []
+    setBlobStore({ ...store, get: async (key) => {
+      reads.push(key)
+      return store.get(key)
+    } })
+    const dir = skillsetDir()
+    const other = await otherProcess(store)
+    await other.saveSkillsetCache(dir)
+    const otherMarker = await store.get(`${KEY}.version`)
+    // This process's folder lands last, but the other process's marker does.
+    await saveSkillsetCache(dir)
+    await store.put(`${KEY}.version`, otherMarker!)
+    reads.length = 0
+
+    for (let request = 0; request < 3; request++) {
+      fs.rmSync(dir, { recursive: true, force: true })
+      expect(await restoreSkillsetCache(dir)).toBe(true)
+    }
+    expect(reads).toEqual([`${KEY}.version`, KEY, `${KEY}.version`, `${KEY}.version`])
+  })
+
   it('finds nothing to restore once another process deleted the stored copy', async () => {
     const store = memoryStore()
     setBlobStore(store)
