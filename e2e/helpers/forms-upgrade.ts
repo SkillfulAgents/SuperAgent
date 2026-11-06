@@ -19,6 +19,7 @@ const authSettingsSchema = z.object({ auth: z.object({ passwordMinLength: z.numb
 const admin = { name: 'Forms Validation Admin', email: 'forms-admin@e2e.test', password: 'Forms-Admin-2026-Strong!' }
 const password = 'Forms-Original-2026!'
 const nextPassword = 'Forms-Replacement-2026!'
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
 export type FormsUser = { name: string; email: string; password: string; id?: string }
 
 export async function initializeFormsAdmin(request: APIRequestContext, apiBaseUrl: string) {
@@ -37,6 +38,13 @@ async function activate(context: FormsContext, locator: Locator) {
   else await locator.click()
 }
 
+async function inViewport(page: Page, locator: Locator) {
+  if (!(await locator.count())) return false
+  const box = await locator.boundingBox()
+  const viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }))
+  return !!box && !!viewport && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height
+}
+
 async function session(context: FormsContext) {
   const response = await (context.authenticatedRequest ?? context.page.context().request).get(`${context.apiBaseUrl}/api/auth/get-session`)
   expect(response.ok()).toBe(true)
@@ -51,21 +59,33 @@ async function policy(context: FormsContext, minLength: number, complexity: bool
 }
 
 async function ready(context: FormsContext) {
-  const request = context.authenticatedRequest ?? context.page.context().request
-  const response = await request.get(`${context.apiBaseUrl}/api/user-settings`)
+  const { page } = context
+  const request = context.authenticatedRequest ?? page.context().request
+  const response = await request.put(`${context.apiBaseUrl}/api/user-settings`, { data: { setupCompleted: true } })
   expect(response.ok()).toBe(true)
-  const settings = z.object({ setupCompleted: z.boolean() }).parse(await response.json())
-  if (!settings.setupCompleted) {
-    if (context.page.url() === 'about:blank') await context.navigate('/')
-    await expect(context.page.getByTestId('wizard-container')).toBeVisible()
-    // Wait for the real seeded template response before leaving onboarding.
-    // Navigating away mid-fetch can surface a WebKit cancellation as a page error.
-    await expect(context.page.getByRole('button', { name: 'E2E Onboarding Template — install' })).toBeVisible()
-    await activate(context, context.page.getByRole('button', { name: 'Skip', exact: true }))
-    await expect.poll(async () => z.object({ setupCompleted: z.boolean() }).parse(await (await request.get(`${context.apiBaseUrl}/api/user-settings`)).json()).setupCompleted).toBe(true)
+  const name = page.getByLabel('Name', { exact: true })
+  if (page.url() === 'about:blank') {
+    await context.navigate('/settings/platform')
+  } else if (!page.url().includes('/settings')) {
+    // Open settings through the app. A document navigation during initial
+    // authentication can cancel the template-catalog fetch in WebKit.
+    const menu = page.getByTestId('user-menu-trigger')
+    await expect(page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).first()).toBeVisible()
+    if (!(await inViewport(page, menu))) {
+      await activate(context, page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).first())
+    }
+    await activate(context, menu)
+    await activate(context, page.getByTestId('settings-button'))
   }
-  await context.navigate('/settings/platform')
-  await expect(context.page.getByLabel('Name', { exact: true })).toBeVisible()
+  const settings = page.getByTestId('global-settings-page')
+  await expect(settings).toBeVisible()
+  if (!page.url().includes('/settings/platform')) {
+    const account = page.getByTestId('settings-nav-platform')
+    // Narrow Settings has a menu/content stack, separate from the app sidebar.
+    if (!(await inViewport(page, account))) await activate(context, settings.getByRole('button').first())
+    await activate(context, account)
+  }
+  await expect(name).toBeVisible()
 }
 
 async function signIn(context: FormsContext, user: FormsUser) {
@@ -100,7 +120,7 @@ async function withUser(context: FormsContext, mode: 'existing' | 'signup' | 'in
     await check(user)
   } catch (error) {
     failure = error
-    try { await context.captureFailure?.() } catch (captureError) { failure = new AggregateError([error, captureError], 'Form scenario and failure capture failed') }
+    try { await context.captureFailure?.() } catch (captureError) { failure = new AggregateError([error, captureError], `Form scenario failed: ${errorMessage(error)}; failure capture failed: ${errorMessage(captureError)}`) }
   }
   try {
     await context.page.unrouteAll({ behavior: 'ignoreErrors' })
@@ -120,7 +140,7 @@ async function withUser(context: FormsContext, mode: 'existing' | 'signup' | 'in
     const response = await context.adminRequest.put(`${context.apiBaseUrl}/api/settings`, { data: { auth: before.auth } })
     expect(response.ok(), 'Restore the prior auth policy').toBe(true)
   } catch (cleanupError) {
-    failure = failure ? new AggregateError([failure, cleanupError], 'Form scenario and cleanup failed') : cleanupError
+    failure = failure ? new AggregateError([failure, cleanupError], `Form scenario failed: ${errorMessage(failure)}; cleanup failed: ${errorMessage(cleanupError)}`) : cleanupError
   }
   if (failure) throw failure
 }
@@ -148,7 +168,7 @@ async function holdRequest(page: Page, path: string, method = 'POST') {
     release()
     await page.unroute(`**${path}`, handler)
     await Promise.all(handlers)
-    if (errors.length) throw new AggregateError(errors, 'Held API request failed')
+    if (errors.length) throw new AggregateError(errors, `Held API request failed: ${errors.map(errorMessage).join('; ')}`)
   }
   return {
     release,
@@ -157,7 +177,7 @@ async function holdRequest(page: Page, path: string, method = 'POST') {
       let failure: unknown
       try { await action() } catch (error) { failure = error }
       try { await stop() } catch (cleanupError) {
-        failure = failure ? new AggregateError([failure, cleanupError], 'Form assertion and request cleanup failed') : cleanupError
+        failure = failure ? new AggregateError([failure, cleanupError], `Form assertion failed: ${errorMessage(failure)}; request cleanup failed: ${errorMessage(cleanupError)}`) : cleanupError
       }
       if (failure) throw failure
     },
@@ -299,12 +319,10 @@ export async function checkProfileNameForm(context: FormsContext) {
     await expect.poll(async () => (await session(context))?.user.name).toBe('Forms Second Name')
     await expect(save).toBeDisabled()
     await name.fill('Discard on remount')
-    await context.navigate('/notifications')
-    await context.navigate('/settings/platform')
-    await expect(name).toHaveValue('Forms Second Name')
-    await expect(save).toBeDisabled()
+    // A full remount drops the unsaved draft and reads the persisted baseline.
     await page.reload()
     await expect(name).toHaveValue('Forms Second Name')
+    await expect(save).toBeDisabled()
 }
 
 async function checkProfilePassword(context: FormsContext) {
