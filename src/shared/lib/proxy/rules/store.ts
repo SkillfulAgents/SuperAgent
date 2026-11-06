@@ -9,6 +9,7 @@ import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { proxyRules, proxyRuleVersions, type ProxyRule, type ProxyRuleVersion } from '@shared/lib/db/schema'
 import type { ActiveRule, RuleEffect, RuleKind, RuleTestCase } from './engine'
+import { cachedRules, invalidateRuleCache } from './rule-cache'
 
 export interface RuleTarget {
   kind: RuleKind
@@ -54,36 +55,24 @@ export interface RuleView {
   warnings: string[]
 }
 
-// Live rules per target, for the proxies' hot path. Every write here drops
-// the target's entry; the TTL bounds staleness from writes this process
-// didn't make (another process on the same database, cascade deletes).
-const CACHE_TTL_MS = 5_000
-const activeRuleCache = new Map<string, { loadedAt: number; rules: Array<{ agentSlug: string | null; active: ActiveRule }> }>()
-let cacheGeneration = 0
+export { invalidateRuleCache }
 
-function cacheKey(target: RuleTarget): string {
-  return `${target.kind}:${target.targetId}`
-}
-
-/** Forget cached rules: one target's, or every target's. */
-export function invalidateRuleCache(target?: RuleTarget): void {
-  cacheGeneration++
-  if (target) activeRuleCache.delete(cacheKey(target))
-  else activeRuleCache.clear()
-}
-
-/** Live rules that apply to `agentSlug` on a target, cached briefly. */
+/**
+ * Live rules that apply to `agentSlug` on a target, cached briefly and shared
+ * across processes (rule-cache.ts). Every write here invalidates the target; the
+ * ceiling bounds staleness from anything that doesn't (cascade deletes, a lost
+ * invalidation).
+ */
 export async function listActiveRules(target: RuleTarget, agentSlug: string): Promise<ActiveRule[]> {
-  const key = cacheKey(target)
-  let cached = activeRuleCache.get(key)
-  if (!cached || Date.now() - cached.loadedAt > CACHE_TTL_MS) {
-    const generation = cacheGeneration
-    const rows = await listRules(target)
-    cached = { loadedAt: Date.now(), rules: rows.map((row) => ({ agentSlug: row.rule.agentSlug, active: toActiveRule(row) })) }
-    // A write that landed while this read was in flight wins.
-    if (generation === cacheGeneration) activeRuleCache.set(key, cached)
-  }
-  return cached.rules.filter((r) => r.agentSlug === null || r.agentSlug === agentSlug).map((r) => r.active)
+  const rules = await cachedRules(target, async () =>
+    (await listRules(target)).map((row) => ({ agentSlug: row.rule.agentSlug, active: toActiveRule(row) })))
+  return rules.filter((r) => r.agentSlug === null || r.agentSlug === agentSlug).map((r) => r.active)
+}
+
+/** The target a stored rule belongs to. The table's check says it always has one. */
+function targetOf(rule: Pick<ProxyRule, 'kind' | 'accountId' | 'mcpId'>): RuleTarget | undefined {
+  const targetId = rule.kind === 'api' ? rule.accountId : rule.mcpId
+  return targetId ? { kind: rule.kind, targetId } : undefined
 }
 
 function targetCondition(target: RuleTarget) {
@@ -235,7 +224,7 @@ export async function createRule(options: {
     insertWhere(proxyRuleVersions, version, sql`exists (select 1 from ${proxyRules} where ${proxyRules.id} = ${ruleId})`),
   ])
   if (changesOf(inserted) === 0) return null
-  invalidateRuleCache(options.target)
+  await invalidateRuleCache(options.target)
   const saved = await getRule(ruleId)
   if (!saved) throw new Error('Rule disappeared after insert')
   return saved
@@ -262,8 +251,8 @@ export async function addRuleVersion(
     insertWhere(proxyRuleVersions, version, sql`exists (select 1 from ${proxyRules} where ${stillCurrent})`),
     db.update(proxyRules).set({ currentVersionId: version.id, updatedAt: now }).where(stillCurrent),
   ])
-  invalidateRuleCache()
   if (changesOf(updated) === 0) return null
+  await invalidateRuleCache(targetOf(current.rule))
   return getRule(ruleId)
 }
 
@@ -279,8 +268,10 @@ export async function deleteRule(ruleId: string, expectedVersionId?: string): Pr
       isNull(proxyRules.deletedAt),
       expectedVersionId ? eq(proxyRules.currentVersionId, expectedVersionId) : undefined,
     ))
-    .returning({ id: proxyRules.id })
+    .returning({ kind: proxyRules.kind, accountId: proxyRules.accountId, mcpId: proxyRules.mcpId })
     .all()
-  invalidateRuleCache()
-  return result.length > 0
+  const [deleted] = result
+  if (!deleted) return false
+  await invalidateRuleCache(targetOf(deleted))
+  return true
 }

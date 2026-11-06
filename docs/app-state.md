@@ -281,3 +281,36 @@ if (entry && generations.isCurrent(entry.value.generation, path)) return entry.v
 **Wakes.** `events:volume:mutation-released` only tells waiters to look again: the record alone decides a turn. Waiters also poll, from 50 ms doubling to 1 s, so a lost wake or a PubSub outage costs at most a second. Promises, waiters and timers stay in the process.
 
 **The limit.** A claim coordinates the processes that ask. A request a holder already sent runs on after its claim lapses, so a delayed write can land after a successor's. Provider preconditions (ETag, revision, `IfMatch`) still fence those, and nothing here makes a side effect happen exactly once. A holder that lapsed (its claim is gone or past its deadline) marks its paths changed again when its work settles, in case its request landed after someone's read; if its process died, that read lasts until its freshness bound. A release in time advances nothing, since no read could take a generation for those paths meanwhile. That rests on the 10 s clock margin: if clocks differ by more, a reader can call a claim dead while its holder still thinks it holds it, the holder's in-time release then advances nothing, and that reader's listing lasts until its freshness bound.
+
+## Policy caches
+
+Two caches stand in front of a decision made elsewhere: the proxy rules, whose source is the database, and the platform plan, which the upstream proxy enforces. Both need to be fast. A process's own reads must never bring back what another process invalidated.
+
+### Proxy rules
+
+The live rules of a target (`src/shared/lib/proxy/rules/rule-cache.ts`). The ticket's `cache:proxy-rules:{kind}:{targetId}` is the strong namespace `cache:proxy-rules` with key parts kind and target id. Rules are policy, so the namespace is strong: a snapshot is never older than 5 seconds, in any process, even if every invalidation and every hint is lost.
+
+- **One record holds the snapshot, and its revision is the generation.** A fill reads the record, loads from the database, then writes with a compare-and-set against the revision it read. Any invalidation is a new write to that record, so the fill's write fails and its rows stay with the readers already waiting for them.
+- **A fill never publishes over "absent".** When there is no record, it first inserts an empty one and publishes over that revision. An invalidation record that expired during a slow load would let a write from absent land. Expiry retires a revision for good, so here the late fill's write simply fails.
+- **The 5 seconds count from before the database read.** The publish passes what is left as `{ ttlMs }`, and a load that used all of it publishes nothing. AppState's clock judges the expiry, and the filling process's clock only measures its own elapsed time, so clock skew plays no part. On a remote backend the publish's own one-way trip comes on top.
+- **Invalidating every target is an epoch.** `invalidateRuleCache()` with no target (agent cleanup) cannot list the keys, so it writes a new random id to one record that never expires. Each snapshot carries the epoch it was read under, and a read takes the epoch and the snapshot in one `getMany` and ignores a mismatch. So a fill that began before the bump can land at any time after it and still go unread.
+- **In-flight loads stay in the process.** Readers of one process share a load, but only one that is sure to see what they saw: it has not read the database yet, or the record is still the revision it started from, under the same epoch. A read after an invalidation therefore never gets the rows from before it.
+- **Failure.** A failed invalidation after a committed write is logged and does not fail the write; the ceiling bounds the staleness. When AppState cannot answer a read, the database does.
+
+A hit costs one `getMany`: no database read, about 40 µs on `LocalAppState` at the 20-rule cap, and one round trip to the authority on a remote backend, per proxied request. A miss adds a database read, a compare-and-set and, when no record exists, an insert, at most about once per target per process per 5 seconds.
+
+### Platform plan
+
+Plan policies per account (`src/shared/lib/llm-provider/platform-plan-cache.ts`). Snapshots are disposable, because the upstream proxy enforces the plan and a read can ask again, so they live in the eventual namespace `cache:platform-plan`. Forgetting them must reach every process, so the epoch is the strong record `cache:platform-plan:epoch`, which never expires. A read costs a strong read and an eventual read, one after the other, per turn.
+
+- **Key:** digest of the platform's base URL, org, member, auth revision, epoch.
+- **Auth revision** is a digest of the connection's token, stored or from the environment. A different connection never reads this entry, even if the clear that should have come with the switch was lost, or the account has no org or member to tell it apart. A save that keeps the token (an identity refresh) keeps the revision, and the clear that comes with every save handles it. `platformAuth.updatedAt` is not used: an environment-managed connection has none, and a pasted key's account read runs before the record exists.
+- **Clearing** writes a new epoch. A 403 for the plan and every connection save or disconnect do this. Everything under the old epoch is unreachable and runs out within 24 hours.
+- **A platform read takes `beginRead()` before the request and hands it to `remember()` with the answer.** The answer is filed under the epoch from before the request, so an answer that a clear overtook goes where nothing reads it. If the epoch could not be read, the answer is not filed.
+- **Freshness is not retention.** A known answer is fresh for an hour, and "no answer" for 10 minutes; past that it is served at once while a background read replaces it. An entry goes 24 hours after the platform last gave an answer. A failed or empty reload keeps a known answer and asks again in 10 minutes, without extending those 24 hours. `fresh` skips the cached read.
+- **Clocks.** `freshUntil` and `loadedAt` come from the writer's clock and are judged by the reader's, so skew moves a reload by that much. An entry stamped further ahead than an hour counts as stale.
+- **No compare-and-set in an eventual namespace.** `remember()` skips an answer from a read older than the stored one, but two writers at once can still lose one's write. The cost is one reload, or a stale answer until its freshness runs out, and the proxy enforces meanwhile.
+
+### Hints
+
+`events:proxy-rules:changed` has channels `(kind, targetId)` and `('all-targets')`. `events:platform:plan` has channels `(org, member)` (when an account's answer changes) and `('all-accounts')` (a clear). Events carry only `{ revision }`. **Nothing subscribes to either yet**, and no freshness rule above depends on them. A plan subscriber must check that the viewer may see the account, since the channel is only addressed by org and member.

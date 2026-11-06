@@ -50,7 +50,7 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
   // ACL rows are gone too, so an agent-scoped hint could be filtered out.
   // This content-free hint makes every connected cache recheck its own scope.
   globalFeed.publish({ type: 'notifications_changed' })
-  invalidateRuleCache()
+  await invalidateRuleCache()
   for (const rule of scopedRules) await auditRuleChange('deleted', rule, { by: 'system', reason: 'agent_deleted' })
 }
 
