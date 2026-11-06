@@ -11,6 +11,7 @@ import { createAppState, type AppState, type AppStateScope, type Expiry, type Re
 import type { AppStateEngine, EngineSubscriber, IncrementBounds, KeyPolicy, StoredEntry } from '@shared/lib/app-state/engine'
 import { LocalAppStateBackend, type EntryStore } from '@shared/lib/app-state/local-app-state'
 import type { Env } from './index'
+import { reachCurrentCode, restartIfOlder } from './object-version'
 
 /** The path a subscription's WebSocket opens; each `channel` query value is one full channel. */
 export const SUBSCRIBE_PATH = '/subscribe'
@@ -62,6 +63,10 @@ export class AppStateDurableObject extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.engine = new LocalAppStateBackend({ store: sqliteEntryStore(ctx.storage.sql), now: () => this.now() })
+  }
+
+  checkVersion(callerVersion: string): boolean {
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
   }
 
   read(key: string): StoredEntry | null {
@@ -164,26 +169,33 @@ export interface CloudflareAppStateOptions {
   scope?: AppStateScope
   /** The org's object by default. */
   hub?: EventHub
+  /** This deploy's time: the org's object restarts onto it if it runs older code (object-version.ts). */
+  version?: string
 }
 
 export function createCloudflareAppState(objects: DurableObjectNamespace<AppStateDurableObject>, options: CloudflareAppStateOptions = {}): AppState {
   // A new stub for each call: a Worker invocation cannot use an I/O object that another one made.
-  const object = () => objects.getByName(OBJECT_NAME)
-  return createAppState({ scope: options.scope ?? ORG_SCOPE, engine: objectEngine(object, options.hub ?? objectHub(object)) })
+  const call: ObjectCall = async (use) => {
+    await reachCurrentCode(objects, OBJECT_NAME, options.version)
+    return use(objects.getByName(OBJECT_NAME))
+  }
+  return createAppState({ scope: options.scope ?? ORG_SCOPE, engine: objectEngine(call, options.hub ?? objectHub(call)) })
 }
 
 type AppStateObject = ReturnType<DurableObjectNamespace<AppStateDurableObject>['getByName']>
+/** One call on the org's object, made once the object runs this deploy's code or newer. */
+type ObjectCall = <R>(use: (object: AppStateObject) => R | Promise<R>) => Promise<Awaited<R>>
 
-function objectEngine(object: () => AppStateObject, hub: EventHub): AppStateEngine {
+function objectEngine(call: ObjectCall, hub: EventHub): AppStateEngine {
   return {
-    read: (key) => object().read(key),
-    readMany: async (keys) => (keys.length === 0 ? [] : object().readMany([...keys])),
-    write: (key, json, policy, expiry) => object().write(key, json, keyPolicy(policy), expiry),
-    remove: (key) => object().remove(key),
-    insertIfAbsent: (key, json, policy, expiry) => object().insertIfAbsent(key, json, keyPolicy(policy), expiry),
-    compareAndSet: (key, expected, json, policy, expiry) => object().compareAndSet(key, expected, json, keyPolicy(policy), expiry),
-    increment: (key, delta, bounds, limits, policy, expiry) => object().increment(key, delta, { ...bounds }, { ...limits }, keyPolicy(policy), expiry),
-    consume: (key, revision) => object().consume(key, revision),
+    read: (key) => call((object) => object.read(key)),
+    readMany: async (keys) => (keys.length === 0 ? [] : call((object) => object.readMany([...keys]))),
+    write: (key, json, policy, expiry) => call((object) => object.write(key, json, keyPolicy(policy), expiry)),
+    remove: (key) => call((object) => object.remove(key)),
+    insertIfAbsent: (key, json, policy, expiry) => call((object) => object.insertIfAbsent(key, json, keyPolicy(policy), expiry)),
+    compareAndSet: (key, expected, json, policy, expiry) => call((object) => object.compareAndSet(key, expected, json, keyPolicy(policy), expiry)),
+    increment: (key, delta, bounds, limits, policy, expiry) => call((object) => object.increment(key, delta, { ...bounds }, { ...limits }, keyPolicy(policy), expiry)),
+    consume: (key, revision) => call((object) => object.consume(key, revision)),
     publish: (channel, json) => hub.publish(channel, json),
     subscribe: async (channels, subscriber) => {
       const subscription = new HubSubscription(hub, channels, subscriber)
@@ -241,15 +253,15 @@ class HubSubscription {
 }
 
 /** The org's object as the hub: a publish is one call, and each subscription holds its own socket there. */
-function objectHub(object: () => AppStateObject): EventHub {
+function objectHub(call: ObjectCall): EventHub {
   return {
     async publish(fullChannel, json) {
-      await object().publish(fullChannel, json)
+      await call((object) => object.publish(fullChannel, json))
     },
     async connect(fullChannels, onEvent, onLost) {
       const url = new URL(`https://app-state${SUBSCRIBE_PATH}`)
       for (const channel of fullChannels) url.searchParams.append('channel', channel)
-      const response = await object().fetch(new Request(url, { headers: { Upgrade: 'websocket' } }))
+      const response = await call((object) => object.fetch(new Request(url, { headers: { Upgrade: 'websocket' } })))
       const socket = (response as Response & { webSocket?: WorkerWebSocket | null }).webSocket
       if (!socket) throw new Error(`The AppState object refused the subscription (${response.status})`)
       socket.accept()

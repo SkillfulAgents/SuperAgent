@@ -70,6 +70,7 @@ declare module 'cloudflare:workers' {
     readonly id: DurableObjectId
     readonly storage: DurableObjectStorage
     acceptWebSocket(socket: WorkerWebSocket): void
+    abort(reason?: string): void
     getWebSockets(): WorkerWebSocket[]
   }
 
