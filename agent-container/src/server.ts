@@ -829,6 +829,7 @@ import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, effectWantsTree, sameDocument, newDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
 import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, goneRefOf, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
 import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead, formatUnreadFrames } from './page-reader';
+import { browserScale, pinBrowserScaleArgs } from './browser-scale';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
 import { parseNetworkActivity, type NetworkActivity } from './network-activity';
@@ -960,6 +961,19 @@ async function observeUrlDigest(): Promise<UrlDigest | null> {
 async function observePage(script: string): Promise<string | null> {
   const r = await execBrowser(['eval', script], browserState.cdpUrl || undefined);
   return r.exitCode === 0 ? r.stdout : null;
+}
+
+/**
+ * With 2x rendering on, what scales a capture to the page's CSS size, for the image the agent
+ * gets. Its image's pixels are then the coordinates `mouse` takes, and it costs what it does at
+ * 1x. The saved file stays as captured, because `diff screenshot` compares it with a new capture.
+ */
+async function screenshotCssScale(): Promise<number | undefined> {
+  const scale = browserScale();
+  if (!scale) return undefined;
+  const ratio = await observePage('window.devicePixelRatio');
+  // A page emulating another ratio (`set viewport`, `set device`) keeps what it asked for.
+  return ratio !== null && Number(ratio) === scale ? 1 / scale : undefined;
 }
 
 /** One observation of the current page. */
@@ -2096,7 +2110,7 @@ app.post('/browser/screenshot', async (c) => {
       if (result.exitCode !== 0) {
         return c.json({ error: result.stdout, success: false }, 500);
       }
-      return c.json({ success: true, output: result.stdout });
+      return c.json({ success: true, output: result.stdout, cssScale: await screenshotCssScale() });
     }
 
     // Otherwise only when the page looks different from the last image this
@@ -2109,7 +2123,7 @@ app.post('/browser/screenshot', async (c) => {
     const shot = parseIfChangedOutput(conditional.stdout);
     if (shot?.changed && shot.path) {
       rememberScreenshot(key, shot.path);
-      return c.json({ success: true, path: shot.path });
+      return c.json({ success: true, path: shot.path, cssScale: await screenshotCssScale() });
     }
     if (shot && !shot.changed) {
       const previous = recallScreenshot(key);
@@ -2134,7 +2148,7 @@ app.post('/browser/screenshot', async (c) => {
     }
     const path = extractScreenshotPath(result.stdout);
     if (shot && !shot.changed && path.startsWith('/')) rememberScreenshot(key, path);
-    return c.json({ success: true, output: result.stdout });
+    return c.json({ success: true, output: result.stdout, cssScale: await screenshotCssScale() });
   } catch (error: any) {
     console.error('[Browser] Error taking screenshot:', error);
     return c.json({ error: error.message || 'Failed to take screenshot' }, 500);
@@ -4002,6 +4016,8 @@ setInterval(() => inputManager.cleanupStale(), 60_000).unref();
 // Pin agent-browser's screenshot directory and sweep stale files (boot +
 // hourly). Every screenshot is a uniquely named PNG nothing else deletes.
 startScreenshotJanitor();
+
+pinBrowserScaleArgs();
 
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');

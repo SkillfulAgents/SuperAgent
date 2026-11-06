@@ -736,6 +736,8 @@ export class ContainerRuntime {
       envVars['AGENT_BROWSER_USE_HOST'] = '1'
       envVars['HOST_APP_URL'] = hostApiBaseUrl
       envVars['AGENT_ID'] = slug
+    } else if (settings.app?.containerBrowserHighDpi) {
+      envVars['BROWSER_HIGH_DPI'] = '1'
     }
 
     // What the start needs from the agent's workspace goes through the
