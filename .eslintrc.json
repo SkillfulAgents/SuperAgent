@@ -43,6 +43,12 @@
   },
   "overrides": [
     {
+      "files": ["src/cf/**/*.ts"],
+      "rules": {
+        "react-hooks/rules-of-hooks": "off"
+      }
+    },
+    {
       "files": ["**/*.test.ts", "**/*.test.tsx"],
       "rules": {
         "local-rules/no-unhandled-throwing-builtins": "off",

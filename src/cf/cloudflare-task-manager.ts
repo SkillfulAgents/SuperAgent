@@ -1,71 +1,122 @@
 /**
- * The org's background work in one Durable Object, the CFTaskManager of the planned TaskManager
- * (SUP-1539, SUP-1540). That interface has no code yet, so this object boots SuperAgent and runs
- * its existing background services on their own timers, minus the ones that watch local
- * containers: each container belongs to its agent's object. An alarm wakes the object after an
- * eviction.
- *
- * A deploy replaces the object, but the replaced instance's timers keep firing (SUP-1284: a
- * scheduled task ran twice). From then on its storage refuses writes, so a small write on a timer
- * tells an instance it was replaced, and it stops its services.
+ * The TaskManager of every isolate of the org: the CFTaskManager of docs/background-work.md.
+ * Handlers are registered here, as on LocalTaskManager, and payloads are checked the same way.
+ * The schedule is the org's TaskManagerDurableObject: `at`, `ensureEvery` and `cancel` go there,
+ * in the order they are called, and it runs each job on its alarm through the handlers of its own
+ * isolate (`execute`). So a job survives the isolate that scheduled it.
  */
-import { DurableObject } from 'cloudflare:workers'
-import type { DurableObjectNamespace, DurableObjectState, DurableObjectStub } from 'cloudflare:workers'
-import type { Env } from './index'
+import type { DurableObjectNamespace } from 'cloudflare:workers'
+import { Task, TaskManager, type PeriodicOptions, type RetryPolicy, type TaskContext, type TaskSpec } from '@shared/lib/background-work'
+import { captureException } from '@shared/lib/error-reporting'
+import { servingTaskManager, type ExecutionOutcome, type TaskManagerDurableObject } from './task-manager-durable-object'
 
-/** The name of the org's one task manager. */
+/** The name of the org's one task manager object. */
 const OBJECT_NAME = 'org'
-/** How often the alarm wakes an evicted object. */
-const WAKE_EVERY_MS = 60_000
-/** How often an instance checks that it is still the live one. */
-const CHECK_EVERY_MS = 10_000
 
-export function taskManagerOf(objects: DurableObjectNamespace<CloudflareTaskManager>): DurableObjectStub<CloudflareTaskManager> {
-  return objects.getByName(OBJECT_NAME)
+type Schedule = Pick<TaskManagerDurableObject, 'scheduleAt' | 'scheduleEvery' | 'cancelJob' | 'stopDispatch'>
+
+function retryDelay(policy: RetryPolicy, attempt: number): number | undefined {
+  if (policy.delaysMs.length === 0) return undefined
+  if (attempt >= (policy.maxAttempts ?? policy.delaysMs.length + 1)) return undefined
+  return policy.delaysMs[Math.min(attempt - 1, policy.delaysMs.length - 1)]
 }
 
-export class CloudflareTaskManager extends DurableObject<Env> {
-  private started: Promise<void> | undefined
-  private liveCheck: ReturnType<typeof setInterval> | undefined
+export class CloudflareTaskManager extends TaskManager {
+  private readonly handlers = new Map<string, Task<unknown>>()
+  // Calls take effect in the order they are made, as docs/background-work.md asks of every backend.
+  private queue: Promise<unknown> = Promise.resolve()
+  private stopped = false
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env)
-    ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS live_check (id INTEGER PRIMARY KEY CHECK (id = 1), checked_at INTEGER NOT NULL)')
+  constructor(private readonly objects: DurableObjectNamespace<TaskManagerDurableObject>) {
+    super()
   }
 
-  /** Starts the background services unless they already run here, and arms the alarm. */
-  async wake(): Promise<void> {
-    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + WAKE_EVERY_MS)
-    await this.start()
+  register<P>(task: Task<P>): void {
+    this.handlers.set(task.type, task as Task<unknown>)
   }
 
-  async alarm(): Promise<void> {
-    await this.ctx.storage.setAlarm(Date.now() + WAKE_EVERY_MS)
-    await this.start()
+  handles(taskType: string): boolean {
+    return this.handlers.has(taskType)
   }
 
-  private start(): Promise<void> {
-    this.started ??= this.startServices().catch((error: unknown) => {
-      this.started = undefined
-      throw error
-    })
-    return this.started
+  async at<P>(runAt: number, id: string, spec: TaskSpec<P>): Promise<void> {
+    const payloadJson = this.checkedPayloadJson(spec.taskType, spec.payload)
+    if (!Number.isFinite(runAt)) throw new Error(`Task ${spec.taskType} (${id}) was scheduled at an invalid time`)
+    if (this.stopped) return
+    await this.inOrder((schedule) => schedule.scheduleAt(id, spec.taskType, payloadJson, runAt))
   }
 
-  private async startServices(): Promise<void> {
-    const app = await import('./boot')
-    await app.boot(this.env)
-    await app.startBackgroundServices()
-    this.liveCheck = setInterval(() => this.checkLive(app.stopBackgroundServices), CHECK_EVERY_MS)
+  async ensureEvery<P>(id: string, spec: TaskSpec<P>, options: PeriodicOptions): Promise<void> {
+    const payloadJson = this.checkedPayloadJson(spec.taskType, spec.payload)
+    if (!(options.intervalMs > 0)) throw new Error(`Task ${spec.taskType} (${id}) was scheduled with an invalid interval`)
+    if (this.stopped) return
+    await this.inOrder((schedule) => schedule.scheduleEvery(id, spec.taskType, payloadJson, { intervalMs: options.intervalMs, initialDelayMs: options.initialDelayMs, jitterRatio: options.jitterRatio }))
   }
 
-  private checkLive(stopServices: () => Promise<void>): void {
+  async cancel(id: string): Promise<void> {
+    await this.inOrder((schedule) => schedule.cancelJob(id))
+  }
+
+  /** Dispatch is the object's alarm; an isolate has nothing to start. */
+  async start(): Promise<void> {
+    this.stopped = false
+  }
+
+  /**
+   * Nothing is scheduled from this isolate after this. In the object, dispatch stops too, and
+   * the jobs stay stored for the next instance: stopping is not cancelling.
+   */
+  async stop(): Promise<void> {
+    this.stopped = true
+    await servingTaskManager()?.stopDispatch()
+  }
+
+  /** One run of a job, in the object's isolate: the handler, then what the object should do next. */
+  async execute(taskType: string, payloadJson: string, ctx: TaskContext): Promise<ExecutionOutcome> {
+    const task = this.handler(taskType)
+    let result
     try {
-      this.ctx.storage.sql.exec('INSERT INTO live_check (id, checked_at) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET checked_at = excluded.checked_at', Date.now())
+      result = await task.execute(task.payloadSchema.parse(JSON.parse(payloadJson)), ctx)
     } catch (error) {
-      clearInterval(this.liveCheck)
-      console.warn('[task-manager] storage refused a write: a newer instance replaced this one, so its background services stop', error)
-      stopServices().catch((stopError: unknown) => console.error('[task-manager] stopping the background services failed:', stopError))
+      return { kind: 'failed', error, retryInMs: task.retryPolicy ? retryDelay(task.retryPolicy, ctx.attempt) : undefined }
     }
+    if (result.kind !== 'next') return result
+    try {
+      if (!Number.isFinite(result.at)) throw new Error(`Task ${taskType} (${ctx.jobId}) returned an invalid time`)
+      return { kind: 'next', at: result.at, payloadJson: this.checkedPayloadJson(taskType, result.payload) }
+    } catch (error) {
+      return { kind: 'failed', error }
+    }
+  }
+
+  report(error: unknown, { taskType, jobId, attempt }: { taskType: string; jobId: string; attempt: number }): void {
+    console.error(`[TaskManager] ${taskType} (${jobId}) failed on attempt ${attempt}:`, error)
+    captureException(error, { tags: { component: 'task-manager', taskType }, extra: { jobId, attempt } })
+  }
+
+  private inOrder(call: (schedule: Schedule) => Promise<unknown> | unknown): Promise<unknown> {
+    // Inside the object itself (a task scheduling more work), the call goes to it directly: through its stub it would come back to it.
+    const run = () => call(servingTaskManager() ?? this.objects.getByName(OBJECT_NAME))
+    const next = this.queue.then(run, run)
+    this.queue = next.catch(() => {})
+    return next
+  }
+
+  private handler(taskType: string): Task<unknown> {
+    const task = this.handlers.get(taskType)
+    if (!task) throw new Error(`No task is registered for type ${taskType}`)
+    return task
+  }
+
+  /** The payload as the object stores it: JSON its schema accepts once it is read back. */
+  private checkedPayloadJson(taskType: string, payload: unknown): string {
+    const task = this.handler(taskType)
+    let json: string
+    try {
+      json = JSON.stringify(payload ?? null)
+    } catch (error) {
+      throw new Error(`The payload of task ${taskType} cannot be stored`, { cause: error })
+    }
+    return JSON.stringify(task.payloadSchema.parse(JSON.parse(json)))
   }
 }

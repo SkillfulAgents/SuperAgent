@@ -2,7 +2,7 @@
  * SuperAgent in this isolate, booted once, in src/web/server.ts's order: the database, AppState,
  * key custody, then the setup from main's afterBindInitialize that requests read from memory.
  * index.ts loads this module on the first API request. The Worker and the Durable Objects boot
- * the same way; only CloudflareTaskManager starts the background services, and only an agent's
+ * the same way; only TaskManagerDurableObject starts the background services, and only an agent's
  * own CloudflareAgentActor runs its actor.
  */
 import { mkdirSync } from 'node:fs'
@@ -22,19 +22,23 @@ import { APP_VERSION } from '@shared/lib/config/version'
 import { decodeOrgIdFromToken, installPlatformFetchInterceptor } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { ensureManagedPlatformConnection } from '@shared/lib/llm-provider/connection-settings'
-import { initializeServices, shutdownServices } from '@shared/lib/startup'
+import { initializeServices, prepareBackgroundWork, shutdownServices } from '@shared/lib/startup'
+import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { useActorTransport, useSessionStore } from '@shared/lib/agent-actor/registry'
 import { remoteActor, serveActor } from '@shared/lib/agent-actor/network-actor'
 import { createConfigOps } from '@shared/lib/agent-actor/config-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
+// eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- a deployment's session store needs its own summary cache, as local-session-store.ts makes
 import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
 import { setIdleAlarmTimers } from '@shared/lib/container/idle-alarm'
+// eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the delete route's folder must exist on Workers (see serve)
 import { getAgentDir } from '@shared/lib/utils/file-storage'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
+import { CloudflareTaskManager } from './cloudflare-task-manager'
 import { routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
 import { createCloudflareFileOps } from './cloudflare-file-ops'
 import { ownedHere, servingAgentObject } from './agent-objects'
@@ -42,6 +46,7 @@ import { errorOnRedirect } from './workers-shims/fetch-redirect'
 import type { Env } from './index'
 
 let booted: Promise<void> | undefined
+let tasks: CloudflareTaskManager | undefined
 let fetchWrapped = false
 // The decision of each agent's idle alarm armed in this isolate, by agent.
 const idleRings = new Map<AgentSlug, () => Promise<void>>()
@@ -96,6 +101,12 @@ export function serveContainerRequest(request: Request, env: Env): Promise<Respo
   return Promise.resolve(api.fetch(request, env))
 }
 
+/** This isolate's TaskManager, whose handlers the org's task manager object runs jobs through. */
+export function backgroundTasks(): CloudflareTaskManager {
+  if (!tasks) throw new Error('SuperAgent has not booted in this isolate')
+  return tasks
+}
+
 /** The background services, minus the ones that watch local containers: each agent's object watches its own. */
 export function startBackgroundServices(): Promise<void> {
   return initializeServices({ localContainers: false })
@@ -115,6 +126,13 @@ async function start(env: Env): Promise<void> {
   // A boot retried after a later step failed finds AppState installed.
   if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE))
   await ensureKeyManager(() => new CloudflareKeyManager({ env, probes: appKeyProbes }))
+  // Then task dispatch, before anything is served: a request can schedule work. Every isolate registers
+  // the services' Tasks; only TaskManagerDurableObject starts the services and runs the jobs.
+  if (!isBackgroundWorkInitialized()) {
+    tasks = new CloudflareTaskManager(env.TASK_MANAGER)
+    await initializeBackgroundWork(tasks)
+  }
+  await prepareBackgroundWork({ localContainers: false })
   await seedSettings(env.APP_ORIGIN)
 
   // The setup from main's afterBindInitialize (startup.ts) that requests read from this isolate's memory.

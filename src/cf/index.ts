@@ -10,10 +10,10 @@ import { getServerFacts, withServerFacts, withServerFactsRevision } from '@share
 import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './app-state-durable-object'
 import type { CloudflareAgentActor } from './cloudflare-agent-actor'
-import { taskManagerOf, type CloudflareTaskManager } from './cloudflare-task-manager'
+import { taskManagerOf, type TaskManagerDurableObject } from './task-manager-durable-object'
 
 export { AppStateDurableObject } from './app-state-durable-object'
-export { CloudflareTaskManager } from './cloudflare-task-manager'
+export { TaskManagerDurableObject } from './task-manager-durable-object'
 export { CloudflareAgentActor } from './cloudflare-agent-actor'
 
 /**
@@ -32,8 +32,8 @@ export interface Env {
   DB: D1Database
   /** The org's AppState: shared state and live events (app-state-durable-object.ts). */
   APP_STATE: DurableObjectNamespace<AppStateDurableObject>
-  /** Where the org's background services run (cloudflare-task-manager.ts). */
-  TASK_MANAGER: DurableObjectNamespace<CloudflareTaskManager>
+  /** The org's scheduled work, and where its background services run (task-manager-durable-object.ts). */
+  TASK_MANAGER: DurableObjectNamespace<TaskManagerDurableObject>
   /** One per agent: its container and, while it sleeps, its saved workspace (cloudflare-agent-actor.ts). */
   AGENT_ACTOR: DurableObjectNamespace<CloudflareAgentActor>
   /** Agent workspace files, one object per content hash. */
