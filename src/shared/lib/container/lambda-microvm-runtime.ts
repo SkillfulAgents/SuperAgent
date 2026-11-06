@@ -55,9 +55,11 @@ const RESUME_RETRY_DELAY_MS = 400
 // handshake completes (a live stream is idle by design).
 const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
 const ECS_METADATA_TIMEOUT_MS = 2_000
-// start() re-checks a RUNNING VM's /health before adopting it; a second try
-// keeps one slow reply from replacing a busy but live VM.
-const ADOPT_HEALTH_ATTEMPTS = 2
+// start() re-checks a RUNNING VM's /health before adopting it. A frozen VM never
+// answers, but a busy one (video render at 100% CPU) can take several seconds,
+// so allow a long budget before replacing it and losing its in-flight work.
+const ADOPT_HEALTH_ATTEMPTS = 3
+const ADOPT_HEALTH_TIMEOUT_MS = 10_000
 const ADOPT_HEALTH_RETRY_DELAY_MS = 1_000
 // Quiet session streams through MicroVM ingress die at ~60s without traffic.
 export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
@@ -1091,7 +1093,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     if (port === null) return false
     for (let attempt = 0; attempt < ADOPT_HEALTH_ATTEMPTS; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, ADOPT_HEALTH_RETRY_DELAY_MS))
-      if (await this.isHealthy(port)) return true
+      if (await this.isHealthy(port, ADOPT_HEALTH_TIMEOUT_MS)) return true
     }
     return false
   }

@@ -812,19 +812,19 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(types.indexOf('Run')).toBeGreaterThan(types.indexOf('Terminate'))
   })
 
-  it('start keeps a RUNNING VM when /health answers on the second try', async () => {
+  it('start keeps a RUNNING VM when /health answers on the third try', async () => {
     const client = newClient()
     await client.start()
     let probes = 0
     vi.stubGlobal('fetch', vi.fn(async () => {
       probes += 1
-      if (probes === 1) throw new Error('The operation was aborted due to timeout')
+      if (probes < 3) throw new Error('The operation was aborted due to timeout')
       return { ok: true } as Response
     }))
     sendMock.mockClear()
 
     expect((await client.start()).status).toBe('running')
-    expect(probes).toBe(2)
+    expect(probes).toBe(3)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
   })
