@@ -16,6 +16,7 @@ import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
@@ -2028,14 +2029,19 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
-    const live = await actor.live()
+    const [live, participants] = await Promise.all([
+      actor.live(),
+      isAuthMode() ? sessionParticipantsBestEffort(slug, sessionList.map((s) => s.id)) : undefined,
+    ])
     const sessionsWithStatus = withSessionStatus(sessionList, live).map((session) => {
       const wake = wakesBySession.get(session.id)
+      const people = participants?.get(session.id)
       return {
         ...session,
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         hasUnreadMention: mentionedSessionIds.has(session.id),
+        ...(people ? { participants: people } : {}),
         ...(wake
           ? {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
@@ -2316,6 +2322,16 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
 }
 
 /** Rows authored by a person; an integration's rows carry its card instead (see annotateIntegrationMessages). */
+// The faces on a session row are decoration: a lookup failure leaves the list without them.
+async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: string[]) {
+  try {
+    return await getSessionParticipants(agentSlug, sessionIds)
+  } catch (error) {
+    captureException(error, { tags: { component: 'agents', operation: 'session-participants' }, level: 'warning' })
+    return undefined
+  }
+}
+
 function userAuthors(rows: { messageId: string; userId: string | null }[]): { messageId: string; userId: string }[] {
   return rows.flatMap(row => row.userId ? [{ messageId: row.messageId, userId: row.userId }] : [])
 }

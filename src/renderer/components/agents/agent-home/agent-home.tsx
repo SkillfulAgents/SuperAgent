@@ -99,7 +99,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
   const draftsStore = useDraftsStore()
-  const { canUseAgent, canAdminAgent, isAuthMode, isAdmin } = useUser()
+  const { canUseAgent, canAdminAgent, isAuthMode, isAdmin, agentMemberCount } = useUser()
+  // Faces on the session rows only where the sidebar shows a member stack.
+  const showSessionParticipants = isAuthMode && agentMemberCount(agent.slug) > 1
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
   const replacedDashboards = useMemo(
@@ -585,6 +587,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                       showHeader={false}
                       searchQuery={sessionSearch}
                       sortOrder={sessionSort}
+                      showParticipants={showSessionParticipants}
                     />
                   </>
                 ) : (
