@@ -69,12 +69,11 @@ const subscription = await appState().subscribe([roster.channel(meetingId)], onC
 
 ## Implementing a backend
 
-A backend supplies an engine, not a whole `AppState`. `engine.ts` has the raw operations on full keys and encoded values, and `createAppState({ scope, engine })` puts the typed layer (validation, encoding, strong-only checks, listeners) on top, the same for every deployment. There are two ways to supply one:
+A backend is a subclass of the abstract `AppState` class (`abstract-app-state.ts`). The class does the typed work the same for every deployment: validation, encoding, the strong-only checks and listener delivery. The subclass implements the protected operations on full keys and encoded values (`readEntries`, `writeEntry`, `removeEntry`, `insertEntry`, `compareAndSetEntry`, `incrementEntry`, `consumeEntry`, `publishEvent`, `listen`).
 
-- **Keep the rules, change the storage.** `LocalAppStateBackend` decides every operation in one synchronous step, so it is atomic wherever one process owns the entries. A process that keeps storage passes its own `EntryStore` (`new LocalAppStateBackend({ store })`), for example a Durable Object over its SQLite. Revisions stay unique over a kept store, because each backend issues them under a new epoch.
-- **Decide elsewhere.** An engine whose methods answer over the network (to that Durable Object, or Redis). Each method must stay one atomic step at the authority.
+Each operation must be decided in one atomic step at the authority. `LocalAppState` decides each one in one synchronous turn over the process's entries. A remote subclass sends each one as one call to the authority (a tenant Durable Object, or Redis), which runs it as one transaction. Never build an operation from a read and a write that cross the network: two processes can interleave between them.
 
-Either way, run the shared suite:
+Each subclass runs the shared suite:
 
 ```ts
 describeAppStateConformance('CloudflareAppState', () => ({ open, advance, settled }))
@@ -96,7 +95,7 @@ What a backend must preserve beyond the suite:
 
 - Strong namespaces are read from and written to the authority (a tenant Durable Object, or Redis), and their records survive eviction. An eventual namespace may be served from a store with propagation delay, never past its expiry.
 - Revisions stay unique across deletion, expiry, eviction and restart. Do not derive them from a per-key counter that restarts at 1.
-- An engine that decides elsewhere uses `resolveExpiry` from `definitions.ts`, so expiry behaves identically everywhere. The typed layer already does keys, validation and the strong-only checks.
+- The authority uses `resolveExpiry` from `definitions.ts`, so expiry behaves identically everywhere. A counter's result is checked there against `limits`, the bounds of its schema, because the authority never sees the schema.
 - Subscriptions must be rebuilt from serialized routing when a Durable Object is woken from hibernation. They must not rely on a JavaScript callback surviving eviction.
 - Secrets in a shared backend are sealed through KeyManager (SUP-1509). AppState never holds a raw root key.
 
