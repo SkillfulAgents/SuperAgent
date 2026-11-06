@@ -8,7 +8,7 @@ const readStream = async (stream: ReadableStream<Uint8Array>) => text(new Uint8A
 
 /** An in-memory container file API (GET, /content, /upload, /mkdir, DELETE) that can be asleep. */
 function fakeContainer(initial: Record<string, string> = {}) {
-  const files = new Map<string, Uint8Array>(Object.entries(initial).map(([path, body]) => [path, new TextEncoder().encode(body)]))
+  const files = new Map(Object.entries(initial).map(([path, body]) => [path, new TextEncoder().encode(body)]))
   const dirs = new Set<string>([''])
   const calls: string[] = []
   // How each upload's body arrived: streamed, or as bytes.
@@ -61,7 +61,7 @@ function fakeContainer(initial: Record<string, string> = {}) {
 
 /** The saved workspace (AgentDurableObject's file list in R2), in memory. */
 function fakeSleeping(initial: Record<string, string> = {}) {
-  const files = new Map<string, Uint8Array>(Object.entries(initial).map(([path, body]) => [path, new TextEncoder().encode(body)]))
+  const files = new Map(Object.entries(initial).map(([path, body]) => [path, new TextEncoder().encode(body)]))
   const state = { runningOnNextChange: false }
   const fileEntry = (path: string) => ({ name: path.split('/').pop()!, path, type: 'file' as const, size: files.get(path)!.byteLength })
   // A change made while the container is starting is refused once, the way AgentDurableObject does.
@@ -89,7 +89,7 @@ function fakeSleeping(initial: Record<string, string> = {}) {
     },
     async write(path, bytes) {
       if (refused()) return false
-      files.set(path, bytes)
+      files.set(path, new Uint8Array(bytes))
       return true
     },
     async remove(path) {
