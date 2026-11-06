@@ -10,6 +10,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 // The catalog leaf, not the actor package index: the index loads the
 // container layer, which every route test would then have to mock.
 import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
+import type { AgentRecord } from '@shared/lib/agent-actor/types'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -163,14 +164,31 @@ function isAdmin(user: { role?: string }): boolean {
  * Runs in BOTH auth and non-auth modes (the URL form is independent of auth)
  * and MUST run before any AgentRead/AgentUser/AgentAdmin check, since the ACL
  * tables are keyed on the canonical id. Subsumes the old agent-existence guard.
+ *
+ * The agent is read once per request: a route under `/:id/*` that also lists
+ * ResolveAgent() runs it twice, and the second run reuses the first.
  */
 export function ResolveAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    const id = await agentCatalog.resolve(c.req.param('id') ?? '')
-    if (!id) return c.json({ error: 'Agent not found' }, 404)
-    c.set('agentId' as never, id as never)
+    if (c.get('agentRecord' as never) === undefined) {
+      const agent = await agentCatalog.resolveRecord(c.req.param('id') ?? '')
+      if (!agent) return c.json({ error: 'Agent not found' }, 404)
+      c.set('agentId' as never, agent.slug as never)
+      c.set('agentRecord' as never, agent as never)
+    }
     return next()
   }
+}
+
+/**
+ * The agent {@link ResolveAgent} read when the request started, so a handler
+ * that only reads it does not read its row again. A handler that changes the
+ * agent reads it again after the change. Throws if ResolveAgent() did not run.
+ */
+export function getResolvedAgent(c: Context): AgentRecord {
+  const agent = c.get('agentRecord' as never) as AgentRecord | undefined
+  if (!agent) throw new Error('agentRecord not resolved — ResolveAgent() middleware missing?')
+  return agent
 }
 
 /**

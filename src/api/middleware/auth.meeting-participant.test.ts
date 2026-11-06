@@ -20,7 +20,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
-vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({ agentCatalog: { resolve: async (slug: string) => slug === 'missing' ? null : slug } }))
+vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({ agentCatalog: { resolveRecord: async (slug: string) => slug === 'missing' ? null : { slug } } }))
 
 import { Authenticated, AgentAdmin, AgentRead, AgentUser, EntityAgentRole, IsAdmin, OwnsAccount, ResolveAgent, getAuthorizedAgentRole, getMeetingParticipant } from './auth'
 

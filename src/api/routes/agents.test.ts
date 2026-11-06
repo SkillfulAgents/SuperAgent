@@ -213,6 +213,7 @@ vi.mock('../middleware/auth', () => ({
     return next()
   },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
+  getResolvedAgent: (c: any) => ({ slug: c.get('agentId') ?? c.req.param('id') }),
   getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
   getMeetingParticipant: () => mockMeetingParticipant.value,
 }))
@@ -8659,10 +8660,9 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: '2026-01-01T12:00:00.000Z',
     })
-    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+    expect(getAgentWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), { includeSummary: false })
     expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
-
   it('keeps the listing order in auth mode: the catalog sorts, the route does not', async () => {
     mockIsAuthMode.mockReturnValue(true)
     // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e. by
