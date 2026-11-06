@@ -195,7 +195,12 @@ class EngineAppState implements AppState {
     }
     this.subscriptions.add(subscription as EngineSubscription<unknown>)
     signal?.addEventListener('abort', onAbort, { once: true })
-    await subscription.start(this.engine)
+    try {
+      await subscription.start(this.engine)
+    } catch (error) {
+      await subscription.end()
+      throw error
+    }
     return subscription
   }
 
