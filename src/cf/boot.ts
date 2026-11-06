@@ -177,7 +177,8 @@ async function seedSettings(origin: string): Promise<void> {
 
 /** Where each agent runs: its actor in its own object, its files in its container or, asleep, in R2. */
 function wireAgents(env: Env): void {
-  useActorTransport((slug, local) => ownedHere(slug, local, remoteActor(env.AGENT_ACTOR.getByName(slug))))
+  // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
+  useActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => env.AGENT_ACTOR.getByName(slug).fetch(request) })))
   useSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
   setIdleAlarmTimers((slug, ring) => {
     idleRings.set(slug, ring)
