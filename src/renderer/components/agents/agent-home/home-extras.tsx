@@ -5,6 +5,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { HomeDefaultModel } from './home-default-model'
 import { HomeRetention } from './home-retention'
+import { useHomeCardLook } from './home-collapsible'
 
 interface HomeExtrasProps {
   agentSlug: string
@@ -15,6 +16,7 @@ interface HomeExtrasProps {
 export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasProps) {
   const navigate = useNavigate()
   const { openFolder } = useFilePreview()
+  const look = useHomeCardLook()
 
   // Two cards, spaced by the column like any other pair of cards. Neither has
   // vertical padding of its own: that would stack onto its first and last
@@ -24,13 +26,13 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   // rounded corners so the hover fill stays inside.
   return (
     <>
-      <div className={cn("rounded-xl border bg-background", className)} data-testid="home-preferences-group">
+      <div className={cn(look.card, className)} data-testid="home-preferences-group">
         <div className="divide-y divide-border/50">
           <HomeDefaultModel agentSlug={agentSlug} />
           <HomeRetention agentSlug={agentSlug} />
         </div>
       </div>
-      <div className={cn("overflow-hidden rounded-xl border bg-background", className)}>
+      <div className={cn("overflow-hidden", look.card, className)}>
         <div className="divide-y divide-border/50">
           <ExtrasButton
             label="Agent-to-agent connections"
@@ -50,6 +52,7 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
           <ExtrasButton
             label="Agent Directory"
             onClick={() => openFolder('/workspace', agentSlug)}
+            drawerOpener
             hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
             testId="home-agent-directory-open-browser"
           />
@@ -73,18 +76,21 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   )
 }
 
-function ExtrasButton({ label, onClick, hoverIcon, testId }: { label: string; onClick: () => void; hoverIcon?: ReactNode; testId?: string }) {
+function ExtrasButton({ label, onClick, hoverIcon, drawerOpener, testId }: { label: string; onClick: () => void; hoverIcon?: ReactNode; drawerOpener?: boolean; testId?: string }) {
+  const look = useHomeCardLook()
   return (
     <button
       type="button"
       onClick={onClick}
       data-testid={testId}
+      // Lets a page that closes its drawer on outside clicks leave this one open.
+      data-drawer-opener={drawerOpener || undefined}
       // min-h-12: every navigation row is the same height, including the last
       // one, which sits flush with the card's bottom edge. The focus ring is
       // inset because the card clips its rows to the rounded corners.
       className="group flex min-h-12 w-full items-center justify-between px-4 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
     >
-      <span className="text-sm font-medium text-muted-foreground">{label}</span>
+      <span className={look.label}>{label}</span>
       {hoverIcon ? (
         <span className="relative h-4 w-4">
           <ChevronRight

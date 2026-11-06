@@ -2,6 +2,7 @@ import { useModelSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { useHomeCardLook } from './home-collapsible'
 
 interface HomeDefaultModelProps {
   agentSlug: string
@@ -16,6 +17,7 @@ interface HomeDefaultModelProps {
  * following the app-wide default.
  */
 export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
+  const look = useHomeCardLook()
   // Picker-safe endpoint — the card renders for every agent member, admin or not.
   const { data: settings } = useModelSettings(agentSlug)
   const { data: prefs } = useAgentPreferences(agentSlug)
@@ -31,7 +33,7 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
       className="flex items-center justify-between gap-2 py-2 px-4"
       data-testid="home-default-model-card"
     >
-      <span className="text-sm font-medium text-muted-foreground">Agent Default Model</span>
+      <span className={look.label}>Agent Default Model</span>
       <SettingsModelSelect
         agentSlug={agentSlug}
         model={displayModel}

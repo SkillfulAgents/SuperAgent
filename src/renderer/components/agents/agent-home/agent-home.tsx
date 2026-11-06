@@ -27,7 +27,6 @@ import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
@@ -37,16 +36,8 @@ import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
-import { HomeTriggers } from './home-triggers'
-import { HomeSkills } from './home-skills'
-import { HomeExtras } from './home-extras'
-import { HomeConnections } from './home-connections'
-import { HomeAgentIntegrations } from './home-agent-integrations'
-import { HomeVolumes } from './home-volumes'
-import { HomeHooks } from './home-hooks'
 import { HomeBookmarks } from './home-bookmarks'
-import { DashboardCard } from '@renderer/components/home/dashboard-card'
-import { HomeWidgets } from './home-widgets'
+import { AgentSettingsColumn } from './agent-settings-column'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
@@ -102,10 +93,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const { canUseAgent, canAdminAgent, isAuthMode, isAdmin } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
-  const replacedDashboards = useMemo(
-    () => new Set((Array.isArray(agent.widgets) ? agent.widgets : []).filter((w) => w.hasDashboard).map((w) => w.slug)),
-    [agent.widgets],
-  )
   const [isExpanded, setIsExpanded] = useState(false)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -122,9 +109,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
-  // Agent-scoped dialogs opened from HomeExtras. Header settings are a
-  // popover on the gear now; the sidebar context menu keeps the full dialog.
-  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const titleRef = useRef<InlineEditableTitleHandle>(null)
   // The three-dot button opens the title's context menu (see below).
   const menuTriggerRef = useRef<HTMLDivElement>(null)
@@ -157,9 +141,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       else openDirectory()
     })
   }, [pendingAgentHomeAction, agent.slug, setPendingAgentHomeAction, openExport, openDirectory])
-  const handleOpenSettings = useCallback((tab?: string) => {
-    if (tab === 'system-prompt') setSystemPromptOpen(true)
-  }, [])
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
     return sessionsData.map(toSessionItem)
@@ -288,7 +269,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const showRightColumn = isOwner
 
   return (
-    <>
     <div
       data-testid="agent-home"
       // Surfaces the one-shot new-agent intro state for tests/debugging without
@@ -602,36 +582,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            <HomeWidgets agentSlug={agent.slug} />
-            {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
-              // An artifact with a widget shows the widget instead of its screenshot.
-              .filter((d) => !replacedDashboards.has(d.slug))
-              .map((d) => (
-                <DashboardCard
-                  key={d.slug}
-                  dashboard={d}
-                  agentSlug={agent.slug}
-                />
-              ))}
-            <HomeTriggers
-              className="intro-step intro-step-4"
-              agentSlug={agent.slug}
-              scheduledTasks={scheduledTasks}
-              onSelectTask={(taskId: string) => {
-                void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agent.slug, taskId } })
-              }}
-              onSelectWebhook={(webhookId: string) => {
-                void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
-              }}
-              onSelectCompletedTasks={() => {
-                void navigate({ to: '/agents/$slug/completed-tasks', params: { slug: agent.slug } })
-              }}
-              onSelectInboundXAgent={() => {
-                void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
-              }}
-            />
-            <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />
-            <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={(skillPath) => {
+            <AgentSettingsColumn agent={agent} scheduledTasks={scheduledTasks} onRunSkill={(skillPath) => {
               const text = `/${skillPath} `
               composer.setMessage(text)
               composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -642,20 +593,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 }
               }, 0)
             }} />
-            <HomeAgentIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
-            <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
-            <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>
         )}
       </div>
     </div>
-
-      <SystemPromptDialog
-        agent={agent}
-        open={systemPromptOpen}
-        onOpenChange={setSystemPromptOpen}
-      />
-    </>
   )
 }

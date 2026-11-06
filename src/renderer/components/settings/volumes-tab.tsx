@@ -11,13 +11,9 @@ import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settin
 import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-badge'
 import { useAgents } from '@renderer/hooks/use-agents'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 
 export function agentBackPath(source: 'home' | 'list' | undefined, from: string | undefined): string | null {
-  if (source !== 'home' || !from) return null
-  // The one query an agent's page may carry is the one that opens the Team Brain agent's Agent Home.
-  const [path, query, ...rest] = from.split('?')
-  return /^\/agents\/[^/?#]+$/.test(path) && rest.length === 0 && (query === undefined || query === TEAM_BRAIN_AGENT_HOME_QUERY) ? from : null
+  return source === 'home' && from ? from : null
 }
 
 export function VolumesTab() {
@@ -34,7 +30,7 @@ export function VolumesTab() {
   const agentPath = agentBackPath(source, from)
   const homeAgent = agents.data?.find(agent => [agent.slug, agent.displaySlug].some(slug => agentPath?.split('?')[0] === `/agents/${encodeURIComponent(slug)}`))
   const back = agentPath
-    ? { onBack: () => router.history.push(agentPath), label: homeAgent?.name ?? 'Agent' }
+    ? { onBack: () => router.history.push(agentPath), label: homeAgent?.name ?? 'Back' }
     : { onBack: backToList, label: undefined }
   const [deleting, setDeleting] = useState<VolumeDefinitionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -56,7 +52,7 @@ export function VolumesTab() {
   return (
     <div className="space-y-6" data-testid="volumes-settings">
       {selectedId ? selectedVolume ? <VolumeDetailPage key={selectedVolume.id} volume={selectedVolume} onBack={back.onBack} backLabel={back.label} onDelete={() => { setError(null); setDeleting(selectedVolume) }} />
-        : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>Back to {back.label ?? 'drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
+        : <div className="space-y-3"><Button variant="ghost" onClick={back.onBack}>{homeAgent ? `Back to ${homeAgent.name}` : back.label ?? 'Back to drives'}</Button><p role={registry.isLoading ? 'status' : 'alert'} className="text-sm text-muted-foreground">{registry.isLoading ? 'Loading drive…' : registry.error ? 'Could not load this drive. Please try again.' : 'This drive is no longer available.'}</p></div>
         : <>
       <div className="flex items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground">Save folders once, then add them to any of your agents from their Drives card.</p>
