@@ -7,16 +7,10 @@
  * object's SQLite. It is restored before the agent launches, and saved when the agent's writes go
  * quiet, before the container stops, and before it sleeps. While the agent sleeps, its files are
  * read and written here (the stored* methods).
- *
- * The agent's actor runs here too: its ops come from the rest of the org over this object's stub
- * (`remoteActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
- * the host stay in this isolate, which shares the org's database and AppState. SuperAgent's idle
- * alarm for the agent is kept in this object's alarm.
  */
 import { Container, type StopParams } from '@cloudflare/containers'
 import type { DurableObjectState } from 'cloudflare:workers'
 import { ASLEEP_HEADER, type StoredEntry } from './cloudflare-container-control'
-import { runAsAgentObject } from './agent-objects'
 import type { Env } from './index'
 
 // The agent server's port: the image's PORT, SuperAgent's CONTAINER_INTERNAL_PORT. Not imported:
@@ -32,10 +26,6 @@ const DELETE_BATCH = 1000
 // Mode of a file first written while the agent sleeps.
 const NEW_FILE_MODE = 0o644
 const BLOB = /^\/blobs\/([0-9a-f]{64})$/
-// remoteActor's default origin: requests for this host are the actor's ops.
-const ACTOR_HOST = 'actor'
-// The scheduled method that rings SuperAgent's idle alarm for this agent.
-const IDLE_ALARM = 'ringIdleAlarm'
 
 // A type, not an interface: SQL row types must be assignable to Record<string, SqlStorageValue>.
 type WorkspaceFile = {
@@ -118,8 +108,6 @@ export class CloudflareAgentActor extends Container<Env> {
   private saveQueued = false
   // Restoring on wake and changing the saved workspace take turns, so a change can't land after a restore read the list.
   private storeLock: Promise<unknown> = Promise.resolve()
-  // The actor's cached container status starts as stopped in a new object, but the container outlives the object.
-  private statusSynced: Promise<void> | undefined
 
   static {
     this.outboundByHost = {
@@ -140,44 +128,8 @@ export class CloudflareAgentActor extends Container<Env> {
   // Only startAgent may start the container: anything else reaching a stopped one would start it
   // with no env, no restore and no agent. Until the agent is up it reads as asleep.
   override async fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).hostname === ACTOR_HOST) return this.serveActor(request)
     if (!(await this.agentRunning())) return new Response(null, { status: 503, headers: { [ASLEEP_HEADER]: '1' } })
     return super.fetch(request)
-  }
-
-  /** Keeps SuperAgent's idle alarm for this agent in this object's alarm, so it goes off after the isolate is gone. */
-  setIdleAlarm(at: number): void {
-    this.deleteSchedules(IDLE_ALARM)
-    this.schedule(new Date(at), IDLE_ALARM).catch((error: unknown) => {
-      console.error(`[CloudflareAgentActor ${this.agentName()}] arming the idle alarm failed:`, error)
-    })
-  }
-
-  clearIdleAlarm(): void {
-    this.deleteSchedules(IDLE_ALARM)
-  }
-
-  /** SuperAgent's idle alarm for this agent went off (setIdleAlarm). */
-  async ringIdleAlarm(): Promise<void> {
-    const slug = this.agentName()
-    await runAsAgentObject(slug, this, async () => {
-      const app = await import('./boot')
-      await app.boot(this.env)
-      await app.ringIdleAlarm(slug)
-    })
-  }
-
-  private serveActor(request: Request): Promise<Response> {
-    const slug = this.agentName()
-    return runAsAgentObject(slug, this, async () => {
-      const app = await import('./boot')
-      await app.boot(this.env)
-      await (this.statusSynced ??= app.syncAgentStatus(slug).catch((error: unknown) => {
-        this.statusSynced = undefined
-        console.error(`[CloudflareAgentActor ${slug}] syncing the container status failed:`, error)
-      }))
-      return app.serveActorRequest(request)
-    })
   }
 
   override onStop(params: StopParams): void {
