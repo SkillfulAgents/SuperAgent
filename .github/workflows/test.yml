@@ -494,6 +494,18 @@ jobs:
           mkdir -p test-results
           E2E_MOCK=true npx playwright test --config=playwright.graph.config.ts --project=graph-webkit --project=graph-webkit-touch 2>&1 | tee test-results/graph-webkit.log
 
+      - name: Run auth forms on WebKit and touch
+        if: ${{ matrix.repeat == 1 && !cancelled() && steps.webkit_setup.outcome == 'success' }}
+        env:
+          E2E_PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/forms-webkit
+          PLAYWRIGHT_OUTPUT_DIR: test-results/forms-webkit
+          PLAYWRIGHT_HTML_REPORT: playwright-report/forms-webkit
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --config=playwright.forms.config.ts --project=forms-webkit --project=forms-webkit-touch 2>&1 | tee test-results/forms-webkit.log
+
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -526,6 +538,7 @@ jobs:
         run: npm ci
 
       - name: Install Playwright browsers
+        id: auth_browser_setup
         run: npx playwright install --with-deps chromium
 
       - name: Run Auth E2E tests
@@ -535,6 +548,20 @@ jobs:
           PLAYWRIGHT_OUTPUT_DIR: test-results/auth
           PLAYWRIGHT_HTML_REPORT: playwright-report/auth
         run: npm run test:e2e:auth
+
+      # A separate server/database lets these scenarios change password policy
+      # without affecting the existing auth projects. Run even if that suite fails.
+      - name: Run auth forms on Chromium and touch
+        if: ${{ !cancelled() && steps.auth_browser_setup.outcome == 'success' }}
+        env:
+          E2E_PORT: '3001'
+          SUPERAGENT_DATA_DIR: .e2e-data/forms-chromium
+          PLAYWRIGHT_OUTPUT_DIR: test-results/forms-chromium
+          PLAYWRIGHT_HTML_REPORT: playwright-report/forms-chromium
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          npm run test:e2e:forms 2>&1 | tee test-results/forms-chromium.log
 
       - name: Upload auth Playwright artifacts
         if: always()
@@ -654,6 +681,24 @@ jobs:
           path: |
             test-results/electron-graph/
             test-results/electron-graph.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Validate built Electron cloud profile forms
+        if: ${{ !cancelled() && steps.desktop_build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/forms/run.ts 2>&1 | tee test-results/electron-forms.log
+
+      - name: Upload Electron form artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-forms-artifacts
+          path: |
+            test-results/electron-forms/
+            test-results/electron-forms.log
           if-no-files-found: ignore
           retention-days: 7
 
