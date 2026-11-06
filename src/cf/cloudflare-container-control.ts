@@ -2,17 +2,17 @@
  * Serves SuperAgent's cloudflare-container runner in this isolate. A Worker cannot dial a
  * container's port, so the runner calls CLOUDFLARE_CONTAINER_URL (http://agent-container.internal)
  * and these calls are answered here, by intercepting fetch: `_control/<agentId>[/start|/stop]`
- * drives the agent's CloudflareAgentActor, and `<agentId>/<path>` (WebSocket upgrades too) goes to
+ * drives the agent's AgentDurableObject, and `<agentId>/<path>` (WebSocket upgrades too) goes to
  * its container's API. The agent reaches the host at CLOUDFLARE_CONTAINER_HOST_URL
- * (http://host.internal), which CloudflareAgentActor routes back to the Worker.
+ * (http://host.internal), which AgentDurableObject routes back to the Worker.
  */
 import type { DurableObjectNamespace } from 'cloudflare:workers'
-import type { CloudflareAgentActor } from './cloudflare-agent-actor'
+import type { AgentDurableObject } from './cloudflare-agent'
 
 const CONTAINER_HOST = 'agent-container.internal'
 const CONTAINER_PORT = 3000
 
-type AgentActors = DurableObjectNamespace<CloudflareAgentActor>
+type AgentObjects = DurableObjectNamespace<AgentDurableObject>
 
 /** Marks the 503 an agent's object answers while its agent is not running: a 503 crossing the stub keeps no null body to tell by. */
 export const ASLEEP_HEADER = 'X-Agent-Asleep'
@@ -31,13 +31,13 @@ export interface SleepingStore {
   remove(path: string): Promise<boolean>
 }
 
-export function sleepingStore(actors: AgentActors, agentId: string): SleepingStore {
-  const actor = () => actors.getByName(agentId)
+export function sleepingStore(agents: AgentObjects, agentId: string): SleepingStore {
+  const agent = () => agents.getByName(agentId)
   return {
-    entry: (path) => actor().storedEntry(path),
-    read: (path) => actor().storedRead(path),
-    write: (path, bytes) => actor().storedWrite(path, bytes),
-    remove: (path) => actor().storedRemove(path),
+    entry: (path) => agent().storedEntry(path),
+    read: (path) => agent().storedRead(path),
+    write: (path, bytes) => agent().storedWrite(path, bytes),
+    remove: (path) => agent().storedRemove(path),
   }
 }
 
@@ -47,7 +47,7 @@ let installed = false
  * Sets the runner's configuration and answers its calls in this isolate. Called at boot, before
  * SuperAgent first starts a container; the token only has to match within this isolate.
  */
-export function routeContainerFetch(actors: AgentActors): void {
+export function routeContainerFetch(agents: AgentObjects): void {
   if (installed) return
   installed = true
   const token = crypto.randomUUID()
@@ -57,15 +57,15 @@ export function routeContainerFetch(actors: AgentActors): void {
 
   const control = async (request: Request, agentId: string, action: string): Promise<Response> => {
     if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })
-    const actor = actors.getByName(agentId)
-    if (request.method === 'GET' && action === '') return Response.json({ running: await actor.agentRunning() })
+    const agent = agents.getByName(agentId)
+    if (request.method === 'GET' && action === '') return Response.json({ running: await agent.agentRunning() })
     if (request.method === 'POST' && action === 'start') {
       const { env } = (await request.json()) as { env: Record<string, string> }
-      await actor.startAgent(env)
+      await agent.startAgent(env)
       return new Response(null, { status: 204 })
     }
     if (request.method === 'POST' && action === 'stop') {
-      await actor.stopAgent()
+      await agent.stopAgent()
       return new Response(null, { status: 204 })
     }
     return new Response('not found', { status: 404 })
@@ -78,6 +78,6 @@ export function routeContainerFetch(actors: AgentActors): void {
     const [, first, ...rest] = url.pathname.split('/')
     if (first === '_control') return control(new Request(input, init), decodeURIComponent(rest[0] ?? ''), rest[1] ?? '')
     const target = `http://127.0.0.1:${CONTAINER_PORT}/${rest.join('/')}${url.search}`
-    return actors.getByName(decodeURIComponent(first)).fetch(new Request(target, new Request(input, init)))
+    return agents.getByName(decodeURIComponent(first)).fetch(new Request(target, new Request(input, init)))
   }
 }

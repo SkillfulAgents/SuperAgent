@@ -294,7 +294,7 @@ COPY --chown=root:root git.sh /usr/local/bin/git
 COPY --chown=root:root start.sh /usr/local/bin/gamut-start
 
 # On Cloudflare the container starts with the snapshot server instead of gamut-start: it restores
-# /workspace, which starts empty there, then runs gamut-start (src/cf/cloudflare-agent-actor.ts).
+# /workspace, which starts empty there, then runs gamut-start (src/cf/cloudflare-agent.ts).
 COPY --chown=claude:claude cloudflare/snapshot-server.mjs cloudflare/workspace-scan.mjs /opt/gamut/cloudflare/
 
 # Switch to non-root user

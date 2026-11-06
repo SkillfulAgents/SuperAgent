@@ -9,15 +9,15 @@ import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHand
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './cloudflare-app-state'
-import type { CloudflareAgentActor } from './cloudflare-agent-actor'
+import type { AgentDurableObject } from './cloudflare-agent'
 import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
 
 export { AppStateDurableObject } from './cloudflare-app-state'
 export { TaskManagerDurableObject } from './cloudflare-task-manager'
-export { CloudflareAgentActor } from './cloudflare-agent-actor'
+export { AgentDurableObject } from './cloudflare-agent'
 
 /**
- * @cloudflare/containers routes a container's outbound requests (CloudflareAgentActor's
+ * @cloudflare/containers routes a container's outbound requests (AgentDurableObject's
  * outboundByHost) through this entrypoint, by this name. The work they leave running keeps the
  * invocation alive.
  */
@@ -34,8 +34,8 @@ export interface Env {
   APP_STATE: DurableObjectNamespace<AppStateDurableObject>
   /** The org's scheduled work, and where its background services run (cloudflare-task-manager.ts). */
   TASK_MANAGER: DurableObjectNamespace<TaskManagerDurableObject>
-  /** One per agent: its container and, while it sleeps, its saved workspace (cloudflare-agent-actor.ts). */
-  AGENT_ACTOR: DurableObjectNamespace<CloudflareAgentActor>
+  /** One per agent: its container and, while it sleeps, its saved workspace (cloudflare-agent.ts). */
+  AGENT: DurableObjectNamespace<AgentDurableObject>
   /** Agent workspace files, one object per content hash. */
   WORKSPACES: R2Bucket
   /** The built UI. */

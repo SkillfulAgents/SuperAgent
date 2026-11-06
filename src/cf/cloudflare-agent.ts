@@ -64,7 +64,7 @@ export async function serveWorkspaceRequest(request: Request, env: Env, objectId
     const object = await env.WORKSPACES.get(workspaceBlobKey(objectId, hash))
     return object ? new Response(object.body) : new Response(null, { status: 404 })
   }
-  const agent = () => env.AGENT_ACTOR.get(env.AGENT_ACTOR.idFromString(objectId))
+  const agent = () => env.AGENT.get(env.AGENT.idFromString(objectId))
   if (hash && request.method === 'PUT') {
     const length = Number(request.headers.get('x-content-length'))
     if (!request.body || !Number.isInteger(length)) return new Response('x-content-length required', { status: 400 })
@@ -90,7 +90,7 @@ async function serveHostRequest(request: Request, env: Env): Promise<Response> {
   return app.serveContainerRequest(request, env)
 }
 
-export class CloudflareAgentActor extends Container<Env> {
+export class AgentDurableObject extends Container<Env> {
   defaultPort = CONTAINER_INTERNAL_PORT
   entrypoint = SNAPSHOT_SERVER
   // The library stops an idle container after this long; the agent's own idle alarm is SuperAgent's.
@@ -134,7 +134,7 @@ export class CloudflareAgentActor extends Container<Env> {
 
   override onStop(params: StopParams): void {
     this.launched = false
-    console.log(`[CloudflareAgentActor ${this.agentName()}] container exited (code ${params.exitCode}, ${params.reason})`)
+    console.log(`[AgentDurableObject ${this.agentName()}] container exited (code ${params.exitCode}, ${params.reason})`)
   }
 
   startAgent(envVars: Record<string, string>): Promise<void> {
@@ -157,7 +157,7 @@ export class CloudflareAgentActor extends Container<Env> {
     await this.containerFetch(new Request('http://container/launch', { method: 'POST' }), SNAPSHOT_PORT)
     await this.waitForPort({ portToCheck: CONTAINER_INTERNAL_PORT, waitInterval: BOOT_POLL_MS })
     this.launched = true
-    console.log(`[CloudflareAgentActor ${this.agentName()}] agent launched`)
+    console.log(`[AgentDurableObject ${this.agentName()}] agent launched`)
   }
 
   stopAgent(): Promise<void> {
@@ -184,7 +184,7 @@ export class CloudflareAgentActor extends Container<Env> {
 
   // A stop that fails leaves the container running; the library renews the timeout, so it is tried again then.
   override async onActivityExpired(): Promise<void> {
-    await this.stopAgent().catch((error: unknown) => console.error(`[CloudflareAgentActor ${this.agentName()}] idle stop failed:`, error))
+    await this.stopAgent().catch((error: unknown) => console.error(`[AgentDurableObject ${this.agentName()}] idle stop failed:`, error))
   }
 
   /** Records bytes the Worker is about to store for this agent (serveWorkspaceRequest). */
@@ -359,10 +359,10 @@ export class CloudflareAgentActor extends Container<Env> {
       })
       const dropped = await this.dropUnreferenced([...stored])
       await this.settlePending()
-      console.log(`[CloudflareAgentActor ${this.agentName()}] saved workspace version ${version}: ${files.length} entries, ${missing.length} uploaded, ${dropped} removed`)
+      console.log(`[AgentDurableObject ${this.agentName()}] saved workspace version ${version}: ${files.length} entries, ${missing.length} uploaded, ${dropped} removed`)
       return true
     } catch (error) {
-      console.error(`[CloudflareAgentActor ${this.agentName()}] workspace save failed; keeping the previous one:`, error)
+      console.error(`[AgentDurableObject ${this.agentName()}] workspace save failed; keeping the previous one:`, error)
       return false
     }
   }

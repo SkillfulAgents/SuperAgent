@@ -1,7 +1,7 @@
 // Runs first in the agent's Cloudflare Container. The container's disk is empty on every start, so
-// CloudflareAgentActor (src/cf/cloudflare-agent-actor.ts) restores /workspace through here, then
+// AgentDurableObject (src/cf/cloudflare-agent.ts) restores /workspace through here, then
 // launches the agent. Files live in R2, one object per content hash, reached at
-// http://workspace.internal (routed by CloudflareAgentActor).
+// http://workspace.internal (routed by AgentDurableObject).
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -161,7 +161,7 @@ http.createServer(async (req, res) => {
 }).listen(PORT)
 
 // The container's first request to the store is slow (~1 s); make it now, while the
-// CloudflareAgentActor still waits for this port, so the restore does not pay for it.
+// AgentDurableObject still waits for this port, so the restore does not pay for it.
 fetch(`${STORE}/warm`).then((response) => response.body?.cancel()).catch(() => {})
 
 // As PID 1, Node ignores SIGTERM unless it handles it, and the container would never stop.

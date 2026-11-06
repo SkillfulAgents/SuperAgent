@@ -2,7 +2,7 @@
  * An agent's files when its workspace lives only inside its Cloudflare Container, as
  * local-file-ops.ts is for a workspace on this machine. While the container runs, every operation
  * is a call to the container's file API. While it does not, every operation goes to the saved
- * workspace (CloudflareAgentActor's file list and R2), which the next start restores.
+ * workspace (AgentDurableObject's file list and R2), which the next start restores.
  *
  * A file operation never wakes the container: starting it reads the agent's config through these
  * same operations, so a wake from here would wait on itself.

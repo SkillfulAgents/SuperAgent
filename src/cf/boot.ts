@@ -61,7 +61,7 @@ export function stopBackgroundServices(): Promise<void> {
 
 async function start(env: Env): Promise<void> {
   // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
-  routeContainerFetch(env.AGENT_ACTOR)
+  routeContainerFetch(env.AGENT)
   await openDatabase({ driver: d1(env.DB) })
   // A boot retried after a later step failed finds AppState installed.
   if (!isAppStateInitialized()) await initializeAppState(createCloudflareAppState(env.APP_STATE))
