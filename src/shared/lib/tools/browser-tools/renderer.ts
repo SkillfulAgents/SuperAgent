@@ -14,12 +14,15 @@ import {
   CircleDot,
   MousePointer2,
   Terminal,
+  ScanEye,
+  Upload,
 } from 'lucide-react'
 import {
   browserOpenDef, browserCloseDef, browserSnapshotDef, browserReadDef, browserCaptureTrafficDef,
   browserClickDef, browserFillDef, browserScrollDef,
   browserWaitDef, browserPressDef, browserTypeDef, browserScreenshotDef,
   browserSelectDef, browserHoverDef, browserDownloadDef, browserEvalDef, browserRunDef,
+  browserUploadDef, browserGetStateDef,
 } from './definition'
 
 export const browserOpenRenderer = defineToolRenderer(browserOpenDef, {
@@ -65,6 +68,9 @@ export const browserSelectRenderer = defineToolRenderer(browserSelectDef, {
 export const browserHoverRenderer = defineToolRenderer(browserHoverDef, {
   icon: MousePointer2,
 })
+export const browserUploadRenderer = defineToolRenderer(browserUploadDef, {
+  icon: Upload,
+})
 export const browserDownloadRenderer = defineToolRenderer(browserDownloadDef, {
   icon: Download,
 })
@@ -73,4 +79,7 @@ export const browserEvalRenderer = defineToolRenderer(browserEvalDef, {
 })
 export const browserRunRenderer = defineToolRenderer(browserRunDef, {
   icon: Terminal,
+})
+export const browserGetStateRenderer = defineToolRenderer(browserGetStateDef, {
+  icon: ScanEye,
 })

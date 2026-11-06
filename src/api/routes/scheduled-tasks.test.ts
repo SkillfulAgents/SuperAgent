@@ -278,7 +278,7 @@ describe('scheduled-tasks route', () => {
       effort: 'low',
     })
     // Registered as a scheduled execution in one write, then attached with that metadata.
-    const registered = { isScheduledExecution: true, scheduledTaskId: 'task-1', scheduledTaskName: 'Daily report' }
+    const registered = { isScheduledExecution: true, scheduledTaskId: 'task-1', scheduledTaskName: 'Daily report', model: 'claude-agent', effort: 'low' }
     expect(mockRegisterSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'container-session-1', 'Daily report', registered)
     expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()
     expect(mockLiveSessions.subscribe).toHaveBeenCalledWith(
@@ -325,6 +325,8 @@ describe('scheduled-tasks route', () => {
       isScheduledExecution: true,
       scheduledTaskId: 'task-1',
       scheduledTaskName: undefined,
+      model: 'custom-model',
+      effort: 'high',
     })
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockRecordManualExecution).not.toHaveBeenCalled()
