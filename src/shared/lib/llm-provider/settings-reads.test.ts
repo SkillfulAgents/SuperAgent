@@ -60,7 +60,7 @@ beforeEach(async () => {
   handle = await createTestDatabase()
   state.db = handle.db
   reads = vi.spyOn(records, 'readStoredRecord')
-  platformPlanCache.clear()
+  await platformPlanCache.clear()
   await mutateSettings((s) => {
     s.llmProvider = 'platform'
     s.platformAuth = platformAuth

@@ -215,7 +215,7 @@ export abstract class BaseLlmProvider {
   }
 
   /** A live turn failed with this error; a provider may drop state it proves stale. */
-  noteTurnError(_status: number | undefined, _body: unknown): void {}
+  async noteTurnError(_status: number | undefined, _body: unknown): Promise<void> {}
 
   /**
    * Public cache identity for availability; changes when provider account

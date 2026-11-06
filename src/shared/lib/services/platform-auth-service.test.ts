@@ -57,6 +57,7 @@ import {
   getPlatformAccessToken,
   getPlatformAuthStatus,
   getPlatformAuthStatusForUser,
+  fetchActingPlatformAccount,
   getEnrichedPlatformAuthStatus,
   initEnvManagedPlatformStatus,
   savePlatformAuth,
@@ -598,7 +599,7 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
     await initEnvManagedPlatformStatus()
-    platformPlanCache.clear()
+    await platformPlanCache.clear()
     vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -615,9 +616,37 @@ describe('platform-auth-service', () => {
     await getEnrichedPlatformAuthStatus('ba-user-plan')
 
     const load = vi.fn(async () => null)
-    expect(await platformPlanCache.get(platformPlanCache.key('org_env', 'sub_member_2'), load))
+    expect(await platformPlanCache.get(platformPlanCache.key('org_env', 'sub_member_2', process.env.PLATFORM_TOKEN), load))
       .toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
     expect(load).not.toHaveBeenCalled()
+  })
+
+  it('does not keep the plan policy of an account read that a clear overtook', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+    let respond: (response: Response) => void = () => {}
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() => new Promise((resolve) => { respond = resolve }))
+
+    const reading = fetchActingPlatformAccount(process.env.PLATFORM_TOKEN)
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    await platformPlanCache.clear()
+    respond(new Response(
+      JSON.stringify({
+        memberId: 'sub_member_3',
+        orgId: 'org_env',
+        userId: 'user_3',
+        plan: { id: 'pro-30', name: 'Pro 30' },
+        deniedModels: ['claude-fable-'],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    await reading
+
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get(platformPlanCache.key('org_env', 'sub_member_3', process.env.PLATFORM_TOKEN), load)).toBeNull()
+    expect(load).toHaveBeenCalled()
   })
 
   it('returns a null workspace icon when /v1/account has no icon field', async () => {

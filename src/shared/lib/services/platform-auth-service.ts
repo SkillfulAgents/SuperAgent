@@ -114,7 +114,7 @@ interface SavePlatformAuthInput {
  * (status 400) on an invalid/revoked key or (5xx) an unreachable platform.
  */
 async function fetchPlatformAccountInfo(token: string) {
-  return rememberAccountPolicy(await fetchPlatformJson({
+  return keepingAccountPolicy(token, () => fetchPlatformJson({
     path: '/v1/account',
     token,
     schema: PlatformAccountInfoSchema,
@@ -128,9 +128,13 @@ async function fetchPlatformAccountInfo(token: string) {
 }
 
 // Every account read carries the account's plan policy (SUP-1124): keep it for
-// model selection, keyed by the account it describes.
-function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T): T {
-  platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId), accountPlanPolicy(account))
+// model selection, keyed by the account it describes and the token that read
+// it. The read begins before the request, so an answer overtaken by a clear of
+// the cache stays forgotten.
+async function keepingAccountPolicy<T extends ParsedPlatformAccountInfo>(token: string, fetchAccount: () => T | Promise<T>): Promise<T> {
+  const read = await platformPlanCache.beginRead()
+  const account = await fetchAccount()
+  await platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId, token), accountPlanPolicy(account), read)
   return account
 }
 
@@ -144,7 +148,7 @@ export async function fetchActingPlatformAccount(token?: string | null): Promise
   // is the one it keyed on); the current one when not given.
   const bearer = token === undefined ? await getPlatformAccessToken() : token
   if (!bearer) throw new Error('Platform is not connected')
-  return rememberAccountPolicy(await fetchPlatformJson({
+  return keepingAccountPolicy(bearer, () => fetchPlatformJson({
     path: '/v1/account',
     token: bearer,
     schema: PlatformAccountInfoSchema,
@@ -298,8 +302,8 @@ function notifyPlatformServiceAuthChanged(connected: boolean): void {
   // The success log is the only positive signal this fire-and-forget path ran;
   // platform-auth-service.notify.test.ts asserts on it.
   background(import('./platform-service')
-    .then((mod) => {
-      mod.platformService.onAuthChanged(connected)
+    .then(async (mod) => {
+      await mod.platformService.onAuthChanged(connected)
       console.log(`[platform-auth] platform-service notified of auth change (connected=${connected})`)
     })
     .catch((error) => captureException(error, { tags: { area: 'platform-auth', op: 'notify-service' } })), { name: 'platform-auth.notify-platform-service' })
@@ -484,7 +488,7 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
   const token = await getPlatformAccessToken()
   if (!token) return null
   try {
-    const account = rememberAccountPolicy(await runWithRequestUser(userId, () =>
+    const account = await keepingAccountPolicy(token, () => runWithRequestUser(userId, () =>
       fetchPlatformJson({
         path: '/v1/account',
         token,

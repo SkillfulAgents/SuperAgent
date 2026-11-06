@@ -15,7 +15,8 @@ vi.mock('@shared/lib/services/cloud-workspace-service', () => ({
   refreshCloudWorkspace: () => mockRefreshCloudWorkspace(),
 }))
 // The acting account is attribution's business; here it is one fixed account.
-vi.mock('@shared/lib/llm-provider/platform-plan-account', () => ({ actingPlanCacheKey: async () => 'acting-account' }))
+const ACTING_ACCOUNT = vi.hoisted(() => ({ platform: 'platform', orgId: 'org_1', memberId: 'member_1', authRevision: 'connection_1' }))
+vi.mock('@shared/lib/llm-provider/platform-plan-account', () => ({ actingPlanCacheKey: async () => ACTING_ACCOUNT }))
 
 let mockIsAuthMode = false
 let mockConnected = true
@@ -29,6 +30,7 @@ import { registerTasks } from '@shared/lib/background-work/testing/register-task
 
 beforeEach(() => registerTasks(platformService))
 import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
+import { backgroundSettled } from '@shared/lib/background'
 
 const SNAPSHOT = {
   configured: true,
@@ -115,23 +117,48 @@ describe('PlatformService', () => {
   })
 
   it('keeps the plan policy a billing read carries for the acting account, and forgets it on an account change (SUP-1124)', async () => {
-    platformPlanCache.clear()
+    await platformPlanCache.clear()
     mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
     await platformService.refreshBilling()
     const load = vi.fn(async () => null)
-    expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(await platformPlanCache.get(ACTING_ACCOUNT, load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
     expect(load).not.toHaveBeenCalled()
-    platformService.onAuthChanged(false)
-    expect(await platformPlanCache.get('acting-account', load)).toBeNull()
+    await platformService.onAuthChanged(false)
+    expect(await platformPlanCache.get(ACTING_ACCOUNT, load)).toBeNull()
     expect(load).toHaveBeenCalled()
   })
 
+  it('does not keep the policy of a billing read that a clear overtook', async () => {
+    await platformPlanCache.clear()
+    let respond: (billing: unknown) => void = () => {}
+    mockFetchBilling.mockImplementation(() => new Promise((resolve) => { respond = resolve }))
+    const refreshing = platformService.refreshBilling()
+    await vi.waitFor(() => expect(mockFetchBilling).toHaveBeenCalled())
+
+    await platformPlanCache.clear()
+    respond({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
+    await refreshing
+
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get(ACTING_ACCOUNT, load)).toBeNull()
+    expect(load).toHaveBeenCalled()
+  })
+
+  it('keeps what the refresh after a connection change reads', async () => {
+    mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
+    await platformService.onAuthChanged(true)
+    await backgroundSettled()
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get(ACTING_ACCOUNT, load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(load).not.toHaveBeenCalled()
+  })
+
   it('does not record a policy from a proxy that predates plans', async () => {
-    platformPlanCache.clear()
+    await platformPlanCache.clear()
     mockFetchBilling.mockResolvedValue(SNAPSHOT)
     await platformService.refreshBilling()
     const load = vi.fn(async () => ({ planName: 'Pro 200', deniedModels: [] }))
-    expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 200', deniedModels: [] })
+    expect(await platformPlanCache.get(ACTING_ACCOUNT, load)).toEqual({ planName: 'Pro 200', deniedModels: [] })
     expect(load).toHaveBeenCalled()
   })
 
@@ -139,7 +166,7 @@ describe('PlatformService', () => {
     mockFetchBilling.mockResolvedValue(SNAPSHOT)
     await platformService.refreshBilling()
     expect(platformService.getCachedBilling()).toEqual(SNAPSHOT)
-    platformService.onAuthChanged(false)
+    await platformService.onAuthChanged(false)
     expect(platformService.getCachedBilling()).toBeNull()
   })
 

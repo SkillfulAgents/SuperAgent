@@ -125,8 +125,8 @@ export class PlatformLlmProvider extends BaseLlmProvider {
 
   // A plan refusal proves a cached policy stale (a downgrade, or a policy read
   // before one): forget them all, so the next selection reads the account again.
-  override noteTurnError(_status: number | undefined, body: unknown): void {
-    if (parseModelNotInPlan(body)) platformPlanCache.clear()
+  override async noteTurnError(_status: number | undefined, body: unknown): Promise<void> {
+    if (parseModelNotInPlan(body)) await platformPlanCache.clear()
   }
 
   async getContainerEnvVars(agent?: AgentIdentity, given?: ProviderSettings): Promise<Record<string, string | undefined>> {

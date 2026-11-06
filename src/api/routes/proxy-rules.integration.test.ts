@@ -118,12 +118,12 @@ async function userRule(agentSlug: string | null = null, code = INTERNAL_ONLY, e
   return saved
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   sqlite = new Database(':memory:')
   testDb = drizzle(sqlite, { schema })
   migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
   defaultPolicy = 'review'
-  invalidateRuleCache()
+  await invalidateRuleCache()
   vi.mocked(logAuditEvent).mockClear()
   upstreamCalls.length = 0
   userInputRequestManager.reset()
