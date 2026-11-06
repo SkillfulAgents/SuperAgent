@@ -16,7 +16,7 @@ const command = process.platform === 'win32'
 
 export default defineConfig({
   testDir: './e2e/auth/specs',
-  testMatch: '**/forms-upgrade.spec.ts',
+  testMatch: '**/account-forms.spec.ts',
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results/forms',
   fullyParallel: false,
   workers: 1,

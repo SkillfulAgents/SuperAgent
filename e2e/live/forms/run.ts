@@ -15,7 +15,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { _electron, expect, request, type APIRequestContext, type ElectronApplication, type Page } from '@playwright/test'
 import type { WebContents, WebPreferences } from 'electron'
-import { checkProfileNameForm, checkProfilePasswordForm, type FormsContext, type FormsUser } from '../../helpers/forms-upgrade'
+import { checkProfileNameForm, checkProfilePasswordForm, type FormsContext, type FormsUser } from '../../helpers/account-forms'
 import { startStubPlatform } from '../cloud-electron/stub-platform.mjs'
 import { authResponseSchema, cloudTargetSchema, policySchema, seedSettingsSchema } from './schema'
 

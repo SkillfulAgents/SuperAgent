@@ -471,7 +471,7 @@ async function checkForcedPassword(context: FormsContext) {
   })
 }
 
-export const formsUpgradeScenarios: readonly (readonly [string, (context: FormsContext) => Promise<void>])[] = [
+export const accountFormScenarios: readonly (readonly [string, (context: FormsContext) => Promise<void>])[] = [
   ['sign-in validates, recovers from rejection and submits once while pending', checkSignIn],
   ['sign-up awaits policy, validates corrected fields and resets across tabs', checkSignup],
   ['profile name recovers from save failure and re-baselines dirty state after save', checkProfileName],

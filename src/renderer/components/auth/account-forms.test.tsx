@@ -65,7 +65,7 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-describe('authentication forms with the real RHF and Zod resolver', () => {
+describe('account authentication forms', () => {
   it('maps sign-in validation to fields and recovers from a failed submission without losing values', async () => {
     const failed = deferred<{ error: { message: string } }>()
     mocks.signIn.mockReturnValueOnce(failed.promise).mockResolvedValueOnce({ error: null })
@@ -165,7 +165,7 @@ describe('authentication forms with the real RHF and Zod resolver', () => {
   })
 })
 
-describe('profile forms with the real RHF and Zod resolver', () => {
+describe('account profile forms', () => {
   it('keeps a failed name save dirty, then resets the baseline after success and session refresh', async () => {
     const firstSave = deferred<{ error: { message: string } }>()
     const retrySave = deferred<{ error: null }>()

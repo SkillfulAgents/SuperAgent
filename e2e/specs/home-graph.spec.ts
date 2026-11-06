@@ -19,7 +19,7 @@
  */
 import { test as base, expect, type Page } from '@playwright/test'
 import { createAgent, uniqueName, type TestAgent } from '../helpers/agents'
-import { graphSettingsSchema } from '../helpers/graph-upgrade'
+import { graphSettingsSchema } from '../helpers/home-graph-interactions'
 
 // A prior draw/drag leaves saved pins that can cover a later test's new node.
 // Keep the isolated server's real API, but scope agents and graph settings to

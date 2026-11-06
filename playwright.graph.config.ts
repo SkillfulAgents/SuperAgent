@@ -14,7 +14,7 @@ const inline = Object.entries(env).map(([name, value]) => process.platform === '
 const command = process.platform === 'win32'
   ? `${inline} && node e2e/setup-e2e-data.js && npm run dev:web`
   : `${inline} node e2e/setup-e2e-data.js && ${inline} npm run dev:web`
-const desktopSpecs = ['**/home-graph.spec.ts', '**/graph-upgrade.spec.ts']
+const desktopSpecs = ['**/home-graph.spec.ts', '**/home-graph-interactions.spec.ts']
 
 export default defineConfig({
   testDir: './e2e',
@@ -28,8 +28,8 @@ export default defineConfig({
   projects: [
     { name: 'graph-chromium', testMatch: desktopSpecs, grepInvert: /@touch/, use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } },
     { name: 'graph-webkit', testMatch: desktopSpecs, grepInvert: /@touch/, use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 } } },
-    { name: 'graph-chromium-touch', testMatch: '**/graph-upgrade.spec.ts', grep: /@touch/, use: { ...devices['Pixel 7'], viewport: { width: 1024, height: 900 } } },
-    { name: 'graph-webkit-touch', testMatch: '**/graph-upgrade.spec.ts', grep: /@touch/, use: { ...devices['iPhone 13'], viewport: { width: 1024, height: 900 } } },
+    { name: 'graph-chromium-touch', testMatch: '**/home-graph-interactions.spec.ts', grep: /@touch/, use: { ...devices['Pixel 7'], viewport: { width: 1024, height: 900 } } },
+    { name: 'graph-webkit-touch', testMatch: '**/home-graph-interactions.spec.ts', grep: /@touch/, use: { ...devices['iPhone 13'], viewport: { width: 1024, height: 900 } } },
   ],
   webServer: { command, url: `${baseURL}/api/settings`, reuseExistingServer: false, timeout: 120_000, stdout: 'pipe' },
 })

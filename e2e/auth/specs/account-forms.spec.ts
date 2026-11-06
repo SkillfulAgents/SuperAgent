@@ -1,9 +1,9 @@
 import { test, expect, type Request } from '@playwright/test'
-import { formsUpgradeScenarios, formsTouchScenarios, initializeFormsAdmin, type FormsContext } from '../../helpers/forms-upgrade'
+import { accountFormScenarios, formsTouchScenarios, initializeFormsAdmin, type FormsContext } from '../../helpers/account-forms'
 
 test.describe.configure({ mode: 'default' })
 
-for (const [name, scenario] of [...formsUpgradeScenarios, ...formsTouchScenarios]) {
+for (const [name, scenario] of [...accountFormScenarios, ...formsTouchScenarios]) {
   test(name, async ({ page, request, baseURL, isMobile, browserName }, testInfo) => {
     const authRoot = `${baseURL!.replace(/\/$/, '')}/api/auth`
     let sequence = 0
