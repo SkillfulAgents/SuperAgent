@@ -3,6 +3,7 @@ import { getPlatformAccessToken, platformAccessTokenFrom } from '@shared/lib/ser
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getOrCreateMapping } from './context-map-store'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
+import { pageWsUrlFromDebuggerUrl } from './browserbase-live-view'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 
@@ -153,11 +154,10 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     const debug = await response.json() as BrowserbaseDebugResponse
     if (!debug.pages || debug.pages.length === 0) return null
 
-    const pages = debug.pages.map((page) => ({
-      id: page.id,
-      url: page.url,
-      wsUrl: `wss://connect.browserbase.com/debug/${sessionId}/devtools/page/${page.id}`,
-    }))
+    const pages = debug.pages.flatMap((page) => {
+      const wsUrl = pageWsUrlFromDebuggerUrl(page.debuggerUrl)
+      return wsUrl ? [{ id: page.id, url: page.url, wsUrl }] : []
+    })
 
     return { pages }
   }
