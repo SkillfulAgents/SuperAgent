@@ -1,5 +1,6 @@
 
-import { AtSign, Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
+import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -932,7 +933,7 @@ function NotificationsMenuButton() {
   return (
     <SidebarMenuButton asChild data-testid="notifications-button" isActive={isActive}>
       <AppLink to="/notifications">
-        <Bell className="h-4 w-4" />
+        <AnimatedNavIcon name="bell" className="h-4 w-4" />
         <span>Notifications</span>
         {unreadMentions > 0 ? (
           <UnreadDot mention className="ml-auto" />
@@ -960,7 +961,7 @@ function TodoMenuButton() {
   return (
     <SidebarMenuButton asChild data-testid="todo-button" isActive={pathname === '/todo'}>
       <AppLink to="/todo">
-        <ListTodo className="h-4 w-4" />
+        <AnimatedNavIcon name="todo" className="h-4 w-4" />
         <span>Todo</span>
         {needsInput > 0 && (
           <span
@@ -993,7 +994,7 @@ function TeamBrainMenuButton() {
 
   const label = (
     <>
-      <Brain className="h-4 w-4" />
+      <AnimatedNavIcon name="brain" className="h-4 w-4" />
       <span>Team Brain</span>
       {!seen && !visited && !brainAgent && (
         <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
@@ -1032,7 +1033,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
         style={{ paddingLeft: AGENT_AVATAR_LEFT }}
         data-testid="settings-button"
       >
-        <Settings className="h-4 w-4" />
+        <AnimatedNavIcon name="settings" className="h-4 w-4" />
         <span>Settings</span>
       </SidebarMenuButton>
     )
@@ -1059,7 +1060,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
           className={userMenuItemClassName}
           data-testid="settings-button"
         >
-          <Settings className="h-4 w-4" />
+          <AnimatedNavIcon name="settings" className="h-4 w-4" />
           Settings
         </button>
         <div className="-mx-1 my-1 h-px bg-border" role="separator" />
@@ -1070,7 +1071,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="sign-out-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Sign out
           </button>
         ) : (
@@ -1085,7 +1086,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="switch-to-local-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Use this computer
           </button>
         )}
@@ -1804,7 +1805,7 @@ export function AppSidebar() {
                     className="h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground hover:bg-foreground/10 transition-colors"
                     data-testid="search-button"
                   >
-                    <Search className="h-4 w-4 -translate-y-[1px]" />
+                    <AnimatedNavIcon name="search" className="h-4 w-4" style={{ translate: '0 -1px' }} />
                   </button>
                 </TooltipTrigger>
                 {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
@@ -1867,7 +1868,7 @@ export function AppSidebar() {
                     data-testid="home-button"
                   >
                     <AppLink to="/">
-                      <LayoutGrid className="h-4 w-4" />
+                      <AnimatedNavIcon name="home" className="h-4 w-4" />
                       <span>Home</span>
                     </AppLink>
                   </SidebarMenuButton>
@@ -1894,7 +1895,7 @@ export function AppSidebar() {
                       data-testid="marketplace-button"
                     >
                       <AppLink to="/explore">
-                        <Compass className="h-4 w-4" />
+                        <AnimatedNavIcon name="compass" className="h-4 w-4" />
                         <span>Discover New Agents</span>
                       </AppLink>
                     </SidebarMenuButton>
@@ -1906,7 +1907,7 @@ export function AppSidebar() {
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
-                    <Plus className="h-4 w-4" />
+                    <AnimatedNavIcon name="plus" className="h-4 w-4" />
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -2014,7 +2015,7 @@ export function AppSidebar() {
                       data-testid="add-section-button"
                     >
                       <span className="flex shrink-0 items-center">
-                        <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                        <AnimatedNavIcon name="plus" className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
                       </span>
                       <span>Add section</span>
                     </SidebarMenuButton>
