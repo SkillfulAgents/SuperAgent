@@ -8,7 +8,7 @@
  * serves a tenant from its own isolate installs its implementation for that
  * tenant at its entry point; consumers do not change.
  */
-import type { AppState } from './contract'
+import type { AppState } from './abstract-app-state'
 import { createLocalAppState } from './local-app-state'
 
 interface Initialization {
