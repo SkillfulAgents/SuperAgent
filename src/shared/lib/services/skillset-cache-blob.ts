@@ -39,12 +39,15 @@ async function storedFiles(key: string): Promise<DecodedFile[] | null> {
   const store = blobStore()
   const marker = await store?.get(versionKeyFor(key))
   if (!store || !marker) return null
+  const version = new TextDecoder().decode(marker)
   const kept = decoded.get(key)
-  if (kept?.version === new TextDecoder().decode(marker)) return kept.files
+  if (kept?.version === version) return kept.files
   const stored = await store.get(key)
   if (!stored) return null
-  const { version, files } = JSON.parse(new TextDecoder().decode(stored)) as { v: 1; version: string; files: PackedFile[] }
+  const { files } = JSON.parse(new TextDecoder().decode(stored)) as { v: 1; version: string; files: PackedFile[] }
   const result = decode(files)
+  // Kept under the marker read, not the folder's own version: two saves that race can leave the
+  // marker naming the other one's folder, and the next save changes the marker either way.
   decoded.set(key, { version, files: result })
   return result
 }
