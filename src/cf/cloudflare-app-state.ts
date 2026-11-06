@@ -175,16 +175,16 @@ export interface CloudflareAppStateOptions {
 
 export function createCloudflareAppState(objects: DurableObjectNamespace<AppStateDurableObject>, options: CloudflareAppStateOptions = {}): AppState {
   // A new stub for each call: a Worker invocation cannot use an I/O object that another one made.
-  const call: ObjectCall = async (use) => {
+  const call: ObjectCall = async <R>(run: (object: AppStateObject) => R | Promise<R>): Promise<Awaited<R>> => {
     await reachCurrentCode(objects, OBJECT_NAME, options.version)
-    return use(objects.getByName(OBJECT_NAME))
+    return await run(objects.getByName(OBJECT_NAME))
   }
   return createAppState({ scope: options.scope ?? ORG_SCOPE, engine: objectEngine(call, options.hub ?? objectHub(call)) })
 }
 
 type AppStateObject = ReturnType<DurableObjectNamespace<AppStateDurableObject>['getByName']>
 /** One call on the org's object, made once the object runs this deploy's code or newer. */
-type ObjectCall = <R>(use: (object: AppStateObject) => R | Promise<R>) => Promise<Awaited<R>>
+type ObjectCall = <R>(run: (object: AppStateObject) => R | Promise<R>) => Promise<Awaited<R>>
 
 function objectEngine(call: ObjectCall, hub: EventHub): AppStateEngine {
   return {

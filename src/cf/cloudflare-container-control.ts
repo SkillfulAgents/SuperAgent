@@ -37,18 +37,18 @@ export interface SleepingStore {
  * The agent's object: itself when it serves the current request (a call through its stub would
  * come back to it), and otherwise its stub, once it runs this deploy's code or newer.
  */
-export async function withAgentObject<R>(agents: AgentObjects, agentId: string, version: string | undefined, use: (agent: AgentCalls) => R | Promise<R>): Promise<R> {
+export async function withAgentObject<R>(agents: AgentObjects, agentId: string, version: string | undefined, run: (agent: AgentCalls) => R | Promise<R>): Promise<R> {
   const own = servingAgentObject(agentId)
-  if (own) return use(own)
+  if (own) return run(own)
   await reachCurrentCode(agents, agentId, version)
-  return use(agents.getByName(agentId) as unknown as AgentCalls)
+  return run(agents.getByName(agentId) as unknown as AgentCalls)
 }
 
 /** The agent object's calls the rest of the org makes, as its stub answers them. */
 type AgentCalls = Pick<AgentDurableObject, 'fetch' | 'agentRunning' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
 
 export function sleepingStore(agents: AgentObjects, agentId: string, version: string | undefined): SleepingStore {
-  const call = <R>(use: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, use)
+  const call = <R>(run: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, run)
   return {
     entry: (path) => call((agent) => agent.storedEntry(path)),
     read: (path) => call((agent) => agent.storedRead(path)),
@@ -71,7 +71,7 @@ export function routeContainerFetch(agents: AgentObjects, version: string | unde
   process.env.CLOUDFLARE_CONTAINER_HOST_URL = 'http://host.internal'
   process.env.CLOUDFLARE_CONTAINER_TOKEN = token
 
-  const call = <R>(agentId: string, use: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, use)
+  const call = <R>(agentId: string, run: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, run)
 
   const control = async (request: Request, agentId: string, action: string): Promise<Response> => {
     if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })
