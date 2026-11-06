@@ -217,7 +217,8 @@ let processPrepared: Promise<void> | null = null
 /**
  * The setup that requests read from this process's memory: account providers,
  * the auth gate, platform attribution and the managed platform connection.
- * Runs once per process. `afterBindInitialize` runs it before the services; a
+ * Runs once per process. Service startup runs it alongside agent discovery and
+ * joins both before any container starts; a
  * host that serves requests from processes that start no services (one per
  * request, or many short-lived ones) calls it after AppState and KeyManager.
  * A failure is not remembered, so the next call tries again.
