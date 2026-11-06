@@ -37,12 +37,12 @@
     "bindings": [
       { "name": "APP_STATE", "class_name": "AppStateDurableObject" },
       { "name": "TASK_MANAGER", "class_name": "TaskManagerDurableObject" },
-      { "name": "AGENT_ACTOR", "class_name": "CloudflareAgentActor" }
+      { "name": "AGENT", "class_name": "AgentDurableObject" }
     ]
   },
-  // The normal agent image; it starts with agent-container/cloudflare/snapshot-server.mjs (cloudflare-agent-actor.ts).
-  "containers": [{ "class_name": "CloudflareAgentActor", "image": "../../agent-container/Dockerfile", "instance_type": "standard-1", "max_instances": 20 }],
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject", "CloudflareAgentActor"] }],
+  // The normal agent image; it starts with agent-container/cloudflare/snapshot-server.mjs (cloudflare-agent.ts).
+  "containers": [{ "class_name": "AgentDurableObject", "image": "../../agent-container/Dockerfile", "instance_type": "standard-1", "max_instances": 20 }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject", "AgentDurableObject"] }],
   // An object on older code restarts when a caller on a newer deploy reaches it (object-version.ts).
   "version_metadata": { "binding": "VERSION" },
   "observability": { "enabled": true }

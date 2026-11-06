@@ -6,17 +6,17 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { AgentActor, AgentSlug } from '@shared/lib/agent-actor/types'
-import type { CloudflareAgentActor } from './cloudflare-agent-actor'
+import type { AgentDurableObject } from './cloudflare-agent'
 
-const serving = new AsyncLocalStorage<{ slug: AgentSlug; object: CloudflareAgentActor }>()
+const serving = new AsyncLocalStorage<{ slug: AgentSlug; object: AgentDurableObject }>()
 
 /** Runs `work` as the agent's own object: what it starts there (background work too) stays its own. */
-export function runAsAgentObject<T>(slug: AgentSlug, object: CloudflareAgentActor, work: () => T): T {
+export function runAsAgentObject<T>(slug: AgentSlug, object: AgentDurableObject, work: () => T): T {
   return serving.run({ slug, object }, work)
 }
 
 /** The agent's object when it is the one serving the current request; null otherwise. */
-export function servingAgentObject(slug: AgentSlug): CloudflareAgentActor | null {
+export function servingAgentObject(slug: AgentSlug): AgentDurableObject | null {
   const current = serving.getStore()
   return current?.slug === slug ? current.object : null
 }

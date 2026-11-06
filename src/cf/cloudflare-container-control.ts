@@ -2,19 +2,19 @@
  * Serves SuperAgent's cloudflare-container runner in this isolate. A Worker cannot dial a
  * container's port, so the runner calls CLOUDFLARE_CONTAINER_URL (http://agent-container.internal)
  * and these calls are answered here, by intercepting fetch: `_control/<agentId>[/start|/stop]`
- * drives the agent's CloudflareAgentActor, and `<agentId>/<path>` (WebSocket upgrades too) goes to
+ * drives the agent's AgentDurableObject, and `<agentId>/<path>` (WebSocket upgrades too) goes to
  * its container's API. The agent reaches the host at CLOUDFLARE_CONTAINER_HOST_URL
- * (http://host.internal), which CloudflareAgentActor routes back to the Worker.
+ * (http://host.internal), which AgentDurableObject routes back to the Worker.
  */
 import type { DurableObjectNamespace } from 'cloudflare:workers'
-import type { CloudflareAgentActor } from './cloudflare-agent-actor'
+import type { AgentDurableObject } from './cloudflare-agent'
 import { servingAgentObject } from './agent-objects'
 import { reachCurrentCode } from './object-version'
 
 const CONTAINER_HOST = 'agent-container.internal'
 const CONTAINER_PORT = 3000
 
-type AgentActors = DurableObjectNamespace<CloudflareAgentActor>
+type AgentObjects = DurableObjectNamespace<AgentDurableObject>
 
 /** Marks the 503 an agent's object answers while its agent is not running: a 503 crossing the stub keeps no null body to tell by. */
 export const ASLEEP_HEADER = 'X-Agent-Asleep'
@@ -37,18 +37,18 @@ export interface SleepingStore {
  * The agent's object: itself when it serves the current request (a call through its stub would
  * come back to it), and otherwise its stub, once it runs this deploy's code or newer.
  */
-export async function withAgentObject<R>(actors: AgentActors, agentId: string, version: string | undefined, use: (agent: AgentCalls) => R | Promise<R>): Promise<R> {
+export async function withAgentObject<R>(agents: AgentObjects, agentId: string, version: string | undefined, use: (agent: AgentCalls) => R | Promise<R>): Promise<R> {
   const own = servingAgentObject(agentId)
   if (own) return use(own)
-  await reachCurrentCode(actors, agentId, version)
-  return use(actors.getByName(agentId) as unknown as AgentCalls)
+  await reachCurrentCode(agents, agentId, version)
+  return use(agents.getByName(agentId) as unknown as AgentCalls)
 }
 
 /** The agent object's calls the rest of the org makes, as its stub answers them. */
-type AgentCalls = Pick<CloudflareAgentActor, 'fetch' | 'agentRunning' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
+type AgentCalls = Pick<AgentDurableObject, 'fetch' | 'agentRunning' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
 
-export function sleepingStore(actors: AgentActors, agentId: string, version: string | undefined): SleepingStore {
-  const call = <R>(use: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(actors, agentId, version, use)
+export function sleepingStore(agents: AgentObjects, agentId: string, version: string | undefined): SleepingStore {
+  const call = <R>(use: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, use)
   return {
     entry: (path) => call((agent) => agent.storedEntry(path)),
     read: (path) => call((agent) => agent.storedRead(path)),
@@ -63,7 +63,7 @@ let installed = false
  * Sets the runner's configuration and answers its calls in this isolate. Called at boot, before
  * SuperAgent first starts a container; the token only has to match within this isolate.
  */
-export function routeContainerFetch(actors: AgentActors, version: string | undefined): void {
+export function routeContainerFetch(agents: AgentObjects, version: string | undefined): void {
   if (installed) return
   installed = true
   const token = crypto.randomUUID()
@@ -71,7 +71,7 @@ export function routeContainerFetch(actors: AgentActors, version: string | undef
   process.env.CLOUDFLARE_CONTAINER_HOST_URL = 'http://host.internal'
   process.env.CLOUDFLARE_CONTAINER_TOKEN = token
 
-  const call = <R>(agentId: string, use: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(actors, agentId, version, use)
+  const call = <R>(agentId: string, use: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, use)
 
   const control = async (request: Request, agentId: string, action: string): Promise<Response> => {
     if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })

@@ -3,7 +3,7 @@
  * key custody, task dispatch, then the process setup (prepareProcess).
  * index.ts loads this module on the first API request. The Worker and the Durable Objects boot
  * the same way; only TaskManagerDurableObject starts the background services, and only an agent's
- * own CloudflareAgentActor runs its actor.
+ * own AgentDurableObject runs its actor.
  */
 import { mkdirSync } from 'node:fs'
 import api from '../api'
@@ -62,7 +62,7 @@ export function serve(request: Request, env: Env, ctx: ExecutionContext): Promis
     if (deleted) mkdirSync(getAgentDir(deleted), { recursive: true })
     const response = await api.fetch(request, env, ctx)
     if (deleted && response.ok) {
-      await withAgentObject(env.AGENT_ACTOR, deleted, env.VERSION?.timestamp, (agent) => agent.purgeWorkspace()).catch((error: unknown) => {
+      await withAgentObject(env.AGENT, deleted, env.VERSION?.timestamp, (agent) => agent.purgeWorkspace()).catch((error: unknown) => {
         console.error(`[cloudflare] purging the saved workspace of ${deleted} failed:`, error)
       })
     }
@@ -70,7 +70,7 @@ export function serve(request: Request, env: Env, ctx: ExecutionContext): Promis
   })
 }
 
-/** An op on the agent's actor, in the agent's own object (cloudflare-agent-actor.ts). */
+/** An op on the agent's actor, in the agent's own object (cloudflare-agent.ts). */
 export function serveActorRequest(request: Request): Promise<Response> {
   return actorOps(request)
 }
@@ -109,7 +109,7 @@ export function stopBackgroundServices(): Promise<void> {
 
 async function start(env: Env): Promise<void> {
   // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
-  routeContainerFetch(env.AGENT_ACTOR, env.VERSION?.timestamp)
+  routeContainerFetch(env.AGENT, env.VERSION?.timestamp)
   wireAgents(env)
   await openDatabase({ driver: d1(env.DB) })
   // A boot retried after a later step failed finds AppState installed.
@@ -177,7 +177,7 @@ function errorOnRedirect(fetch: typeof globalThis.fetch): typeof globalThis.fetc
 /** Where each agent runs: its actor in its own object, its files in its container or, asleep, in R2. */
 function wireAgents(env: Env): void {
   // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
-  useActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT_ACTOR, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
+  useActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
   useSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
   setIdleAlarmTimers((slug, ring) => {
     idleRings.set(slug, ring)
@@ -198,7 +198,7 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
     const headers = new Headers(init?.headers)
     for (const [name, value] of Object.entries(auth)) headers.set(name, value)
     const streamed = init?.body instanceof ReadableStream
-    return withAgentObject(env.AGENT_ACTOR, slug, env.VERSION?.timestamp, (agent) => agent.fetch(new Request(`http://container${path}`, { ...init, headers, ...(streamed ? { duplex: 'half' } : {}) } as RequestInit)))
+    return withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(new Request(`http://container${path}`, { ...init, headers, ...(streamed ? { duplex: 'half' } : {}) } as RequestInit)))
   }, agentSleepingStore(env, slug))
   return {
     slug,
@@ -213,7 +213,7 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
 
 /** The saved workspace: from the agent's own object directly, from anywhere else through its stub. */
 function agentSleepingStore(env: Env, slug: AgentSlug): SleepingStore {
-  const viaStub = sleepingStore(env.AGENT_ACTOR, slug, env.VERSION?.timestamp)
+  const viaStub = sleepingStore(env.AGENT, slug, env.VERSION?.timestamp)
   const side = (): SleepingStore => {
     const own = servingAgentObject(slug)
     if (!own) return viaStub

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentActor } from '@shared/lib/agent-actor/types'
-import type { CloudflareAgentActor } from './cloudflare-agent-actor'
+import type { AgentDurableObject } from './cloudflare-agent'
 import { ownedHere, runAsAgentObject, servingAgentObject } from './agent-objects'
 
 const actor = (where: string) => ({ slug: 'sales-agent', files: { getDoc: async () => where } }) as unknown as AgentActor
-const object = {} as CloudflareAgentActor
+const object = {} as AgentDurableObject
 
 describe('ownedHere', () => {
   it("uses the actor in this isolate only inside the agent's own object, and the remote one everywhere else", async () => {

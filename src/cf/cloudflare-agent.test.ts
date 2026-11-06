@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { CloudflareAgentActor, serveWorkspaceRequest, workspaceBlobKey } from './cloudflare-agent-actor'
+import { AgentDurableObject, serveWorkspaceRequest, workspaceBlobKey } from './cloudflare-agent'
 import type { Env } from './index'
 
 // Workers' FixedLengthStream, which Node lacks: here a pass-through.
@@ -33,7 +33,7 @@ function env(r2: ReturnType<typeof bucket>) {
   const agent = { markBlobPending: vi.fn(async () => {}), workspaceRequest: vi.fn(async () => new Response(null, { status: 202 })) }
   const value = {
     WORKSPACES: r2,
-    AGENT_ACTOR: { idFromString: (id: string) => id, get: () => agent },
+    AGENT: { idFromString: (id: string) => id, get: () => agent },
   } as unknown as Env
   return { value, agent }
 }
@@ -95,7 +95,7 @@ describe('serveWorkspaceRequest', () => {
 /** The real stop code, on an object whose container calls are recorded instead of made. */
 function agent(saved: boolean) {
   const calls: string[] = []
-  const object = Object.create(CloudflareAgentActor.prototype) as CloudflareAgentActor & Record<string, unknown>
+  const object = Object.create(AgentDurableObject.prototype) as AgentDurableObject & Record<string, unknown>
   Object.assign(object, {
     ctx: { id: { name: 'sales agent' } },
     saveWorkspace: async () => {
@@ -110,7 +110,7 @@ function agent(saved: boolean) {
   return { object, calls }
 }
 
-describe('CloudflareAgentActor stop', () => {
+describe('AgentDurableObject stop', () => {
   it('stops the container after the workspace is saved', async () => {
     const { object, calls } = agent(true)
 
@@ -133,7 +133,7 @@ describe('CloudflareAgentActor stop', () => {
     await object.onActivityExpired()
 
     expect(calls).toEqual(['save'])
-    expect(error).toHaveBeenCalledWith('[CloudflareAgentActor sales agent] idle stop failed:', expect.any(Error))
+    expect(error).toHaveBeenCalledWith('[AgentDurableObject sales agent] idle stop failed:', expect.any(Error))
     error.mockRestore()
   })
 })

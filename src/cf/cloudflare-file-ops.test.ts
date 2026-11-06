@@ -59,12 +59,12 @@ function fakeContainer(initial: Record<string, string> = {}) {
   return { call, files, calls, uploads, state }
 }
 
-/** The saved workspace (CloudflareAgentActor's file list in R2), in memory. */
+/** The saved workspace (AgentDurableObject's file list in R2), in memory. */
 function fakeSleeping(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial).map(([path, body]) => [path, new TextEncoder().encode(body)]))
   const state = { runningOnNextChange: false }
   const fileEntry = (path: string) => ({ name: path.split('/').pop()!, path, type: 'file' as const, size: files.get(path)!.byteLength })
-  // A change made while the container is starting is refused once, the way CloudflareAgentActor does.
+  // A change made while the container is starting is refused once, the way AgentDurableObject does.
   const refused = () => {
     if (!state.runningOnNextChange) return false
     state.runningOnNextChange = false
