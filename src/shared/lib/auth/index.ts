@@ -110,7 +110,7 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
     session: {
       expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
       updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
-      ...(authSettings.sessionCookieCacheSeconds
+      ...((authSettings.sessionCookieCacheSeconds ?? 0) > 0
         ? { cookieCache: { enabled: true, maxAge: authSettings.sessionCookieCacheSeconds } }
         : {}),
       additionalFields: {
