@@ -67,7 +67,7 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['npm install playwright into a folder', bash('npm install --prefix /workspace/playwright-tools playwright'), []],
   ['instagram story from a file upload', bash('B=$PROXY_BASE_URL/acct; curl -s -X POST "$B/graph.instagram.com/v21.0/me/media" -H "Authorization: Bearer $PROXY_TOKEN" -d "media_type=STORIES" -d "upload_type=resumable" | tee c.json'), ['instagram-public-media-url']],
   ['instagram post with media_type before the host', bash('curl -s -X POST -d "media_type=REELS" -d "video_url=https://cdn.example.com/clip.mp4" "$B/graph.instagram.com/me/media"'), ['instagram-public-media-url']],
-  ['instagram read own posts', bash('curl -s "$B/graph.instagram.com/me/media?fields=id,media_type,media_url"'), []],
+  ['instagram read own posts', bash('curl -s "$B/graph.instagram.com/me/media?fields=id,media_type,media_url"'), ['instagram-public-media-url']],
   ['facebook graph publish (has file upload)', bash('curl -s -X POST "$B/graph.facebook.com/v21.0/123/media" -d "media_type=STORIES" -d "upload_type=resumable"'), []],
   ['grep for the install phrase (refused once, retry runs)', bash('grep -rn "playwright install chromium" notes/'), ['playwright-install']],
 ]
