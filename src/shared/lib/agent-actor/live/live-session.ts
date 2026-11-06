@@ -240,6 +240,8 @@ export class LiveSession {
   /** The process the container evicted while we were attached: a one-shot release. */
   private evictedProcessInstance: string | undefined = undefined
   private settleAfterStopTimer: ReturnType<typeof setTimeout> | null = null
+  /** The settle came due while a stop was on its way (see `stopReturned`). */
+  private settleAfterStopDeferred = false
   /**
    * A failed turn's error still being presented (an asynchronous read).
    * Frames arriving meanwhile wait in it and are handled, in order, once its
@@ -250,11 +252,13 @@ export class LiveSession {
    */
   private pendingError: PendingError | null
   /**
-   * A turn the runtime started on its own right after a stop, not announced
-   * yet: it is announced at its first output, and one that ends with none was
-   * no turn at all (see `runtimeStateChanged`).
+   * A turn the runtime started on its own right after a full stop, not
+   * announced yet: it is announced at its first output, and one that ends with
+   * none was no turn at all (see `runtimeStateChanged`).
    */
   private quietTurn = false
+  /** The stop behind `isInterrupted` replaced the process rather than keeping it. */
+  private stopReplacedProcess = false
 
   // ---- Automation stream policy ------------------------------------------------
   /** An unpromoted automation: its stream is released once the session settles. */
@@ -603,6 +607,7 @@ export class LiveSession {
 
     // The flag first: frames already in the pipe are the stopped turn's.
     this.isInterrupted = true
+    this.stopReplacedProcess = !processKept
     this.quietTurn = false
     this.stream.stop()
     this.isAwaitingInput = false
@@ -829,7 +834,10 @@ export class LiveSession {
       if (!this.isActive || this.runtimeState !== 'idle' || this.background.openCount() > 0) return
       // A stop of the session on its way killed the task: the stop ends the
       // session, as cancelled (see `stopReturned` for one that does not).
-      if (this.ctx.stopInFlight()) return
+      if (this.ctx.stopInFlight()) {
+        this.settleAfterStopDeferred = true
+        return
+      }
       console.log(`[LiveSession] Session ${this.ctx.sessionId}: last background task stopped while idle — settling`)
       this.finalizeIdle()
     }, SETTLE_AFTER_STOP_GRACE_MS)
@@ -841,12 +849,15 @@ export class LiveSession {
    * it: a stopped task's settle it held back gets its grace again.
    */
   stopReturned(): void {
+    if (!this.settleAfterStopDeferred) return
+    this.settleAfterStopDeferred = false
     if (this.isActive && this.runtimeState === 'idle' && this.lastResultSubtype !== null && this.background.openCount() === 0) {
       this.scheduleSettleAfterStop()
     }
   }
 
   private cancelSettleAfterStop(): void {
+    this.settleAfterStopDeferred = false
     if (this.settleAfterStopTimer) {
       clearTimeout(this.settleAfterStopTimer)
       this.settleAfterStopTimer = null
@@ -1014,7 +1025,7 @@ export class LiveSession {
     ) {
       return
     }
-    // A turn the runtime started on its own after a stop shows itself with
+    // A turn the runtime started on its own after a full stop shows itself with
     // its first output. Its result without one ran no model turn: no turn to report.
     if (this.quietTurn) {
       if (showsTurnOutput(content)) this.announceTurn()
@@ -1339,7 +1350,7 @@ export class LiveSession {
       return
     }
     if (state !== 'running') return
-    const afterStop = this.isInterrupted
+    const afterFullStop = this.isInterrupted && this.stopReplacedProcess
     this.turnGeneration += 1
     // A turn runs again: the stopped turn's frames can't still be in the pipe.
     // (After a soft stop the process lives on, and its next turn is the
@@ -1349,10 +1360,12 @@ export class LiveSession {
     // The wake a stopped task was waiting for: the runtime settles it now.
     this.cancelSettleAfterStop()
     if (this.isActive) return
-    // A turn the runtime starts on its own after a stop: the process a full
-    // stop replaced reports the old one's tasks in a turn that calls no model
-    // and shows nothing. Announced at its first output, if it has any.
-    if (afterStop) {
+    // A turn the runtime starts on its own after a full stop: the new process
+    // reports the old one's tasks in a turn that calls no model and shows
+    // nothing. Announced at its first output, if it has any. Everything that
+    // asks whether a turn runs reads it as idle meanwhile, so only this turn
+    // waits: a kept process's wake is a real turn from its first frame.
+    if (afterFullStop) {
       this.quietTurn = true
       return
     }
