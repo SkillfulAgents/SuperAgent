@@ -269,3 +269,61 @@ A manifest moves one way through three states:
 - Files `toFile` wrote that are older than an hour go too, unless the upload is `finalizing`. So does anything left in the layout from before manifests, by age alone.
 
 With `LocalAppState` the manifests live in memory, so a restart forgets uploads in progress, and their bytes are swept later. A client that goes on sending gets 409 for its next chunk and sends the file again.
+
+
+## Volume change coordination
+
+What volume providers share about changes to one remote: which changes may run now, and which cached listings they made stale (`src/shared/lib/volumes/volume-coordination.ts`). The ticket's `coord:volume:{provider}:{remoteScope}` is the strong namespace `coord:volume`, with key parts provider and a digest of the remote's identity. A caller passes a typed `VolumeRemote` (`{ provider: 's3', origin, bucket }`, `{ provider: 'dropbox', accountId }`) rather than a string it built, and the tenant comes from AppState's own prefix.
+
+One record per remote holds the claims and the generation, so a change claims all its paths and invalidates what it affects in one `reduceRecord` write. `defineLease` holds one key per owner, and per-path locks could neither see an ancestor nor be taken atomically.
+
+**Making a change.** `withVolumeClaim` queues the claim, waits for its turn, keeps it renewed and removes it when the work settles:
+
+```ts
+await withVolumeClaim(remote, { paths: [objectKey], waitTimeoutMs: 60_000, holdTimeoutMs: 120_000, signal }, async (claim) => {
+  const before = await appState().get(listingKey)         // the parent listing this change updates
+  await claim.confirm({ minRemainingMs: REQUEST_TIMEOUT_MS })
+  await provider.write(objectKey, { ifMatch: etag, signal: claim.signal }) // nothing awaited since the confirm
+  if (before && await claim.isCurrent(before.value.generation, parent)) {
+    await appState().set(listingKey, { ...before.value, entries: updated, generation: claim.generation })
+  }
+})
+```
+
+- `paths` are what the change conflicts over: each path and what is under it, normalized as the provider's listings are. Omit `paths` to claim the whole remote, for a provider that does not need overlap (Dropbox commits, GitHub).
+- `invalidates` are the listings it makes stale: each path, what is under it, and its parent. The default is `paths`. A coarse claim still names only what it changes here, so unrelated listings stay cached. A flat id, as Drive uses, is simply its own listing.
+- `waitTimeoutMs` ends the wait with `LeaseWaitTimeoutError`. A full line (128 live changes on one remote) refuses at once with the same error.
+- `holdTimeoutMs` is the operation's deadline, counted from its turn. The claim lasts 30 s from each renewal and renews every 10 s until then. At the deadline renewals stop and `claim.signal` aborts with `LeaseLostError`, as it does when a renewal fails. A `confirm` asking for more time than the deadline leaves is refused.
+- `request.signal` cancels the wait and removes the claim. A cancelled or timed-out waiter leaves no claim, timer or subscription behind.
+- A claim is not re-entrant: a nested overlapping claim waits for its own outer one.
+
+**Order.** The claims are a queue in arrival order, and a claim's turn comes once nothing ahead of it overlaps. Siblings run together. A change waits for every earlier overlapping change, and a later one waits for it, so a folder rename behind child writes is not overtaken and cannot starve. The cost is the same as today's in-process queue: a child write behind a waiting folder change waits too. A claim counts from its arrival, so a waiter renews it, and a process that dies holds up overlapping changes behind it until its claim is dead (at most 40 s).
+
+**Clocks.** A holder judges its claim by its own clock: held until the write's send time plus 30 s, and a later answer counts as lost. Being listed in the record proves nothing, since a dead claim stays there until someone's write removes it. So a renewal, `claim.isCurrent` and the release each check the holder's own deadline, with no margin. Contenders judge `expiresAt`, which the holder's clock wrote, on their own clocks, so they call a claim dead only 10 s past it, and a turn that came by a dead claim is taken by a write that removes it. Clocks further apart than that can run two overlapping changes until the removed holder's next renewal or `confirm` fails.
+
+**Caching a listing.** A compare-and-set cannot span the record and a listing, so publication is unconditional and serving is conditional. A cache entry embeds `volumeGenerationSchema`:
+
+```ts
+// Fill: take the generation before reading the source.
+const generation = await beginVolumeRead(remote, path)
+const entries = await provider.list(path)
+if (generation) await appState().set(listingKey, { entries, readAt, checkedAt: readAt, generation })
+
+// Serve: one read of the record checks any number of entries.
+const generations = await readVolumeGenerations(remote)
+if (entry && generations.isCurrent(entry.value.generation, path)) return entry.value.entries
+```
+
+- `beginVolumeRead` returns null while a change affecting that listing is in line or running. Return what the source says but do not cache it: there is no second advance when the change ends, so nothing read during it may be trusted afterwards.
+- A fill that began before a change may land after it, even over a fresher entry. Readers reject it, so it costs one re-read and cannot resurrect anything. `isCurrent` before the `set` only saves a write.
+- A holder updates a listing in place with `claim.isCurrent` (the claim is still held, and only its own change is newer) and stamps the result with `claim.generation`. Once a later change affecting that path arrives, readers reject the entry, however late it lands. Sibling changes in flight together each find the other newer and publish nothing, so the listing is read again.
+- If AppState cannot answer either call, treat it as a miss: read the source and do not cache.
+- A change learned of from outside, such as a change feed, calls `advanceVolumeGeneration(remote, paths)`; with no paths, every listing of the remote is stale. If its answer is lost, call it again: an extra advance only costs a re-read. Its result is what an `events:volume:*:invalidated` hint carries. That hint is the provider's own topic, and a lost one costs nothing but latency for a local copy.
+- Entries of one remote under different credential hashes all check the same record, so an overlapping mount's change reaches them without a scan.
+- A generation does not replace a freshness bound: only a change that went through this helper advances it. Keep each provider's freshness and retention limits, and keep authorizing the caller before reuse.
+
+**Generations.** A generation is a random `incarnation` plus a counter. It advances at each arrival, so it is also the claim's fencing token. The record remembers the last 128 changes; anything older counts as stale everywhere. A record idle for an hour expires, and a generation from before that never matches again, so a slow fill refuses itself rather than succeeding against a missing record.
+
+**Wakes.** `events:volume:mutation-released` only tells waiters to look again: the record alone decides a turn. Waiters also poll, from 50 ms doubling to 1 s, so a lost wake or a PubSub outage costs at most a second. Promises, waiters and timers stay in the process.
+
+**The limit.** A claim coordinates the processes that ask. A request a holder already sent runs on after its claim lapses, so a delayed write can land after a successor's. Provider preconditions (ETag, revision, `IfMatch`) still fence those, and nothing here makes a side effect happen exactly once. A holder that lapsed (its claim is gone or past its deadline) marks its paths changed again when its work settles, in case its request landed after someone's read; if its process died, that read lasts until its freshness bound. A release in time advances nothing, since no read could take a generation for those paths meanwhile. That rests on the 10 s clock margin: if clocks differ by more, a reader can call a claim dead while its holder still thinks it holds it, the holder's in-time release then advances nothing, and that reader's listing lasts until its freshness bound.
