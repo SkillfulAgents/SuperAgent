@@ -61,7 +61,7 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
 }))
 // Sources are the Team Brain agent's own connections; they open on its Connections page.
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate, useRouterState: ({ select }: { select: (s: { location: { href: string } }) => unknown }) => select({ location: { href: '/team-brain' } }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({
   useAgentConnectedAccounts: () => ({
     data: { accounts: [{ id: 'a1', toolkitSlug: 'slack', displayName: 'Acme workspace', status: 'active', provider: { displayName: 'Slack' } }] },
@@ -117,7 +117,15 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUpdateUserSettings: () => ({ mutate: userSettings.save }),
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
-const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false } }))
+const { user } = vi.hoisted(() => {
+  const user = { isAuthMode: false, isAdmin: false, owner: true, canAdminAgent: (_slug: string) => user.owner }
+  return { user }
+})
+vi.mock('@renderer/components/agents/agent-home/agent-settings-column', () => ({
+  AgentSettingsColumn: ({ scheduledTasks, hideConnections, hiddenVolumeId }: { scheduledTasks: unknown[]; hideConnections?: boolean; hiddenVolumeId?: string }) => (
+    <div data-testid="agent-settings-column">{JSON.stringify({ scheduledTasks, hideConnections, hiddenVolumeId })}</div>
+  ),
+}))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
@@ -195,7 +203,7 @@ function setWide(wide: boolean) {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  Object.assign(user, { isAuthMode: false, isAdmin: false })
+  Object.assign(user, { isAuthMode: false, isAdmin: false, owner: true })
 })
 
 describe('TeamBrainOverview', () => {
@@ -392,7 +400,7 @@ describe('TeamBrainOverview', () => {
     expect(details.getByText('Dropbox › Team Brain')).toBeInTheDocument()
     // The whole row opens it in Dropbox.
     await userEvent.click(screen.getByRole('button', { name: 'Open Team Brain drive settings' }))
-    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'vol1', source: 'home', from: '/agents/team-brain' } })
+    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'vol1', source: 'home', from: '/team-brain' } })
 
     // Scheduled tasks are every one the agent has, by its id, whatever it is named: a row each for when it runs and how
     // often, which opens the task's own page to change the schedule or pause it.
@@ -642,22 +650,37 @@ describe('TeamBrainOverview', () => {
     // The settings button opens the settings drawer, where turning off sits at the foot.
     await userEvent.click(screen.getByTestId('team-brain-menu'))
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
-    // Above it, the rest of the agent's settings: its Agent Home, which only this row reaches.
-    await userEvent.click(await screen.findByTestId('team-brain-agent-settings'))
-    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug', params: { slug: 'team-brain' }, search: { from: '/team-brain' } })
+    // Above it, the rest of the agent's settings open in place, without the tasks, connections and drive shown above.
+    expect(screen.queryByTestId('agent-settings-column')).toBeNull()
+    await userEvent.click(await screen.findByTestId('team-brain-advanced-settings-toggle'))
+    expect(screen.getByTestId('agent-settings-column')).toHaveTextContent(JSON.stringify({ scheduledTasks: [], hideConnections: true, hiddenVolumeId: 'vol1' }))
     await userEvent.click(await screen.findByTestId('team-brain-turn-off'))
     await userEvent.click(await screen.findByTestId('team-brain-turn-off-confirm'))
     expect(app.deleteAgent).toHaveBeenCalledWith('team-brain', expect.anything())
   })
 
   it('leaves turning it off and who uses it to admins in a team workspace', async () => {
-    Object.assign(user, { isAuthMode: true, isAdmin: false })
+    Object.assign(user, { isAuthMode: true, isAdmin: false, owner: false })
     render(<TeamBrainOverview agent={BRAIN} />)
     await userEvent.click(screen.getByTestId('team-brain-menu'))
     expect(await screen.findByTestId('team-brain-details')).toBeInTheDocument()
     expect(screen.queryByTestId('team-brain-turn-off')).toBeNull()
+    // The agent's own settings are its owners', as on any agent: an owner who is not an admin sees them, an admin who
+    // is not an owner does not.
+    expect(screen.queryByTestId('team-brain-advanced-settings')).toBeNull()
     await userEvent.click(screen.getByTestId('team-brain-agents-toggle'))
     expect(screen.getByTestId('team-brain-agent-writer')).toBeDisabled()
+    cleanup()
+    Object.assign(user, { owner: true })
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    expect(await screen.findByTestId('team-brain-advanced-settings')).toBeInTheDocument()
+    cleanup()
+    Object.assign(user, { isAdmin: true, owner: false })
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    expect(await screen.findByTestId('team-brain-turn-off')).toBeInTheDocument()
+    expect(screen.queryByTestId('team-brain-advanced-settings')).toBeNull()
   })
 
   it('shows the latest sessions a person started under the composer, and See all opens the rest in place', async () => {
