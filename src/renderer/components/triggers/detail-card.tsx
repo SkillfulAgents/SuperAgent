@@ -13,7 +13,7 @@ export function DetailCard({ label, headerActions, footer, className, children }
   const hasHeader = label !== undefined || headerActions !== undefined
 
   return (
-    <div className={cn('rounded-xl border bg-background py-4', className)}>
+    <div className={cn('rounded-card border bg-background py-4', className)}>
       {hasHeader && (
         <div className="px-4 flex items-center justify-between gap-4">
           {label !== undefined ? (

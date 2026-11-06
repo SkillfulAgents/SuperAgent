@@ -58,7 +58,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
         throw new Error(`Invalid config for ${provider} integration ${record.id}`)
       }
       const Connector = await load()
-      const appLink = resolveAppLinkContext(record.agentSlug)
+      const appLink = await resolveAppLinkContext(record.agentSlug)
       return instantiate ? instantiate(Connector, config, appLink, record) : new Connector(config, appLink)
     },
     cleanup,

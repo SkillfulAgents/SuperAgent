@@ -106,12 +106,12 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
 // install-from-skillset resolves the skillset config from settings, then builds a
 // ref via getSkillsetProvider — stub both so the route reaches createOwnerAcl.
 vi.mock('@shared/lib/config/settings', () => ({
-  getAccountProviderUserId: () => 'test-user',
-  getEffectiveAnthropicApiKey: () => 'test-key',
-  getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => ({
+  getAccountProviderUserId: async () => 'test-user',
+  getEffectiveAnthropicApiKey: async () => 'test-key',
+  getEffectiveModels: async () => ({ summarizerModel: 'claude-3-haiku' }),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => ({
     container: {},
     skillsets: [{ id: 'test-skillset', url: 'https://example.com/s', name: 'Test Skillset', provider: 'github', providerData: {} }],
   }),
@@ -241,7 +241,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
 // Import the router after all mocks are registered.
 import agents from './agents'
-import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 
 function appWithAgents() {
   const app = new Hono()
@@ -414,16 +414,24 @@ describe('SUP-207: regression — successful creation does not roll back', () =>
 })
 
 describe('agent_created on the global feed (AUTH_MODE)', () => {
-  // The creator's notification streams admit the new agent by loading their
-  // agents again on this event, so it must come after the row that grants it.
+  // The creator's notification streams follow the new agent by loading their
+  // agents again on this event, so it must come after the row that grants it,
+  // and go to the creator's own channel: their streams do not follow the
+  // agent's yet. Recorded as it is published, not as it is delivered.
   function recordCreation() {
     const order: string[] = []
     mockDbInsertValues.mockImplementation(() => {
       order.push('owner-acl')
     })
-    const stop = globalFeed.subscribe((event) => {
-      if (event.type === 'agent_created') order.push(`agent_created:${event.agentSlug}`)
-    })
+    const record = (event: GlobalFeedEvent, to: string) => {
+      if (event.type === 'agent_created') order.push(`agent_created:${event.agentSlug}:${to}`)
+    }
+    const toUsers = vi.spyOn(globalFeed, 'publishToUsers').mockImplementation((userIds, event) => record(event, [...userIds].join(',')))
+    const toAudience = vi.spyOn(globalFeed, 'publish').mockImplementation((event) => record(event, 'audience'))
+    const stop = () => {
+      toUsers.mockRestore()
+      toAudience.mockRestore()
+    }
     return { order, stop }
   }
 
@@ -442,7 +450,7 @@ describe('agent_created on the global feed (AUTH_MODE)', () => {
     stop()
 
     expect(res.status).toBe(201)
-    expect(order).toEqual(['owner-acl', 'agent_created:new-agent'])
+    expect(order).toEqual(['owner-acl', `agent_created:new-agent:${ACTING_USER_ID}`])
   })
 
   it('is not published when the owner ACL insert fails', async () => {

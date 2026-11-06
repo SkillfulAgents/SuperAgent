@@ -8,6 +8,7 @@ import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 import { background } from '@shared/lib/background'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -386,8 +387,8 @@ export async function processSSEEvent(
       const request = (data as { request?: PendingUserInputRequest }).request
       if (!request) break
       const card = requestCardFromRegistry(request)
-      // null = chat stays quiet: a review (agent-scoped, rendered off the
-      // global channel) or an auto-approved ask nobody has to decide.
+      // null = chat stays quiet: a review (its Allow/Deny card is sent by the
+      // connector's `deliver`) or an auto-approved ask nobody has to decide.
       if (!card) break
 
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
@@ -480,6 +481,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     accumulatedText: '',
     lastUpdateTime: 0,
   }
+  if (finalText.trim() === NO_REPLY_TOKEN) return
 
   try {
     if (messageId) {

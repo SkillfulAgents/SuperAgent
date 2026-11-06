@@ -1,5 +1,5 @@
 import { listAgents } from '@shared/lib/services/agent-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { readStoredAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
@@ -64,12 +64,12 @@ class SessionAutoDeleteMonitor {
     this.isProcessing = true
 
     try {
-      const globalDefault = getSettings().app?.autoDeleteInactiveDays
+      const globalDefault = (await getSettings()).app?.autoDeleteInactiveDays
       const agents = await listAgents()
 
       for (const agent of agents) {
         try {
-          const agentPrefs = await readAgentPreferences(agent.slug)
+          const agentPrefs = await readStoredAgentPreferences(agent.slug)
           const effectiveDays = agentPrefs.autoDeleteInactiveDays ?? globalDefault
           if (effectiveDays === undefined || effectiveDays <= 0) continue
 

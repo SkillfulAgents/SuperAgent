@@ -87,7 +87,7 @@ export async function createAgentIntegration(params: CreateAgentIntegrationParam
     requireApproval: true,
     sessionTimeout: params.sessionTimeout !== undefined ? params.sessionTimeout
       : agentIntegrationRegistry.getDefinition(params.provider)?.managementCapabilities?.includes('session_timeout') ? DEFAULT_SESSION_TIMEOUT_HOURS : null,
-    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? (await getSettings()).llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -287,7 +287,7 @@ export async function listAgentIntegrationsByAgents(
 export async function updateAgentIntegration(id: string, params: UpdateAgentIntegrationParams): Promise<boolean> {
   if (params.config === undefined) {
     const result = await db.update(chatIntegrations)
-      .set(fieldUpdates(params))
+      .set(await fieldUpdates(params))
       .where(eq(chatIntegrations.id, id))
       .run()
     return changesOf(result) > 0
@@ -316,7 +316,7 @@ export async function updateAgentIntegration(id: string, params: UpdateAgentInte
     const movedTo = newToken && newToken !== currentToken ? newToken : null
 
     const result = await db.update(chatIntegrations)
-      .set({ ...fieldUpdates(params), config: JSON.stringify(nextConfig) })
+      .set({ ...(await fieldUpdates(params)), config: JSON.stringify(nextConfig) })
       .where(and(
         eq(chatIntegrations.id, id),
         eq(chatIntegrations.config, current.config),
@@ -337,7 +337,7 @@ export async function updateAgentIntegration(id: string, params: UpdateAgentInte
 }
 
 /** The column updates a PATCH carries, config aside. */
-function fieldUpdates(params: UpdateAgentIntegrationParams): Record<string, unknown> {
+async function fieldUpdates(params: UpdateAgentIntegrationParams): Promise<Record<string, unknown>> {
   const updates: Record<string, unknown> = { updatedAt: new Date() }
   if (params.name !== undefined) updates.name = params.name
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
@@ -347,7 +347,10 @@ function fieldUpdates(params: UpdateAgentIntegrationParams): Record<string, unkn
   if (params.model !== undefined) {
     updates.model = params.model
     if (!params.model) updates.llmProviderId = null
-    else if (params.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = sql`coalesce(${chatIntegrations.llmProviderId}, ${getSettings().llmDefault!.llmProviderId})`
+    else if (params.llmProviderId === undefined) {
+      const llmDefault = (await getSettings()).llmDefault
+      if (llmDefault) updates.llmProviderId = sql`coalesce(${chatIntegrations.llmProviderId}, ${llmDefault.llmProviderId})`
+    }
   }
   if (params.effort !== undefined) updates.effort = params.effort
   if (params.speed !== undefined) updates.speed = params.speed

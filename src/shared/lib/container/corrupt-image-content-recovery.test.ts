@@ -132,7 +132,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: vi.fn(() => ({
+  activeLlmProviderFrom: vi.fn(() => ({
     getContainerEnvVars: () => ({}),
   })),
 }))

@@ -2,11 +2,12 @@ import { Menu, BrowserWindow, app, nativeImage } from 'electron'
 import path from 'path'
 import type { ApiTarget } from '@shared/lib/api-target'
 import { fetchAgentsWithStatus, ActivityStatus } from './agent-status'
+import { exportVaultKey } from './keys/vault-key-export'
 
 let mainWindowRef: BrowserWindow | null = null
 // A getter rather than a stored URL: in cloud mode the effective base is the
 // keyed proxy prefix, and which one is in force can change on a target switch.
-let getApiBaseUrlRef: (() => string) | null = null
+let getApiBaseUrlRef: (() => Promise<string>) | null = null
 let updateInterval: NodeJS.Timeout | null = null
 
 /**
@@ -118,7 +119,13 @@ let buildGeneration = 0
  */
 async function buildAppMenu(): Promise<void> {
   const generation = ++buildGeneration
-  const agents = getApiBaseUrlRef ? await fetchAgentsWithStatus(getApiBaseUrlRef()) : []
+  const agents = getApiBaseUrlRef
+    ? await getApiBaseUrlRef().then(fetchAgentsWithStatus, (error: unknown) => {
+      // Built without agents, like an unreachable API, rather than not at all.
+      console.error('Failed to resolve the API base URL for the app menu:', error)
+      return []
+    })
+    : []
   if (generation !== buildGeneration) return
 
   // Group agents by status
@@ -215,6 +222,16 @@ async function buildAppMenu(): Promise<void> {
           accelerator: 'CmdOrCtrl+N',
           click: () => sendMenuCommand({ channel: 'open-create-agent' }),
         },
+        { type: 'separator' as const },
+        {
+          // Main process end to end: the key never reaches a renderer.
+          label: 'Export Browser Vault Key…',
+          click: () => {
+            exportVaultKey(mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null).catch((error) => {
+              console.error('[keys] Exporting the vault key failed:', error instanceof Error ? error.message : error)
+            })
+          },
+        },
         ...(!isMac ? [
           { type: 'separator' as const },
           {
@@ -281,7 +298,7 @@ async function buildAppMenu(): Promise<void> {
  */
 export function createAppMenu(
   mainWindow: BrowserWindow | null,
-  getApiBaseUrl: () => string
+  getApiBaseUrl: () => Promise<string>
 ): void {
   mainWindowRef = mainWindow
   getApiBaseUrlRef = getApiBaseUrl

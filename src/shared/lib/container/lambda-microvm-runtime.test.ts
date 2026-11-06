@@ -34,8 +34,11 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addEr
 // output here (that's the builder's concern), we only verify the runtime
 // delivers the agent's own config.envVars through runHookPayload.
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
+  activeLlmProviderFrom: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
+
+// The host token is an app record; these tests have no database.
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: async () => 'hostc_test' }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
 const autoResumeOnUnexpectedDeath = vi.fn((): boolean => true)
@@ -410,6 +413,31 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
 
   it('getInfoFromRuntime reports stopped before any start (no state)', async () => {
     expect(await newClient().getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(await newClient().isDefinitelyStopped()).toBe(false)
+  })
+
+  it.each(['RUNNING', 'PENDING', 'SUSPENDING', 'SUSPENDED', 'TERMINATING', 'TERMINATED'])('proves VM exit only once TERMINATED (%s)', async (state) => {
+    const client = newClient()
+    await client.start()
+    responses.getState = state
+    expect(await client.isDefinitelyStopped()).toBe(state === 'TERMINATED')
+  })
+
+  it('checks a terminating VM even after routing state was discarded', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATING'
+    await client.getInfoFromRuntime()
+    expect(await client.isDefinitelyStopped()).toBe(false)
+    responses.getState = 'TERMINATED'
+    expect(await client.isDefinitelyStopped()).toBe(true)
+  })
+
+  it('does not treat an unsuccessful VM lookup as proof of exit', async () => {
+    const client = newClient()
+    await client.start()
+    sendMock.mockRejectedValueOnce(new Error('network error'))
+    expect(await client.isDefinitelyStopped()).toBe(false)
   })
 
   it('getInfoFromRuntime treats SUSPENDED as stopped and terminates the leftover VM', async () => {

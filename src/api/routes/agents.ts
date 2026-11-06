@@ -20,7 +20,6 @@ import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
-import type Anthropic from '@anthropic-ai/sdk'
 import { createHash, randomUUID } from 'crypto'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
@@ -86,6 +85,7 @@ import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
 import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -106,17 +106,20 @@ import {
   fieldsWentIn,
   partsFrom,
   readLoginContext,
-  settleHeldParts,
+  saveHeldParts,
   usableHeld,
   valuesFor,
 } from '@shared/lib/browser-vault/login-host'
 import {
+  claimHeldParts,
   forgetHeldLogin,
   heldLoginFor,
   holdLoginValues,
   recentSignInIdentity,
   releaseHeldValues,
   rememberSignInIdentity,
+  settleHeldClaim,
+  type HeldClaim,
 } from '@shared/lib/browser-vault/held-values'
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
@@ -275,18 +278,19 @@ import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
-import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider, getLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
+import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { stopInstanceOnAllProviders } from '../../main/host-browser'
@@ -525,8 +529,8 @@ async function requestContainerWorkspaceMutation<T>(
   return payload
 }
 
-function getConfiguredSkillsets() {
-  return getSettings().skillsets || []
+async function getConfiguredSkillsets(): Promise<SkillsetConfig[]> {
+  return (await getSettings()).skillsets || []
 }
 
 function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>) {
@@ -1111,7 +1115,7 @@ async function processImport(c: Context, zip: TemplateZipSource, formData: FormD
 // Uses ?refresh=true to force a cache refresh before reading
 agents.get('/discoverable-agents', async (c) => {
   try {
-    const skillsets = getConfiguredSkillsets()
+    const skillsets = await getConfiguredSkillsets()
     const shouldRefresh = c.req.query('refresh') === 'true'
 
     if (shouldRefresh) {
@@ -1140,7 +1144,7 @@ agents.post('/install-from-skillset', async (c) => {
       return c.json({ error: 'skillsetId and agentPath are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -1232,10 +1236,10 @@ agents.post('/generate-name', zValidator('json', generateNameBodySchema), async 
     const { prompt } = c.req.valid('json')
     const truncatedPrompt = prompt.trim().substring(0, 10_000)
 
-    const anthropic = await getLlmClient()
+    const { client: anthropic, model: summarizerModel } = await getConfiguredLlmClientAndModel()
     const raw = (
       await createSummarizerText(anthropic, {
-        model: getSummarizerModel(),
+        model: summarizerModel,
         messages: [
           {
             role: 'user',
@@ -1283,8 +1287,8 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
     createdAt: new Date(),
   })
   // Notification streams load the user's agents when they open; this tells
-  // the creator's open streams to load again, so the new agent's events reach them.
-  globalFeed.publish({ type: 'agent_created', agentSlug })
+  // the creator's open streams to load again and follow the new agent.
+  announceAgentCreated(agentSlug, [userId])
 }
 
 // Insert the owner ACL for a just-created agent, rolling back the on-disk
@@ -1325,17 +1329,6 @@ async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
   }
 }
 
-// Create LLM client using the active provider
-async function getLlmClient(): Promise<Anthropic> {
-  return await getConfiguredLlmClient()
-}
-
-// Model used for generating session names (lightweight task).
-// Resolve here because this is a host-direct SDK call (no container chokepoint).
-function getSummarizerModel(): string {
-  return resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
-}
-
 /**
  * Name a session opened by a system notice (voice mode started from the
  * agent home) from the first message a person sends to it. The notice must
@@ -1365,9 +1358,9 @@ async function generateAndUpdateSessionNameAsync(
   const skipProviderNaming = process.env.E2E_MOCK === 'true'
   if (!skipProviderNaming) {
     try {
-      const anthropic = await getLlmClient()
+      const { client: anthropic, model: summarizerModel } = await getConfiguredLlmClientAndModel()
       sessionName = await createSummarizerText(anthropic, {
-        model: getSummarizerModel(),
+        model: summarizerModel,
         messages: [
           {
             role: 'user',
@@ -1558,7 +1551,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     await deletePoliciesForAgent(slug)
 
     // Turning Team Brain off: no other agent keeps reading a brain that no longer syncs. The drive and its files stay.
-    const teamBrain = getTeamBrain()
+    const teamBrain = await getTeamBrain()
     // Running agents drop it on their next start.
     if (teamBrain?.agentSlug === slug) for (const agent of await releaseVolume(teamBrain.volumeId, slug)) await afterMountChange(agent)
 
@@ -1577,7 +1570,10 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     }
 
     // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays.
-    if (getTeamBrain()?.agentSlug === slug) mutateSettings((settings) => { delete settings.teamBrain })
+    await mutateSettings((settings) => {
+      if (settings.teamBrain?.agentSlug !== slug) return false
+      delete settings.teamBrain
+    })
 
     // Remove the agent's dedicated host-browser Chrome profile. The container
     // teardown above only stops the browser on the ACTIVE provider — a Chrome
@@ -2063,7 +2059,9 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 // just the displayed binding, never unrelated personal accounts.
 agents.get('/:id/llm-connections', AgentRead(), async c => {
   const slug = getAgentId(c)
-  const prefs = await readAgentPreferences(slug)
+  // One read for the listing: the agent's default and the connections' state both come from it.
+  const settings = await getSettings()
+  const prefs = await readAgentPreferences(slug, settings)
   let currentId = prefs.defaultLlmProviderId ?? undefined
   const reference = c.req.query('llmProviderId')
   if (reference && reference !== currentId) {
@@ -2073,7 +2071,7 @@ agents.get('/:id/llm-connections', AgentRead(), async c => {
       if (attached) { currentId = reference; break }
     }
   }
-  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, currentId) })
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, currentId, settings) })
 })
 
 agents.get('/:id/sessions/:sessionId/llm-connections', AgentUser(), async c => {
@@ -2082,8 +2080,10 @@ agents.get('/:id/sessions/:sessionId/llm-connections', AgentUser(), async c => {
   const sessionId = c.req.param('sessionId')
   if (!await actor.sessions.isKnown(sessionId)) return c.json({ error: 'Session not found' }, 404)
   const metadata = await actor.sessions.metadata(sessionId)
-  const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug), getEffectiveModels())
-  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.llmProviderId ?? undefined) })
+  // One read for the listing: the session's effective binding and the connections' state come from it.
+  const settings = await getSettings()
+  const effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(slug, settings), effectiveModelsFrom(settings), settings)
+  return c.json({ connections: await listConnections({ userId: getCurrentUserId(c), admin: false }, effective.llmProviderId ?? undefined, settings) })
 })
 
 // POST /api/agents/:id/sessions - Create a new session with initial message
@@ -2145,8 +2145,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(slug)
 
-    const agentLimits = getEffectiveAgentLimits()
-    const customEnvVars = getCustomEnvVars()
+    // One read of the settings for this session's start: limits, custom env,
+    // tab limit, models and the runtime below all come from it.
+    const launch = await resolveSessionDefaults(await getSettings(), slug)
+    const { agentLimits, customEnvVars, maxBrowserTabs, models } = launch
 
     // Server-generated uuid for the initial message (never client-supplied —
     // it keys the messageAuthor attribution row). Returned in the response so
@@ -2154,11 +2156,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const initialMessageUuid = randomUUID()
 
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
-    const agentPrefs = await readAgentPreferences(slug)
-    const models = getEffectiveModels()
-    await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, agentPrefs.defaultLlmProviderId)
-    const resolved = await resolveConnectionRuntimeInherit(runtimeOptions, agentPrefs, models)
-    const prewarm = await resolveConnectionRuntimeInherit({}, agentPrefs, models)
+    await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, launch.agentPrefs.defaultLlmProviderId)
+    const resolved = await launch.resolve(runtimeOptions)
+    const prewarm = await launch.resolve({})
 
     // Runtime choices are SESSION state once the first turn starts, including
     // inherited defaults. Persist the effective values, not merely explicit
@@ -2206,8 +2206,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         maxThinkingTokens: agentLimits.maxThinkingTokens,
         maxTurns: agentLimits.maxTurns,
         maxBudgetUsd: agentLimits.maxBudgetUsd,
-        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+        customEnvVars,
+        maxBrowserTabs,
         effort: resolved.effort,
         speed: resolved.speed,
         ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
@@ -2296,14 +2296,16 @@ const messagesListQuerySchema = z
 // changes apply to history retroactively.
 async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
   if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
+  // One read for the page, however many errors it holds; the next page reads again.
+  const settings = await getSettings()
   const runtimeProvider = (await agentRegistry.get(agentSlug).sessions.live(sessionId)).runtime?.provider
   let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
   const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
   if (!provider) {
     // Resolve the saved account even if its selected model has since retired.
-    const id = storedSelection(metadata?.model, metadata?.llmProviderId)?.llmProviderId
+    const id = (await storedSelection(metadata?.model, metadata?.llmProviderId, settings))?.llmProviderId
     const connection = id ? await getConnection(id) : null
-    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection())?.provider ?? getActiveLlmProvider()
+    provider = connection ? providerForConnection(connection) : (await resolveGlobalSelection(undefined, settings))?.provider ?? activeLlmProviderFrom(settings)
   }
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
@@ -2311,7 +2313,7 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
     // An error keeps the copy of the provider that produced it.
     const recorded = metadata?.errorProviders?.[item.id]
     item.errorPresentation =
-      (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
+      (await (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError, settings)) ?? undefined
   }
 }
 
@@ -2743,7 +2745,8 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
 /** In an agent several people can message, name the sender for the agent, as chat integrations do. */
 async function attributedForAgent(c: Context, agentSlug: string, text: string): Promise<string> {
   // A slash command or system notice only keeps its meaning at the very start of the text.
-  if (!isAuthMode() || text.startsWith('/') || isSystemMessageText(text)) return text
+  // A meeting bot relays whoever in the room spoke; its credential only names who started the meeting.
+  if (!isAuthMode() || getMeetingParticipant(c) || text.startsWith('/') || isSystemMessageText(text)) return text
   // Attribution is best-effort: a failed member count sends the message without it.
   try {
     if ((await countMembersWithMinRole(agentSlug, 'user')) < 2) return text
@@ -2935,9 +2938,11 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
 
     const live = await actor.sessions.live(sessionId)
     let effective: Awaited<ReturnType<typeof resolveConnectionRuntimeInherit>> | null = null
-    if (getSettings().llmDefault) {
+    // One read for the session's display defaults; the next view reads again.
+    const settings = await getSettings()
+    if (settings.llmDefault) {
       try {
-        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug), getEffectiveModels())
+        effective = await resolveConnectionRuntimeInherit(metadata ?? {}, await readAgentPreferences(agentSlug, settings), effectiveModelsFrom(settings), settings)
       } catch (error) {
         // History remains readable during provider/configuration outages.
         // A new turn still resolves and validates its runtime before sending.
@@ -3658,12 +3663,15 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
     if (decline) {
       const reason = declineReason || 'User declined to answer'
 
+      // `skipped`: the person chose not to answer. The container ends the
+      // question as an annotated answer (the reason is what the agent reads)
+      // where the CLI supports it, and as a declined tool call otherwise.
       const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
+          body: JSON.stringify({ reason, unanswered: 'skipped' }),
         }
       )
 
@@ -3826,15 +3834,15 @@ function credentialBrokerErrorResponse(
   return c.json({ error: error.message, code: error.code }, status)
 }
 
-function configuredPasswordManagers(): string[] {
-  const configured = getSettings().app?.configuredPasswordManagers
+async function configuredPasswordManagers(): Promise<string[]> {
+  const configured = (await getSettings()).app?.configuredPasswordManagers
   return Array.isArray(configured)
     ? configured.filter((provider): provider is string => typeof provider === 'string')
     : []
 }
 
-function passwordManagerIsConfigured(provider: string): boolean {
-  return configuredPasswordManagers().includes(provider)
+async function passwordManagerIsConfigured(provider: string): Promise<boolean> {
+  return (await configuredPasswordManagers()).includes(provider)
 }
 
 const BROWSER_CONTEXT_TTL_MS = 30_000
@@ -3927,7 +3935,7 @@ agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) 
     const result = await credentialBroker.suggest(
       { agentSlug, sessionId, toolUseId },
       url,
-      configuredPasswordManagers(),
+      await configuredPasswordManagers(),
     )
     return c.json(result)
   } catch (error) {
@@ -3945,7 +3953,7 @@ agents.post(
     const body = c.req.valid('json')
     const gated = await gateCredentialRequest(c, body.toolUseId)
     if (gated instanceof Response) return gated
-    if (!passwordManagerIsConfigured(body.provider)) {
+    if (!(await passwordManagerIsConfigured(body.provider))) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
     const status = await credentialBroker.beginPairing(body.provider)
@@ -3978,7 +3986,7 @@ agents.post(
     const body = c.req.valid('json')
     const gated = await gateCredentialRequest(c, body.toolUseId)
     if (gated instanceof Response) return gated
-    if (!passwordManagerIsConfigured(body.provider)) {
+    if (!(await passwordManagerIsConfigured(body.provider))) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
     await credentialBroker.completePairing(body.provider, body.code)
@@ -4100,7 +4108,7 @@ agents.post(
  * A form for this app itself, at any of its addresses (see isOwnOrigin):
  * signing the agent's browser in there would hand it the user's session here.
  */
-function signsInToThisApp(c: Context, origin: string): boolean {
+async function signsInToThisApp(c: Context, origin: string): Promise<boolean> {
   return isOwnOrigin(origin, [c.req.header('origin'), c.req.url])
 }
 
@@ -4122,7 +4130,7 @@ agents.get('/:id/sessions/:sessionId/login-request', AgentUser(), async (c) => {
 
   const read = await readLoginContext(getAgentId(c), toolUseId)
   if (!read.ok) return c.json({ error: read.error, problems: read.problems }, read.status)
-  if (signsInToThisApp(c, read.context.origin)) return c.json(thisAppProblem(read.context.origin), 409)
+  if (await signsInToThisApp(c, read.context.origin)) return c.json(thisAppProblem(read.context.origin), 409)
   return c.json(read.context)
 })
 
@@ -4142,7 +4150,7 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
   if (!read.ok) return c.json({ error: read.error }, read.status)
   const pageOrigin = read.context.origin
   const site = siteOfOrigin(pageOrigin)
-  if (!site || signsInToThisApp(c, pageOrigin)) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
+  if (!site || await signsInToThisApp(c, pageOrigin)) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
   const viewer = getViewerUserId(c)
   const [accounts, providerAccounts, otherMembers] = await Promise.all([
     listOwnedAccountsOnSite(viewer, site),
@@ -4164,7 +4172,7 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
   return c.json({
     site,
     otherMembers,
-    identity: recentSignInIdentity(agentSlug, c.req.param('sessionId'), site),
+    identity: await recentSignInIdentity(agentSlug, c.req.param('sessionId'), site),
     accounts: accounts.map(offer),
     providerAccounts: providerAccounts.map((account) => ({
       ...offer(account),
@@ -4218,7 +4226,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       return c.json({ error: 'The sign-in form changed. Reload it and try again.' }, 409)
     }
     const context = read.context
-    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (await signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
     const site = siteOfOrigin(context.origin)
     if (!site || context.fields.length === 0) return c.json({ error: 'This sign-in request has no field to fill' }, 409)
     const heldValues = body.heldValues ?? []
@@ -4251,11 +4259,11 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       account?.username ||
       body.username ||
       (vault.success ? vault.data.username : undefined) ||
-      recentSignInIdentity(agentSlug, sessionId, site) ||
+      (await recentSignInIdentity(agentSlug, sessionId, site)) ||
       null
     if (body.save && !identity) return c.json({ error: 'Enter the username of this account to save it' }, 400)
     if (body.save && identity && identity.length > MAX_USERNAME) return c.json({ error: 'That username is too long to save' }, 400)
-    const held = usableHeld(heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
+    const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
     const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
     const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
     const values = body.values.map((value, index) => value || fallback[index])
@@ -4287,15 +4295,38 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const heldLabels = context.held.filter((field, index) => heldValues[index] && heldParts[partKeyOf(field) ?? '']).map((field) => field.label)
     const saving = Boolean(body.save && identity)
 
+    // What was held goes into one page only: this fill takes it before sending it.
+    let heldClaim: HeldClaim | null = null
+    if (held && fromHeld.length > 0) {
+      heldClaim = await claimHeldParts(agentSlug, sessionId, site, held, fromHeld)
+      // Another fill used it, or the user dropped it, since this one read it: the user enters it.
+      if (!heldClaim) {
+        const fields = context.fields.flatMap((_, index) => (!body.values[index] && heldPart(index) ? [index] : []))
+        return c.json({ error: 'Enter what the saved account could not fill.', reason: 'fields_needed', fields }, 409)
+      }
+    }
+    // The held values as claimed: the same ones the form was checked against.
+    const claimedFallback = heldClaim ? valuesFor(context.fields, identity, { ...saved, ...heldClaim.values }) : fallback
+    const sent = body.values.map((value, index) => value || claimedFallback[index])
+
     const shown = noteUsername(identity)
-    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, {
-      ...(shown ? { username: shown } : {}),
-      site,
-      // A saved account the user picked, as it is: the agent is told it by name.
-      source: account && !body.values.some(Boolean) ? 'vault' : 'user',
-      saved: saving,
-      held: heldLabels,
-    })
+    let filled: Awaited<ReturnType<typeof fillLoginInContainer>>
+    try {
+      filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, sent, {
+        ...(shown ? { username: shown } : {}),
+        site,
+        // A saved account the user picked, as it is: the agent is told it by name.
+        source: account && !body.values.some(Boolean) ? 'vault' : 'user',
+        saved: saving,
+        held: heldLabels,
+      })
+    } catch (error) {
+      // No answer: the values may be in the page, so what was held for it is used.
+      if (heldClaim) await settleHeldClaim(heldClaim, fromHeld)
+      throw error
+    }
+    // Refused: nothing went in, and what was held is there again.
+    if (!filled.ok && heldClaim) await settleHeldClaim(heldClaim, [])
     // The browser that showed the form closed while the user was away (a
     // Browserbase session ends long before they come back): nothing can go
     // into a page now, and the user is not asked twice. The agent is told
@@ -4313,29 +4344,30 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
         try {
           const savedNow = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { ...(held?.save ? earlier : {}), ...entered } })
           kept = { how: 'saved', username: savedNow.username }
-          if (held?.save) forgetHeldLogin(agentSlug, sessionId, site)
+          // Saved now: the held copies go (only those, not one held since).
+          if (held?.save) await releaseHeldValues(agentSlug, sessionId, site, held, Object.keys(earlier))
         } catch (error) {
           // Held instead, below: the agent's next try still needs no one.
           console.error('[fill-login] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
         }
       }
-      if (!kept && Object.keys({ ...earlier, ...entered }).length > 0) {
-        holdLoginValues(agentSlug, sessionId, site, {
-          username: identity,
-          values: { ...earlier, ...entered },
-          origin: held && Object.keys(entered).length === 0 ? held.origin : context.origin,
-          // Nothing typed now: the earlier step's choice stands. Typed now without saving: nothing is saved.
-          save: Object.keys(entered).length === 0 ? held?.save ?? null : null,
-        })
-        kept = { how: 'held', ...(shown ? { username: shown } : {}) }
-      }
+      // What earlier steps held goes along only while it is still held: not
+      // once the user declined, or another fill used it.
+      const holding = !kept && Object.keys({ ...earlier, ...entered }).length > 0 && await holdLoginValues(agentSlug, sessionId, site, {
+        username: identity,
+        values: entered,
+        origin: held && Object.keys(entered).length === 0 ? held.origin : context.origin,
+        // Nothing typed now: the earlier step's choice stands. Typed now without saving: nothing is saved.
+        save: Object.keys(entered).length === 0 ? held?.save ?? null : null,
+      }, { carry: held })
+      if (holding) kept = { how: 'held', ...(shown ? { username: shown } : {}) }
       // The account itself: one the user picked, or the one the host was signing in with.
       if (!kept && account) kept = { how: hostsAccount ? 'vault' : 'picked', username: account.username }
       const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site, ...(kept ? { kept } : {}) })
       if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
       await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
       claimed = null
-      if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+      if (identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
       trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
       return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
     }
@@ -4343,6 +4375,12 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // Nothing is saved, granted or held for a step that never went in.
     if (!filled.ok) return c.json({ error: filled.error }, filled.status)
     claimed = null
+    // Only what went into the page counts: the browser may have written none of it.
+    const wentIn = fieldsWentIn(filled.result, context.fields.length)
+    // The step that was held is done before the next one is held: what went in
+    // is used, a part the browser could not write is there for the next try.
+    const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
+    if (heldClaim) await settleHeldClaim(heldClaim, usedHeld)
 
     let savedAccount: VaultAccount | null = null
     let saveError: string | undefined
@@ -4357,23 +4395,19 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       }
     }
     if (grantsAccount && account) await grantToAgent(viewer, agentSlug, account.id)
-    // Only what went into the page counts: the browser may have written none of it.
-    const wentIn = fieldsWentIn(filled.result, context.fields.length)
     const passwordWentIn = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
-    // The step that was held is done before the next one is held.
-    const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
-    if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: usedHeld, username: identity })
-    if (typedOverHeld.length) releaseHeldValues(agentSlug, sessionId, site, typedOverHeld)
+    if (heldClaim && held) await saveHeldParts({ claim: heldClaim, held, used: usedHeld, username: identity })
+    if (held && typedOverHeld.length) await releaseHeldValues(agentSlug, sessionId, site, held, typedOverHeld)
     if (account?.rejectedAt && usesSavedPassword && passwordWentIn && !hostsAccount) await clearAccountRejected(account.id)
     if (heldLabels.length) {
-      holdLoginValues(agentSlug, sessionId, site, {
+      await holdLoginValues(agentSlug, sessionId, site, {
         username: identity,
         values: heldParts,
         origin: context.origin,
         save: body.save ? { owner: viewer, origin: context.origin } : null,
       })
     }
-    if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+    if (identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
     // The account the values were for, and whether its password went in: a
     // password tried counts toward how often the vault fills it without the user.
     const usedAccount = savedAccount ?? account
@@ -4418,7 +4452,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
       return c.json({ error: 'The sign-in form changed. Reload it and try again.' }, 409)
     }
     const context = read.context
-    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (await signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
     const site = siteOfOrigin(context.origin)
     if (!site) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
     const viewer = getViewerUserId(c)
@@ -4505,7 +4539,7 @@ agents.post(
     const sessionId = c.req.param('sessionId')
     const context = await loginRequestContext(agentSlug, body.toolUseId)
     if (!context) return c.json({ error: 'The sign-in form is not ready yet' }, 409)
-    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (await signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
     // A saved login holds an identifier and a password, nothing else.
     if (!context.fields.every((field) => field.kind === 'username' || field.kind === 'password')) {
       return c.json({ error: 'This form asks for more than a saved login holds' }, 409)
@@ -4529,7 +4563,7 @@ agents.post(
     const viewer = getViewerUserId(c)
     const site = siteOfOrigin(context.origin)
     // The login's own username, else whose account the last step went in as.
-    const identity = credential.username.trim() || (site ? recentSignInIdentity(agentSlug, sessionId, site) : null) || null
+    const identity = credential.username.trim() || (site ? await recentSignInIdentity(agentSlug, sessionId, site) : null) || null
     // "Save for later" copies the whole login into the vault, also on a step
     // that shows only the username: the next step then needs no one.
     const saving = Boolean(body.save && site && identity && credential.password)
@@ -4553,14 +4587,14 @@ agents.post(
         }
       }
       if (!kept && site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0) {
-        holdLoginValues(agentSlug, sessionId, site, { username: identity, values: { password: credential.password }, origin: context.origin, save: null })
+        await holdLoginValues(agentSlug, sessionId, site, { username: identity, values: { password: credential.password }, origin: context.origin, save: null })
         kept = { how: 'held', ...(shown ? { username: shown } : {}) }
       }
       const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site: site ?? context.origin, ...(kept ? { kept } : {}) })
       if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
       claimed = null
-      if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+      if (site && identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
       trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
       return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
     }
@@ -4580,7 +4614,7 @@ agents.post(
     } else if (body.save) {
       saveError = identity ? 'The saved login has no password to save' : 'The saved login has no username, so it was not saved'
     }
-    if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+    if (site && identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
     // The user signed in with the account themselves: what the vault may fill without them counts from here.
     const wentIn = fieldsWentIn(filled.result, context.fields.length)
     if (savedAccount && wentIn.some(Boolean)) {
@@ -4622,6 +4656,13 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
     if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
     claimed = { id: body.toolUseId, token: claim.token }
 
+    // Declined, or signed in by hand: what the user typed for a later step
+    // goes, before the agent hears of it, so an answer never goes out with it
+    // still held. The site is on the request's located context.
+    const located = loginContextSchema.safeParse(claim.request.payload.login)
+    const site = located.success ? siteOfOrigin(located.data.origin) : null
+    if (site) await forgetHeldLogin(agentSlug, sessionId, site)
+
     const response = body.action === 'manual'
       ? await actor.container.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
           method: 'POST',
@@ -4638,13 +4679,8 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
       return c.json({ error: 'Failed to answer the sign-in request' }, 500)
     }
 
-    // Declined, or signed in by hand: what the user typed for a later step
-    // goes. The site is on the request's located context, read before it settles.
-    const located = loginContextSchema.safeParse(claim.request.payload.login)
     await actor.inputs.complete(sessionId, body.toolUseId, body.action === 'manual' ? 'answered' : 'declined')
     claimed = null
-    const site = located.success ? siteOfOrigin(located.data.origin) : null
-    if (site) forgetHeldLogin(agentSlug, sessionId, site)
     if (body.action === 'decline') {
       // As with a browser hand-off: stop the turn so the user can talk to the agent.
       await actor.messages.stop(sessionId, { scope: 'turn' })
@@ -4755,6 +4791,9 @@ function hostRunResponse(c: Context, outcome: HostRunOutcome, what: 'script run'
       return c.json({ success: true })
     case 'claimed':
       return c.json({ error: `This ${what} request is already being handled` }, 409)
+    case 'abandoned':
+      // Only an auto-run started by the agent's own grant can be abandoned.
+      return c.json({ error: `This ${what} request was stopped` }, 409)
     case 'missing_permissions':
       return c.json({ success: false, missingPermissions: outcome.permissions }, 428)
     case 'failed':
@@ -4926,7 +4965,7 @@ const brainUpkeepBodySchema = z.object({ scheduleExpression: z.string().trim().m
 // set-up, so it never depends on the agent's first turn. Once only.
 agents.post('/:id/team-brain/upkeep', AgentUser(), zValidator('json', brainUpkeepBodySchema), async (c) => {
   const slug = getAgentId(c)
-  if (getTeamBrain()?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
+  if ((await getTeamBrain())?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
   const { scheduleExpression } = c.req.valid('json')
   if (!validateCronExpression(scheduleExpression).valid) return c.json({ error: 'Invalid cron expression' }, 400)
   try {
@@ -5744,7 +5783,7 @@ agents.get('/:id/mcp-audit-log', AgentAdmin(), async (c) => {
 agents.get('/:id/skills', AgentRead(), async (c) => {
   try {
     const id = getAgentId(c)
-    const skills = await getAgentSkillsWithStatus(id, getConfiguredSkillsets())
+    const skills = await getAgentSkillsWithStatus(id, await getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch skills:', error)
@@ -5756,7 +5795,7 @@ agents.get('/:id/skills', AgentRead(), async (c) => {
 agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
   try {
     const id = getAgentId(c)
-    const skills = await getDiscoverableSkills(id, getConfiguredSkillsets())
+    const skills = await getDiscoverableSkills(id, await getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
     console.error('Failed to fetch discoverable skills:', error)
@@ -5774,7 +5813,7 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId and skillPath are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -5857,7 +5896,7 @@ agents.get('/:id/skills/:dir/publish-info', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -5882,7 +5921,7 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -5976,7 +6015,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
 agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const status = await getAgentTemplateStatus(slug, getConfiguredSkillsets())
+    const status = await getAgentTemplateStatus(slug, await getConfiguredSkillsets())
     return c.json(status)
   } catch (error) {
     console.error('Failed to get template status:', error)
@@ -6039,7 +6078,7 @@ agents.get('/:id/template-publish-info', AgentRead(), async (c) => {
       return c.json({ error: 'skillsetId query parameter is required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -6063,7 +6102,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
       return c.json({ error: 'skillsetId, title, and body are required' }, 400)
     }
 
-    const config = getConfiguredSkillsets().find(s => s.id === skillsetId)
+    const config = (await getConfiguredSkillsets()).find(s => s.id === skillsetId)
     if (!config) {
       return c.json({ error: 'Skillset not found' }, 404)
     }
@@ -6080,7 +6119,7 @@ agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/template-refresh - Refresh status
 agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
-    const skillsets = getConfiguredSkillsets()
+    const skillsets = await getConfiguredSkillsets()
     await refreshAgentTemplates(skillsets, { background: c.req.query('background') === '1' })
     const slug = getAgentId(c)
     const status = await getAgentTemplateStatus(slug, skillsets)
@@ -6096,7 +6135,7 @@ agents.post('/:id/template-refresh', AgentUser(), async (c) => {
 agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const skillsets = getConfiguredSkillsets()
+    const skillsets = await getConfiguredSkillsets()
     await refreshAgentSkills(agentSlug, skillsets, { background: c.req.query('background') === '1' })
     const skills = await getAgentSkillsWithStatus(agentSlug, skillsets)
     return c.json({ skills })

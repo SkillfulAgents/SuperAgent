@@ -11,7 +11,7 @@ import {
   type LoginVaultPayload,
 } from '@shared/lib/tools/request-login/login-request'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { heldLoginFor, releaseHeldValues, rememberSignInIdentity, type HeldLogin } from './held-values'
+import { claimHeldParts, heldLoginFor, rememberSignInIdentity, settleHeldClaim, type HeldClaim, type HeldLoginRead } from './held-values'
 import { providerName } from './providers'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
 import {
@@ -183,28 +183,25 @@ export function noteUsername(username: string | null | undefined): string | unde
 }
 
 /** A held step, when its values may go into this page (as a saved account's would). */
-export function usableHeld(held: HeldLogin | null, pageOrigin: string): HeldLogin | null {
+export function usableHeld(held: HeldLoginRead | null, pageOrigin: string): HeldLoginRead | null {
   return held && vaultFillsInto(held.origin, pageOrigin) ? held : null
 }
 
 /**
- * After held parts went into the page: forget them and, when the user asked
- * to save them, add them to the account — only one that still exists, is
- * theirs, and this agent may still use: the user may have deleted or revoked
- * it since, and that is not undone from memory.
+ * After held parts went into the page (their claim settled): when the user
+ * asked to save them, add them to the account — only one that still exists,
+ * is theirs, and this agent may still use: the user may have deleted or
+ * revoked it since, and that is not undone from what was held.
  */
-export async function settleHeldParts(input: {
-  agentSlug: string
-  sessionId: string
-  site: string
-  held: HeldLogin
+export async function saveHeldParts(input: {
+  claim: HeldClaim
+  held: HeldLoginRead
   used: string[]
   username: string | null
 }): Promise<void> {
-  const { agentSlug, sessionId, site, held, used, username } = input
-  if (used.length === 0) return
-  releaseHeldValues(agentSlug, sessionId, site, used)
-  if (!held.save || !username) return
+  const { claim, held, used, username } = input
+  const { agentSlug, site } = claim
+  if (used.length === 0 || !held.save || !username) return
   const owner = held.save.owner
   try {
     // The saver's own: another member may have the same username granted to this agent.
@@ -212,7 +209,7 @@ export async function settleHeldParts(input: {
     const account = (await listGrantedAccounts(agentSlug, site))
       .find((candidate) => usernameKey(candidate.username) === key && (candidate.ownerId ?? null) === (owner ?? null))
     if (!account) return
-    const values = Object.fromEntries(used.map((part) => [part, held.values[part]]))
+    const values = Object.fromEntries(used.map((part) => [part, claim.values[part]]))
     await saveAccount({ owner, site, origin: held.origin, username: account.username, values })
     await logAuditEvent({ userId: owner, object: 'browser_account', objectId: account.id, action: 'updated', details: { site } })
   } catch (error) {
@@ -323,7 +320,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   const context = read.context
   const site = siteOfOrigin(context.origin)
   // This app's own page: the card says nothing can go there.
-  if (!site || isOwnOrigin(context.origin, [])) return ask({ mode: 'new' }, context)
+  if (!site || (await isOwnOrigin(context.origin, []))) return ask({ mode: 'new' }, context)
   if (askUser) {
     const turnedDown = username ? await findGrantedAccount(agentSlug, site, username) : null
     // Only a step that asks for the password can have turned it down: not a wrong code.
@@ -332,7 +329,26 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
     return ask({ mode: 'ask', ...(username ? { username: turnedDown?.username ?? username } : {}), ...(reason ? { reason } : {}) }, context)
   }
 
-  const held = usableHeld(heldLoginFor(agentSlug, sessionId, site, username), context.origin)
+  // Decided again when what was held for this step is taken by another fill
+  // while this one decides: then without it.
+  for (let attempt = 0; attempt < HELD_DECISION_ATTEMPTS; attempt++) {
+    const decision = await decideFromVault(call, context, site, username)
+    if (decision) return decision
+  }
+  return ask({ mode: 'new' }, context)
+}
+
+/** How often a decision starts over after what was held for its step was taken under it. */
+const HELD_DECISION_ATTEMPTS = 3
+
+/**
+ * The vault's answer to a call that names an account or follows a held step.
+ * Null when the held parts it was to fill were taken (by another fill), used
+ * or forgotten after it read them: nothing was sent, and the caller decides again.
+ */
+async function decideFromVault(call: LoginRequestCall, context: LoginContext, site: string, username: string | undefined): Promise<LoginDecision | null> {
+  const { agentSlug, sessionId, toolUseId } = call
+  const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, username), context.origin)
   if (!username && !held) {
     const granted = await listGrantedAccounts(agentSlug, site)
     if (granted.length === 0) return ask({ mode: 'new' }, context)
@@ -379,22 +395,36 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
 
   // A secret first typed on an encrypted page does not go to a plain-HTTP one unasked.
   const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
-  const parts = { ...saved, ...(held?.values ?? {}) }
-  const values = valuesFor(context.fields, identity, parts)
-  const covered = values.flatMap((value, index) => (value ? [index] : []))
-  if (covered.length < values.length) {
+  const covered = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) }).flatMap((value, index) => (value ? [index] : []))
+  if (covered.length < context.fields.length) {
     return ask({ mode: 'complete', ...(identity ? { username: identity } : {}), ...(account ? { accountId: account.id } : {}), covered }, context)
   }
 
+  // What was held goes into one page only: this fill takes it before sending it.
   const fromHeld = Object.keys(held?.values ?? {}).filter((part) => context.fields.some((field) => partKeyOf(field) === part))
+  let claim: HeldClaim | null = null
+  if (held && fromHeld.length > 0) {
+    claim = await claimHeldParts(agentSlug, sessionId, site, held, fromHeld)
+    if (!claim) return null
+  }
+  const values = valuesFor(context.fields, identity, { ...saved, ...(claim?.values ?? {}) })
   const shown = noteUsername(identity)
-  const filled = await fillLoginInContainer(agentSlug, sessionId, toolUseId, context, values, {
-    ...(shown ? { username: shown } : {}),
-    site,
-    source: account && fromHeld.length === 0 ? 'vault' : 'user',
-    saved: false,
-    held: [],
-  })
+  let filled: Awaited<ReturnType<typeof fillLoginInContainer>>
+  try {
+    filled = await fillLoginInContainer(agentSlug, sessionId, toolUseId, context, values, {
+      ...(shown ? { username: shown } : {}),
+      site,
+      source: account && fromHeld.length === 0 ? 'vault' : 'user',
+      saved: false,
+      held: [],
+    })
+  } catch (error) {
+    // No answer: the values may be in the page, so what was held for it is used.
+    if (claim) await settleHeldClaim(claim, fromHeld)
+    throw error
+  }
+  // The page or the browser refused: nothing went in, and what was held is there for the next try.
+  if (!filled.ok && claim) await settleHeldClaim(claim, [])
   // The browser closed first: there is nothing for the user to answer. The
   // account, or what was held, signs the agent in once it opens the page again.
   if (!filled.ok && filled.browserClosed) {
@@ -404,12 +434,14 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   // The page or the browser refused: the user can still answer the form.
   if (!filled.ok) return ask({ mode: 'complete', ...(identity ? { username: identity } : {}), ...(account ? { accountId: account.id } : {}), covered }, context)
 
-  if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
   // Only what went into the page counts: the browser may have written none of it.
   const wentIn = fieldsWentIn(filled.result, context.fields.length)
-  // Saved once filled: the step it was for did come.
+  // What went in is used; a held part the browser could not write is there for the next try.
   const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
-  if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: usedHeld, username: identity })
+  if (claim) await settleHeldClaim(claim, usedHeld)
+  // Saved once filled: the step it was for did come.
+  if (claim && held) await saveHeldParts({ claim, held, used: usedHeld, username: identity })
+  if (identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
   // Saved or held for this step: either way the account's password was tried
   // (filledTooOften counts it); held, the user had just entered it.
   if (account && wentIn.some(Boolean)) {

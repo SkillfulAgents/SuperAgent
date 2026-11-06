@@ -1,4 +1,6 @@
-import { readNotifications, noteNotificationChange } from '@renderer/lib/notification-read-cache'
+import { readPlatformNotifications } from '@renderer/lib/platform-notification-read-cache'
+import { notificationChangeSchema } from '@shared/lib/notifications/notification-change-schema'
+import { readNotifications, noteNotificationChange, invalidateNotificationCaches, notificationClientId } from '@renderer/lib/notification-read-cache'
 import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
 import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -61,7 +63,7 @@ import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
-// refetched wholesale after the stream comes back from a fatal close.
+// refetched wholesale each time the stream says `connected`.
 const EXPENSIVE_QUERY_KEYS = new Set<unknown>([
   'agent-template-publish-info',
   'agent-template-pr-info',
@@ -82,9 +84,9 @@ export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }
 // would strand the orange dot until the refetch.
 const SESSION_LIFECYCLE_ECHO = {
   session_active: { isActive: true },
-  // Awaiting implies active server-side (the projection is
-  // `state.isActive && …`), so assert both.
-  session_awaiting_input: { isActive: true, isAwaitingInput: true },
+  // An idle session can be awaiting on a call parked on its own card, so this
+  // asserts awaiting only; session_active owns the active flag.
+  session_awaiting_input: { isAwaitingInput: true },
   session_input_provided: { isAwaitingInput: false },
   session_idle: { isActive: false, isAwaitingInput: false },
   session_error: { isActive: false, isAwaitingInput: false },
@@ -131,8 +133,6 @@ export function GlobalNotificationHandler() {
   const [reconnectKey, setReconnectKey] = useState(0)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
-  const wasDeadRef = useRef(false)
-  const hasConnectedRef = useRef(false)
   const streamRef = useRef<EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
@@ -172,16 +172,7 @@ export function GlobalNotificationHandler() {
     const platformCtx = NotificationActionContextSchema.safeParse(event.context)
     if (platformCtx.success && platformCtx.data.kind === 'platform_notification') {
       const platformNotificationId = platformCtx.data.platformNotificationId
-      apiFetch('/api/platform-notifications/read', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: [platformNotificationId] }),
-      })
-        .then((res) => {
-          if (res.ok) {
-            queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
-          }
-        })
+      readPlatformNotifications(queryClient, [platformNotificationId])
         .catch(() => {
           // Best-effort: the detail view marks read on open anyway.
         })
@@ -272,6 +263,17 @@ export function GlobalNotificationHandler() {
         const data = JSON.parse(event.data)
 
         switch (data.type) {
+          case 'connected':
+            noteNotificationChange(queryClient)
+            // The server sends this once the stream follows every channel it
+            // carries, so what changes from here on arrives as an event. What
+            // changed before it did not: the queries that loaded before the
+            // first connect, a gap after a drop, a stream the server ended
+            // because it fell behind. Read everything this feed keeps current
+            // again. Every server version sends it as its first frame.
+            queryClient.invalidateQueries({ predicate: isRefetchableAfterOutage })
+            break
+
           case 'agent_members_changed':
           case 'agent_access_revoked': {
             const parsed = collaborationEventSchema.safeParse(data)
@@ -297,16 +299,19 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
             }
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            invalidateNotificationCaches(queryClient)
+            break
+          }
+
+          case 'notifications_changed': {
+            const parsed = notificationChangeSchema.safeParse(data)
+            if (!parsed.success || parsed.data.sourceClientId === notificationClientId(queryClient)) break
+            invalidateNotificationCaches(queryClient, parsed.data.agentSlug)
             break
           }
 
           case 'session_mention_withdrawn': {
-            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
-            // The message that tagged this viewer was taken back before it ran.
-            queryClient.invalidateQueries({ queryKey: ['notifications'] })
-            if (typeof data.agentSlug === 'string') queryClient.invalidateQueries({ queryKey: ['sessions', data.agentSlug] })
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            invalidateNotificationCaches(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
             break
           }
 
@@ -318,11 +323,11 @@ export function GlobalNotificationHandler() {
           }
 
           case 'os_notification': {
-            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
-            // Refresh notification list (for badge/dropdown)
-            queryClient.invalidateQueries({ queryKey: ['notifications'] })
             if (data.notificationType === 'platform_notification') {
               queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
+            } else {
+              noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
+              queryClient.invalidateQueries({ queryKey: ['notifications'] })
             }
             // Refresh sessions so unread indicators update in sidebar
             const notifAgentSlug = data.agentSlug as string | undefined
@@ -339,9 +344,11 @@ export function GlobalNotificationHandler() {
             } else if (notifType === 'session_scheduled' && data.taskId) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', data.taskId] })
               queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.taskId] })
-            } else if (notifType === 'session_mention') {
-              // No session lifecycle event follows a mention to refresh the agent row's dot.
+            }
+            if (notifType && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notifType)) {
+              // Completion enrichment may finish after the lifecycle refetch.
               queryClient.invalidateQueries({ queryKey: ['agents'] })
+              queryClient.invalidateQueries({ queryKey: ['session'] })
             }
 
             // Skip if user doesn't have access to the notification's agent
@@ -390,8 +397,7 @@ export function GlobalNotificationHandler() {
               // suppressed branch below marks the record read instead, and
               // for disabled types the server-side gate creates no record.
               // The sessions refetch invalidated above confirms; the agent
-              // rollup is confirmed by the accompanying session lifecycle
-              // event's ['agents'] invalidation (or the 60s poll).
+              // rollup and preview are confirmed by this event's agents refetch.
               if (
                 notificationType
                 && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notificationType)
@@ -701,28 +707,10 @@ export function GlobalNotificationHandler() {
       }
     }
 
-    // Agents and roles cover the window before the first connect. Rosters are
-    // already loading on mount; only refresh them after a gap.
+    // Opening is not the time to refetch: the server may still be setting up
+    // what the stream follows. `connected` is (see above).
     es.onopen = () => {
-      const isReconnect = hasConnectedRef.current || wasDeadRef.current
-      hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
-      if (wasDeadRef.current) {
-        // The dead window can be arbitrarily long, and every family this
-        // stream feeds may have moved in it. Refetch what is mounted.
-        wasDeadRef.current = false
-        queryClient.invalidateQueries({ predicate: isRefetchableAfterOutage })
-        return
-      }
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
-      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-      if (isReconnect) {
-        queryClient.invalidateQueries({ queryKey: ['agent-members'] })
-        queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
-        // A drive announces only a change to its status pill, so one missed in the gap is never sent again.
-        queryClient.invalidateQueries({ queryKey: ['mounts'] })
-        queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
-      }
     }
 
     es.onerror = () => {
@@ -732,7 +720,6 @@ export function GlobalNotificationHandler() {
     const disposeLiveness = watchStreamLiveness(es, () => {
       if (streamRef.current !== es) return
       es.close()
-      wasDeadRef.current = true
       const delay = reconnectDelayMs(reconnectAttemptRef.current)
       reconnectAttemptRef.current += 1
       reconnectTimerRef.current = setTimeout(() => {

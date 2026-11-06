@@ -18,8 +18,8 @@ import {
   writeCloudWorkspaceRecord,
 } from '@shared/lib/platform-auth/cloud-workspace-record'
 import {
-  getPlatformAccessToken,
-  getPlatformAuthStatus,
+  platformAccessTokenFrom,
+  platformAuthStatusFrom,
 } from '@shared/lib/services/platform-auth-service'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { refreshCloudServerFacts } from '@shared/lib/services/cloud-server-facts'
@@ -56,13 +56,17 @@ vi.mock('@shared/lib/platform-auth/cloud-workspace-client', () => ({
 }))
 vi.mock('@shared/lib/platform-auth/cloud-workspace-record', () => ({
   readCloudWorkspaceRecord: vi.fn(),
-  writeCloudWorkspaceRecord: vi.fn(),
-  clearCloudWorkspaceRecord: vi.fn(),
+  // Resolves whether it wrote; the service reports a token held only when it did.
+  writeCloudWorkspaceRecord: vi.fn(async () => true),
+  clearCloudWorkspaceRecord: vi.fn(async () => undefined),
   buildCloudWorkspaceTokenPreview: (t: string) => `${t.slice(0, 3)}…`,
 }))
+// The service reads the account from one settings read; the connection in
+// those settings is what these two answer.
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: vi.fn(async () => ({})) }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: vi.fn(),
-  getPlatformAuthStatus: vi.fn(),
+  platformAccessTokenFrom: vi.fn(),
+  platformAuthStatusFrom: vi.fn(),
 }))
 vi.mock('@shared/lib/services/cloud-server-facts', () => ({
   refreshCloudServerFacts: vi.fn(async () => undefined),
@@ -74,8 +78,8 @@ const mockExchange = vi.mocked(exchangeGrantAtDeployment)
 const mockReadRecord = vi.mocked(readCloudWorkspaceRecord)
 const mockWriteRecord = vi.mocked(writeCloudWorkspaceRecord)
 const mockClearRecord = vi.mocked(clearCloudWorkspaceRecord)
-const mockGetToken = vi.mocked(getPlatformAccessToken)
-const mockAuthStatus = vi.mocked(getPlatformAuthStatus)
+const mockGetToken = vi.mocked(platformAccessTokenFrom)
+const mockAuthStatus = vi.mocked(platformAuthStatusFrom)
 const mockValidateUrl = vi.mocked(validateMcpDiscoveryUrl)
 const mockCapture = vi.mocked(captureException)
 const mockRefreshFacts = vi.mocked(refreshCloudServerFacts)
@@ -110,7 +114,7 @@ function connectedAs(
     connected: true,
     orgId,
     ...principal,
-  } as unknown as ReturnType<typeof getPlatformAuthStatus>
+  } as unknown as ReturnType<typeof platformAuthStatusFrom>
 }
 
 const DISCONNECTED = {
@@ -118,7 +122,7 @@ const DISCONNECTED = {
   orgId: null,
   userId: null,
   memberId: null,
-} as unknown as ReturnType<typeof getPlatformAuthStatus>
+} as unknown as ReturnType<typeof platformAuthStatusFrom>
 
 function storedRecord(overrides: Record<string, unknown> = {}) {
   return {
@@ -132,7 +136,7 @@ function storedRecord(overrides: Record<string, unknown> = {}) {
     memberId: PRINCIPAL.memberId,
     tokenFingerprint: fingerprintOf(TOKEN),
     ...overrides,
-  } as ReturnType<typeof readCloudWorkspaceRecord>
+  } as Awaited<ReturnType<typeof readCloudWorkspaceRecord>>
 }
 
 function isoIn(ms: number): string {
@@ -155,7 +159,7 @@ describe('getCloudWorkspace', () => {
     delete process.env.E2E_MOCK
     mockGetToken.mockReturnValue(TOKEN)
     mockAuthStatus.mockReturnValue(connectedAs(PRINCIPAL))
-    mockReadRecord.mockReturnValue(null)
+    mockReadRecord.mockResolvedValue(null)
   })
 
   afterEach(() => {
@@ -191,6 +195,23 @@ describe('getCloudWorkspace', () => {
     expect(status.available).toBe(false)
     expect(mockClearRecord).toHaveBeenCalledOnce()
     expect(mockFetchDeployments).not.toHaveBeenCalled()
+  })
+
+  it('clears a disconnected app’s record only while it is still disconnected inside the write', async () => {
+    // A connection (and its first mint) can commit between the read that saw
+    // no account and the clear: the clear's guard re-checks the settings it
+    // replaces, so it never wipes the new account's record.
+    mockGetToken.mockReturnValue(null)
+    mockAuthStatus.mockReturnValue(DISCONNECTED)
+
+    await getCloudWorkspace()
+
+    const onlyIf = mockClearRecord.mock.calls[0]?.[0]?.onlyIf
+    expect(onlyIf).toBeTypeOf('function')
+    expect(onlyIf?.({} as never)).toBe(true)
+    mockAuthStatus.mockReturnValue(connectedAs(PRINCIPAL))
+    mockGetToken.mockReturnValue(TOKEN)
+    expect(onlyIf?.({} as never)).toBe(false)
   })
 
   it('sends the raw token and, on discovery failure, reports it as unknown — not absent', async () => {
@@ -418,7 +439,7 @@ describe('getCloudWorkspace', () => {
 
   it('reuses a valid stored token for the same deployment without minting', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
-    mockReadRecord.mockReturnValue(storedRecord())
+    mockReadRecord.mockResolvedValue(storedRecord())
 
     const status = await getCloudWorkspace()
 
@@ -430,7 +451,7 @@ describe('getCloudWorkspace', () => {
 
   it('re-mints when the stored token is bound to a different deployment URL', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
-    mockReadRecord.mockReturnValue(storedRecord({ deploymentUrl: 'https://old.example.com' }))
+    mockReadRecord.mockResolvedValue(storedRecord({ deploymentUrl: 'https://old.example.com' }))
     mockRequestGrant.mockResolvedValue('grant.jwt')
     mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
 
@@ -443,7 +464,7 @@ describe('getCloudWorkspace', () => {
   it('re-mints when the stored token is within the 1h refresh buffer of expiry', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     // 30 min out — inside the buffer.
-    mockReadRecord.mockReturnValue(storedRecord({ expiresAt: isoIn(30 * 60_000) }))
+    mockReadRecord.mockResolvedValue(storedRecord({ expiresAt: isoIn(30 * 60_000) }))
     mockRequestGrant.mockResolvedValue('grant.jwt')
     mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
 
@@ -455,7 +476,7 @@ describe('getCloudWorkspace', () => {
   it('re-mints rather than reusing a token minted for another principal', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     // Same org, same deployment, unexpired — but a different member.
-    mockReadRecord.mockReturnValue(storedRecord({ userId: 'usr_other', memberId: 'sub_other' }))
+    mockReadRecord.mockResolvedValue(storedRecord({ userId: 'usr_other', memberId: 'sub_other' }))
     mockRequestGrant.mockResolvedValue('grant.jwt')
     mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
 
@@ -471,7 +492,7 @@ describe('getCloudWorkspace', () => {
 
   it('re-mints rather than reusing a legacy record with no principal', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
-    mockReadRecord.mockReturnValue(
+    mockReadRecord.mockResolvedValue(
       storedRecord({ userId: null, memberId: null, tokenFingerprint: null }),
     )
     mockRequestGrant.mockResolvedValue('grant.jwt')
@@ -487,7 +508,7 @@ describe('getCloudWorkspace', () => {
     // "same account" and hand this connection the previous one's session.
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     mockAuthStatus.mockReturnValue(connectedAs({ userId: null, memberId: null }))
-    mockReadRecord.mockReturnValue(
+    mockReadRecord.mockResolvedValue(
       storedRecord({
         userId: null,
         memberId: null,
@@ -508,7 +529,7 @@ describe('getCloudWorkspace', () => {
   it('reuses an id-less record only when the same credential is in hand', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     mockAuthStatus.mockReturnValue(connectedAs({ userId: null, memberId: null }))
-    mockReadRecord.mockReturnValue(storedRecord({ userId: null, memberId: null }))
+    mockReadRecord.mockResolvedValue(storedRecord({ userId: null, memberId: null }))
 
     const status = await getCloudWorkspace()
 
@@ -570,6 +591,25 @@ describe('getCloudWorkspace', () => {
     expect(status).toMatchObject({ hasValidToken: false })
   })
 
+  it('makes the account check part of the write, so a switch after the check cannot land a token', async () => {
+    // The write is a compare-and-set on settings, which also hold the platform
+    // connection: its guard re-checks the account against the settings it
+    // replaces, so no await sits between the check and the write.
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockRequestGrant.mockResolvedValue('grant.jwt')
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+
+    await getCloudWorkspace()
+
+    const options = mockWriteRecord.mock.calls[0][1]
+    const onlyIf = options?.onlyIf
+    expect(onlyIf).toBeTypeOf('function')
+    expect(onlyIf?.({} as never)).toBe(true)
+    mockAuthStatus.mockReturnValue(connectedAs({ userId: 'usr_2', memberId: 'sub_2' }))
+    mockGetToken.mockReturnValue('plat_sa_other_account')
+    expect(onlyIf?.({} as never)).toBe(false)
+  })
+
   it('still reports the workspace as found when the grant/exchange fails', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     mockRequestGrant.mockRejectedValue(new Error('no exchange endpoint'))
@@ -587,20 +627,20 @@ describe('getCloudWorkspace', () => {
   describe('forced token refresh', () => {
     it('re-mints even though the stored token is nowhere near expiry', async () => {
       mockFetchDeployments.mockResolvedValue([DEPLOYED])
-      mockReadRecord.mockReturnValue(storedRecord())
+      mockReadRecord.mockResolvedValue(storedRecord())
       mockRequestGrant.mockResolvedValue('grant')
       mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 86400 })
 
       const status = await getCloudWorkspace({ forceTokenRefresh: true })
 
       expect(mockExchange).toHaveBeenCalledOnce()
-      expect(mockWriteRecord).toHaveBeenCalledWith(expect.objectContaining({ token: 'fresh' }))
+      expect(mockWriteRecord).toHaveBeenCalledWith(expect.objectContaining({ token: 'fresh' }), expect.anything())
       expect(status).toMatchObject({ hasValidToken: true })
     })
 
     it('leaves the stored token in place when the re-mint fails', async () => {
       mockFetchDeployments.mockResolvedValue([DEPLOYED])
-      mockReadRecord.mockReturnValue(storedRecord())
+      mockReadRecord.mockResolvedValue(storedRecord())
       mockRequestGrant.mockRejectedValue(new Error('platform down'))
 
       const status = await getCloudWorkspace({ forceTokenRefresh: true })
@@ -614,7 +654,7 @@ describe('getCloudWorkspace', () => {
       mockFetchDeployments.mockResolvedValue([
         { ...DEPLOYED, authorization_server: 'https://attacker.example' },
       ])
-      mockReadRecord.mockReturnValue(storedRecord())
+      mockReadRecord.mockResolvedValue(storedRecord())
 
       const status = await getCloudWorkspace({ forceTokenRefresh: true })
 
@@ -643,20 +683,20 @@ describe('refreshCloudWorkspace', () => {
   // A renderer driving the workspace reads them at boot, which must not wait on
   // the deployment for them.
   it('refreshes the deployment’s server facts once a token is held for it', async () => {
-    mockReadRecord.mockReturnValue(storedRecord())
+    mockReadRecord.mockResolvedValue(storedRecord())
     await refreshCloudWorkspace()
     expect(mockRefreshFacts).toHaveBeenCalledWith(DEPLOYED.deployment_url)
   })
 
   // The cycle holds PlatformService's refresh, which skips others while it runs.
   it('doesn’t wait for them', async () => {
-    mockReadRecord.mockReturnValue(storedRecord())
+    mockReadRecord.mockResolvedValue(storedRecord())
     mockRefreshFacts.mockReturnValueOnce(new Promise(() => {}))
     await expect(refreshCloudWorkspace()).resolves.toBeUndefined()
   })
 
   it('leaves them alone for a workspace this app can’t drive', async () => {
-    mockReadRecord.mockReturnValue(null)
+    mockReadRecord.mockResolvedValue(null)
     mockRequestGrant.mockRejectedValue(new Error('grant refused'))
     await refreshCloudWorkspace()
     expect(mockRefreshFacts).not.toHaveBeenCalled()

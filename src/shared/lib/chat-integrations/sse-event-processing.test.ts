@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, STREAM_FIRST_POST_CHARS, STREAM_UPDATE_MS, type ManagedConnector } from './chat-delivery'
 import { MockChatAgentIntegration } from './mock-connector'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
@@ -356,7 +357,7 @@ describe('processSSEEvent', () => {
       expect(getMock(managed).sentCards.length).toBe(0)
     })
 
-    it('stays quiet for a review — those are agent-scoped and render off the global channel', async () => {
+    it('stays quiet for a review — its Allow/Deny card is sent by the connector', async () => {
       await processSSEEvent(managed, createdEvent('proxy_review', { toolkit: 'github', displayText: 'Allow?' }))
       expect(getMock(managed).sentCards.length).toBe(0)
     })
@@ -439,6 +440,18 @@ describe('finalizeStreaming', () => {
     expect(managed.streamingState.accumulatedText).toBe('')
     expect(managed.streamingState.currentMessageId).toBeNull()
     expect(managed.streamingState.lastUpdateTime).toBe(0)
+  })
+
+  it('posts nothing for a reply of exactly the no-reply token, and posts a reply that merely contains it', async () => {
+    const managed = createManagedConnector()
+    await processSSEEvent(managed, { type: 'stream_delta', text: `\n${NO_REPLY_TOKEN}  ` })
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).streamUpdates).toHaveLength(0)
+    expect(getMock(managed).sentMessages).toHaveLength(0)
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: `Nothing to add, ${NO_REPLY_TOKEN}` })
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).sentMessages.map(m => m.message.text)).toEqual([`Nothing to add, ${NO_REPLY_TOKEN}`])
   })
 
   it('falls back to sendMessage when finalizeStreamingMessage throws', async () => {

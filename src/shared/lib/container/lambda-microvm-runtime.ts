@@ -888,8 +888,8 @@ function isExecutableLaunchFailureError(error: unknown): boolean {
   return (error as { containerErrorClass?: unknown }).containerErrorClass === 'executable_launch_failed'
 }
 
-function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
-  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
+async function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): Promise<UnexpectedDeathPlan> {
+  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(await getSettings())) {
     return { action: 'settle' }
   }
   return plan
@@ -903,6 +903,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly supportsCustomAgentImage = false
 
   private replaceInFlight: Promise<void> | null = null
+  private lastMicrovmId: string | null = null
 
   constructor(config: ContainerConfig) {
     super(config)
@@ -936,7 +937,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, installed.microvmId)
-      return honorMicrovmAutoResume(
+      // Awaited inside the try: a failed settings read falls back to the probe below, which never recovers.
+      return await honorMicrovmAutoResume(
         planFromClassification(
           classifyMicrovmDeath({
             state: mvm.state,
@@ -1010,7 +1012,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName)
+    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName, options?.settings)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
@@ -1190,6 +1192,21 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         extra: { microvmId: observedId },
       })
       return { status: 'running', port: state.proxyPort }
+    }
+  }
+
+  async isDefinitelyStopped(): Promise<boolean> {
+    // A missing local record after a host restart is not proof of VM death.
+    // Keep the last id when routing state is discarded so a terminating VM
+    // can still be checked after it actually exits.
+    const currentId = () => agentStates.get(this.config.agentId)?.microvmId ?? this.lastMicrovmId
+    const id = currentId()
+    if (!id) return false
+    try {
+      const mvm = await getMicrovm(getMicrovmRuntimeConfig().region, id)
+      return currentId() === id && mvm.state === 'TERMINATED'
+    } catch (error) {
+      return currentId() === id && isNotFound(error)
     }
   }
 
@@ -1378,6 +1395,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   private cleanupLocal(): void {
     const state = agentStates.get(this.config.agentId)
+    if (state) this.lastMicrovmId = state.microvmId
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
     clearBootstrapEnv(this.config.agentId)

@@ -5,7 +5,9 @@
  * INSERTs (Supabase Realtime, RLS-scoped to the connected user) into OS
  * notifications and inbox-invalidation signals. Holds NO content store — the
  * inbox always reads live from the platform proxy; this manager owns only the
- * websocket and an OS-notification dedup watermark.
+ * websocket and an OS-notification dedup watermark. Which receiver notifies a
+ * row is claimed in AppState (`platform-notification-seen.ts`), so a row that
+ * several receivers get is notified once.
  *
  * Non-auth only: a multi-tenant auth_mode server has no business firing OS
  * notifications; its web clients rely on the inbox query's refetch cadence.
@@ -26,6 +28,7 @@ import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
 import { platformNotificationRealtimeRecordSchema } from '@shared/lib/services/platform-notifications-schema'
 import { SupabaseRealtimeClient } from '@shared/lib/services/supabase-realtime-client'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { claimPlatformNotificationBroadcast } from './platform-notification-seen'
 
 // JWT lasts 1 hour; refresh with headroom. The same tick retries the
 // subscription when the proxy returned a null config earlier (e.g. an auth
@@ -36,7 +39,6 @@ class PlatformNotificationsManager {
   private isRunning = false
   private realtimeClient: SupabaseRealtimeClient | null = null
   private refreshInterval: NodeJS.Timeout | null = null
-  private notifiedIds = new Set<string>()
   private lastNotifiedAt: string | null = null
   // Bumped by every stop() and start(): an async connect that resumes after
   // its generation passed must not touch the current one's client/interval
@@ -47,13 +49,16 @@ class PlatformNotificationsManager {
   async start(): Promise<void> {
     if (this.isRunning) return
     if (isAuthMode()) return
-    if (!getPlatformProxyBaseUrl() || !getPlatformAccessToken()) {
+    // Claimed before the token read: a stop() or another start() while it is
+    // in flight supersedes this start.
+    const generation = ++this.generation
+    if (!getPlatformProxyBaseUrl() || !(await getPlatformAccessToken())) {
       console.log('[PlatformNotifications] Platform not connected, skipping')
       return
     }
+    if (generation !== this.generation || this.isRunning) return
 
     this.isRunning = true
-    const generation = ++this.generation
     console.log('[PlatformNotifications] Starting...')
 
     try {
@@ -71,9 +76,11 @@ class PlatformNotificationsManager {
   }
 
   stop(): void {
+    // Bumped even when not running, so a start() still reading the token
+    // does not go on to subscribe after this stop.
+    this.generation++
     if (!this.isRunning) return
     this.isRunning = false
-    this.generation++
 
     if (this.realtimeClient) {
       this.realtimeClient.disconnect()
@@ -83,9 +90,9 @@ class PlatformNotificationsManager {
       clearInterval(this.refreshInterval)
       this.refreshInterval = null
     }
-    this.notifiedIds.clear()
     // The in-memory watermark re-seeds from settings on the next start; the
     // persisted value survives disconnect/reconnect (and process restarts).
+    // Seen markers live in AppState and expire on their own.
     this.lastNotifiedAt = null
     console.log('[PlatformNotifications] Stopped')
   }
@@ -100,12 +107,12 @@ class PlatformNotificationsManager {
 
   // Org JWTs need the acting member appended to the bearer; opaque personal
   // keys ignore it, so a placeholder is fine when no member is recorded.
-  private getMemberId(): string {
-    return getSettings().platformAuth?.memberId ?? 'local'
+  private async getMemberId(): Promise<string> {
+    return (await getSettings()).platformAuth?.memberId ?? 'local'
   }
 
   private async connect(generation: number): Promise<void> {
-    const memberId = this.getMemberId()
+    const memberId = await this.getMemberId()
     const config = await getNotificationsRealtimeConfig(memberId)
     if (generation !== this.generation) return
     if (!config) {
@@ -122,7 +129,7 @@ class PlatformNotificationsManager {
     }
     const client = new SupabaseRealtimeClient()
     this.realtimeClient = client
-    await client.connect(config, (record) => background(this.handleRealtimeInsert(record), { name: 'platform-notifications-manager.handle-realtime-insert' }))
+    await client.connect(config, (record) => background(this.handleRealtimeInsert(record, memberId), { name: 'platform-notifications-manager.handle-realtime-insert' }))
     if (generation !== this.generation) {
       // Superseded while the socket opened: tear down our own client, but
       // leave this.realtimeClient alone if a newer connect already replaced it.
@@ -141,7 +148,7 @@ class PlatformNotificationsManager {
   private async seedWatermark(memberId: string): Promise<void> {
     if (this.lastNotifiedAt) return
 
-    const persisted = getSettings().platformNotifications?.lastNotifiedAt
+    const persisted = (await getSettings()).platformNotifications?.lastNotifiedAt
     if (persisted) {
       this.lastNotifiedAt = persisted
       return
@@ -156,14 +163,18 @@ class PlatformNotificationsManager {
       console.error('[PlatformNotifications] Watermark seed failed:', error)
       this.lastNotifiedAt = new Date().toISOString()
     }
-    this.persistWatermark()
+    await this.persistWatermark()
   }
 
-  private persistWatermark(): void {
+  private async persistWatermark(): Promise<void> {
     const lastNotifiedAt = this.lastNotifiedAt
     if (!lastNotifiedAt) return
     try {
-      mutateSettings((settings) => {
+      // Concurrent inserts persist concurrently: keep the newer watermark, so
+      // a write that lost the race and retries cannot move it backwards.
+      await mutateSettings((settings) => {
+        const stored = settings.platformNotifications?.lastNotifiedAt
+        if (stored && stored >= lastNotifiedAt) return false
         settings.platformNotifications = { ...settings.platformNotifications, lastNotifiedAt }
       })
     } catch (error) {
@@ -173,7 +184,7 @@ class PlatformNotificationsManager {
     }
   }
 
-  private async handleRealtimeInsert(rawRecord: unknown): Promise<void> {
+  private async handleRealtimeInsert(rawRecord: unknown, memberId: string): Promise<void> {
     const parsed = platformNotificationRealtimeRecordSchema.safeParse(rawRecord)
     if (!parsed.success) {
       captureException(parsed.error, {
@@ -187,16 +198,18 @@ class PlatformNotificationsManager {
     // An open inbox page updates live regardless of OS-notification dedup.
     globalFeed.publish({ type: 'platform_notifications_changed' })
 
-    // Dedup: the in-session id-set survives reconnect replays; the persisted
-    // watermark survives restarts and suppresses backdated inserts.
-    if (this.notifiedIds.has(record.id)) return
+    // Dedup: the persisted watermark survives restarts and suppresses
+    // backdated inserts and replays; it is checked and advanced before any
+    // await, so this process judges its own deliveries in order. The seen
+    // marker then lets exactly one receiver notify a row that several get
+    // (another process, a replay that reached one whose watermark is older).
     if (this.lastNotifiedAt && record.created_at <= this.lastNotifiedAt) return
-    this.notifiedIds.add(record.id)
     this.lastNotifiedAt =
       this.lastNotifiedAt && this.lastNotifiedAt > record.created_at
         ? this.lastNotifiedAt
         : record.created_at
-    this.persistWatermark()
+    await this.persistWatermark()
+    if (!(await claimPlatformNotificationBroadcast(memberId, record.id))) return
 
     if (!(await this.isPlatformNotificationEnabled())) return
 
@@ -240,7 +253,7 @@ class PlatformNotificationsManager {
         await this.connect(generation)
         return
       }
-      const config = await getNotificationsRealtimeConfig(this.getMemberId())
+      const config = await getNotificationsRealtimeConfig(await this.getMemberId())
       if (config?.jwt && this.realtimeClient) {
         await this.realtimeClient.updateToken(config.jwt)
       }

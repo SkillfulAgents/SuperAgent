@@ -1,18 +1,23 @@
 import { modelSelectionSchema } from '../llm-provider/connection-schema'
 import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
-import fs from 'fs'
-import path from 'path'
 import os from 'os'
-import { getDataDir } from './data-dir'
+import { createHash } from 'crypto'
 import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
-import {
-  writeFileAtomicSync,
-  CorruptFileError,
-} from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
+import {
+  compareAndSetRecord,
+  insertRecordIfAbsent,
+  parseRecordValue,
+  readStoredRecord,
+  serializeRecordValue,
+  type RecordDb,
+} from '@shared/lib/app-records/records'
+// From the leaf module: this file extends it at load time (see errors.ts).
+import { InvalidAppRecordError } from '@shared/lib/app-records/errors'
+import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { globalInstructionsSchema } from './global-instructions-schema'
 import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
@@ -497,24 +502,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
 
-function getSettingsPath(): string {
-  return path.join(getDataDir(), 'settings.json')
-}
-
 function parseModelCatalogSettings(value: unknown): ModelCatalogSettings | undefined {
   if (value === undefined) return undefined
   const parsed = modelCatalogSettingsSchema.safeParse(value)
   if (!parsed.success) {
-    console.warn('Invalid modelCatalog in settings.json; ignoring model catalog overrides:', parsed.error.message)
+    console.warn('Invalid modelCatalog in settings; ignoring model catalog overrides:', parsed.error.message)
     return undefined
   }
   return parsed.data
 }
 
-/**
- * Load settings from the JSON file.
- * Returns default settings if file doesn't exist.
- */
 /**
  * Pre-SUP-275 stored model defaults. Back then the three `models.*` fields were
  * persisted as these concrete ids and version pinning did not exist (the UI
@@ -626,7 +623,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     // Deep-clone the default when defaulting: callers mutate `s.skillsets` in
     // place (e.g. sync-remote's `current.push(config)`), and returning the shared
     // DEFAULT_SETTINGS.skillsets reference would poison the module constant for a
-    // settings.json that merely omits `skillsets`.
+    // stored value that merely omits `skillsets`.
     skillsets: loaded.skillsets !== undefined
       ? loaded.skillsets
       : structuredClone(DEFAULT_SETTINGS.skillsets),
@@ -660,7 +657,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
         if (raw === undefined) continue
         const parsed = capabilityPolicySchema.safeParse(raw)
         if (parsed.success) out[key] = parsed.data
-        else console.warn(`Invalid agentCapabilities.${key} in settings.json; using default:`, raw)
+        else console.warn(`Invalid agentCapabilities.${key} in settings; using default:`, raw)
       }
       return out
     })(),
@@ -670,162 +667,166 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       if (loaded.globalInstructions === undefined) return undefined
       const parsed = globalInstructionsSchema.safeParse(loaded.globalInstructions)
       if (parsed.success) return parsed.data
-      console.warn('Invalid globalInstructions in settings.json; ignoring it')
+      console.warn('Invalid globalInstructions in settings; ignoring it')
       return undefined
     })(),
     teamBrain: (() => {
       if (loaded.teamBrain === undefined) return undefined
       const parsed = teamBrainRecordSchema.safeParse(loaded.teamBrain)
       if (parsed.success) return parsed.data
-      console.warn('Invalid teamBrain in settings.json; ignoring it')
+      console.warn('Invalid teamBrain in settings; ignoring it')
       return undefined
     })(),
   }
 }
 
 /**
- * Strict, fail-closed load. Reads fresh from disk (bypassing
- * the cache) and:
- *   - absent file (ENOENT) → defaults (legitimate first run),
- *   - torn/corrupt JSON or a non-object → THROWS CorruptFileError,
- *   - other IO errors → propagate.
- *
- * This is what every WRITE path re-reads under, so a momentarily unreadable
- * `settings.json` aborts the write instead of being silently replaced by
- * defaults (which would permanently wipe API keys, auth policy, skillsets, …).
- * Never default-then-save here.
+ * Settings as stored and the revision they were read at. Revision 0 means
+ * nothing is stored yet (a fresh install), and the settings are the defaults.
  */
-export function loadSettingsStrict(): AppSettings {
-  const settingsPath = getSettingsPath()
-  let content: string
-  try {
-    content = fs.readFileSync(settingsPath, 'utf-8')
-  } catch (err) {
-    // Absent file = legitimate first run → bare defaults (preserves the original
-    // behavior, which did NOT default-merge auth/analytics for a missing file).
-    // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
-    // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
-    // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return structuredClone(DEFAULT_SETTINGS)
-    throw err // other IO error (EACCES/EIO/…) — propagate, never default-then-save
-  }
-  // Validate the boundary (object shape); torn JSON / non-object → throw.
-  const raw = parseJsonStrict(settingsPath, content)
-  return mergeLoadedSettings(raw)
-}
-
-/** Parse + shape-validate raw settings content; throws CorruptFileError on a
- *  torn file or a non-object value. */
-function parseJsonStrict(settingsPath: string, content: string): Record<string, any> {
-  let loaded: unknown
-  try {
-    loaded = JSON.parse(content)
-  } catch (err) {
-    throw new CorruptFileError(settingsPath, 'settings.json is not valid JSON', { cause: err })
-  }
-  const validated = persistedSettingsSchema.safeParse(loaded)
-  if (!validated.success) {
-    throw new CorruptFileError(
-      settingsPath,
-      `settings.json is not a JSON object: ${validated.error.message}`,
-      { cause: validated.error }
-    )
-  }
-  return validated.data as Record<string, any>
+export interface SettingsSnapshot {
+  readonly settings: AppSettings
+  readonly revision: number
 }
 
 /**
- * Load settings for READ-ONLY consumers (display, getters). Tolerant: never
- * throws, so a corrupt file degrades to in-memory defaults rather than crashing
- * the app — but it NEVER writes those defaults back (the data-loss
- * amplification). Writes go through {@link mutateSettings}/{@link loadSettingsStrict},
- * which re-throw on corruption, so defaults surfaced here can't overwrite a real
- * but temporarily-unreadable file.
+ * Parse the stored settings value onto the defaults. A value that is not a
+ * JSON object, or that the merge rejects, is an InvalidAppRecordError.
  */
-export function loadSettings(): AppSettings {
+function parseStoredSettings(stored: string, revision: number): AppSettings {
   try {
-    return loadSettingsStrict()
+    const raw = parseRecordValue(SETTINGS_RECORD_KEY, stored, persistedSettingsSchema) as Record<string, any>
+    return mergeLoadedSettings(raw)
+  } catch (cause) {
+    const fingerprint = `${revision}:${createHash('sha256').update(stored).digest('hex')}`
+    const message = cause instanceof InvalidAppRecordError ? cause.message : cause instanceof Error ? cause.message : String(cause)
+    throw new InvalidSettingsError(fingerprint, message, { cause })
+  }
+}
+
+/** Stored settings that cannot be read; `fingerprint` names the stored value (revision and content hash). */
+export class InvalidSettingsError extends InvalidAppRecordError {
+  constructor(
+    readonly fingerprint: string,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(SETTINGS_RECORD_KEY, message, options)
+  }
+}
+
+/**
+ * Strict, fail-closed read of the stored settings and their revision, fresh
+ * from the store on every call:
+ *   - nothing stored → defaults at revision 0 (a fresh install),
+ *   - a stored value that is not a JSON object, or that the merge rejects →
+ *     THROWS InvalidAppRecordError,
+ *   - a database error → propagates.
+ *
+ * Every write reads through this, so stored settings that cannot be read
+ * abort the write instead of being replaced by defaults (which would wipe API
+ * keys, auth policy, skillsets, …).
+ */
+export async function readSettingsSnapshot(db?: RecordDb): Promise<SettingsSnapshot> {
+  const stored = await readStoredRecord(SETTINGS_RECORD_KEY, db)
+  // Deep-clone the defaults: callers mutate nested objects in place.
+  if (!stored) return { settings: structuredClone(DEFAULT_SETTINGS), revision: 0 }
+  return { settings: parseStoredSettings(stored.value, stored.revision), revision: stored.revision }
+}
+
+/** The settings, read strictly (see {@link readSettingsSnapshot}). */
+export async function loadSettingsStrict(db?: RecordDb): Promise<AppSettings> {
+  return (await readSettingsSnapshot(db)).settings
+}
+
+/**
+ * The current settings, read from the store on every call (there is no
+ * process-wide copy: a write committed by another process is what the next
+ * call returns). Tolerant of an invalid stored value: it degrades to the
+ * defaults, reported, but nothing writes those defaults back, because every
+ * write goes through {@link updateSettings}, which reads strictly. A database
+ * error is not an invalid value and propagates.
+ *
+ * Read once per operation and pass the value on, rather than calling this
+ * from every helper an operation reaches.
+ */
+export async function getSettings(db?: RecordDb): Promise<AppSettings> {
+  try {
+    return await loadSettingsStrict(db)
   } catch (error) {
-    console.error('Failed to load settings; using in-memory defaults (NOT overwriting the file):', error)
-    if (error instanceof CorruptFileError) {
+    if (!(error instanceof InvalidAppRecordError)) throw error
+    // Every read hits the bad value; report each stored value once.
+    const fingerprint = error instanceof InvalidSettingsError ? error.fingerprint : null
+    if (fingerprint === null || fingerprint !== lastReportedInvalidSettings) {
+      lastReportedInvalidSettings = fingerprint
+      console.error('Stored settings are invalid; using defaults (NOT overwriting them):', error)
       captureException(error, { tags: { area: 'settings', op: 'load' } })
     }
-    // Deep-clone so a caller mutating a nested field can't pollute the module
-    // constant (see loadSettingsStrict).
     return structuredClone(DEFAULT_SETTINGS)
   }
 }
 
-/**
- * Save settings to the JSON file.
- */
-export function saveSettings(settings: AppSettings): void {
-  const settingsPath = getSettingsPath()
-  const dataDir = getDataDir()
+/** The invalid stored settings last reported: a diagnostic dedupe, not a settings cache. */
+let lastReportedInvalidSettings: string | null = null
 
-  // Ensure data directory exists
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true })
+/** Writes that lost this many compare-and-set races in a row give up rather than spin. */
+const MAX_SETTINGS_WRITE_ATTEMPTS = 25
+
+export class SettingsWriteConflictError extends Error {
+  constructor() {
+    super(`Settings changed underneath ${MAX_SETTINGS_WRITE_ATTEMPTS} write attempts in a row; giving up`)
+    this.name = 'SettingsWriteConflictError'
   }
+}
 
-  // Atomic temp-file + rename: an interrupted write can never leave a
-  // torn settings.json that a later read would mistake for corruption (or that
-  // the tolerant loader would mask with defaults). Mode 0o600 (owner-only) since
-  // the file holds API keys.
-  writeFileAtomicSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
+export interface SettingsUpdate {
+  /** The settings the winning attempt read. */
+  readonly before: AppSettings
+  /** The settings as written (or `before`, unchanged, when nothing was written). */
+  readonly after: AppSettings
+  /** False when the update returned `false` and nothing was written. */
+  readonly written: boolean
 }
 
 /**
- * Get current settings (cached for the request).
+ * Read-modify-write of the settings without a transaction: read strictly with
+ * the revision, apply `update` to a copy, and write only if the stored
+ * revision is still the one read. When another writer got there first, read
+ * again and apply `update` again to the newer settings.
+ *
+ * `update` may therefore run more than once, so it must only change the draft
+ * it is given and values it resets itself: no I/O, no events, no appending to
+ * outer arrays it does not clear first. Return `false` to write nothing.
+ * Stored settings that cannot be read abort the update (see
+ * {@link readSettingsSnapshot}); success means the write committed.
  */
-let cachedSettings: AppSettings | null = null
-
-export function getSettings(): AppSettings {
-  if (!cachedSettings) {
-    cachedSettings = loadSettings()
+export async function updateSettings(
+  update: (draft: AppSettings, before: Readonly<AppSettings>) => void | false,
+  db?: RecordDb,
+): Promise<SettingsUpdate> {
+  for (let attempt = 1; attempt <= MAX_SETTINGS_WRITE_ATTEMPTS; attempt++) {
+    const { settings: before, revision } = await readSettingsSnapshot(db)
+    const draft = structuredClone(before)
+    if (update(draft, before) === false) return { before, after: before, written: false }
+    const value = serializeRecordValue(SETTINGS_RECORD_KEY, draft as unknown as Record<string, unknown>, persistedSettingsSchema)
+    const written = revision === 0
+      ? await insertRecordIfAbsent(SETTINGS_RECORD_KEY, value, db)
+      : await compareAndSetRecord(SETTINGS_RECORD_KEY, revision, value, db)
+    if (written) return { before, after: draft, written: true }
   }
-  return cachedSettings
+  throw new SettingsWriteConflictError()
 }
 
 /**
- * Replace the whole settings object and refresh the cache.
- *
- * Prefer {@link mutateSettings} for partial updates — it re-reads fresh from
- * disk so it can't lose a concurrent writer's change. Use this only when the
- * caller has already merged against a FRESH (strict) read with no `await`
- * between the read and here (so nothing could interleave), e.g. the settings
- * PUT route. The write itself is atomic.
+ * {@link updateSettings} for the common case: change the settings in place
+ * and get back what was written. The mutator may run more than once (see
+ * there), so it must be free of side effects outside the settings it is given.
  */
-export function updateSettings(settings: AppSettings): void {
-  saveSettings(settings)
-  cachedSettings = settings
-}
-
-/**
- * Serialized, fail-closed read-modify-write of settings.
- *
- * Synchronous on purpose: with no `await` between the fresh strict read and the
- * atomic write, concurrent callers cannot interleave, so this serializes for
- * free and closes the lost-update race across the many background settings
- * writers (runtime auto-switch, token refresh, permission grants, skillset
- * reconcile, …). It re-reads FRESH from disk every call — never the possibly
- * stale/defaulted cache — and {@link loadSettingsStrict} THROWS on a corrupt
- * file, so a torn settings.json aborts the mutation instead of clobbering real
- * API keys/auth with defaults. Returns the persisted settings.
- */
-export function mutateSettings(mutator: (settings: AppSettings) => void): AppSettings {
-  const fresh = loadSettingsStrict()
-  mutator(fresh)
-  saveSettings(fresh)
-  cachedSettings = fresh
-  return fresh
-}
-
-/**
- * Clear the settings cache (useful after external modifications).
- */
-export function clearSettingsCache(): void {
-  cachedSettings = null
+export async function mutateSettings(
+  mutator: (settings: AppSettings) => void | false,
+  db?: RecordDb,
+): Promise<AppSettings> {
+  return (await updateSettings((draft) => mutator(draft), db)).after
 }
 
 // TODO - following function are very repetitive - consider refactor to a single generic function that takes the API key name as parameter
@@ -834,8 +835,8 @@ export function clearSettingsCache(): void {
  * Get the status of the Anthropic API key configuration.
  * Saved settings take precedence over environment variable.
  */
-export function getAnthropicApiKeyStatus(): ApiKeyStatus {
-  const settings = getSettings()
+export async function getAnthropicApiKeyStatus(): Promise<ApiKeyStatus> {
+  const settings = await getSettings()
   if (settings.apiKeys?.anthropicApiKey) {
     return { isConfigured: true, source: 'settings' }
   }
@@ -849,8 +850,8 @@ export function getAnthropicApiKeyStatus(): ApiKeyStatus {
  * Get the effective Anthropic API key to use.
  * Saved settings take precedence over environment variable.
  */
-export function getEffectiveAnthropicApiKey(): string | undefined {
-  const settings = getSettings()
+export async function getEffectiveAnthropicApiKey(): Promise<string | undefined> {
+  const settings = await getSettings()
   // Saved settings take precedence
   if (settings.apiKeys?.anthropicApiKey) {
     return settings.apiKeys.anthropicApiKey
@@ -862,8 +863,12 @@ export function getEffectiveAnthropicApiKey(): string | undefined {
 /**
  * Get the status of the Composio API key configuration.
  */
-export function getComposioApiKeyStatus(): ApiKeyStatus {
-  const settings = getSettings()
+export async function getComposioApiKeyStatus(): Promise<ApiKeyStatus> {
+  return composioApiKeyStatusFrom(await getSettings())
+}
+
+/** {@link getComposioApiKeyStatus} from settings already read. */
+export function composioApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
   if (settings.apiKeys?.composioApiKey) {
     return { isConfigured: true, source: 'settings' }
   }
@@ -877,8 +882,12 @@ export function getComposioApiKeyStatus(): ApiKeyStatus {
  * Get the effective Composio API key to use.
  * Saved settings take precedence over environment variable.
  */
-export function getEffectiveComposioApiKey(): string | undefined {
-  const settings = getSettings()
+export async function getEffectiveComposioApiKey(): Promise<string | undefined> {
+  return effectiveComposioApiKeyFrom(await getSettings())
+}
+
+/** {@link getEffectiveComposioApiKey} from settings already read. */
+export function effectiveComposioApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.composioApiKey) {
     return settings.apiKeys.composioApiKey
   }
@@ -889,16 +898,24 @@ export function getEffectiveComposioApiKey(): string | undefined {
  * Get the Composio user ID.
  * Saved settings take precedence over environment variable.
  */
-export function getComposioUserId(): string | undefined {
-  const settings = getSettings()
+export async function getComposioUserId(): Promise<string | undefined> {
+  return composioUserIdFrom(await getSettings())
+}
+
+/** {@link getComposioUserId} from settings already read. */
+export function composioUserIdFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.composioUserId) {
     return settings.apiKeys.composioUserId
   }
   return process.env.COMPOSIO_USER_ID
 }
 
-export function getNangoApiKeyStatus(): ApiKeyStatus {
-  const settings = getSettings()
+export async function getNangoApiKeyStatus(): Promise<ApiKeyStatus> {
+  return nangoApiKeyStatusFrom(await getSettings())
+}
+
+/** {@link getNangoApiKeyStatus} from settings already read. */
+export function nangoApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
   if (settings.apiKeys?.nangoSecretKey) {
     return { isConfigured: true, source: 'settings' }
   }
@@ -908,32 +925,48 @@ export function getNangoApiKeyStatus(): ApiKeyStatus {
   return { isConfigured: false, source: 'none' }
 }
 
-export function getNangoSecretKey(): string | undefined {
-  const settings = getSettings()
+export async function getNangoSecretKey(): Promise<string | undefined> {
+  return nangoSecretKeyFrom(await getSettings())
+}
+
+/** {@link getNangoSecretKey} from settings already read. */
+export function nangoSecretKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.nangoSecretKey) {
     return settings.apiKeys.nangoSecretKey
   }
   return process.env.NANGO_SECRET_KEY
 }
 
-export function getAccountProviderUserId(): string | undefined {
-  const settings = getSettings()
+export async function getAccountProviderUserId(): Promise<string | undefined> {
+  return accountProviderUserIdFrom(await getSettings())
+}
+
+/** {@link getAccountProviderUserId} from settings already read. */
+export function accountProviderUserIdFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.accountProviderUserId) {
     return settings.apiKeys.accountProviderUserId
   }
-  return getComposioUserId()
+  // The Composio user id, from the same read.
+  if (settings.apiKeys?.composioUserId) {
+    return settings.apiKeys.composioUserId
+  }
+  return process.env.COMPOSIO_USER_ID
 }
 
-export function getDefaultAccountProviderType(): AccountProviderType {
-  const settings = getSettings()
+export async function getDefaultAccountProviderType(): Promise<AccountProviderType> {
+  const settings = await getSettings()
   return settings.app?.accountProvider ?? 'composio'
 }
 
 /**
  * Get the status of the Browserbase API key configuration.
  */
-export function getBrowserbaseApiKeyStatus(): ApiKeyStatus {
-  const settings = getSettings()
+export async function getBrowserbaseApiKeyStatus(): Promise<ApiKeyStatus> {
+  return browserbaseApiKeyStatusFrom(await getSettings())
+}
+
+/** {@link getBrowserbaseApiKeyStatus} from settings already read. */
+export function browserbaseApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
   if (settings.apiKeys?.browserbaseApiKey) {
     return { isConfigured: true, source: 'settings' }
   }
@@ -947,8 +980,12 @@ export function getBrowserbaseApiKeyStatus(): ApiKeyStatus {
  * Get the effective Browserbase API key to use.
  * Saved settings take precedence over environment variable.
  */
-export function getEffectiveBrowserbaseApiKey(): string | undefined {
-  const settings = getSettings()
+export async function getEffectiveBrowserbaseApiKey(): Promise<string | undefined> {
+  return effectiveBrowserbaseApiKeyFrom(await getSettings())
+}
+
+/** {@link getEffectiveBrowserbaseApiKey} from settings already read. */
+export function effectiveBrowserbaseApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.browserbaseApiKey) {
     return settings.apiKeys.browserbaseApiKey
   }
@@ -959,8 +996,12 @@ export function getEffectiveBrowserbaseApiKey(): string | undefined {
  * Get the effective Browserbase project ID to use.
  * Saved settings take precedence over environment variable.
  */
-export function getEffectiveBrowserbaseProjectId(): string | undefined {
-  const settings = getSettings()
+export async function getEffectiveBrowserbaseProjectId(): Promise<string | undefined> {
+  return effectiveBrowserbaseProjectIdFrom(await getSettings())
+}
+
+/** {@link getEffectiveBrowserbaseProjectId} from settings already read. */
+export function effectiveBrowserbaseProjectIdFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
   if (settings.apiKeys?.browserbaseProjectId) {
     return settings.apiKeys.browserbaseProjectId
   }
@@ -970,8 +1011,12 @@ export function getEffectiveBrowserbaseProjectId(): string | undefined {
 /**
  * Get the effective model settings, with defaults applied.
  */
-export function getEffectiveModels(): ModelSettings {
-  const settings = getSettings()
+export async function getEffectiveModels(): Promise<ModelSettings> {
+  return effectiveModelsFrom(await getSettings())
+}
+
+/** {@link getEffectiveModels} from settings already read. */
+export function effectiveModelsFrom(settings: Pick<AppSettings, 'llmProvider' | 'modelCatalog' | 'models'>): ModelSettings {
   const catalogDefaults = getCatalogDefaultModels(
     settings.llmProvider ?? 'anthropic',
     settings.modelCatalog,
@@ -988,26 +1033,26 @@ export function getEffectiveModels(): ModelSettings {
 /**
  * Get the effective agent limits settings.
  */
-export function getEffectiveAgentLimits(): AgentLimitsSettings {
-  const settings = getSettings()
+export async function getEffectiveAgentLimits(): Promise<AgentLimitsSettings> {
+  const settings = await getSettings()
   return settings.agentLimits ?? {}
 }
 
-export function getModelCatalogSettings(): ModelCatalogSettings {
-  const settings = getSettings()
+export async function getModelCatalogSettings(): Promise<ModelCatalogSettings> {
+  const settings = await getSettings()
   return settings.modelCatalog ?? {}
 }
 
 /**
  * Get custom environment variables for agent containers.
  */
-export function getCustomEnvVars(): Record<string, string> {
-  const settings = getSettings()
+export async function getCustomEnvVars(): Promise<Record<string, string>> {
+  const settings = await getSettings()
   return settings.customEnvVars ?? {}
 }
 
-export function getVoiceSettings(): VoiceSettings {
-  const settings = getSettings()
+export async function getVoiceSettings(): Promise<VoiceSettings> {
+  const settings = await getSettings()
   return settings.voice ?? {}
 }
 
@@ -1015,8 +1060,8 @@ export function getVoiceSettings(): VoiceSettings {
  * Resolved APNs relay config: `url` is null when delivery is disabled (kill
  * switch off, or relay URL explicitly set to the empty string).
  */
-export function getApnsRelayConfig(): { url: string | null; enabled: boolean } {
-  const settings = getSettings()
+export async function getApnsRelayConfig(): Promise<{ url: string | null; enabled: boolean }> {
+  const settings = await getSettings()
   const enabled = settings.push?.apnsEnabled !== false
   const rawUrl = settings.push?.apnsRelayUrl ?? DEFAULT_APNS_RELAY_URL
   const url = enabled && rawUrl !== '' ? rawUrl.replace(/\/+$/, '') : null
@@ -1024,19 +1069,19 @@ export function getApnsRelayConfig(): { url: string | null; enabled: boolean } {
 }
 
 /** Resolved launch policies for subagents/workflows (defaults applied). */
-export function getAgentCapabilitySettings(): AgentCapabilitySettings {
-  const settings = getSettings()
+export async function getAgentCapabilitySettings(): Promise<AgentCapabilitySettings> {
+  const settings = await getSettings()
   return settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES
 }
 
 /** The global guidance every agent receives; '' when none is set. */
-export function getGlobalInstructions(): string {
-  return getSettings().globalInstructions ?? ''
+export async function getGlobalInstructions(): Promise<string> {
+  return (await getSettings()).globalInstructions ?? ''
 }
 
 /** The workspace's Team Brain, or null before one is set up. */
-export function getTeamBrain(): TeamBrainRecord | null {
-  return getSettings().teamBrain ?? null
+export async function getTeamBrain(): Promise<TeamBrainRecord | null> {
+  return (await getSettings()).teamBrain ?? null
 }
 
 export { DEFAULT_SETTINGS }

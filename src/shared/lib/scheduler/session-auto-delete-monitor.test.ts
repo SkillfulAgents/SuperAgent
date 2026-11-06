@@ -29,7 +29,12 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({
-  readAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
+  readStoredAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
+  // The resolving read costs a settings read per agent with a default model; the sweep must not use it.
+  readAgentPreferences: async (slug: string) => {
+    await mockGetSettings()
+    return mockReadAgentPreferences(slug)
+  },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -39,6 +44,11 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
+
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ getClient: () => ({ releaseSession: async () => true, deleteSession: async () => true }) }) }
+})
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
@@ -338,7 +348,7 @@ describe('SessionAutoDeleteMonitor', () => {
     mockListSessions.mockResolvedValue([old1, old2])
     mockReadSessionMetadata.mockResolvedValue({})
     mockIsAuthMode.mockReturnValue(true)
-    mockDeleteSessionsBatch.mockResolvedValue(['ok'])
+    mockDeleteSessionsBatch.mockImplementation(async (_store: unknown, ids: string[]) => ids.filter((id) => id === 'ok'))
 
     await startAndTrigger()
 
@@ -374,6 +384,31 @@ describe('SessionAutoDeleteMonitor', () => {
   // --------------------------------------------------------------------------
   // Error handling
   // --------------------------------------------------------------------------
+
+  it('reads the settings once per sweep, however many agents it sweeps', async () => {
+    mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'model-a', autoDeleteInactiveDays: 30 })
+    mockListSessions.mockResolvedValue([])
+    const readsFor = async (count: number) => {
+      mockListAgents.mockResolvedValue(Array.from({ length: count }, (_, i) => makeAgent(`agent-${i}`)))
+      mockGetSettings.mockClear()
+      await Reflect.get(sessionAutoDeleteMonitor, 'cleanupAllAgents').call(sessionAutoDeleteMonitor)
+      return mockGetSettings.mock.calls.length
+    }
+    expect(await readsFor(1)).toBe(1)
+    expect(await readsFor(5)).toBe(1)
+    // A change committed between two sweeps is what the next one sees.
+    const now = Date.now()
+    mockReadAgentPreferences.mockResolvedValue({})
+    mockListAgents.mockResolvedValue([makeAgent('test-agent')])
+    mockListSessions.mockResolvedValue([makeSession('s40', new Date(now - 40 * 86_400_000))])
+    mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 60 } })
+    await Reflect.get(sessionAutoDeleteMonitor, 'cleanupAllAgents').call(sessionAutoDeleteMonitor)
+    expect(mockDeleteSessionsBatch).not.toHaveBeenCalled()
+    mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
+    await Reflect.get(sessionAutoDeleteMonitor, 'cleanupAllAgents').call(sessionAutoDeleteMonitor)
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), ['s40'])
+  })
 
   it('continues to other agents when one fails', async () => {
     const now = Date.now()

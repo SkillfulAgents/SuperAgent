@@ -43,6 +43,28 @@ export function setErrorReportingUser(user: ErrorReportingUser | null): void {
   try { provider?.setUser(user) } catch { /* never crash */ }
 }
 
+/**
+ * Attach what reports need from the database: the tenant id (the user of
+ * events with no signed-in user) and the settings part of the environment
+ * fingerprint. Error reporting starts before the database opens so a failed
+ * boot can still be reported; the entry point calls this once app records are
+ * installed. Never throws.
+ */
+export async function attachErrorReportingIdentity(): Promise<void> {
+  if (!provider) return
+  try {
+    const [{ getTenantId }, { getSettings }, { collectSettingsEnvironmentData }] = await Promise.all([
+      import('../analytics/tenant-id'),
+      import('../config/settings'),
+      import('./environment'),
+    ])
+    provider.setTenantId(await getTenantId())
+    provider.setContext('environment_settings', collectSettingsEnvironmentData(await getSettings()))
+  } catch (err) {
+    console.warn('[ErrorReporting] Could not attach the tenant identity:', err)
+  }
+}
+
 export function addErrorBreadcrumb(breadcrumb: Breadcrumb): void {
   try { provider?.addBreadcrumb(breadcrumb) } catch { /* never crash */ }
 }

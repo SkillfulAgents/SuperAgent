@@ -68,6 +68,11 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-20250514',
     dashboardBuilderModel: 'claude-sonnet-4-20250514',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+    dashboardBuilderModel: 'claude-sonnet-4-20250514',
+  }),
   getSettings: () => ({}),
   VALID_SCRIPT_TYPES: { darwin: ['applescript', 'shell'], linux: ['shell'], win32: ['powershell'] },
 }))

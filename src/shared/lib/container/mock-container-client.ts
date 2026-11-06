@@ -1,6 +1,6 @@
 import { MessageNotAcceptedError } from './message-dispatch-error'
 import { getSettings } from '../config/settings'
-import { resolveSelectionHierarchy, storedSelection } from '../llm-provider/connections'
+import { resolveSelectionHierarchyFrom, storedSelection } from '../llm-provider/connections'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -774,6 +774,94 @@ export class HookBlockScenario implements MockScenario {
         content: { type: 'result', subtype: 'success', num_turns: 0, duration_api_ms: 0 },
       })
     }, 160)
+  }
+}
+
+/**
+ * A question the person declined, as the real container ends it on a CLI with
+ * `ask_user_question_unanswered_v1`: an answer carrying the reason, annotated
+ * `unanswered`. Null for any other input or rejection.
+ */
+function mockSkippedQuestionResult(
+  pending: { inputType: string; input?: Record<string, unknown> } | undefined,
+  init: RequestInit | undefined,
+): { content: string; toolUseResult: Record<string, unknown> } | null {
+  if (pending?.inputType !== 'question' || typeof init?.body !== 'string') return null
+  let body: { reason?: unknown; unanswered?: unknown }
+  try {
+    body = JSON.parse(init.body) as typeof body
+  } catch {
+    return null
+  }
+  const questions = pending.input?.questions
+  if (typeof body.unanswered !== 'string' || !Array.isArray(questions)) return null
+  const reason = typeof body.reason === 'string' && body.reason ? body.reason : 'User declined to answer'
+  const texts = questions.map((q) => String((q as { question?: unknown }).question ?? ''))
+  return {
+    content: `The user answered: ${texts.map((t) => `"${t}"="${reason}"`).join(', ')}. Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.`,
+    toolUseResult: {
+      questions,
+      answers: Object.fromEntries(texts.map((t) => [t, reason])),
+      annotations: Object.fromEntries(texts.map((t) => [t, { unanswered: body.unanswered }])),
+    },
+  }
+}
+
+/**
+ * A planned task list: TaskCreate calls whose results carry the saved
+ * description (CLI 2.1.317+), the first task in progress, and the turn held
+ * open so the activity card shows the plan.
+ */
+export class TaskPlanScenario implements MockScenario {
+  constructor(
+    private tasks: Array<{ subject: string; description: string; activeForm: string }>,
+    private holdMs: number,
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const at = stepsInOrder()
+    const stamp = Date.now()
+    const ids = this.tasks.map((_, i) => `tool_task_${stamp}_${i}`)
+    const updateId = `tool_task_${stamp}_update`
+    at(10, () => {
+      client.writeJsonlEntry(sessionId, { type: 'user', message: { content: userMessage }, timestamp: new Date().toISOString() })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          content: [
+            ...this.tasks.map((task, i) => ({ type: 'tool_use', id: ids[i], name: 'TaskCreate', input: task })),
+            { type: 'tool_use', id: updateId, name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      this.tasks.forEach((task, i) => {
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: ids[i], content: `Task #${i + 1} created successfully: ${task.subject}` }] },
+          timestamp: new Date().toISOString(),
+          toolUseResult: { task: { id: String(i + 1), subject: task.subject, description: task.description } },
+        })
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: updateId, content: 'Updated task #1 status' }] },
+        timestamp: new Date().toISOString(),
+      })
+      // The live session refetches the transcript on a user frame.
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: updateId, content: 'Updated task #1 status' }] } },
+      })
+    })
+    at(this.holdMs, () => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'The plan is ready.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, { type: 'result', content: { type: 'result', subtype: 'success' } })
+    })
   }
 }
 
@@ -1553,6 +1641,9 @@ export class ProxyReviewScenario implements MockScenario {
     // policies each own a distinct account and don't race on the shared
     // MOCK_ACCOUNT_ID scope-policy rows across workers.
     const accountId = getMessageParam(userMessage, 'account_id') ?? MOCK_ACCOUNT_ID
+    // `scope=session` raises the review as a call from this session's
+    // proxy URL does; without it the review is agent-wide.
+    const callerSessionId = getMessageParam(userMessage, 'scope') === 'session' ? sessionId : undefined
     const capturedDelay = delay
     setTimeout(() => background(async () => {
       await seedMockConnectedAccount(accountId)
@@ -1560,6 +1651,7 @@ export class ProxyReviewScenario implements MockScenario {
       background(reviewManager.requestReview({
         agentSlug,
         accountId,
+        callerSessionId,
         reviewType: 'api',
         toolkit: this.toolkit,
         method: this.method,
@@ -2171,6 +2263,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
     // A task only the runtime's task list names (a subagent started it)
     ['leave a preview server', new SnapshotOnlyBackgroundScenario()],
+    // A planned task list whose tasks carry descriptions, held mid-turn
+    ['plan the work', new TaskPlanScenario([
+      { subject: 'Collect last quarter\'s numbers', description: 'Pull revenue, churn and new accounts per month from the billing export.\nFlag any month with missing rows.', activeForm: 'Collecting last quarter\'s numbers' },
+      { subject: 'Draft the summary', description: 'One page: three headline numbers, what moved them, and what to watch next quarter.', activeForm: 'Drafting the summary' },
+      { subject: 'Send it for review', description: 'Share the draft with the finance channel and ask for corrections by Friday.', activeForm: 'Sending it for review' },
+    ], 120_000)],
     // A workspace hook blocking the prompt before the model sees it
     ['trip the breaker', new HookBlockScenario('Circuit breaker: too many messages without operator input')],
     // Register a slow response scenario for cross-session tests
@@ -2968,11 +3066,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
   }
 
+  async isDefinitelyStopped(): Promise<boolean> {
+    return !this.running
+  }
+
   async getInfo(): Promise<ContainerInfo> {
     return this.getInfoFromRuntime()
   }
 
-  getHostAuthHeaders(): Record<string, string> {
+  async getHostAuthHeaders(): Promise<Record<string, string>> {
     return {}
   }
 
@@ -3278,7 +3380,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // Malformed escape — keep the raw path segment (mock tool ids are alphanumeric anyway)
       }
       console.log(`[MockContainerClient] Input ${resolveMatch[2]}: ${fetchPath}`)
+      const pendingInput = this.pendingInputs.get(toolUseId)
       this.pendingInputs.delete(toolUseId)
+      const skippedQuestion = resolveMatch[2] === 'reject' ? mockSkippedQuestionResult(pendingInput, init) : null
       // Find the session with pending inputs (we only have one active at a time in tests)
       for (const [sessionId, count] of this.pendingInputCounts) {
         if (count > 0) {
@@ -3292,7 +3396,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           const toolResultBlocks = [{
             type: 'tool_result',
             tool_use_id: toolUseId,
-            content: resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request',
+            content: skippedQuestion?.content
+              ?? (resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request'),
           }]
           const sidechainParent = this.sidechainToolParents.get(toolUseId)
           if (sidechainParent) {
@@ -3335,10 +3440,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
               type: 'user',
               message: { content: toolResultBlocks },
               timestamp: new Date().toISOString(),
+              ...(skippedQuestion ? { toolUseResult: skippedQuestion.toolUseResult } : {}),
             })
             this.emitStreamMessage(sessionId, {
               type: 'user',
-              content: { type: 'user', message: { content: toolResultBlocks } },
+              content: {
+                type: 'user',
+                message: { content: toolResultBlocks },
+                ...(skippedQuestion ? { tool_use_result: skippedQuestion.toolUseResult } : {}),
+              },
             })
           }
           if (remaining === 0) {
@@ -3432,7 +3542,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     if (!options.initialMessage) throw new Error('initialMessage is required')
     // Resolve the selection exactly as the real container client does, so E2E
     // assertions see the concrete wire id the SDK would receive.
-    const model = resolveContainerModel(options.model, 'agent')
+    const model = await resolveContainerModel(options.model, 'agent')
     // Record for E2E test assertions
     MockContainerClient.lastCreateSessionCall = {
       effort: options.effort,
@@ -3527,8 +3637,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const existed = this.sessions.has(sessionId)
+    await this.releaseSession(sessionId)
     this.sessions.delete(sessionId)
+    console.log(`[MockContainerClient] Deleted session ${sessionId}`)
+    return true
+  }
+
+  async releaseSession(sessionId: string): Promise<boolean> {
     this.streamCallbacks.delete(sessionId)
     this.pendingUserMessageUuids.delete(sessionId)
     this.busySessions.delete(sessionId)
@@ -3537,9 +3652,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       for (const timer of timers.values()) clearTimeout(timer)
       this.queuedSteeringTimers.delete(sessionId)
     }
-    this.interruptEpochs.delete(sessionId)
-    console.log(`[MockContainerClient] Deleted session ${sessionId}`)
-    return existed
+    // As an interrupt does: the deleted session's pending scenario writes become no-ops.
+    this.interruptEpochs.set(sessionId, (this.interruptEpochs.get(sessionId) ?? 0) + 1)
+    return true
   }
 
   /**
@@ -3606,18 +3721,21 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     // Resolve like the real container client so E2E sees the concrete wire id.
-    let model = resolveContainerModel(options?.model, 'agent')
-    const result: SendMessageResult = {}
-    if (getSettings().llmDefault && !options?.preserveRuntime) {
+    let model = await resolveContainerModel(options?.model, 'agent')
+    // One read for the message, as the real client makes.
+    const settings = await getSettings()
+    const result: SendMessageResult = { llmDefault: Boolean(settings.llmDefault) }
+    if (settings.llmDefault && !options?.preserveRuntime) {
       const { agentRegistry } = await import('../agent-actor')
       const actor = agentRegistry.get(this.config.agentId)
       const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
-      const selected = await resolveSelectionHierarchy(
-        storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
-        storedSelection(metadata?.model, metadata?.llmProviderId),
+      const selected = await resolveSelectionHierarchyFrom(
+        settings,
+        await storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId, settings),
+        await storedSelection(metadata?.model, metadata?.llmProviderId, settings),
         async () => {
           const preferences = await actor.config.get('preferences')
-          return storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId)
+          return storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId, settings)
         },
       )
       model = selected.wireModel

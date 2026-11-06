@@ -44,8 +44,8 @@ export interface PlatformClaim {
 
 // Org tokens carry the acting member as `<token>::<memberId>`; opaque keys are
 // already bound to one member and pass through unchanged.
-function bearerFor(scope: RelayScope): string {
-  const token = getPlatformAccessToken()
+async function bearerFor(scope: RelayScope): Promise<string> {
+  const token = await getPlatformAccessToken()
   if (!token) throw new PlatformRelayError(401, 'Platform access token not available')
   return decodeOrgIdFromToken(token) ? `${token}::${scope}` : token
 }
@@ -56,11 +56,12 @@ async function relayPost(
   body: unknown,
   signal?: AbortSignal,
 ): Promise<Response> {
+  const bearer = await bearerFor(scope)
   const response = await fetch(`${getPlatformProxyBaseUrl()}/v1/webhook-events${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${bearerFor(scope)}`,
+      Authorization: `Bearer ${bearer}`,
     },
     body: JSON.stringify(body),
     signal,

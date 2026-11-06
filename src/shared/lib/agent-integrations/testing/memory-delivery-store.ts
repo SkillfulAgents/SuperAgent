@@ -39,6 +39,10 @@ export function memoryDeliveryStore(): typeof deliveryStore {
     cancel: async (id, externalId, exceptId) => {
       for (const row of rows.values()) if (row.integrationId === id && (!externalId || row.externalId === externalId) && row.id !== exceptId) Object.assign(row, { state: 'cancelled', owner: null, noticeState: 'none' })
     },
+    // Holds no installation status: every row of the integration counts as stopped.
+    cancelStopped: async id => {
+      for (const row of rows.values()) if (row.integrationId === id) Object.assign(row, { state: 'cancelled', owner: null, noticeState: 'none' })
+    },
     cancelSession: async () => {},
     prune: async () => {},
     recover: async () => { rows.clear() },

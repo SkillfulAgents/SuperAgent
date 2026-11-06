@@ -1,6 +1,6 @@
 /**
  * Trusted-origins resolution: the TRUSTED_ORIGINS env var is the documented
- * deployment interface and must win over settings.json — it feeds Better
+ * deployment interface and must win over settings — it feeds Better
  * Auth's baseURL and the audience the token-exchange endpoint verifies
  * grants against.
  */
@@ -11,7 +11,7 @@ import type { Context } from 'hono'
 const mockSettings = vi.hoisted(() => ({ auth: {} as Record<string, unknown> }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => mockSettings,
+  getSettings: async () => mockSettings,
 }))
 
 const mockIsAuthMode = vi.hoisted(() => vi.fn(() => false))
@@ -41,35 +41,35 @@ afterEach(() => {
 })
 
 describe('getTrustedOrigins', () => {
-  it('prefers the TRUSTED_ORIGINS env var over settings', () => {
+  it('prefers the TRUSTED_ORIGINS env var over settings', async () => {
     process.env.TRUSTED_ORIGINS = 'https://cloud.example, https://second.example'
     mockSettings.auth = { trustedOrigins: ['https://settings.example'] }
-    expect(getTrustedOrigins()).toEqual(['https://cloud.example', 'https://second.example'])
+    expect(await getTrustedOrigins()).toEqual(['https://cloud.example', 'https://second.example'])
   })
 
-  it('falls back to settings when the env var is unset or empty', () => {
+  it('falls back to settings when the env var is unset or empty', async () => {
     mockSettings.auth = { trustedOrigins: ['https://settings.example'] }
-    expect(getTrustedOrigins()).toEqual(['https://settings.example'])
+    expect(await getTrustedOrigins()).toEqual(['https://settings.example'])
     process.env.TRUSTED_ORIGINS = ' , '
-    expect(getTrustedOrigins()).toEqual(['https://settings.example'])
+    expect(await getTrustedOrigins()).toEqual(['https://settings.example'])
   })
 })
 
 describe('getAppBaseUrl', () => {
-  it('uses the first TRUSTED_ORIGINS entry (the documented cloud contract)', () => {
+  it('uses the first TRUSTED_ORIGINS entry (the documented cloud contract)', async () => {
     process.env.TRUSTED_ORIGINS = 'https://cloud.example'
-    expect(getAppBaseUrl()).toBe('https://cloud.example')
+    expect(await getAppBaseUrl()).toBe('https://cloud.example')
   })
 
-  it('falls back to HOST/PORT/USE_HTTPS when no origins are configured', () => {
+  it('falls back to HOST/PORT/USE_HTTPS when no origins are configured', async () => {
     process.env.HOST = 'deploy.example'
     process.env.PORT = '8443'
     process.env.USE_HTTPS = 'true'
-    expect(getAppBaseUrl()).toBe('https://deploy.example:8443')
+    expect(await getAppBaseUrl()).toBe('https://deploy.example:8443')
   })
 
-  it('defaults to localhost when nothing is configured', () => {
-    expect(getAppBaseUrl()).toBe('http://localhost:47891')
+  it('defaults to localhost when nothing is configured', async () => {
+    expect(await getAppBaseUrl()).toBe('http://localhost:47891')
   })
 })
 

@@ -320,7 +320,7 @@ describe('LiveSessions', () => {
         async getInfoFromRuntime(): Promise<ContainerInfo> {
           return { status: 'running', port: address.port }
         }
-        getHostAuthHeaders() { return {} }
+        async getHostAuthHeaders() { return {} }
       }
       const client = new ReplayClient({ agentId: AGENT_SLUG })
       const socketConnected = new Promise<import('ws').WebSocket>(resolve => {
@@ -587,6 +587,8 @@ describe('LiveSessions', () => {
         usage: { input_tokens: 1, output_tokens: 0 },
       })
       mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      // The idle frame follows the error, which goes out once it is presented.
+      await flushNotifications()
 
       expect(sessions().isActive(SESSION_ID)).toBe(false)
       expect(sessions().isSubscribed(SESSION_ID)).toBe(false)

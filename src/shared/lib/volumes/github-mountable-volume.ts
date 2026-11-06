@@ -4,6 +4,7 @@ import type { VolumeAttention } from '@shared/lib/types/mount'
 import { githubBrowseSchema, type GithubVolumeConfig } from './github-schema'
 import { githubBranches, githubFolder, githubHead, githubRepo, githubRepos, requireGithubAccount } from './github-client'
 import { githubSync } from './github-sync'
+import { GITHUB_PUSH_BYTES } from './github-merge'
 import { volumeFolderBrowser } from './volume-folder-browser'
 import { guardDelete, guardedUpload } from './guarded-upload'
 
@@ -33,6 +34,11 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
   override get attention(): VolumeAttention | null { return this.sync.attention }
 
   override get sourceLabel(): string { return `GitHub · ${this.config.owner}/${this.config.repo}@${this.config.branch}${this.config.path ? `/${this.config.path}` : ''}` }
+
+  override get agentNote(): string {
+    return 'GitHub drives commit and push changes straight to their branch. ' +
+      `Files over ${GITHUB_PUSH_BYTES / 1000} KB, empty folders, and the repository's .github/workflows/ stay local.`
+  }
 
   async list(name: string): Promise<VolumeEntry[]> {
     await this.sync.fresh()

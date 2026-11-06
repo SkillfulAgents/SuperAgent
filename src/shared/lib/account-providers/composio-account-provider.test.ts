@@ -1,7 +1,13 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
-const { token, proxy } = vi.hoisted(() => ({ token: vi.fn(), proxy: vi.fn() }))
+const { token, proxy, resolveAuth, AUTH } = vi.hoisted(() => ({
+  token: vi.fn(), proxy: vi.fn(), resolveAuth: vi.fn(),
+  /** What a settings read resolves the Composio credentials to. */
+  AUTH: { localApiKey: 'local-key', platformToken: null, userId: 'user' },
+}))
 vi.mock('@shared/lib/composio/client', () => ({
   getConnectionToken: token, proxyExecute: proxy,
+  resolveComposioAuth: resolveAuth,
+  composioAuthFrom: () => ({ localApiKey: 'from-settings', platformToken: null, userId: null }),
   ComposioRedactedTokenError: class extends Error {},
 }))
 import { ComposioRedactedTokenError } from '@shared/lib/composio/client'
@@ -16,6 +22,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   token.mockRejectedValue(new ComposioRedactedTokenError('Token is managed by Composio'))
   proxy.mockResolvedValue({ status: 200, data: { ok: true }, headers: {} })
+  resolveAuth.mockResolvedValue(AUTH)
 })
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -30,7 +37,7 @@ describe('Composio binary transport', () => {
         endpoint: base.targetUrl, method: 'POST', connectedAccountId: 'connection',
         parameters: [{ name: 'dropbox-api-arg', value: headers.get('Dropbox-API-Arg'), type: 'header' }],
         binaryBody: { base64: Buffer.from(bytes).toString('base64'), content_type: contentType },
-      })
+      }, AUTH)
     }
     // A retry must see the original headers and take the same binary path.
     expect(headers.get('Content-Type')).toBe(contentType)
@@ -43,7 +50,7 @@ describe('Composio binary transport', () => {
     })
     expect(proxy).toHaveBeenCalledWith(expect.objectContaining({
       body: { path: '/Team' }, parameters: [{ name: 'content-type', value: 'application/json', type: 'header' }],
-    }))
+    }), AUTH)
     expect(proxy.mock.calls[0][0].binaryBody).toBeUndefined()
   })
 
@@ -53,7 +60,7 @@ describe('Composio binary transport', () => {
     })
     expect(proxy).toHaveBeenCalledWith(expect.objectContaining({
       parameters: [{ name: 'content-type', value: 'application/octet-stream', type: 'header' }],
-    }))
+    }), AUTH)
     expect(proxy.mock.calls[0][0].binaryBody).toBeUndefined()
   })
 
@@ -68,5 +75,35 @@ describe('Composio binary transport', () => {
     expect(fetch.mock.calls[0][1]!.headers).toEqual(new Headers({
       'Content-Type': 'application/octet-stream', Authorization: 'Bearer test-token',
     }))
+  })
+})
+
+describe('Composio credentials for one proxied request', () => {
+  it('reads the credentials once for the token lookup and the forward', async () => {
+    await new ComposioAccountProvider().makeApiCall({ ...base, headers: new Headers(), body: null })
+    expect(resolveAuth).toHaveBeenCalledOnce()
+    expect(token).toHaveBeenCalledWith('connection', AUTH)
+    expect(proxy).toHaveBeenCalledWith(expect.anything(), AUTH)
+  })
+
+  it('reads nothing when the token it cached goes straight to the upstream', async () => {
+    token.mockResolvedValue({ accessToken: 'test-token' })
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('ok')))
+    const provider = new ComposioAccountProvider()
+    await provider.makeApiCall({ ...base, headers: new Headers(), body: null })
+    resolveAuth.mockClear()
+    await provider.makeApiCall({ ...base, headers: new Headers(), body: null })
+    expect(resolveAuth).not.toHaveBeenCalled()
+  })
+
+  it('uses the credentials the request took instead of reading settings', async () => {
+    const provider = new ComposioAccountProvider()
+    const credentials = provider.credentialsFrom({})
+    await provider.getConnection('connection', 'dropbox', credentials).catch(() => undefined)
+    await provider.makeApiCall({ ...base, headers: new Headers(), body: null, credentials })
+    expect(resolveAuth).not.toHaveBeenCalled()
+    const taken = { localApiKey: 'from-settings', platformToken: null, userId: null }
+    expect(token).toHaveBeenCalledWith('connection', taken)
+    expect(proxy).toHaveBeenCalledWith(expect.anything(), taken)
   })
 })

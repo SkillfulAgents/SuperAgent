@@ -130,7 +130,7 @@ export function IntegrationMessageFooter({ display, message, link, className }: 
       {open && (
         <pre
           id={panelId}
-          className="max-h-72 w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 p-3 text-left font-mono text-[11px] leading-relaxed text-muted-foreground"
+          className="max-h-72 w-full overflow-auto whitespace-pre-wrap break-words rounded-card border border-border bg-muted/40 p-3 text-left font-mono text-[11px] leading-relaxed text-muted-foreground"
           data-testid="integration-message-agent-input"
         >
           {message.content.text}

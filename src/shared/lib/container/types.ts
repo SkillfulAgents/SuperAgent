@@ -2,6 +2,7 @@ import type { RuntimeOptions } from './runtime-options'
 import type { ContainerVolume } from '@shared/lib/types/mount'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
+import type { AppSettings } from '@shared/lib/config/settings'
 
 /** The container refused an operation because the session is mid-turn (HTTP 409). */
 export class ContainerConflictError extends Error {
@@ -45,6 +46,13 @@ export interface SendMessageResult {
    * together with `metadataUpdates`.
    */
   metadataWritten?: boolean
+  /**
+   * Whether the settings this send was prepared from name an app default
+   * connection (`llmDefault`): the binding the send resolved is then the
+   * session's. Read with the rest of the send, so the caller need not read
+   * the settings again to store it.
+   */
+  llmDefault?: boolean
 }
 
 export const CONTAINER_RUNNER_IDS = [
@@ -183,6 +191,12 @@ export interface StartOptions {
    * runtime has no view of the workspace and must not read it by host path.
    */
   agentName?: string
+  /**
+   * The settings the caller read for this start, so the start's own steps
+   * (image, resource limits, the agent env) do not read them again. Read by
+   * the start when absent. Host-side only: never part of the container's env.
+   */
+  settings?: AppSettings
   /** Sent as SUPERAGENT_VOLUMES with `volumeRunFlags()`, and dropped with them when the runtime refuses the flags. */
   volumes?: ContainerVolume[]
   /** The runtime refused the volume flags, so the container started without its volumes. */
@@ -270,6 +284,8 @@ export interface ContainerClient {
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
   getInfoFromRuntime(): Promise<ContainerInfo>
+  /** Positive evidence that no container process remains. Unknown/unreachable is false. */
+  isDefinitelyStopped(): Promise<boolean>
 
   // Alias for getInfoFromRuntime() - prefer getCachedInfo() from containerManager
   getInfo(): Promise<ContainerInfo>
@@ -280,8 +296,10 @@ export interface ContainerClient {
 
   // Headers proving the caller is the host — required by the container API,
   // which is also reachable from the agent's own Bash. Callers that dial the
-  // container directly (e.g. WebSocket upgrades) must attach these.
-  getHostAuthHeaders(): Record<string, string>
+  // container directly (e.g. WebSocket upgrades) must attach these. The
+  // token is a database record that never changes for the agent: a client
+  // reads it on its first request and keeps it.
+  getHostAuthHeaders(): Promise<Record<string, string>>
 
   getWebSocketBaseUrl(port: number): string
   getHostApiBaseUrl(): string | Promise<string>
@@ -298,6 +316,9 @@ export interface ContainerClient {
   // Session management (proxied to container API)
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
+  /** Stop the session's process, retaining the record needed to resume after a failed file delete. */
+  releaseSession(sessionId: string): Promise<boolean>
+  // true once the container holds no process for the session, including one it never had.
   deleteSession(sessionId: string): Promise<boolean>
   // Copy a session's transcript into a new session (Fork Session).
   // null = the container predates the fork endpoint (plain 404). Throws

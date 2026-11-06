@@ -26,7 +26,7 @@ import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
-import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE, voiceModeEnteredMessage, voiceTranscriptNotice } from '@shared/lib/voice/voice-mode-messages'
 import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
@@ -398,9 +398,11 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   // the agent to read with the next utterance.
   const [openedByVoice] = useState(() => !!sessionId && isVoiceModeRequested(sessionId))
   const [voiceModeOn, setVoiceModeOn] = useState(openedByVoice)
+  // A Home-created session already has its entry notice; add only the transcript location.
+  const initialVoiceNotice = useRef(openedByVoice)
   useEffect(() => {
     if (!sessionId) return
-    if (isVoiceModeRequested(sessionId)) setVoiceModeOn(true)
+    if (isVoiceModeRequested(sessionId)) { initialVoiceNotice.current = true; setVoiceModeOn(true) }
     clearVoiceModeRequest(sessionId)
   }, [sessionId])
   // The rest of the session view draws around the mic (activity card, hints).
@@ -438,7 +440,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       return
     }
     setVoiceModeOn(true)
-    sendNoticeRef.current(VOICE_MODE_ENTERED_MESSAGE)
     track('voice_mode_entered', { origin: 'session' })
   }, [track, isDisabled, sessionId, createFirstTurn])
   const exitVoiceMode = useCallback(() => setVoiceModeOn(false), [])
@@ -482,6 +483,14 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     send: (text) => {
       voiceSendRef.current = true
       return submitMessage(text).finally(() => { voiceSendRef.current = false })
+    },
+    onStarted: async (path) => {
+      const initial = initialVoiceNotice.current
+      if (!initial || path) {
+        await sendNotice.mutateAsync({ sessionId: sessionId!, agentSlug,
+          content: initial && path ? voiceTranscriptNotice(path) : voiceModeEnteredMessage(path), shouldQuery: false })
+      }
+      initialVoiceNotice.current = false
     },
     startWithAgentTurn: openedByVoice,
     history: voiceHistory,
@@ -549,6 +558,8 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         phase={voice.phase}
         ready={voice.ready}
         agentName={voiceAgent?.name}
+        agent={voiceAgent}
+        waitingForInput={(inputRequests?.length ?? 0) > 0}
         userSpeaking={voice.userSpeaking}
         utterance={voice.utterance}
         transcript={voice.transcript}

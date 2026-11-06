@@ -3,13 +3,22 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
 import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth-settings'
+import { digestKeyPart, type StateKey } from '@shared/lib/app-state'
+import { defineLockout, type LockoutPolicy, type LockoutRecord, type UnlockedStatus } from '@shared/lib/app-state/lockout'
+import { captureException } from '@shared/lib/error-reporting'
 
-// Per-email failed login attempt tracking
-const accountLockouts = new Map<string, { count: number; lockedUntil: number }>()
+/**
+ * Failed email sign-ins per account, keyed by the lowercased email as sent
+ * (digested). Failures below the threshold have no expiry: they last until a
+ * successful sign-in clears them.
+ */
+const accountLockouts = defineLockout({ name: 'auth:lockout' })
 
-/** Exported for testing: clear all lockout state */
-export function clearLockouts() {
-  accountLockouts.clear()
+function lockoutPolicy(authSettings: Awaited<ReturnType<typeof getAuthSettings>>): LockoutPolicy {
+  return {
+    threshold: authSettings.accountLockoutThreshold ?? 10,
+    lockMs: (authSettings.accountLockoutDurationMin ?? 30) * 60 * 1000,
+  }
 }
 
 export function validatePasswordComplexity(password: string): string | null {
@@ -28,7 +37,10 @@ export function validatePasswordComplexity(password: string): string | null {
 export async function authEnforcementMiddleware(c: Context, next: Next) {
   if (c.req.method !== 'POST') return next()
 
-  const authSettings = getAuthSettings()
+  const authSettings = await getAuthSettings()
+  const policy = lockoutPolicy(authSettings)
+  // The sign-in's account and the lockout state it was let through with.
+  let signIn: { key: StateKey<LockoutRecord, 'strong'>; status: UnlockedStatus } | null = null
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const path = new URL(c.req.url).pathname
 
@@ -99,23 +111,22 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
       return c.json({ code: 'LOCAL_AUTH_DISABLED', message: 'Email authentication is disabled' }, 403)
     }
 
-    // Account lockout check
+    // Account lockout check. An AppState failure is thrown: a sign-in whose
+    // lock cannot be read is refused, not let through.
     if (body?.email) {
       const email = String(body.email).toLowerCase()
-      const lockout = accountLockouts.get(email)
-      const now = Date.now()
+      const key = accountLockouts.key(digestKeyPart(email))
+      // Clears a lock that has run out, so the account starts counting again.
+      const status = await accountLockouts.check(key, policy)
 
-      if (lockout && lockout.count >= (authSettings.accountLockoutThreshold ?? 10)) {
-        if (now < lockout.lockedUntil) {
-          const remainingMin = Math.ceil((lockout.lockedUntil - now) / 60000)
-          return c.json({
-            code: 'ACCOUNT_LOCKED',
-            message: `Account is locked. Try again in ${remainingMin} minute${remainingMin !== 1 ? 's' : ''}.`,
-          }, 429)
-        }
-        // Lockout expired — reset
-        accountLockouts.delete(email)
+      if (status.locked) {
+        const remainingMin = Math.max(1, Math.ceil((status.lockedUntil - Date.now()) / 60000))
+        return c.json({
+          code: 'ACCOUNT_LOCKED',
+          message: `Account is locked. Try again in ${remainingMin} minute${remainingMin !== 1 ? 's' : ''}.`,
+        }, 429)
       }
+      signIn = { key, status }
 
       // Pre-check ban status so we return a meaningful message
       // instead of Better Auth's generic "No reason"
@@ -162,25 +173,21 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
   // Call next handler (Better Auth)
   await next()
 
-  // After sign-in: track failed/successful attempts for lockout,
-  // and replace generic "banned" errors with the actual ban reason.
-  if (path === '/api/auth/sign-in/email' && body?.email) {
-    const email = String(body.email).toLowerCase()
-    const status = c.res.status
-
-    if (status >= 400) {
-      // Failed login — increment counter
-      const lockout = accountLockouts.get(email) ?? { count: 0, lockedUntil: 0 }
-      lockout.count++
-      const threshold = authSettings.accountLockoutThreshold ?? 10
-      if (lockout.count >= threshold) {
-        const durationMs = (authSettings.accountLockoutDurationMin ?? 30) * 60 * 1000
-        lockout.lockedUntil = Date.now() + durationMs
+  // After sign-in: count a failure toward the lockout, or clear the failures
+  // this sign-in was checked against. Better Auth has answered by now, so a
+  // lockout write that fails is reported and its answer stands: throwing
+  // would replace it with a 500, and a success's session cookie with it.
+  if (signIn) {
+    try {
+      if (c.res.status >= 400) {
+        await accountLockouts.failed(signIn.key, policy)
+      } else {
+        // Failures counted after the check (a concurrent wrong password) stay.
+        await accountLockouts.succeeded(signIn.key, signIn.status)
       }
-      accountLockouts.set(email, lockout)
-    } else {
-      // Successful login — clear lockout
-      accountLockouts.delete(email)
+    } catch (error) {
+      console.error('[auth] Failed to update the account lockout:', error)
+      captureException(error, { tags: { component: 'auth', operation: 'account-lockout' } })
     }
   }
 }

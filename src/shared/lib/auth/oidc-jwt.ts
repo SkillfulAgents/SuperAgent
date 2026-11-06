@@ -7,16 +7,39 @@ import {
   type JWTPayload,
   type JWTVerifyResult,
 } from 'jose'
-import { getKVCacheStore } from '@shared/lib/kv-cache/kv-store'
+import { z } from 'zod'
+import { appState, defineNamespace, digestKeyPart } from '@shared/lib/app-state'
 
 type RemoteJwksResolver = ReturnType<typeof createRemoteJWKSet>
 
 /** How long a key set is used before jose fetches it again (jose's default). A key id it lacks is fetched sooner. */
 const JWKS_MAX_AGE_MS = 10 * 60_000
 
+/**
+ * Downloaded key sets, so a process that starts often verifies without
+ * downloading them again. A copy keeps jose's `uat` (when the set was
+ * downloaded) and expires `JWKS_MAX_AGE_MS` after it, so it is never used
+ * longer than the download it came from. It holds what the issuer publishes:
+ * public keys.
+ */
+const oidcJwksCache = defineNamespace({
+  name: 'cache:oidc-jwks',
+  consistency: 'eventual',
+  // Typed as jose's own: the schema checks the shape, and jose checks each key
+  // as it imports it. Loose, so a JWK keeps every member (n, e, crv, x, ...).
+  schema: z.object({
+    jwks: z.object({ keys: z.array(z.looseObject({ kty: z.string() })) }),
+    uat: z.number(),
+  }) as z.ZodType<ExportedJWKSCache>,
+  expiry: { ttlMs: JWKS_MAX_AGE_MS, onUpdate: 'reset' },
+})
+
+/** The cache key of an issuer's key set. */
+export const oidcJwksKey = (issuer: string) => oidcJwksCache.key(digestKeyPart(issuer))
+
 interface IssuerKeys {
   resolver: RemoteJwksResolver
-  /** jose's cache of the key set, read from and written back to the KV cache store. */
+  /** jose's cache of the key set, read from and written back to the AppState cache. */
   stored: JWKSCacheInput
 }
 
@@ -30,11 +53,9 @@ export function _setOidcJwksResolverForTest(resolver: RemoteJwksResolver | null)
   jwksByIssuer.clear()
 }
 
-const storeKey = (issuer: string) => `oidc-jwks:${issuer}`
-
 /**
- * The key set comes from the KV cache store first, so a host whose processes start often (its
- * store outlives the process) verifies without fetching the keys in each new process.
+ * The key set comes from the AppState cache first, so a host whose processes start often (its
+ * AppState outlives the process) verifies without fetching the keys in each new process.
  */
 async function issuerKeys(issuer: string): Promise<IssuerKeys> {
   let jwksUrl: URL
@@ -43,14 +64,16 @@ async function issuerKeys(issuer: string): Promise<IssuerKeys> {
   } catch (error) {
     throw new Error(`Invalid issuer URL for JWKS: ${issuer}`, { cause: error })
   }
-  // The store only saves a download: if it fails, jose fetches the keys.
+  // The cache only saves a download: if it fails, jose fetches the keys.
   const stored: JWKSCacheInput =
-    (await getKVCacheStore()
-      .get<ExportedJWKSCache>(storeKey(issuer))
-      .catch((error) => {
-        console.warn('[oidc-jwt] Failed to read the stored issuer key set:', error)
-        return null
-      })) ?? {}
+    (
+      await appState()
+        .get(oidcJwksKey(issuer))
+        .catch((error: unknown) => {
+          console.warn('[oidc-jwt] Failed to read the stored issuer key set:', error)
+          return null
+        })
+    )?.value ?? {}
   return {
     resolver: createRemoteJWKSet(jwksUrl, { cacheMaxAge: JWKS_MAX_AGE_MS, [jwksCache]: stored }),
     stored,
@@ -105,9 +128,9 @@ export async function verifyOidcJwt(
   } finally {
     // jose updated its cache in place when it fetched the key set: keep the new one.
     if (holdsKeys(stored) && stored.uat !== fetchedAt) {
-      await getKVCacheStore()
-        .put(storeKey(options.issuer), stored, JWKS_MAX_AGE_MS)
-        .catch((error) => {
+      await appState()
+        .set(oidcJwksKey(options.issuer), stored, { expiry: { at: stored.uat + JWKS_MAX_AGE_MS } })
+        .catch((error: unknown) => {
           console.warn('[oidc-jwt] Failed to store the issuer key set:', error)
         })
     }

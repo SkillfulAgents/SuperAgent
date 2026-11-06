@@ -6,9 +6,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const settings = vi.hoisted(() => ({ value: {} as Record<string, unknown> }))
+const settings = vi.hoisted(() => ({ value: {} as Record<string, unknown>, reads: 0 }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => settings.value,
+  getSettings: () => {
+    settings.reads++
+    return settings.value
+  },
   getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'review' }),
   getModelCatalogSettings: () => ({}),
 }))
@@ -32,7 +35,7 @@ const live = attachLiveSessionsHarness()
 let client: StreamClient
 let running: boolean
 const runtime = {
-  getClient: () => client as ContainerClient,
+  getClient: async () => client as ContainerClient,
   ensureRunning: vi.fn(async () => client as ContainerClient),
   getCachedInfo: () => ({ status: running ? 'running' : 'stopped' }),
 }
@@ -271,8 +274,7 @@ describe('deliver', () => {
   })
 
   it('stores a changed selection once the message went, and tells every window', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
-    send().mockResolvedValueOnce({ selection: { model: 'model-b', llmProviderId: 'conn-a' } })
+    send().mockResolvedValueOnce({ selection: { model: 'model-b', llmProviderId: 'conn-a' }, llmDefault: true })
     const events = live.collect(SLUG, SESSION).events
     const write = vi.spyOn(service, 'updateSessionMetadata')
 
@@ -284,8 +286,7 @@ describe('deliver', () => {
   })
 
   it('writes nothing when the send changed nothing', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
-    send().mockResolvedValueOnce({ selection: { model: 'model-a', llmProviderId: 'conn-a' } })
+    send().mockResolvedValueOnce({ selection: { model: 'model-a', llmProviderId: 'conn-a' }, llmDefault: true })
     const write = vi.spyOn(service, 'updateSessionMetadata')
 
     await delivery().deliver({ sessionId: SESSION, content: 'hi', options: { model: 'model-a', llmProviderId: 'conn-a' } })
@@ -293,8 +294,25 @@ describe('deliver', () => {
     expect(live.host.sent('global').filter((event) => event.type === 'session_updated')).toEqual([])
   })
 
+  it('stores the binding from what the send read, without reading the settings again', async () => {
+    // The send prepared under an app default and resolved model-b.
+    send().mockResolvedValueOnce({ selection: { model: 'model-b', llmProviderId: 'conn-a' }, llmDefault: true })
+    settings.reads = 0
+    await delivery().deliver({ sessionId: SESSION, content: 'hi', options: { model: 'model-b' } })
+    expect(settings.reads).toBe(0)
+    expect(await metadata()).toMatchObject({ model: 'model-b', llmProviderId: 'conn-a' })
+  })
+
+  it('stores what the request named when the send was prepared without an app default', async () => {
+    send().mockResolvedValueOnce({ selection: { model: 'model-c', llmProviderId: 'conn-a' }, llmDefault: false })
+    settings.reads = 0
+    await delivery().deliver({ sessionId: SESSION, content: 'hi', options: { model: 'model-d' } })
+    expect(settings.reads).toBe(0)
+    expect(await metadata()).toMatchObject({ model: 'model-d' })
+  })
+
   it('still reports a sent message as sent when storing its selection fails', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
+    send().mockResolvedValueOnce({ llmDefault: true })
     vi.spyOn(service, 'updateSessionMetadata').mockRejectedValueOnce(new Error('disk full'))
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
@@ -304,10 +322,9 @@ describe('deliver', () => {
   })
 
   it('reads the session in its own turn, after the delivery ahead of it stored its selection', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
     let releaseFirst!: () => void
     send()
-      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({ selection: { model: 'model-b', llmProviderId: 'conn-a' } }) }))
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({ selection: { model: 'model-b', llmProviderId: 'conn-a' }, llmDefault: true }) }))
       .mockResolvedValueOnce({})
     const read = vi.spyOn(service, 'getSessionMetadata')
 
@@ -370,22 +387,36 @@ describe('start', () => {
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
+  it('stores the runtime the session was created with', async () => {
+    await delivery().start({
+      ...request,
+      create: { initialMessage: 'go', model: 'claude-haiku-5-5', llmProviderId: 'conn-claude-subscription', effort: 'low' as const },
+    })
+
+    expect(await sessionService.getSessionMetadata(store(), 'new-session')).toMatchObject({
+      model: 'claude-haiku-5-5',
+      llmProviderId: 'conn-claude-subscription',
+      effort: 'low',
+      isScheduledExecution: true,
+    })
+  })
+
   it('lets a session started with computer use use any app before its stream attaches', async () => {
     const computerUse = live.agents.get(SLUG).computerUse
-    let atAttach: string | undefined
+    let atAttach: Promise<string> | undefined
     vi.mocked(client.subscribeToStream).mockImplementationOnce(() => {
       atAttach = computerUse.check('use_application', 'Safari', 'new-session')
       return { unsubscribe: vi.fn(), ready: Promise.resolve() }
     })
 
     await delivery().start({ ...request, grantComputerUse: true })
-    expect(atAttach).toBe('granted')
-    expect(computerUse.check('use_application', 'Safari', 'other-session')).toBe('prompt_needed')
+    expect(await atAttach).toBe('granted')
+    expect(await computerUse.check('use_application', 'Safari', 'other-session')).toBe('prompt_needed')
   })
 
   it('grants a session started without computer use nothing', async () => {
     await delivery().start(request)
-    expect(live.agents.get(SLUG).computerUse.check('use_application', 'Safari', 'new-session')).toBe('prompt_needed')
+    expect(await live.agents.get(SLUG).computerUse.check('use_application', 'Safari', 'new-session')).toBe('prompt_needed')
   })
 
   it('stores a session a user starts without its own copy of the commands', async () => {
@@ -547,7 +578,7 @@ describe('stop', () => {
       .toEqual({ path: 'interrupted', interrupted: true, processKept: false, escalated: false })
     expect(client.interruptSession).toHaveBeenCalledWith(SESSION, { scope: 'turn' })
     expect(sessions().isActive(SESSION)).toBe(false)
-    expect(denyAllForAgent).toHaveBeenCalledWith(SLUG)
+    expect(denyAllForAgent).toHaveBeenCalledWith(SLUG, SESSION)
   })
 
   it('leaves an idle session alone when asked to stop only a running one', async () => {

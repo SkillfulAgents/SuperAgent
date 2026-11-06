@@ -3,7 +3,9 @@ import { existsSync } from 'fs'
 import api from '../api'
 import { mountWebBuild } from './web-build'
 import { openDatabase } from '@shared/lib/db'
-import { flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
+import { initializeLocalAppState } from '@shared/lib/app-state'
+import { installServerKeyManager } from '@shared/lib/keys/install-server-key-manager'
+import { attachErrorReportingIdentity, flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
 import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
@@ -69,7 +71,15 @@ async function start() {
 
   // Then the database: nothing below runs without the schema being current,
   // and a migration failure must fail the boot rather than the first request.
+  // Settings and the other host records live in it: give error reports the
+  // tenant identity now that it can be read.
   await openDatabase()
+  await attachErrorReportingIdentity()
+  // Then the state the API's processes share; this one process keeps it in memory.
+  await initializeLocalAppState()
+  // Then key custody: the vault seals and opens through it, and it checks a
+  // key against the sealed data, so after the database and before any request.
+  await installServerKeyManager()
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 

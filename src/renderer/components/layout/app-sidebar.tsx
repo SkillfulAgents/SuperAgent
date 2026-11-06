@@ -231,7 +231,7 @@ function SessionSubItem({
   return (
     <SidebarMenuSubItem
       {...dragHandlers}
-      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+      className={cn('rounded-item', SIDEBAR_FILE_DROP_CUE)}
     >
       <SessionContextMenu
         sessionId={session.id}
@@ -434,7 +434,7 @@ function InlineRenameInput({
       onBlur={submit}
       onClick={(e) => e.stopPropagation()}
       autoFocus
-      className="w-full bg-background border border-input rounded px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
+      className="w-full bg-background border border-input rounded-item px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
     />
   )
 }
@@ -681,7 +681,7 @@ const AgentMenuItemInner = React.forwardRef<
                 params={{ slug: agent.displaySlug }}
                 data-testid={`agent-item-${agent.slug}`}
                 data-active={isSelected}
-                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-item focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                 {/* The orb is decorative; its state still needs a text equivalent. */}
@@ -786,7 +786,7 @@ const AgentMenuItemInner = React.forwardRef<
                   onClick={handleChevronClick}
                   aria-label={isOpen ? 'Collapse' : 'Expand'}
                   aria-expanded={isOpen}
-                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-control outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
                   <AvatarCutout cutout={avatarCutout}>
                     <AgentAvatar
@@ -1010,7 +1010,7 @@ function TeamBrainMenuButton() {
 }
 
 const userMenuItemClassName =
-  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
+  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-item hover:bg-accent transition-colors disabled:opacity-60'
 
 /**
  * The footer's primary button. With a signed-in user it is their avatar and
@@ -1131,7 +1131,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 function HistoryNavigationButtons() {
   const { canGoBack, canGoForward, back, forward } = useHistoryNavigation()
   const buttonClassName =
-    'h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors ' +
+    'h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground transition-colors ' +
     'hover:bg-foreground/10 hover:text-foreground disabled:cursor-default disabled:text-muted-foreground/30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/30'
 
   return (
@@ -1776,7 +1776,7 @@ export function AppSidebar() {
 
           {isWindowsElectron && (
             <button
-              className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              className="app-no-drag shrink-0 p-0.5 rounded-icon hover:bg-foreground/10 transition-colors cursor-default"
               aria-label="Application menu"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect()
@@ -1801,7 +1801,7 @@ export function AppSidebar() {
                     type="button"
                     onClick={openSearch}
                     aria-label="Search"
-                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground hover:bg-foreground/10 transition-colors"
                     data-testid="search-button"
                   >
                     <Search className="h-4 w-4 -translate-y-[1px]" />

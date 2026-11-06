@@ -13,7 +13,7 @@ class DirectChat extends MockChatAgentIntegration {
 }
 
 const record: AgentIntegrationRecord = { id: 'integration', agentSlug: 'agent', provider: 'slack', config: '{}', name: null, status: 'active',
-  errorMessage: null, model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+  errorMessage: null, model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), version: 0, updatedAt: new Date() }
 const context = { integration: record, externalId: 'C1' } as IntegrationInputContext
 const sentAt = new Date('2026-09-22T10:00:00.000Z')
 

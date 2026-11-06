@@ -1,3 +1,4 @@
+import { readPlatformNotifications } from '@renderer/lib/platform-notification-read-cache'
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -62,18 +63,7 @@ export function useMarkPlatformNotificationsRead() {
 
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (ids: string[]) => {
-      const res = await apiFetch('/api/platform-notifications/read', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
-      })
-      if (!res.ok) throw new Error('Failed to mark platform notifications read')
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
-    },
+    mutationFn: (ids: string[]) => readPlatformNotifications(queryClient, ids),
   })
 }
 
@@ -83,15 +73,6 @@ export function useMarkAllPlatformNotificationsRead() {
 
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async () => {
-      const res = await apiFetch('/api/platform-notifications/read-all', {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to mark all platform notifications read')
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
-    },
+    mutationFn: () => readPlatformNotifications(queryClient),
   })
 }

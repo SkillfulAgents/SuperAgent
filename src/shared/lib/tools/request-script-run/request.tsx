@@ -134,7 +134,7 @@ export function ScriptRunRequestItem({
           ? {
               extraContent: (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="inline-flex h-7 items-center rounded-md bg-muted px-2.5 text-xs font-medium text-foreground/80">
+                  <span className="inline-flex h-7 items-center rounded-control bg-muted px-2.5 text-xs font-medium text-foreground/80">
                     {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
                   </span>
                 </div>
@@ -144,10 +144,10 @@ export function ScriptRunRequestItem({
       }
     >
       <div className="pt-4">
-        <div className="overflow-hidden rounded-md border border-border bg-white dark:bg-background">
+        <div className="overflow-hidden rounded-card border border-border bg-white dark:bg-background">
           <pre className="overflow-x-auto whitespace-pre-wrap break-all p-2 text-xs font-mono text-foreground/75">
             <code>
-              <span className="mr-2 inline-flex h-6 items-center rounded-md bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
+              <span className="mr-2 inline-flex h-6 items-center rounded-control bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
                 {SCRIPT_TYPE_LABELS[scriptType] || scriptType}
               </span>
               {script}

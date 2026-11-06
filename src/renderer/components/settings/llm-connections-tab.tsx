@@ -42,7 +42,7 @@ const SIGN_IN_PROVIDER: Record<OAuthProvider, SubscriptionSignInProvider> = {
   'grok-subscription': 'grok', 'codex-subscription': 'codex', 'kimi-subscription': 'kimi', 'minimax-subscription': 'minimax',
 }
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 // Shared by connection rows and the Add connection row so the list keeps one row height.
 const CONNECTION_ROW = 'min-h-[3.75rem] py-3 px-4 flex items-center'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
@@ -270,7 +270,7 @@ function ConnectionRowMenu({
               setOpen(false)
               onEdit()
             }}
-            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left"
+            className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted text-left"
           >
             <Pencil className="h-4 w-4" />
             Edit
@@ -283,7 +283,7 @@ function ConnectionRowMenu({
             setOpen(false)
             onDelete()
           }}
-          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left text-destructive disabled:pointer-events-none disabled:opacity-50"
+          className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted text-left text-destructive disabled:pointer-events-none disabled:opacity-50"
         >
           <Trash2 className="h-4 w-4" />
           Delete
@@ -339,10 +339,10 @@ function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void 
             key={id}
             type="button"
             onClick={() => onPick(id)}
-            className="flex items-start gap-4 rounded-xl border p-5 text-left transition-colors hover:border-muted-foreground/50 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex items-start gap-4 rounded-card border p-5 text-left transition-colors hover:border-muted-foreground/50 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {/* The AWS logo's wordmark is near-black, so its tile stays light in dark mode. */}
-            <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-background', id === 'bedrock' && 'dark:bg-white')}>
+            <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-control border bg-background', id === 'bedrock' && 'dark:bg-white')}>
               <ProviderLogo provider={id} />
             </span>
             <span className="min-w-0">
@@ -619,7 +619,7 @@ export function ConnectionEditor({
       )}
       <div className="grid gap-2 text-sm">
         Model Defaults
-        <div className="overflow-hidden rounded-lg border divide-y divide-border/50" data-testid="connection-default-models">
+        <div className="overflow-hidden rounded-card border divide-y divide-border/50" data-testid="connection-default-models">
           {([
             { label: 'Browser model', description: 'Runs web browsing for agents.', model: browserModel, onPick: setBrowserModel },
             // Stored as the dashboard model; users know dashboards as agentic apps.
@@ -649,7 +649,7 @@ export function ConnectionEditor({
           Advanced Settings
           <ChevronDown className="h-4 w-4 shrink-0 opacity-70 transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
         </CollapsibleTrigger>
-        <CollapsibleContent className="overflow-hidden rounded-lg border divide-y divide-border/50">
+        <CollapsibleContent className="overflow-hidden rounded-card border divide-y divide-border/50">
           <div data-testid="connection-env-editor">
             <div className="flex flex-col px-4 py-3">
               <span className="flex items-center gap-2 text-xs font-medium">
@@ -662,7 +662,7 @@ export function ConnectionEditor({
             </div>
             <div className="space-y-3 px-4 pb-4">
               {envEntries.length > 0 && (
-                <div className="divide-y divide-border/50 rounded-md border">
+                <div className="divide-y divide-border/50 rounded-card border">
                   {envEntries.map(([key, value]) => (
                     <div key={key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 py-1.5 pl-3 pr-1.5" data-testid="connection-env-row">
                       <span className="truncate font-mono text-xs" title={key}>{key}</span>

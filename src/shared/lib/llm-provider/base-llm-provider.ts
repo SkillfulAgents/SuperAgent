@@ -2,12 +2,13 @@ import type { ProviderUsage } from './usage-schema'
 import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
 import type { OAuthCredential } from './oauth-schema'
 import Anthropic from '@anthropic-ai/sdk'
-import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
+import { getSettings, type ApiKeySettings, type ApiKeyStatus, type AppSettings } from '../config/settings'
 import type { ConnectionConfig } from './connection-schema'
-import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { ModelCatalogSettings, ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { ModelAvailability } from './model-availability-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
+import type { Attribution } from '../platform-attribution'
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
 import { PROVIDER_ERROR_CODES, isUpstreamApiErrorCode } from '@shared/lib/types/api'
 
@@ -55,11 +56,43 @@ export interface ProviderConfiguration {
   env: Record<string, string | undefined>
 }
 
+/**
+ * The global settings a provider without a {@link ProviderConfiguration}
+ * reads its credentials from (the platform provider: its stored connection).
+ */
+export type ProviderSettings = Pick<AppSettings, 'apiKeys' | 'platformAuth'>
+
+/** How {@link BaseLlmProvider.getModelAvailability} reads what it needs. */
+export interface ModelAvailabilityOptions {
+  /** Re-read the provider's source instead of its cache. */
+  fresh?: boolean
+  /** The global settings the operation already read; read here when absent. */
+  settings?: ProviderSettings
+  /**
+   * The attribution the operation acts under, resolved at most once for it by
+   * the caller (see `actingAttributionOnce`); resolved here when absent.
+   */
+  acting?: () => Promise<Attribution | null>
+}
+
 export abstract class BaseLlmProvider {
   constructor(protected readonly configuration?: ProviderConfiguration) {}
 
-  protected configuredKeys(): ProviderConfiguration['apiKeys'] {
-    return this.configuration?.apiKeys ?? getSettings().apiKeys ?? {}
+  /**
+   * The global settings for a provider that is not bound to a connection:
+   * those the operation already read (`given`), else read fresh. Undefined
+   * for one that is bound: it never reads global settings.
+   */
+  protected async ambientSettings(given?: ProviderSettings): Promise<ProviderSettings | undefined> {
+    return this.configuration ? undefined : given ?? await getSettings()
+  }
+
+  /**
+   * The connection's credentials, else those in the global settings given
+   * (read with {@link ambientSettings}, once per operation).
+   */
+  protected keysFrom(settings: ProviderSettings | undefined): ProviderConfiguration['apiKeys'] {
+    return this.configuration?.apiKeys ?? settings?.apiKeys ?? {}
   }
 
   protected envValue(name: string): string | undefined {
@@ -109,7 +142,7 @@ export abstract class BaseLlmProvider {
    * deferred tools), where it used to mean off for anything but
    * api.anthropic.com.
    */
-  toolSearchEnv(_model?: string): 'true' | 'false' {
+  async toolSearchEnv(_model?: string): Promise<'true' | 'false'> {
     return 'false'
   }
 
@@ -117,9 +150,18 @@ export abstract class BaseLlmProvider {
   readonly mediaPrompt: string | undefined = undefined
 
   /** Check whether an API key is configured and its source. */
-  getApiKeyStatus(): ApiKeyStatus {
-    const settings = { apiKeys: this.configuredKeys() }
-    if ((this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)) {
+  async getApiKeyStatus(): Promise<ApiKeyStatus> {
+    return this.apiKeyStatusFrom(await this.ambientSettings())
+  }
+
+  /**
+   * {@link getApiKeyStatus} from global settings already read; a provider
+   * bound to a connection ignores them. For callers that must not read the
+   * settings again, such as a data migration reading its own handle.
+   */
+  apiKeyStatusFrom(settings: ProviderSettings | undefined): ApiKeyStatus {
+    const keys = this.keysFrom(settings)
+    if ((this.settingsKeyField ? keys[this.settingsKeyField] : undefined)) {
       return { isConfigured: true, source: 'settings' }
     }
     if (this.envValue(this.envVarName)) {
@@ -129,15 +171,28 @@ export abstract class BaseLlmProvider {
   }
 
   /** Get the effective API key (settings take precedence over env var). */
-  getEffectiveApiKey(): string | undefined {
-    const settings = { apiKeys: this.configuredKeys() }
-    const fromSettings = (this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)
+  async getEffectiveApiKey(): Promise<string | undefined> {
+    return this.effectiveApiKeyFrom(await this.ambientSettings())
+  }
+
+  /** {@link getEffectiveApiKey} from global settings already read. */
+  protected effectiveApiKeyFrom(settings: ProviderSettings | undefined): string | undefined {
+    const keys = this.keysFrom(settings)
+    const fromSettings = (this.settingsKeyField ? keys[this.settingsKeyField] : undefined)
     if (fromSettings) return fromSettings
     return this.envValue(this.envVarName)
   }
 
   /** Create an Anthropic-compatible SDK client configured for this provider. */
-  abstract createClient(): Anthropic
+  createClient(): Promise<Anthropic> {
+    return this.createClientFrom()
+  }
+
+  /**
+   * {@link createClient} from the global settings the operation already read
+   * (read here when absent); a provider bound to a connection ignores them.
+   */
+  abstract createClientFrom(settings?: ProviderSettings): Promise<Anthropic>
 
   /**
    * The provider's built-in catalog of concrete model ids (shipped in code).
@@ -152,17 +207,21 @@ export abstract class BaseLlmProvider {
    * Current restrictions for a connection's catalog, for the account the
    * current request or run is attributed to. Null means unrestricted. Model
    * selection treats an unavailable model like an unset one. `fresh` re-reads
-   * the provider's source instead of its cache.
+   * the provider's source instead of its cache; `settings` and `acting` are
+   * what the operation already read, so a chain of checks reads them once.
    */
-  async getModelAvailability(_catalog: ModelDefinition[], _options: { fresh?: boolean } = {}): Promise<ModelAvailability | null> {
+  async getModelAvailability(_catalog: ModelDefinition[], _options: ModelAvailabilityOptions = {}): Promise<ModelAvailability | null> {
     return null
   }
 
   /** A live turn failed with this error; a provider may drop state it proves stale. */
   noteTurnError(_status: number | undefined, _body: unknown): void {}
 
-  /** Public cache identity for availability; changes when provider account context changes. */
-  getModelAvailabilityRevision(): string | null {
+  /**
+   * Public cache identity for availability; changes when provider account
+   * context changes. `settings`: the global settings already read, if any.
+   */
+  async getModelAvailabilityRevision(_settings?: ProviderSettings): Promise<string | null> {
     return null
   }
 
@@ -171,8 +230,12 @@ export abstract class BaseLlmProvider {
    * (e.g. 'opus') so defaults ride upgrades. The resolver alias-resolves
    * this to a concrete id; it is the ultimate fallback when a selection
    * can't be matched.
+   *
+   * `modelCatalog` is the global settings' catalog, for the one provider whose
+   * defaults come from it (generic: the first model the user added). Without
+   * it that provider falls back to GENERIC_DEFAULT_MODEL or its placeholder.
    */
-  getDefaultModel(purpose: ModelPurpose): string {
+  getDefaultModel(purpose: ModelPurpose, _modelCatalog?: ModelCatalogSettings): string {
     switch (purpose) {
       case 'summarizer': return this.catalogDefaultModels.summarizerModel
       case 'agent': return this.catalogDefaultModels.agentModel
@@ -188,24 +251,27 @@ export abstract class BaseLlmProvider {
    * (which may not exist for the new one, e.g. a bare-Claude id on Bedrock)
    * can't leak across providers.
    */
-  getDefaultModels(): {
+  getDefaultModels(modelCatalog?: ModelCatalogSettings): {
     summarizerModel: string
     agentModel: string
     browserModel: string
     dashboardBuilderModel: string
   } {
     return {
-      summarizerModel: this.getDefaultModel('summarizer'),
-      agentModel: this.getDefaultModel('agent'),
-      browserModel: this.getDefaultModel('browser'),
-      dashboardBuilderModel: this.getDefaultModel('dashboard'),
+      summarizerModel: this.getDefaultModel('summarizer', modelCatalog),
+      agentModel: this.getDefaultModel('agent', modelCatalog),
+      browserModel: this.getDefaultModel('browser', modelCatalog),
+      dashboardBuilderModel: this.getDefaultModel('dashboard', modelCatalog),
     }
   }
 
   async getContainerProxyConfig(): Promise<LlmProxyConfig | undefined> { return undefined }
 
-  /** Get env vars to inject into agent containers. */
-  abstract getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>>
+  /**
+   * Get env vars to inject into agent containers. `settings`: the global
+   * settings the operation already read (read here when absent and needed).
+   */
+  abstract getContainerEnvVars(agent?: AgentIdentity, settings?: ProviderSettings): Promise<Record<string, string | undefined>>
 
   /**
    * Validate an API key. `opts.baseUrl` is only meaningful for providers whose
@@ -229,13 +295,16 @@ export abstract class BaseLlmProvider {
   // Only consulted for upstream API failures: classes this provider recognizes
   // get one under any upstream code (the CLI tags some denials `unknown`);
   // the generic banner only under a code that marks a provider error.
-  presentationForTurnError(
+  // `settings`: the global settings already read, so a page of errors reads
+  // them once (the platform provider's billing link comes from them).
+  async presentationForTurnError(
     status: number | undefined,
     body: unknown,
     apiErrorCode: string | null | undefined,
-  ): ProviderErrorPresentation | null {
+    settings?: ProviderSettings,
+  ): Promise<ProviderErrorPresentation | null> {
     if (!isUpstreamApiErrorCode(apiErrorCode)) return null
-    const specialized = this.parseErrorResponseOverride(status, body, apiErrorCode)
+    const specialized = await this.parseErrorResponseOverride(status, body, apiErrorCode, settings)
     if (specialized) return specialized
     return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
   }
@@ -245,11 +314,12 @@ export abstract class BaseLlmProvider {
    * recognizes. Return null for everything else — the generic banner is
    * applied here in the base class, so overrides never build it themselves.
    */
-  protected parseErrorResponseOverride(
+  protected async parseErrorResponseOverride(
     _status: number | undefined,
     _body: unknown,
     _apiErrorCode?: string,
-  ): ProviderErrorPresentation | null {
+    _settings?: ProviderSettings,
+  ): Promise<ProviderErrorPresentation | null> {
     return null
   }
 }

@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: vi.fn(() => ({ app: {} })),
+  getSettings: vi.fn(async () => ({ app: {} })),
 }))
 
 vi.mock('@shared/lib/services/user-settings-service', () => ({
@@ -188,7 +188,7 @@ describe('check-for-updates', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -551,7 +551,7 @@ describe('silent background checks', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -653,7 +653,7 @@ describe('channel file not found (latest-mac.yml 404)', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -737,7 +737,7 @@ describe('concurrent check coalescing', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -809,7 +809,7 @@ describe('check timeout (watchdog)', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -872,7 +872,7 @@ describe('download and install lifecycle', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -952,7 +952,7 @@ describe('download target channel (re-run invariant)', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: true } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
@@ -995,7 +995,7 @@ describe('prerelease setting transitions', () => {
     mockAutoUpdater.allowPrerelease = false
     mockAutoUpdater.allowDowngrade = false
     _mockChannel = undefined
-    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getSettings).mockResolvedValue({ app: {} } as any)
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()

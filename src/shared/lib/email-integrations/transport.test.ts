@@ -1,15 +1,22 @@
 import { eq, sql } from 'drizzle-orm'
 import { chatIntegrations } from '../db/schema'
 import { createAgentIntegrationSession } from '../services/agent-integration-session-service'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
 import { createAgentIntegration, getAgentIntegration } from '../services/agent-integration-service'
 import { PlatformEmailAgentIntegration } from './platform-email-agent-integration'
 import { emailConfigSchema, emailMessageSchema, parseEmailConfig } from './config-schema'
+import { emailMailboxWake } from './wake'
+import { appState } from '../app-state'
+import { backgroundSettled } from '../background'
 
 let handle: TestDatabase, testDb: AppDatabase
-const transport = vi.hoisted(() => ({ json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn() }))
+// The gateway client; one operation's client (a poll, a history read) is the same mock.
+const transport = vi.hoisted(() => {
+  const client = { json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn(), forOperation: () => client }
+  return client
+})
 vi.mock('../db', () => ({ get db() { return testDb } }))
 vi.mock('./live', () => ({ watchEmail: transport.watch }))
 vi.mock('./gateway-client', async importOriginal => ({ ...await importOriginal<typeof import('./gateway-client')>(), clientFor: () => transport }))
@@ -33,7 +40,7 @@ beforeEach(async () => {
   transport.message.mockResolvedValue(message)
   transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [], hasMore: false, cursor: 0 } : { status: 'active', domain: { status: 'ready' } })
 })
-afterEach(async () => { await connector.disconnect(); vi.useRealTimers(); await handle.close() })
+afterEach(async () => { await connector.disconnect(); vi.restoreAllMocks(); vi.useRealTimers(); await handle.close() })
 it('resumes its persisted poll cursor, fetches full messages and checkpoints after handoff', async () => {
   await testDb.update(chatIntegrations).set({ config: JSON.stringify({ ...config, eventCursor: 10 }) }).where(eq(chatIntegrations.id, id)).run()
   transport.json.mockImplementation(async (path: string) => path === '/me' ? { orgId: 'org', memberId: 'member' } : path.startsWith('/events') ? { data: [{ cursor: 11, type: 'message.received', messageId: message.id }], hasMore: false, cursor: 11 } : { status: 'active', domain: { status: 'ready' } })
@@ -128,4 +135,113 @@ it('bounds gateway discovery to 50 threads and one message page each', async () 
   expect(transport.json).toHaveBeenCalledTimes(51)
   expect(transport.json.mock.calls[0][0]).toContain('limit=51')
   expect(transport.json.mock.calls.slice(1).every(([path]) => path.endsWith('?after=0'))).toBe(true)
+})
+
+describe('wakes', () => {
+  let events: Array<{ cursor: number; type: string; messageId: string | null }>
+  const eventPolls = () => transport.json.mock.calls.filter(([path]) => path.startsWith('/events')).length
+  const storedCursor = async () => parseEmailConfig((await getAgentIntegration(id))!.config).eventCursor
+  const wake = (cursor?: number, mailboxId = config.mailboxId) => appState().publish(emailMailboxWake.channel(mailboxId), { mailboxId, kind: 'message.received', ...(cursor ? { cursor } : {}) })
+  /** Runs what a wake or a due timer started, without moving the clock. */
+  const settle = async () => { await backgroundSettled(); await vi.advanceTimersByTimeAsync(0); await backgroundSettled() }
+  beforeEach(() => {
+    events = []
+    transport.json.mockImplementation(async (path: string) => {
+      if (path === '/me') return { orgId: 'org', memberId: 'member' }
+      if (path.startsWith('/events')) {
+        const after = Number(new URL(path, 'https://gateway.test').searchParams.get('after'))
+        const data = events.filter(event => event.cursor > after)
+        return { data, hasMore: false, cursor: data.at(-1)?.cursor ?? after }
+      }
+      return { status: 'active', domain: { status: 'ready' } }
+    })
+  })
+
+  it('catches up from the stored cursor when no wake arrives, on the next poll and on reconnect', async () => {
+    const inputs = vi.fn(); connector.onEvent(inputs)
+    await connector.connect(); await settle()
+    events.push({ cursor: 11, type: 'message.received', messageId: message.id })
+    // The wake for it is lost.
+    await settle()
+    expect(inputs).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(inputs).toHaveBeenCalledOnce()
+    expect(await storedCursor()).toBe(11)
+
+    await connector.disconnect()
+    events.push({ cursor: 12, type: 'message.received', messageId: message.id })
+    connector = await streamConnector(); connector.onEvent(inputs)
+    await connector.connect(); await settle()
+    expect(inputs).toHaveBeenCalledTimes(2)
+    expect(await storedCursor()).toBe(12)
+  })
+  it('polls on a wake, and a repeated or late one neither polls again nor hands the message over twice', async () => {
+    const inputs = vi.fn(); connector.onEvent(inputs)
+    await connector.connect(); await settle()
+    events.push({ cursor: 11, type: 'message.received', messageId: message.id })
+    await wake(11); await settle()
+    expect(inputs).toHaveBeenCalledOnce()
+    expect(await storedCursor()).toBe(11)
+    const polls = eventPolls()
+    await wake(11); await wake(11); await wake(5); await settle()
+    expect(eventPolls()).toBe(polls)
+    expect(inputs).toHaveBeenCalledOnce()
+    // A wake for another mailbox is not this one's.
+    events.push({ cursor: 12, type: 'message.received', messageId: message.id })
+    await wake(12, '00000000-0000-4000-8000-000000000099'); await settle()
+    expect(eventPolls()).toBe(polls)
+    // A wake without a cursor (a stream's `ready`) always polls.
+    await appState().publish(emailMailboxWake.channel(config.mailboxId), { mailboxId: config.mailboxId, kind: 'ready' }); await settle()
+    expect(inputs).toHaveBeenCalledTimes(2)
+    expect(await storedCursor()).toBe(12)
+  })
+  it('moves the cursor only once the message is handed over, however many wakes name it', async () => {
+    const inputs = vi.fn().mockResolvedValue('retry'); connector.onEvent(inputs)
+    await connector.connect(); await settle()
+    events.push({ cursor: 11, type: 'message.received', messageId: message.id })
+    await wake(11); await wake(11); await settle()
+    expect(await storedCursor()).toBe(0)
+    inputs.mockResolvedValue('accepted')
+    await wake(11); await settle()
+    expect(await storedCursor()).toBe(11)
+  })
+  it('stops listening for wakes when it disconnects, also while it is still subscribing', async () => {
+    const state = appState()
+    const subscribe = state.subscribe.bind(state)
+    let setUp!: () => void
+    const gate = new Promise<void>(resolve => { setUp = resolve })
+    const heard = vi.fn()
+    vi.spyOn(state, 'subscribe').mockImplementation(async (channels, listener, options) => {
+      await gate
+      return subscribe(channels, (event, channel) => { heard(event); return listener(event, channel) }, options)
+    })
+    const connecting = connector.connect()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(state.subscribe).toHaveBeenCalledOnce()
+    await connector.disconnect()
+    setUp(); await connecting
+    const polls = eventPolls()
+    await wake(); await settle()
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(heard).not.toHaveBeenCalled()
+    expect(eventPolls()).toBe(polls)
+    expect(transport.watch).not.toHaveBeenCalled()
+  })
+  it('ends its wake subscription on disconnect and builds a new one on reconnect', async () => {
+    const state = appState()
+    const heard = vi.fn()
+    const subscribe = state.subscribe.bind(state)
+    vi.spyOn(state, 'subscribe').mockImplementation((channels, listener, options) => subscribe(channels, (event, channel) => { heard(event); return listener(event, channel) }, options))
+    const inputs = vi.fn(); connector.onEvent(inputs)
+    await connector.connect(); await settle()
+    await connector.disconnect()
+    await wake(); await settle()
+    expect(heard).not.toHaveBeenCalled()
+    connector = await streamConnector(); connector.onEvent(inputs)
+    await connector.connect(); await settle()
+    events.push({ cursor: 3, type: 'message.received', messageId: message.id })
+    await wake(3); await settle()
+    expect(heard).toHaveBeenCalledOnce()
+    expect(inputs).toHaveBeenCalledOnce()
+  })
 })

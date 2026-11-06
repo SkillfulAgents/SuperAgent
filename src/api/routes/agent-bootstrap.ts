@@ -159,7 +159,7 @@ agentBootstrap.post('/:agentSlug/events/undelivered-turn', async (c) => {
   if (!parsed.success) return c.json({ error: 'Invalid undelivered turn event' }, 400)
 
   const { closeCode, ...report } = parsed.data
-  const containerRunner = getSettings().container?.containerRunner ?? 'unknown'
+  const containerRunner = (await getSettings()).container?.containerRunner ?? 'unknown'
   // Only a host that still shows the turn as working on a socket it thinks is
   // open is stuck; anything else already settled or detached on purpose.
   const live = await agentRegistry.get(agentSlug).sessions.live(report.sessionId)

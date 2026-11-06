@@ -1,3 +1,4 @@
+import { notificationClientId } from '@renderer/lib/notification-read-cache'
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, cleanup, waitFor } from '@testing-library/react'
@@ -430,7 +431,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // No OS popup (the user is watching it live), but the backend-created
     // record is marked read so the unread badge doesn't inflate.
     expect(showOSNotification).not.toHaveBeenCalled()
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' }))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', expect.objectContaining({ method: 'POST' })))
   })
 
   it('also invalidates sessions query (for sidebar awaiting_input indicator)', () => {
@@ -531,6 +532,34 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(sessions?.[0].isAwaitingInput).toBe(true)
     const agents = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }[]>(['agents'])
     expect(agents?.[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('session_awaiting_input on an idle session raises awaiting without marking it working', () => {
+    queryClient.setQueryData(['sessions', 'my-agent'], [{
+      id: 'sess-1',
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+      isActive: false,
+    }])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_awaiting_input',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    const [session] = queryClient.getQueryData<{ isActive?: boolean; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])!
+    expect(session.isAwaitingInput).toBe(true)
+    expect(session.isActive).toBe(false)
   })
 
   it('session_idle optimistically clears working AND awaiting flags (teardown broadcasts no input_provided)', () => {
@@ -713,6 +742,24 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(agents?.[0].hasUnreadNotifications).toBe(false)
   })
 
+  it.each(['notifications_changed', 'agent_access_revoked', 'agent_members_changed'])('%s refreshes list, unified counts and every unread projection', type => {
+    const keys = [['notifications', 15, 0, 'all'], ['notifications', 'unread-count'], ['agents'], ['sessions', 'a'], ['session', 's1', 'a']]
+    keys.forEach(key => queryClient.setQueryData(key, {}))
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type, agentSlug: 'a' })
+    keys.forEach(key => expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true))
+  })
+
+  it('ignores the initiating cache’s echo but refreshes another window', () => {
+    const key = ['notifications', 'unread-count']
+    queryClient.setQueryData(key, { count: 0 })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'notifications_changed', agentSlug: 'a', sourceClientId: notificationClientId(queryClient) })
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false)
+    simulateSSEMessage(getLatestEventSource(), { type: 'notifications_changed', agentSlug: 'a', sourceClientId: crypto.randomUUID() })
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+  })
+
   it('platform_notifications_changed refreshes the proxy-live inbox queries', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -741,7 +788,8 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     })
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notifications'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-x'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['session'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
   })
 
@@ -1030,7 +1078,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 
-  it('only refreshes collaboration and drive queries on reconnect, not first open', () => {
+  it('refetches everything the feed keeps current on each connected, and nothing on open', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -1039,26 +1087,54 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
+    // The server may still be setting up what the stream follows when it opens.
     const es = getLatestEventSource()
     es.onopen?.()
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
-    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
-    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
-    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['mounts'] })
+    expect(invalidateSpy).not.toHaveBeenCalled()
 
+    simulateSSEMessage(es, { type: 'connected' })
+    expect(invalidateSpy).toHaveBeenCalledTimes(1)
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+
+    // A browser-handled reconnect: once on connected, never on open as well.
     invalidateSpy.mockClear()
     es.onerror?.()
     es.onopen?.()
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
-    // A drive's status change sent during the gap is not sent again.
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['mounts'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['volume-definitions'] })
-    // Mount and a browser-handled reconnect are not outages.
-    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    simulateSSEMessage(es, { type: 'connected' })
+    expect(invalidateSpy).toHaveBeenCalledTimes(1)
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+
+  it('connected after a reconnect from an overflow refreshes schedules, widgets and requests', () => {
+    // What the feed keeps current, with an LLM-backed query beside it.
+    const kept = [
+      ['scheduled-tasks', 'agent-a'],
+      ['scheduled-task', 'task-1'],
+      ['widgets', 'agent-a'],
+      ['pending-user-requests'],
+      ['sessions', 'agent-a'],
+      ['agents'],
+    ]
+    const fill = () => {
+      for (const key of [...kept, ['skill-publish-info', 'agent-a']]) queryClient.setQueryData(key, [])
+    }
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    const es = getLatestEventSource()
+    es.onopen?.()
+    simulateSSEMessage(es, { type: 'connected' })
+    fill()
+
+    // The server ended a stream that fell behind; the browser reconnects on
+    // its own (not a fatal close), and the events in the gap are gone.
+    es.readyState = MockEventSource.CONNECTING
+    es.onerror?.()
+    es.readyState = MockEventSource.OPEN
+    es.onopen?.()
+    for (const key of kept) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false)
+
+    simulateSSEMessage(es, { type: 'connected' })
+    for (const key of kept) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['skill-publish-info', 'agent-a'])?.isInvalidated).toBe(false)
   })
 })
 
@@ -1100,7 +1176,7 @@ describe('stream healing', () => {
     })
   }
 
-  it('error at readyState 2 reopens and the reopen refetches everything mounted except LLM-backed queries', async () => {
+  it('error at readyState 2 reopens, and connected on the reopened stream refetches everything mounted except LLM-backed queries', async () => {
     renderHandler()
     expect(MockEventSource.instances).toHaveLength(1)
 
@@ -1110,17 +1186,20 @@ describe('stream healing', () => {
     expect(MockEventSource.instances).toHaveLength(2)
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     getLatestEventSource().onopen?.()
+    expect(invalidateSpy).not.toHaveBeenCalled()
+    simulateSSEMessage(getLatestEventSource(), { type: 'connected' })
     expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
     expect(isRefetchableAfterOutage({ queryKey: ['sessions', 'a1'] })).toBe(true)
     for (const key of ['agent-template-publish-info', 'agent-template-pr-info', 'skill-publish-info', 'skill-pr-info']) {
       expect(isRefetchableAfterOutage({ queryKey: [key, 'a1'] })).toBe(false)
     }
 
-    // A later transient reconnect on the same stream is not an outage.
+    // A later reconnect the browser handles refetches the same way.
     invalidateSpy.mockClear()
     getLatestEventSource().onopen?.()
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
-    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    simulateSSEMessage(getLatestEventSource(), { type: 'connected' })
+    expect(invalidateSpy).toHaveBeenCalledTimes(1)
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
   })
 
   it('reopen delay doubles per consecutive fatal close and resets on open', async () => {
