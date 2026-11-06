@@ -62,6 +62,8 @@ interface IntegrationRowProps extends Omit<HTMLAttributes<HTMLDivElement>, 'titl
    * pass `null` to omit the icon square entirely.
    */
   icon?: ReactNode | null
+  /** Draw `icon` as is, without the muted square: for an agent's avatar, which brings its own shape. */
+  bareIcon?: boolean
   name: ReactNode
   /** Inline badge/chip rendered next to the name on the same row. */
   nameBadge?: ReactNode
@@ -100,6 +102,7 @@ export const IntegrationRow = forwardRef<HTMLDivElement, IntegrationRowProps>(fu
   iconSlug,
   iconFallback,
   icon,
+  bareIcon,
   name,
   nameBadge,
   subtitle,
@@ -149,7 +152,8 @@ export const IntegrationRow = forwardRef<HTMLDivElement, IntegrationRowProps>(fu
       }}
     >
       <div className="flex items-center gap-3">
-        {icon !== null && (
+        {icon !== null && bareIcon && <div className="flex shrink-0 items-center justify-center">{icon}</div>}
+        {icon !== null && !bareIcon && (
           <div className="h-7 w-7 rounded-control bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
             {icon ?? (
               <ServiceIcon
