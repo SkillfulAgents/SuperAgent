@@ -585,7 +585,11 @@ interface AgentSummaryOptions {
    * outside auth mode), so there is no caller that legitimately lacks it.
    */
   userId: string
+  /** The unread projection for exactly these agents, when the caller already started it. */
+  unreadProjection?: UnreadProjection
 }
+
+type UnreadProjection = Awaited<ReturnType<typeof readUnreadProjection>>
 
 function attentionSessionCountsOutsideLatest(
   sessionId: string,
@@ -774,6 +778,21 @@ async function getVisibleSessionExpansion(
 }
 
 /**
+ * Both halves of the unread projection, one query each rather than one per
+ * agent — the list route hydrates every agent on every poll. Needs only the
+ * slugs, so a caller can start it before it has the agents.
+ */
+function readUnreadProjection(slugs: string[], userId: string) {
+  return Promise.all([
+    getUnreadNotificationsByAgents(slugs, userId),
+    getSessionIdsMarkedUnreadByAgents(slugs, userId),
+    // Only auth mode has people to mention.
+    isAuthMode() ? getUnreadMentionsByAgents(slugs, userId) : new Map<string, Set<string>>(),
+    getUnreadNotificationPreviewsByAgents(slugs, userId),
+  ])
+}
+
+/**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
@@ -782,17 +801,8 @@ async function enrichAgentsWithSummary(
   agents: ApiAgent[],
   options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
-  const slugs = agents.map(a => a.slug)
-
-  // Both halves of the unread projection, one query each rather than one per
-  // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs, options.userId),
-    getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
-    // Only auth mode has people to mention.
-    isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
-    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
-  ])
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] =
+    options.unreadProjection ?? await readUnreadProjection(agents.map(a => a.slug), options.userId)
 
   const limit = pLimit(5)
   return Promise.all(
@@ -1482,13 +1492,19 @@ agents.post('/', async (c) => {
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const agent = await getAgentWithStatus(getResolvedAgent(c), { includeSummary: false })
+    const slug = getAgentId(c)
+    const userId = getCurrentUserId(c)
+    // Needs only the slug, so it runs in parallel with the status read.
+    const [agent, unreadProjection] = await Promise.all([
+      getAgentWithStatus(getResolvedAgent(c), { includeSummary: false }),
+      readUnreadProjection([slug], userId),
+    ])
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent], { userId: getCurrentUserId(c) })
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId, unreadProjection })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
