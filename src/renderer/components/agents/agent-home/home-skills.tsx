@@ -45,7 +45,7 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
   const hasDiscoverable = discoverableSkills.length > 0
 
   return (
-    <HomeCollapsible title="Skills" count={skillsData ? skills.length : undefined} className={className}>
+    <HomeCollapsible id="skills" title="Skills" count={skillsData ? skills.length : undefined} className={className}>
       {skills.length === 0 ? (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No skills yet</p>

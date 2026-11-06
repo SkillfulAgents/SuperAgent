@@ -14,9 +14,9 @@ export async function openHomeSidePanel(page: Page): Promise<void> {
 export type HomeSection = 'Triggers' | 'Connections' | 'Skills' | 'External Integrations' | 'Drives' | 'Hooks'
 
 /**
- * Agent Home's sections are rows in one panel, collapsed until opened. Opens
- * `section` so its rows and actions can be reached; a no-op when it's open.
- * Each visit to Agent Home starts collapsed again (the side panel as the user left it), so call it after landing.
+ * Agent Home's sections are rows in one panel, closed until opened, then as the user last left them (a user setting
+ * shared by every agent, so another test may have left one open). Opens `section` so its rows and actions can be
+ * reached; a no-op when it's open.
  */
 export async function openHomeSection(page: Page, section: HomeSection): Promise<void> {
   await openHomeSidePanel(page)

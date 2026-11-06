@@ -1,13 +1,26 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeCollapsible, HomePanel } from './home-collapsible'
 
+// The stored open state (user setting agentHomeSectionsOpen): a fake settings document and its writes.
+let storedSettings: { agentHomeSectionsOpen?: Record<string, boolean> } | undefined
+const mutate = vi.fn()
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: storedSettings }),
+  useUpdateUserSettings: () => ({ mutate }),
+}))
+
+beforeEach(() => {
+  storedSettings = {}
+  mutate.mockReset()
+})
+
 function renderPanel(defaultOpen?: boolean) {
   return render(
     <HomePanel>
-      <HomeCollapsible title="Skills" defaultOpen={defaultOpen}>
+      <HomeCollapsible id="skills" title="Skills" defaultOpen={defaultOpen}>
         <p>Skill list</p>
       </HomeCollapsible>
     </HomePanel>,
@@ -34,7 +47,7 @@ describe('HomeCollapsible', () => {
   it('shows its count beside the chevron, outside the header name', () => {
     render(
       <HomePanel>
-        <HomeCollapsible title="Skills" count={3}>
+        <HomeCollapsible id="skills" title="Skills" count={3}>
           <p>Skill list</p>
         </HomeCollapsible>
       </HomePanel>,
@@ -51,5 +64,26 @@ describe('HomeCollapsible', () => {
   it('can start open', () => {
     renderPanel(true)
     expect(screen.getByText('Skill list')).toBeVisible()
+  })
+
+  it('opens as the user last left it', () => {
+    storedSettings = { agentHomeSectionsOpen: { skills: true } }
+    renderPanel()
+    expect(screen.getByText('Skill list')).toBeVisible()
+  })
+
+  it('a stored state wins over the default', () => {
+    storedSettings = { agentHomeSectionsOpen: { skills: false } }
+    renderPanel(true)
+    expect(screen.queryByText('Skill list')).not.toBeInTheDocument()
+  })
+
+  it('stores the state it is left in, merged into the other sections', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+    await user.click(screen.getByRole('button', { name: 'Skills' }))
+    expect(screen.getByText('Skill list')).toBeVisible()
+    const patch = mutate.mock.calls[0][0] as (current: object) => object
+    expect(patch({ agentHomeSectionsOpen: { triggers: true } })).toEqual({ agentHomeSectionsOpen: { triggers: true, skills: true } })
   })
 })

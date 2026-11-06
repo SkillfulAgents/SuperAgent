@@ -202,6 +202,10 @@ export const userSettingsSchema = z.object({
   // Home graph view: the "Details" toggle (pin every resource's detail card
   // + count chips open). Absent = off.
   graphShowDetails: z.boolean().optional(),
+  // Agent Home: which of its side panel's sections (Triggers, Connections, …) are
+  // open, keyed by section id, as the user last left them; the same on every
+  // agent. Absent = the section's default (closed, bar Hooks with a blocking hook).
+  agentHomeSectionsOpen: z.record(z.string(), z.boolean()).optional(),
   // Team Brain home page: which groups of the brain's own files its tree shows
   // ('about', 'archive'). Absent = none.
   teamBrainViews: lenientArray(z.string()),

@@ -38,7 +38,7 @@ export function HomeHooks({ agentSlug, isOwner, className }: HomeHooksProps) {
 
   return (
     // Open from the start when a hook can block messages, so the warning is seen.
-    <HomeCollapsible title="Hooks" count={hooks.length} defaultOpen={hasBlockingHook} className={className}>
+    <HomeCollapsible id="hooks" title="Hooks" count={hooks.length} defaultOpen={hasBlockingHook} className={className}>
       {hasBlockingHook && (
         <div className="mt-2 mx-4 flex items-start gap-2 rounded-card bg-amber-500/10 p-2.5" data-testid="home-hooks-warning">
           <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />

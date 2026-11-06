@@ -52,7 +52,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   if (!volumes.canAddMount && volumes.mounts.length === 0 && !volumes.operationError) return null
 
   return (
-    <HomeCollapsible title="Drives" count={volumes.isLoading ? undefined : volumes.mounts.length} className={className}>
+    <HomeCollapsible id="drives" title="Drives" count={volumes.isLoading ? undefined : volumes.mounts.length} className={className}>
       {volumes.mounts.length > 0 ? (
         <div className="mt-2">
           {volumes.mounts.map((mount) => (

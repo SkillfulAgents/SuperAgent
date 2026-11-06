@@ -123,7 +123,7 @@ export function HomeTriggers({
   const hasCompleted = completedCount > 0
 
   return (
-    <HomeCollapsible title="Triggers" count={webhookTriggersData ? items.length : undefined} className={className}>
+    <HomeCollapsible id="triggers" title="Triggers" count={webhookTriggersData ? items.length : undefined} className={className}>
       {items.length > 0 || hasDeleted || hasCompleted ? (
         <div className="mt-2">
           {items.map((item) =>

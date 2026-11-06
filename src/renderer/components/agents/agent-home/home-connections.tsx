@@ -113,7 +113,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
   }, [accountsData, mcpsData])
 
   return (
-    <HomeCollapsible title="Connections" count={accountsData && mcpsData ? connections.length : undefined} className={className}>
+    <HomeCollapsible id="connections" title="Connections" count={accountsData && mcpsData ? connections.length : undefined} className={className}>
       {connections.length > 0 ? (
         <div className="mt-2">
           {connections.map((conn) => (

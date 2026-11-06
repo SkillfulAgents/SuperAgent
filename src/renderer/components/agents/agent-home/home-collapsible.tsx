@@ -1,8 +1,9 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@renderer/components/ui/collapsible'
 import { HOME_GLASS_SURFACE_CLASS } from './home-glass-panel'
+import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 
 /**
  * The one card the Agent Home sections (Triggers, Connections, Skills, …) share.
@@ -29,22 +30,39 @@ export function HomePanel({ children, className }: { children: ReactNode; classN
  */
 export const HOME_SECTION_HEADER_CLASS = 'flex min-h-12 w-full items-center justify-between px-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
 
+/** The Agent Home sections, by the id their open state is stored under (user setting `agentHomeSectionsOpen`). */
+export type HomeSectionId = 'triggers' | 'connections' | 'skills' | 'integrations' | 'drives' | 'hooks'
+
 interface HomeCollapsibleProps {
+  /** Where its open state is stored, so it opens as the user last left it, on every agent. */
+  id: HomeSectionId
   title: string
   /** How many items the section holds, shown while it is collapsed. Omit until known. */
   count?: number
+  /** Open until the user has opened or closed it themselves. */
   defaultOpen?: boolean
   children: ReactNode
   className?: string
 }
 
 /**
- * A section row in the HomePanel: a header the height of the HomeExtras rows,
- * collapsed by default, that opens to the section's content below it.
+ * A section row in the HomePanel: a header the height of the HomeExtras rows
+ * that opens to the section's content below it. It opens as the user last left
+ * it (a user setting, shared by every agent's Agent Home), collapsed until then.
+ * The local override answers at once while the settings write round-trips.
  */
-export function HomeCollapsible({ title, count, defaultOpen = false, children, className }: HomeCollapsibleProps) {
+export function HomeCollapsible({ id, title, count, defaultOpen = false, children, className }: HomeCollapsibleProps) {
+  const { data: userSettings } = useUserSettings()
+  const { mutate: mutateSettings } = useUpdateUserSettings()
+  const [override, setOverride] = useState<boolean | null>(null)
+  const open = override ?? userSettings?.agentHomeSectionsOpen?.[id] ?? defaultOpen
+  const setOpen = (next: boolean) => {
+    setOverride(next)
+    // The function form merges into the latest stored map, so toggling two sections quickly keeps both.
+    mutateSettings((current) => ({ agentHomeSectionsOpen: { ...current.agentHomeSectionsOpen, [id]: next } }))
+  }
   return (
-    <Collapsible defaultOpen={defaultOpen} className={className}>
+    <Collapsible open={open} onOpenChange={setOpen} className={className}>
       <CollapsibleTrigger className={HOME_SECTION_HEADER_CLASS}>
         <span className="text-[12px]/5 text-muted-foreground">{title}</span>
         <span className="flex items-center gap-2">

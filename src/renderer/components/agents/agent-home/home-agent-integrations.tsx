@@ -57,7 +57,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
   const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
-    <HomeCollapsible title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
+    <HomeCollapsible id="integrations" title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
       {rows.length > 0 ? (
         <div className="mt-2">
           {rows.map((integration) => {
