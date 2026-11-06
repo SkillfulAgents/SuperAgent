@@ -102,6 +102,8 @@ vi.mock('../../main/host-browser', () => ({
   getActiveProvider: () => null,
   stopAllProviders: () => Promise.resolve(),
 }))
+const staleUploads = vi.hoisted(() => ({ startStaleUploadCleanup: vi.fn(), stopStaleUploadCleanup: vi.fn() }))
+vi.mock('./utils/chunked-upload', () => staleUploads)
 vi.mock('../../main/host-browser/profile-maintenance', () => ({
   startBrowserProfileCleanup: vi.fn(),
   stopBrowserProfileCleanup: vi.fn(),
@@ -308,6 +310,28 @@ describe('initializeServices post-bind critical path', () => {
     expect(reconcile).toHaveBeenCalledTimes(1)
     expect(logBootTiming).toHaveBeenCalledTimes(1)
     expect(getServicesInitError()).toBeNull()
+    expect(staleUploads.startStaleUploadCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('leaves the stale-upload sweep to afterBindInitialize, not to importing this module or initializing services', async () => {
+    const { initializeServices } = await import('./startup')
+    await initializeServices()
+    expect(staleUploads.startStaleUploadCleanup).not.toHaveBeenCalled()
+  })
+
+  it('starts the stale-upload sweep even when an auth gate fails init', async () => {
+    validateAuth.mockRejectedValueOnce(new Error('platform unreachable'))
+    const { afterBindInitialize } = await import('./startup')
+    await afterBindInitialize()
+    expect(initializeAgents).not.toHaveBeenCalled()
+    expect(staleUploads.startStaleUploadCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('stops the stale-upload sweep on shutdown', async () => {
+    const { shutdownServices } = await import('./startup')
+    // The rest of shutdown reaches services this file does not fake in full.
+    await shutdownServices().catch(() => undefined)
+    expect(staleUploads.stopStaleUploadCleanup).toHaveBeenCalledOnce()
   })
 
   it('records the init error for runtime-status when init fails degraded', async () => {

@@ -822,6 +822,12 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
 }))
 
 const mockStoreUploadChunk = vi.fn()
+/** The coordinator's part once the last chunk is committed: hands `finish` the upload, here a file at `filePath`. */
+function assembleTo(filePath: string, size = 10, toFile = vi.fn(async () => filePath)) {
+  return async (_input: unknown, finish: (assembled: unknown) => Promise<unknown>) => (
+    { status: 'finished', result: await finish({ size, stream: () => new Blob(['final chunk']).stream(), toFile }) }
+  )
+}
 vi.mock('@shared/lib/utils/chunked-upload', () => {
   function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
     return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
@@ -836,12 +842,19 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
       this.maxBytes = maxBytes
     }
   }
+  class UploadConflictError extends Error {}
+  class UploadOutcomeUnknownError extends Error {
+    constructor(cause: unknown) {
+      super('The upload may have taken effect, but its result is unknown. Check before sending it again.', { cause })
+    }
+  }
   return {
     MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
     formatUploadTooLargeMessage,
+    UploadConflictError,
+    UploadOutcomeUnknownError,
     UploadTooLargeError,
     storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
-    cleanupStaleTempUploads: vi.fn(async () => undefined),
   }
 })
 
@@ -857,7 +870,7 @@ import { CredentialRefreshError } from '../../../agent-container/src/credential-
 import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 import { ProviderRefreshUnavailableError } from '@shared/lib/agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
-import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
+import { UploadConflictError, UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   exportAgentFull,
   exportAgentTemplate,
@@ -2303,20 +2316,20 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.status).toBe('chunk_received')
     expect(body.chunkIndex).toBe(0)
     expect(importAgentFromTemplate).not.toHaveBeenCalled()
-    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
-      '11111111-1111-1111-1111-111111111111',
-      0,
-      2,
-      expect.any(Buffer),
-      500 * 1024 * 1024,
-    )
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith({
+      ownerId: 'test-user-id',
+      uploadId: '11111111-1111-1111-1111-111111111111',
+      target: 'template-import',
+      chunkIndex: 0,
+      totalChunks: 2,
+      chunk: expect.any(Buffer),
+      maxTotalBytes: 500 * 1024 * 1024,
+    }, expect.any(Function))
   })
 
   it('assembles and processes on final chunk', async () => {
     const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsStat.mockResolvedValue({ size: 10 })
-    mockFsUnlink.mockResolvedValue(undefined)
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
 
     const form = buildChunkForm({
       chunk: 'data-part-1',
@@ -2337,14 +2350,11 @@ describe('POST /api/agents/import-template (chunked)', () => {
       undefined,
       'full',
     )
-    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
   })
 
   it('passes name override on final chunk', async () => {
     const assembledPath = '/mock/tmp/uploads/33333333-3333-3333-3333-333333333333.assembled'
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsStat.mockResolvedValue({ size: 7 })
-    mockFsUnlink.mockResolvedValue(undefined)
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
 
     const form = buildChunkForm({
       chunk: 'zipdata',
@@ -2433,39 +2443,11 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.error).toContain('No file or chunk provided')
   })
 
-  it('handles duplicate chunk index by overwriting and still assembles correctly', async () => {
-    const uploadId = '66666666-6666-6666-6666-666666666666'
-    mockStoreUploadChunk
-      .mockResolvedValueOnce({ status: 'received' })
-      .mockResolvedValueOnce({
-        status: 'assembled',
-        filePath: `/mock/tmp/uploads/${uploadId}.assembled`,
-      })
-    mockFsStat.mockResolvedValue({ size: 12 })
-    mockFsUnlink.mockResolvedValue(undefined)
-
-    const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
-    const res1 = await postFormData(app, '/api/agents/import-template', form1)
-    expect(res1.status).toBe(200)
-    expect((await res1.json()).status).toBe('chunk_received')
-
-    const form2 = buildChunkForm({ chunk: 'part1', uploadId, chunkIndex: 1, totalChunks: 2, mode: 'template' })
-    const res2 = await postFormData(app, '/api/agents/import-template', form2)
-    expect(res2.status).toBe(201)
-    expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      { filePath: `/mock/tmp/uploads/${uploadId}.assembled` },
-      undefined,
-      'template',
-    )
-  })
-
   it('rejects when assembled compressed size exceeds limit', async () => {
     const uploadId = '77777777-7777-7777-7777-777777777777'
     const assembledPath = `/mock/tmp/uploads/${uploadId}.assembled`
     const MAX = 500 * 1024 * 1024
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsStat.mockResolvedValue({ size: MAX + 1 })
-    mockFsUnlink.mockResolvedValue(undefined)
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath, MAX + 1))
 
     const form = buildChunkForm({
       chunk: 'data',
@@ -2478,7 +2460,40 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(res.status).toBe(413)
     expect(importAgentFromTemplate).not.toHaveBeenCalled()
     expect(mockFsReadFile).not.toHaveBeenCalled()
-    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
+  })
+
+  it('returns 409 with what to do when the chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This chunk is out of order for this upload. Start a new upload to send the file again.'))
+
+    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 1, totalChunks: 2 })
+    const res = await postFormData(app, '/api/agents/import-template', form)
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('answers a failed import with its own message', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/tmp/uploads/x'))
+    vi.mocked(importAgentFromTemplate).mockRejectedValueOnce(new Error('not a template'))
+
+    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
+    const res = await postFormData(app, '/api/agents/import-template', form)
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toBe('not a template')
+  })
+
+  it('says the result is unknown when a step after the import fails', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/tmp/uploads/x'))
+    vi.mocked(hasOnboardingSkill).mockRejectedValueOnce(new Error('workspace went away'))
+
+    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
+    const res = await postFormData(app, '/api/agents/import-template', form)
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toContain('its result is unknown. Check before sending it again')
+    expect(importAgentFromTemplate).toHaveBeenCalledOnce()
   })
 
   it('returns 413 when storeUploadChunk throws UploadTooLargeError', async () => {
@@ -4392,14 +4407,10 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     }
   })
 
-  // The rename is the shortcut of a workspace on this machine; across a wire the
-  // file streams in (copy-into-workspace.test.ts).
-  it.skipIf(underActorTransport)('moves the assembled chunked upload from the host temp file into the workspace', async () => {
-    const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsRename.mockResolvedValue(undefined)
+  it('streams the chunked upload into the workspace, without asking for a file', async () => {
+    const toFile = vi.fn(async () => '/mock/never')
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/never', 11, toFile))
     mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 11 })
-    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = new FormData()
     form.append('chunk', new File(['final'], 'chunk.bin'))
@@ -4414,19 +4425,48 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(body.success).toBe(true)
     expect(body.filename).toBe('report.pdf')
     expect(body.size).toBe(11)
-    // The assembled temp file is renamed under the workspace's uploads/, not
-    // read and written again; the rename consumed it, so nothing is copied.
-    expect(mockFsRename).toHaveBeenCalledWith(assembledPath, expect.stringContaining('/mock/workspace/uploads/'))
-    expect(mockCreateReadStream).not.toHaveBeenCalled()
-    expect(mockCreateWriteStream).not.toHaveBeenCalled()
-    expect(mockFsCopyFile).not.toHaveBeenCalled()
-    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-      0,
-      1,
-      expect.any(Buffer),
-      2 * 1024 * 1024 * 1024,
-    )
+    expect(body.path).toMatch(/^\/workspace\/uploads\/report/)
+    expect(vi.mocked(writeFileAtomicStream)).toHaveBeenCalledWith(expect.stringContaining('/mock/workspace/uploads/report'), expect.anything(), expect.anything())
+    expect(toFile).not.toHaveBeenCalled()
+    expect(mockFsRename).not.toHaveBeenCalled()
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith({
+      ownerId: 'test-user-id',
+      uploadId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      target: 'agent:test-agent',
+      chunkIndex: 0,
+      totalChunks: 1,
+      chunk: expect.any(Buffer),
+      maxTotalBytes: 2 * 1024 * 1024 * 1024,
+    }, expect.any(Function))
+  })
+
+  function chunkForm() {
+    const form = new FormData()
+    form.append('chunk', new File(['final'], 'chunk.bin'))
+    form.append('uploadId', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    form.append('chunkIndex', '0')
+    form.append('totalChunks', '1')
+    form.append('filename', 'report.pdf')
+    return form
+  }
+
+  it('returns 409 with what to do when the chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This upload has already ended. Start a new upload to send the file again.'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', chunkForm())
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+  })
+
+  it('answers a plain failure when the write into the workspace fails', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/never', 11))
+    vi.mocked(writeFileAtomicStream).mockRejectedValueOnce(new Error('disk full'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', chunkForm())
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toBe('Failed to upload file')
   })
 })
 
