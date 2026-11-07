@@ -115,12 +115,8 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
 }))
 
 
-vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
-  useCreateUntitledAgent: () => ({
-    createUntitledAgent: vi.fn(),
-    isPending: false,
-  }),
-  UNTITLED_AGENT_NAME: 'Untitled',
+vi.mock('@renderer/components/agents/new-agent-menu', () => ({
+  NewAgentMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 vi.mock('@renderer/components/ui/sidebar', () => ({

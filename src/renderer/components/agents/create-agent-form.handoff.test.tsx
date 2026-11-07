@@ -33,8 +33,6 @@ let mockCatalog = catalogFixture()
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
-    justCreatedSlug: null,
-    setJustCreatedSlug: vi.fn(),
     get signupHandoff() {
       return mockSignupHandoff
     },
@@ -84,6 +82,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   }),
+  useUpdateAgentAvatar: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeleteAgent: () => ({
     mutateAsync: vi.fn(),
     isPending: false,

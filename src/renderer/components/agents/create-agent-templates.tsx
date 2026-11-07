@@ -54,6 +54,7 @@ export function CreateAgentTemplates({
   onSelect,
   onNavigateAway,
   onImportClick,
+  standalone = false,
   className,
 }: {
   onSelect: (template: ApiDiscoverableAgent) => void
@@ -69,6 +70,11 @@ export function CreateAgentTemplates({
    * caller's import dialog. Omitted → no tile.
    */
   onImportClick?: () => void
+  /**
+   * The roster as the page's subject (the Browse Templates page) rather than
+   * the alternative under a composer: a plain title in the foreground colour.
+   */
+  standalone?: boolean
   className?: string
 }) {
   const navigate = useNavigate()
@@ -108,7 +114,7 @@ export function CreateAgentTemplates({
   if (isLoading) {
     return (
       <div className={className} data-testid="create-agent-templates-loading">
-        <SectionHeading>Or start from a template</SectionHeading>
+        <SectionHeading standalone={standalone}>{standalone ? 'Start from a template' : 'Or start from a template'}</SectionHeading>
         <TemplateGrid>
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-[180px] rounded-card" />
@@ -122,17 +128,24 @@ export function CreateAgentTemplates({
     // No cards to browse, but the import path survives: no heading ("Or start
     // from a template" would promise templates that are not there), just the
     // tile the roster would have ended with anyway.
-    if (!onImportClick) return null
+    if (!onImportClick && !standalone) return null
     return (
       <div className={className} data-testid="create-agent-templates">
-        <ImportTile onClick={onImportClick} />
+        {/* As the page's subject, say so rather than show a lone tile. */}
+        {standalone && (
+          <>
+            <SectionHeading standalone>Start from a template</SectionHeading>
+            <p className="mb-6 text-sm text-muted-foreground">No templates are available yet.</p>
+          </>
+        )}
+        {onImportClick && <ImportTile onClick={onImportClick} />}
       </div>
     )
   }
 
   return (
     <div className={className} data-testid="create-agent-templates">
-      <SectionHeading>Or start from a template</SectionHeading>
+      <SectionHeading standalone={standalone}>{standalone ? 'Start from a template' : 'Or start from a template'}</SectionHeading>
       <div className="space-y-8">
         {grouped.map(({ category, shown, rest }) => (
           <section key={category}>
@@ -184,8 +197,10 @@ function ImportTile({ onClick }: { onClick: () => void }) {
 /** Same size as the step's "Describe your first AI teammate" title, but in
  *  the muted color — the roster is the alternative path, one register below
  *  the question it answers. */
-function SectionHeading({ children }: { children: React.ReactNode }) {
-  return <h3 className="mb-6 text-2xl font-normal text-muted-foreground">{children}</h3>
+function SectionHeading({ children, standalone }: { children: React.ReactNode; standalone: boolean }) {
+  return standalone
+    ? <h2 className="mb-8 text-2xl font-normal">{children}</h2>
+    : <h3 className="mb-6 text-2xl font-normal text-muted-foreground">{children}</h3>
 }
 
 /** Three fluid columns on desktop, one on phones; the see-more tile fills

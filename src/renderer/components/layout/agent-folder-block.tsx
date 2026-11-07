@@ -303,6 +303,7 @@ export function AgentFolderBlock({
   onRenameEnd,
   onDelete,
   onCreateAgent,
+  createAgentMenu,
   children,
 }: {
   folder: AgentFolder
@@ -322,6 +323,12 @@ export function AgentFolderBlock({
   onDelete: () => void
   /** Rendered as a + on the header row: a new agent filed into this folder. */
   onCreateAgent?: () => void
+  /**
+   * The + as a menu instead: wraps the button in the menu it opens (the New
+   * Agent menu, filing into this folder). Either this or `onCreateAgent`
+   * offers the +.
+   */
+  createAgentMenu?: (trigger: React.ReactElement) => React.ReactNode
   children: React.ReactNode
 }) {
   const [isRenaming, setIsRenaming] = useState(initialRenaming ?? false)
@@ -457,19 +464,22 @@ export function AgentFolderBlock({
         </DropdownMenu>
       )}
 
-      {onCreateAgent && !isRenaming && (
-        <button
-          type="button"
-          onClick={onCreateAgent}
-          aria-label={`New agent in ${folder.name}`}
-          data-header-zone
-          title={`New agent in ${folder.name}`}
-          data-testid={`new-agent-in-folder-${folder.id}`}
-          className={cn(HEADER_ACTION_CLASS, 'right-[7px]')}
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-      )}
+      {(onCreateAgent || createAgentMenu) && !isRenaming && (() => {
+        const plus = (
+          <button
+            type="button"
+            onClick={onCreateAgent}
+            aria-label={`New agent in ${folder.name}`}
+            data-header-zone
+            title={`New agent in ${folder.name}`}
+            data-testid={`new-agent-in-folder-${folder.id}`}
+            className={cn(HEADER_ACTION_CLASS, 'right-[7px]')}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        )
+        return createAgentMenu ? createAgentMenu(plus) : plus
+      })()}
 
       {/*
         The body stays MOUNTED while collapsed and hides via the `hidden`

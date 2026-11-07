@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen } from '@testing-library/react'
 import { CreateAgentForm } from './create-agent-form'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -30,6 +30,7 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@renderer/hooks/use-agents', () => ({
   useCreateAgent: () => mockCreateAgent,
   useUpdateAgent: () => mockUpdateAgent,
+  useUpdateAgentAvatar: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeleteAgent: () => mockDeleteAgent,
 }))
 
@@ -195,6 +196,39 @@ describe('CreateAgentForm', () => {
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
     expect(peekPendingSessionSeed('session-123')).toBeDefined()
     expect(mockNavigate).toHaveBeenCalled()
+  })
+
+  describe('as a step that defers creating (onContinue)', () => {
+    afterEach(() => {
+      mockComposer.message = ''
+    })
+
+    it('leaves its button to the host and moves on without creating once a prompt is typed', async () => {
+      mockComposer.message = 'Watch our support inbox'
+      const onContinue = vi.fn()
+      const continueRef: { current: (() => Promise<void>) | null } = { current: null }
+      renderWithProviders(<CreateAgentForm onContinue={onContinue} continueRef={continueRef} />)
+
+      expect(screen.queryByTestId('create-agent-submit')).toBeNull()
+      await act(async () => { await continueRef.current?.() })
+      expect(onContinue).toHaveBeenCalled()
+      expect(mockComposer.handleSubmit).not.toHaveBeenCalled()
+    })
+
+    it('does not move on with an empty prompt', async () => {
+      const onContinue = vi.fn()
+      const continueRef: { current: (() => Promise<void>) | null } = { current: null }
+      renderWithProviders(<CreateAgentForm onContinue={onContinue} continueRef={continueRef} />)
+      await act(async () => { await continueRef.current?.() })
+      expect(onContinue).not.toHaveBeenCalled()
+    })
+
+    it('hands the host its create action', async () => {
+      const submitRef: { current: (() => Promise<void>) | null } = { current: null }
+      renderWithProviders(<CreateAgentForm onContinue={vi.fn()} submitRef={submitRef} />)
+      await act(async () => { await submitRef.current?.() })
+      expect(mockComposer.handleSubmit).toHaveBeenCalled()
+    })
   })
 
   it('does not offer file attachments', () => {

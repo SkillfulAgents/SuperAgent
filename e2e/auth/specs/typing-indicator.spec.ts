@@ -46,11 +46,16 @@ test('auth mode: a user does not see their own typing indicator', async ({ page 
 
   // Create an agent and open its first session (the typing indicator only
   // renders inside the session chat view, and the typing POST only fires once a
-  // sessionId exists). The home composer creates the session and navigates to it.
+  // sessionId exists). The create page (name, job, add-ons) creates the
+  // agent and its first session and navigates to it.
   await page.locator('[data-testid="new-agent-button"]').click()
-  await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-  await page.locator('[data-testid="home-message-input"]').fill('Hello from the typing test')
-  await page.locator('[data-testid="home-send-button"]').click()
+  await page.locator('[data-testid="new-agent-from-scratch"]').click()
+  await expect(page.locator('[data-testid="new-agent-page"]')).toBeVisible({ timeout: 10000 })
+  await page.locator('[data-testid="agent-identity-name"]').fill('Typing Test Agent')
+  await page.locator('[data-testid="agent-identity-continue"]').click()
+  await page.locator('[data-testid="create-agent-prompt"]').fill('Hello from the typing test')
+  await page.locator('[data-testid="create-agent-continue"]').click()
+  await page.locator('[data-testid="create-agent-finish"]').click()
 
   // We're now in the session chat view: wait for it to settle.
   await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
