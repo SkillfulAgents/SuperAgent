@@ -108,11 +108,12 @@ console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
 // Initialize error reporting as early as possible (after data dir is set)
 import { initErrorReporting, captureException, flushErrorReporting, attachErrorReportingIdentity } from '@shared/lib/error-reporting'
+import { createServerProvider } from '@shared/lib/error-reporting/sentry-provider'
 import { recordFatalError, reportCrashMarkerFromLastRun, toReportableError } from './crash-marker'
 
 // Only report errors in production builds — dev mode generates too much noise
 if (app.isPackaged) {
-  initErrorReporting({ environment: 'electron' })
+  initErrorReporting(createServerProvider({ environment: 'electron' }))
   // If the last session died in a fatal handler, its Sentry event may have
   // been lost (no offline transport) — deliver the on-disk record now.
   void reportCrashMarkerFromLastRun()

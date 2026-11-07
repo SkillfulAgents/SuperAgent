@@ -33,7 +33,7 @@ import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
-import { attachErrorReportingIdentity, initErrorReporting, setErrorReportingUser } from './error-reporting'
+import { attachErrorReportingIdentity, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
@@ -288,12 +288,9 @@ async function prepareProcessInner(): Promise<void> {
 }
 
 async function initializeServicesInner() {
-  // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
-  // initErrorReporting is a no-op if already initialized, so this is safe.
-  // Skip in dev mode — dev errors are too noisy and pollute Sentry.
+  // The entry point started error reporting (main/index.ts, web/server.ts). Re-attaching the
+  // tenant identity is harmless, and gives it to a reporter started before the database opened.
   if (process.env.NODE_ENV === 'production') {
-    initErrorReporting({ environment: 'web' })
-    // A provider started only now has no tenant identity yet; re-attaching is harmless.
     await attachErrorReportingIdentity()
   }
 

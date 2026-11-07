@@ -9,6 +9,7 @@ import { attachErrorReportingIdentity, flushErrorReporting, initErrorReporting }
 import { initializeBackgroundWork } from '@shared/lib/background-work'
 import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
 import { afterBindInitialize, registerBackgroundWork, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { createServerProvider } from '@shared/lib/error-reporting/sentry-provider'
 import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
 
@@ -68,7 +69,7 @@ async function start() {
   // provider to reach. Same rule as afterBindInitialize (production only,
   // where a second init is a no-op).
   if (process.env.NODE_ENV === 'production') {
-    initErrorReporting({ environment: 'web' })
+    initErrorReporting(createServerProvider({ environment: 'web' }))
   }
 
   // Then the database: nothing below runs without the schema being current,
