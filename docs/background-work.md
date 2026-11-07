@@ -117,7 +117,7 @@ A service needs no `stop()` just to clear a timer, since the manager owns those.
 | `platform-notifications` | JWT refresh or reconnect (50 min) | background, startup slot |
 | `agent-integrations` | Health check (5 min), a chat's stream restore (30 s after a failure), the delivery pump's wakeups | background, startup slot |
 | `container-image` | None: pulls or checks the image | background, startup slot |
-| `task-scheduler` | Its own poll, for now | background, startup slot |
+| `task-scheduler` | One wakeup per pending schedule (see below) | background, startup slot |
 | `webhook-triggers` | Registration resync (5 min after the last sync, backing off after a failure) | background, startup slot |
 | `session-auto-delete`, `api-log-auto-delete` | Cleanup (30 s after start, then every 4 h) | background |
 | `account-sync` | Sync (10 s after start, then every 5 min) | background |
@@ -134,3 +134,26 @@ The stale-upload sweep (`src/shared/lib/utils/chunked-upload.ts`) is a task with
 **A pass that must not count as running.** The integration and container health checks start their work and return, rather than being awaited. A connect that hangs holds up only its own integration (`reconcilingIds`), and a runtime that hangs on one agent holds up only that pass; if the manager saw a pass as running, it would skip all the later ones. Reach for this only when later passes are safe to run alongside a stuck one.
 
 **Left where they are.** Browser profile maintenance is going away and is not migrated. An agent's auto-sleep is its `IdleAlarm`. Transport heartbeats, request-local timeouts, typing indicators and renderer timers are not background jobs. Neither is the wait between the follow-up passes of a reconnect after system resume (`reconnectAll`), which is one pass in progress.
+
+## Scheduled tasks
+
+The `scheduled_tasks` table is the authority; `nextExecutionAt` and the status stay there, written by the existing domain code. Each pending schedule also has one local wakeup, an `agent.cron` job, which is in memory and only says "look at this record now". So a wakeup that is stale does no harm: when it fires, the record decides.
+
+- **Pending and due:** execute it.
+- **Pending and not due:** it moved; wake again at the record's time.
+- **Not pending, or gone:** nothing.
+
+`syncScheduleWakeup()` in `scheduled-task-service.ts` keeps a wakeup in line with its record. It reads the record, in order per schedule, so writes landing close together end with the wakeup the last of them asks for. Writes that change when a schedule fires call it: create, edit, timezone, pause, resume, cancel, reset, delete. At startup the scheduler calls it for every pending schedule, which is how a fresh manager learns them. A schedule that came due while the app was closed fires once, and moves past the times it missed. A new write that moves a schedule's time must call it too, or the schedule keeps its old wakeup until it fires.
+
+A record that may still be pending is never dropped. Anything that goes wrong (the record cannot be read, a fire fails and cannot be marked failed, a wakeup cannot be updated) ends in another look a minute later.
+
+What the 60-second poll used to give, kept on purpose:
+
+- **One at a time.** Due tasks execute one after another across all schedules, since each can boot a container.
+- **At most once a minute.** A cron with a seconds field fires no more than once a minute. A wakeup for its next time comes no sooner than a minute after the last fire.
+- **A hold is a look a minute later.** A recurring task whose previous run is busy stays due with its time unchanged, and each look counts a skip.
+- **Sleep.** A task due during a sleep fires within a minute of waking, since `at()` re-checks the clock.
+
+Not kept: the spacing of a chain. A one-off or session wake that schedules the next one with a short wait fired no sooner than the next poll, and now fires at its time, so the chain runs as fast as its turns. It has no identity to limit, as a recurring schedule does.
+
+A task finishes once its run has started: nothing waits for the session to end. The overdue catch-up runs right after the scheduler's startup slot rather than holding it, one at a time.

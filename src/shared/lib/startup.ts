@@ -124,12 +124,12 @@ function backgroundServices(): Service[] {
       await stopAllProviders()
     }),
 
-    // The startup slots go in this order, FIFO, and the last three below are
-    // open-ended (image pull on fresh installs; the task scheduler's catch-up
-    // scan boots a container per overdue task; the trigger manager's
-    // registration reads every subscribed trigger). The two user-facing
-    // connects are cheap handshakes: they go first, so chat messages and
-    // notifications cannot go dark behind minutes of catch-up work.
+    // The startup slots go in this order, FIFO, and the last three below can be
+    // slow (image pull on fresh installs; reading every schedule, whose overdue
+    // ones then fire one at a time; the trigger manager's registration reads
+    // every subscribed trigger). The two user-facing connects are cheap
+    // handshakes: they go first, so chat messages and notifications cannot go
+    // dark behind minutes of catch-up work.
 
     // OS notifications from Supabase Realtime INSERTs. The manager self-gates on
     // auth mode and platform connectivity; connect/disconnect after launch is
