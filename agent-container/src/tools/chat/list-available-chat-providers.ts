@@ -19,7 +19,10 @@ const SLACK_MANIFEST = `{
         "channels:history", "channels:read",
         "groups:history", "groups:read",
         "mpim:history", "mpim:read",
-        "reactions:write"
+        "reactions:write", "reactions:read", "emoji:read",
+        "pins:read", "pins:write", "bookmarks:read", "bookmarks:write",
+        "canvases:read", "canvases:write", "lists:read", "lists:write",
+        "channels:join", "channels:manage", "groups:write", "usergroups:read"
       ]
     }
   },
@@ -79,7 +82,7 @@ ${SLACK_MANIFEST}
    1. Go to https://api.slack.com/apps → Create New App → From scratch → Select workspace
    2. Settings → Socket Mode → Toggle ON
    3. Basic Information → App-Level Tokens → Generate with \`connections:write\` scope → Copy xapp-… token
-   4. OAuth & Permissions → Bot Token Scopes → Add: chat:write, im:history, im:read, im:write, channels:history, channels:read, groups:history, groups:read, mpim:history, mpim:read, users:read, files:read, files:write, reactions:write
+   4. OAuth & Permissions → Bot Token Scopes → Add: chat:write, im:history, im:read, im:write, channels:history, channels:read, groups:history, groups:read, mpim:history, mpim:read, users:read, files:read, files:write, reactions:write, reactions:read, emoji:read, pins:read, pins:write, bookmarks:read, bookmarks:write, canvases:read, canvases:write, lists:read, lists:write, channels:join, channels:manage, groups:write, usergroups:read
    5. Event Subscriptions → Toggle ON → Subscribe to bot events → Add: message.im, message.channels, message.groups, message.mpim
    6. Interactivity & Shortcuts → Toggle ON
    7. App Home → Messages Tab → Check "Allow users to send Slash commands and messages"

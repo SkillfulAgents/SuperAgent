@@ -11,6 +11,8 @@ export interface SessionSurface {
   /** Destination context, when known. */
   where?: string
   multiParty?: boolean
+  /** Offer NO_REPLY outside multi-party chats too, for a surface that can answer without words. */
+  noReply?: boolean
 }
 
 const CHAT_DELIVERY =
@@ -34,7 +36,8 @@ const CONVERSATIONAL_FRAMING = [
 
 export function buildSessionContextPrompt(surface: SessionSurface): string {
   const rules = [CHAT_DELIVERY, NO_DOUBLE_POST]
-  if (surface.multiParty) rules.push(ATTRIBUTION, NO_REPLY)
+  if (surface.multiParty) rules.push(ATTRIBUTION)
+  if (surface.multiParty || surface.noReply) rules.push(NO_REPLY)
   rules.push(...CONVERSATIONAL_FRAMING)
 
   const header = surface.where

@@ -148,6 +148,8 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
     expect(restarted.received).toHaveBeenCalledWith(expect.objectContaining({
       chatId: expectedChatId, text: 'what is the code?',
     }))
+    // A session that does not name the thread is told it, so its Slack tools can.
+    expect(incomingMessageSchema.parse(restarted.received.mock.calls[0][0]).threadId).toBe(expectedChatId === 'C123' ? 'C123|1000.001' : undefined)
     expect(slack.replies).not.toHaveBeenCalled() // retained session already has history
     await restarted.connector.sendMessage(expectedChatId, { text: 'CEDAR' })
     expect(slack.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C123', thread_ts: '1000.001' }))
@@ -276,6 +278,6 @@ describe('Slack forwarded messages', () => {
     ] })
     await slackChat.receive({ text: '<@U_BOT> what did they send?', ts: '1000.003', thread_ts: '1000.001' })
 
-    expect(slackChat.received.mock.calls[0][0].text).toContain(`Tester: <@U_BOT> can you publish this?\n\n${SHARED_QUOTE}`)
+    expect(slackChat.received.mock.calls[0][0].text).toContain(`Tester (1970-01-01 00:16 UTC, message id: 1000.001): <@U_BOT> can you publish this?\n\n${SHARED_QUOTE}`)
   })
 })

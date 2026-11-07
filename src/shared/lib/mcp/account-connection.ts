@@ -39,6 +39,10 @@ class AccountMcpConnection implements McpConnection {
       tools: this.tools }
   }
 
+  fetch(url: string, init: RequestInit): Promise<Response> {
+    return mcpSafeFetch(url, init)
+  }
+
   async authorizeInvocation(call: McpInvocation): Promise<McpAccessResult> {
     if (call.isProtocolMethod) return { ok: true, policyDecision: 'allow' }
     const resolvePolicy = async () => {

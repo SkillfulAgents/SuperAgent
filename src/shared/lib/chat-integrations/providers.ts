@@ -90,16 +90,19 @@ export const chatProviders: IntegrationProvider[] = [
       await deleteTelegramWebhook(config)
     },
   ),
-  chatProvider(
-    'slack', slackConfigSchema, async () => (await import('./slack-connector')).SlackConnector,
-    async (Connector, config, appLink, record) => {
-      const { createSlackThreadStateStore } = await import('./slack-thread-state')
-      return new Connector(config, appLink, createSlackThreadStateStore(record.id), record)
-    },
-    // The app keeps posting to the endpoint, which is disabled after this.
-    async record => { (await import('./slack-connector')).forgetSlackInstallation(record.id) },
-    async (record, input) => (await import('./slack-webhooks')).updateSlackWebhookSettings(record, input),
-  ),
+  {
+    ...chatProvider(
+      'slack', slackConfigSchema, async () => (await import('./slack-connector')).SlackConnector,
+      async (Connector, config, appLink, record) => {
+        const { createSlackThreadStateStore } = await import('./slack-thread-state')
+        return new Connector(config, appLink, createSlackThreadStateStore(record.id), record)
+      },
+      // The app keeps posting to the endpoint, which is disabled after this.
+      async record => { (await import('./slack-connector')).forgetSlackInstallation(record.id) },
+      async (record, input) => (await import('./slack-webhooks')).updateSlackWebhookSettings(record, input),
+    ),
+    async mcp(record) { const { slackMcpConnection } = await import('./slack-mcp'); return slackMcpConnection(record) },
+  },
   chatProvider(
     'imessage', imessageConfigSchema, async () => (await import('./imessage-connector')).IMessageConnector,
     (Connector, config, appLink, record) => new Connector(config, appLink, record),

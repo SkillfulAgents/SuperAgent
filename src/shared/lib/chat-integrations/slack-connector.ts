@@ -41,7 +41,8 @@ import { buildSessionContextPrompt } from './chat-session-context'
 import { SLACK_AGENT_INSTRUCTIONS } from './definitions'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
-import { isSlackBlocksRejection, isSlackFileNotReady, isUnrecoverableSlackError } from './slack-error'
+import { isSlackBlocksRejection, isSlackFileNotReady, isUnrecoverableSlackError, slackPlatformErrorCode } from './slack-error'
+import { integrationMcpName } from '../agent-integrations/mcp'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -165,8 +166,6 @@ export function fitSlackTables(markdown: string): string {
 
 // ── Session system prompt ───────────────────────────────────────────────
 
-const SLACK_PROVIDER_RULES = `- ${SLACK_AGENT_INSTRUCTIONS}`
-
 /**
  * Session-level context for Slack conversations, built per session so it names
  * the concrete destination (DM vs channel vs thread). Without this the agent
@@ -174,6 +173,11 @@ const SLACK_PROVIDER_RULES = `- ${SLACK_AGENT_INSTRUCTIONS}`
  * into the chat — it has misrouted messages by replying through
  * send_chat_message and guessing a DM target.
  */
+const SLACK_PROVIDER_RULES = `- You are a teammate in this Slack conversation. Act like a thoughtful colleague and use whatever Slack offers that fits the moment.
+- Answer with words, an emoji reaction, or both. A reaction alone can acknowledge, agree or mark something done.
+- Besides replying, your Slack tools can read the channel and its threads, reply to one person privately, schedule messages and reminders, edit or delete your own messages, pin and bookmark, write canvases, work with lists, join or create channels, and look up people.
+- ${SLACK_AGENT_INSTRUCTIONS}`
+
 export function buildSlackSystemPrompt(message: SystemPromptContext): string {
   const pipeIdx = message.chatId.indexOf('|')
   const baseChannelId = pipeIdx > 0 ? message.chatId.slice(0, pipeIdx) : message.chatId
@@ -187,8 +191,9 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
         : 'a Slack conversation'
   const shared = buildSessionContextPrompt({
     surface: 'chat',
-    where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId})`,
+    where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId}${message.integrationId ? `, your Slack tools: ${integrationMcpName(message.integrationId)}` : ''})`,
     multiParty: isMultiPartyChatType(kind),
+    noReply: true,
   })
   return `${shared}\n${SLACK_PROVIDER_RULES}`
 }
@@ -556,6 +561,28 @@ function inThread<T extends object>(args: T, threadTs: string | undefined, alsoS
   return alsoSendToChannel ? { ...args, thread_ts: threadTs, reply_broadcast: true } : { ...args, thread_ts: threadTs }
 }
 
+/** Longest message text a history line shows, so one pasted document cannot fill the agent's context. */
+const MESSAGE_CHARS = 1500
+
+/** One message as a line: "Name (2026-11-02 23:55 UTC, message id: 1793992161.065119): text [file: deck.pdf]". */
+export function slackMessageLine(name: string, ts: string | undefined, text: string, files: string[], empty?: string): string | null {
+  const chars = Array.from(text)
+  const shown = chars.length > MESSAGE_CHARS ? `${chars.slice(0, MESSAGE_CHARS).join('')}…(cut)` : text
+  const body = [shown, ...files.map(f => `[file: ${f}]`)].filter(Boolean).join(' ') || empty
+  if (!body) return null
+  const at = ts ? `${new Date(Number(ts) * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC, message id: ${ts}` : ''
+  return `${name}${at ? ` (${at})` : ''}: ${body}`
+}
+
+const NO_THREAD_CONTEXT: ReadonlyMap<string, { channel: string; threadTs: string }> = new Map()
+
+export interface SlackApi {
+  client: SlackApp['client']
+  channelOf(chatId: string): { channel: string; threadTs?: string }
+  userName(userId: string): Promise<string | undefined>
+  plainText(text: string): Promise<string>
+}
+
 export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
 
@@ -563,6 +590,7 @@ export class SlackConnector extends ChatAgentIntegration {
   static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
   static classifyChatId = classifySlackChat
   static parentChatId = (chatId: string) => classifySlackChatId(chatId) === 'thread' ? chatId.slice(0, chatId.indexOf('|')) : undefined
+  static showsMessageIds = true
 
   private app: SlackApp | null = null
   private receiver: SocketModeReceiver | null = null
@@ -782,6 +810,7 @@ export class SlackConnector extends ChatAgentIntegration {
         externalMessageId: ts,
         text,
         chatId: effectiveChatId,
+        threadId: routing.threadKey === effectiveChatId ? undefined : routing.threadKey,
         userId,
         userName,
         chatName,
@@ -1165,6 +1194,8 @@ export class SlackConnector extends ChatAgentIntegration {
         for (const chunk of rest) await this.postText(chatId, chunk)
       }
     } catch (err: unknown) {
+      // The reply was deleted while streaming: let delivery post the final text anew.
+      if (slackPlatformErrorCode(err) === 'message_not_found') throw err
       const errMsg = err instanceof Error ? err.message : String(err)
       if (!errMsg.includes('no_change')) {
         console.error('[SlackConnector] Failed to finalize message:', err)
@@ -1561,6 +1592,22 @@ export class SlackConnector extends ChatAgentIntegration {
     return channelId
   }
 
+  /** The bot's Slack client and this connector's resolvers, for the integration's MCP tools. */
+  api(): SlackApi | null {
+    if (!this.app) return null
+    return {
+      client: this.app.client,
+      // Parsed from the id alone: the reply-routing map follows the latest message and must not move a tool's target.
+      channelOf: chatId => resolveSlackChannel(chatId, NO_THREAD_CONTEXT),
+      userName: userId => this.resolveUserName(userId),
+      plainText: text => this.resolveMentionsInText(text),
+    }
+  }
+
+  get workspaceName(): string | undefined {
+    return this.workspace.name
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────────
 
   private resolveChannel(effectiveChatId: string): { channel: string; threadTs?: string } {
@@ -1589,7 +1636,8 @@ export class SlackConnector extends ChatAgentIntegration {
         const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
         const content = slackMessageContent(m).text
         const text = content ? await this.resolveMentionsInText(content) : ''
-        if (text) lines.push(`${name}: ${text}`)
+        const line = text && slackMessageLine(name, m.ts, text, [])
+        if (line) lines.push(line)
       }
       if (lines.length === 0) return null
 

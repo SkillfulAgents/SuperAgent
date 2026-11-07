@@ -22,6 +22,13 @@ const UNRECOVERABLE_SLACK_ERROR_CODES = new Set([
 /** @slack/web-api ErrorCode.PlatformError — an ok:false API response. */
 const SLACK_PLATFORM_ERROR_CODE = 'slack_webapi_platform_error'
 
+/** The code of an ok:false Slack API response (e.g. not_in_channel), or undefined for any other error. */
+export function slackPlatformErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object' || !('code' in err) || err.code !== SLACK_PLATFORM_ERROR_CODE || !('data' in err)) return undefined
+  const { data } = err
+  return data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' ? data.error : undefined
+}
+
 export function isUnrecoverableSlackError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   const e = err as { code?: unknown; data?: { error?: unknown } }

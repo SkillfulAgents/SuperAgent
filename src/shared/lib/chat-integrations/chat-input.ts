@@ -8,11 +8,103 @@ import { agentRegistry } from '../agent-actor'
 import { captureException } from '../error-reporting'
 import { chunksOf } from '../agent-actor/jsonl-files'
 import { heicUploadAsJpeg } from '@/api/routes/heic-jpeg'
-const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024
+export const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 function isTrustedSlackDownloadHost(u: URL): boolean {
   return u.protocol === 'https:' && isHostOrSubdomain(u.hostname, 'slack.com')
+}
+
+/**
+ * Download a URL with Bearer auth, following redirects manually.
+ *
+ * The Slack bot token is attached ONLY when the next hop is an HTTPS request
+ * to a trusted Slack host (SUP-232). Slack download URLs redirect to signed S3
+ * URLs whose auth lives in the query string, so dropping the header on
+ * cross-origin hops does not break legitimate downloads — but it prevents the
+ * xoxb token from leaking to an attacker-controlled redirect target.
+ */
+export async function downloadSlackUrl(url: string, token: string): Promise<Buffer | null> {
+  let target = tryParseUrl(url)
+  if (!target) {
+    console.error('[ChatAgentIntegration] Invalid Slack download URL')
+    return null
+  }
+
+  const headersFor = (u: URL): Record<string, string> =>
+    isTrustedSlackDownloadHost(u) ? { 'Authorization': `Bearer ${token}` } : {}
+
+  let response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
+  // Follow redirects, re-evaluating auth for every hop.
+  let redirects = 0
+  while (response.status >= 300 && response.status < 400 && redirects < 5) {
+    const location = response.headers.get('location')
+    if (!location) break
+    // Resolve relative redirects against the current URL.
+    const next = tryParseUrl(location, target)
+    if (!next) {
+      console.error('[ChatAgentIntegration] Invalid redirect location in Slack download')
+      return null
+    }
+    target = next
+    response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
+    redirects++
+  }
+
+  if (!response.ok) {
+    console.error(`[ChatAgentIntegration] File download HTTP ${response.status} for ${url}`)
+    return null
+  }
+
+  const buffer = await readDownload(response)
+  if (!buffer || !isUsableDownload(buffer)) {
+    return null
+  }
+  return buffer
+}
+
+/** The response body, or null once it is over the size limit: an oversized file is never held whole. */
+async function readDownload(response: Response): Promise<Buffer | null> {
+  const declared = Number(response.headers.get('content-length'))
+  if (declared > MAX_FILE_DOWNLOAD_SIZE) {
+    await response.body?.cancel().catch(() => {})
+    console.error(`[ChatAgentIntegration] Downloaded file too large (${(declared / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
+    return null
+  }
+  if (!response.body) return Buffer.alloc(0)
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of chunksOf(response.body)) {
+    size += chunk.length
+    if (size > MAX_FILE_DOWNLOAD_SIZE) {
+      console.error(`[ChatAgentIntegration] Downloaded file too large (over ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
+      return null
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks, size)
+}
+
+
+/** Validate downloaded content is actual file data, not an HTML error page. */
+function isUsableDownload(buffer: Buffer): boolean {
+  if (buffer.length === 0) {
+    console.error('[ChatAgentIntegration] Downloaded file is empty')
+    return false
+  }
+  if (buffer.length > MAX_FILE_DOWNLOAD_SIZE) {
+    console.error(`[ChatAgentIntegration] Downloaded file too large (${(buffer.length / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
+    return false
+  }
+  // Check for HTML content (Slack login pages, error pages)
+  if (buffer.length > 15) {
+    const head = buffer.slice(0, 15).toString('utf8').toLowerCase()
+    if (head.includes('<!doctype') || head.includes('<html')) {
+      console.error('[ChatAgentIntegration] Downloaded file is HTML, not a valid file (missing files:read scope?)')
+      return false
+    }
+  }
+  return true
 }
 
 export class ChatInputBuilder {
@@ -32,11 +124,14 @@ export class ChatInputBuilder {
       ? formatSenderPrefix(sender)
       : ''
     const text = prefix + (message.text || '')
+    // Only with content, so an id alone never turns a skipped turn into one. Before any file block, which must stay last.
+    const idLine = connectorClass?.showsMessageIds ? `(message id: ${message.externalMessageId}${message.threadId ? `, thread: ${message.threadId}` : ''})` : ''
+    const withId = (content: string, files = false) => (idLine && (content.trim() || files) ? (content ? `${content}\n${idLine}` : idLine) : content)
     // What the person wrote, for display: no attribution prefix, injected context or file block.
     let request = message.display?.requestText ?? (message.text || '')
 
     if (!message.files || message.files.length === 0) {
-      return { text, failedFiles: [], request }
+      return { text: withId(text), failedFiles: [], request }
     }
 
     const { appendAttachedFiles } = await import('@shared/lib/utils/attached-files')
@@ -78,7 +173,7 @@ export class ChatInputBuilder {
       }
     }
 
-    return { text: appendAttachedFiles(transcribedText, uploadedPaths), failedFiles, request }
+    return { text: appendAttachedFiles(withId(transcribedText, uploadedPaths.length > 0), uploadedPaths), failedFiles, request }
   }
 
   /** Download a file from the chat platform, returning a Buffer. */
@@ -97,8 +192,8 @@ export class ChatInputBuilder {
       // Telegram & iMessage: direct URL download (no auth needed)
       const response = await fetch(fileUrl)
       if (!response.ok) return null
-      const buffer = await this.readDownload(response)
-      if (!buffer || !this.validateFileContent(buffer)) return null
+      const buffer = await readDownload(response)
+      if (!buffer || !isUsableDownload(buffer)) return null
       return buffer
     } catch (err) {
       console.error(`[ChatAgentIntegration] File download failed:`, err)
@@ -112,7 +207,7 @@ export class ChatInputBuilder {
     const fileIdMatch = fileUrl.match(/files-pri\/[A-Z0-9]+-([A-Z0-9]+)/)
     if (!fileIdMatch) {
       // Fallback: try direct download with auth
-      return this.downloadWithAuth(fileUrl, botToken)
+      return downloadSlackUrl(fileUrl, botToken)
     }
 
     const fileId = fileIdMatch[1]
@@ -128,98 +223,7 @@ export class ChatInputBuilder {
       return null
     }
 
-    return this.downloadWithAuth(info.file.url_private_download, botToken)
-  }
-
-  /**
-   * Download a URL with Bearer auth, following redirects manually.
-   *
-   * The Slack bot token is attached ONLY when the next hop is an HTTPS request
-   * to a trusted Slack host (SUP-232). Slack download URLs redirect to signed S3
-   * URLs whose auth lives in the query string, so dropping the header on
-   * cross-origin hops does not break legitimate downloads — but it prevents the
-   * xoxb token from leaking to an attacker-controlled redirect target.
-   */
-  private async downloadWithAuth(url: string, token: string): Promise<Buffer | null> {
-    let target = tryParseUrl(url)
-    if (!target) {
-      console.error('[ChatAgentIntegration] Invalid Slack download URL')
-      return null
-    }
-
-    const headersFor = (u: URL): Record<string, string> =>
-      isTrustedSlackDownloadHost(u) ? { 'Authorization': `Bearer ${token}` } : {}
-
-    let response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
-    // Follow redirects, re-evaluating auth for every hop.
-    let redirects = 0
-    while (response.status >= 300 && response.status < 400 && redirects < 5) {
-      const location = response.headers.get('location')
-      if (!location) break
-      // Resolve relative redirects against the current URL.
-      const next = tryParseUrl(location, target)
-      if (!next) {
-        console.error('[ChatAgentIntegration] Invalid redirect location in Slack download')
-        return null
-      }
-      target = next
-      response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
-      redirects++
-    }
-
-    if (!response.ok) {
-      console.error(`[ChatAgentIntegration] File download HTTP ${response.status} for ${url}`)
-      return null
-    }
-
-    const buffer = await this.readDownload(response)
-    if (!buffer || !this.validateFileContent(buffer)) {
-      return null
-    }
-    return buffer
-  }
-
-  /** The response body, or null once it is over the size limit: an oversized file is never held whole. */
-  private async readDownload(response: Response): Promise<Buffer | null> {
-    const declared = Number(response.headers.get('content-length'))
-    if (declared > MAX_FILE_DOWNLOAD_SIZE) {
-      await response.body?.cancel().catch(() => {})
-      console.error(`[ChatAgentIntegration] Downloaded file too large (${(declared / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
-      return null
-    }
-    if (!response.body) return Buffer.alloc(0)
-    const chunks: Buffer[] = []
-    let size = 0
-    for await (const chunk of chunksOf(response.body)) {
-      size += chunk.length
-      if (size > MAX_FILE_DOWNLOAD_SIZE) {
-        console.error(`[ChatAgentIntegration] Downloaded file too large (over ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
-        return null
-      }
-      chunks.push(chunk)
-    }
-    return Buffer.concat(chunks, size)
-  }
-
-  /** Validate downloaded content is actual file data, not an HTML error page. */
-  private validateFileContent(buffer: Buffer): boolean {
-    if (buffer.length === 0) {
-      console.error('[ChatAgentIntegration] Downloaded file is empty')
-      return false
-    }
-    if (buffer.length > MAX_FILE_DOWNLOAD_SIZE) {
-      console.error(`[ChatAgentIntegration] Downloaded file too large (${(buffer.length / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
-      return false
-    }
-    // Check for HTML content (Slack login pages, error pages)
-    if (buffer.length > 15) {
-      const head = buffer.slice(0, 15).toString('utf8').toLowerCase()
-      if (head.includes('<!doctype') || head.includes('<html')) {
-        console.error('[ChatAgentIntegration] Downloaded file is HTML, not a valid file (missing files:read scope?)')
-        return false
-      }
-    }
-    return true
+    return downloadSlackUrl(info.file.url_private_download, botToken)
   }
 
   /** Write a file to the agent's workspace uploads directory. */

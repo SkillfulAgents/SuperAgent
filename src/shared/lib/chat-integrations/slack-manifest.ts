@@ -4,7 +4,7 @@
  * installation's relay endpoint with one.
  */
 
-const BOT_SCOPES = [
+export const BOT_SCOPES = [
   'users:read',
   'chat:write',
   'files:read',
@@ -19,6 +19,20 @@ const BOT_SCOPES = [
   'mpim:history',
   'mpim:read',
   'reactions:write',
+  'reactions:read',
+  'emoji:read',
+  'pins:read',
+  'pins:write',
+  'bookmarks:read',
+  'bookmarks:write',
+  'canvases:read',
+  'canvases:write',
+  'lists:read',
+  'lists:write',
+  'channels:join',
+  'channels:manage',
+  'groups:write',
+  'usergroups:read',
 ]
 
 export const SLACK_BOT_EVENTS = ['message.im', 'message.channels', 'message.groups', 'message.mpim']

@@ -1,12 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { ChatInputBuilder } from './chat-input'
+import { downloadSlackUrl } from './chat-input'
 
-const chatInput = new ChatInputBuilder(async () => undefined)
 const DOWNLOAD_URL = 'https://files.slack.com/files-pri/T123-F456/report.pdf'
 const LIMIT = 50 * 1024 * 1024
 
 function download(): Promise<Buffer | null> {
-  return (chatInput as any).downloadWithAuth(DOWNLOAD_URL, 'xoxb-token')
+  return downloadSlackUrl(DOWNLOAD_URL, 'xoxb-token')
 }
 
 describe('chat attachment download size limit', () => {
