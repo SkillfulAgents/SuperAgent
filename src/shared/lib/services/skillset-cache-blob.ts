@@ -13,13 +13,7 @@ import { randomUUID } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { blobStore } from '@shared/lib/blob-store/blob-store'
-
-interface PackedFile {
-  path: string
-  /** base64 */
-  data: string
-  mode: number
-}
+import { skillsetCacheBlobSchema, type PackedSkillsetFile } from './skillset-cache-blob-schema'
 
 /** Not `skillset-cache/`: in the data dir that is the cache folder itself. */
 const keyFor = (repoDir: string) => `skillset-cache-packs/${path.basename(repoDir)}`
@@ -34,7 +28,7 @@ interface DecodedFile {
 
 const decoded = new Map<string, { version: string; files: DecodedFile[] }>()
 
-const decode = (files: PackedFile[]): DecodedFile[] => files.map((file) => ({ path: file.path, bytes: Buffer.from(file.data, 'base64'), mode: file.mode }))
+const decode = (files: PackedSkillsetFile[]): DecodedFile[] => files.map((file) => ({ path: file.path, bytes: Buffer.from(file.data, 'base64'), mode: file.mode }))
 
 async function storedFiles(key: string): Promise<DecodedFile[] | null> {
   const store = blobStore()
@@ -45,7 +39,17 @@ async function storedFiles(key: string): Promise<DecodedFile[] | null> {
   if (kept?.version === version) return kept.files
   const stored = await store.get(key)
   if (!stored) return null
-  const { files } = JSON.parse(new TextDecoder().decode(stored)) as { v: 1; version: string; files: PackedFile[] }
+  let packed
+  try {
+    packed = skillsetCacheBlobSchema.parse(JSON.parse(new TextDecoder().decode(stored)))
+  } catch (error) {
+    // An interrupted write or an unsupported pack is a cache miss. Leave the
+    // stored bytes alone: another process may already be replacing them.
+    decoded.delete(key)
+    console.warn(`[skillsets] Ignoring invalid stored cache ${key}:`, error)
+    return null
+  }
+  const { files } = packed
   const result = decode(files)
   // Kept under the marker read, not the folder's own version: two saves that race can leave the
   // marker naming the other one's folder, and the next save changes the marker either way.
@@ -53,7 +57,7 @@ async function storedFiles(key: string): Promise<DecodedFile[] | null> {
   return result
 }
 
-async function collect(root: string, dir: string, out: PackedFile[]): Promise<void> {
+async function collect(root: string, dir: string, out: PackedSkillsetFile[]): Promise<void> {
   for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
     if (entry.name === '.git') continue
     const full = path.join(dir, entry.name)
@@ -67,18 +71,27 @@ async function collect(root: string, dir: string, out: PackedFile[]): Promise<vo
 
 export async function saveSkillsetCache(repoDir: string): Promise<void> {
   const store = blobStore()
-  const files: PackedFile[] = []
+  const files: PackedSkillsetFile[] = []
   await collect(repoDir, repoDir, files)
   const key = keyFor(repoDir)
   const version = randomUUID()
-  await store.put(key, new TextEncoder().encode(JSON.stringify({ v: 1, version, files })))
+  const packed = skillsetCacheBlobSchema.parse({ v: 1, version, files })
+  await store.put(key, new TextEncoder().encode(JSON.stringify(packed)))
   await store.put(versionKeyFor(key), new TextEncoder().encode(version))
   // Not kept in memory here: only a process that restores needs the decoded files.
   decoded.delete(key)
 }
 
-/** Writes the stored folder to disk; false without a stored copy. */
+/** Restores an absent folder; false if it exists or no valid stored copy is available. */
 export async function restoreSkillsetCache(repoDir: string): Promise<boolean> {
+  // A fresh download with a missing index must fail validation, not be overlaid
+  // with old files. Only an absent cache folder can use the stored copy.
+  try {
+    await fs.promises.lstat(repoDir)
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   const files = await storedFiles(keyFor(repoDir))
   if (!files) return false
   const root = path.resolve(repoDir)

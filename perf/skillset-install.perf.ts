@@ -100,7 +100,8 @@ describe('skillset install', () => {
       // Includes one source-directory read to distinguish a real second
       // instructions file from the AGENTS.md created with the new agent,
       // and one index.json read for the template's avatar. This fixture has
-      // no index.json, so that read also checks the blob store for a stored copy.
+      // no index.json, so that read also checks whether the cache folder is absent
+      // before attempting a restore.
       // Legacy templates additionally read, write and remove CLAUDE.md.
       // Each atomic write counts its data write and its two fsyncs.
       totalOps: instructionsFile === 'AGENTS.md' ? 125 : 132,

@@ -7,9 +7,12 @@ import { memoryBlobStore as memoryStore } from '@shared/lib/blob-store/testing/m
 import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
 
 const KEY = 'skillset-cache-packs/platform--sales-playbooks'
+const tempDirs: string[] = []
 
 function skillsetDir(): string {
-  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'skillset-cache-')), 'platform--sales-playbooks')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skillset-cache-'))
+  tempDirs.push(root)
+  const dir = path.join(root, 'platform--sales-playbooks')
   fs.mkdirSync(path.join(dir, 'skills', 'lead-research'), { recursive: true })
   fs.mkdirSync(path.join(dir, '.git'))
   fs.writeFileSync(path.join(dir, 'index.json'), '{"skills":[{"name":"lead-research","path":"skills/lead-research"}]}')
@@ -28,7 +31,10 @@ async function otherProcess(store: BlobStore) {
 
 const skillText = (dir: string) => fs.readFileSync(path.join(dir, 'skills', 'lead-research', 'SKILL.md'), 'utf-8')
 
-afterEach(() => setBlobStore(null))
+afterEach(() => {
+  setBlobStore(null)
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
 
 describe('skillset cache in the blob store', () => {
   it('restores a saved folder into an empty data dir', async () => {
@@ -54,6 +60,35 @@ describe('skillset cache in the blob store', () => {
     await deleteSkillsetCache(dir)
 
     expect(await restoreSkillsetCache(dir)).toBe(false)
+  })
+
+  it('does not overlay an existing folder whose index is missing', async () => {
+    setBlobStore(memoryStore())
+    const dir = skillsetDir()
+    await saveSkillsetCache(dir)
+    fs.unlinkSync(path.join(dir, 'index.json'))
+    fs.writeFileSync(path.join(dir, 'skills', 'lead-research', 'SKILL.md'), '# Fresh download\n')
+
+    expect(await restoreSkillsetCache(dir)).toBe(false)
+    expect(fs.existsSync(path.join(dir, 'index.json'))).toBe(false)
+    expect(skillText(dir)).toBe('# Fresh download\n')
+  })
+
+  it.each([
+    ['truncated JSON', '{'],
+    ['missing files', JSON.stringify({ v: 1, version: '00000000-0000-4000-8000-000000000001' })],
+    ['unsupported format', JSON.stringify({ v: 2, version: '00000000-0000-4000-8000-000000000001', files: [] })],
+    ['invalid file bytes', JSON.stringify({ v: 1, version: '00000000-0000-4000-8000-000000000001', files: [{ path: 'index.json', data: 'not base64!', mode: 0o600 }] })],
+  ])('treats %s as a cache miss without creating a partial folder', async (_name, contents) => {
+    const store = memoryStore()
+    setBlobStore(store)
+    const dir = skillsetDir()
+    await saveSkillsetCache(dir)
+    await store.put(KEY, Buffer.from(contents))
+    fs.rmSync(dir, { recursive: true, force: true })
+
+    await expect(restoreSkillsetCache(dir)).resolves.toBe(false)
+    expect(fs.existsSync(dir)).toBe(false)
   })
 
   it('reads the folder once after a save in the same process, then only the version marker', async () => {
