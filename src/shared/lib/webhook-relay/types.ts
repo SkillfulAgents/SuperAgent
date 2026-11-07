@@ -123,10 +123,8 @@ export interface WebhookRelaySnapshot {
   lastError: string | null
 }
 
-export interface WebhookRelayService {
+export interface WebhookRelayService extends Service {
   readonly kind: 'platform' | 'unavailable'
-  /** The relay's scheduled work, for its service to register. */
-  readonly tasks?: Service['tasks']
   snapshot(): WebhookRelaySnapshot
   /** Called on availability/transport/error changes, not on every claim. */
   onChange(listener: (snapshot: WebhookRelaySnapshot) => void): () => void

@@ -6,9 +6,11 @@ import { pruneExpiredApiLogsForAgent } from '@shared/lib/services/api-log-auto-d
 import { db } from '@shared/lib/db'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { PassTask, taskManager } from '@shared/lib/background-work'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 
-class ApiLogAutoDeleteMonitor {
+class ApiLogAutoDeleteMonitor implements Service {
+  readonly id = 'api-log-auto-delete'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private pollIntervalMs = 4 * 60 * 60 * 1000

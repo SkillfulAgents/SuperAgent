@@ -1,5 +1,5 @@
 
-import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
+import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, Loader2, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
 import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
@@ -1907,7 +1907,9 @@ export function AppSidebar() {
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
-                    <AnimatedNavIcon name="plus" className="h-4 w-4" />
+                    {isCreatingAgent
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <AnimatedNavIcon name="plus" className="h-4 w-4" />}
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

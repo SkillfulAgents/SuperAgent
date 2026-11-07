@@ -10,7 +10,7 @@
 
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { PassTask, taskManager } from '@shared/lib/background-work'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
@@ -112,7 +112,10 @@ function groupByEndpoint(events: readonly RelayEvent[]): Map<string, RelayEvent[
   return grouped
 }
 
-class TriggerManager {
+class TriggerManager implements Service {
+  readonly id = 'webhook-triggers'
+  readonly phase = 'background' as const
+  readonly startupIo = true
   private isRunning = false
   private readonly registrations = new Map<string, MemberRegistration>()
   private syncQueue: Promise<void> = Promise.resolve()
