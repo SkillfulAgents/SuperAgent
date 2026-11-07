@@ -1,6 +1,6 @@
 /**
- * The remote actor: `remoteActor` is an `AgentActor` whose every op is one
- * HTTP request, and `serveActor` answers those requests from the actor itself. The
+ * The remote agent actor: `remoteAgentActor` is an `AgentActor` whose every op is one
+ * HTTP request, and `serveAgentActor` answers those requests from the actor itself. The
  * two meet at a `fetch`-shaped function, so the actor can sit in another
  * process or machine, or in this one behind a loopback.
  *
@@ -128,7 +128,7 @@ function remoteGroup(call: (path: string, args: unknown[]) => Promise<unknown>, 
 }
 
 /** Every group of an actor reached through `send`, and its `live`. */
-export function remoteActorOps(
+export function remoteAgentActorOps(
   slug: AgentSlug,
   send: ActorFetch,
   base = 'http://actor',
@@ -149,11 +149,11 @@ export function remoteActorOps(
 /**
  * A test transport: the actor behind its own HTTP server in this process.
  * Every op goes out as a real `Request` and comes back as a real `Response`
- * through `serveActor`; anything else (`slug`, the local actor's state that a
+ * through `serveAgentActor`; anything else (`slug`, the local actor's state that a
  * test reaches by a cast) is the actor's own.
  */
 export function loopbackActor(actor: AgentActor): AgentActor {
-  const ops = remoteActorOps(actor.slug, serveActor(() => actor), undefined, actor) as Record<string, unknown>
+  const ops = remoteAgentActorOps(actor.slug, serveAgentActor(() => actor), undefined, actor) as Record<string, unknown>
   return new Proxy(actor, {
     get(target, key, receiver) {
       if (typeof key === 'string' && key in ops) return ops[key]
@@ -162,7 +162,7 @@ export function loopbackActor(actor: AgentActor): AgentActor {
   })
 }
 
-/** Where `remoteActor` sends an agent's ops: anything that answers requests, such as a Durable Object stub. */
+/** Where `remoteAgentActor` sends an agent's ops: anything that answers requests, such as a Durable Object stub. */
 export interface ActorTarget {
   /** The agent's slug, as a stub got by name carries it. */
   readonly name?: string
@@ -170,9 +170,9 @@ export interface ActorTarget {
 }
 
 /** An actor that runs wherever `target` reaches. */
-export function remoteActor(target: ActorTarget, slug: AgentSlug | undefined = target.name, base?: string): AgentActor {
-  if (!slug) throw new TypeError('remoteActor needs the agent slug: a target got by name, or the slug itself')
-  return { slug, ...remoteActorOps(slug, (request) => target.fetch(request), base) }
+export function remoteAgentActor(target: ActorTarget, slug: AgentSlug | undefined = target.name, base?: string): AgentActor {
+  if (!slug) throw new TypeError('remoteAgentActor needs the agent slug: a target got by name, or the slug itself')
+  return { slug, ...remoteAgentActorOps(slug, (request) => target.fetch(request), base) }
 }
 
 // ============================================================================
@@ -180,11 +180,11 @@ export function remoteActor(target: ActorTarget, slug: AgentSlug | undefined = t
 // ============================================================================
 
 /**
- * Answers `remoteActor`'s requests from the actor `resolve` hands back for a
+ * Answers `remoteAgentActor`'s requests from the actor `resolve` hands back for a
  * slug. Paths outside `/agents/<slug>/op|pipe/…` get 404; an op path names
  * only a function on an actor group (no prototype keys, no `constructor`).
  */
-export function serveActor(resolve: (slug: AgentSlug) => AgentActor | Promise<AgentActor>): ActorFetch {
+export function serveAgentActor(resolve: (slug: AgentSlug) => AgentActor | Promise<AgentActor>): ActorFetch {
   return async (request) => {
     const url = new URL(request.url)
     const match = /^\/agents\/([^/]+)\/(op|pipe)\/([^/]+)$/.exec(url.pathname)
