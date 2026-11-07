@@ -84,8 +84,11 @@ function fakeSleeping(initial: Record<string, string> = {}) {
       }
       return [...children.values()]
     },
-    async read(path) {
-      return files.get(path) ?? null
+    async read(path, range) {
+      const body = files.get(path)
+      if (!body) return null
+      const part = range ? body.subarray(range.start, range.end === undefined ? undefined : range.end + 1) : body
+      return { size: body.byteLength, stream: new Response(part).body! }
     },
     async write(path, bytes) {
       if (refused()) return false
@@ -246,6 +249,18 @@ describe('Cloudflare file ops while the container is asleep', () => {
     for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) sizes.push(chunk.value.byteLength)
 
     expect(sizes).toEqual([65536, 65536, 65536, 8192])
+  })
+
+  it('reads only the range asked for from a saved file', async () => {
+    const sleeping = fakeSleeping({ 'exports/report.csv': 'region,total\nwest,42\n' })
+    const container = fakeContainer()
+    container.state.running = false
+    const files = createCloudflareFileOps(container.call, sleeping.store)
+
+    expect(await readStream(await files.read('exports/report.csv', { start: 13, end: 16 }))).toBe('west')
+    const sized = await files.readSized('exports/report.csv')
+    expect(sized.size).toBe(21)
+    expect(await readStream(sized.stream)).toBe('region,total\nwest,42\n')
   })
 
   it('sends a write to the container when it started meanwhile', async () => {

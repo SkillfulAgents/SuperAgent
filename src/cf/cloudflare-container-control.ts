@@ -22,11 +22,15 @@ export const ASLEEP_HEADER = 'X-Agent-Asleep'
 /** A saved file or folder, in the shape of the container's file API. */
 export type StoredEntry = { name: string; path: string; type: 'file' | 'directory'; size?: number; modifiedAt?: string }
 
+/** Bytes `start` to `end`, both included; no `end` reads to the end of the file. */
+export type ByteRange = { start: number; end?: number }
+
 /** An agent's saved workspace, read and written while its container is not running. */
 export interface SleepingStore {
   /** A file, a directory's children, or null when neither exists. */
   entry(path: string): Promise<StoredEntry | StoredEntry[] | null>
-  read(path: string): Promise<Uint8Array | null>
+  /** A file's bytes, or the range asked for, streamed from R2; `size` is the whole file's. */
+  read(path: string, range?: ByteRange): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** False when the container started meanwhile: the write has to go to the container. */
   write(path: string, bytes: Uint8Array): Promise<boolean>
   /** Removes a file or a directory with everything under it; false as for write. */
@@ -51,7 +55,7 @@ export function sleepingStore(agents: AgentObjects, agentId: string, version: st
   const call = <R>(run: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, run)
   return {
     entry: (path) => call((agent) => agent.storedEntry(path)),
-    read: (path) => call((agent) => agent.storedRead(path)),
+    read: (path, range) => call((agent) => agent.storedRead(path, range)),
     write: (path, bytes) => call((agent) => agent.storedWrite(path, bytes)),
     remove: (path) => call((agent) => agent.storedRemove(path)),
   }
