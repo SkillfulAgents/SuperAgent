@@ -23,7 +23,17 @@ Awaiting `at()` on the local manager means the work is registered in this proces
 
 ## Initialization
 
-Each entry point awaits `prepareBackgroundWork()` from `startup.ts` after the database, AppState and key custody, and before it serves anything, because a request can schedule work as soon as the API is bound. The entry points are Electron main, `src/web/server.ts` and the Vite dev server's `server-lifecycle` plugin. `perf/harness.ts`, which boots only the API, calls `initializeLocalBackgroundWork()` directly. Importing these modules starts no timer and does no I/O. `taskManager()` and `serviceHost()` before initialization throw.
+Each entry point picks the backend and installs it, after the database, AppState and key custody, and before it serves anything, because a request can schedule work as soon as the API is bound:
+
+```ts
+await initializeBackgroundWork(new LocalTaskManager())
+```
+
+The entry points are Electron main, `src/web/server.ts`, the Vite dev server's `server-lifecycle` plugin and `perf/harness.ts`. Another backend installs the same way, with its own manager. Only an entry point names a backend, so the package's index does not export `LocalTaskManager`: it comes from `background-work/local-task-manager`. Importing these modules starts no timer and does no I/O. `taskManager()` and `serviceHost()` before initialization throw.
+
+Right after it installs, an entry point that runs the app's services (all of them but the perf harness, which boots only the API) calls `registerBackgroundWork()` from `startup.ts`. It registers every service and its Tasks on whatever is installed, and starts nothing. It picks no backend, and throws if nothing is installed. The dev server repeats it for each request.
+
+A shutdown can come before the install, as the entry point is still on its way there. `stopBackgroundWork()` remembers it, and what the entry point goes on to install comes up stopped. Nothing has started by then, so no service has anything to release.
 
 Call `taskManager()` and `serviceHost()` each time you use them. The instances are held on `globalThis`, so another copy of the module sees them too: after a test's `vi.resetModules()`, or after Vite re-instantiates the module following an edit.
 

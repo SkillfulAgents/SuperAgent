@@ -86,6 +86,8 @@ export default defineConfig({
         const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')
         const appStateModule = path.resolve(__dirname, 'src/shared/lib/app-state/index.ts')
         const keysModule = path.resolve(__dirname, 'src/shared/lib/keys/install-server-key-manager.ts')
+        const backgroundWorkModule = path.resolve(__dirname, 'src/shared/lib/background-work/index.ts')
+        const localTaskManagerModule = path.resolve(__dirname, 'src/shared/lib/background-work/local-task-manager.ts')
         const startupModule = path.resolve(__dirname, 'src/shared/lib/startup.ts')
         const ensureBooted = async () => {
           const { isDatabaseOpen, openDatabase } = await server.ssrLoadModule(dbModule)
@@ -102,8 +104,14 @@ export default defineConfig({
           const { installServerKeyManager } = await server.ssrLoadModule(keysModule)
           await installServerKeyManager()
           // Then task dispatch, as the web server does: a request can schedule work.
-          const { prepareBackgroundWork } = await server.ssrLoadModule(startupModule)
-          await prepareBackgroundWork()
+          const { isBackgroundWorkInitialized, initializeBackgroundWork } = await server.ssrLoadModule(backgroundWorkModule)
+          const { LocalTaskManager } = await server.ssrLoadModule(localTaskManagerModule)
+          // Checked and installed in one step: it is installed before the call returns.
+          if (!isBackgroundWorkInitialized()) {
+            await initializeBackgroundWork(new LocalTaskManager())
+          }
+          const { registerBackgroundWork } = await server.ssrLoadModule(startupModule)
+          registerBackgroundWork()
         }
         server.middlewares.use((req, res, next) => {
           if (!req.url?.startsWith('/api')) return next()

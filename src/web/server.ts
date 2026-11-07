@@ -6,7 +6,10 @@ import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { installServerKeyManager } from '@shared/lib/keys/install-server-key-manager'
 import { attachErrorReportingIdentity, flushErrorReporting, initErrorReporting } from '@shared/lib/error-reporting'
-import { afterBindInitialize, prepareBackgroundWork, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { initializeBackgroundWork } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
+import { afterBindInitialize, registerBackgroundWork, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { createServerProvider } from '@shared/lib/error-reporting/sentry-provider'
 import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
 
@@ -66,7 +69,7 @@ async function start() {
   // provider to reach. Same rule as afterBindInitialize (production only,
   // where a second init is a no-op).
   if (process.env.NODE_ENV === 'production') {
-    initErrorReporting({ environment: 'web' })
+    initErrorReporting(createServerProvider({ environment: 'web' }))
   }
 
   // Then the database: nothing below runs without the schema being current,
@@ -81,7 +84,8 @@ async function start() {
   // key against the sealed data, so after the database and before any request.
   await installServerKeyManager()
   // Then task dispatch: a request can schedule work as soon as the bind below lands.
-  await prepareBackgroundWork()
+  await initializeBackgroundWork(new LocalTaskManager())
+  registerBackgroundWork()
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 
