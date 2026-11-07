@@ -1,0 +1,1 @@
+[   79020ms] [WARNING] WebSocket connection to 'ws://localhost:47891/api/agents/ou3rqz6ihi/browser/stream?width=74' failed: WebSocket is closed before the connection is established. @ http://localhost:47891/assets/use-browser-stream-BlOPUPvk.js:0
