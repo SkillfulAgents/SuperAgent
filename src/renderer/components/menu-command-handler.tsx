@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import type { ApiTarget } from '@renderer/lib/api-target'
 import { useDialogs } from '../context/dialog-context'
-import { useCreateUntitledAgent } from '../hooks/use-create-untitled-agent'
+import { useOpenCreateAgent } from '../hooks/use-open-create-agent'
 import { useTargetSwitch } from '../hooks/use-target-switch'
 
 /**
@@ -30,7 +30,7 @@ type MenuCommand =
 function useMenuCommandDispatch(): (command: MenuCommand) => void {
   const navigate = useNavigate()
   const { openSettings } = useDialogs()
-  const { createUntitledAgent } = useCreateUntitledAgent()
+  const openCreateAgent = useOpenCreateAgent()
   const { switchTo, ready: canSwitch } = useTargetSwitch()
 
   // The same path as pressing Local/Cloud, checks and banners included. A
@@ -63,14 +63,14 @@ function useMenuCommandDispatch(): (command: MenuCommand) => void {
           openSettings()
           break
         case 'open-create-agent':
-          void createUntitledAgent({ surface: 'app_menu' })
+          openCreateAgent({ surface: 'app_menu' })
           break
         case 'switch-target':
           setRequestedTarget(command.target)
           break
       }
     },
-    [navigate, openSettings, createUntitledAgent],
+    [navigate, openSettings, openCreateAgent],
   )
 }
 

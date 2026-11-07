@@ -65,7 +65,7 @@ test.describe('Model selection', () => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const initialMessage = `Opus first message ${tag}`
 
-    await agentPage.clickCreateAgent()
+    await agentPage.openEmptyAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     // Pick Opus 4.8 in the grouped composer (expand Opus → pick the version).
@@ -85,7 +85,7 @@ test.describe('Model selection', () => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const initialMessage = `Pinned Opus 4.7 ${tag}`
 
-    await agentPage.clickCreateAgent()
+    await agentPage.openEmptyAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     // Pin Opus 4.7 — the older version must reach the container exactly, not
@@ -130,7 +130,7 @@ test.describe('Model selection', () => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const initialMessage = `xhigh→sonnet auto-reset ${tag}`
 
-    await agentPage.clickCreateAgent()
+    await agentPage.openEmptyAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     await pickModel(page, 'opus', OPUS_LATEST)
@@ -181,7 +181,7 @@ test.describe('Model selection', () => {
   })
 
   test('Sonnet 4.6 offers Max effort but hides Extra High', async ({ page }) => {
-    await agentPage.clickCreateAgent()
+    await agentPage.openEmptyAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     // Default starts on Opus — confirm xhigh/max are visible there first.

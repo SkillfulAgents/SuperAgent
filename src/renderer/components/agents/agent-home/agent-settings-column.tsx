@@ -47,7 +47,6 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
           </div>
         ))}
       <HomeTriggers
-        className="intro-step intro-step-4"
         agentSlug={agent.slug}
         scheduledTasks={scheduledTasks}
         onSelectTask={(taskId: string) => {
@@ -63,12 +62,12 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
           void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
         }}
       />
-      {!hideConnections && <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />}
-      <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={onRunSkill} />
-      <HomeAgentIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
-      <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} hiddenVolumeId={hiddenVolumeId} />
-      <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={(tab) => { if (tab === 'system-prompt') setSystemPromptOpen(true) }} />
-      <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
+      {!hideConnections && <HomeConnections agentSlug={agent.slug} />}
+      <HomeSkills agentSlug={agent.slug} onRunSkill={onRunSkill} />
+      <HomeAgentIntegrations agentSlug={agent.slug} />
+      <HomeVolumes agentSlug={agent.slug} hiddenVolumeId={hiddenVolumeId} />
+      <HomeExtras agentSlug={agent.slug} onOpenSettings={(tab) => { if (tab === 'system-prompt') setSystemPromptOpen(true) }} />
+      <HomeHooks agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
       <SystemPromptDialog
         agent={agent}
         open={systemPromptOpen}

@@ -6,6 +6,7 @@
 
 import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
 import type { LlmProviderId } from '../llm-provider/provider-types'
+import type { AgentAvatar } from './agent-avatar'
 
 // ============================================================================
 // Agent Roles
@@ -50,6 +51,8 @@ export interface CreateAgentInput {
   name: string
   description?: string
   instructions?: string
+  /** The orb picked while creating; omitted, the agent gets a random one. */
+  avatar?: AgentAvatar
 }
 
 /**

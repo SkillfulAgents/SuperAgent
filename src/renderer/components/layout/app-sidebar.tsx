@@ -61,7 +61,7 @@ import { useExperiment } from '@renderer/hooks/use-experiment'
 import { useTodos } from '@renderer/hooks/use-todos'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
+import { NewAgentMenu } from '@renderer/components/agents/new-agent-menu'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
@@ -1174,13 +1174,12 @@ function HistoryNavigationButtons() {
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
   const { openSettings } = useDialogs()
-  const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
   const updateStatus = useUpdateStatus()
   const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
 
-  // The "New Agent" menu command is handled centrally by MenuCommandHandler
-  // (which calls createUntitledAgent); the sidebar keeps the hook for its own
-  // "+" button below.
+  // The "New Agent" app-menu command is handled centrally by
+  // MenuCommandHandler (straight to the from-scratch page); the sidebar's own
+  // "New Agent" row and each section's + open the New Agent menu.
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { openSearch } = useSearch()
   const isMobile = useIsMobile()
@@ -1716,14 +1715,13 @@ export function AppSidebar() {
     )
   }, [collapsedFolders, updateSettings])
 
-  // A folder's own +: the new agent is filed into it, and a collapsed folder
-  // opens so the new row is in view when the list refetches. Two settings
-  // writes (expand, then the filing inside the hook), serialized by scope.
-  const handleCreateAgentInFolder = useCallback((folderId: string) => {
-    if (isCreatingAgent) return
+  // A folder's own +: whichever way the agent is made, it is filed into the
+  // folder, and a collapsed folder opens as the way is picked so the new row
+  // is in view when the create page hands back to the app. Two settings
+  // writes (expand here, the filing on create), serialized by scope.
+  const expandFolderForNewAgent = useCallback((folderId: string) => {
     if ((collapsedFolders ?? []).includes(folderId)) handleToggleFolder(folderId)
-    void createUntitledAgent({ surface: 'section_plus', folderId })
-  }, [isCreatingAgent, collapsedFolders, handleToggleFolder, createUntitledAgent])
+  }, [collapsedFolders, handleToggleFolder])
 
   const isOnline = useIsOnline()
 
@@ -1902,14 +1900,12 @@ export function AppSidebar() {
                   </SidebarMenuItem>
                 )}
                 <SidebarMenuItem>
-                  <SidebarMenuButton
-                    onClick={() => { void createUntitledAgent({ surface: 'nav' }) }}
-                    disabled={isCreatingAgent}
-                    data-testid="new-agent-button"
-                  >
-                    <AnimatedNavIcon name="plus" className="h-4 w-4" />
-                    <span>New Agent</span>
-                  </SidebarMenuButton>
+                  <NewAgentMenu surface="nav">
+                    <SidebarMenuButton data-testid="new-agent-button">
+                      <AnimatedNavIcon name="plus" className="h-4 w-4" />
+                      <span>New Agent</span>
+                    </SidebarMenuButton>
+                  </NewAgentMenu>
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
@@ -1978,7 +1974,15 @@ export function AppSidebar() {
                             onRename={(name) => handleRenameFolder(section.folder.id, name)}
                             onRenameEnd={() => setPendingRenameFolderId(null)}
                             onDelete={() => handleDeleteFolder(section.folder.id)}
-                            onCreateAgent={() => handleCreateAgentInFolder(section.folder.id)}
+                            createAgentMenu={(trigger) => (
+                              <NewAgentMenu
+                                surface="section_plus"
+                                folderId={section.folder.id}
+                                onChoose={() => expandFolderForNewAgent(section.folder.id)}
+                              >
+                                {trigger}
+                              </NewAgentMenu>
+                            )}
                           >
                             <SectionAgentList agents={section.agents} />
                           </AgentFolderBlock>

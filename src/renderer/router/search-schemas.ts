@@ -113,6 +113,20 @@ export const settingsSearchSchema = z
     message: 'a connection subview requires detail',
   })
 
+// The create-agent page (`/new-agent`). `from` is the close-target, captured
+// like settings' so Back returns where the button was pressed and survives a
+// refresh. `section` is the left-nav section whose + opened the page: the new
+// agent is filed into it. `surface` is which button opened it, for
+// `agent_created` analytics. Per-field .catch so a stale section id or surface
+// never drops a valid `from`.
+export const CREATE_AGENT_SURFACES = ['nav', 'section_plus', 'home', 'app_menu'] as const
+export type CreateAgentSurface = (typeof CREATE_AGENT_SURFACES)[number]
+export const newAgentSearchSchema = z.object({
+  from: internalPath.optional().catch(undefined),
+  section: z.string().min(1).max(128).optional().catch(undefined),
+  surface: z.enum(CREATE_AGENT_SURFACES).optional().catch(undefined),
+})
+
 // The GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
 // sections, flattened in display order). NOTE: `system-prompt` (agent-scoped
 // local dialog) and `secrets` (agent-scoped page, /agents/$slug/secrets) are

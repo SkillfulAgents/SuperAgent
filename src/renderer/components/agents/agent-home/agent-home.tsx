@@ -46,7 +46,7 @@ import {
   DEFAULT_AGENT_PROMPT_EXAMPLES,
   DISABLED as TYPEWRITER_DISABLED,
 } from '@renderer/hooks/use-typewriter-placeholder'
-import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
+import { UNTITLED_AGENT_NAME } from '@renderer/lib/untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
@@ -64,30 +64,9 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  // The new-agent morph tag lives in NavTransientContext — above the router, so
-  // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
-  // use-create-untitled-agent.
-  const { justCreatedSlug, setJustCreatedSlug, pendingAgentHomeAction, setPendingAgentHomeAction } = useNavTransient()
+  const { pendingAgentHomeAction, setPendingAgentHomeAction } = useNavTransient()
   const { openFolder } = useFilePreview()
   const navigate = useNavigate()
-  const [introStagger] = useState(() => {
-    if (justCreatedSlug !== agent.slug) return false
-    return !window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  })
-  const [introPlaying, setIntroPlaying] = useState(!introStagger)
-  useEffect(() => {
-    if (!introStagger) return
-    const t = setTimeout(() => setIntroPlaying(true), 1000)
-    return () => clearTimeout(t)
-  }, [introStagger])
-  // One-shot: consume the morph tag immediately once introStagger has captured it
-  // at mount, so it can't replay if AgentHome unmounts mid-animation — e.g. the
-  // user sends the first message within ~2s, the index leaf unmounts, and a
-  // deferred clear would be cancelled, stranding the tag and re-animating on
-  // return. The animation runs off local introStagger/introPlaying state.
-  useEffect(() => {
-    if (introStagger) setJustCreatedSlug(null)
-  }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
   const draftsStore = useDraftsStore()
   const { canUseAgent, canAdminAgent, isAuthMode, isAdmin, agentMemberCount } = useUser()
@@ -273,24 +252,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   return (
     <div
       data-testid="agent-home"
-      // Surfaces the one-shot new-agent intro state for tests/debugging without
-      // coupling to CSS classes: absent when no morph, 'pending' while the
-      // "Creating" beat holds, 'playing' once the staggered slide-in runs.
-      data-intro={introStagger ? (introPlaying ? 'playing' : 'pending') : undefined}
-      className={cn(
-        'flex-1 flex flex-col overflow-y-auto overscroll-contain px-4 py-6 md:px-10 md:py-10 bg-background',
-        introStagger && 'agent-home-intro relative',
-        introPlaying && 'intro-play'
-      )}
+      className="flex-1 flex flex-col overflow-y-auto overscroll-contain px-4 py-6 md:px-10 md:py-10 bg-background"
     >
-      {introStagger && !introPlaying && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Creating
-          </div>
-        </div>
-      )}
       <div
         data-testid="agent-home-layout"
         className={cn(
@@ -302,7 +265,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       >
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
+          <ScrollAwarePageTitle className="flex items-center justify-between gap-2">
             {isOwner
               ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
               : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
@@ -409,7 +372,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               {composer.chipDialog}
               <form
                 onSubmit={composer.handleSubmit}
-                className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
+                className={cn(composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
@@ -522,7 +485,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 />
               </form>
 
-              <div className="space-y-6 intro-step intro-step-3">
+              <div className="space-y-6">
               {/* Bookmarks */}
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 

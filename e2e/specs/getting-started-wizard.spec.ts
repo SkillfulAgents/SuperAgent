@@ -144,7 +144,7 @@ test.describe('Getting Started Wizard', () => {
     // Step 6: Create Agent (skippable)
     await wizardPage.clickNext()
     await wizardPage.expectStep(6)
-    await expect(page.getByRole('heading', { name: /describe your first ai teammate/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: /name your first ai teammate/i })).toBeVisible()
 
     // Skip on last step finishes
     await wizardPage.clickSkip()
@@ -209,10 +209,13 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
-    // The template roster renders inline under the composer; clicking a card
-    // installs it in place (no marketplace detour, no naming step — the agent
-    // takes the template's own name) and finishing the install completes the
-    // wizard.
+    // The agent step opens on its name step; past it, the template roster
+    // renders inline under the composer. Clicking a card installs it in place
+    // (no marketplace detour) under the template's own name — the name typed
+    // first applies only to an agent made from a prompt — and finishing the
+    // install completes the wizard.
+    await page.getByTestId('agent-identity-name').fill('Not The Template Name')
+    await page.getByTestId('agent-identity-continue').click()
     const installed = page.waitForResponse(response =>
       response.request().method() === 'POST' && response.url().endsWith('/api/agents/install-from-skillset'),
     )

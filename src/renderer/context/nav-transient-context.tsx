@@ -6,8 +6,6 @@ export type SignupHandoff = { prompt?: string; model?: string; template_slug?: s
 export type AgentHomeAction = { slug: string; action: 'export' | 'directory' }
 
 interface NavTransientValue {
-  justCreatedSlug: string | null
-  setJustCreatedSlug: (slug: string | null) => void
   signupHandoff: SignupHandoff | null
   setSignupHandoff: (value: SignupHandoff | null) => void
   pendingAgentHomeAction: AgentHomeAction | null
@@ -21,8 +19,6 @@ const NavTransientContext = createContext<NavTransientValue | null>(null)
  * reload (correct for one-shots). Mounted ABOVE the router (App.tsx) so a
  * route change never resets them.
  *
- * - `justCreatedSlug`: the new-agent "morph" tag. Produced by
- *   `useCreateUntitledAgent` on create and consumed by AgentHome.
  * - `signupHandoff`: marketing-site prompt+model prefill for the first-run
  *   create box. Produced by SignupHandoffConsumer and consumed by CreateAgentForm.
  * - `pendingAgentHomeAction`: "Export Agent" or "Agent Directory" chosen from
@@ -32,15 +28,12 @@ const NavTransientContext = createContext<NavTransientValue | null>(null)
  *   the workspace folder panel.
  */
 export function NavTransientProvider({ children }: { children: ReactNode }) {
-  const [justCreatedSlug, setJustCreatedSlug] = useState<string | null>(null)
   const [signupHandoff, setSignupHandoff] = useState<SignupHandoff | null>(null)
   const [pendingAgentHomeAction, setPendingAgentHomeAction] = useState<AgentHomeAction | null>(null)
 
   return (
     <NavTransientContext.Provider
       value={{
-        justCreatedSlug,
-        setJustCreatedSlug,
         signupHandoff,
         setSignupHandoff,
         pendingAgentHomeAction,

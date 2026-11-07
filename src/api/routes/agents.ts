@@ -1452,10 +1452,16 @@ agents.post('/', async (c) => {
     if (!name?.trim()) {
       return c.json({ error: 'Name is required' }, 400)
     }
+    // The orb picked on the create page; absent, the catalog picks one.
+    const avatar = agentAvatarSchema.optional().safeParse(body.avatar)
+    if (!avatar.success) {
+      return c.json({ error: 'Invalid avatar' }, 400)
+    }
 
     const agent = await createAgent({
       name: name.trim(),
       description: description?.trim(),
+      avatar: avatar.data,
     })
 
     await createOwnerAclOrRollback(c, agent.slug)

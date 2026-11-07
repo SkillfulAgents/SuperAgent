@@ -96,6 +96,18 @@ describe('minting and resolving slugs', () => {
 })
 
 describe('records', () => {
+  it('keeps the avatar picked at creation instead of drawing one', async () => {
+    const assignment = vi.spyOn(avatarAssignment, 'randomAgentAvatar')
+    try {
+      const picked = agentAvatarSchema.parse({ color: 'duo-teal-blush', shape: 'hexagon' })
+      expect((await catalog.insert({ slug: 'p', name: 'Picked', avatar: picked, createdAt: new Date() })).avatar).toEqual(picked)
+      expect(await rowFor('p')).toMatchObject({ avatarColor: picked.color, avatarShape: picked.shape })
+      expect(assignment).not.toHaveBeenCalled()
+    } finally {
+      assignment.mockRestore()
+    }
+  })
+
   it('assigns a random pair at insertion and keeps it through reads, renames and picker updates', async () => {
     const first = agentAvatarSchema.parse({ color: 'tonal-red', shape: 'triangle' })
     const second = agentAvatarSchema.parse({ color: 'tonal-teal', shape: 'arch' })
