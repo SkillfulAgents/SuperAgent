@@ -14,7 +14,7 @@ import type {
   StateKey,
   Topic,
 } from './contract'
-import type { IncrementBounds } from './engine'
+import type { CounterBounds } from './abstract-app-state'
 
 const SEGMENT = '[a-z][a-z0-9-]*'
 const NAMESPACE_NAME = new RegExp(`^${SEGMENT}(?::${SEGMENT})*$`)
@@ -127,17 +127,17 @@ export function decodeValue<T>(schema: z.ZodType<T>, json: string): T {
   return schema.parse(parsed)
 }
 
-/** The number checks an engine can enforce from a counter's limits alone: a format (`int()`) and bounds. */
+/** The number checks a subclass can enforce from a counter's limits alone: a format (`int()`) and bounds. */
 const COUNTER_CHECKS = new Set(['number_format', 'greater_than', 'less_than'])
 
 /**
- * The integers at the ends of what a counter's schema accepts, so an engine can
- * refuse a result past them before it writes. The engine never sees the schema,
+ * The integers at the ends of what a counter's schema accepts, so a subclass can
+ * refuse a result past them before it writes. The authority never sees the schema,
  * so a counter's schema must be a plain number schema with only those checks:
  * any other rule (`multipleOf`, `refine`, a wrapper) could let a stored result
  * fail every later read, and is refused here instead.
  */
-export function counterLimits(schema: z.ZodType<number>): IncrementBounds {
+export function counterLimits(schema: z.ZodType<number>): CounterBounds {
   const number = schema as z.ZodNumber
   const checks = number.def.type === 'number' ? number.def.checks ?? [] : null
   if (!checks || checks.some((check) => !COUNTER_CHECKS.has(check._zod.def.check))) {

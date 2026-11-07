@@ -15,7 +15,7 @@ import { mutateSettings } from '@shared/lib/config/settings'
 import { initializeServices, prepareBackgroundWork, prepareProcess, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import type { ExecutionContext } from 'cloudflare:workers'
-import { createCloudflareAppState } from './cloudflare-app-state'
+import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './cloudflare-task-manager'
 import { routeContainerFetch } from './cloudflare-container-control'
@@ -64,7 +64,7 @@ async function start(env: Env): Promise<void> {
   routeContainerFetch(env.AGENT)
   await openDatabase({ driver: d1(env.DB) })
   // A boot retried after a later step failed finds AppState installed.
-  if (!isAppStateInitialized()) await initializeAppState(createCloudflareAppState(env.APP_STATE))
+  if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE))
   await ensureKeyManager(() => new CloudflareKeyManager({ env, probes: appKeyProbes }))
   // Then task dispatch, before anything is served: a request can schedule work. Every isolate registers
   // the services' Tasks; only TaskManagerDurableObject starts the services and runs the jobs.

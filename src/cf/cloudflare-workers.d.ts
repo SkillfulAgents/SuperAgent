@@ -55,6 +55,7 @@ declare module 'cloudflare:workers' {
   export interface DurableObjectStorage {
     readonly sql: SqlStorage
     readonly kv: SyncKvStorage
+    /** Runs `closure` as one transaction: it commits all its writes, or none if it throws. */
     transactionSync<T>(closure: () => T): T
     getAlarm(): Promise<number | null>
     setAlarm(scheduledTime: number): Promise<void>

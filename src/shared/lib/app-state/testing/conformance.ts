@@ -9,7 +9,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import type { AppState, AppStateScope, Channel, Revision } from '../contract'
+import type { AppState } from '../abstract-app-state'
+import type { AppStateScope, Channel, Revision } from '../contract'
 import { defineNamespace, defineTopic } from '../definitions'
 
 export interface ConformanceBackend {

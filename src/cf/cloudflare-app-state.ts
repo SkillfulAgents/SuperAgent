@@ -1,15 +1,26 @@
 /**
- * AppState on Cloudflare. The org's AppStateDurableObject decides every keyed operation with
- * SuperAgent's own local rules (LocalAppStateBackend) over its SQLite, one call at a time, so each
- * one is atomic as it is in one process; it also carries events to the sockets that subscribed.
- * Every isolate and object of the org uses SuperAgent's typed AppState over an engine that sends
- * each operation to that object (createCloudflareAppState).
+ * AppState on Cloudflare. The org's AppStateDurableObject is the authority: it decides each keyed
+ * operation in one SQLite transaction (`transactionSync`), so an operation is never a read and a
+ * write split by the network. It also carries events to the sockets that subscribed. Every isolate
+ * and object of the org uses CloudflareAppState, which sends each operation to that object as one call.
  */
 import { DurableObject } from 'cloudflare:workers'
-import type { DurableObjectNamespace, DurableObjectState, SqlStorage, WorkerWebSocket } from 'cloudflare:workers'
-import { createAppState, type AppState, type AppStateScope, type Expiry, type Revision } from '@shared/lib/app-state'
-import type { AppStateEngine, EngineSubscriber, IncrementBounds, KeyPolicy, StoredEntry } from '@shared/lib/app-state/engine'
-import { LocalAppStateBackend, type EntryStore } from '@shared/lib/app-state/local-app-state'
+import type { DurableObjectNamespace, DurableObjectState, WorkerWebSocket } from 'cloudflare:workers'
+import {
+  AppState,
+  type AppStateScope,
+  type CounterBounds,
+  type EventSink,
+  type Expiry,
+  type KeyPolicy,
+  type Revision,
+  type StoredCompareAndSet,
+  type StoredConsume,
+  type StoredEntry,
+  type StoredIncrement,
+  type StoredInsert,
+} from '@shared/lib/app-state'
+import { resolveExpiry } from '@shared/lib/app-state/definitions'
 import type { Env } from './index'
 
 /** The path a subscription's WebSocket opens; each `channel` query value is one full channel. */
@@ -29,71 +40,72 @@ interface Attachment {
 
 type EntryRow = { json: string; revision: string; expires_at: number | null }
 
-/** The local engine's entries in the object's SQLite, so they outlive the object. */
-function sqliteEntryStore(sql: SqlStorage): EntryStore {
-  sql.exec('CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, json TEXT NOT NULL, revision TEXT NOT NULL, expires_at INTEGER)')
-  return {
-    get(key) {
-      const row = sql.exec<EntryRow>('SELECT json, revision, expires_at FROM app_state WHERE key = ?', key).toArray()[0]
-      if (!row) return undefined
-      return { json: row.json, revision: row.revision as Revision, expiresAt: row.expires_at === null ? null : Number(row.expires_at) }
-    },
-    put(key, entry) {
-      sql.exec(
-        'INSERT INTO app_state (key, json, revision, expires_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET json = excluded.json, revision = excluded.revision, expires_at = excluded.expires_at',
-        key, entry.json, entry.revision, entry.expiresAt,
-      )
-    },
-    delete(key) {
-      sql.exec('DELETE FROM app_state WHERE key = ?', key)
-    },
-    deleteExpired(now) {
-      sql.exec('DELETE FROM app_state WHERE expires_at <= ?', now)
-    },
-    get size() {
-      return Number(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM app_state').toArray()[0]?.n ?? 0)
-    },
-  }
-}
+/** The fewest writes between two sweeps of expired entries. */
+const SWEEP_AFTER_WRITES = 1_000
 
 export class AppStateDurableObject extends DurableObject<Env> {
-  private readonly engine: LocalAppStateBackend
+  // Revisions are `{epoch}.{sequence}`: a new instance of the object never issues one an earlier one did.
+  private readonly epoch = crypto.randomUUID()
+  private sequence = 0
+  private writesUntilSweep = SWEEP_AFTER_WRITES
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
-    this.engine = new LocalAppStateBackend({ store: sqliteEntryStore(ctx.storage.sql), now: () => this.now() })
-  }
-
-  read(key: string): StoredEntry | null {
-    return this.engine.read(key)
+    ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, json TEXT NOT NULL, revision TEXT NOT NULL, expires_at INTEGER)')
   }
 
   readMany(keys: string[]): (StoredEntry | null)[] {
-    return this.engine.readMany(keys)
+    return this.atomically(() => keys.map((key) => this.read(key)))
   }
 
-  write(key: string, json: string, policy: KeyPolicy, expiry?: Expiry) {
-    return this.engine.write(key, json, policy, expiry)
+  write(key: string, json: string, policy: KeyPolicy, expiry?: Expiry): StoredEntry {
+    return this.atomically(() => this.put(key, json, policy, expiry, this.read(key)))
   }
 
   remove(key: string): void {
-    this.engine.remove(key)
+    this.ctx.storage.sql.exec('DELETE FROM app_state WHERE key = ?', key)
   }
 
-  insertIfAbsent(key: string, json: string, policy: KeyPolicy, expiry?: Expiry) {
-    return this.engine.insertIfAbsent(key, json, policy, expiry)
+  insertIfAbsent(key: string, json: string, policy: KeyPolicy, expiry?: Expiry): StoredInsert {
+    return this.atomically(() => {
+      const current = this.read(key)
+      if (current) return { inserted: false, current }
+      return { inserted: true, entry: this.put(key, json, policy, expiry, null) }
+    })
   }
 
-  compareAndSet(key: string, expected: Revision | null, json: string, policy: KeyPolicy, expiry?: Expiry) {
-    return this.engine.compareAndSet(key, expected, json, policy, expiry)
+  compareAndSet(key: string, expected: Revision | null, json: string, policy: KeyPolicy, expiry?: Expiry): StoredCompareAndSet {
+    return this.atomically(() => {
+      const current = this.read(key)
+      if ((current?.revision ?? null) !== expected) return { ok: false, current }
+      return { ok: true, entry: this.put(key, json, policy, expiry, current) }
+    })
   }
 
-  increment(key: string, delta: number, bounds: IncrementBounds, limits: IncrementBounds, policy: KeyPolicy, expiry?: Expiry) {
-    return this.engine.increment(key, delta, bounds, limits, policy, expiry)
+  increment(key: string, delta: number, bounds: CounterBounds, limits: CounterBounds, policy: KeyPolicy, expiry?: Expiry): StoredIncrement {
+    return this.atomically(() => {
+      const current = this.read(key)
+      const value = current ? (JSON.parse(current.json) as unknown) : 0
+      if (typeof value !== 'number') throw new TypeError(`AppState counter ${key} does not hold a number`)
+      const next = value + delta
+      if (!Number.isSafeInteger(next)) throw new RangeError(`AppState counter ${key} would leave the safe integers`)
+      if ((bounds.min !== undefined && next < bounds.min) || (bounds.max !== undefined && next > bounds.max)) {
+        return { applied: false, current }
+      }
+      if ((limits.min !== undefined && next < limits.min) || (limits.max !== undefined && next > limits.max)) {
+        throw new RangeError(`AppState counter ${key}: ${next} is outside what its schema accepts`)
+      }
+      return { applied: true, entry: this.put(key, JSON.stringify(next), policy, expiry, current) }
+    })
   }
 
-  consume(key: string, revision?: Revision) {
-    return this.engine.consume(key, revision)
+  consume(key: string, revision?: Revision): StoredConsume {
+    return this.atomically(() => {
+      const current = this.read(key)
+      if (!current || (revision !== undefined && current.revision !== revision)) return { consumed: false, current }
+      this.remove(key)
+      return { consumed: true, entry: current }
+    })
   }
 
   /** Sends the event to every socket subscribed to its channel; answers before any subscriber acts on it. */
@@ -139,6 +151,37 @@ export class AppStateDurableObject extends DurableObject<Env> {
   protected now(): number {
     return Date.now()
   }
+
+  /** Runs `decide` as one SQLite transaction: all its reads and writes, or none of its writes. */
+  private atomically<T>(decide: () => T): T {
+    return this.ctx.storage.transactionSync(decide)
+  }
+
+  /** The live entry; an expired one is deleted and reads as missing. */
+  private read(key: string): StoredEntry | null {
+    const row = this.ctx.storage.sql.exec<EntryRow>('SELECT json, revision, expires_at FROM app_state WHERE key = ?', key).toArray()[0]
+    if (!row) return null
+    const expiresAt = row.expires_at === null ? null : Number(row.expires_at)
+    if (expiresAt !== null && expiresAt <= this.now()) {
+      this.remove(key)
+      return null
+    }
+    return { json: row.json, revision: row.revision as Revision, expiresAt }
+  }
+
+  private put(key: string, json: string, policy: KeyPolicy, expiry: Expiry | undefined, current: StoredEntry | null): StoredEntry {
+    const now = this.now()
+    const entry: StoredEntry = { json, revision: `${this.epoch}.${++this.sequence}` as Revision, expiresAt: resolveExpiry(policy, expiry, current ?? undefined, now) }
+    this.ctx.storage.sql.exec(
+      'INSERT INTO app_state (key, json, revision, expires_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET json = excluded.json, revision = excluded.revision, expires_at = excluded.expires_at',
+      key, entry.json, entry.revision, entry.expiresAt,
+    )
+    if (--this.writesUntilSweep <= 0) {
+      this.ctx.storage.sql.exec('DELETE FROM app_state WHERE expires_at <= ?', now)
+      this.writesUntilSweep = SWEEP_AFTER_WRITES
+    }
+    return entry
+  }
 }
 
 /** One org per Worker: the scope names the deployment, and the org is its only tenant. */
@@ -152,7 +195,7 @@ const RECONNECT_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
 export interface EventHub {
   publish(fullChannel: string, json: string): Promise<void>
   /** Receives the events of `fullChannels` until closed; resolves once subscribed. `onLost` runs once if the hub drops it. */
-  connect(fullChannels: readonly string[], onEvent: (fullChannel: string, json: string) => void, onLost: () => void): Promise<HubConnection>
+  connect(fullChannels: readonly string[], onEvent: EventSink, onLost: () => void): Promise<HubConnection>
 }
 
 export interface HubConnection {
@@ -166,35 +209,73 @@ export interface CloudflareAppStateOptions {
   hub?: EventHub
 }
 
-export function createCloudflareAppState(objects: DurableObjectNamespace<AppStateDurableObject>, options: CloudflareAppStateOptions = {}): AppState {
-  // A new stub for each call: a Worker invocation cannot use an I/O object that another one made.
-  const object = () => objects.getByName(OBJECT_NAME)
-  return createAppState({ scope: options.scope ?? ORG_SCOPE, engine: objectEngine(object, options.hub ?? objectHub(object)) })
-}
-
 type AppStateObject = ReturnType<DurableObjectNamespace<AppStateDurableObject>['getByName']>
 
-function objectEngine(object: () => AppStateObject, hub: EventHub): AppStateEngine {
-  return {
-    read: (key) => object().read(key),
-    readMany: async (keys) => (keys.length === 0 ? [] : object().readMany([...keys])),
-    write: (key, json, policy, expiry) => object().write(key, json, keyPolicy(policy), expiry),
-    remove: (key) => object().remove(key),
-    insertIfAbsent: (key, json, policy, expiry) => object().insertIfAbsent(key, json, keyPolicy(policy), expiry),
-    compareAndSet: (key, expected, json, policy, expiry) => object().compareAndSet(key, expected, json, keyPolicy(policy), expiry),
-    increment: (key, delta, bounds, limits, policy, expiry) => object().increment(key, delta, { ...bounds }, { ...limits }, keyPolicy(policy), expiry),
-    consume: (key, revision) => object().consume(key, revision),
-    publish: (channel, json) => hub.publish(channel, json),
-    subscribe: async (channels, subscriber) => {
-      const subscription = new HubSubscription(hub, channels, subscriber)
-      await subscription.open()
-      return () => subscription.close()
-    },
+/** Only the policy crosses to the object: a namespace also carries its schema and functions. */
+const keyPolicy = ({ name, consistency, expiry }: KeyPolicy): KeyPolicy => ({ name, consistency, expiry })
+
+/** Sends each operation to the org's object as one call, which the object decides atomically. */
+export class CloudflareAppState extends AppState {
+  private readonly hub: EventHub
+
+  constructor(
+    private readonly objects: DurableObjectNamespace<AppStateDurableObject>,
+    options: CloudflareAppStateOptions = {},
+  ) {
+    super(options.scope ?? ORG_SCOPE)
+    this.hub = options.hub ?? objectHub(() => this.object())
+  }
+
+  protected async readEntries(fullKeys: readonly string[]): Promise<(StoredEntry | null)[]> {
+    return fullKeys.length === 0 ? [] : this.object().readMany([...fullKeys])
+  }
+
+  protected writeEntry(fullKey: string, json: string, policy: KeyPolicy, expiry?: Expiry): Promise<StoredEntry> {
+    return this.object().write(fullKey, json, keyPolicy(policy), expiry)
+  }
+
+  protected removeEntry(fullKey: string): Promise<void> {
+    return this.object().remove(fullKey)
+  }
+
+  protected insertEntry(fullKey: string, json: string, policy: KeyPolicy, expiry?: Expiry): Promise<StoredInsert> {
+    return this.object().insertIfAbsent(fullKey, json, keyPolicy(policy), expiry)
+  }
+
+  protected compareAndSetEntry(fullKey: string, expected: Revision | null, json: string, policy: KeyPolicy, expiry?: Expiry): Promise<StoredCompareAndSet> {
+    return this.object().compareAndSet(fullKey, expected, json, keyPolicy(policy), expiry)
+  }
+
+  protected incrementEntry(
+    fullKey: string,
+    delta: number,
+    bounds: CounterBounds,
+    limits: CounterBounds,
+    policy: KeyPolicy,
+    expiry?: Expiry,
+  ): Promise<StoredIncrement> {
+    return this.object().increment(fullKey, delta, { ...bounds }, { ...limits }, keyPolicy(policy), expiry)
+  }
+
+  protected consumeEntry(fullKey: string, revision?: Revision): Promise<StoredConsume> {
+    return this.object().consume(fullKey, revision)
+  }
+
+  protected publishEvent(fullChannel: string, json: string): Promise<void> {
+    return this.hub.publish(fullChannel, json)
+  }
+
+  protected async listen(fullChannels: readonly string[], sink: EventSink): Promise<() => Promise<void>> {
+    const subscription = new HubSubscription(this.hub, fullChannels, sink)
+    await subscription.open()
+    return async () => subscription.close()
+  }
+
+  // A new stub for each call: a Worker invocation cannot use an I/O object that another one made.
+  private object(): AppStateObject {
+    return this.objects.getByName(OBJECT_NAME)
   }
 }
-
-/** Only the policy crosses to the object: a namespace also carries its schema and functions. */
-const keyPolicy = ({ name, consistency, expiry }: Parameters<AppStateEngine['write']>[2]) => ({ name, consistency, expiry })
 
 /** One subscription's socket to the hub, connected again while subscribed if the hub drops it. */
 class HubSubscription {
@@ -206,11 +287,11 @@ class HubSubscription {
   constructor(
     private readonly hub: EventHub,
     private readonly channels: readonly string[],
-    private readonly subscriber: EngineSubscriber,
+    private readonly sink: EventSink,
   ) {}
 
   async open(): Promise<void> {
-    const connection = await this.hub.connect(this.channels, (channel, json) => this.subscriber.deliver(channel, json), () => this.lost())
+    const connection = await this.hub.connect(this.channels, this.sink, () => this.lost())
     if (!this.active) return connection.close()
     this.connection = connection
     this.attempts = 0
