@@ -464,18 +464,24 @@ export class ContainerHost {
   }
 
   /**
-   * Get the current runtime readiness state. Before this process has checked, a runner
-   * that needs no local image reads as ready once its deployment set it up (its
-   * environment configures it): that is all the check would find. A deployment that
-   * serves each request from a fresh process (one org's API on many isolates) then never
-   * shows "Checking runtime availability" forever.
+   * Get the current runtime readiness state. In a process that runs no readiness check
+   * (`deriveReadiness`), a runner that needs no local image reads as ready once its
+   * deployment set it up (its environment configures it), until a readiness is set here:
+   * that is all the check would find, so one org's API on many isolates never shows
+   * "Checking runtime availability" forever.
    */
   getReadiness(): RuntimeReadiness {
-    if (!this.readinessChecked) return this.derivedReadiness() ?? this._readiness
+    if (this.readinessDerived && !this.readinessChecked) return this.derivedReadiness() ?? this._readiness
     return this._readiness
   }
 
-  /** Set once this process has run a readiness check; until then readiness is derived. */
+  /** Called by a process that runs no readiness check, because each agent's container is watched where that agent runs. */
+  deriveReadiness(): void {
+    this.readinessDerived = true
+  }
+
+  private readinessDerived = false
+  /** Set once a readiness is set in this process; from then on that one is reported. */
   private readinessChecked = false
 
   private derivedReadiness(): RuntimeReadiness | null {

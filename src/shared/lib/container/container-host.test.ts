@@ -1905,8 +1905,15 @@ describe('ContainerHost.getReadiness before this process has checked', () => {
     mockSettingsState.containerRunner = 'docker'
   })
 
+  // As on Cloudflare, where startup's localContainers: false leaves out the readiness check.
+  const uncheckedProcess = () => {
+    const host = new ContainerHost()
+    host.deriveReadiness()
+    return host
+  }
+
   it('reads as ready when a runner that needs no local image is set up here, without a check', () => {
-    const freshProcess = new ContainerHost()
+    const freshProcess = uncheckedProcess()
 
     expect(freshProcess.getReadiness()).toEqual({ status: 'READY', message: 'Ready (lambda-microvm)', pullProgress: null })
     expect(checkAllRunnersAvailability).not.toHaveBeenCalled()
@@ -1914,12 +1921,12 @@ describe('ContainerHost.getReadiness before this process has checked', () => {
 
   it('stays checking when every runner set up here pulls an image', () => {
     mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: true, isEligible: () => true }))
-    expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
+    expect(uncheckedProcess().getReadiness().status).toBe('CHECKING')
   })
 
   it('stays checking for a runner that needs no image but is not set up here', () => {
     mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: false, isEligible: () => false }))
-    expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
+    expect(uncheckedProcess().getReadiness().status).toBe('CHECKING')
   })
 
   it('reports what a check found once one ran', async () => {
@@ -1927,11 +1934,16 @@ describe('ContainerHost.getReadiness before this process has checked', () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
       { runner: 'lambda-microvm', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: false },
     ])
-    const freshProcess = new ContainerHost()
+    const freshProcess = uncheckedProcess()
 
     await freshProcess.ensureImageReady()
 
     expect(freshProcess.getReadiness().status).toBe('RUNTIME_UNAVAILABLE')
+  })
+
+  it('stays checking until its own check in a process that runs one, such as a MicroVM host', () => {
+    expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
+    expect(checkAllRunnersAvailability).not.toHaveBeenCalled()
   })
 })
 

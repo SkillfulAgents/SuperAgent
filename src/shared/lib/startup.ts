@@ -217,12 +217,15 @@ export function registerBackgroundWork(options: BackgroundWorkOptions = {}): voi
     if (options.localContainers === false && LOCAL_CONTAINER_SERVICES.has(service.id)) continue
     if (!host.isRegistered(service.id)) host.register(service)
   }
+  // The image check is one of the services left out, so readiness comes from the runners' setup.
+  if (options.localContainers === false) containerHost.deriveReadiness()
 }
 
 export interface BackgroundWorkOptions {
   /**
    * False when this process watches no containers, because each agent's container is watched
-   * where that agent runs: the container-host and container-image services are not registered.
+   * where that agent runs: the container-host and container-image services are not registered,
+   * and runtime readiness comes from the runners' setup (`ContainerHost.deriveReadiness`).
    */
   localContainers?: boolean
 }
