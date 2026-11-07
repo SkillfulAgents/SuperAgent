@@ -81,6 +81,7 @@ export function DeclineButton({
             <div className="mt-2 flex min-h-10 gap-2 rounded-item border border-border bg-background pl-3 pr-0 pb-1">
               <textarea
                 ref={inputRef}
+                data-testid={testId ? `${testId}-reason-input` : undefined}
                 placeholder={`Reason for ${placeholderVerb}...`}
                 value={reason}
                 rows={1}
@@ -102,6 +103,7 @@ export function DeclineButton({
                 type="button"
                 size="icon"
                 disabled={disabled}
+                data-testid={testId ? `${testId}-reason-submit` : undefined}
                 onClick={() => {
                   onDecline(reason.trim() || undefined)
                   setOpen(false)

@@ -64,6 +64,7 @@ import {
   pageTranscript,
 } from './x-agent-transcript-view'
 import { awaitReview } from '@shared/lib/proxy/review-request'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -233,12 +234,12 @@ async function checkAgentPolicy(
 
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+    const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
-    if (userDecision === 'deny') {
-      return { allowed: false, reason: 'Denied by user' }
+    if (review.decision === 'deny') {
+      return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }
     // A Block set while the card was open beats the approval.
     if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {

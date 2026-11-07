@@ -1,12 +1,10 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Terminal, ChevronDown } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Terminal } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { DeclineButton } from '../requests/decline-button'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
+import { ApprovalActions } from '../requests/approval-actions'
 
 interface ScriptRunRequestItemProps {
   toolUseId: string
@@ -39,7 +37,6 @@ export function ScriptRunRequestItem({
 }: ScriptRunRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
-  const [allowMenuOpen, setAllowMenuOpen] = useState(false)
 
   const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
     setStatus('submitting')
@@ -157,64 +154,13 @@ export function ScriptRunRequestItem({
       </div>
 
       <RequestItemActions>
-        <DeclineButton
-          onDecline={handleDeny}
+        <ApprovalActions
+          testIdPrefix="script-run"
           disabled={status === 'submitting'}
-          label="Deny"
-          showIcon={false}
-          className="border-border text-foreground hover:bg-muted"
-          data-testid="script-deny-btn"
+          onDeny={handleDeny}
+          onAllow={() => handleApprove('once')}
+          expanded={{ label: 'Always Allow', hint: 'This agent can always run shell commands and scripts on your computer without asking', onSelect: () => handleApprove('always') }}
         />
-
-        <div className="flex items-stretch">
-          <Button
-            onClick={() => handleApprove('once')}
-            loading={status === 'submitting'}
-            size="xs"
-            className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
-            data-testid="script-run-once-btn"
-          >
-            Allow Once
-          </Button>
-          <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                disabled={status === 'submitting'}
-                size="xs"
-                className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
-                data-testid="script-run-timed-btn-chevron"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-44 p-1">
-              <Button
-                onClick={() => {
-                  setAllowMenuOpen(false)
-                  handleApprove('timed')
-                }}
-                variant="ghost"
-                size="xs"
-                className="w-full justify-start text-foreground hover:bg-muted"
-                data-testid="script-run-timed-btn"
-              >
-                Allow 15 min
-              </Button>
-              <Button
-                onClick={() => {
-                  setAllowMenuOpen(false)
-                  handleApprove('always')
-                }}
-                variant="ghost"
-                size="xs"
-                className="w-full justify-start text-foreground hover:bg-muted"
-                data-testid="script-run-always-btn"
-              >
-                Always Allow
-              </Button>
-            </PopoverContent>
-          </Popover>
-        </div>
       </RequestItemActions>
     </RequestItemShell>
   )
