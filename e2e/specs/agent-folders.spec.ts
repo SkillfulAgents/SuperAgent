@@ -299,7 +299,7 @@ test.describe('agent folders in the left nav', () => {
     await removeCreatedFolders(request)
   })
 
-  test('creates an agent in a collapsed section, opens it at once, and files it there', async ({
+  test('creates an agent in a collapsed section and waits for its assignment before navigating', async ({
     page,
     request,
   }, testInfo) => {
@@ -329,12 +329,12 @@ test.describe('agent folders in the left nav', () => {
     await page.getByTestId(`new-agent-in-folder-${id}`).click()
     const agent = await (await created).json() as { slug: string }
     try {
-      // The agent opens while its filing is still held.
       await expect.poll(() => assignmentStarted).toBe(true)
-      await expect(page).toHaveURL(/\/agents\//)
+      expect(new URL(page.url()).pathname).toBe('/')
     } finally {
       release()
     }
+    await expect(page).toHaveURL(/\/agents\//)
     await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
     await expect(body.locator('[data-avatar-orb="ghost"]')).toHaveCount(0)
     await page.reload()

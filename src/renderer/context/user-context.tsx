@@ -9,7 +9,7 @@ import { targetIsRemote } from '@renderer/lib/api-target'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentRole } from '@shared/lib/types/agent'
 
-export interface AgentRoleInfo {
+interface AgentRoleInfo {
   role: AgentRole
   memberCount: number
 }
