@@ -101,7 +101,7 @@ SSE (global): `widget_refresh_started`, `widget_snapshot_ready` (also relayed fr
 ## Renderer
 
 - `WidgetCard` (`src/renderer/components/widgets/widget-card.tsx`) — the snapshot in an `<iframe sandbox="">` (no scripts, no same-origin), **inlined with `srcdoc`** rather than framed by URL, keyed on `htmlHash`, spinner while refreshing, error badge on `lastError`, hover refresh button, "Open app" and a link to the dashboard when `hasDashboard`. The document is fetched with `useWidgetHtml`. Framing the API URL works only where the renderer and the API share an origin — the web build. A packaged desktop renderer is `file://` and `dev:electron` is a different port, and `frame-ancestors 'self'` (doing its job) blocks both; inlining removes the origin question, and the header still keeps third parties out of the URL.
-- `HomeWidgets` (Agent Home right column) — **the** refresh trigger: on the first listing it calls `refresh-stale` once if anything is stale. Dashboards that have a widget are not listed a second time as screenshot cards.
+- Agent Home calls `useRefreshWidgetsOnVisit` independently of its settings panel: on the first nonempty listing it asks the server to refresh stale widgets once per visit, even when the panel is closed. `HomeWidgets` only renders the cards; reopening it does not repeat the refresh. Dashboards that have a widget are not listed a second time as screenshot cards.
 - App Home — one tile per artifact, keyed `dash::<agent>::<slug>` for both kinds; an artifact with a widget renders the widget (default footprint from `size`) instead of the screenshot.
 
 ## iOS contract

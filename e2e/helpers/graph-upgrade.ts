@@ -91,7 +91,7 @@ async function dragMouse(page: Page, from: Point, to: Point) {
   await page.evaluate(() => new Promise<void>(resolve => setTimeout(resolve, 0)))
 }
 
-async function fit(page: Page, touch = false) {
+export async function fitGraphViewport(page: Page, touch = false) {
   const control = page.getByRole('button', { name: 'Fit View', exact: true })
   if (touch) await control.tap()
   else await control.click()
@@ -138,7 +138,7 @@ async function withGraph(context: GraphUpgradeContext, run: (agents: [Agent, Age
     })
     await context.navigate('/?view=graph')
     for (const agent of agents) await expect(card(context.page, agent)).toBeVisible()
-    await fit(context.page)
+    await fitGraphViewport(context.page)
     await run(agents as [Agent, Agent, Agent])
   } catch (error) {
     failure = error
@@ -217,7 +217,7 @@ export async function checkGraphViewportAndSelection(context: GraphUpgradeContex
     const zoomedOut = await viewport(page)
     await page.mouse.wheel(0, -150)
     await expect.poll(async () => (await viewport(page)).zoom).toBeGreaterThan(zoomedOut.zoom)
-    await fit(page)
+    await fitGraphViewport(page)
     await expect(wrapper(page, target)).toHaveClass(/selected/)
     await expect(wrapper(page, source)).not.toHaveClass(/selected/)
     const canvas = await page.getByTestId('agent-graph').boundingBox()
@@ -477,7 +477,7 @@ export async function checkGraphRemountCleanup(context: GraphUpgradeContext) {
       await expect(card(page, source)).toBeVisible()
       await expectConnectionCleared(page)
       await expect(page.locator('.react-flow__node.selected')).toHaveCount(0)
-      await fit(page)
+      await fitGraphViewport(page)
     }
     await card(page, source).click()
     await expect(page.getByTestId('graph-node-open')).toBeVisible()
@@ -562,7 +562,7 @@ export async function checkGraphTouch(context: GraphUpgradeContext, browserName:
       [{ x: pinchCenter.x - 45, y: pinchCenter.y }, { x: pinchCenter.x + 45, y: pinchCenter.y }],
       [{ x: 20, y: 0 }, { x: -20, y: 0 }])
     await expect.poll(async () => (await viewport(page)).zoom).toBeLessThan(beforePinch.zoom * 0.8)
-    await fit(page, true)
+    await fitGraphViewport(page, true)
 
     const nodeBefore = await nodePosition(page, source)
     await touchGesture(page, browserName, [await center(card(page, source))], [{ x: 80, y: 50 }])

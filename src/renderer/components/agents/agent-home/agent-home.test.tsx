@@ -337,14 +337,23 @@ describe('AgentHome', () => {
     }
   })
 
-  it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
+  it('gives a non-owner the one centred column with no side panel', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    const layout = screen.getByTestId('agent-home-layout')
-    expect(layout).toHaveClass('w-full', 'xl:max-w-2xl')
-    expect(layout).not.toHaveClass('max-w-2xl')
+    expect(screen.getByTestId('agent-home-layout')).toHaveClass('mx-auto', 'w-full', 'max-w-[1040px]')
+    expect(screen.queryByTestId('agent-home-side-panel')).not.toBeInTheDocument()
+  })
+
+  it('always shows an owner the side panel, with no toggle for it', () => {
+    mockCanAdminAgent = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    expect(screen.getByTestId('agent-home-side-panel')).toContainElement(screen.getByTestId('home-sections-panel'))
+    expect(screen.queryByTestId('agent-home-side-panel-toggle')).not.toBeInTheDocument()
   })
 
   it('reuses the agent context menu on the agent title', () => {
@@ -558,14 +567,14 @@ describe('AgentHome', () => {
     )
 
     const editor = screen.getByTestId('home-message-input')
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
     expect(editor.style.minHeight).toBe('')
 
     await user.click(screen.getByRole('button', { name: 'Expand input' }))
     expect(editor.className).toContain('min-h-[50vh]')
 
     await user.click(screen.getByRole('button', { name: 'Shrink input' }))
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
   })
 
   it('auto-expands to full view when the editor overflows its max-height', async () => {

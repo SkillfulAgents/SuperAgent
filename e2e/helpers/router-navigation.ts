@@ -5,6 +5,7 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { createResponseGuard } from './response-guard'
+import { openHomeAdvancedSettings } from './agent-home'
 
 export interface RouterNavigationContext {
   page: Page
@@ -137,6 +138,7 @@ export async function checkSupersededAgentLoader(context: RouterNavigationContex
 
     // Exercise another real lazy route after the late response is delivered,
     // rather than checking the destination before the old loader settles.
+    await openHomeAdvancedSettings(page)
     await page.getByTestId('home-api-logs-open-page').click()
     await expect(page.getByTestId('api-logs-back-button')).toBeVisible()
     await expect(page.getByTestId('agent-breadcrumb')).toHaveText(destination.name)
@@ -168,6 +170,7 @@ export async function checkLazySessionDraftHistory(context: RouterNavigationCont
   await page.getByTestId('agent-breadcrumb').click()
   await expectAgentHome(page, agent)
   await page.getByTestId('home-message-input').fill(homeDraft)
+  await openHomeAdvancedSettings(page)
   await page.getByTestId('home-api-logs-open-page').click()
   await expect(page.getByTestId('api-logs-back-button')).toBeVisible()
   await page.getByTestId('api-logs-back-button').click()

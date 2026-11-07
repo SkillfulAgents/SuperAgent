@@ -19,7 +19,7 @@
  */
 import { test as base, expect, type Page } from '@playwright/test'
 import { createAgent, uniqueName, type TestAgent } from '../helpers/agents'
-import { graphSettingsSchema } from '../helpers/graph-upgrade'
+import { fitGraphViewport, graphSettingsSchema } from '../helpers/graph-upgrade'
 
 // A prior draw/drag leaves saved pins that can cover a later test's new node.
 // Keep the isolated server's real API, but scope agents and graph settings to
@@ -233,12 +233,10 @@ test.describe('home connections graph', () => {
     const node = page.getByTestId(`graph-node-agent-${agent.slug}`)
     await expect(node).toBeVisible()
 
-    // Sibling specs share this server: their agents fill the graph, and while
-    // they keep creating more, every structural change re-solves the layout
-    // and shifts every unpinned node. A bounding box measured before a
-    // reshuffle dangles — the mouse grabs empty canvas and pans instead of
-    // dragging. Re-fit, re-measure and retry until the settings write proves
-    // THIS node's position landed.
+    // Fit View settles on animation frames after its button click returns.
+    // Raw mouse gestures skip locator stability checks, so measuring too early
+    // grabs the node's old position and pans empty canvas. Wait for the fit,
+    // then retry any later layout changes until THIS node's position is saved.
     const savedPosition = async () => {
       const settings = await (await request.get('/api/user-settings')).json() as {
         graphNodePositions?: Record<string, { x: number; y: number }>
@@ -247,9 +245,7 @@ test.describe('home connections graph', () => {
     }
     let landed = false
     for (let attempt = 0; attempt < 5 && !landed; attempt++) {
-      // Late-created agents can push the grid past the initial viewport;
-      // re-fitting keeps the target node on screen for the grab.
-      await page.getByRole('button', { name: 'Fit View' }).click()
+      await fitGraphViewport(page)
       const box = await node.boundingBox()
       if (!box) continue
       const persisted = page

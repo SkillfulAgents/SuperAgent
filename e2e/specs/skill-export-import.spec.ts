@@ -5,6 +5,7 @@ import path from 'path'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { buildSkillZip } from '../helpers/skill-zip'
+import { openHomeSection, openSkillUpload, openSkillBrowse } from '../helpers/agent-home'
 
 test.describe('Skill Export & Import', () => {
   let appPage: AppPage
@@ -40,9 +41,8 @@ test.describe('Skill Export & Import', () => {
 
     await createSkillTestAgent(`Skill Imp ${Date.now()}`)
 
-    const importButton = page.locator('[data-testid="import-skill-button"]')
-    await expect(importButton).toBeVisible({ timeout: 10000 })
-    await importButton.click()
+    await openHomeSection(page, 'Skills')
+    await openSkillUpload(page)
 
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
@@ -53,6 +53,7 @@ test.describe('Skill Export & Import', () => {
     await dialog.locator('button[type="submit"]').click()
     await expect(dialog).not.toBeVisible({ timeout: 15000 })
 
+    await openHomeSection(page, 'Skills')
     const installedRow = page.locator('[data-testid="installed-skill-row"]').filter({ hasText: skillName })
     await expect(installedRow).toBeVisible({ timeout: 10000 })
   })
@@ -69,9 +70,8 @@ test.describe('Skill Export & Import', () => {
 
     await createSkillTestAgent(`Bad Imp ${Date.now()}`)
 
-    const importButton = page.locator('[data-testid="import-skill-button"]')
-    await expect(importButton).toBeVisible({ timeout: 10000 })
-    await importButton.click()
+    await openHomeSection(page, 'Skills')
+    await openSkillUpload(page)
 
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
@@ -85,9 +85,8 @@ test.describe('Skill Export & Import', () => {
   test('export a skill via three-dot menu', async ({ page }) => {
     await createSkillTestAgent(`Skill Exp ${Date.now()}`)
 
-    const addSkillButton = page.locator('[data-testid="add-skill-button"]')
-    await expect(addSkillButton).toBeVisible({ timeout: 10000 })
-    await addSkillButton.click()
+    await openHomeSection(page, 'Skills')
+    await openSkillBrowse(page)
 
     const browseDialog = page.locator('[data-testid="skills-browse-dialog"]')
     await expect(browseDialog).toBeVisible()
@@ -95,6 +94,7 @@ test.describe('Skill Export & Import', () => {
     await expect(browseDialog.locator('[data-skill-name="e2e-plain-skill"]')).toBeHidden({ timeout: 10000 })
     await page.keyboard.press('Escape')
 
+    await openHomeSection(page, 'Skills')
     const installedRow = page.locator('[data-testid="installed-skill-row"][data-skill-path="e2e-plain-skill"]')
     await expect(installedRow).toBeVisible({ timeout: 10000 })
 
@@ -118,9 +118,8 @@ test.describe('Skill Export & Import', () => {
   test('round-trip: export from one agent, import into another', async ({ page }) => {
     await createSkillTestAgent(`RT Exp ${Date.now()}`)
 
-    const addSkillButton = page.locator('[data-testid="add-skill-button"]')
-    await expect(addSkillButton).toBeVisible({ timeout: 10000 })
-    await addSkillButton.click()
+    await openHomeSection(page, 'Skills')
+    await openSkillBrowse(page)
 
     const browseDialog = page.locator('[data-testid="skills-browse-dialog"]')
     await expect(browseDialog).toBeVisible()
@@ -128,6 +127,7 @@ test.describe('Skill Export & Import', () => {
     await expect(browseDialog.locator('[data-skill-name="e2e-plain-skill"]')).toBeHidden({ timeout: 10000 })
     await page.keyboard.press('Escape')
 
+    await openHomeSection(page, 'Skills')
     const installedRow = page.locator('[data-testid="installed-skill-row"][data-skill-path="e2e-plain-skill"]')
     await expect(installedRow).toBeVisible({ timeout: 10000 })
     await installedRow.hover()
@@ -146,9 +146,8 @@ test.describe('Skill Export & Import', () => {
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
     await expect(page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
-    const importButton = page.locator('[data-testid="import-skill-button"]')
-    await expect(importButton).toBeVisible({ timeout: 10000 })
-    await importButton.click()
+    await openHomeSection(page, 'Skills')
+    await openSkillUpload(page)
 
     const importDialog = page.getByRole('dialog')
     await expect(importDialog).toBeVisible()
@@ -156,6 +155,7 @@ test.describe('Skill Export & Import', () => {
     await importDialog.locator('button[type="submit"]').click()
     await expect(importDialog).not.toBeVisible({ timeout: 15000 })
 
+    await openHomeSection(page, 'Skills')
     const importedRow = page.locator('[data-testid="installed-skill-row"]').filter({ hasText: 'e2e-plain-skill' })
     await expect(importedRow).toBeVisible({ timeout: 10000 })
   })
