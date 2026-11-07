@@ -189,6 +189,9 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 
 export class PlatformWebhookRelayService implements WebhookRelayService {
   readonly kind = 'platform' as const
+  readonly id = 'webhook-relay'
+  readonly phase = 'eager' as const
+  readonly critical = true
 
   private readonly tickMs: number
   private readonly reconcileMs: number

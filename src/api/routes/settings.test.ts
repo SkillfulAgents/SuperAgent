@@ -2265,7 +2265,7 @@ describe('settings route', () => {
       expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
         expect.stringMatching(/^\/mock\/data\/model-icons\/[a-f0-9-]+\.svg$/),
         expect.any(Buffer),
-        { mode: 0o600, flag: 'wx' },
+        { mode: 0o600 },
       )
     })
 
