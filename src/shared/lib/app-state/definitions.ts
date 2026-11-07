@@ -14,7 +14,6 @@ import type {
   StateKey,
   Topic,
 } from './contract'
-import type { CounterBounds } from './abstract-app-state'
 
 const SEGMENT = '[a-z][a-z0-9-]*'
 const NAMESPACE_NAME = new RegExp(`^${SEGMENT}(?::${SEGMENT})*$`)
@@ -127,33 +126,6 @@ export function decodeValue<T>(schema: z.ZodType<T>, json: string): T {
   return schema.parse(parsed)
 }
 
-/** The number checks a subclass can enforce from a counter's limits alone: a format (`int()`) and bounds. */
-const COUNTER_CHECKS = new Set(['number_format', 'greater_than', 'less_than'])
-
-/**
- * The integers at the ends of what a counter's schema accepts, so a subclass can
- * refuse a result past them before it writes. The authority never sees the schema,
- * so a counter's schema must be a plain number schema with only those checks:
- * any other rule (`multipleOf`, `refine`, a wrapper) could let a stored result
- * fail every later read, and is refused here instead.
- */
-export function counterLimits(schema: z.ZodType<number>): CounterBounds {
-  const number = schema as z.ZodNumber
-  const checks = number.def.type === 'number' ? number.def.checks ?? [] : null
-  if (!checks || checks.some((check) => !COUNTER_CHECKS.has(check._zod.def.check))) {
-    throw new TypeError('An AppState counter needs a plain number schema: int() and bounds only')
-  }
-  const { minValue, maxValue } = number
-  return { min: limitOf(schema, minValue, 1), max: limitOf(schema, maxValue, -1) }
-}
-
-function limitOf(schema: z.ZodType<number>, bound: number | null | undefined, inward: 1 | -1): number | undefined {
-  if (typeof bound !== 'number' || !Number.isFinite(bound)) return undefined
-  const limit = inward > 0 ? Math.ceil(bound) : Math.floor(bound)
-  // An exclusive bound (`positive()`, `lt(n)`) reports the value it excludes.
-  return schema.safeParse(limit).success ? limit : limit + inward
-}
-
 /** Throws unless the key's namespace is strong; the conditional operations need one. */
 export function assertStrong(key: StateKey<unknown>, operation: string): void {
   if (key.namespace.consistency !== 'strong') {
@@ -167,7 +139,7 @@ export function assertStrong(key: StateKey<unknown>, operation: string): void {
  * new one.
  */
 export function resolveExpiry(
-  namespace: Pick<Namespace<unknown>, 'name' | 'consistency' | 'expiry'>,
+  namespace: Namespace<unknown>,
   requested: Expiry | undefined,
   current: { expiresAt: number | null } | undefined,
   now: number,
