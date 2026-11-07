@@ -1,15 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ErrorReportingProvider } from './types'
 
-const createServerProvider = vi.fn()
-vi.mock('./sentry-provider', () => ({ createServerProvider }))
-
-function recordingReporter() {
+function recordingReporter(eventId: string) {
   const captured: unknown[] = []
   const reporter: ErrorReportingProvider = {
-    captureException: (error) => { captured.push(error); return 'event-1' },
+    captureException: (error) => { captured.push(error); return eventId },
     captureMessage: () => undefined,
     setUser: () => {},
+    setTenantId: () => {},
     addBreadcrumb: () => {},
     setContext: () => {},
     setTag: () => {},
@@ -20,29 +18,29 @@ function recordingReporter() {
 
 afterEach(() => {
   vi.resetModules()
-  createServerProvider.mockReset()
 })
 
-describe('setErrorReportingProvider', () => {
-  it('reports through the deployment reporter, and startup keeps it instead of starting Sentry for Node', async () => {
+describe('initErrorReporting', () => {
+  it('reports through the reporter the entry point passed, and keeps the first one', async () => {
     const errorReporting = await import('./index')
-    const { reporter, captured } = recordingReporter()
-
-    errorReporting.setErrorReportingProvider(reporter)
-    errorReporting.initErrorReporting({ environment: 'web' })
+    const workers = recordingReporter('event-workers')
+    const later = recordingReporter('event-later')
     const error = new Error('Agent object failed to answer')
 
-    expect(errorReporting.captureException(error)).toBe('event-1')
-    expect(captured).toEqual([error])
-    expect(createServerProvider).not.toHaveBeenCalled()
+    errorReporting.initErrorReporting(workers.reporter)
+    errorReporting.initErrorReporting(later.reporter)
+
+    expect(errorReporting.captureException(error)).toBe('event-workers')
+    expect(workers.captured).toEqual([error])
+    expect(later.captured).toEqual([])
   })
 
-  it('starts Sentry for Node when no deployment reporter is set', async () => {
+  it('leaves reporting off when the reporter could not start', async () => {
     const errorReporting = await import('./index')
-    createServerProvider.mockReturnValue(recordingReporter().reporter)
 
-    errorReporting.initErrorReporting({ environment: 'web' })
+    errorReporting.initErrorReporting(null)
 
-    expect(createServerProvider).toHaveBeenCalledWith({ environment: 'web' })
+    expect(errorReporting.captureException(new Error('Agent object failed to answer'))).toBeUndefined()
+    expect(errorReporting.getErrorReporter()).toBeNull()
   })
 })
