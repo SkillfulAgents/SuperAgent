@@ -9,7 +9,7 @@
  * read and written here (the stored* methods).
  *
  * The agent's actor runs here too: its ops come from the rest of the org over this object's stub
- * (`remoteActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
+ * (`remoteAgentActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
  * the host stay in this isolate, which shares the org's database and AppState. The agent's idle
  * check runs on this object's alarm, which outlives the isolate.
  */
@@ -33,7 +33,7 @@ const DELETE_BATCH = 1000
 // Mode of a file first written while the agent sleeps.
 const NEW_FILE_MODE = 0o644
 const BLOB = /^\/blobs\/([0-9a-f]{64})$/
-// remoteActor's default origin: requests for this host are the actor's ops.
+// remoteAgentActor's default origin: requests for this host are the actor's ops.
 const ACTOR_HOST = 'actor'
 // The scheduled method that runs SuperAgent's idle check for this agent.
 const IDLE_CHECK = 'checkIdle'
@@ -143,7 +143,7 @@ export class AgentDurableObject extends Container<Env> {
   // Only startAgent may start the container: anything else reaching a stopped one would start it
   // with no env, no restore and no agent. Until the agent is up it reads as asleep.
   override async fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).hostname === ACTOR_HOST) return this.serveActor(request)
+    if (new URL(request.url).hostname === ACTOR_HOST) return this.serveAgentActor(request)
     if (!(await this.agentRunning())) return new Response(null, { status: 503, headers: { [ASLEEP_HEADER]: '1' } })
     return super.fetch(request)
   }
@@ -173,13 +173,13 @@ export class AgentDurableObject extends Container<Env> {
     })
   }
 
-  private serveActor(request: Request): Promise<Response> {
+  private serveAgentActor(request: Request): Promise<Response> {
     const slug = this.agentName()
     return runAsAgentObject(slug, this, async () => {
       const app = await import('./boot')
       await app.boot(this.env)
       await this.syncStatus(app, slug)
-      return app.serveActorRequest(request)
+      return app.serveAgentActorRequest(request)
     })
   }
 

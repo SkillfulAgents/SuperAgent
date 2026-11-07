@@ -18,7 +18,7 @@ import { initializeServices, prepareProcess, registerBackgroundWork, shutdownSer
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { setActorTransport, setSessionStore } from '@shared/lib/agent-actor/registry'
-import { remoteActor, serveActor } from '@shared/lib/agent-actor/network-actor'
+import { remoteAgentActor, serveAgentActor } from '@shared/lib/agent-actor/remote-agent-actor'
 import { createConfigOps } from '@shared/lib/agent-actor/config-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
@@ -42,7 +42,7 @@ let booted: Promise<void> | undefined
 let tasks: CloudflareTaskManager | undefined
 let fetchWrapped = false
 // The agent's actor, as its own object serves it.
-const actorOps = serveActor((slug) => agentRegistry.get(slug))
+const actorOps = serveAgentActor((slug) => agentRegistry.get(slug))
 
 /** Boots SuperAgent in this isolate once; a failed boot is tried again by the next call. */
 export function boot(env: Env): Promise<void> {
@@ -71,7 +71,7 @@ export function serve(request: Request, env: Env, ctx: ExecutionContext): Promis
 }
 
 /** An op on the agent's actor, in the agent's own object (cloudflare-agent.ts). */
-export function serveActorRequest(request: Request): Promise<Response> {
+export function serveAgentActorRequest(request: Request): Promise<Response> {
   return actorOps(request)
 }
 
@@ -187,7 +187,7 @@ function errorOnRedirect(fetch: typeof globalThis.fetch): typeof globalThis.fetc
 /** Where each agent runs: its actor in its own object, its files in its container or, asleep, in R2. */
 function wireAgents(env: Env): void {
   // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
-  setActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
+  setActorTransport((slug, local) => ownedHere(slug, local, remoteAgentActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
   setSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
 }
 
