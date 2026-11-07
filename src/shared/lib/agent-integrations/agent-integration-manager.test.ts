@@ -202,6 +202,13 @@ beforeEach(async () => {
 afterEach(() => manager.stop())
 
 describe('AgentIntegration host contract', () => {
+  it('reports a failed start and still rejects, for the service host to log', async () => {
+    const failure = new Error('no deliveries')
+    vi.spyOn(manager['deliveries'], 'start').mockRejectedValueOnce(failure)
+    await expect(manager.start()).rejects.toBe(failure)
+    expect(captureException).toHaveBeenCalledWith(failure, expect.objectContaining({ tags: expect.objectContaining({ operation: 'startup' }) }))
+  })
+
   it('creates a session and routes subsequent events by the provider logical key', async () => {
     await manager.start()
     await adapter.input('comment-one')

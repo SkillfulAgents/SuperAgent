@@ -281,7 +281,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
 
     // Session wake ("Wake now"): resume the target session instead of creating
     // a new one. deliverSessionWake is the same claimed path the scheduler
-    // uses, so a poll firing at the same instant can never double-deliver.
+    // uses, so a wakeup firing at the same instant can never double-deliver.
     if (task.resumeSessionId) {
       const result = await deliverSessionWake(task, 'manual')
 

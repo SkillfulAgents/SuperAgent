@@ -12,6 +12,9 @@ const released = vi.hoisted(() => [] as string[])
 vi.mock('./webhook-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./webhook-relay')>()),
   getWebhookRelay: () => ({
+    id: 'webhook-relay',
+    phase: 'eager',
+    critical: true,
     start: () => { relayState.started = true },
     stop: () => { relayState.started = false; released.push('webhook-relay') },
     snapshot: () => ({ available: relayState.started, unavailableReason: relayState.started ? null : 'stopped' }),
@@ -120,28 +123,28 @@ vi.mock('./proxy/review-manager', () => ({ reviewManager: { rejectAll: vi.fn() }
 vi.mock('./proxy/account-reauth-manager', () => ({ accountReauthManager: { rejectAll: vi.fn() } }))
 vi.mock('./proxy/mcp-reauth-manager', () => ({ mcpReauthManager: { rejectAll: vi.fn() } }))
 vi.mock('./scheduler/task-scheduler', () => ({
-  taskScheduler: { start: () => taskSchedulerStart(), stop: () => { released.push('task-scheduler') } },
+  taskScheduler: { id: 'task-scheduler', phase: 'background', startupIo: true, start: () => taskSchedulerStart(), stop: () => { released.push('task-scheduler') } },
 }))
 vi.mock('./scheduler/trigger-manager', () => ({
-  triggerManager: { start: () => triggerManagerStart(), stop: () => { released.push('trigger-manager') } },
+  triggerManager: { id: 'webhook-triggers', phase: 'background', startupIo: true, start: () => triggerManagerStart(), stop: () => { released.push('trigger-manager') } },
 }))
 vi.mock('./scheduler/platform-notifications-manager', () => ({
-  platformNotificationsManager: { start: () => platformNotificationsStart(), stop: () => { released.push('platform-notifications') } },
+  platformNotificationsManager: { id: 'platform-notifications', phase: 'background', startupIo: true, start: () => platformNotificationsStart(), stop: () => { released.push('platform-notifications') } },
 }))
 vi.mock('./agent-integrations/agent-integration-manager', () => ({
-  agentIntegrationManager: { start: () => chatIntegrationStart(), stop: () => { released.push('agent-integrations') } },
+  agentIntegrationManager: { id: 'agent-integrations', phase: 'background', startupIo: true, start: () => chatIntegrationStart(), stop: () => { released.push('agent-integrations') } },
 }))
 vi.mock('./scheduler/session-auto-delete-monitor', () => ({
-  sessionAutoDeleteMonitor: { start: () => Promise.resolve(), stop: () => { released.push('session-auto-delete') } },
+  sessionAutoDeleteMonitor: { id: 'session-auto-delete', phase: 'background', start: () => Promise.resolve(), stop: () => { released.push('session-auto-delete') } },
 }))
 vi.mock('./scheduler/api-log-auto-delete-monitor', () => ({
-  apiLogAutoDeleteMonitor: { start: () => Promise.resolve(), stop: () => { released.push('api-log-auto-delete') } },
+  apiLogAutoDeleteMonitor: { id: 'api-log-auto-delete', phase: 'background', start: () => Promise.resolve(), stop: () => { released.push('api-log-auto-delete') } },
 }))
 vi.mock('./scheduler/account-sync-service', () => ({
-  accountSyncService: { start: () => Promise.resolve(), stop: () => { released.push('account-sync') } },
+  accountSyncService: { id: 'account-sync', phase: 'background', start: () => Promise.resolve(), stop: () => { released.push('account-sync') } },
 }))
 vi.mock('./services/platform-service', () => ({
-  platformService: { start: vi.fn(), stop: () => { released.push('platform') } },
+  platformService: { id: 'platform', phase: 'background', start: vi.fn(), stop: () => { released.push('platform') } },
 }))
 vi.mock('./container/client-factory', () => ({
   shutdownActiveRunner: async () => { released.push('active-runner') },
@@ -442,14 +445,12 @@ describe('initializeServices post-bind critical path', () => {
 
     it('keeps other services running when one background service fails to start', async () => {
       chatIntegrationStart.mockRejectedValueOnce(new Error('no integrations'))
-      const { captureException } = await import('./error-reporting')
       const { initializeServices } = await import('./startup')
       const { serviceHost } = await import('./background-work')
       const error = vi.spyOn(console, 'error').mockImplementation(() => {})
       await initializeServices()
       await vi.waitFor(() => expect(serviceHost().states()['webhook-triggers']).toBe('started'))
       expect(serviceHost().states()['agent-integrations']).toBe('failed')
-      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'no integrations' }), { tags: { component: 'chat-integration', operation: 'startup' } })
       error.mockRestore()
     })
 

@@ -7,12 +7,14 @@ import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-t
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 import { background } from '@shared/lib/background'
-import { PassTask, taskManager } from '@shared/lib/background-work'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { inArray } from 'drizzle-orm'
 
-class SessionAutoDeleteMonitor {
+class SessionAutoDeleteMonitor implements Service {
+  readonly id = 'session-auto-delete'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private pollIntervalMs = 4 * 60 * 60 * 1000 // Every 4 hours

@@ -10,7 +10,7 @@ import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { syncAgentsAssignedConnectedAccount } from '@shared/lib/services/connection-sync-service'
 import { background } from '@shared/lib/background'
-import { PassTask, taskManager } from '@shared/lib/background-work'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 
 type LocalStatus = 'active' | 'revoked' | 'expired'
 
@@ -25,7 +25,9 @@ function mapRemoteStatusToLocal(remoteStatus: ProviderConnectionListItem['status
   }
 }
 
-class AccountSyncService {
+class AccountSyncService implements Service {
+  readonly id = 'account-sync'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private pollIntervalMs = 5 * 60 * 1000

@@ -1481,12 +1481,12 @@ agents.post('/', async (c) => {
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const slug = getAgentId(c)
+    const resolved = getResolvedAgent(c)
     const userId = getCurrentUserId(c)
     // Needs only the slug, so it runs in parallel with the status read.
     const [agent, unreadProjection] = await Promise.all([
-      getAgentWithStatus(getResolvedAgent(c), { includeSummary: false }),
-      readUnreadProjection([slug], userId),
+      getAgentWithStatus(resolved, { includeSummary: false }),
+      readUnreadProjection([resolved.slug], userId),
     ])
 
     if (!agent) {

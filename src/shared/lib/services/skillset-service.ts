@@ -813,7 +813,7 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
   const populate = (async () => {
     if (await isCacheReady(repoDir, ref.provider)) return repoDir
     const populated = await populateSkillsetCache(ref, hostingProvider, repoDir)
-    await saveSkillsetCache(populated).catch((error) => console.warn(`[skillsets] Could not store the cache of ${repoDir}:`, error))
+    await storeSkillsetCache(hostingProvider, populated)
     return populated
   })()
   activeSkillsetPopulates.set(repoDir, populate)
@@ -824,6 +824,13 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
       activeSkillsetPopulates.delete(repoDir)
     }
   }
+}
+
+/** A git cache is cloned again rather than restored (see isCacheReady), so it is never stored. */
+async function storeSkillsetCache(hostingProvider: ReturnType<typeof getSkillsetProvider>, repoDir: string): Promise<void> {
+  if (hostingProvider.usesGitCache) return
+  // A failed save only costs a download in the next process that starts empty.
+  await saveSkillsetCache(repoDir).catch((error) => console.warn(`[skillsets] Could not store the cache of ${repoDir}:`, error))
 }
 
 async function populateSkillsetCache(
@@ -977,7 +984,7 @@ export async function refreshSkillset(
   if (inFlight) return inFlight
 
   const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then(async (index) => {
-    await saveSkillsetCache(repoDir).catch((error) => console.warn(`[skillsets] Could not store the cache of ${repoDir}:`, error))
+    await storeSkillsetCache(hostingProvider, repoDir)
     lastSkillsetRefreshAt.set(repoDir, Date.now())
     return index
   })
