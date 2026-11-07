@@ -221,14 +221,14 @@ function agentSleepingStore(env: Env, slug: AgentSlug): SleepingStore {
     if (!own) return viaStub
     return {
       entry: (path) => own.storedEntry(path),
-      read: (path) => own.storedRead(path),
+      read: (path, range) => own.storedRead(path, range),
       write: (path, bytes) => own.storedWrite(path, bytes),
       remove: (path) => own.storedRemove(path),
     }
   }
   return {
     entry: (path) => side().entry(path),
-    read: (path) => side().read(path),
+    read: (path, range) => side().read(path, range),
     write: (path, bytes) => side().write(path, bytes),
     remove: (path) => side().remove(path),
   }
