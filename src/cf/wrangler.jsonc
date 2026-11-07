@@ -24,6 +24,8 @@
     "AUTH_MODE": "true",
     "APP_ORIGIN": "https://superagent.example.com"
   },
+  // Set with `wrangler secret put` (above): a deploy fails while one is missing.
+  "secrets": { "required": ["SUPERAGENT_VAULT_KEY", "BETTER_AUTH_SECRET", "AUTH_PROVIDERS_JSON", "PLATFORM_TOKEN"] },
   "assets": {
     "directory": "../../dist/renderer",
     "binding": "ASSETS",
