@@ -8,6 +8,8 @@
  */
 import type { DurableObjectNamespace } from 'cloudflare:workers'
 import type { AgentDurableObject } from './cloudflare-agent'
+import { servingAgentObject } from './agent-objects'
+import { reachCurrentCode } from './object-version'
 
 const CONTAINER_HOST = 'agent-container.internal'
 const CONTAINER_PORT = 3000
@@ -35,13 +37,27 @@ export interface SleepingStore {
   remove(path: string): Promise<boolean>
 }
 
-export function sleepingStore(agents: AgentObjects, agentId: string): SleepingStore {
-  const agent = () => agents.getByName(agentId)
+/**
+ * The agent's object: itself when it serves the current request (a call through its stub would
+ * come back to it), and otherwise its stub, once it runs this deploy's code or newer.
+ */
+export async function withAgentObject<R>(agents: AgentObjects, agentId: string, version: string | undefined, run: (agent: AgentCalls) => R | Promise<R>): Promise<R> {
+  const own = servingAgentObject(agentId)
+  if (own) return run(own)
+  await reachCurrentCode(agents, agentId, version)
+  return run(agents.getByName(agentId) as unknown as AgentCalls)
+}
+
+/** The agent object's calls the rest of the org makes, as its stub answers them. */
+type AgentCalls = Pick<AgentDurableObject, 'fetch' | 'actorCall' | 'agentRunning' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
+
+export function sleepingStore(agents: AgentObjects, agentId: string, version: string | undefined): SleepingStore {
+  const call = <R>(run: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, run)
   return {
-    entry: (path) => agent().storedEntry(path),
-    read: (path, range) => agent().storedRead(path, range),
-    write: (path, bytes) => agent().storedWrite(path, bytes),
-    remove: (path) => agent().storedRemove(path),
+    entry: (path) => call((agent) => agent.storedEntry(path)),
+    read: (path, range) => call((agent) => agent.storedRead(path, range)),
+    write: (path, bytes) => call((agent) => agent.storedWrite(path, bytes)),
+    remove: (path) => call((agent) => agent.storedRemove(path)),
   }
 }
 
@@ -51,7 +67,7 @@ let installed = false
  * Sets the runner's configuration and answers its calls in this isolate. Called at boot, before
  * SuperAgent first starts a container; the token only has to match within this isolate.
  */
-export function routeContainerFetch(agents: AgentObjects): void {
+export function routeContainerFetch(agents: AgentObjects, version: string | undefined): void {
   if (installed) return
   installed = true
   const token = crypto.randomUUID()
@@ -59,17 +75,18 @@ export function routeContainerFetch(agents: AgentObjects): void {
   process.env.CLOUDFLARE_CONTAINER_HOST_URL = 'http://host.internal'
   process.env.CLOUDFLARE_CONTAINER_TOKEN = token
 
+  const call = <R>(agentId: string, run: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, run)
+
   const control = async (request: Request, agentId: string, action: string): Promise<Response> => {
     if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })
-    const agent = agents.getByName(agentId)
-    if (request.method === 'GET' && action === '') return Response.json({ running: await agent.agentRunning() })
+    if (request.method === 'GET' && action === '') return Response.json({ running: await call(agentId, (agent) => agent.agentRunning()) })
     if (request.method === 'POST' && action === 'start') {
       const { env } = (await request.json()) as { env: Record<string, string> }
-      await agent.startAgent(env)
+      await call(agentId, (agent) => agent.startAgent(env))
       return new Response(null, { status: 204 })
     }
     if (request.method === 'POST' && action === 'stop') {
-      await agent.stopAgent()
+      await call(agentId, (agent) => agent.stopAgent())
       return new Response(null, { status: 204 })
     }
     return new Response('not found', { status: 404 })
@@ -82,6 +99,6 @@ export function routeContainerFetch(agents: AgentObjects): void {
     const [, first, ...rest] = url.pathname.split('/')
     if (first === '_control') return control(new Request(input, init), decodeURIComponent(rest[0] ?? ''), rest[1] ?? '')
     const target = `http://127.0.0.1:${CONTAINER_PORT}/${rest.join('/')}${url.search}`
-    return agents.getByName(decodeURIComponent(first)).fetch(new Request(target, new Request(input, init)))
+    return call(decodeURIComponent(first), (agent) => agent.fetch(new Request(target, new Request(input, init))))
   }
 }
