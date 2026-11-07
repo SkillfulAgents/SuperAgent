@@ -1,4 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
+import { ChatInputBuilder } from './chat-input'
+import { parseAttachedFiles } from '@shared/lib/utils/attached-files'
+import type { ChatConnectorClass } from './chat-agent-integration'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { routeSlackMessage, resolveSlackChannel, fitSlackTables, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, slackAnswerFromAction, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -734,5 +738,40 @@ describe('SlackConnector question cards', () => {
   it('keeps an approval card to Allow and Deny, with no field to type a decision in', async () => {
     expect(await controls({ type: 'question_request', toolUseId: 'review:r1:agent', questions: [{ question: 'Allow?', options }] }))
       .toEqual(['section', 'button', 'button'])
+  })
+})
+
+describe('SlackConnector thread backfill', () => {
+  it('labels each earlier message with its id', async () => {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    ;(connector as any).app = { client: {
+      conversations: { replies: vi.fn().mockResolvedValue({ ok: true, messages: [{ ts: '100.1', user: 'U1', text: 'kickoff' }, { ts: '100.2', user: 'U1', text: 'now' }] }) },
+      users: { info: vi.fn().mockResolvedValue({ user: { real_name: 'Alice' } }) },
+    } }
+
+    expect(await (connector as any).fetchThreadHistory('C1', '100.1', '100.2')).toBe('[Thread context — 1 previous message]\nAlice (1970-01-01 00:01 UTC, message id: 100.1): kickoff')
+  })
+})
+
+describe('Slack message ids and deleted replies', () => {
+  it('adds the message id after the content, and never alone', async () => {
+    const builder = new ChatInputBuilder(async () => ({ showsMessageIds: true, classifyChatId: () => 'dm' }) as unknown as ChatConnectorClass)
+    const integration = { provider: 'slack', agentSlug: 'agent', config: '{}' } as AgentIntegrationRecord
+    const message = (text: string, files?: Array<{ name: string; url: string }>) => ({ chatId: 'D1', userId: 'U1', text, externalMessageId: '1.2', timestamp: new Date(), files })
+    expect((await builder.buildMessageContent(integration, message('hi'))).text).toBe('hi\n(message id: 1.2)')
+    expect((await builder.buildMessageContent(integration, { ...message('hi'), threadId: 'C1|1.0' })).text).toBe('hi\n(message id: 1.2, thread: C1|1.0)')
+    expect((await builder.buildMessageContent(integration, message('', [{ name: 'a.pdf', url: '' }]))).text).toBe('')
+    vi.spyOn(builder as any, 'downloadFileBuffer').mockResolvedValue(Buffer.from('pdf'))
+    vi.spyOn(builder as any, 'writeToWorkspace').mockResolvedValue('/workspace/uploads/a.pdf')
+    const { text } = await builder.buildMessageContent(integration, message('', [{ name: 'a.pdf', url: 'https://files.slack.com/a.pdf' }]))
+    expect(text.startsWith('(message id: 1.2)\n')).toBe(true)
+    expect(parseAttachedFiles(text).attachedFiles).toEqual(['/workspace/uploads/a.pdf'])
+  })
+
+  it('lets delivery post the final text anew when the streaming reply was deleted', async () => {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const update = vi.fn().mockRejectedValue(Object.assign(new Error('message_not_found'), { code: 'slack_webapi_platform_error', data: { error: 'message_not_found' } }))
+    ;(connector as any).app = { client: { chat: { update } } }
+    await expect(connector.finalizeStreamingMessage('C1', '100.5', 'final')).rejects.toThrow('message_not_found')
   })
 })

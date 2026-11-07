@@ -54,4 +54,6 @@ export interface McpConnection {
   recoverAuthorization(signal: AbortSignal, callerSessionId?: string): Promise<McpRecoveryResult>
   /** Only upstream outcomes reach this hook, never local rejection/cancellation. */
   reportHealth(available: boolean): Promise<void>
+  /** Sends one request to the server: over the network, or to a server the source runs itself. */
+  fetch(url: string, init: RequestInit): Promise<Response>
 }

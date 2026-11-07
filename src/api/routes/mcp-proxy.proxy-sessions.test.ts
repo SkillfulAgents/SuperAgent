@@ -15,7 +15,6 @@ vi.mock('@shared/lib/agent-actor', () => ({ agentRegistry: { get: () => mock.act
 vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: async () => 'agent' }))
 vi.mock('@shared/lib/db', () => ({ db: { insert: () => ({ values: async () => {} }) } }))
 vi.mock('@shared/lib/mcp/connections', () => ({ resolveMcpConnection: async () => ({ ok: true, connection: mock.connection }) }))
-vi.mock('@shared/lib/mcp/mcp-safe-fetch', () => ({ mcpSafeFetch: (...args: unknown[]) => mock.fetch(...args) }))
 
 import mcpProxy from './mcp-proxy'
 
@@ -39,6 +38,7 @@ beforeEach(() => {
     recoverAuthorization: vi.fn(async () => ({ ok: true })),
     markAuthRequired: vi.fn(async () => {}),
     reportHealth: vi.fn(async () => {}),
+    fetch: (...args: unknown[]) => mock.fetch(...args),
   }
   mock.fetch.mockReset()
 })
