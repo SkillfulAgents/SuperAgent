@@ -5,7 +5,7 @@ import { runInNewContext } from 'vm'
 const captureException = vi.hoisted(() => vi.fn())
 vi.mock('./error-reporting', () => ({ captureException }))
 
-import { background, backgroundInFlight, backgroundSettled } from './background'
+import { background, backgroundInFlight, backgroundSettled, runWithBackground } from './background'
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void
@@ -97,6 +97,22 @@ describe('background', () => {
     second.resolve()
     await settling
     expect(done).toEqual(['first', 'second'])
+  })
+
+  it('hands work started inside runWithBackground to that request lifetime, now or after an await', async () => {
+    const waitUntil = vi.fn()
+    const first = deferred()
+    await runWithBackground({ waitUntil }, async () => {
+      background(first.promise, { name: 'test.inside' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      background(Promise.resolve(), { name: 'test.inside-later' })
+    })
+    background(Promise.resolve(), { name: 'test.outside' })
+
+    expect(waitUntil).toHaveBeenCalledTimes(2)
+    first.resolve()
+    await waitUntil.mock.calls[0][0]
+    expect(backgroundInFlight()).not.toContain('test.inside')
   })
 
   it('stops waiting for work that can never settle once it is collected', async () => {
