@@ -589,6 +589,13 @@ describe('"Always allow" never overwrites a Block', () => {
     expect(await getPolicy(CALLER, 'read', null)).toBeNull()
   })
 
+  it('saves from a file card', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReturnValueOnce([{ id: 'review-1', agentSlug: CALLER, xAgent: { targetAgentSlug: TARGET_A, targetAgentName: TARGET_A, operation: 'read', fileTransfer: { kind: 'download', filename: 'report.pdf' } } }] as never)
+    expect((await always('read', TARGET_A)).status).toBe(200)
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('allow')
+  })
+
   it('still saves when no Block is set', async () => {
     expect((await always('invoke', TARGET_A)).status).toBe(200)
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')

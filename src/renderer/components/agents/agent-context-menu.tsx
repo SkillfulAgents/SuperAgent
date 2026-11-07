@@ -67,7 +67,7 @@ interface AgentContextMenuProps {
   agent: ApiAgent
   children: React.ReactNode
   /**
-   * Where the surface has an inline-editable title (the agent home), Rename
+   * Where the surface has its own name editor (the agent home), Rename
    * hands off to it instead of opening the rename dialog.
    */
   onRename?: () => void
@@ -419,7 +419,7 @@ export function AgentContextMenu({
         onOpenChange={setShowDeleteDialog}
       />
 
-      {/* Rename for surfaces without an inline title (sidebar, home cards). */}
+      {/* Rename for surfaces without their own name editor (sidebar, home cards). */}
       <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
         <DialogContent className="overflow-hidden" data-testid="rename-agent-dialog">
           <DialogHeader>

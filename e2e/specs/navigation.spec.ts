@@ -20,6 +20,7 @@ import {
   type TestAgent,
   type TestSession,
 } from '../helpers/agents'
+import { isWebKitTeardownFetchError } from '../helpers/page-errors'
 
 interface TestConnectedAccount {
   id: string
@@ -42,7 +43,9 @@ function uniqueName(testInfo: TestInfo, label: string) {
 
 function collectPageErrors(page: Page) {
   const errors: string[] = []
-  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('pageerror', (error) => {
+    if (!isWebKitTeardownFetchError(page, error)) errors.push(error.message)
+  })
   return errors
 }
 
