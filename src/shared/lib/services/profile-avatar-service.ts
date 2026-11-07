@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PNG } from 'pngjs'
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { user } from '@shared/lib/db/schema'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import { hostFiles } from '@shared/lib/blob-store/blob-store'
 import { avatarOverrideSchema, MAX_AVATAR_BYTES } from '@shared/lib/user-profile-schema'
 
 export class InvalidAvatarError extends Error {}
@@ -48,16 +47,19 @@ export function prepareAvatar(input: Buffer): Buffer {
   }
 }
 
-export function avatarDirectory(): string {
-  return path.join(getDataDir(), 'profile-photos')
+const avatarFiles = hostFiles('profile-photos')
+
+/** A stored photo's PNG bytes, or null when there is none under that name. */
+export function readStoredAvatar(filename: string): Promise<Uint8Array | null> {
+  return avatarFiles.read(filename)
 }
 
 export async function removeStoredAvatar(reference: string | null): Promise<void> {
   const parsed = avatarOverrideSchema.safeParse(reference)
   if (!parsed.success) return
-  // Only server-issued, validated basenames ever reach the filesystem.
-  await fs.unlink(path.join(avatarDirectory(), path.basename(parsed.data))).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== 'ENOENT') console.error('Failed to remove old profile photo', error)
+  // Only server-issued, validated basenames ever reach storage.
+  await avatarFiles.remove(path.basename(parsed.data)).catch((error) => {
+    console.error('Failed to remove old profile photo', error)
   })
 }
 
@@ -66,8 +68,7 @@ export async function setAvatar(userId: string, input: Buffer | null): Promise<s
   if (input) {
     const png = prepareAvatar(input)
     const filename = `${randomUUID()}.png`
-    await fs.mkdir(avatarDirectory(), { recursive: true })
-    await fs.writeFile(path.join(avatarDirectory(), filename), png, { flag: 'wx', mode: 0o600 })
+    await avatarFiles.write(filename, png)
     reference = avatarOverrideSchema.parse(`/api/profile/images/${filename}`)
   }
   let previous: string | null
