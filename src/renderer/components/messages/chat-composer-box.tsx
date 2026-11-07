@@ -135,7 +135,7 @@ export function ChatComposerBox({
           dataTestId={dataTestId}
           minRows={rows}
           enterKeyHint={enterKeyHint}
-          className={cn('max-h-[200px]', textareaClassName)}
+          className={cn('mt-1 max-h-[200px]', textareaClassName)}
           potentialSecrets={potentialSecrets}
           chipContext={chipContext}
           onEditorElement={setEditorRef}
