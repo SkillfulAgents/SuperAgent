@@ -39,6 +39,7 @@ export interface IncomingMessage {
   chatType?: 'private' | 'group' | 'supergroup'  // Telegram chat type (undefined for non-Telegram connectors)
   userName?: string            // Display name of the user (for session naming)
   chatName?: string            // Display name of the chat/channel (for session naming)
+  threadId?: string            // The thread's conversation id, when the message is in a thread chatId does not name
   files?: { name: string; url: string; mimeType?: string }[]
   timestamp: Date
   /** Shown in the app only; never part of the agent's input. Links must be public https. */
@@ -64,7 +65,7 @@ export interface OutgoingMessage {
 }
 
 /** Context available at chat-session creation, passed to generateSystemPrompt. */
-export type SystemPromptContext = Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'>
+export type SystemPromptContext = Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'> & { integrationId?: string }
 
 /** What a connector's chat classifier gets to look at. */
 export type ChatClassifyContext = Pick<IncomingMessage, 'chatId' | 'chatName'>
@@ -117,7 +118,7 @@ export interface ChatDirectoryPage<T> {
  */
 export type ChatConnectorClass = Pick<
   typeof ChatAgentIntegration,
-  'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId' | 'parentChatId'
+  'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId' | 'parentChatId' | 'showsMessageIds'
 >
 
 const CHAT_EVENT_LABELS: Record<IntegrationMessageSource['kind'], string> = {
@@ -164,6 +165,9 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   /** The chat a thread id belongs to (a Slack thread's channel), or undefined when the id is not a thread. */
   static parentChatId?: (chatId: string) => string | undefined
+
+  /** The agent sees each message's id, for tools that act on a message (react to it, read its thread). */
+  static showsMessageIds?: boolean
 
   /**
    * List people reachable through the provider's directory (capability:
@@ -335,7 +339,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (failedFiles.length && (await this.isAllowed(context))) {
       await this.sendMessage(context.externalId, { text: `Could not download file(s): ${failedFiles.join(', ')}. ${skip ? 'Message was not sent to the agent.' : 'Your text message will still be sent.'}\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.` })
     }
-    return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.(message), display: this.describeMessage(message, request) }
+    return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.({ ...message, integrationId: context.integration.id }), display: this.describeMessage(message, request) }
   }
 
   /** The app's card for an incoming chat message: who wrote what, where. */

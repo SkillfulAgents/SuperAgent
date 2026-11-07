@@ -4,6 +4,7 @@ import { AgentIntegrationRegistry } from '../agent-integrations/registry'
 import type { AgentIntegration } from '../agent-integrations/agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { chatProviders } from './providers'
+import { incomingMessageSchema } from './message-schema'
 import * as threadState from './slack-thread-state'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
@@ -147,6 +148,8 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
     expect(restarted.received).toHaveBeenCalledWith(expect.objectContaining({
       chatId: expectedChatId, text: 'what is the code?',
     }))
+    // A session that does not name the thread is told it, so its Slack tools can.
+    expect(incomingMessageSchema.parse(restarted.received.mock.calls[0][0]).threadId).toBe(expectedChatId === 'C123' ? 'C123|1000.001' : undefined)
     expect(slack.replies).not.toHaveBeenCalled() // retained session already has history
     await restarted.connector.sendMessage(expectedChatId, { text: 'CEDAR' })
     expect(slack.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C123', thread_ts: '1000.001' }))

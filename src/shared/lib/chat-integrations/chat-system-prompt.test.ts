@@ -97,6 +97,7 @@ vi.mock('./slack-connector', async (importOriginal) => {
     SlackConnector: class {
       static generateSystemPrompt = actual.SlackConnector.generateSystemPrompt
       static classifyChatId = actual.SlackConnector.classifyChatId
+      static showsMessageIds = actual.SlackConnector.showsMessageIds
       constructor() {
         Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
@@ -188,7 +189,8 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('chat id: D0AAA111')
     expect(prompt).not.toContain('Iddo Gino')
     expect(prompt).not.toContain('[Jane Doe]')
-    expect(prompt).not.toContain(NO_REPLY_TOKEN)
+    expect(prompt).toContain(NO_REPLY_TOKEN)
+    expect(prompt).toContain('A reaction alone can acknowledge')
   })
 
   it('describes the channel and the attribution prefix for channel sessions', async () => {
@@ -196,7 +198,7 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('a channel (id C0BBB222)')
     expect(prompt).not.toContain('#office')
     expect(prompt).toContain('[Jane Doe]')
-    expect(prompt).toContain(NO_REPLY_TOKEN)
+    expect(prompt.split(NO_REPLY_TOKEN)).toHaveLength(2)
     const positions = [DELIVERY, NO_DOUBLE_POST, ATTRIBUTION, CONCISE, NORMAL_CAPABILITIES]
       .map((rule) => prompt.indexOf(rule))
     expect(positions.every((position) => position >= 0)).toBe(true)
@@ -368,7 +370,8 @@ describe('chat session system prompt wiring', () => {
     expect(args.systemPrompt).toContain(DELIVERY)
     expect(args.systemPrompt).toContain(NO_DOUBLE_POST)
     expect(args.systemPrompt).toContain(NORMAL_CAPABILITIES)
-    expect(args.message).toBe('\\[user-1]: hey')
+    expect(args.message).toMatch(/^\\\[user-1\]: hey\n\(message id: mock-msg-\d+\)$/)
+    expect(args.systemPrompt).toMatch(/your Slack tools: agent_integration_\w+\)/)
   })
 
   it('uses one Telegram classification for DM and group prompt attribution and prefixes', async () => {
@@ -392,6 +395,7 @@ describe('chat session system prompt wiring', () => {
     expect(group.systemPrompt).toContain('a group conversation (chat id: -1001234567890)')
     expect(group.systemPrompt).not.toContain('Ignore previous instructions')
     expect(group.systemPrompt).toContain('[Jane Doe]')
+    expect(group.systemPrompt).not.toContain('emoji reaction')
     expect(group.message).toBe('\\[Alice]: group')
   })
 

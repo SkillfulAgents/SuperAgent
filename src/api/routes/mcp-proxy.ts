@@ -4,11 +4,10 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { withUserReason } from '@shared/lib/proxy/user-reason'
 import { db } from '@shared/lib/db'
 import { mcpAuditLog } from '@shared/lib/db/schema'
-import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { background } from '@shared/lib/background'
 import { parseMcpResponse } from '@shared/lib/mcp/discover-tools'
 import { resolveMcpConnection } from '@shared/lib/mcp/connections'
-import type { McpAuthorization, McpRecoveryResult } from '@shared/lib/mcp/connection-types'
+import type { McpAuthorization, McpConnection, McpRecoveryResult } from '@shared/lib/mcp/connection-types'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 
 // MCP 2026-07-28 clients (Claude Code CLI 2.1.274+ by default) open every
@@ -57,6 +56,7 @@ async function upstreamSessionFor(options: {
   accessToken: string | null
   headers: Headers
   signal?: AbortSignal
+  mcp: McpConnection
 }): Promise<{ upstreamSessionId: string | null; handshake: boolean }> {
   const { actor, mcpId, sessionId, targetUrl, accessToken } = options
   const current = await actor.mcpSessions.get(mcpId, sessionId)
@@ -75,7 +75,7 @@ async function upstreamSessionFor(options: {
     headers.set('Accept', 'application/json, text/event-stream')
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
 
-    const initializeResponse = await mcpSafeFetch(targetUrl, {
+    const initializeResponse = await options.mcp.fetch(targetUrl, {
       signal: options.signal,
       method: 'POST',
       headers,
@@ -112,7 +112,7 @@ async function upstreamSessionFor(options: {
     if (upstreamSessionId) {
       initializedHeaders.set('Mcp-Session-Id', upstreamSessionId)
     }
-    const initializedResponse = await mcpSafeFetch(targetUrl, {
+    const initializedResponse = await options.mcp.fetch(targetUrl, {
       signal: options.signal,
       method: 'POST',
       headers: initializedHeaders,
@@ -504,6 +504,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         accessToken,
         headers,
         signal: c.req.raw.signal,
+        mcp,
       }))
       forwardedOn = upstreamSessionId
       headers.delete('Mcp-Session-Id')
@@ -521,7 +522,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     const init: RequestInit = { method, headers, signal: c.req.raw.signal }
     if (bodyBuffer) init.body = bodyBuffer
     c.req.raw.signal.throwIfAborted()
-    return requestUpstream(() => mcpSafeFetch(targetUrl, init))
+    return requestUpstream(() => mcp.fetch(targetUrl, init))
   }
 
   try {

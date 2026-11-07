@@ -2,6 +2,7 @@ import { normalizeCachedMcpTools } from './connection-schema'
 import type { McpToolInfo } from './types'
 import type { IntegrationMcpConnection } from '../agent-integrations/mcp-types'
 import type { McpAccessResult, McpAuthorization, McpConnection, McpRecoveryResult } from './connection-types'
+import { mcpSafeFetch } from './mcp-safe-fetch'
 
 /** Adapts the provider contract without creating a separately editable account. */
 export class IntegrationMcpAdapter implements McpConnection {
@@ -36,5 +37,9 @@ export class IntegrationMcpAdapter implements McpConnection {
 
   async reportHealth(available: boolean): Promise<void> {
     await this.connection.reportHealth(available)
+  }
+
+  fetch(url: string, init: RequestInit): Promise<Response> {
+    return this.connection.serve ? this.connection.serve(new Request(url, init)) : mcpSafeFetch(url, init)
   }
 }
