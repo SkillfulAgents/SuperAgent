@@ -3,6 +3,8 @@ import { app, ipcMain, powerMonitor } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { closeBackgroundWork, initializeBackgroundWork, isBackgroundWorkInitialized, serviceHost } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const semver = require('semver')
 
@@ -18,7 +20,7 @@ vi.mock('electron', () => ({
   },
   ipcMain: { handle: vi.fn() },
   BrowserWindow: vi.fn(),
-  powerMonitor: { on: vi.fn() },
+  powerMonitor: { on: vi.fn(), off: vi.fn() },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -121,6 +123,10 @@ async function boot({ init = true }: { init?: boolean } = {}) {
   vi.resetModules()
   const mod = await import('./auto-updater')
   mod.registerUpdateHandlers()
+  // As Electron's entry point does, once it has installed background work.
+  if (isBackgroundWorkInitialized() && !serviceHost().isRegistered(mod.automaticUpdateChecks.id)) {
+    serviceHost().register(mod.automaticUpdateChecks)
+  }
   if (init) {
     await mod.initAutoUpdater({
       isDestroyed: () => true,
@@ -813,6 +819,112 @@ describe('check timeout (watchdog)', () => {
     vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
     vi.mocked(app.getVersion).mockReturnValue('0.2.5')
     await boot()
+  })
+
+  describe('automatic checks', () => {
+    const FOUR_HOURS = 4 * 60 * 60 * 1000
+
+    beforeEach(async () => {
+      // The shared boot scheduled its checks on real timers; start over on fake ones.
+      await closeBackgroundWork()
+      await initializeBackgroundWork(new LocalTaskManager())
+      vi.useFakeTimers()
+      mockAutoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: '0.2.5' } })
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('makes the first check after 30 seconds and then one every 4 hours from init', async () => {
+      await boot()
+      mockAutoUpdater.checkForUpdates.mockClear()
+      await vi.advanceTimersByTimeAsync(29_999)
+      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+
+      // The recurring check counts from init, not from the first check.
+      await vi.advanceTimersByTimeAsync(FOUR_HOURS - 30_000 - 1)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(FOUR_HOURS)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(3)
+    })
+
+    it('reads the setting at each check', async () => {
+      await boot()
+      mockAutoUpdater.checkForUpdates.mockClear()
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false, autoCheckUpdates: false } as any)
+      await vi.advanceTimersByTimeAsync(FOUR_HOURS)
+      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+
+      vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false, autoCheckUpdates: true } as any)
+      await vi.advanceTimersByTimeAsync(FOUR_HOURS)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+    })
+
+    it('schedules once however many windows initialize it', async () => {
+      await boot()
+      const mod = await import('./auto-updater')
+      await mod.initAutoUpdater({ isDestroyed: () => true, webContents: { send: vi.fn() } } as any)
+      mockAutoUpdater.checkForUpdates.mockClear()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+    })
+
+    it('waits for background work when a window got the updater ready first', async () => {
+      await closeBackgroundWork()
+      await boot()
+      expect(captureException).not.toHaveBeenCalled()
+
+      await initializeBackgroundWork(new LocalTaskManager())
+      const mod = await import('./auto-updater')
+      // Installed, but the service is not registered yet.
+      mod.startAutomaticUpdateChecks()
+      serviceHost().register(mod.automaticUpdateChecks)
+      mod.startAutomaticUpdateChecks()
+      mockAutoUpdater.checkForUpdates.mockClear()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+    })
+
+    it('waits for the updater when background work came first, and never schedules without it', async () => {
+      await boot({ init: false })
+      const mod = await import('./auto-updater')
+      mod.startAutomaticUpdateChecks()
+      await vi.advanceTimersByTimeAsync(FOUR_HOURS)
+      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+
+      await mod.initAutoUpdater({ isDestroyed: () => true, webContents: { send: vi.fn() } } as any)
+      mockAutoUpdater.checkForUpdates.mockClear()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+    })
+
+    it('makes no more checks once the host stops, and stops listening for resume', async () => {
+      await boot()
+      mockAutoUpdater.checkForUpdates.mockClear()
+      await serviceHost().stop()
+      await vi.advanceTimersByTimeAsync(FOUR_HOURS * 2)
+      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+      expect(powerMonitor.off).toHaveBeenCalledWith('resume', powerEvents.resume)
+    })
+
+    it('stays alive when reading the setting fails, instead of rejecting into the process handler', async () => {
+      const unhandled = vi.fn()
+      process.on('unhandledRejection', unhandled)
+      try {
+        await boot()
+        vi.mocked(getUserSettings).mockRejectedValueOnce(new Error('database is locked') as never)
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(unhandled).not.toHaveBeenCalled()
+        expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'database is locked' }), expect.anything())
+      } finally {
+        process.off('unhandledRejection', unhandled)
+      }
+    })
   })
 
   it('a hung silent check resets to idle once the timeout fires', async () => {
