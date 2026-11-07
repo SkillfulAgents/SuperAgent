@@ -37,6 +37,7 @@ import {
   agentDesktopHome,
   commandTimeoutMs,
   displayListSchema,
+  cursorOverlayDataSchema,
   launchDataSchema,
   permissionsDataSchema,
   runAgentDesktop,
@@ -51,6 +52,8 @@ import {
 import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
 import { computerUsePreferences } from './types'
 import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
+import { sameApp } from './app-identity'
+import { activateStartMenuApp, findStartMenuApp, startMenuApps, waitForActivatedWindow } from './windows-start-menu'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import * as path from 'path'
 
@@ -142,23 +145,30 @@ async function applyCursor(session: string, caller: ComputerUseCaller, showCurso
   if (image) {
     // The image carries the name, so agent-desktop draws no label of its own,
     // and with an image it shows no greeting either.
-    await runAgentDesktopOrThrow([
+    warnIfNotRendered(await runAgentDesktopOrThrow([
       '--session', session,
       'cursor-overlay', 'enable',
       `--image=${image.path}`,
       `--hotspot=${image.hotspot.x},${image.hotspot.y}`,
       ...accent,
-    ])
+    ]))
     return
   }
   // The accent colours the cursor's body, its ripple and its highlight.
-  await runAgentDesktopOrThrow([
+  warnIfNotRendered(await runAgentDesktopOrThrow([
     '--session', session,
     'cursor-overlay', 'enable',
     `--label=${cursorLabel(caller.label)}`,
     `--max-words=${CURSOR_LABEL_MAX_WORDS}`,
     ...accent,
-  ])
+  ]))
+}
+
+/** `cursor-overlay enable` succeeds when no renderer came up to draw the cursor too; it says so in `rendered`. */
+function warnIfNotRendered(data: unknown): void {
+  if (cursorOverlayDataSchema.safeParse(data).data?.rendered === false) {
+    console.warn('[ComputerUse] agent-desktop enabled the agent cursor but drew none (rendered: false)')
+  }
 }
 
 async function startSession(caller: ComputerUseCaller, showCursor: boolean): Promise<AppSession> {
@@ -228,26 +238,28 @@ interface Placement {
  */
 async function placeCall(method: string, targets: CallTargets, reread = false): Promise<Placement> {
   const apps = new Set<string>()
+  // One entry per app, however each part of the call spells it (sameApp).
+  const add = (app: string) => { if (![...apps].some((known) => sameApp(known, app))) apps.add(app) }
   let unplaced = false
-  if (targets.app) apps.add(targets.app)
-  if (targets.system) apps.add(targets.system)
+  if (targets.app) add(targets.app)
+  if (targets.system) add(targets.system)
   for (const id of targets.snapshotIds) {
     const app = snapshotApps.get(id)
-    if (app) apps.add(app)
+    if (app) add(app)
   }
   for (const id of targets.windowIds) {
     const app = windowApps.get(id) ?? (await lookUpWindowApp(id))
-    if (app) apps.add(app)
+    if (app) add(app)
   }
   const windows = targets.points?.length || targets.focused ? await listWindows() : []
   for (const point of targets.points ?? []) {
     const app = appAt(point, windows, OBSERVATION_COMMANDS.has(method))
-    if (app) apps.add(app)
+    if (app) add(app)
     else unplaced = true
   }
   if (targets.focused) {
     const focused = windows.find((window) => window.is_focused)
-    if (focused) apps.add(ownerOf(focused))
+    if (focused) add(ownerOf(focused))
     else unplaced = true
   }
   if (apps.size > 1 && !reread && targets.windowIds.length > 0) {
@@ -285,13 +297,13 @@ async function targetAppOf(method: string, targets: CallTargets): Promise<string
  */
 async function confirmPlacement(method: string, targets: CallTargets, approved: string): Promise<string> {
   const named = targets.app ?? targets.system
-  if (named !== undefined && named !== approved) {
+  if (named !== undefined && !sameApp(named, approved)) {
     throw new ComputerUseArgumentError(`${method} names ${named}, but it was approved for ${approved}. Nothing was sent.`)
   }
   const moves = (targets.points?.length ?? 0) > 0 || (targets.focused && !FOCUSED_APP_COMMANDS.has(method))
   if (!moves) return approved
   const { apps } = await placeCall(method, targets)
-  const now = [...apps].filter((app) => app !== approved)
+  const now = [...apps].filter((app) => !sameApp(app, approved))
   if (now.length === 0) return approved
   const where = now.join(', ')
   throw new ComputerUseArgumentError(targets.focused
@@ -678,10 +690,21 @@ async function runCommand(
   // agent-desktop does not say where the window it captured is, so the window
   // list is read for that, alongside the capture rather than after it: the
   // two reads are then as close in time as they can be.
-  const placing = method === 'screenshot'
-    ? screenshotTarget(commandArgs).catch(() => ({ target: null, reason: 'the window list could not be read' }))
-    : null
-  const { stdout, envelope } = await runInBudget(session, commandArgs, signal)
+  const placeScreenshot = (args: readonly string[]) => screenshotTarget(args).catch(() => ({ target: null, reason: 'the window list could not be read' }))
+  let placing = method === 'screenshot' ? placeScreenshot(commandArgs) : null
+  let { stdout, envelope } = await runInBudget(session, commandArgs, signal)
+  if (process.platform === 'win32' && envelope?.error?.code === 'APP_NOT_FOUND') {
+    if (method === 'launch') {
+      const launched = await launchFromStartMenu(commandArgs, envelope, signal)
+      if (launched) ({ stdout, envelope } = launched)
+    } else if (method === 'screenshot') {
+      const byWindow = await screenshotArgsByWindow(commandArgs)
+      if (byWindow) {
+        placing = placeScreenshot(byWindow)
+        ;({ stdout, envelope } = await runInBudget(session, byWindow, signal))
+      }
+    }
+  }
   if (envelope?.error?.code === 'PERM_DENIED') {
     believedUntil.accessibility = 0
     believedUntil.screen_recording = 0
@@ -699,6 +722,65 @@ async function runCommand(
     ? withoutScreenshotData(envelope, method === 'screenshot')
     : null
   return { output: stripped ? JSON.stringify(stripped) : stdout, ...(app && { app }) }
+}
+
+/** How long a launch from the Start menu waits for the app's window. */
+const START_MENU_LAUNCH_WAIT_MS = 20_000
+
+/** The name a `launch` command line launches: its one positional argument. */
+function launchName(commandArgs: readonly string[]): string | undefined {
+  const separator = commandArgs.indexOf('--')
+  if (separator !== -1) return commandArgs[separator + 1]
+  const last = commandArgs.at(-1)
+  return commandArgs.length > 1 && last !== undefined && !last.startsWith('-') ? last : undefined
+}
+
+/**
+ * A Windows app agent-desktop could not launch by that name, launched by the
+ * name the Start menu shows (Calculator, Spotify, Settings): agent-desktop
+ * launches only paths and executables in the Windows directory, which no
+ * Store app has. Answers as `launch` does, with the window that came up;
+ * null when the Start menu has no app by that name.
+ */
+async function launchFromStartMenu(
+  commandArgs: readonly string[],
+  failed: AgentDesktopEnvelope,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; envelope: AgentDesktopEnvelope } | null> {
+  const name = launchName(commandArgs)
+  // A path is agent-desktop's to launch: it failed because nothing is there.
+  if (!name || name.includes('\\') || name.includes('/')) return null
+  const entry = findStartMenuApp(name, await startMenuApps().catch(() => []))
+  if (!entry || signal?.aborted) return null
+  const before = await listWindows()
+  activateStartMenuApp(entry)
+  const window = await waitForActivatedWindow(before, listWindows, START_MENU_LAUNCH_WAIT_MS, signal)
+  const startMenu = { name: entry.name, app_id: entry.appId }
+  const envelope: AgentDesktopEnvelope = {
+    ...(failed.version !== undefined && { version: failed.version }),
+    ok: true,
+    command: 'launch',
+    data: window
+      ? { app: window.app_name, window: { id: window.id, ...(window.title !== undefined && { title: window.title }) }, start_menu: startMenu }
+      : { app: entry.name, start_menu: startMenu, note: `Started from the Start menu; no window of it appeared within ${START_MENU_LAUNCH_WAIT_MS / 1000}s` },
+  }
+  return { stdout: JSON.stringify(envelope), envelope }
+}
+
+/**
+ * A screenshot of a Windows app agent-desktop could not capture by its name
+ * (a Store app, whose window a frame host owns), as a capture of that app's
+ * window: the focused one, else the first. Null when no window is the app's.
+ */
+async function screenshotArgsByWindow(commandArgs: readonly string[]): Promise<string[] | null> {
+  const app = flagValue(commandArgs, '--app')
+  if (!app || flagValue(commandArgs, '--window-id') !== undefined || flagValue(commandArgs, '--screen') !== undefined) return null
+  const windows = (await listWindows()).filter((window) => !window.minimized && sameApp(window.app_name, app))
+  const window = windows.find((candidate) => candidate.is_focused) ?? windows[0]
+  if (!window) return null
+  const [command, ...rest] = commandArgs
+  const withoutApp = rest.filter((token, i) => !token.startsWith('--app=') && token !== '--app' && rest[i - 1] !== '--app')
+  return [command, `--window-id=${window.id}`, ...withoutApp]
 }
 
 /**

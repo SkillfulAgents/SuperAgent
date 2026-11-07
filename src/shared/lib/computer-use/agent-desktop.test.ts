@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 
 // Which files exist, for the binary lookup; the real file system unless a test says otherwise.
@@ -8,7 +10,7 @@ vi.mock('fs', async (importOriginal) => {
   return { ...actual, existsSync: (file: string) => (exists ? exists(file) : actual.existsSync(file)) }
 })
 
-const { commandTimeoutMs, forgetAgentDesktopBinary, resolveAgentDesktopBinary } = await import('./agent-desktop')
+const { agentDesktopNamedCopy, commandTimeoutMs, forgetAgentDesktopBinary, resolveAgentDesktopBinary } = await import('./agent-desktop')
 
 const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform')!
 const ORIGINAL_ARCH = Object.getOwnPropertyDescriptor(process, 'arch')!
@@ -29,6 +31,7 @@ describe('resolveAgentDesktopBinary', () => {
 
     forgetAgentDesktopBinary()
     vi.stubEnv('SUPERAGENT_IS_PACKAGED', '1')
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
     exists = (file) => path.basename(file) === 'agent-desktop'
     expect(resolveAgentDesktopBinary().executable).not.toBe('/lab/bin/agent-desktop')
   })
@@ -38,7 +41,37 @@ describe('resolveAgentDesktopBinary', () => {
     Object.defineProperty(process, 'arch', { value: 'x64', configurable: true })
     exists = (file) => path.basename(file) === 'agent-desktop-win32-x64.exe'
 
-    expect(path.basename(resolveAgentDesktopBinary().executable)).toBe('agent-desktop-win32-x64.exe')
+    // Copied as agent-desktop.exe for the cursor; with no real file to copy, the package's binary runs.
+    expect(path.basename(resolveAgentDesktopBinary().executable)).toMatch(/^agent-desktop(-win32-x64)?\.exe$/)
+  })
+})
+
+describe('agentDesktopNamedCopy', () => {
+  it('runs a copy named agent-desktop.exe, made again only when the binary changes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-desktop-copy-'))
+    const source = path.join(dir, 'agent-desktop-win32-x64.exe')
+    fs.writeFileSync(source, 'v1')
+    const bin = path.join(dir, 'bin')
+
+    const copy = agentDesktopNamedCopy(source, bin)
+    expect(copy).toBe(path.join(bin, 'agent-desktop.exe'))
+    expect(fs.readFileSync(copy, 'utf8')).toBe('v1')
+
+    fs.writeFileSync(copy, 'v1')
+    fs.utimesSync(copy, fs.statSync(source).atime, fs.statSync(source).mtime)
+    const untouched = fs.statSync(copy).mtimeMs
+    agentDesktopNamedCopy(source, bin)
+    expect(fs.statSync(copy).mtimeMs).toBe(untouched)
+
+    fs.writeFileSync(source, 'version 2')
+    agentDesktopNamedCopy(source, bin)
+    expect(fs.readFileSync(copy, 'utf8')).toBe('version 2')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('falls back to the package binary when it cannot copy', () => {
+    expect(agentDesktopNamedCopy(path.join(os.tmpdir(), 'no-such-agent-desktop.exe'), path.join(os.tmpdir(), 'no-copy-here')))
+      .toBe(path.join(os.tmpdir(), 'no-such-agent-desktop.exe'))
   })
 })
 

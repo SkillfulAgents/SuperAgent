@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { AgentComputerUse } from './agent-permissions'
 
 const mockGetSettings = vi.fn()
@@ -61,5 +61,31 @@ describe('AgentComputerUse session grant', () => {
     store.grantSession('s1')
     await store.revokeAll()
     expect(await store.check('use_application', 'Safari', 's1')).toBe('prompt_needed')
+  })
+})
+
+describe('AgentComputerUse app grants on Windows', () => {
+  const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform')!
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSettings.mockReturnValue({})
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+  })
+  afterEach(() => { Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM) })
+
+  it('covers the app however it is spelled: with or without .exe, in any case', async () => {
+    const store = new AgentComputerUse('agent-1')
+    await store.grant('use_application', 'always', 'notepad')
+    expect(await store.check('use_application', 'Notepad.exe')).toBe('granted')
+    expect(await store.check('use_application', 'NOTEPAD')).toBe('granted')
+    expect(await store.check('use_application', 'notepad++.exe')).toBe('prompt_needed')
+  })
+
+  it('does not count a respelling as a new active app', () => {
+    const store = new AgentComputerUse('agent-1')
+    expect(store.setActiveApp('s1', 'notepad')).toBe(true)
+    expect(store.setActiveApp('s1', 'Notepad.exe')).toBe(false)
+    expect(store.setActiveApp('s1', 'CalculatorApp.exe')).toBe(true)
   })
 })
