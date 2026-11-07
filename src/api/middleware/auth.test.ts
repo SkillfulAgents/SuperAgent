@@ -50,6 +50,13 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 }))
 vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
 
+// A display slug names its agent by its last segment.
+const mockResolveRecord = vi.fn(async (input: string) =>
+  input.endsWith('-a1b2c3d4e5') ? { slug: 'a1b2c3d4e5', name: 'Sales' } : null)
+vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({
+  agentCatalog: { resolveRecord: (input: string) => mockResolveRecord(input) },
+}))
+
 // Import after mocks
 import {
   Authenticated,
@@ -68,6 +75,9 @@ import {
   canUseAgent,
   getAuthorizedAgentRole,
   getRequestDeviceId,
+  ResolveAgent,
+  getAgentId,
+  getResolvedAgent,
 } from './auth'
 
 // ---------------------------------------------------------------------------
@@ -1248,6 +1258,26 @@ describe('Auth Middleware', () => {
   // =========================================================================
   // Agent slug extraction
   // =========================================================================
+
+  describe('ResolveAgent()', () => {
+    it('reads the agent once when a router and its route both mount it', async () => {
+      const app = new Hono()
+      app.use('/agents/:id/*', ResolveAgent())
+      app.get('/agents/:id', ResolveAgent(), (c) => c.json({ id: getAgentId(c), name: getResolvedAgent(c).name }))
+
+      const res = await app.request('http://localhost/agents/sales-a1b2c3d4e5')
+
+      expect(await res.json()).toEqual({ id: 'a1b2c3d4e5', name: 'Sales' })
+      expect(mockResolveRecord).toHaveBeenCalledTimes(1)
+    })
+
+    it('answers 404 for an agent that does not exist', async () => {
+      const app = new Hono()
+      app.get('/agents/:id', ResolveAgent(), (c) => c.json({ ok: true }))
+
+      expect((await app.request('http://localhost/agents/support-z9y8x7w6v5')).status).toBe(404)
+    })
+  })
 
   describe('Agent slug extraction from route params', () => {
     it('passes correct agent slug to ACL query', async () => {

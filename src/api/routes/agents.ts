@@ -42,7 +42,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -1481,12 +1481,12 @@ agents.post('/', async (c) => {
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const slug = getAgentId(c)
+    const resolved = getResolvedAgent(c)
     const userId = getCurrentUserId(c)
     // Needs only the slug, so it runs in parallel with the status read.
     const [agent, unreadProjection] = await Promise.all([
-      getAgentWithStatus(slug, { includeSummary: false }),
-      readUnreadProjection([slug], userId),
+      getAgentWithStatus(resolved, { includeSummary: false }),
+      readUnreadProjection([resolved.slug], userId),
     ])
 
     if (!agent) {
@@ -1869,8 +1869,9 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     await actor.container.start()
     if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
-    // Skip the session-summary enrichment: it stats every transcript, and every
-    // caller of this command discards the body and refetches agent data anyway.
+    // Read the agent again: a rename or delete can land while the container starts, and a
+    // null answer makes the client refetch. Skip the session-summary enrichment: it stats
+    // every transcript, and the client keeps the summary it already has.
     const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
