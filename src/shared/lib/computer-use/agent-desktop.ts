@@ -138,11 +138,42 @@ export function resolveAgentDesktopBinary(): AgentDesktopBinary {
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
   const fromPackage = fromDirectory(binDir, MACOS_HELPER_NAME)
     ?? fromDirectory(binDir, `${MACOS_HELPER_NAME}-${process.platform}-${arch}`)
-    ?? (process.platform === 'win32' ? fromDirectory(binDir, MACOS_HELPER_NAME, `agent-desktop-win32-${arch}.exe`) : null)
-  if (!fromPackage) {
+  if (fromPackage) return (resolved = fromPackage)
+  const archNamed = process.platform === 'win32' ? fromDirectory(binDir, MACOS_HELPER_NAME, `agent-desktop-win32-${arch}.exe`) : null
+  if (!archNamed) {
     throw new Error(`agent-desktop is not installed for ${process.platform}-${arch} (looked in ${binDir})`)
   }
-  return (resolved = fromPackage)
+  return (resolved = { executable: agentDesktopNamedCopy(archNamed.executable, path.join(getDataDir(), 'agent-desktop-bin')) })
+}
+
+/**
+ * A copy of the arch-named Windows executable under the name the CLI needs.
+ * agent-desktop starts its cursor overlay only from a binary named
+ * `agent-desktop` (from any other, `cursor-overlay enable` answers
+ * `rendered: false`), and the package keeps only `agent-desktop-win32-<arch>.exe`.
+ * The copy is made again when the package's binary changes. Without one the
+ * commands still run, from the package's binary, with no cursor.
+ */
+export function agentDesktopNamedCopy(executable: string, dir: string): string {
+  const copy = path.join(dir, 'agent-desktop.exe')
+  try {
+    const source = fs.statSync(executable)
+    const current = fs.existsSync(copy) ? fs.statSync(copy) : null
+    if (!current || current.size !== source.size || current.mtimeMs !== source.mtimeMs) {
+      fs.mkdirSync(dir, { recursive: true })
+      const temporary = `${copy}.${process.pid}.tmp`
+      fs.copyFileSync(executable, temporary)
+      // The source's times on the copy are how a later start tells it is current.
+      fs.utimesSync(temporary, source.atime, source.mtime)
+      fs.renameSync(temporary, copy)
+    }
+    return copy
+  } catch (error) {
+    // A copy another app instance is running cannot be replaced: run it as it is.
+    if (fs.existsSync(copy)) return copy
+    console.warn('[ComputerUse] Could not copy agent-desktop as agent-desktop.exe; agents\' cursors will not show:', error)
+    return executable
+  }
 }
 
 /** For tests: forget the binary found before, so the next command looks again. */
@@ -299,6 +330,9 @@ export async function runAgentDesktopOrThrow(args: readonly string[]): Promise<u
 // --- The parts of a command's data the app reads ---
 
 export const sessionStartDataSchema = z.object({ session_id: z.string() }).passthrough()
+
+/** `cursor-overlay enable`: `rendered` is false when no renderer came up to draw the cursor. */
+export const cursorOverlayDataSchema = z.object({ rendered: z.boolean().optional() }).passthrough()
 
 export const snapshotDataSchema = z.object({
   snapshot_id: z.string(),

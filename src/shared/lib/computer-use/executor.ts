@@ -37,6 +37,7 @@ import {
   agentDesktopHome,
   commandTimeoutMs,
   displayListSchema,
+  cursorOverlayDataSchema,
   launchDataSchema,
   permissionsDataSchema,
   runAgentDesktop,
@@ -51,6 +52,7 @@ import {
 import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
 import { computerUsePreferences } from './types'
 import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
+import { sameApp } from './app-identity'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import * as path from 'path'
 
@@ -142,23 +144,30 @@ async function applyCursor(session: string, caller: ComputerUseCaller, showCurso
   if (image) {
     // The image carries the name, so agent-desktop draws no label of its own,
     // and with an image it shows no greeting either.
-    await runAgentDesktopOrThrow([
+    warnIfNotRendered(await runAgentDesktopOrThrow([
       '--session', session,
       'cursor-overlay', 'enable',
       `--image=${image.path}`,
       `--hotspot=${image.hotspot.x},${image.hotspot.y}`,
       ...accent,
-    ])
+    ]))
     return
   }
   // The accent colours the cursor's body, its ripple and its highlight.
-  await runAgentDesktopOrThrow([
+  warnIfNotRendered(await runAgentDesktopOrThrow([
     '--session', session,
     'cursor-overlay', 'enable',
     `--label=${cursorLabel(caller.label)}`,
     `--max-words=${CURSOR_LABEL_MAX_WORDS}`,
     ...accent,
-  ])
+  ]))
+}
+
+/** `cursor-overlay enable` succeeds when no renderer came up to draw the cursor too; it says so in `rendered`. */
+function warnIfNotRendered(data: unknown): void {
+  if (cursorOverlayDataSchema.safeParse(data).data?.rendered === false) {
+    console.warn('[ComputerUse] agent-desktop enabled the agent cursor but drew none (rendered: false)')
+  }
 }
 
 async function startSession(caller: ComputerUseCaller, showCursor: boolean): Promise<AppSession> {
@@ -228,26 +237,28 @@ interface Placement {
  */
 async function placeCall(method: string, targets: CallTargets, reread = false): Promise<Placement> {
   const apps = new Set<string>()
+  // One entry per app, however each part of the call spells it (sameApp).
+  const add = (app: string) => { if (![...apps].some((known) => sameApp(known, app))) apps.add(app) }
   let unplaced = false
-  if (targets.app) apps.add(targets.app)
-  if (targets.system) apps.add(targets.system)
+  if (targets.app) add(targets.app)
+  if (targets.system) add(targets.system)
   for (const id of targets.snapshotIds) {
     const app = snapshotApps.get(id)
-    if (app) apps.add(app)
+    if (app) add(app)
   }
   for (const id of targets.windowIds) {
     const app = windowApps.get(id) ?? (await lookUpWindowApp(id))
-    if (app) apps.add(app)
+    if (app) add(app)
   }
   const windows = targets.points?.length || targets.focused ? await listWindows() : []
   for (const point of targets.points ?? []) {
     const app = appAt(point, windows, OBSERVATION_COMMANDS.has(method))
-    if (app) apps.add(app)
+    if (app) add(app)
     else unplaced = true
   }
   if (targets.focused) {
     const focused = windows.find((window) => window.is_focused)
-    if (focused) apps.add(ownerOf(focused))
+    if (focused) add(ownerOf(focused))
     else unplaced = true
   }
   if (apps.size > 1 && !reread && targets.windowIds.length > 0) {
@@ -285,13 +296,13 @@ async function targetAppOf(method: string, targets: CallTargets): Promise<string
  */
 async function confirmPlacement(method: string, targets: CallTargets, approved: string): Promise<string> {
   const named = targets.app ?? targets.system
-  if (named !== undefined && named !== approved) {
+  if (named !== undefined && !sameApp(named, approved)) {
     throw new ComputerUseArgumentError(`${method} names ${named}, but it was approved for ${approved}. Nothing was sent.`)
   }
   const moves = (targets.points?.length ?? 0) > 0 || (targets.focused && !FOCUSED_APP_COMMANDS.has(method))
   if (!moves) return approved
   const { apps } = await placeCall(method, targets)
-  const now = [...apps].filter((app) => app !== approved)
+  const now = [...apps].filter((app) => !sameApp(app, approved))
   if (now.length === 0) return approved
   const where = now.join(', ')
   throw new ComputerUseArgumentError(targets.focused

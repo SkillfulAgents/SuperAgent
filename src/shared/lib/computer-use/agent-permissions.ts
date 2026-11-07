@@ -21,6 +21,7 @@ import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import type { ComputerUsePermissionLevel, ComputerUseSettings, PermissionGrant, PermissionGrantType } from './types'
 import { TIMED_GRANT_DURATION_MS } from './types'
+import { sameApp } from './app-identity'
 
 /** An "always" grant as settings store it. */
 type PersistedGrant = NonNullable<ComputerUseSettings['agentPermissions']>[string]['grants'][number]
@@ -162,7 +163,8 @@ export class AgentComputerUse {
 
   /** Record the app a session acted in; true when it differs from its last one. */
   setActiveApp(sessionId: string, appName: string): boolean {
-    const changed = this.activeApps.get(sessionId) !== appName
+    const previous = this.activeApps.get(sessionId)
+    const changed = previous === undefined || !sameApp(previous, appName)
     this.activeApps.set(sessionId, appName)
     return changed
   }
@@ -219,7 +221,7 @@ export class AgentComputerUse {
     // For 'use_application', the named app must match: a request that names
     // no app is asked about every time, and no grant covers it.
     if (level === 'use_application') {
-      return appName !== undefined && grant.appName === appName
+      return appName !== undefined && grant.appName !== undefined && sameApp(grant.appName, appName)
     }
     return true
   }

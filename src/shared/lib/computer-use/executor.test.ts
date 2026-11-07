@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PNG } from 'pngjs'
 import type { AgentDesktopEnvelope } from './agent-desktop'
 
@@ -464,6 +464,30 @@ describe('placing a call that names no app', () => {
       ? ok('list-windows', [{ id: 'w-3', title: 'Doc', app_name: 'TextEdit', pid: 5, is_focused: true }])
       : defaultAnswer(args))
     expect(await resolveComputerUseTargetApp('press', { combo: 'cmd+s' })).toBe('TextEdit')
+  })
+})
+
+describe('an app named two ways on Windows', () => {
+  const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform')!
+  afterEach(() => { Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM) })
+  const notepadWindow = (args: string[]) => (commandOf(args) === 'list-windows'
+    ? ok('list-windows', [{ id: 'w-61', title: 'Untitled - Notepad', app_name: 'Notepad.exe', pid: 9, is_focused: true }])
+    : defaultAnswer(args))
+
+  it('is one app under its launch name and its image name', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    answer = notepadWindow
+    expect(await resolveComputerUseTargetApp('press', { combo: 'ctrl+shift+s', app: 'notepad', window_id: 'w-61' })).toBe('notepad')
+    await executeComputerUseCommand('press', { combo: 'ctrl+shift+s', app: 'notepad', window_id: 'w-61' }, caller())
+    await executeComputerUseCommand('snapshot', { app: 'Notepad.exe' }, caller(), { app: 'notepad' })
+    expect(runs.filter((args) => ['press', 'snapshot'].includes(commandOf(args)))).toHaveLength(2)
+  })
+
+  it('stays two apps on macOS', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    answer = notepadWindow
+    await expect(executeComputerUseCommand('press', { combo: 'cmd+s', app: 'notepad', window_id: 'w-61' }, caller()))
+      .rejects.toThrow(/One call acts in one app; this one names notepad, Notepad\.exe/)
   })
 })
 
