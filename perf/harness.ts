@@ -65,6 +65,9 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   await openDatabase()
   const { initializeLocalAppState } = await import('@shared/lib/app-state')
   await initializeLocalAppState()
+  const { initializeBackgroundWork } = await import('@shared/lib/background-work')
+  const { LocalTaskManager } = await import('@shared/lib/background-work/local-task-manager')
+  await initializeBackgroundWork(new LocalTaskManager())
   // This harness skips the full service startup, but container discovery needs
   // the same provider registry. Registration is local and stays outside measurements.
   const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')

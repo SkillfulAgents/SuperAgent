@@ -874,7 +874,98 @@ html[data-keyboard-open] [data-composer-footer] {
   background-color: hsl(var(--primary) / 0.12);
 }
 
+/* Dark mode has no drop shadows on the glass below: on a dark page they barely show and only muddy the edge, so a
+   faint light edge (border or inset hairline) shapes each surface instead. */
+/* Agent Home's white buttons as glass (the share and settings buttons, the composer's controls): a translucent fill
+   over a blur, a faint light edge so they still read on the composer's glass, and a soft shadow. Scoped to Agent Home
+   (agent-home.tsx), by the variant every outline button marks itself with, plus anything marked data-glass (the empty
+   state's "Other ways to get started" cards); a button in its active state (the mic while recording) keeps its own
+   look. */
+.home-glass-controls [data-variant="outline"]:not([data-active]),
+.home-glass-controls [data-glass] {
+  background-color: hsl(var(--background) / 0.45);
+  border: 1px solid hsl(0 0% 100% / 0.6);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
+  backdrop-filter: blur(12px) saturate(1.3);
+}
+.home-glass-controls [data-variant="outline"]:not([data-active]):hover,
+.home-glass-controls [data-glass]:hover,
+.home-glass-controls [data-glass]:focus-visible {
+  background-color: hsl(var(--background) / 0.75);
+}
+.dark .home-glass-controls [data-variant="outline"]:not([data-active]),
+.dark .home-glass-controls [data-glass] {
+  background-color: hsl(var(--background) / 0.3);
+  border-color: hsl(0 0% 100% / 0.08);
+  box-shadow: none;
+}
+.dark .home-glass-controls [data-variant="outline"]:not([data-active]):hover,
+.dark .home-glass-controls [data-glass]:hover,
+.dark .home-glass-controls [data-glass]:focus-visible {
+  background-color: hsl(var(--background) / 0.55);
+}
 
+/* A composer is its own surface, so its action row's outline buttons (attach, model, mic, voice mode, stop) sit plain
+   on it, filling only on hover, rather than as tiles on a tile (chat-composer-box.tsx). After Agent Home's glass, which
+   it overrides there. */
+[data-composer-actions] [data-variant="outline"]:not([data-active]),
+.dark [data-composer-actions] [data-variant="outline"]:not([data-active]) {
+  background-color: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+[data-composer-actions] [data-variant="outline"]:not([data-active]):not(:disabled):not([aria-disabled="true"]):hover {
+  background-color: hsl(var(--foreground) / 0.05);
+}
+.dark [data-composer-actions] [data-variant="outline"]:not([data-active]):not(:disabled):not([aria-disabled="true"]):hover {
+  background-color: hsl(0 0% 100% / 0.08);
+}
+/* Agent Home's title row (Share, the agent menu): solid buttons with a hairline border, so they read as buttons on the
+   near-white page rather than a faint pane of glass. */
+.home-glass-controls .home-title-row [data-variant="outline"]:not([data-active]) {
+  background-color: hsl(var(--background));
+  border-color: hsl(var(--border));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.home-glass-controls .home-title-row [data-variant="outline"]:not([data-active]):hover {
+  background-color: hsl(var(--muted));
+}
+.dark .home-glass-controls .home-title-row [data-variant="outline"]:not([data-active]) {
+  box-shadow: none;
+}
+
+/* The agent header's status chip and its power button (agent-header.tsx): the glass of Agent Home's buttons, so the
+   background behind the header tints it. The chip is the thinner pane, with a light top edge; the button inside is the
+   brighter one, lifted off it by a soft shadow. */
+.status-chip {
+  background-color: hsl(var(--background) / 0.35);
+  border: 1px solid hsl(0 0% 100% / 0.55);
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.5), 0 1px 3px rgba(15, 23, 42, 0.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+}
+.dark .status-chip {
+  background-color: hsl(var(--background) / 0.25);
+  border-color: hsl(0 0% 100% / 0.08);
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.06);
+}
+.status-chip-button {
+  background-color: hsl(var(--background) / 0.75);
+  border: 1px solid hsl(0 0% 100% / 0.8);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 2px 6px -2px rgba(15, 23, 42, 0.08);
+}
+.status-chip-button:hover:not(:disabled) { background-color: hsl(var(--background) / 0.95); }
+.dark .status-chip-button {
+  background-color: hsl(0 0% 100% / 0.1);
+  border-color: hsl(0 0% 100% / 0.12);
+  box-shadow: none;
+}
+.dark .status-chip-button:hover:not(:disabled) { background-color: hsl(0 0% 100% / 0.16); }
 
 /*
   Search palette enter/exit: fade + a small upward glide that replaces the

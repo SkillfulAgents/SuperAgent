@@ -57,6 +57,8 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
+        // Its variant, for a surface to restyle its buttons by kind (Agent Home's glass: globals.css).
+        data-variant={variant ?? 'default'}
         {...props}
         disabled={loading || props.disabled}
       >

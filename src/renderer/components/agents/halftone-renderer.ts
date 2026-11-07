@@ -183,28 +183,101 @@ export function drawAlphaBuckets(
   }
 }
 
-function flowHeight(u: number, v: number, time: number): number {
-  return (
-    0.3 * Math.sin(u * 7 - time * 0.04) +
-    0.2 * Math.sin(u * 13 + v * 6 - time * 0.05) +
-    0.15 * Math.sin(u * 4 + v * 11 + time * 0.03)
-  )
-}
+const FLOW_AMPLITUDES = [0.3, 0.2, 0.15] as const
 
-function rotatedFlowHeight(
-  u: number,
-  v: number,
-  time: number,
-  rotationCos: number,
-  rotationSin: number
-): number {
-  const du = u - 0.5
-  const dv = v - 0.5
-  return flowHeight(
-    0.5 + du * rotationCos - dv * rotationSin,
-    0.5 + du * rotationSin + dv * rotationCos,
-    time
-  )
+/**
+ * Factor the three rotated waves with sin(a + b), sharing trigonometry across
+ * each row and column instead of evaluating nine sines per dot per frame.
+ * Retain the original finite-difference samples for lighting; derivatives
+ * would change the appearance. Float64 caches keep the JS math's precision,
+ * with storage proportional to rows + columns rather than the number of dots.
+ */
+class FlowField {
+  // Three phases and three interleaved sin/cos pairs per column/row.
+  private columnPhase = new Float64Array(0)
+  private columnSinCos = new Float64Array(0)
+  private rowSinCos = new Float64Array(0)
+  // sin/cos of the x and y finite-difference offsets, four values per wave.
+  private readonly offsets = new Float64Array(12)
+  private columns = 0
+
+  resize(
+    columnU: Float32Array,
+    rowV: Float32Array,
+    columns: number,
+    rows: number,
+    epsilon: number,
+    rotationCos: number,
+    rotationSin: number
+  ): void {
+    this.columns = columns
+    if (this.columnPhase.length < columns * 3) this.columnPhase = new Float64Array(columns * 3)
+    if (this.columnSinCos.length < columns * 6) this.columnSinCos = new Float64Array(columns * 6)
+    if (this.rowSinCos.length < rows * 6) this.rowSinCos = new Float64Array(rows * 6)
+
+    // The original waves have (u, v) frequencies (7, 0), (13, 6), (4, 11),
+    // rotated around (0.5, 0.5). Split each into column and row contributions.
+    const columnFrequency = [
+      7 * rotationCos,
+      13 * rotationCos + 6 * rotationSin,
+      4 * rotationCos + 11 * rotationSin,
+    ]
+    const rowFrequency = [
+      -7 * rotationSin,
+      -13 * rotationSin + 6 * rotationCos,
+      -4 * rotationSin + 11 * rotationCos,
+    ]
+    const origin = [3.5, 9.5, 7.5]
+    for (let wave = 0; wave < FLOW_AMPLITUDES.length; wave++) {
+      this.offsets[wave * 4] = Math.sin(columnFrequency[wave] * epsilon)
+      this.offsets[wave * 4 + 1] = Math.cos(columnFrequency[wave] * epsilon)
+      this.offsets[wave * 4 + 2] = Math.sin(rowFrequency[wave] * epsilon)
+      this.offsets[wave * 4 + 3] = Math.cos(rowFrequency[wave] * epsilon)
+      for (let column = 0; column < columns; column++) {
+        this.columnPhase[column * 3 + wave] = origin[wave] + (columnU[column] - 0.5) * columnFrequency[wave]
+      }
+      for (let row = 0; row < rows; row++) {
+        const phase = (rowV[row] - 0.5) * rowFrequency[wave]
+        this.rowSinCos[row * 6 + wave * 2] = Math.sin(phase)
+        this.rowSinCos[row * 6 + wave * 2 + 1] = Math.cos(phase)
+      }
+    }
+  }
+
+  update(time: number): void {
+    for (let column = 0; column < this.columns; column++) {
+      const phaseIndex = column * 3
+      const pairIndex = column * 6
+      const phase0 = this.columnPhase[phaseIndex] - time * 0.04
+      const phase1 = this.columnPhase[phaseIndex + 1] - time * 0.05
+      const phase2 = this.columnPhase[phaseIndex + 2] + time * 0.03
+      this.columnSinCos[pairIndex] = Math.sin(phase0)
+      this.columnSinCos[pairIndex + 1] = Math.cos(phase0)
+      this.columnSinCos[pairIndex + 2] = Math.sin(phase1)
+      this.columnSinCos[pairIndex + 3] = Math.cos(phase1)
+      this.columnSinCos[pairIndex + 4] = Math.sin(phase2)
+      this.columnSinCos[pairIndex + 5] = Math.cos(phase2)
+    }
+  }
+
+  sample(column: number, row: number, epsilon: number, sample: DensitySample): void {
+    let height = 0, heightX = 0, heightY = 0
+    const columns = this.columnSinCos
+    const rows = this.rowSinCos
+    const offsets = this.offsets
+    for (let wave = 0; wave < FLOW_AMPLITUDES.length; wave++) {
+      const columnIndex = column * 6 + wave * 2
+      const rowIndex = row * 6 + wave * 2
+      const offsetIndex = wave * 4
+      const sin = columns[columnIndex] * rows[rowIndex + 1] + columns[columnIndex + 1] * rows[rowIndex]
+      const cos = columns[columnIndex + 1] * rows[rowIndex + 1] - columns[columnIndex] * rows[rowIndex]
+      const amplitude = FLOW_AMPLITUDES[wave]
+      height += amplitude * sin
+      heightX += amplitude * (sin * offsets[offsetIndex + 1] + cos * offsets[offsetIndex])
+      heightY += amplitude * (sin * offsets[offsetIndex + 3] + cos * offsets[offsetIndex + 2])
+    }
+    shadeInto(height + 0.65, heightX + 0.65, heightY + 0.65, epsilon, 0.18, 0.74, 0.45, 1.9, sample)
+  }
 }
 
 function updatePulseFrame(time: number, frame: PulseFrame): void {
@@ -251,28 +324,6 @@ function shadeInto(
   sample.radius = Math.max(0.2, baseRadius + Math.max(0, height) * heightRadius)
 }
 
-function flowSampleInto(
-  u: number,
-  v: number,
-  epsilon: number,
-  time: number,
-  rotationCos: number,
-  rotationSin: number,
-  sample: DensitySample
-): void {
-  shadeInto(
-    rotatedFlowHeight(u, v, time, rotationCos, rotationSin) + 0.65,
-    rotatedFlowHeight(u + epsilon, v, time, rotationCos, rotationSin) + 0.65,
-    rotatedFlowHeight(u, v + epsilon, time, rotationCos, rotationSin) + 0.65,
-    epsilon,
-    0.18,
-    0.74,
-    0.45,
-    1.9,
-    sample
-  )
-}
-
 function pulseSampleInto(
   u: number,
   v: number,
@@ -313,6 +364,7 @@ export class HalftoneFrameRenderer {
   private readonly rotationCos: number
   private readonly rotationSin: number
   private readonly alphaBands: number
+  private readonly flowField = new FlowField()
   private readonly sample: DensitySample = { alpha: 0, radius: 0 }
   private readonly pulseFrame: PulseFrame = {
     radius0: 0,
@@ -388,6 +440,12 @@ export class HalftoneFrameRenderer {
       this.rowV[row] = row / this.rows
     }
 
+    if (this.motif === 'flow_3d') {
+      this.flowField.resize(
+        this.columnU, this.rowV, this.columns, this.rows,
+        this.epsilon, this.rotationCos, this.rotationSin
+      )
+    }
     const capacity = this.columns * this.rows
     this.cellVignette = ensureFloat32Capacity(this.cellVignette, capacity)
     this.cellAlphaScale = ensureFloat32Capacity(this.cellAlphaScale, capacity)
@@ -454,6 +512,7 @@ export class HalftoneFrameRenderer {
     const cursorRelease = scaleHalftoneEasingRate(CURSOR_RELEASE, frameScale)
     const fieldTime = time + this.seedTime
     if (this.motif === 'pulse') updatePulseFrame(fieldTime, this.pulseFrame)
+    else this.flowField.update(fieldTime)
     let dotCount = 0
 
     for (let row = 0; row < this.rows; row++) {
@@ -472,15 +531,7 @@ export class HalftoneFrameRenderer {
             this.sample
           )
         } else {
-          flowSampleInto(
-            u,
-            v,
-            this.epsilon,
-            fieldTime,
-            this.rotationCos,
-            this.rotationSin,
-            this.sample
-          )
+          this.flowField.sample(column, row, this.epsilon, this.sample)
         }
 
         let alpha = Math.min(1, this.sample.alpha * this.contrast * 0.9)

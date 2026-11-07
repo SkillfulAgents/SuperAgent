@@ -5,7 +5,7 @@ import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-p
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
-import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { requiresOneTimeXAgentReview, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
@@ -42,7 +42,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -584,7 +584,11 @@ interface AgentSummaryOptions {
    * outside auth mode), so there is no caller that legitimately lacks it.
    */
   userId: string
+  /** The unread projection for exactly these agents, when the caller already started it. */
+  unreadProjection?: UnreadProjection
 }
+
+type UnreadProjection = Awaited<ReturnType<typeof readUnreadProjection>>
 
 function attentionSessionCountsOutsideLatest(
   sessionId: string,
@@ -773,6 +777,21 @@ async function getVisibleSessionExpansion(
 }
 
 /**
+ * Both halves of the unread projection, one query each rather than one per
+ * agent — the list route hydrates every agent on every poll. Needs only the
+ * slugs, so a caller can start it before it has the agents.
+ */
+function readUnreadProjection(slugs: string[], userId: string) {
+  return Promise.all([
+    getUnreadNotificationsByAgents(slugs, userId),
+    getSessionIdsMarkedUnreadByAgents(slugs, userId),
+    // Only auth mode has people to mention.
+    isAuthMode() ? getUnreadMentionsByAgents(slugs, userId) : new Map<string, Set<string>>(),
+    getUnreadNotificationPreviewsByAgents(slugs, userId),
+  ])
+}
+
+/**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
@@ -781,17 +800,8 @@ async function enrichAgentsWithSummary(
   agents: ApiAgent[],
   options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
-  const slugs = agents.map(a => a.slug)
-
-  // Both halves of the unread projection, one query each rather than one per
-  // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs, options.userId),
-    getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
-    // Only auth mode has people to mention.
-    isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
-    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
-  ])
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] =
+    options.unreadProjection ?? await readUnreadProjection(agents.map(a => a.slug), options.userId)
 
   const limit = pLimit(5)
   return Promise.all(
@@ -1477,14 +1487,19 @@ agents.post('/', async (c) => {
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const slug = getAgentId(c)
-    const agent = await getAgentWithStatus(slug, { includeSummary: false })
+    const resolved = getResolvedAgent(c)
+    const userId = getCurrentUserId(c)
+    // Needs only the slug, so it runs in parallel with the status read.
+    const [agent, unreadProjection] = await Promise.all([
+      getAgentWithStatus(resolved, { includeSummary: false }),
+      readUnreadProjection([resolved.slug], userId),
+    ])
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent], { userId: getCurrentUserId(c) })
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId, unreadProjection })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
@@ -1860,8 +1875,9 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     await actor.container.start()
     if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
-    // Skip the session-summary enrichment: it stats every transcript, and every
-    // caller of this command discards the body and refetches agent data anyway.
+    // Read the agent again: a rename or delete can land while the container starts, and a
+    // null answer makes the client refetch. Skip the session-summary enrichment: it stats
+    // every transcript, and the client keeps the summary it already has.
     const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
@@ -7987,6 +8003,14 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 // Proxy review endpoints
 // =============================================================================
 
+const ALLOW_NEEDS_BOTH = 'Only a User or Owner of both agents can allow this request.'
+
+/** Allowing a request to read or message another agent needs someone who uses both. List and create requests name no other agent. */
+async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview | undefined): Promise<boolean> {
+  if (!review || !xAgentReviewNamesTarget(review)) return true
+  return canUseAgent(c, review.targetAgentSlug)
+}
+
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
@@ -7999,7 +8023,11 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
 
   // Approving an agent's proxy rule persists access on the account or MCP
   // server, so (like "always allow") only its owner may approve it.
-  const proposal = (await agentRegistry.get(slug).inputs.reviews.get(reviewId))?.ruleProposal
+  const pendingReview = await agentRegistry.get(slug).inputs.reviews.get(reviewId)
+  const proposal = pendingReview?.ruleProposal
+  if (body.decision === 'allow' && !(await canAllowXAgentCard(c, slug, pendingReview?.xAgent))) {
+    return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
+  }
   if (proposal && body.decision === 'allow' && isAuthMode()) {
     const context = await loadTargetContext({ kind: proposal.ruleKind, targetId: proposal.targetId })
     if (!context || context.userId !== getCurrentUserId(c)) {
@@ -8040,7 +8068,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   const pendingReview = await agentRegistry.get(slug).inputs.reviews.get(reviewId)
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
-    return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
+    return c.json({ error: 'Creating an agent can only be allowed once' }, 400)
   }
   // An unnamed call's scopes union every action on its path: a policy on one of them can allow a delete.
   if (body.decision === 'allow' && body.scope !== '*' && pendingReview?.endpointAmbiguous) {
@@ -8048,6 +8076,13 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   }
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
+  }
+  // The card this settles, and the connection this saves, each need someone who uses both agents.
+  if (body.decision === 'allow' && !(await canAllowXAgentCard(c, slug, pendingReview?.xAgent))) {
+    return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
+  }
+  if (body.reviewType === 'xagent' && body.xAgent?.targetSlug != null && !(await canUseAgent(c, body.xAgent.targetSlug))) {
+    return c.json({ error: 'Only a User or Owner of both agents can change this connection.' }, 403)
   }
   // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
   const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)

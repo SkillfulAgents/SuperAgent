@@ -31,6 +31,7 @@ import {
 import { useBookmarks, useUpdateBookmarks } from '@renderer/hooks/use-bookmarks'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { bookmarkTarget, type Bookmark } from '@shared/lib/utils/bookmarks'
+import { HomeGlassPanel } from './home-glass-panel'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface HomeBookmarksProps {
@@ -167,9 +168,8 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
   }
 
   return (
-    <div>
-      <h2 className="text-sm font-medium text-muted-foreground mb-1">Bookmarks</h2>
-      <div className="border-b mb-1" />
+    // Its own glass panel, under Recent sessions; there is none at all without bookmarks.
+    <HomeGlassPanel title="Bookmarks" testId="home-bookmarks">
       <div className="divide-y divide-border/50">
         {bookmarks.map((bookmark, i) => (
           <BookmarkRow
@@ -227,6 +227,6 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </HomeGlassPanel>
   )
 }

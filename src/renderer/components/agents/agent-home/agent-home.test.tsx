@@ -330,14 +330,23 @@ describe('AgentHome', () => {
     }
   })
 
-  it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
+  it('gives a non-owner the one centred column with no side panel', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
 
-    const layout = screen.getByTestId('agent-home-layout')
-    expect(layout).toHaveClass('w-full', 'xl:max-w-2xl')
-    expect(layout).not.toHaveClass('max-w-2xl')
+    expect(screen.getByTestId('agent-home-layout')).toHaveClass('mx-auto', 'w-full', 'max-w-[1040px]')
+    expect(screen.queryByTestId('agent-home-side-panel')).not.toBeInTheDocument()
+  })
+
+  it('always shows an owner the side panel, with no toggle for it', () => {
+    mockCanAdminAgent = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    expect(screen.getByTestId('agent-home-side-panel')).toContainElement(screen.getByTestId('home-sections-panel'))
+    expect(screen.queryByTestId('agent-home-side-panel-toggle')).not.toBeInTheDocument()
   })
 
   it('reuses the agent context menu on the agent title', () => {
@@ -350,7 +359,7 @@ describe('AgentHome', () => {
     expect(contextMenu).toContainElement(screen.getByTestId('agent-name'))
   })
 
-  it('renames the agent inline for owners', async () => {
+  it('renames the agent from the name and avatar editor for owners', async () => {
     const user = userEvent.setup()
     mockCanAdminAgent = true
 
@@ -359,15 +368,15 @@ describe('AgentHome', () => {
     )
 
     await user.click(screen.getByTestId('agent-name'))
+    expect(screen.getByTestId('agent-identity-preview')).toBeInTheDocument()
     await user.clear(screen.getByTestId('agent-name-input'))
-    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent')
-    await user.click(screen.getByTestId('agent-name-save'))
+    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent{Enter}')
 
     await waitFor(() => {
-      expect(mockUpdateAgentMutateAsync).toHaveBeenCalledWith({
-        slug: 'test-agent',
-        name: 'Renamed Agent',
-      })
+      expect(mockUpdateAgentMutate).toHaveBeenCalledWith(
+        { slug: 'test-agent', name: 'Renamed Agent' },
+        expect.anything(),
+      )
     })
   })
 
@@ -519,14 +528,14 @@ describe('AgentHome', () => {
     )
 
     const editor = screen.getByTestId('home-message-input')
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
     expect(editor.style.minHeight).toBe('')
 
     await user.click(screen.getByRole('button', { name: 'Expand input' }))
     expect(editor.className).toContain('min-h-[50vh]')
 
     await user.click(screen.getByRole('button', { name: 'Shrink input' }))
-    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.className).toContain('min-h-[40px]')
   })
 
   it('auto-expands to full view when the editor overflows its max-height', async () => {
@@ -562,7 +571,7 @@ describe('AgentHome', () => {
 
     expect(screen.getByTestId('view-only-banner')).toBeInTheDocument()
     expect(screen.queryByTestId('home-message-input')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('agent-avatar-picker')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-identity-trigger')).not.toBeInTheDocument()
   })
 
   it('shows agent name in view-only mode', () => {

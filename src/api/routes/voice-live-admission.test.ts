@@ -11,8 +11,8 @@ import {
 } from '@shared/lib/voice/live-session-admission'
 
 // Two copies of the route module stand for two processes serving one tenant:
-// each has its own module state (registry, timers), and AppState, held on
-// globalThis, is the one thing they share.
+// each has its own module state (registry) and its own task manager, and
+// AppState, held on globalThis, is the one thing they share.
 const mocks = vi.hoisted(() => ({
   selected: 'openai',
   user: 'alice',
@@ -46,12 +46,26 @@ vi.mock('@shared/lib/agent-integrations/live-setting', () => ({ resolveLiveConve
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({}) }))
 vi.mock('@shared/lib/services/agent-service', () => ({ getAgent: vi.fn() }))
 import first from './voice'
+import { liveSessions as firstSessions } from '@shared/lib/voice/live-sessions'
+import { taskManager } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
 
 let second: typeof first
+let secondSessions: typeof firstSessions
+let secondManager: LocalTaskManager
 beforeAll(async () => {
   vi.resetModules()
+  // Another process has a registry of its own, where a reloaded module shares this one's.
+  delete (globalThis as { liveSessions?: unknown }).liveSessions
+  vi.doMock('@shared/lib/background-work', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@shared/lib/background-work')>(),
+    taskManager: () => secondManager,
+  }))
   second = (await import('./voice')).default
+  secondSessions = (await import('@shared/lib/voice/live-sessions')).liveSessions
+  vi.doUnmock('@shared/lib/background-work')
   expect(second).not.toBe(first)
+  expect(secondSessions).not.toBe(firstSessions)
 })
 
 function answer(id = `rtc-${++mocks.sessions}`) {
@@ -77,13 +91,20 @@ async function entries(owner = 'alice') {
 beforeEach(() => {
   // Real time keeps passing; useRealTimers() drops the retries and deadlines a test leaves behind.
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  taskManager().register(firstSessions.hangUpTask)
+  secondManager = new LocalTaskManager()
+  secondManager.register(secondSessions.hangUpTask)
+  void secondManager.start()
   mocks.selected = 'openai'
   mocks.user = 'alice'
   mocks.keys = { openai: 'openai-key-1', platform: 'platform-token-1' }
   mocks.create.mockReset().mockImplementation(async () => answer())
   for (const close of Object.values(mocks.close)) close.mockReset().mockResolvedValue(undefined)
 })
-afterEach(() => vi.useRealTimers())
+afterEach(async () => {
+  await secondManager.stop()
+  vi.useRealTimers()
+})
 
 describe('Live voice admission across processes', () => {
   it('admits exactly four of six concurrent starts split across two processes', async () => {

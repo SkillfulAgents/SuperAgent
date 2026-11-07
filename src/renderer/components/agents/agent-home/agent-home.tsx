@@ -1,14 +1,12 @@
-import { AgentMemberStack } from '@renderer/components/agents/agent-member-stack'
-import { Plus } from 'lucide-react'
-
-import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
+import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
+import { useState, useRef, useMemo, useCallback, useEffect, useLayoutEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } from 'lucide-react'
+import { ArrowUp, ChevronDown, Loader2, Eye, Maximize2, Minimize2, MoreHorizontal, Search } from 'lucide-react'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
-import { AgentAvatarPicker } from '@renderer/components/agents/agent-avatar/agent-avatar-picker'
+import { AgentIdentityEditor, type AgentIdentityEditorHandle } from '@renderer/components/agents/agent-avatar/agent-identity-editor'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
@@ -27,7 +25,6 @@ import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { toast } from 'sonner'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
@@ -35,10 +32,15 @@ import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
-import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
+import { HOME_GLASS_COMPOSER_CLASS, HomeGlassPanel } from './home-glass-panel'
+import { HomeHalftoneBackdrop } from './home-halftone-backdrop'
+import { ContentBackdrop } from '@renderer/components/layout/content-shell'
+import { HomeSidePanel, SIDE_PANEL_BESIDE_PAGE, SIDE_PANEL_ROOM } from './home-side-panel'
+import { useMediaQuery } from '@renderer/hooks/use-media-query'
 import { HomeBookmarks } from './home-bookmarks'
 import { AgentSettingsColumn } from './agent-settings-column'
-import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useRefreshWidgetsOnVisit } from '@renderer/hooks/use-widgets'
+import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import {
@@ -62,6 +64,11 @@ interface AgentHomeProps {
   onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => void
 }
 
+/** Recent sessions shows the latest few, as Team Brain's home does; See all sessions opens the rest in place. */
+const RECENT_SESSIONS = 3
+/** How many of all its sessions show at once, opened in place. */
+const ALL_SESSIONS_PAGE = 5
+
 export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
   const { pendingAgentHomeAction, setPendingAgentHomeAction } = useNavTransient()
@@ -70,12 +77,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const startOnboardingSession = useStartOnboardingSession()
   const draftsStore = useDraftsStore()
   const { canUseAgent, canAdminAgent, isAuthMode, isAdmin, agentMemberCount } = useUser()
-  // Faces on the session rows only where the sidebar shows a member stack.
   const showSessionParticipants = isAuthMode && agentMemberCount(agent.slug) > 1
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
+  useRefreshWidgetsOnVisit(isOwner ? agent.slug : null)
   const [isExpanded, setIsExpanded] = useState(false)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
+  const [allSessions, setAllSessions] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
@@ -87,10 +95,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
-  const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
-  const titleRef = useRef<InlineEditableTitleHandle>(null)
+  const identityRef = useRef<AgentIdentityEditorHandle>(null)
   // The three-dot button opens the title's context menu (see below).
   const menuTriggerRef = useRef<HTMLDivElement>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -247,321 +254,405 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     [],
   )
 
-  const showRightColumn = isOwner
+  const showSidePanel = isOwner
+
+  // The side panel (widgets, sections, the Show more settings) is always there: beside the page from xl, and narrower, below
+  // the page's own content, where there is no room beside it.
+  const wide = useMediaQuery(SIDE_PANEL_BESIDE_PAGE)
+  const sidePanelBeside = showSidePanel && wide
+
+  // Beside the page, the side panel sticks at the top of the view as the page scrolls: at the page's top padding
+  // (sticky offsets count from inside it), whose height is read off the scroller, and no taller than the view.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [dockTop, setPageTop] = useState(0)
+  const [viewHeight, setViewHeight] = useState(0)
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+    if (!scroller) return
+    const measure = () => {
+      setPageTop(Math.round(parseFloat(getComputedStyle(scroller).paddingTop) || 0))
+      setViewHeight(scroller.clientHeight)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [])
+  // Beside the page, the panel's top edge lines up with the top edge of the title row's buttons (they sit centred in
+  // that row, so a little below its top): the agent menu button's offset in the page's column, measured.
+  const columnRef = useRef<HTMLDivElement>(null)
+  const agentMenuButtonRef = useRef<HTMLButtonElement>(null)
+  const [panelTop, setPanelTop] = useState(0)
+  useLayoutEffect(() => {
+    const column = columnRef.current
+    const button = agentMenuButtonRef.current
+    if (!column || !button) return
+    const measure = () => setPanelTop(Math.round(button.getBoundingClientRect().top - column.getBoundingClientRect().top))
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(column)
+    return () => observer.disconnect()
+  }, [sidePanelBeside])
+
+  const lastActiveAt = useMemo(
+    // A session without activity yet counts from its creation, as the sessions list shows it.
+    () => sessions.reduce<string | null>((latest, s) => {
+      const at = s.lastActivityAt ?? s.createdAt
+      return !latest || at > latest ? at : latest
+    }, null),
+    [sessions],
+  )
+
+  const sidePanelContent = (
+    <AgentSettingsColumn agent={agent} scheduledTasks={scheduledTasks} onRunSkill={(skillPath) => {
+      composer.setMessage(`/${skillPath} `)
+      composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setTimeout(() => composerTextareaRef.current?.focus(), 0)
+    }} />
+  )
+  const lastActive = lastActiveAt ? (
+    <span data-testid="agent-home-last-active">Last active {formatDate(lastActiveAt)}</span>
+  ) : undefined
 
   return (
+    <>
+    {/* The background sits behind the scrolling page, and the header's glass above it, and stays put while the page scrolls. Its white buttons are glass. */}
+    <div className="home-glass-controls relative flex min-h-0 min-w-0 flex-1 flex-col">
+    <ContentBackdrop><HomeHalftoneBackdrop agent={agent} /></ContentBackdrop>
     <div
+      ref={scrollRef}
       data-testid="agent-home"
-      className="flex-1 flex flex-col overflow-y-auto overscroll-contain px-4 py-6 md:px-10 md:py-10 bg-background"
+      className="relative min-h-0 flex-1 flex flex-col overflow-y-auto overscroll-contain px-4 py-6 md:px-10 md:py-10"
     >
-      <div
-        data-testid="agent-home-layout"
-        className={cn(
-          'grid gap-10 items-start w-full mx-auto',
-          showRightColumn
-            ? 'grid-cols-1 max-w-6xl xl:grid-cols-[1fr_minmax(320px,400px)]'
-            : 'xl:max-w-2xl',
-        )}
-      >
-        {/* Left Column — Chat composer + Sessions */}
-        <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <ScrollAwarePageTitle className="flex items-center justify-between gap-2">
-            {isOwner
-              ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
-              : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
-            <AgentContextMenu
-              agent={agent}
-              onRename={() => titleRef.current?.startEditing()}
-              onExport={openExport}
-              onOpenDirectory={openDirectory}
-              onOpenChange={setMenuOpen}
-            >
-              <div ref={menuTriggerRef} className="flex-1 min-w-0 cursor-context-menu">
-                <InlineEditableTitle
-                  ref={titleRef}
-                  value={agent.name}
-                  canEdit={isOwner}
-                  isSaving={updateAgent.isPending}
-                  onSave={async (name) => {
-                    await updateAgent.mutateAsync({ slug: agent.slug, name })
-                  }}
-                  onError={(error) => {
-                    console.error('Failed to rename agent:', error)
-                    toast.error('Failed to rename agent', {
-                      description: error instanceof Error ? error.message : 'Please try again.',
-                    })
-                  }}
-                  displayClassName="text-xl font-medium"
-                  inputClassName="h-9 text-xl font-medium"
-                  saveButtonClassName="h-8 w-8"
-                  ariaLabel="Rename agent"
-                  saveAriaLabel="Save name"
-                  displayTestId="agent-name"
-                  inputTestId="agent-name-input"
-                  saveButtonTestId="agent-name-save"
-                />
-              </div>
-            </AgentContextMenu>
-            {isAuthMode ? (
-              <AgentMemberStack
-                agentSlug={agent.slug}
-                renderShareControl={(isOwner || isAdmin) ? (isShared) => (
-                  <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} trigger={isShared ? (
-                    <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0 rounded-full bg-background ring-2 ring-background focus-visible:ring-ring" aria-label="Share agent" title="Invite, publish, or export" data-testid="agent-share-button">
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  ) : undefined} />
-                ) : undefined}
-              />
-            ) : isOwner && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
-            {/* Three-dot = the same agent menu a right-click on the title (or
-                the sidebar row) opens, so the two never drift apart. A click
-                replays as a contextmenu event on the title's trigger, anchored
-                under this button; Rename hands off to the inline title above. */}
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              className="h-8 w-8 shrink-0"
-              aria-label="Agent menu"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              data-testid="agent-settings-button"
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect()
-                menuTriggerRef.current?.dispatchEvent(
-                  new MouseEvent('contextmenu', {
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: rect.left,
-                    clientY: rect.bottom + 4,
-                  })
-                )
-              }}
-            >
-              <MoreVertical className="h-4 w-4" />
-            </Button>
-          </ScrollAwarePageTitle>
-          {isViewOnly ? (
-            <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">
-              <Eye className="h-5 w-5" />
-              <span>Select a session from the sidebar to view its messages</span>
-            </div>
-          ) : (
-            <>
-              {!apiKeyConfigured && (
-                <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground">
-                  <span>No API key configured. An administrator needs to set up the LLM API key.</span>
-                </div>
-              )}
-              {!isRuntimeReady && readiness && (
-                <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground">
-                  {isPulling && <Loader2 className="h-4 w-4 animate-spin" />}
-                  <span>{readiness.message}</span>
-                  {readiness.pullProgress?.percent != null && (
-                    <span>({readiness.pullProgress.status} - {readiness.pullProgress.percent}%)</span>
-                  )}
-                </div>
-              )}
-
-              <MountChoiceDialog
-                open={composer.mountDialog.open}
-                onChoice={composer.mountDialog.onChoice}
-                folderName={composer.mountDialog.folderName}
-              />
-              {composer.chipDialog}
-              <form
-                onSubmit={composer.handleSubmit}
-                className={cn(composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
-                {...composer.dragHandlers}
+      {/* Team Brain's home-page layout: one column the composer's width, centred in the page; the side panel opens
+          beside it from xl, the column making room on the right while the page stays where it is. */}
+      <div data-testid="agent-home-layout" className="mx-auto min-w-0 w-full max-w-[1040px]">
+        <div
+          ref={columnRef}
+          // Makes room on the panel's own curves (globals.css), so the two move as one.
+          className={cn('relative', sidePanelBeside && SIDE_PANEL_ROOM)}
+        >
+          <div className="mx-auto w-full max-w-[720px] space-y-6">
+            <div>
+            <ScrollAwarePageTitle className="home-title-row flex items-center justify-between gap-2">
+              <AgentContextMenu
+                agent={agent}
+                onRename={() => identityRef.current?.open()}
+                onExport={openExport}
+                onOpenDirectory={openDirectory}
+                onOpenChange={setMenuOpen}
               >
-                <ChatComposerBox
-                  textareaRef={composerTextareaRef}
-                  attachments={composer.attachments}
-                  onRemoveAttachment={composer.removeAttachment}
-                  onRetryAttachment={composer.retryAttachment}
-                  value={composer.message}
-                  onChange={composer.setMessage}
-                  onKeyDown={handleKeyDown}
-                  onPaste={composer.handlePaste}
-                  placeholder={composerPlaceholder}
-                  disabled={isDisabled}
-                  rows={2}
-                  autoFocus={!isMobile}
-                  dataTestId="home-message-input"
-                  secureSecrets={{
-                    agentSlug: agent.slug,
-                    potentialSecrets: composer.potentialSecrets,
-                    onDismiss: composer.dismissPotentialSecret,
-                    onSecure: composer.securePotentialSecret,
-                  }}
-                  chipContext={composer.chipContext}
-                  textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
-                  leftActions={(
-                    <>
-                      <AttachmentPicker
-                        onFileSelect={composer.handleFileSelect}
-                        onFolderSelect={composer.handleFolderSelect}
-                        onRecentFileAttach={(file) => composer.addFiles([{ file }])}
-                        disabled={isDisabled}
-                      />
-                      <ComposerOptions
-                        state={composerOptions}
-                        disabled={isDisabled}
-                        footer={
-                          <AgentDefaultFooter
-                            agentSlug={agent.slug}
-                            state={composerOptions}
-                            agentHomeLink={false}
-                          />
-                        }
-                      />
-                    </>
-                  )}
-                  topRightActions={(
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
-                      onClick={() => setIsExpanded((v) => {
-                        // If user is collapsing, remember it so the auto-expand
-                        // effect doesn't immediately re-flip a still-overflowing message.
-                        userCollapsedRef.current = v
-                        return !v
-                      })}
-                      aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
-                    >
-                      {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-                    </Button>
-                  )}
-                  rightActions={(
-                    <>
-                      <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
-                      {!isFreshUntitled && (
-                        <VoiceModeButton onClick={() => void startVoiceSession('home')} disabled={isDisabled} />
-                      )}
-                      {isFreshUntitled ? (
-                        <Button
-                          type="submit"
-                          size="sm"
-                          disabled={!composer.canSubmit}
-                          data-testid="home-send-button"
-                        >
-                          {isDisabled ? (
-                            <>
-                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                              Creating...
-                            </>
-                          ) : (
-                            'Create Agent'
-                          )}
-                        </Button>
-                      ) : (
-                        <Button
-                          type="submit"
-                          size="icon"
-                          className="h-[34px] w-[34px]"
-                          disabled={!composer.canSubmit}
-                          data-testid="home-send-button"
-                          aria-label="Send message"
-                        >
-                          {isDisabled ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <ArrowUp className="h-4 w-4" />
-                          )}
-                        </Button>
-                      )}
-                    </>
-                  )}
-                  footer={(
-                    <>
-                      <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
-                      <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
-                      <AgentRuntimeErrorView error={createSession.error} className="mt-2" />
-                    </>
-                  )}
-                />
-              </form>
-
-              <div className="space-y-6">
-              {/* Bookmarks */}
-              <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
-
-              {/* Sessions list / creation aids */}
-              <div className={sessions.length > 0 ? 'pt-2' : ''}>
-                {sessions.length > 0 ? (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-sm font-medium text-muted-foreground flex-1">Recent Sessions</h2>
-                      <SortPopover value={sessionSort} onChange={setSessionSort} ariaLabel="Sort sessions" />
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-6 w-6 shrink-0"
-                        onClick={() => {
-                          const next = !sessionSearchOpen
-                          setSessionSearchOpen(next)
-                          if (!next) setSessionSearch('')
-                          else setTimeout(() => sessionSearchRef.current?.focus(), 0)
-                        }}
-                        aria-label="Search sessions"
-                      >
-                        <Search className="h-3.5 w-3.5 text-muted-foreground" />
-                      </Button>
-                      {sessionSearchOpen && (
-                        <Input
-                          ref={sessionSearchRef}
-                          value={sessionSearch}
-                          onChange={(e) => setSessionSearch(e.target.value)}
-                          placeholder="Filter sessions..."
-                          className="h-6 text-xs flex-1"
-                        />
-                      )}
-                    </div>
-                    <div className="border-b mt-2" />
-                    <RelatedSessions
-                      sessions={sessions}
-                      agentSlug={agent.slug}
-                      formatDate={formatDate}
-                      showIcon={false}
-                      showHeader={false}
-                      searchQuery={sessionSearch}
-                      sortOrder={sessionSort}
-                      showParticipants={showSessionParticipants}
+                <div ref={menuTriggerRef} className="flex min-w-0 flex-1 items-center cursor-context-menu">
+                  {isOwner ? (
+                    <AgentIdentityEditor
+                      ref={identityRef}
+                      agent={agent}
+                      state={agentAvatarState(agent, sessionsData)}
+                      size={39}
+                      nameClassName="text-lg/6 font-medium"
+                      subtitle={lastActive}
                     />
-                  </>
-                ) : (
-                  <AgentCreationAids
-                    onStartVoiceMode={() => void startVoiceSession('home_card')}
-                    onImportComplete={handleImportComplete}
-                  />
+                  ) : (
+                    <div className="flex min-w-0 items-center gap-2">
+                      <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
+                      <div className="min-w-0">
+                        <h1 className="truncate text-lg/6 font-medium" data-testid="agent-name">{agent.name}</h1>
+                        <div className="truncate text-xs text-muted-foreground">{lastActive}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </AgentContextMenu>
+              {/* The sidebar row's member stack and roster, a size up. */}
+              {isAuthMode && (
+                <SidebarMemberIndicator
+                  variant="page"
+                  agentSlug={agent.slug}
+                  agentName={agent.name}
+                  memberCount={agentMemberCount(agent.slug)}
+                  maxFaces={5}
+                />
+              )}
+              {(isOwner || (isAuthMode && isAdmin)) && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
+              {/* The same agent menu a right-click on the title (or the sidebar row) opens, so the two never drift apart.
+                  A click replays as a contextmenu event on the title's trigger, anchored under this button; Rename
+                  opens the name and avatar editor. */}
+              <Button
+                ref={agentMenuButtonRef}
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                aria-label="Agent menu"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                data-testid="agent-settings-button"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  menuTriggerRef.current?.dispatchEvent(
+                    new MouseEvent('contextmenu', {
+                      bubbles: true,
+                      cancelable: true,
+                      clientX: rect.left,
+                      clientY: rect.bottom + 4,
+                    })
+                  )
+                }}
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </ScrollAwarePageTitle>
+            </div>
+            {isViewOnly ? (
+              <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-card p-6" data-testid="view-only-banner">
+                <Eye className="h-5 w-5" />
+                <span>Select a session from the sidebar to view its messages</span>
+              </div>
+            ) : (
+              <>
+                {!apiKeyConfigured && (
+                  <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground">
+                    <span>No API key configured. An administrator needs to set up the LLM API key.</span>
+                  </div>
                 )}
-              </div>
-              </div>
-            </>
+                {!isRuntimeReady && readiness && (
+                  <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground">
+                    {isPulling && <Loader2 className="h-4 w-4 animate-spin" />}
+                    <span>{readiness.message}</span>
+                    {readiness.pullProgress?.percent != null && (
+                      <span>({readiness.pullProgress.status} - {readiness.pullProgress.percent}%)</span>
+                    )}
+                  </div>
+                )}
+
+                <MountChoiceDialog
+                  open={composer.mountDialog.open}
+                  onChoice={composer.mountDialog.onChoice}
+                  folderName={composer.mountDialog.folderName}
+                />
+                {composer.chipDialog}
+                  <form
+                    onSubmit={composer.handleSubmit}
+                    className={cn(composer.isDragOver && 'rounded-dialog ring-2 ring-primary ring-inset')}
+                    {...composer.dragHandlers}
+                  >
+                    <ChatComposerBox
+                      // The session composer's glass with the panels' glass edge: the sessions pass under it once it docks.
+                      className={HOME_GLASS_COMPOSER_CLASS}
+                      textareaRef={composerTextareaRef}
+                      attachments={composer.attachments}
+                      onRemoveAttachment={composer.removeAttachment}
+                      onRetryAttachment={composer.retryAttachment}
+                      value={composer.message}
+                      onChange={composer.setMessage}
+                      onKeyDown={handleKeyDown}
+                      onPaste={composer.handlePaste}
+                      placeholder={composerPlaceholder}
+                      disabled={isDisabled}
+                      rows={2}
+                      autoFocus={!isMobile}
+                      dataTestId="home-message-input"
+                      secureSecrets={{
+                        agentSlug: agent.slug,
+                        potentialSecrets: composer.potentialSecrets,
+                        onDismiss: composer.dismissPotentialSecret,
+                        onSecure: composer.securePotentialSecret,
+                      }}
+                      chipContext={composer.chipContext}
+                      textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[40px] max-h-[120px]'}`}
+                      leftActions={(
+                        <>
+                          <AttachmentPicker
+                            buttonClassName="h-7 w-7 shrink-0 p-0"
+                            onFileSelect={composer.handleFileSelect}
+                            onFolderSelect={composer.handleFolderSelect}
+                            onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+                            disabled={isDisabled}
+                          />
+                          <ComposerOptions
+                            state={composerOptions}
+                            disabled={isDisabled}
+                            size="sm"
+                            footer={
+                              <AgentDefaultFooter
+                                agentSlug={agent.slug}
+                                state={composerOptions}
+                                agentHomeLink={false}
+                              />
+                            }
+                          />
+                        </>
+                      )}
+                      topRightActions={(
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-6 w-6 text-muted-foreground/50 hover:text-foreground"
+                          onClick={() => setIsExpanded((v) => {
+                            // If user is collapsing, remember it so the auto-expand
+                            // effect doesn't immediately re-flip a still-overflowing message.
+                            userCollapsedRef.current = v
+                            return !v
+                          })}
+                          aria-label={isExpanded ? 'Shrink input' : 'Expand input'}
+                        >
+                          {isExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                        </Button>
+                      )}
+                      rightActions={(
+                        <>
+                          <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
+                          {!isFreshUntitled && (
+                            <VoiceModeButton onClick={() => void startVoiceSession('home')} disabled={isDisabled} className="h-7 w-7" />
+                          )}
+                          {isFreshUntitled ? (
+                            <Button
+                              type="submit"
+                              size="sm"
+                              className="ml-1.5 h-7"
+                              disabled={!composer.canSubmit}
+                              data-testid="home-send-button"
+                            >
+                              {isDisabled ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                  Creating...
+                                </>
+                              ) : (
+                                'Create Agent'
+                              )}
+                            </Button>
+                          ) : (
+                            <Button
+                              type="submit"
+                              size="icon"
+                              // 6px before it: the plain buttons' own 6px padding is the rest of the gap (chat-composer-box.tsx).
+                              className="ml-1.5 h-7 w-7"
+                              disabled={!composer.canSubmit}
+                              data-testid="home-send-button"
+                              aria-label="Send message"
+                            >
+                              {isDisabled ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <ArrowUp className="h-4 w-4" />
+                              )}
+                            </Button>
+                          )}
+                        </>
+                      )}
+                      footer={(
+                        <>
+                          <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                          <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+                          <AgentRuntimeErrorView error={createSession.error} className="mt-2" />
+                        </>
+                      )}
+                    />
+                  </form>
+
+                <div className="space-y-6">
+                  {sessions.length > 0 ? (
+                    <HomeGlassPanel
+                      title="Recent sessions"
+                      testId="home-recent-sessions"
+                      actions={(
+                        <>
+                          {sessionSearchOpen && (
+                            <Input
+                              ref={sessionSearchRef}
+                              value={sessionSearch}
+                              onChange={(e) => setSessionSearch(e.target.value)}
+                              placeholder="Filter sessions..."
+                              className="h-6 w-40 text-xs"
+                            />
+                          )}
+                          <SortPopover value={sessionSort} onChange={setSessionSort} ariaLabel="Sort sessions" />
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 shrink-0"
+                            onClick={() => {
+                              const next = !sessionSearchOpen
+                              setSessionSearchOpen(next)
+                              if (!next) setSessionSearch('')
+                              else setTimeout(() => sessionSearchRef.current?.focus(), 0)
+                            }}
+                            aria-label="Search sessions"
+                          >
+                            <Search className="h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        </>
+                      )}
+                    >
+                      <RelatedSessions
+                        sessions={sessions}
+                        agentSlug={agent.slug}
+                        formatDate={formatDate}
+                        showIcon={false}
+                        showHeader={false}
+                        searchQuery={sessionSearch}
+                        sortOrder={sessionSort}
+                        showParticipants={showSessionParticipants}
+                        // A search looks through every session, a page at a time.
+                        pageSize={allSessions || sessionSearch ? ALL_SESSIONS_PAGE : RECENT_SESSIONS}
+                        limit={allSessions || sessionSearch ? undefined : RECENT_SESSIONS}
+                        className="mt-1"
+                        // Right under the last row, its text lined up with the rows'.
+                        afterRows={!sessionSearch && sessions.length > RECENT_SESSIONS && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="-ml-2 mt-1"
+                            onClick={() => setAllSessions(!allSessions)}
+                            aria-expanded={allSessions}
+                            data-testid="home-see-all-sessions"
+                          >
+                            {allSessions ? 'Show fewer' : 'See all sessions'}
+                            <ChevronDown className={cn('transition-transform', allSessions && 'rotate-180')} aria-hidden="true" />
+                          </Button>
+                        )}
+                      />
+                    </HomeGlassPanel>
+                  ) : (
+                    <AgentCreationAids
+                      onStartVoiceMode={() => void startVoiceSession('home_card')}
+                      onImportComplete={handleImportComplete}
+                    />
+                  )}
+                  {/* Bookmarks get a panel of their own, when there are any. */}
+                  <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
+                  {/* Narrower than xl there is no room beside the page, so the side panel's cards follow its content. */}
+                  {showSidePanel && !wide && <HomeSidePanel placement="below">{sidePanelContent}</HomeSidePanel>}
+                </div>
+              </>
+            )}
+          </div>
+
+          {sidePanelBeside && (
+            // Beside the page, in the room the column makes: top-aligned with the title row's buttons, it scrolls with
+            // the column and then sticks at the top.
+            <div className="pointer-events-none absolute bottom-0 right-0 z-0 w-[336px]" style={{ top: panelTop }}>
+              <HomeSidePanel
+                placement="beside"
+                // Sticky offsets count from inside the scroller's padding, so its cards stick level with the composer
+                // at 0; its box reaches 32px past them (home-side-panel.tsx), so it sticks at -32 and is 64px taller.
+                style={{ top: -32, maxHeight: Math.max(viewHeight - dockTop - 24, 320) + 64 }}
+              >
+                {sidePanelContent}
+              </HomeSidePanel>
+            </div>
           )}
         </div>
-
-        {/* Right Column — Triggers + Connections + Skills + Volumes */}
-        {showRightColumn && (
-          <div className="space-y-3">
-            <AgentSettingsColumn agent={agent} scheduledTasks={scheduledTasks} onRunSkill={(skillPath) => {
-              const text = `/${skillPath} `
-              composer.setMessage(text)
-              composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              setTimeout(() => {
-                const el = composerTextareaRef.current
-                if (el) {
-                  el.focus()
-                }
-              }, 0)
-            }} />
-          </div>
-        )}
       </div>
     </div>
+    </div>
+
+    </>
   )
 }

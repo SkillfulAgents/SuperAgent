@@ -261,6 +261,8 @@ export interface AgentCatalog {
   update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
   /** The agent slug for a display slug or a slug, or null when there is no such agent. */
   resolve(input: string): Promise<AgentSlug | null>
+  /** The agent for a display slug or a slug, or null when there is no such agent. */
+  resolveRecord(input: string): Promise<AgentRecord | null>
   /** Remove an agent and everything it owns. The caller stops its container first. */
   remove(slug: AgentSlug): Promise<void>
 }

@@ -694,6 +694,19 @@ test.describe('Auth Flow', () => {
     ])
     await sessionPage.waitForResponse(15000)
     expect(initialRead.ok()).toBe(true)
+    await expect(sessionPage.getStopButton()).not.toBeVisible()
+    // Open the completed session afresh before measuring account-switch writes.
+    // First-send optimistic unread state can trigger an immediate clear and a
+    // second, debounced clear during StrictMode's effect replay. A slow sign-in
+    // can otherwise overlap that setup work before get-session reports the new
+    // user. The document captured below still stays live through both switches.
+    const [settledRead] = await Promise.all([
+      user2Page.waitForResponse(response => response.request().method() === 'POST' &&
+        response.url().includes('/api/notifications/read-by-session/')),
+      user2Page.reload(),
+    ])
+    expect(settledRead.ok()).toBe(true)
+    await sessionPage.waitForResponse(15000)
     const protectedUrl = user2Page.url()
     const sessionId = protectedUrl.match(/\/sessions\/([^/?#]+)/)?.[1] ?? ''
     expect(sessionId).toBeTruthy()

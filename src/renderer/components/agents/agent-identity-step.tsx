@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { AvatarView, orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
-import { AvatarChoices } from '@renderer/components/agents/agent-avatar/agent-avatar-picker'
+import { AvatarChoices } from '@renderer/components/agents/agent-avatar/avatar-choices'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { AGENT_NAME_MAX_LENGTH } from '@shared/lib/services/agent-identity-schema'
 import { AGENT_AVATAR_SHAPES, DEFAULT_AGENT_AVATAR_COLORS, type AgentAvatar } from '@shared/lib/types/agent-avatar'

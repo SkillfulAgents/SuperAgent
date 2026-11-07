@@ -13,7 +13,7 @@ import { HomeAgentIntegrations } from './home-agent-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeHooks } from './home-hooks'
 import { HomeWidgets } from './home-widgets'
-import { useHomeCardLook } from './home-collapsible'
+import { HomePanel, useHomeCardLook } from './home-collapsible'
 
 interface AgentSettingsColumnProps {
   agent: ApiAgent
@@ -35,18 +35,11 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
     () => new Set((Array.isArray(agent.widgets) ? agent.widgets : []).filter((w) => w.hasDashboard).map((w) => w.slug)),
     [agent.widgets],
   )
-  return (
+  const hooks = <HomeHooks agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
+  const sections = (
     <>
-      <HomeWidgets agentSlug={agent.slug} className={look.media} />
-      {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
-        // An artifact with a widget shows the widget instead of its screenshot.
-        .filter((d) => !replacedDashboards.has(d.slug))
-        .map((d) => (
-          <div key={d.slug} className={look.media}>
-            <DashboardCard dashboard={d} agentSlug={agent.slug} />
-          </div>
-        ))}
       <HomeTriggers
+       
         agentSlug={agent.slug}
         scheduledTasks={scheduledTasks}
         onSelectTask={(taskId: string) => {
@@ -66,8 +59,22 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
       <HomeSkills agentSlug={agent.slug} onRunSkill={onRunSkill} />
       <HomeAgentIntegrations agentSlug={agent.slug} />
       <HomeVolumes agentSlug={agent.slug} hiddenVolumeId={hiddenVolumeId} />
+    </>
+  )
+  return (
+    <>
+      <HomeWidgets agentSlug={agent.slug} className={look.media} />
+      {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
+        // An artifact with a widget shows the widget instead of its screenshot.
+        .filter((d) => !replacedDashboards.has(d.slug))
+        .map((d) => (
+          <div key={d.slug} className={look.media}>
+            <DashboardCard dashboard={d} agentSlug={agent.slug} />
+          </div>
+        ))}
+      {look.grouped ? <HomePanel>{sections}{hooks}</HomePanel> : sections}
       <HomeExtras agentSlug={agent.slug} onOpenSettings={(tab) => { if (tab === 'system-prompt') setSystemPromptOpen(true) }} />
-      <HomeHooks agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
+      {!look.grouped && hooks}
       <SystemPromptDialog
         agent={agent}
         open={systemPromptOpen}

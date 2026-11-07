@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { cn } from '@shared/lib/utils'
 import { getUserImage, type UserSummary } from '@shared/lib/user-profile-schema'
 import { getApiBaseUrl } from '@renderer/lib/env'
@@ -23,10 +23,12 @@ export function userInitials(user: Pick<UserSummary, 'name' | 'email'>): string 
     : Array.from(words[0] || '?').slice(0, 2).join('')).toLocaleUpperCase()
 }
 
-export function UserAvatar({ user, size = 28, className }: {
+export function UserAvatar({ user, size = 28, className, style }: {
   user: UserSummary
   size?: number
   className?: string
+  /** Merged over the avatar's own (a stack's cut-out mask, say). */
+  style?: CSSProperties
 }) {
   const image = getUserImage(user)
   const src = image?.startsWith('/api/') ? `${getApiBaseUrl()}${image}` : image
@@ -41,7 +43,7 @@ export function UserAvatar({ user, size = 28, className }: {
       // A 10px floor keeps initials legible on roomy avatars, but under 20px it
       // overfills the circle, so the small ones (sidebar faces, mention chips)
       // scale with their size instead.
-      style={{ width: size, height: size, fontSize: size < 20 ? size * 0.42 : Math.max(10, size * 0.34), background: `linear-gradient(145deg, ${from}, ${to})` }}
+      style={{ width: size, height: size, fontSize: size < 20 ? size * 0.42 : Math.max(10, size * 0.34), background: `linear-gradient(145deg, ${from}, ${to})`, ...style }}
     >
       {src && src !== failedSrc
         ? <img src={src} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" onError={() => setFailedSrc(src)} />

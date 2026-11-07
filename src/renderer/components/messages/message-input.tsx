@@ -670,6 +670,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         leftActions={(
           <>
             <AttachmentPicker
+              buttonClassName="h-7 w-7 shrink-0 p-0"
               onFileSelect={composer.handleFileSelect}
               onFolderSelect={composer.handleFolderSelect}
               onRecentFileAttach={(file) => composer.addFiles([{ file }])}
@@ -680,6 +681,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
             <ComposerOptions
               state={composerOptions}
               disabled={isDisabled || isActive}
+              size="sm"
               footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
             />
           </>
@@ -690,9 +692,10 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
               voiceInput={composer.voiceInput}
               message={composer.message}
               disabled={isDisabled}
+              size="compact"
             />
             {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
-            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
+            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} className="h-7 w-7" />
             <ComposerActionButton
               isActive={isActive}
               isWaitingBackground={isWaitingBackground}

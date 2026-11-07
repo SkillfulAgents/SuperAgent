@@ -483,12 +483,12 @@ export class SessionPage {
 
   async approveScriptRun() {
     const container = this.page.locator('[data-testid="script-run-request"]').first()
-    await container.locator('[data-testid="script-run-once-btn"]').click()
+    await container.locator('[data-testid="script-run-allow-once-btn"]').click()
   }
 
   async denyScriptRun() {
     const container = this.page.locator('[data-testid="script-run-request"]').first()
-    await container.locator('[data-testid="script-deny-btn"]').click()
+    await container.locator('[data-testid="script-run-deny-btn"]').click()
   }
 
   // --- Proxy Review Request Helpers ---
@@ -538,8 +538,8 @@ export class SessionPage {
     await this.paginateToCard(container)
     // The reason textarea + submit arrow live inside the Deny chevron popover.
     await container.locator('[data-testid="proxy-review-deny-btn-chevron"]').click()
-    await this.page.locator('[data-testid="proxy-review-deny-reason-input"]').fill(reason)
-    await this.page.locator('[data-testid="proxy-review-deny-reason-submit"]').click()
+    await this.page.locator('[data-testid="proxy-review-deny-btn-reason-input"]').fill(reason)
+    await this.page.locator('[data-testid="proxy-review-deny-btn-reason-submit"]').click()
   }
 
   async alwaysAllowAll(reviewId?: string) {
@@ -599,22 +599,15 @@ export class SessionPage {
     return this.page.locator('[data-testid="computer-use-request"]')
   }
 
-  async approveComputerUseOnce() {
-    const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    // "Allow Once" is inside a popover opened by the chevron next to "Allow 15 min"
-    await container.locator('[data-testid="computer-use-allow-timed-btn-chevron"]').click()
-    // The popover is portaled to document.body, so locate the button on the page
-    await this.page.locator('[data-testid="computer-use-allow-once-btn"]').click()
-  }
-
   async approveComputerUseTimed() {
     const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    await container.locator('[data-testid="computer-use-allow-timed-btn"]').click()
+    // The narrow grant on computer use is 15 minutes
+    await container.locator('[data-testid="computer-use-allow-once-btn"]').click()
   }
 
   async approveComputerUseAlways() {
     const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    await container.locator('[data-testid="computer-use-allow-always-btn"]').click()
+    await container.locator('[data-testid="computer-use-always-allow-btn"]').click()
   }
 
   async denyComputerUse() {
