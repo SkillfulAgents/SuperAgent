@@ -1,5 +1,12 @@
-/** `cloudflare:workers` under Node, for tests: just enough to load src/cf's Durable Objects. */
+/** `cloudflare:workers` under Node, for tests: just enough to load src/cf's Durable Objects and @cloudflare/containers. */
 export class DurableObject<Env = unknown> {
+  constructor(
+    protected readonly ctx: unknown,
+    protected readonly env: Env,
+  ) {}
+}
+
+export class WorkerEntrypoint<Env = unknown> {
   constructor(
     protected readonly ctx: unknown,
     protected readonly env: Env,

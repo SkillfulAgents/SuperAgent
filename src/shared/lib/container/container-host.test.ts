@@ -16,6 +16,10 @@ const mockGetStats = vi.fn()
 const mockIsHealthy = vi.fn()
 
 const mockClearRunnerAvailabilityCache = vi.fn()
+const mockGetContainerClientClass = vi.fn((_runner: string): { requiresLocalImage: boolean; isEligible: () => boolean } => ({
+  requiresLocalImage: true,
+  isEligible: () => true,
+}))
 
 const FUSE_FLAGS = '--device /dev/fuse --cap-add SYS_ADMIN'
 const mockVolumeRunFlags = vi.fn((): string | null => FUSE_FLAGS)
@@ -38,7 +42,7 @@ vi.mock('./client-factory', () => ({
     health: (port?: number) => mockHealth(port),
     volumeRunFlags: () => mockVolumeRunFlags(),
   }),
-  getContainerClientClass: () => ({ requiresLocalImage: true }),
+  getContainerClientClass: (runner: string) => mockGetContainerClientClass(runner),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
   pullImage: vi.fn(),
@@ -201,7 +205,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   remounted: (...args: unknown[]) => mockRemounted(...args),
 }))
 
-import { containerHost } from './container-host'
+import { ContainerHost, containerHost } from './container-host'
 import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 describe('ContainerRuntime.ensureRunning — env var construction', () => {
@@ -1883,6 +1887,63 @@ describe('ContainerHost stale agents', () => {
     containerHost.runtime('a').updateCachedStatus('stopped', null)
     containerHost.dropRuntime('b')
     expect(stale()).toEqual([false, false, true])
+  })
+})
+
+describe('ContainerHost.getReadiness before this process has checked', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    delete process.env.E2E_MOCK
+    mockGetContainerClientClass.mockImplementation((runner: string) => ({
+      requiresLocalImage: runner !== 'lambda-microvm',
+      isEligible: () => true,
+    }))
+  })
+
+  afterEach(() => {
+    mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: true, isEligible: () => true }))
+    mockSettingsState.containerRunner = 'docker'
+  })
+
+  // As on Cloudflare, where startup's localContainers: false leaves out the readiness check.
+  const uncheckedProcess = () => {
+    const host = new ContainerHost()
+    host.deriveReadiness()
+    return host
+  }
+
+  it('reads as ready when a runner that needs no local image is set up here, without a check', () => {
+    const freshProcess = uncheckedProcess()
+
+    expect(freshProcess.getReadiness()).toEqual({ status: 'READY', message: 'Ready (lambda-microvm)', pullProgress: null })
+    expect(checkAllRunnersAvailability).not.toHaveBeenCalled()
+  })
+
+  it('stays checking when every runner set up here pulls an image', () => {
+    mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: true, isEligible: () => true }))
+    expect(uncheckedProcess().getReadiness().status).toBe('CHECKING')
+  })
+
+  it('stays checking for a runner that needs no image but is not set up here', () => {
+    mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: false, isEligible: () => false }))
+    expect(uncheckedProcess().getReadiness().status).toBe('CHECKING')
+  })
+
+  it('reports what a check found once one ran', async () => {
+    mockSettingsState.containerRunner = 'lambda-microvm'
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'lambda-microvm', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: false },
+    ])
+    const freshProcess = uncheckedProcess()
+
+    await freshProcess.ensureImageReady()
+
+    expect(freshProcess.getReadiness().status).toBe('RUNTIME_UNAVAILABLE')
+  })
+
+  it('stays checking until its own check in a process that runs one, such as a MicroVM host', () => {
+    expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
+    expect(checkAllRunnersAvailability).not.toHaveBeenCalled()
   })
 })
 

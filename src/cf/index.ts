@@ -4,13 +4,28 @@
  * loads on the first API request (boot.ts): evaluating it while the Worker starts goes over the
  * startup CPU limit.
  */
-import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher } from 'cloudflare:workers'
+import { ContainerProxy as LibraryContainerProxy } from '@cloudflare/containers'
+import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher, R2Bucket } from 'cloudflare:workers'
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
+import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './cloudflare-app-state'
+import type { AgentDurableObject } from './cloudflare-agent'
 import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
 
 export { AppStateDurableObject } from './cloudflare-app-state'
 export { TaskManagerDurableObject } from './cloudflare-task-manager'
+export { AgentDurableObject } from './cloudflare-agent'
+
+/**
+ * @cloudflare/containers routes a container's outbound requests (AgentDurableObject's
+ * outboundByHost) through this entrypoint, by this name. The work they leave running keeps the
+ * invocation alive.
+ */
+export class ContainerProxy extends LibraryContainerProxy {
+  override fetch(request: Request): Promise<Response> {
+    return runWithBackground(this.ctx, () => super.fetch(request))
+  }
+}
 
 export interface Env {
   /** The org's database: SuperAgent's tables. */
@@ -19,6 +34,10 @@ export interface Env {
   APP_STATE: DurableObjectNamespace<AppStateDurableObject>
   /** The org's scheduled work, and where its background services run (cloudflare-task-manager.ts). */
   TASK_MANAGER: DurableObjectNamespace<TaskManagerDurableObject>
+  /** One per agent: its container and, while it sleeps, its saved workspace (cloudflare-agent.ts). */
+  AGENT: DurableObjectNamespace<AgentDurableObject>
+  /** Agent workspace files, one object per content hash. */
+  WORKSPACES: R2Bucket
   /** The built UI. */
   ASSETS: Fetcher
   /** The Browser Vault key, 32 bytes in base64: a Worker secret (cloudflare-key-manager.ts). */

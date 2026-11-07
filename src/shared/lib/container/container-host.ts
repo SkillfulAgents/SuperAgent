@@ -30,7 +30,7 @@ import {
   type ContainerRunner,
 } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
-import type { ImagePullProgress, RuntimeReadiness } from './types'
+import { CONTAINER_RUNNER_IDS, type ImagePullProgress, type RuntimeReadiness } from './types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings, type AppSettings } from '@shared/lib/config/settings'
@@ -463,9 +463,33 @@ export class ContainerHost {
     }), { name: 'container-host.ensure-image-ready' })
   }
 
-  /** Get the current runtime readiness state. */
+  /**
+   * Get the current runtime readiness state. In a process that runs no readiness check
+   * (`deriveReadiness`), a runner that needs no local image reads as ready once its
+   * deployment set it up (its environment configures it), until a readiness is set here:
+   * that is all the check would find, so one org's API on many isolates never shows
+   * "Checking runtime availability" forever.
+   */
   getReadiness(): RuntimeReadiness {
+    if (this.readinessDerived && !this.readinessChecked) return this.derivedReadiness() ?? this._readiness
     return this._readiness
+  }
+
+  /** Called by a process that runs no readiness check, because each agent's container is watched where that agent runs. */
+  deriveReadiness(): void {
+    this.readinessDerived = true
+  }
+
+  private readinessDerived = false
+  /** Set once a readiness is set in this process; from then on that one is reported. */
+  private readinessChecked = false
+
+  private derivedReadiness(): RuntimeReadiness | null {
+    const runner = CONTAINER_RUNNER_IDS.find((id) => {
+      const client = getContainerClientClass(id)
+      return !client.requiresLocalImage && client.isEligible()
+    })
+    return runner ? { status: 'READY', message: `Ready (${getRunnerDisplayName(runner)})`, pullProgress: null } : null
   }
 
   /** Reset readiness to CHECKING state and broadcast. Used when restarting a runtime.
@@ -523,6 +547,7 @@ export class ContainerHost {
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
+    this.readinessChecked = true
     globalFeed.publish({
       type: 'runtime_readiness_changed',
       readiness,
