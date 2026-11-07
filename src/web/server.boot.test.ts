@@ -38,6 +38,7 @@ vi.mock('../api', async () => {
 })
 vi.mock('@shared/lib/db', () => ({ openDatabase }))
 vi.mock('@shared/lib/error-reporting', () => ({ initErrorReporting, flushErrorReporting, attachErrorReportingIdentity }))
+vi.mock('@shared/lib/error-reporting/sentry-provider', () => ({ createServerProvider: () => null }))
 vi.mock('@shared/lib/app-state', () => ({ initializeLocalAppState }))
 vi.mock('@shared/lib/background-work', () => ({ initializeBackgroundWork }))
 vi.mock('@shared/lib/server-bind', () => ({ bindServerWithRetry }))
