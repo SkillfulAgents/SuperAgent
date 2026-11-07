@@ -5,7 +5,7 @@
  *
  * Times are UTC epoch milliseconds.
  */
-import type { z } from 'zod'
+import { z } from 'zod'
 
 export interface TaskContext {
   readonly jobId: string
@@ -53,6 +53,28 @@ export abstract class Task<P = unknown> {
 export interface TaskSpec<P> {
   taskType: string
   payload: P
+}
+
+export const emptyPayloadSchema = z.object({}).strict()
+export type EmptyPayload = z.infer<typeof emptyPayloadSchema>
+
+/**
+ * One pass of a service's existing work: no payload, and nothing for the manager
+ * to decide afterwards. The pass reports its own failures.
+ */
+export class PassTask extends Task<EmptyPayload> {
+  readonly payloadSchema = emptyPayloadSchema
+  readonly spec: TaskSpec<EmptyPayload>
+
+  constructor(readonly type: string, private readonly pass: () => Promise<unknown>) {
+    super()
+    this.spec = { taskType: type, payload: {} }
+  }
+
+  async execute(): Promise<TaskResult<EmptyPayload>> {
+    await this.pass()
+    return { kind: 'done' }
+  }
 }
 
 export interface PeriodicOptions {

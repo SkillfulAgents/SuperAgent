@@ -115,6 +115,9 @@ vi.mock('drizzle-orm', () => ({
 
 // Import after mocks are set up.
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(sessionAutoDeleteMonitor))
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 
 // ============================================================================

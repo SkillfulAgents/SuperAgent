@@ -9,7 +9,7 @@ import { attachErrorReportingIdentity, flushErrorReporting, initErrorReporting }
 import { createServerProvider } from '@shared/lib/error-reporting/sentry-provider'
 import { initializeBackgroundWork } from '@shared/lib/background-work'
 import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
-import { afterBindInitialize, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
+import { afterBindInitialize, registerBackgroundWork, shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { markBoot } from '@shared/lib/boot-timing'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
 
@@ -85,6 +85,7 @@ async function start() {
   await installServerKeyManager()
   // Then task dispatch: a request can schedule work as soon as the bind below lands.
   await initializeBackgroundWork(new LocalTaskManager())
+  registerBackgroundWork()
 
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 
