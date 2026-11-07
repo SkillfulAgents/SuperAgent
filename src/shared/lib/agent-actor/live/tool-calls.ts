@@ -46,7 +46,7 @@ import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capabi
 import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
 import { getRequiredPermissionLevel } from '@shared/lib/computer-use/types'
 import { commandLineOf, computerUseMethodFromToolName, isComputerUseToolName } from '@shared/lib/computer-use/command-line'
-import { callTargets, type CallTargets } from '@shared/lib/computer-use/commands'
+import { callTargets, capturesScreen, type CallTargets } from '@shared/lib/computer-use/commands'
 import { background } from '@shared/lib/background'
 import { MAIN_THREAD_ONLY_TOOLS, MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult, type LoginDecision } from '../host-port'
@@ -696,7 +696,11 @@ export class ToolCalls {
           // Proceed without the app name.
         }
       }
-      return (await this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId)) === 'granted'
+      if ((await this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId)) !== 'granted') return false
+      // Unattended only with the macOS permissions it needs: without one, it
+      // waits on the user, whose approval asks for it.
+      const missing = await this.ctx.host.call('computerUsePermissions', { screenRecording: capturesScreen(method, params) }).catch(() => null)
+      return missing === null
     }, (granted, stillWanted) => {
       const payload = { method, params, permissionLevel, appName }
       if (granted) {

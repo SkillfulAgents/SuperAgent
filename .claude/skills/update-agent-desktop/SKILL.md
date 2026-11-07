@@ -17,7 +17,7 @@ Computer use runs the `agent-desktop` npm package on the host (`src/shared/lib/c
 Look for, and fix in the same change:
 
 - **Envelope / JSON contract** (`"version"` in every envelope, `docs/json-output.md` upstream): the Zod schemas in `src/shared/lib/computer-use/agent-desktop.ts` (envelope, snapshot, list-windows `app_name`, launch, screenshot `data`, permissions, `session start`).
-- **CLI flags and commands**: the refused commands/flags, the read-only/observation sets and the target extraction (`callTargets`) in `src/shared/lib/computer-use/commands.ts`; the params → argv mapping in `command-line.ts`; in `scripts/lib/computer-use-docs.ts`, `TOOL_COMMANDS` (the commands that get their own tool), `REFUSED_COMMANDS`, `HOST_OWNED_FLAGS` and the guide header template. A new global flag that changes what runs (like `--headed`, `--session`) belongs on the refused list.
+- **CLI flags and commands**: the refused commands/flags, the read-only/observation sets and the target extraction (`callTargets`) in `src/shared/lib/computer-use/commands.ts`; the params → argv mapping in `command-line.ts`; in `scripts/lib/computer-use-docs.ts`, `TOOL_COMMANDS` (the commands that get their own tool), `REFUSED_COMMANDS`, `HOST_OWNED_FLAGS`, what the guides leave out (`DROPPED_SECTIONS`, `DROPPED_LINES`, `REPLACED_TEXT`) and the guide header template. A new global flag that changes what runs (like `--headed`, `--session`) belongs on the refused list.
 - **Ref format** (`@<snapshot>:eN`): `QUALIFIED_REF` in `commands.ts`.
 - **Binary and helper names** (`node_modules/agent-desktop/bin/`): `resolveAgentDesktopBinary()` in `agent-desktop.ts`, `extraResources` in `package.json` (mac and win) and `LEFT_OUT_RESOURCES` in `electron-builder.mas.cjs`. The packaged executable must stay named `agent-desktop` — the macOS cursor overlay is a child the CLI starts by re-running itself, and it starts none from a binary by another name.
 
@@ -31,7 +31,7 @@ git diff --stat agent-container/docs/ src/shared/lib/computer-use/agent-desktop-
 
 The generator falls back to the release tag on GitHub when the binary cannot run here; that source has no `--help`, so `computer-use/flags.md` is left out and the guides keep pointing at `--help`. Regenerate from the binary before merging.
 
-Review the guide diff as an agent would read it: new commands to map in the header, advice that now contradicts what the app decides (input mode, sessions, cursor, refused flags).
+Review the guide diff as an agent would read it: new commands to map in the header, advice that now contradicts what the app decides (input mode, sessions, cursor, refused flags, OS permissions: the app checks them before a call runs and asks the user, so no guide may tell an agent to check or grant one; `generate-computer-use-docs.test.ts` fails on leftovers).
 
 ## 4. Verify
 

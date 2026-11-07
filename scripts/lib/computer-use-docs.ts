@@ -106,11 +106,36 @@ export function rewriteSkillLinks(
 export const FLAGS_GUIDE = `${GUIDE_DIR}/flags.md`
 
 /**
- * Sections of the core skill left out here: there is no shell (each argument
- * is its own string), and the app already knows the OS and says which guide
- * to read.
+ * The `## ` sections each guide leaves out, by its path under the docs root:
+ * - the core skill's shell syntax (there is no shell: each argument is its own
+ *   string) and first run (the app knows the OS and says which guide to read);
+ * - checking and granting the OS permissions, which the app does itself before
+ *   it runs a call, asking the user for one that is missing.
  */
-export const DROPPED_CORE_SECTIONS: readonly string[] = ['Shell syntax', 'First run']
+export const DROPPED_SECTIONS: Readonly<Record<string, readonly string[]>> = {
+  'computer-use.md': ['Shell syntax', 'First run'],
+  'computer-use/macos.md': ['Requirements', 'First contact'],
+  'computer-use/macos-troubleshooting.md': ['PERM_DENIED'],
+  'computer-use/workflows.md': ['First-Time Setup'],
+}
+
+/**
+ * What remains in the guides of the OS permissions and the `permissions`
+ * command, left out the same way: lines dropped whole, and text replaced
+ * within a line.
+ */
+export const DROPPED_LINES: readonly RegExp[] = [
+  /^\d+\. Check permissions first\b/,
+  /^\d+\. \*\*Skipping `status` and `permissions`\.\*\*/,
+  /^- `permissions` returns /,
+  /^\| `PERM_DENIED` \|/,
+]
+export const REPLACED_TEXT: ReadonlyArray<readonly [string, string]> = [
+  [' Permission denial returns `PERM_DENIED` (see the platform skill).', ''],
+  [' (needs Screen Recording)', ''],
+  ['## status, permissions, version', '## status, version'],
+  [' the permission report,', ''],
+]
 
 /** The markdown without the `## ` sections titled `titles`, each up to the next heading of its level or above. */
 export function dropSections(markdown: string, titles: readonly string[]): string {
@@ -125,8 +150,28 @@ export function dropSections(markdown: string, titles: readonly string[]): strin
   return out.join('\n')
 }
 
-/** Commands the app runs itself, left out of the flags guide. */
-export const REFUSED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay', 'help'])
+/**
+ * The markdown without the lines matching `patterns`. An ordered list that
+ * loses an item is numbered again, up to the end of the list.
+ */
+export function dropLines(markdown: string, patterns: readonly RegExp[]): string {
+  const out: string[] = []
+  let dropped = 0
+  for (const line of markdown.split('\n')) {
+    const item = /^(\d+)\. /.exec(line)
+    // A blank or unindented line that is not an item ends the list.
+    if (!item && !/^\s+\S/.test(line)) dropped = 0
+    if (patterns.some((pattern) => pattern.test(line))) {
+      if (item) dropped++
+      continue
+    }
+    out.push(item && dropped > 0 ? line.replace(/^\d+/, String(Number(item[1]) - dropped)) : line)
+  }
+  return out.join('\n')
+}
+
+/** Commands the app runs itself (the session, its cursor, traces, the OS permissions), left out of the flags guide. */
+export const REFUSED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay', 'permissions', 'help'])
 
 /** Global flags the app sets on every call (or refuses), left out of the flags guide and the tools. */
 const HOST_OWNED_FLAGS = [
@@ -210,7 +255,6 @@ export const REFUSED_FLAGS: Readonly<Record<string, readonly string[]>> = {
   launch: ['--arg', '--env', '--cwd', '--cdp'],
   press: ['--force'],
   screenshot: ['PATH'],
-  permissions: ['--request', '--guide'],
   'clipboard-get': ['--out'],
   'clipboard-set': ['--image', '--file-url'],
 }
@@ -471,12 +515,10 @@ host's OS: \`${DOCS_ROOT}/${macos.file}\` or \`${DOCS_ROOT}/${windows.file}\`.
 - **Refused:** paths on the user's computer (\`screenshot\`'s output path,
   \`clipboard-get --out\`, \`clipboard-set --image\` / \`--file-url\`,
   \`--screenshot\`), \`launch --cdp\` / \`--arg\` / \`--env\` / \`--cwd\`,
-  \`press --force\`, \`permissions --request\` / \`--guide\`, and the commands
-  \`session\`, \`trace\` and \`cursor-overlay\`.
+  \`press --force\`, and the commands \`session\`, \`trace\` and
+  \`cursor-overlay\`.
 - **Approval.** The user approves each app before you act in it, so a first
-  call in an app may wait. A denial stands: do not retry it. The app asks the
-  user for macOS permissions (Accessibility, Screen Recording) itself: when a
-  call fails for want of one, tell the user.
+  call in an app may wait. A denial stands: do not retry it.
 - **Opening a web address** in a browser: send \`press\` \`cmd+l\` (or \`cmd+t\`
   for a new tab; \`ctrl+l\` / \`ctrl+t\` on Windows, where \`cmd\` is the
   Windows key) with the browser as \`app\`, together with a \`snapshot\` of

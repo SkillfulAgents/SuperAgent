@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCommandArgs,
   callTargets,
+  capturesScreen,
   ComputerUseArgumentError,
   isSystemTarget,
   permissionLevelOf,
@@ -36,10 +37,10 @@ describe('buildCommandArgs', () => {
     }
   })
 
-  it('refuses forced shortcuts and permission prompts', () => {
+  it('refuses forced shortcuts, and the OS permissions, which the app checks and asks for itself', () => {
     expect(() => buildCommandArgs('press', { argv: ['--app', 'Finder', '--force', '--', 'cmd+q'] })).toThrow(/--force/)
-    expect(() => buildCommandArgs('permissions', { argv: ['--request'] })).toThrow(/--request/)
-    expect(buildCommandArgs('permissions', { argv: [] })).toEqual(['permissions'])
+    expect(() => buildCommandArgs('permissions', { argv: [] })).toThrow(/managed by the app/)
+    expect(() => buildCommandArgs('batch', { argv: ['[{"command":"permissions"}]'] })).toThrow(/managed by the app/)
   })
 
   it('reads nothing after -- as a flag', () => {
@@ -211,6 +212,16 @@ describe('callTargets', () => {
     expect(callTargets('mouse-wheel', { argv: ['--x=-100', '--y', '40', '--dy=-3'] }).points).toEqual([{ x: -100, y: 40 }])
     expect(callTargets('batch', batch({ command: 'mouse-wheel', args: { x: 5, y: 6 } })).points).toEqual([{ x: 5, y: 6 }])
     expect(callTargets('move-window', { argv: ['--app=Notes', '--x=0', '--y=0'] }).points).toBeUndefined()
+  })
+})
+
+describe('capturesScreen', () => {
+  it('is true for a screenshot, alone or in a batch, and not for its help', () => {
+    expect(capturesScreen('screenshot', { argv: ['--app=Notes'] })).toBe(true)
+    expect(capturesScreen('screenshot', { argv: ['--help'] })).toBe(false)
+    expect(capturesScreen('snapshot', { argv: ['--app=Notes'] })).toBe(false)
+    expect(capturesScreen('batch', { argv: ['[{"command":"click","args":{"ref":"@s1:e1"}},{"command":"screenshot","args":{"app":"Notes"}}]'] })).toBe(true)
+    expect(capturesScreen('batch', { argv: ['[{"command":"click","args":{"ref":"@s1:e1"}}]'] })).toBe(false)
   })
 })
 

@@ -5,7 +5,7 @@ import { permissionLevelOf } from './commands'
  * Computer Use Permission & Request Types
  *
  * Three permission levels control what agents can do:
- * - list_apps_windows: read-only (list-apps, list-windows, list-displays, status, permissions)
+ * - list_apps_windows: read-only (list-apps, list-windows, list-displays, status)
  * - use_application: interact with a specific app (snapshot, click, type, launch, ...)
  * - use_host_shell: shell commands / AppleScript (replaces old hostShellUse toggle)
  */

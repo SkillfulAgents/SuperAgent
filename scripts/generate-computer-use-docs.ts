@@ -24,10 +24,13 @@ import path from 'path'
 import { z } from 'zod'
 import {
   CORE_SKILL,
-  DROPPED_CORE_SECTIONS,
+  DROPPED_LINES,
+  DROPPED_SECTIONS,
+  REPLACED_TEXT,
   PLATFORM_SKILLS,
   REFUSED_COMMANDS,
   TOOL_COMMANDS,
+  dropLines,
   dropSections,
   parseCommandList,
   parseToolSpec,
@@ -196,23 +199,31 @@ function finish(markdown: string, version: string): string {
 async function generate(source: SkillSource, version: string): Promise<void> {
   const coreReferences = await source.references(CORE_SKILL)
   const help = await source.commandHelp()
-  const rewrite = (markdown: string, skill: SkillSpec) =>
-    rewriteSkillLinks(stripFrontmatter(markdown), skill, coreReferences)
+  // A guide's path under the docs root picks the sections it leaves out.
+  const rewrite = (markdown: string, skill: SkillSpec, file: string) => REPLACED_TEXT.reduce(
+    (text, [from, to]) => text.split(from).join(to),
+    dropLines(
+      dropSections(rewriteSkillLinks(stripFrontmatter(markdown), skill, coreReferences), DROPPED_SECTIONS[file] ?? []),
+      DROPPED_LINES,
+    ),
+  )
   const files: Array<GuideFile & { body: string }> = []
 
   for (const reference of coreReferences) {
-    const body = rewrite(await source.content(CORE_SKILL, reference), CORE_SKILL)
-    files.push({ path: `computer-use/${reference}.md`, title: titleOf(body, reference), body })
+    const file = `computer-use/${reference}.md`
+    const body = rewrite(await source.content(CORE_SKILL, reference), CORE_SKILL, file)
+    files.push({ path: file, title: titleOf(body, reference), body })
   }
   for (const platform of PLATFORM_SKILLS) {
-    const body = rewrite(await source.content(platform), platform)
+    const body = rewrite(await source.content(platform), platform, platform.file!)
     files.push({ path: platform.file!, title: titleOf(body, platform.alias), body })
     for (const reference of await source.references(platform)) {
-      const refBody = rewrite(await source.content(platform, reference), platform)
-      files.push({ path: `computer-use/${platform.prefix}${reference}.md`, title: titleOf(refBody, reference), body: refBody })
+      const file = `computer-use/${platform.prefix}${reference}.md`
+      const refBody = rewrite(await source.content(platform, reference), platform, file)
+      files.push({ path: file, title: titleOf(refBody, reference), body: refBody })
     }
   }
-  const core = dropSections(rewrite(await source.content(CORE_SKILL), CORE_SKILL), DROPPED_CORE_SECTIONS)
+  const core = rewrite(await source.content(CORE_SKILL), CORE_SKILL, 'computer-use.md')
   if (help) {
     // Stamped by renderFlagsGuide itself; finish() would stamp it twice.
     files.push({ path: 'computer-use/flags.md', title: 'Command Flags', body: renderFlagsGuide(version, help.globalHelp, help.commands) })

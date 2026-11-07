@@ -110,7 +110,7 @@ describe('runComputerUse', () => {
 
     expect(outcome).toEqual({ status: 'resolved' })
     expect(host.calls).toEqual([
-      ['computerUsePermissions', {}],
+      ['computerUsePermissions', { screenRecording: false }],
       ['computerUse', { method: 'list-apps', params: {}, caller: { sessionId: SESSION, agentSlug: 'agent-1' } }],
     ])
     expect(containerCalls).toEqual([{ path: '/inputs/cu-1/resolve', body: { value: 'list-apps ok' } }])
@@ -180,6 +180,32 @@ describe('runComputerUse', () => {
     expect(host.calls.map(([name]) => name)).toEqual(['computerUsePermissions'])
     expect(containerCalls).toEqual([])
     // Open and unclaimed: the next decision can take it.
+    expect(requests.claimRequest('cu-1')).not.toBeNull()
+  })
+
+  it('checks Screen Recording too for a call that takes a screenshot', async () => {
+    const { actor, park } = fakeActor()
+    const host = fakeHost()
+    park('cu-1', 'computer_use')
+
+    await runComputerUse(actor, host.port, computerUseRun({ method: 'screenshot', params: { argv: ['--app=Notes'] }, permissionLevel: 'use_application' }))
+
+    expect(host.calls[0]).toEqual(['computerUsePermissions', { screenRecording: true }])
+  })
+
+  it('asks the user, not the agent, when agent-desktop refuses a call for a permission taken away since the check', async () => {
+    const { actor, park, requests, containerCalls, settled } = fakeActor()
+    const permissions = { accessibility: false, screen_recording: true }
+    let checks = 0
+    const host = fakeHost({
+      computerUsePermissions: async () => (checks++ === 0 ? null : permissions),
+      computerUse: async () => ({ output: '{"ok":false,"error":{"code":"PERM_DENIED"}}', permissionDenied: true }),
+    })
+    park('cu-1', 'computer_use')
+
+    expect(await runComputerUse(actor, host.port, computerUseRun())).toEqual({ status: 'missing_permissions', permissions })
+    expect(containerCalls).toEqual([])
+    expect(settled).toEqual([])
     expect(requests.claimRequest('cu-1')).not.toBeNull()
   })
 
@@ -426,7 +452,7 @@ describe('runAutoApproved', () => {
 
     expect(containerCalls).toEqual([{
       path: '/inputs/cu-1/reject',
-      body: { reason: 'Auto-execute failed: computer use is missing macOS permissions on this machine: Accessibility, Screen Recording' },
+      body: { reason: 'Auto-execute failed: this computer is missing macOS permissions computer use needs (Accessibility, Screen Recording). Nothing was done; the app asks the user for them when you next use the computer.' },
     }])
     expect(settled).toEqual([{ id: 'cu-1', how: 'clearPending', outcome: 'invalidated' }])
   })

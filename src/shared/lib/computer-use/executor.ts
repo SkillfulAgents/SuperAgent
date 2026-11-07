@@ -71,6 +71,11 @@ export interface ComputerUseResult {
   output: string
   /** The app the command acted in, when it is known. */
   app?: string
+  /**
+   * agent-desktop refused it for want of an OS permission, before it acted.
+   * Not the agent's to handle: the app asks the user for the permission.
+   */
+  permissionDenied?: true
 }
 
 /** The cursor label's word limit, the CLI's own default made explicit. */
@@ -677,7 +682,12 @@ async function runCommand(
     ? screenshotTarget(commandArgs).catch(() => ({ target: null, reason: 'the window list could not be read' }))
     : null
   const { stdout, envelope } = await runInBudget(session, commandArgs, signal)
-  if (envelope?.error?.code === 'PERM_DENIED') permissionsGrantedUntil = 0
+  if (envelope?.error?.code === 'PERM_DENIED') {
+    believedUntil.accessibility = 0
+    believedUntil.screen_recording = 0
+    // A batch's earlier entries may have acted, so its result goes back as it is.
+    if (method !== 'batch') return { output: stdout, permissionDenied: true }
+  }
   const app = envelope ? rememberTargets(method, envelope, targetApp) : targetApp
 
   if (placing && envelope) {
@@ -735,27 +745,28 @@ export async function shutdownComputerUse(): Promise<void> {
 }
 
 const PERMISSIONS_BELIEVED_MS = 60_000
-let permissionsGrantedUntil = 0
+/** Until when each permission is believed granted without asking again. */
+const believedUntil = { accessibility: 0, screen_recording: 0 }
 
 /**
- * Check the macOS permissions computer use needs, through agent-desktop.
- * Returns the permission report when Accessibility is missing, or null when
- * commands can run (or it cannot tell). Screen Recording is needed only by
- * `screenshot`, which reports its own PERM_DENIED, so it blocks nothing else.
- * Runs before every command, so a grant is believed for a minute, and until a
- * command reports PERM_DENIED.
+ * Check the macOS permissions a computer-use call needs, through
+ * agent-desktop: Accessibility for every call, and Screen Recording for one
+ * that takes a screenshot. Returns the permission report when one it needs is
+ * missing, or null when it can run (or the check cannot tell). Runs before
+ * every call, so a grant is believed for a minute, and until a command
+ * reports PERM_DENIED.
  */
-export async function checkComputerUsePermissions(): Promise<{ accessibility: boolean; screen_recording: boolean } | null> {
-  if (Date.now() < permissionsGrantedUntil) return null
+export async function checkComputerUsePermissions(needs: { screenRecording?: boolean } = {}): Promise<{ accessibility: boolean; screen_recording: boolean } | null> {
+  const now = Date.now()
+  if (now < believedUntil.accessibility && (!needs.screenRecording || now < believedUntil.screen_recording)) return null
   try {
     const data = permissionsDataSchema.parse(await runAgentDesktopOrThrow(['permissions']))
     const granted = (state?: string) => state === undefined || state === 'granted' || state === 'not_required'
-    const accessibility = granted(data.accessibility?.state)
-    if (accessibility) {
-      permissionsGrantedUntil = Date.now() + PERMISSIONS_BELIEVED_MS
-      return null
-    }
-    return { accessibility, screen_recording: granted(data.screen_recording?.state) }
+    const report = { accessibility: granted(data.accessibility?.state), screen_recording: granted(data.screen_recording?.state) }
+    const until = Date.now() + PERMISSIONS_BELIEVED_MS
+    if (report.accessibility) believedUntil.accessibility = until
+    if (report.screen_recording) believedUntil.screen_recording = until
+    return report.accessibility && (report.screen_recording || !needs.screenRecording) ? null : report
   } catch {
     // If the check itself fails, don't block: the command will report it.
     return null

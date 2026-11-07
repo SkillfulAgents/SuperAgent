@@ -98,7 +98,7 @@ export const localHostPort = createLocalHostPort({
       const acted = app ?? (await mockTargetApp(method, params))
       return { output: `[mock] ${method} executed successfully`, ...(acted !== undefined && { app: acted }) }
     },
-    computerUsePermissions: async () => (isE2EMock() ? null : (await computerUse()).checkComputerUsePermissions()),
+    computerUsePermissions: async (needs) => (isE2EMock() ? null : (await computerUse()).checkComputerUsePermissions(needs)),
     computerUseTargetApp: async ({ method, params }) =>
       isE2EMock()
         ? mockTargetApp(method, params)

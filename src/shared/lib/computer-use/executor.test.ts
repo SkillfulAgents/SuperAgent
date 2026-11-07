@@ -598,23 +598,25 @@ describe('resolveComputerUseTargetApp and remembered windows', () => {
 })
 
 describe('checkComputerUsePermissions', () => {
-  it('blocks commands only on Accessibility, believes a grant until a command is refused for want of one', async () => {
+  it('needs Accessibility for every call and Screen Recording for a screenshot, and believes a grant until a command is refused for want of one', async () => {
     answer = () => ok('permissions', { accessibility: { state: 'granted' }, screen_recording: { state: 'denied' } })
     expect(await checkComputerUsePermissions()).toBeNull()
+    expect(await checkComputerUsePermissions({ screenRecording: true })).toEqual({ accessibility: true, screen_recording: false })
 
     // Checked before every command, so a grant is not re-read each time...
     answer = (args) => (args[0] === 'permissions'
       ? ok('permissions', { accessibility: { state: 'denied' }, screen_recording: { state: 'granted' } })
       : defaultAnswer(args))
+    const checks = runs.filter((args) => args[0] === 'permissions').length
     expect(await checkComputerUsePermissions()).toBeNull()
-    expect(runs.filter((args) => args[0] === 'permissions')).toHaveLength(1)
+    expect(runs.filter((args) => args[0] === 'permissions')).toHaveLength(checks)
 
-    // ...until a command reports it lacks one.
+    // ...until a command reports it lacks one, which goes to the user, not the agent.
     const refuse = answer
     answer = (args) => (commandOf(args) === 'click'
       ? { version: '2.6', ok: false, command: 'click', error: { code: 'PERM_DENIED', message: 'Accessibility permission not granted' } }
       : refuse(args))
-    await executeComputerUseCommand('click', { ref: '@snapA:e1' }, caller())
+    expect(await executeComputerUseCommand('click', { ref: '@snapA:e1' }, caller())).toMatchObject({ permissionDenied: true })
     expect(await checkComputerUsePermissions()).toEqual({ accessibility: false, screen_recording: true })
   })
 })

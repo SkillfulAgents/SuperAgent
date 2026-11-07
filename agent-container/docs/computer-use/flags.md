@@ -771,16 +771,6 @@ Usage: agent-desktop status [OPTIONS]
 Options:
 ```
 
-## permissions
-
-```
-Check nested permission states: accessibility/screen_recording/automation each return {state,...}
-
-Usage: agent-desktop permissions [OPTIONS]
-
-Options:
-```
-
 ## version
 
 ```

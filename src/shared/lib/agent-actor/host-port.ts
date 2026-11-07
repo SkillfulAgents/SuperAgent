@@ -33,10 +33,15 @@ export interface HostCalls {
      * `app`: the app the call was placed in and approved for, so the machine need not place it again.
      */
     request: { method: string; params: Record<string, unknown>; caller: ComputerUseCaller; startBy?: number; app?: string }
-    response: { output: string; app?: string }
+    /** `permissionDenied`: refused for want of an OS permission before it acted; the user is asked, not the agent. */
+    response: { output: string; app?: string; permissionDenied?: boolean }
   }
-  /** The macOS permissions computer use needs on this machine, or null when it has them all. */
-  computerUsePermissions: { request: Record<string, never>; response: ComputerUsePermissionStatus | null }
+  /**
+   * The macOS permissions a computer-use call needs on this machine
+   * (Accessibility, and Screen Recording when `screenRecording`), or null when
+   * it has them.
+   */
+  computerUsePermissions: { request: { screenRecording?: boolean }; response: ComputerUsePermissionStatus | null }
   /**
    * The app a computer-use command targets, from its `--app`, the window it
    * names, the snapshot its ref came from, or the window on top at a point it

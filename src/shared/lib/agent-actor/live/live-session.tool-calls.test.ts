@@ -1817,7 +1817,9 @@ describe('Computer use request detection', () => {
         }))
       })
       expect(live.host.calls).toEqual([
-        ['computerUsePermissions', {}],
+        // Checked when the grant is, and again as the run starts.
+        ['computerUsePermissions', { screenRecording: false }],
+        ['computerUsePermissions', { screenRecording: false }],
         ['computerUse', {
           method: 'list-apps',
           params: { argv: ['--app=Calculator'] },

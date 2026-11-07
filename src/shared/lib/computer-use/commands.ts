@@ -19,7 +19,6 @@ export const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   'list-windows',
   'list-displays',
   'status',
-  'permissions',
   'version',
   'skills',
   'help',
@@ -39,8 +38,11 @@ export const OBSERVATION_COMMANDS: ReadonlySet<string> = new Set([
   'wait',
 ])
 
-/** Commands the app runs itself: the session, its cursor and its traces. */
-const DENIED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay'])
+/**
+ * Commands the app runs itself: the session, its cursor, its traces, and the
+ * OS permissions (checked before every call, and asked of the user).
+ */
+const DENIED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay', 'permissions'])
 
 /** Global flags the app sets (the session) or refuses (traces and debug files written on the host). */
 const HOST_GLOBAL_FLAGS: ReadonlySet<string> = new Set([
@@ -58,14 +60,12 @@ const HOST_GLOBAL_FLAGS: ReadonlySet<string> = new Set([
  *   "open an app" into running arbitrary code, which is the host-shell
  *   permission, not this one.
  * - press: `--force` sends the shortcuts agent-desktop blocks (quit, log out).
- * - permissions: prompting and the guide are the app's to show.
  * - clipboard: a path on the host to write the clipboard's image to, or to
  *   read a file onto the clipboard from.
  */
 const DENIED_COMMAND_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
   launch: new Set(['--cdp', '--arg', '--env', '--cwd']),
   press: new Set(['--force']),
-  permissions: new Set(['--request', '--guide']),
   'clipboard-get': new Set(['--out']),
   'clipboard-set': new Set(['--image', '--file-url']),
 }
@@ -74,7 +74,6 @@ const DENIED_COMMAND_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
 const DENIED_BATCH_ARGS: Readonly<Record<string, readonly string[]>> = {
   launch: ['cdp', 'arg', 'args', 'env', 'cwd'],
   press: ['force'],
-  permissions: ['request', 'guide'],
   'clipboard-get': ['out'],
   'clipboard-set': ['image', 'file_url', 'file_urls'],
   screenshot: ['path', 'output_path'],
@@ -488,6 +487,23 @@ export function callTargets(method: string, params: Params): CallTargets {
     })))
   }
   return targetsOf(method, namedInTokens(method, argv))
+}
+
+/**
+ * Whether the call takes a screenshot, which needs the Screen Recording
+ * permission as well as Accessibility.
+ */
+export function capturesScreen(method: string, params: Params): boolean {
+  if (!Array.isArray(params.argv)) return method === 'screenshot'
+  const argv = argvOf(params)
+  const flags = flagPart(argv)
+  if (flags.includes('--help') || flags.includes('-h')) return false
+  if (method !== 'batch') return method === 'screenshot'
+  try {
+    return parseBatch(argv).some((entry) => entry.command === 'screenshot')
+  } catch {
+    return false
+  }
 }
 
 /** `wait` flags that look inside an app (or at notifications); without them a wait watches nothing private. */

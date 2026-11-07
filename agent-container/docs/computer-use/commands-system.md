@@ -213,10 +213,9 @@ Multi-agent cursors (macOS and Windows): start with `session start --cursor --mu
 - `--agent-id <id> cursor-overlay enable` saves a style for that agent. Do not add `--multi-agent` to it.
 - `cursor-overlay disable` and `session end` stop every cursor in the session, even when you pass an agent id.
 
-## status, permissions, version
+## status, version
 
-- `status` returns adapter health, platform, the permission report, `supported_surfaces`, the latest snapshot (`snapshot_id`, `ref_count`), `session_id`, `tracing`, `state_root`.
-- `permissions` returns `accessibility`, `screen_recording` and `automation`, each as `{ "state": "granted" | "denied" | "not_required" | "unknown" }`, with a `suggestion` when denied. It is cached per process. `permissions --request` asks the OS to prompt, through a bounded isolated helper so a stalled prompt cannot hang the command. It is the only path that prompts. On macOS, `permissions --guide` opens System Settings at the missing permission with an on-screen guide, adds `"guide": "started" | "already_running" | "not_needed"` to the result, and returns without waiting. Other platforms return `PLATFORM_NOT_SUPPORTED` for `--guide`. What to grant is in the platform skill.
+- `status` returns adapter health, platform, `supported_surfaces`, the latest snapshot (`snapshot_id`, `ref_count`), `session_id`, `tracing`, `state_root`.
 - `version` returns `{ version, target, os }`.
 
 ## skills

@@ -5,6 +5,7 @@ import {
   CORE_SKILL,
   PLATFORM_SKILLS,
   TOOL_COMMANDS,
+  dropLines,
   dropSections,
   filterHelp,
   parseCommandList,
@@ -40,6 +41,20 @@ describe('generated computer-use guides', () => {
     for (const guide of guides) {
       expect({ guide: path.relative(ROOT, guide), version: readVersionStamp(readFileSync(guide, 'utf8')) })
         .toEqual({ guide: path.relative(ROOT, guide), version })
+    }
+  })
+
+  it('leave the OS permissions to the app, which checks them before a call runs and asks the user', () => {
+    const guides = [
+      path.join(DOCS_DIR, 'computer-use.md'),
+      ...readdirSync(path.join(DOCS_DIR, 'computer-use')).map((name) => path.join(DOCS_DIR, 'computer-use', name)),
+    ].filter((guide) => !path.basename(guide).startsWith('windows-'))
+    for (const guide of guides) {
+      const text = readFileSync(guide, 'utf8')
+      for (const advice of [/agent-desktop permissions/, /permissions --(guide|request)/, /Screen Recording/, /Accessibility permission/, /First contact/, /`PERM_DENIED` \|/]) {
+        expect({ guide: path.relative(ROOT, guide), advice: advice.test(text) ? String(advice) : null })
+          .toEqual({ guide: path.relative(ROOT, guide), advice: null })
+      }
     }
   })
 })
@@ -171,6 +186,12 @@ describe('generated tools', () => {
 })
 
 describe('guide helpers', () => {
+  it('drops lines, and numbers the ordered list that lost one again', () => {
+    const markdown = '**Fix.**\n1. Check permissions first.\n2. Remove `-i`.\n   Raise the depth.\n3. Retry.\n\n1. Other list.\n- `permissions` returns its states.\n- `version` returns it.'
+    expect(dropLines(markdown, [/^\d+\. Check permissions/, /^- `permissions`/]))
+      .toBe('**Fix.**\n1. Remove `-i`.\n   Raise the depth.\n2. Retry.\n\n1. Other list.\n- `version` returns it.')
+  })
+
   it('drops whole sections by title, up to the next heading of their level', () => {
     const markdown = '# Tool\n\nIntro\n\n## Shell syntax\n\nQuote refs.\n\n### PowerShell\n\nMore.\n\n## The loop\n\nSnapshot first.\n'
     expect(dropSections(markdown, ['Shell syntax'])).toBe('# Tool\n\nIntro\n\n## The loop\n\nSnapshot first.\n')

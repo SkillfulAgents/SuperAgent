@@ -48,12 +48,10 @@ host's OS: `/opt/gamut/docs/computer-use/macos.md` or `/opt/gamut/docs/computer-
 - **Refused:** paths on the user's computer (`screenshot`'s output path,
   `clipboard-get --out`, `clipboard-set --image` / `--file-url`,
   `--screenshot`), `launch --cdp` / `--arg` / `--env` / `--cwd`,
-  `press --force`, `permissions --request` / `--guide`, and the commands
-  `session`, `trace` and `cursor-overlay`.
+  `press --force`, and the commands `session`, `trace` and
+  `cursor-overlay`.
 - **Approval.** The user approves each app before you act in it, so a first
-  call in an app may wait. A denial stands: do not retry it. The app asks the
-  user for macOS permissions (Accessibility, Screen Recording) itself: when a
-  call fails for want of one, tell the user.
+  call in an app may wait. A denial stands: do not retry it.
 - **Opening a web address** in a browser: send `press` `cmd+l` (or `cmd+t`
   for a new tab; `ctrl+l` / `ctrl+t` on Windows, where `cmd` is the
   Windows key) with the browser as `app`, together with a `snapshot` of

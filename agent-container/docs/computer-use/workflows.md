@@ -3,21 +3,6 @@
 
 Patterns for multi-step desktop automation. Every ref comes from the latest snapshot output.
 
-## First-Time Setup
-
-Check the platform and permissions before any automation.
-
-```bash
-agent-desktop status
-agent-desktop permissions
-```
-
-- On macOS, the terminal needs Accessibility permission, and Screen Recording for screenshots. If `permissions` reports `denied`, run `agent-desktop permissions --guide`. It opens System Settings at the missing permission with a panel that shows the user which app to drag into the list.
-- On Windows, there is no permission dialog for same-integrity targets. Input into an elevated target needs an equally elevated terminal.
-- On Linux, there is no permission dialog. The session needs a running AT-SPI bus and `status` must report `accessibility` as `granted`. Run the tool in the same desktop session as the target app. If `status` reports it denied, read the bus section of the Linux skill.
-
-Then read `/opt/gamut/docs/computer-use/macos.md` or `/opt/gamut/docs/computer-use/windows.md` for the details of your OS.
-
 ## Dense app: skeleton, drill, act, verify
 
 Use this for Electron apps and any app with more than about 50 interactive elements.
@@ -201,7 +186,6 @@ The core skill already states the rules on refs, waits, headed mode and retries.
 
 1. **Full snapshots of a dense app.** Use `--skeleton` and `--root`, and re-drill only the region that changed. A full tree costs far more tokens.
 2. **Coordinates when a ref exists.** Semantic actions are more reliable than coordinate clicks.
-3. **Skipping `status` and `permissions`.** A missing permission looks like an empty tree.
-4. **Window snapshot while an overlay is open.** Snapshot the surface instead.
-5. **Hand-rolled CDP.** Use a real CDP client. Raw WebSocket scripts and app-internal APIs break silently and verify nothing.
-6. **Parallel writers on one editor.** Click-to-edit, type and commit are not atomic. Serialize the sequence, and after an uncertain delivery read the state before you act.
+3. **Window snapshot while an overlay is open.** Snapshot the surface instead.
+4. **Hand-rolled CDP.** Use a real CDP client. Raw WebSocket scripts and app-internal APIs break silently and verify nothing.
+5. **Parallel writers on one editor.** Click-to-edit, type and commit are not atomic. Serialize the sequence, and after an uncertain delivery read the state before you act.

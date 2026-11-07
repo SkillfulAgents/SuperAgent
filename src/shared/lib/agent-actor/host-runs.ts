@@ -11,11 +11,11 @@
  * so a tool call delivered twice (a subagent's comes on two paths) or a
  * double click never drives the machine twice.
  */
-import type { HostPort, HostScriptOutput, ComputerUsePermissionStatus } from './host-port'
+import type { HostCalls, HostPort, HostScriptOutput, ComputerUsePermissionStatus } from './host-port'
 import type { ComputerUseOps, ContainerOps, InputOps, MessageOps } from './types'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
-import { isSystemTarget } from '@shared/lib/computer-use/commands'
+import { capturesScreen, isSystemTarget } from '@shared/lib/computer-use/commands'
 import { background } from '@shared/lib/background'
 
 /** The parts of the agent's actor a run uses. */
@@ -74,7 +74,7 @@ export type HostRunOutcome =
   | { status: 'claimed' }
   /** The call was abandoned (a Stop) before the machine work started; nothing ran. */
   | { status: 'abandoned' }
-  /** Computer use lacks macOS permissions; nothing ran and the request is still open. */
+  /** The call lacks macOS permissions it needs; nothing ran and the request is still open. */
   | { status: 'missing_permissions'; permissions: ComputerUsePermissionStatus }
   /** The command failed; the agent got the error and the request is settled. */
   | { status: 'failed'; error: string }
@@ -85,14 +85,15 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
   const { sessionId, toolUseId, method, params, permissionLevel, appName, grantType, startBy } = run
   const { computerUse } = actor.inputs
   return withClaim(actor, toolUseId, async () => {
-    const permissions = await host.call('computerUsePermissions', {})
+    const needs = { screenRecording: capturesScreen(method, params) }
+    const permissions = await host.call('computerUsePermissions', needs)
     if (permissions) return { status: 'missing_permissions', permissions }
 
     // "Once" approves this call alone, which the run does not check again: kept
     // as a grant, it would cover the agent's other calls while this one runs.
     if (grantType && grantType !== 'once') await computerUse.grant(permissionLevel, grantType, appName)
 
-    let result: { output: string; app?: string }
+    let result: HostCalls['computerUse']['response']
     try {
       // Checked in the same step as the command starts: nothing in between.
       if (guard.stillWanted && !guard.stillWanted()) return { status: 'abandoned' }
@@ -110,6 +111,12 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
       // The approval was spent on a system failure, not on a decision.
       await computerUse.clearPending(sessionId, toolUseId, 'invalidated')
       return { status: 'failed', error: message }
+    }
+    if (result.permissionDenied) {
+      // A permission believed granted was taken away: nothing ran, and the
+      // user is asked for it as before a run.
+      const missing = await host.call('computerUsePermissions', needs)
+      if (missing) return { status: 'missing_permissions', permissions: missing }
     }
     const output = result.output
 
@@ -214,7 +221,8 @@ export async function runAutoApproved(actor: HostRunActor, host: HostPort, run: 
         outcome.permissions.accessibility ? null : 'Accessibility',
         outcome.permissions.screen_recording ? null : 'Screen Recording',
       ].filter(Boolean)
-      await giveUp(`Auto-execute failed: computer use is missing macOS permissions on this machine: ${missing.join(', ')}`)
+      // Checked before the run started, so only a permission taken away since lands here.
+      await giveUp(`Auto-execute failed: this computer is missing macOS permissions computer use needs (${missing.join(', ')}). Nothing was done; the app asks the user for them when you next use the computer.`)
     } else if (outcome.status === 'undeliverable') {
       console.error(`[HostRuns] Auto-run of ${toolUseId} finished, but the container did not take the result: ${outcome.detail}`)
     }

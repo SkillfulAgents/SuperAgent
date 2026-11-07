@@ -68,8 +68,10 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
       granted.has(level) || granted.has(`${level}:${appName}`) ? 'granted' : 'prompt_needed',
   } as unknown as AgentComputerUse
   // The machine places a command by the app it names unless a test says otherwise.
+  // The machine has the OS permissions computer use needs unless a test says otherwise.
   const host = createRecordingHostPort({
     computerUseTargetApp: ({ params }) => (typeof params.app === 'string' ? params.app : undefined),
+    computerUsePermissions: null,
     ...options.answers,
   })
   const runs = { name: 'the actor' } as unknown as HostRunActor
@@ -690,6 +692,39 @@ describe('ToolCalls', () => {
       }, { stillWanted: expect.any(Function), machineDone: expect.any(Function) })
     })
 
+    it('parks a command a grant covers on the user when the machine lacks an OS permission it needs', async () => {
+      const h = harness({ answers: { computerUsePermissions: { accessibility: false, screen_recording: true } } })
+      h.grant('use_application:Safari')
+
+      h.calls.mainToolUse(use('t_cu', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+
+      // The user's approval asks for the permission; the agent is told nothing.
+      expect(h.host.calls).toContainEqual(['computerUsePermissions', { screenRecording: false }])
+      expect(h.open('t_cu')).toMatchObject({ kind: 'computer_use', autoApproved: false })
+      expect(h.awaitingSyncs()).toBe(1)
+      expect(mocks.runAutoApproved).not.toHaveBeenCalled()
+      expect(h.answered).toEqual([])
+    })
+
+    it('needs Screen Recording only for a call that takes a screenshot', async () => {
+      const h = harness({
+        answers: {
+          computerUsePermissions: ({ screenRecording }) => (screenRecording ? { accessibility: true, screen_recording: false } : null),
+        },
+      })
+      h.grant('use_application:Safari')
+
+      h.calls.mainToolUse(use('t_snap', 'mcp__agent-desktop__computer_snapshot', { app: 'Safari' }))
+      await settle()
+      h.calls.mainToolUse(use('t_shot', 'mcp__agent-desktop__computer_screenshot', { app: 'Safari' }))
+      await settle()
+
+      expect(mocks.runAutoApproved).toHaveBeenCalledTimes(1)
+      expect(h.open('t_snap')).toMatchObject({ autoApproved: true })
+      expect(h.open('t_shot')).toMatchObject({ autoApproved: false })
+    })
+
     it('asks the machine which app a ref belongs to before judging the command', async () => {
       const h = harness({ answers: { computerUseTargetApp: 'Notes' } })
 
@@ -929,7 +964,7 @@ describe('ToolCalls', () => {
       await settle()
 
       expect(mocks.runAutoApproved).toHaveBeenCalledTimes(1)
-      expect(h.host.calls).toHaveLength(1)
+      expect(h.host.calls.map(([name]) => name)).toEqual(['computerUseTargetApp', 'computerUsePermissions'])
     })
 
     it('parks a subagent\'s command under the subagent, from either path', async () => {

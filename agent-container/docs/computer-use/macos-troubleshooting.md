@@ -3,18 +3,6 @@
 
 Each entry is a symptom, its cause, and the fix. Read `error.code`, `error.suggestion` and `error.disposition` in the JSON envelope first.
 
-## PERM_DENIED
-
-**Symptom.** A command returns `PERM_DENIED`, or `permissions` shows `denied`.
-
-**Cause.** The app that launched agent-desktop has no Accessibility permission (or Screen Recording, for `screenshot` and `session start --screenshots`). The grant belongs to the launching app, not to the shell. A new launcher, such as a different terminal or an IDE, needs its own grant.
-
-**Fix.** Follow "First contact" in the macOS skill: `permissions --guide`, turn on the launching app (and the `agent-desktop` binary if it is listed on its own) in System Settings > Privacy & Security > Accessibility or Screen Recording, then run `agent-desktop permissions` to confirm `granted`. The launching app does not need a restart.
-
-The guide offers the app bundle of the nearest process above agent-desktop. Under a tmux server or an SSH session, no such app exists, so the guide offers the `agent-desktop` binary. In that case, add the terminal app that started tmux by hand. macOS 27 and later name the Accessibility list Device Control and Data Access.
-
-For Automation, open Privacy & Security > Automation and allow the launching app to control System Events.
-
 ## Empty or sparse tree
 
 **Symptom.** `snapshot` returns few nodes, or no refs.
@@ -22,12 +10,11 @@ For Automation, open Privacy & Security > Automation and allow the launching app
 **Cause.** Some apps expose little accessibility data: custom-rendered UIs, games, some creative tools, and parts of web views. Chromium and Electron apps need web accessibility enabled in the renderer.
 
 **Fix.**
-1. Check permissions first (see PERM_DENIED).
-2. Remove `-i` to see non-interactive nodes. Raise `--max-depth`.
-3. Run `list-surfaces --app "App"`. The content may sit in a sheet, popover or menu surface.
-4. Retry the snapshot once. A renderer needs a short settle time after accessibility is enabled.
-5. Use `screenshot` as a visual fallback (needs Screen Recording).
-6. For a fresh Chromium app, use `launch "App" --cdp` and a CDP client for the web contents.
+1. Remove `-i` to see non-interactive nodes. Raise `--max-depth`.
+2. Run `list-surfaces --app "App"`. The content may sit in a sheet, popover or menu surface.
+3. Retry the snapshot once. A renderer needs a short settle time after accessibility is enabled.
+4. Use `screenshot` as a visual fallback.
+5. For a fresh Chromium app, use `launch "App" --cdp` and a CDP client for the web contents.
 
 ## Slow or truncated snapshot
 
