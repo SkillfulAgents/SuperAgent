@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from '@renderer/lib/api'
+import type { XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import { XAgentReviewRequestItem } from './request'
 
 vi.mock('@tanstack/react-router', () => ({
@@ -11,6 +12,11 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(),
+}))
+
+let mockUser: { isAuthMode: boolean; rolesReady: boolean; canUseAgent: (slug: string) => boolean } = { isAuthMode: false, rolesReady: true, canUseAgent: () => true }
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => mockUser,
 }))
 
 describe('XAgentReviewRequestItem attachments', () => {
@@ -161,5 +167,45 @@ describe('XAgentReviewRequestItem buttons', () => {
     fireEvent.change(input, { target: { value: 'wrong agent' } })
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
     expect(vi.mocked(apiFetch).mock.calls[0]).toEqual(['/api/agents/caller/proxy-review/review-7', expect.objectContaining({ body: JSON.stringify({ decision: 'deny', reason: 'wrong agent' }) })])
+  })
+})
+
+describe('XAgentReviewRequestItem in a team workspace', () => {
+  afterEach(() => { mockUser = { isAuthMode: false, rolesReady: true, canUseAgent: () => true } })
+  // The parent renders the card read-only for a Viewer of the calling agent.
+  const readCard: XAgentReview = { targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'read' }
+  const card = (uses: string[], rolesReady = true) => {
+    mockUser = { isAuthMode: true, rolesReady, canUseAgent: (slug) => uses.includes(slug) }
+    render(<XAgentReviewRequestItem reviewId="review-10" agentSlug="caller" readOnly={!uses.includes('caller')} xAgent={readCard} onComplete={vi.fn()} />)
+  }
+
+  it('shows a Viewer of both the read-only card and which agents they need User access to', () => {
+    card([])
+    expect(screen.getByText('You need User access to this agent and Target Agent to allow this.')).toBeInTheDocument()
+    expect(screen.queryByTestId('xagent-review-deny-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('xagent-review-allow-once-btn')).not.toBeInTheDocument()
+  })
+
+  it('offers someone who uses only the calling agent Deny, no Allow, and names the target', () => {
+    card(['caller'])
+    expect(screen.getByText('You need User access to Target Agent to allow this.')).toBeInTheDocument()
+    expect(screen.getByTestId('xagent-review-deny-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('xagent-review-allow-once-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('xagent-review-always-allow-btn')).not.toBeInTheDocument()
+  })
+
+  it('offers no Allow, and no line, while roles load', () => {
+    card(['caller', 'target'], false)
+    expect(screen.getByTestId('xagent-review-deny-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('xagent-review-allow-once-btn')).not.toBeInTheDocument()
+    expect(screen.queryByText(/You need User access/)).not.toBeInTheDocument()
+  })
+
+  it('offers someone who uses both the full bar and no line', () => {
+    card(['caller', 'target'])
+    expect(screen.getByTestId('xagent-review-deny-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('xagent-review-allow-once-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('xagent-review-always-allow-btn')).toBeInTheDocument()
+    expect(screen.queryByText(/You need User access/)).not.toBeInTheDocument()
   })
 })

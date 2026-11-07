@@ -5,7 +5,7 @@ import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-p
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
-import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { requiresOneTimeXAgentReview, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
@@ -42,7 +42,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -7997,6 +7997,14 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 // Proxy review endpoints
 // =============================================================================
 
+const ALLOW_NEEDS_BOTH = 'Only a User or Owner of both agents can allow this request.'
+
+/** Allowing a request to read or message another agent needs someone who uses both. List and create requests name no other agent. */
+async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview | undefined): Promise<boolean> {
+  if (!review || !xAgentReviewNamesTarget(review)) return true
+  return canUseAgent(c, review.targetAgentSlug)
+}
+
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
@@ -8009,7 +8017,11 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
 
   // Approving an agent's proxy rule persists access on the account or MCP
   // server, so (like "always allow") only its owner may approve it.
-  const proposal = (await agentRegistry.get(slug).inputs.reviews.get(reviewId))?.ruleProposal
+  const pendingReview = await agentRegistry.get(slug).inputs.reviews.get(reviewId)
+  const proposal = pendingReview?.ruleProposal
+  if (body.decision === 'allow' && !(await canAllowXAgentCard(c, slug, pendingReview?.xAgent))) {
+    return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
+  }
   if (proposal && body.decision === 'allow' && isAuthMode()) {
     const context = await loadTargetContext({ kind: proposal.ruleKind, targetId: proposal.targetId })
     if (!context || context.userId !== getCurrentUserId(c)) {
@@ -8058,6 +8070,13 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   }
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
+  }
+  // The card this settles, and the connection this saves, each need someone who uses both agents.
+  if (body.decision === 'allow' && !(await canAllowXAgentCard(c, slug, pendingReview?.xAgent))) {
+    return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
+  }
+  if (body.reviewType === 'xagent' && body.xAgent?.targetSlug != null && !(await canUseAgent(c, body.xAgent.targetSlug))) {
+    return c.json({ error: 'Only a User or Owner of both agents can change this connection.' }, 403)
   }
   // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
   const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
