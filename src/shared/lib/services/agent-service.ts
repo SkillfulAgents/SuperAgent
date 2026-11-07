@@ -15,7 +15,6 @@ import {
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
   displaySlug,
-  isMintedAgentId,
 } from '@shared/lib/utils/file-storage'
 import {
   AgentFrontmatter,
@@ -255,10 +254,10 @@ export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): 
  * Create a new agent (returns API format with stopped status)
  */
 export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
-  const { name: rawName, description, instructions, id, avatar } = input
+  const { name: rawName, description, instructions } = input
   const name = String(rawName)
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
-  const record = await writeNewAgent({ name, description: description || undefined, id, avatar }, body)
+  const record = await writeNewAgent({ name, description: description || undefined }, body)
   return newAgentResponse(record, await getTeamBrain(), body)
 }
 
@@ -269,27 +268,14 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
  * nothing lists. A workspace write that fails takes the row with it.
  */
 async function writeNewAgent(
-  identity: { name: string; description?: string; id?: string; avatar?: AgentAvatar },
+  identity: { name: string; description?: string },
   body: string,
 ): Promise<AgentRecord> {
-  // An opaque id — the name no longer feeds the folder, so the "Untitled"
+  // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
   // promptless-create flow can't poison it.
-  const slug = identity.id ?? await agentCatalog.mint()
-  if (identity.id !== undefined) {
-    if (!isMintedAgentId(identity.id)) throw new AgentIdError('invalid', 'An agent id must be 10 lowercase letters or digits')
-    if (!(await agentCatalog.available(identity.id))) throw new AgentIdError('taken', 'That agent id is already in use')
-  }
+  const slug = await agentCatalog.mint()
   const createdAt = new Date()
-  let record: AgentRecord
-  try {
-    record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt, avatar: identity.avatar })
-  } catch (error) {
-    // A create with the same id that won the race between the check above and this insert.
-    if (identity.id !== undefined && await agentCatalog.exists(identity.id)) {
-      throw new AgentIdError('taken', 'That agent id is already in use')
-    }
-    throw error
-  }
+  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt })
 
   const frontmatter: AgentFrontmatter = { name: identity.name, createdAt: createdAt.toISOString() }
   if (identity.description) {
@@ -421,14 +407,6 @@ export async function syncAgentIdentityFromWorkspace(slug: string): Promise<Arra
     if (fields.length > 0) await agentCatalog.update(slug, changes)
     return fields
   })
-}
-
-/** A caller-chosen agent id that cannot be used: malformed, or already in use. */
-export class AgentIdError extends Error {
-  constructor(readonly code: 'invalid' | 'taken', message: string) {
-    super(message)
-    this.name = 'AgentIdError'
-  }
 }
 
 /**
