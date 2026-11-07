@@ -26,12 +26,14 @@ If `$ARGUMENTS` is empty or ambiguous, briefly state the defaults you're using a
 
 ### 1. Locate the source settings
 
-**Source priority (settings.json):**
-1. `~/Library/Application Support/Superagent-Dev/settings.json` — **prefer this**. The dev install has hardcoded direct LLM keys (Anthropic, OpenAI, OpenRouter, etc.) instead of relying on the `platform` LLM provider, which is flakey.
-2. `~/Library/Application Support/Superagent/settings.json` — fall back only if Superagent-Dev doesn't exist. The prod install often uses `llmProvider: "platform"` which depends on a flakey remote auth; tests want direct keys.
-3. `~/.superagent/settings.json` — last-resort fallback.
+Settings live in each install's database (the `settings` row of `app_records`), not in `settings.json`: an install's `settings.json` is imported once, on the first boot of a version with that table, and is stale from then on (see `docs/settings-storage.md`). Read a source install's settings with `readInstallSettings(dataDir)` from `e2e/live/lib/install-settings.mjs` (read-only; falls back to `settings.json` for an install that has not migrated yet), e.g. `node --input-type=module -e "import { readInstallSettings } from './e2e/live/lib/install-settings.mjs'; console.log(JSON.stringify(readInstallSettings(process.argv[1])))" <dataDir>`.
 
-Pick the first that exists AND has a populated `apiKeys.anthropicApiKey` (or another working LLM key). If none have an LLM key, write the settings anyway and surface this loudly in the final summary.
+**Source priority (data dirs):**
+1. `~/Library/Application Support/Superagent-Dev` — **prefer this**. The dev install has hardcoded direct LLM keys (Anthropic, OpenAI, OpenRouter, etc.) instead of relying on the `platform` LLM provider, which is flakey.
+2. `~/Library/Application Support/Superagent` — fall back only if Superagent-Dev doesn't exist. The prod install often uses `llmProvider: "platform"` which depends on a flakey remote auth; tests want direct keys.
+3. `~/.superagent` — last-resort fallback.
+
+Pick the first whose settings have a populated `apiKeys.anthropicApiKey` (or another working LLM key). If none have an LLM key, write the settings anyway and surface this loudly in the final summary.
 
 ### 2. Resolve target dir
 
@@ -53,9 +55,9 @@ description: Test agent A
 You are Agent A. (instructions body)
 ```
 
-### 4. Copy settings.json (curated)
+### 4. Copy settings (curated)
 
-Read prod `settings.json` and write a filtered copy to `<TARGET>/settings.json`.
+Read the source install's settings (step 1) and write a filtered copy to `<TARGET>/settings.json`. The target is a fresh data dir, so its first launch imports that file into its new database; after that launch, change its settings through the app or `PUT /api/settings`, not the file.
 
 **Copy:**
 - `apiKeys` (anthropicApiKey, deepgramApiKey, openaiApiKey, composioUserId — whatever is present)

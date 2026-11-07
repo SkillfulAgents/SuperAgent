@@ -11,16 +11,17 @@
  */
 
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
 import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
+import { NOTIFICATION_TYPES, type NotificationCounts, type NotificationTypeCounts, type NotificationTypeName } from '@shared/lib/notifications/notification-filters'
 
 // Re-export types for external use
 export type { Notification, NewNotification }
 
-export type NotificationType = 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
+export type NotificationType = NotificationTypeName
 
 // ============================================================================
 // Types
@@ -79,6 +80,20 @@ export async function getAgentAccessUserIds(agentSlug: string): Promise<string[]
   return rows.map((row) => row.userId)
 }
 
+// Return the audience from the write itself, so deletion/retention and reads
+// notify exactly the affected agents and mention recipients after committing.
+const changeAudience = () => ({ agentSlug: notifications.agentSlug, recipientUserId: notifications.recipientUserId })
+function publishChanges(rows: Array<{ agentSlug: string; recipientUserId: string | null }>, sourceClientId?: string) {
+  const audiences = new Map(rows.map(row => [JSON.stringify([row.agentSlug, row.recipientUserId]), row]))
+  for (const { agentSlug, recipientUserId } of audiences.values()) {
+    globalFeed.publish({
+      type: 'notifications_changed', agentSlug,
+      ...(recipientUserId ? { recipientUserId } : {}),
+      ...(sourceClientId ? { sourceClientId } : {}),
+    })
+  }
+}
+
 // ============================================================================
 // Create Operations
 // ============================================================================
@@ -113,40 +128,63 @@ export async function createNotification(
 // Read Operations
 // ============================================================================
 
+/** Narrow a query to some notification types; undefined (no filter) adds no condition. */
+function ofTypes(types: readonly NotificationType[] | undefined) {
+  return types && types.length > 0 ? inArray(notifications.type, [...types]) : undefined
+}
+
+/** The rows a viewer can see: their agents' rows (auth mode) minus other people's mentions. */
+function visibleRows(userId: string | undefined) {
+  return userId ? and(inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)) : undefined
+}
+
 /**
  * List notifications, ordered by creation time (newest first).
  * When userId is provided, only returns notifications for agents the user has access to.
+ * `types` narrows the list to those notification types (the Notifications page filters).
  */
-export async function listNotifications(limit: number = 50, userId?: string, offset: number = 0): Promise<Notification[]> {
-  if (userId) {
-    return db
-      .select()
-      .from(notifications)
-      .where(and(inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)))
-      .orderBy(desc(notifications.createdAt))
-      .limit(limit)
-      .offset(offset)
-  }
+export async function listNotifications(limit: number = 50, userId?: string, offset: number = 0, types?: readonly NotificationType[]): Promise<Notification[]> {
   return db
     .select()
     .from(notifications)
+    .where(and(visibleRows(userId), ofTypes(types)))
     .orderBy(desc(notifications.createdAt))
     .limit(limit)
     .offset(offset)
 }
 
-export async function countNotifications(userId?: string): Promise<number> {
-  if (userId) {
-    const result = await db
-      .select({ count: count() })
-      .from(notifications)
-      .where(and(inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)))
-    return result[0]?.count ?? 0
-  }
+export async function countNotifications(userId?: string, types?: readonly NotificationType[]): Promise<number> {
   const result = await db
     .select({ count: count() })
     .from(notifications)
+    .where(and(visibleRows(userId), ofTypes(types)))
   return result[0]?.count ?? 0
+}
+
+/**
+ * One grouped query supplies the badge and per-type tab totals. The badge
+ * counts actionable types; tabs include unread automation notifications too.
+ */
+export async function getNotificationCounts(userId?: string): Promise<Required<NotificationCounts>> {
+  const rows = await db
+    .select({
+      type: notifications.type,
+      total: count(),
+      unread: sql<number>`coalesce(sum(case when ${notifications.isRead} = 0 then 1 else 0 end), 0)`,
+      mentions: userId
+        ? sql<number>`coalesce(sum(case when ${unreadMentionsOf(userId)} then 1 else 0 end), 0)`
+        : sql<number>`0`,
+    })
+    .from(notifications)
+    .where(visibleRows(userId))
+    .groupBy(notifications.type)
+  const types = Object.fromEntries(NOTIFICATION_TYPES.map((type) => [type, { total: 0, unread: 0 }])) as NotificationTypeCounts
+  for (const row of rows) types[row.type] = { total: Number(row.total), unread: Number(row.unread) }
+  return {
+    count: USER_ACTIONABLE_NOTIFICATION_TYPES.reduce((sum, type) => sum + types[type].unread, 0),
+    mentions: rows.reduce((sum, row) => sum + Number(row.mentions), 0),
+    types,
+  }
 }
 
 /**
@@ -282,18 +320,6 @@ export async function getUnreadMentionsByAgents(agentSlugs: string[], viewerId: 
 }
 
 /**
- * The viewer's unread mentions, on agents they can still open (a lost share
- * hides them like any other row).
- */
-export async function getUnreadMentionCount(userId: string): Promise<number> {
-  const result = await db
-    .select({ count: count() })
-    .from(notifications)
-    .where(and(inArray(notifications.agentSlug, accessibleAgents(userId)), unreadMentionsOf(userId)))
-  return result[0]?.count ?? 0
-}
-
-/**
  * List unread notifications.
  * When userId is provided, only returns notifications for agents the user has access to.
  */
@@ -315,27 +341,6 @@ export async function listUnreadNotifications(limit: number = 50, userId?: strin
 }
 
 /**
- * Get unread notification count.
- * When userId is provided, only counts notifications for agents the user has access to.
- */
-export async function getUnreadCount(userId?: string): Promise<number> {
-  const actionable = inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES])
-  if (userId) {
-    const result = await db
-      .select({ count: count() })
-      .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, accessibleAgents(userId)), actionable, visibleTo(userId)))
-    return result[0]?.count ?? 0
-  }
-  const result = await db
-    .select({ count: count() })
-    .from(notifications)
-    .where(and(eq(notifications.isRead, false), actionable))
-
-  return result[0]?.count ?? 0
-}
-
-/**
  * Get a single notification by ID
  */
 export async function getNotification(notificationId: string): Promise<Notification | null> {
@@ -354,7 +359,7 @@ export async function getNotification(notificationId: string): Promise<Notificat
 /**
  * Mark a notification as read
  */
-export async function markAsRead(notificationId: string): Promise<boolean> {
+export async function markAsRead(notificationId: string, sourceClientId?: string): Promise<boolean> {
   const result = await db
     .update(notifications)
     .set({
@@ -362,15 +367,17 @@ export async function markAsRead(notificationId: string): Promise<boolean> {
       readAt: new Date(),
     })
     .where(eq(notifications.id, notificationId))
+    .returning(changeAudience())
 
-  return changesOf(result) > 0
+  publishChanges(result, sourceClientId)
+  return result.length > 0
 }
 
 /**
  * Mark all notifications for a session as read.
  * When userId is provided, only marks notifications for agents the user has access to.
  */
-export async function markSessionNotificationsRead(sessionId: string, userId?: string): Promise<number> {
+export async function markSessionNotificationsRead(sessionId: string, userId?: string, sourceClientId?: string): Promise<number> {
   const conditions = [
     eq(notifications.sessionId, sessionId),
     eq(notifications.isRead, false),
@@ -385,35 +392,28 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
       readAt: new Date(),
     })
     .where(and(...conditions))
+    .returning(changeAudience())
 
-  return changesOf(result)
+  publishChanges(result, sourceClientId)
+  return result.length
 }
 
 /**
  * Mark all notifications as read.
  * When userId is provided, only marks notifications for agents the user has access to.
+ * `types` narrows the write to those notification types (read-all on a filtered tab).
  */
-export async function markAllAsRead(userId?: string): Promise<number> {
-  if (userId) {
-    const result = await db
-      .update(notifications)
-      .set({
-        isRead: true,
-        readAt: new Date(),
-      })
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)))
-    return changesOf(result)
-  }
-
+export async function markAllAsRead(userId?: string, types?: readonly NotificationType[], sourceClientId?: string): Promise<number> {
   const result = await db
     .update(notifications)
     .set({
       isRead: true,
       readAt: new Date(),
     })
-    .where(eq(notifications.isRead, false))
-
-  return changesOf(result)
+    .where(and(eq(notifications.isRead, false), visibleRows(userId), ofTypes(types)))
+    .returning(changeAudience())
+  publishChanges(result, sourceClientId)
+  return result.length
 }
 
 // ============================================================================
@@ -427,8 +427,10 @@ export async function deleteNotification(notificationId: string): Promise<boolea
   const result = await db
     .delete(notifications)
     .where(eq(notifications.id, notificationId))
+    .returning(changeAudience())
 
-  return changesOf(result) > 0
+  publishChanges(result)
+  return result.length > 0
 }
 
 /**
@@ -448,8 +450,10 @@ export async function deleteNotificationsBySessionIds(sessionIds: string[]): Pro
   const result = await db
     .delete(notifications)
     .where(inArray(notifications.sessionId, sessionIds))
+    .returning(changeAudience())
 
-  return changesOf(result)
+  publishChanges(result)
+  return result.length
 }
 
 /**
@@ -476,6 +480,8 @@ export async function deleteOldNotifications(olderThanDays: number = 30): Promis
   const result = await db
     .delete(notifications)
     .where(lt(notifications.createdAt, cutoffDate))
+    .returning(changeAudience())
 
-  return changesOf(result)
+  publishChanges(result)
+  return result.length
 }

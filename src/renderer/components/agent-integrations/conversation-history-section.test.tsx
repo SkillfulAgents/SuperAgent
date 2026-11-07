@@ -43,7 +43,7 @@ const integration = makeChatIntegration({
   requireApproval: true,
 })
 const base = {
-  integration, routeNewChatId: null, onSelectWindow: vi.fn(), onNewConversation: vi.fn(),
+  integration, routeNewChatId: null, onSelectWindow: vi.fn(), onNewConversation: vi.fn(), onOpenSession: vi.fn(),
   agentSlug: 'a', providerName: 'Telegram', canManageAccess: true,
 }
 

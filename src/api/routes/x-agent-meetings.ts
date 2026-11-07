@@ -67,7 +67,7 @@ async function ensureMeetingIntegration(callerSlug: string, request: Request): P
   }
   if (!provider) throw new IntegrationPolicyError('Meetings are unavailable on this host: it needs a public https address (HOST_PUBLIC_URL) and a Platform connection or a Recall.ai key.')
   const definition = agentIntegrationRegistry.getDefinition(provider)!
-  const prepared = await prepareIntegrationSetup(provider, {}, integrationSetupContext(provider, request, callerSlug), true)
+  const prepared = await prepareIntegrationSetup(provider, {}, await integrationSetupContext(provider, request, callerSlug), true)
   let id: string
   try {
     id = await createAgentIntegration({ agentSlug: callerSlug, provider, name: definition.name, config: prepared.config, status: prepared.status })

@@ -68,6 +68,13 @@ describe('notification read confirmations', () => {
       notificationPreview: 'Next notification', notificationPreviewSource: { id: next, sessionId: 's2' },
       unreadSessionIds: ['s2'],
     }] })
+    expect(result.readState?.types).toMatchObject({
+      session_mention: { total: 1, unread: 0 },
+      session_complete: { total: 1, unread: 1 },
+    })
+    const counts = await app.request('/api/notifications/unread-count')
+    expect(counts.status).toBe(200)
+    expect(await counts.json()).toEqual({ count: 1, mentions: 0, types: result.readState?.types })
   })
 
   it('clears notification previews while retaining personal reminders and a live needs-input state', async () => {
@@ -114,7 +121,7 @@ describe('notification read confirmations', () => {
 
   it('keeps a missing notification a 404 and handles empty bulk reads', async () => {
     expect((await app.request('/api/notifications/missing/read', { method: 'POST' })).status).toBe(404)
-    expect((await post('read-all')).readState).toEqual({ count: 0, mentions: 0, agents: [] })
+    expect((await post('read-all')).readState).toMatchObject({ count: 0, mentions: 0, agents: [] })
   })
 
   it('still acknowledges a committed write if reading the confirmation fails', async () => {

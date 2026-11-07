@@ -29,7 +29,7 @@ import {
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
-import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
+import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, getAgentIntegrationSessionBySessionId, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
@@ -110,6 +110,17 @@ agentIntegrationsRouter.get('/providers', async c => {
 })
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
 
+// GET /api/agent-integrations/agents/:id/sessions/:sessionId - Which integration (if any) owns an agent session
+agentIntegrationsRouter.get('/agents/:id/sessions/:sessionId', ResolveAgent(), AgentRead(), async (c) => {
+  try {
+    const mapping = await getAgentIntegrationSessionBySessionId(getAgentId(c), c.req.param('sessionId'))
+    return c.json({ integrationId: mapping?.integrationId ?? null })
+  } catch (error) {
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'session-integration' }, extra: { sessionId: c.req.param('sessionId') } })
+    return c.json({ error: 'Failed to resolve session integration' }, 500)
+  }
+})
+
 const IntegrationAgentRole = EntityAgentRole({
   paramName: 'integrationId',
   lookupFn: async (id: string) => getAgentIntegration(id),
@@ -179,7 +190,7 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
     const provider = c.req.param('provider')
     await assertIntegrationAvailable(provider)
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
-    const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
+    const context = await integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
     const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
     return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
@@ -211,7 +222,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
     await assertConnectionSelectionAccess(llmProviderId)
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
     // Get the authenticated user ID if available
     const user = c.get('user' as never) as { id: string } | undefined
@@ -292,7 +303,7 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())
-    const result = await authorization.run(row, input, integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
+    const result = await authorization.run(row, input, await integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
     // Validation, credential lookup and attempt persistence may fail. Keep the
     // current account running until the provider has a usable authorization URL.
     await agentIntegrationManager.pauseIntegration(row.id)

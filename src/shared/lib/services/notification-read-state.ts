@@ -6,7 +6,7 @@ import { agentRegistry } from '../agent-actor'
 import { agentNotificationPreview } from '../notifications/agent-notification-preview'
 import type { NotificationReadState, NotificationReadTarget } from '../notifications/read-state-schema'
 import {
-  accessibleAgents, getUnreadCount, getUnreadMentionCount,
+  accessibleAgents, getNotificationCounts,
   getUnreadNotificationsByAgents, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents,
 } from './notification-service'
 import { getSessionIdsMarkedUnreadByAgents } from './session-unread-service'
@@ -15,7 +15,7 @@ import { isHiddenAutomatedSession } from './session-visibility'
 /** Resolve affected agents on the server; never trust a client's list of slugs. */
 export async function notificationReadAgentSlugs(target: NotificationReadTarget, viewerId?: string): Promise<string[]> {
   const rows = await db.selectDistinct({ slug: notifications.agentSlug }).from(notifications).where(and(
-    target.kind === 'all' ? eq(notifications.isRead, false)
+    target.kind === 'all' ? and(eq(notifications.isRead, false), target.types ? inArray(notifications.type, [...target.types]) : undefined)
       : target.kind === 'session' ? eq(notifications.sessionId, target.sessionId)
         : eq(notifications.id, target.id),
     viewerId ? inArray(notifications.agentSlug, accessibleAgents(viewerId)) : undefined,
@@ -26,9 +26,8 @@ export async function notificationReadAgentSlugs(target: NotificationReadTarget,
 
 /** Return the new projection with the write, without another client GET. */
 export async function notificationReadState(slugs: string[], viewerId?: string): Promise<NotificationReadState> {
-  const [count, mentions, unread, mentioned, marked, previews] = await Promise.all([
-    getUnreadCount(viewerId),
-    viewerId ? getUnreadMentionCount(viewerId) : 0,
+  const [counts, unread, mentioned, marked, previews] = await Promise.all([
+    getNotificationCounts(viewerId),
     getUnreadNotificationsByAgents(slugs, viewerId),
     viewerId ? getUnreadMentionsByAgents(slugs, viewerId) : new Map<string, Set<string>>(),
     getSessionIdsMarkedUnreadByAgents(slugs, viewerId ?? 'local'),
@@ -58,7 +57,7 @@ export async function notificationReadState(slugs: string[], viewerId?: string):
       mentionedSessionIds: [...mentionIds],
     }
   })))
-  return { count, mentions, agents }
+  return { ...counts, agents }
 }
 
 /** The write has committed; a failed confirmation must not pretend it failed. */

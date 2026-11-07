@@ -7,7 +7,6 @@ import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { useHideSettingsHeader, useFullWidthSettingsContent } from '@renderer/components/settings/settings-page'
 import { AgentAssignmentList } from '@renderer/components/agents/agent-assignment-list'
 import { AppLink } from '@renderer/components/ui/app-link'
-import { agentHomeSearchFor } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { Button } from '@renderer/components/ui/button'
 import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-badge'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -87,7 +86,7 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
       rowDescription={agent => {
         const item = agents.data?.find(candidate => candidate.slug === agent.slug)
         return item?.status === 'running' && item.stale
-        ? <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }} search={agentHomeSearchFor(item)} className="text-[11px] text-orange-600 dark:text-orange-400 hover:underline">Restart agent to apply changes</AppLink> : null
+        ? <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }} className="text-[11px] text-orange-600 dark:text-orange-400 hover:underline">Restart agent to apply changes</AppLink> : null
       }}
     />}
   </section>

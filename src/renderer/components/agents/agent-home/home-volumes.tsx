@@ -41,21 +41,24 @@ import type { MountSummaryWithHealth, VolumeDefinitionSummary } from '@shared/li
 
 interface HomeVolumesProps {
   agentSlug: string
+  /** A drive the page shows elsewhere, left out of the list. */
+  hiddenVolumeId?: string
   className?: string
 }
 
-export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
+export function HomeVolumes({ agentSlug, hiddenVolumeId, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
   const [showNewVolume, setShowNewVolume] = useState(false)
+  const mounts = hiddenVolumeId ? volumes.mounts.filter((mount) => mount.volumeId !== hiddenVolumeId) : volumes.mounts
 
   // Saved sources can be attached from a browser or cloud workspace, too.
-  if (!volumes.canAddMount && volumes.mounts.length === 0 && !volumes.operationError) return null
+  if (!volumes.canAddMount && mounts.length === 0 && !volumes.operationError) return null
 
   return (
-    <HomeCollapsible id="drives" title="Drives" count={volumes.isLoading ? undefined : volumes.mounts.length} className={className}>
-      {volumes.mounts.length > 0 ? (
+    <HomeCollapsible id="drives" title="Drives" count={volumes.isLoading ? undefined : mounts.length} className={className}>
+      {mounts.length > 0 ? (
         <div className="mt-2">
-          {volumes.mounts.map((mount) => (
+          {mounts.map((mount) => (
             <VolumeRow
               key={mount.id}
               mount={mount}
@@ -69,7 +72,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
             />
           ))}
         </div>
-      ) : (
+      ) : volumes.mounts.length === 0 && (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No drives yet</p>
           <p className="text-xs mt-1">Add a saved drive{volumes.canCreateMount ? ' or create a new one' : ''} to give this agent read/write access.</p>

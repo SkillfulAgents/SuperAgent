@@ -7,32 +7,15 @@ import { useUser } from '@renderer/context/user-context'
 import { AgentSharePopover } from '@renderer/components/agents/agent-share-popover'
 import { Button } from '@renderer/components/ui/button'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
+import { UserAvatarStack } from '@renderer/components/ui/user-avatar-stack'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
-// Each circle overlaps the one before it. Rather than a ring in the
-// background colour, which had to track the sidebar row's hover and selected
-// fills (and can't match Agent Home's background), the circle underneath has a gap
-// cut out around the next one, so what's behind shows through. Centred on the
-// next circle, which starts `face - overlap` in.
-function cutout(face: number, overlap: number, next: number, gap: number) {
-  const radius = next / 2 + gap
-  return { maskImage: `radial-gradient(circle at ${face - overlap + next / 2}px 50%, transparent ${radius}px, #000 ${radius + 0.5}px)` }
-}
-
-/**
- * Sizes and colours per surface. The sidebar's: 18px faces 8px over each other
- * with a 1px gap. Agent Home's: the same stack a step up, beside its title.
- */
 const VARIANTS = {
   sidebar: {
-    face: 18, count: 19, overlap: 8, gap: 0.5,
-    overlapClass: '-ml-2', countText: 'text-[8px]',
     countFill: 'bg-[color-mix(in_srgb,hsl(var(--sidebar-foreground))_15%,hsl(var(--sidebar-background)))] text-sidebar-foreground',
     ring: 'focus-visible:ring-sidebar-ring',
   },
   page: {
-    face: 24, count: 24, overlap: 10, gap: 1.5,
-    overlapClass: '-ml-2.5', countText: 'text-[10px]',
     countFill: 'bg-[color-mix(in_srgb,hsl(var(--foreground))_10%,hsl(var(--background)))] text-foreground',
     ring: 'focus-visible:ring-ring',
   },
@@ -62,9 +45,6 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
   const triggerRef = useRef<HTMLButtonElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const count = members?.length ?? memberCount
-  const circleLimit = Math.max(1, maxFaces)
-  const faces = members?.slice(0, count > circleLimit ? circleLimit - 1 : circleLimit) ?? []
-  const remaining = count - faces.length
 
   function clearTimer() {
     if (timer.current !== null) clearTimeout(timer.current)
@@ -122,28 +102,15 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
             setPinned(!pinned)
           }}
         >
-          <span aria-hidden="true" className="pointer-events-none flex items-center pl-0.5 pr-1">
-            {faces.map((member, i) => (
-              <UserAvatar
-                key={member.id}
-                user={member}
-                size={v.face}
-                className={cn(v.overlapClass, 'first:ml-0')}
-                style={i < faces.length - 1 ? cutout(v.face, v.overlap, v.face, v.gap) : remaining > 0 ? cutout(v.face, v.overlap, v.count, v.gap) : undefined}
-              />
-            ))}
-            {/* When the faces don't fit, the last circle gives the whole
-                team's size rather than how many are hidden. It stretches into
-                a pill past two digits, keeping its round left end under the
-                cut-out. */}
-            {remaining > 0 && (
-              <span
-                className={cn('relative first:ml-0 inline-flex shrink-0 items-center justify-center rounded-full px-[3px] font-medium leading-none tabular-nums', v.overlapClass, v.countText, v.countFill)}
-                style={{ minWidth: v.count, height: v.count }}
-                data-testid={`${testId}-count-${agentSlug}`}
-              >{count}</span>
-            )}
-          </span>
+          <UserAvatarStack
+            users={members ?? []}
+            count={count}
+            maxFaces={maxFaces}
+            size={variant === 'page' ? 'md' : 'sm'}
+            className="pl-0.5 pr-1"
+            overflowClassName={v.countFill}
+            overflowTestId={`${testId}-count-${agentSlug}`}
+          />
         </button>
       </PopoverTrigger>
       <PopoverContent

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { createContext, useContext, useState, type ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@renderer/components/ui/collapsible'
@@ -33,6 +33,28 @@ export const HOME_SECTION_HEADER_CLASS = 'flex min-h-12 w-full items-center just
 /** The Agent Home sections, by the id their open state is stored under (user setting `agentHomeSectionsOpen`). */
 export type HomeSectionId = 'triggers' | 'connections' | 'skills' | 'integrations' | 'drives' | 'hooks'
 
+/** How the settings cards look where they sit. Agent Home's by default; another page provides its own. */
+export interface HomeCardLook {
+  card: string
+  section: string
+  media: string
+  label: string
+  defaultOpen: boolean
+  /** Agent Home groups persisted section rows; other surfaces keep standalone cards. */
+  grouped?: boolean
+}
+
+export const HomeCardLookContext = createContext<HomeCardLook>({
+  card: cn('rounded-card', HOME_GLASS_SURFACE_CLASS),
+  section: '',
+  media: '',
+  label: 'text-[12px]/5 text-muted-foreground',
+  defaultOpen: false,
+  grouped: true,
+})
+
+export const useHomeCardLook = () => useContext(HomeCardLookContext)
+
 interface HomeCollapsibleProps {
   /** Where its open state is stored, so it opens as the user last left it, on every agent. */
   id: HomeSectionId
@@ -51,7 +73,24 @@ interface HomeCollapsibleProps {
  * it (a user setting, shared by every agent's Agent Home), collapsed until then.
  * The local override answers at once while the settings write round-trips.
  */
-export function HomeCollapsible({ id, title, count, defaultOpen = false, children, className }: HomeCollapsibleProps) {
+export function HomeCollapsible(props: HomeCollapsibleProps) {
+  const look = useHomeCardLook()
+  if (look.grouped) return <RememberedHomeSection {...props} />
+
+  return (
+    <Collapsible defaultOpen={props.defaultOpen ?? look.defaultOpen}>
+      <div className={cn(look.section, props.className)}>
+        <CollapsibleTrigger className="flex w-full items-center justify-between px-4">
+          <span className={look.label}>{props.title}</span>
+          <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>{props.children}</CollapsibleContent>
+      </div>
+    </Collapsible>
+  )
+}
+
+function RememberedHomeSection({ id, title, count, defaultOpen = false, children, className }: HomeCollapsibleProps) {
   const { data: userSettings } = useUserSettings()
   const { mutate: mutateSettings } = useUpdateUserSettings()
   const [override, setOverride] = useState<boolean | null>(null)

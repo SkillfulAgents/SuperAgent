@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeExtras } from './home-extras'
+import { HomeCardLookContext } from './home-collapsible'
 
 // No provider locks a model here (model locks have their own tests).
 vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
@@ -60,6 +61,17 @@ async function renderOpen(user = userEvent.setup()) {
 }
 
 describe('HomeExtras', () => {
+  it('shows the existing settings directly inside another surface’s advanced panel', () => {
+    render(
+      <HomeCardLookContext.Provider value={{ card: '', section: '', media: '', label: '', defaultOpen: false }}>
+        <HomeExtras agentSlug="test-agent" />
+      </HomeCardLookContext.Provider>,
+    )
+    expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('home-preferences-group')).toBeVisible()
+    expect(screen.getByTestId('home-agent-directory-open-browser')).toHaveAttribute('data-drawer-opener')
+  })
+
   it('keeps everything behind a closed Show more toggle, which reads Show less once open', async () => {
     const user = userEvent.setup()
     render(<HomeExtras agentSlug="test-agent" />)
@@ -99,6 +111,8 @@ describe('HomeExtras', () => {
 
     expect(mocks.openFolder).toHaveBeenCalledWith('/workspace', 'test-agent')
     expect(screen.getByText('Agent Directory')).toBeVisible()
+    // A page that puts its drawer away on a click off it lets this click through.
+    expect(screen.getByTestId('home-agent-directory-open-browser')).toHaveAttribute('data-drawer-opener')
   })
 
   it('opens the Agent-to-agent connections page', async () => {

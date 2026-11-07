@@ -33,7 +33,7 @@ import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationInp
  */
 export async function integrationRelayScope(userId?: string): Promise<string> {
   const resolved = userId ? await resolvePlatformMemberForCandidates([userId]) : null
-  return resolved?.memberId ?? getStoredPlatformMemberId() ?? LOCAL_RELAY_SCOPE
+  return resolved?.memberId ?? (await getStoredPlatformMemberId()) ?? LOCAL_RELAY_SCOPE
 }
 
 /** The endpoint's name on the platform, which lists it alongside agent-minted ones. */

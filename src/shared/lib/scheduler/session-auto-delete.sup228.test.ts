@@ -34,7 +34,7 @@ const mockDeleteCalls: DeleteCall[] = []
 const mockDbDelete = vi.fn((table: unknown) => ({
   where: (predicate: unknown) => {
     mockDeleteCalls.push({ table, predicate })
-    return { changes: 0 }
+    return { returning: async () => [] }
   },
 }))
 
@@ -61,7 +61,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({
-  readAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
+  readStoredAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -115,6 +115,9 @@ vi.mock('drizzle-orm', () => ({
 
 // Import after mocks are set up.
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(sessionAutoDeleteMonitor))
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 
 // ============================================================================

@@ -43,8 +43,8 @@ const sessionSchema = z.object({
   user: z.object({ id: z.string(), mustChangePassword: z.boolean() }),
 }).nullable()
 
-function request(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return getAuth().handler(new Request(`${BASE}/api/auth/${endpoint}`, {
+async function request(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
+  return (await getAuth()).handler(new Request(`${BASE}/api/auth/${endpoint}`, {
     method: body ? 'POST' : 'GET',
     headers: { origin: BASE, 'content-type': 'application/json', ...headers },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -201,7 +201,7 @@ describe('password changes and session continuity', () => {
     await requirePasswordChange(first.user.id)
     const accountsBefore = await testDb.select().from(authAccount)
     const sessionsBefore = await testDb.select().from(authSession)
-    const adapter = (await getAuth().$context).internalAdapter
+    const adapter = (await (await getAuth()).$context).internalAdapter
     const failedRevoke = vi.spyOn(adapter, 'deleteUserSessions').mockRejectedValueOnce(new Error('Injected session revocation failure'))
 
     const changed = await request('change-password', {
@@ -221,7 +221,7 @@ describe('password changes and session continuity', () => {
     const first = await signUp()
     const second = await signIn(first.user.email)
     await requirePasswordChange(first.user.id)
-    const adapter = (await getAuth().$context).internalAdapter
+    const adapter = (await (await getAuth()).$context).internalAdapter
     const failedCreate = vi.spyOn(adapter, 'createSession').mockRejectedValueOnce(new Error('Injected session creation failure'))
 
     const changed = await request('change-password', {

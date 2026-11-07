@@ -43,13 +43,15 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = GROK_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override toolSearchEnv() { return 'true' as const }
+  override async toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = GROK_MEDIA_PROMPT
   override readonly supportsModelSearch = true
 
-  override getEffectiveApiKey() { return this.configuration?.oauth?.accessToken }
-  override getApiKeyStatus() {
-    return this.getEffectiveApiKey() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
+  // Credentials come only from the connection, never from global settings.
+  protected override async ambientSettings() { return undefined }
+  protected override effectiveApiKeyFrom() { return this.configuration?.oauth?.accessToken }
+  override apiKeyStatusFrom() {
+    return this.effectiveApiKeyFrom() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
   }
   private async credential(rejectedGeneration?: number) {
     if (!this.configuration?.resolveCredential) throw new Error('Reconnect Grok in Settings → Model Providers')
@@ -85,7 +87,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
       return grokFetch(input, { ...init, headers, redirect: 'error' })
     })
   }
-  createClient(): Anthropic {
+  async createClientFrom(): Promise<Anthropic> {
     return new Anthropic({ authToken: 'app-managed', baseURL: GROK_SUBSCRIPTION_BASE_URL,
       // Rebuild translation after an auth retry so reasoning replay is scoped
       // to the credential actually used, including reconnects to another account.
@@ -122,7 +124,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
       supportedEfforts: ['low', 'medium', 'high'] as EffortLevel[], supportsWebSearch: true,
     }))
   }
-  protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
+  protected override async parseErrorResponseOverride(status: number | undefined, body: unknown) {
     const actual = status ?? inferErrorStatus(extractErrorMessage(body))
     if (actual === 401) return { severity: 'error' as const, icon: 'info' as const, message: '**Grok sign-in expired or invalid.** Reconnect in Settings → Model Providers.' }
     if (actual === 402 || actual === 403) return { severity: 'error' as const, icon: 'info' as const, message: '**Grok subscription access was denied.** Check the connected account’s subscription and entitlement.' }

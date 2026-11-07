@@ -10,9 +10,9 @@ let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('@shared/lib/agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada', avatar: { color: 'tonal-blue', shape: 'hexagon' } })) } }))
-
 const { createMeeting, mintParticipantToken, setMeetingSession, transitionMeeting } = await import('@shared/lib/meeting-integrations/store')
 const { meetingRoster } = await import('@shared/lib/meeting-integrations/roster')
+const { meetingSpeakersKey } = await import('@shared/lib/meeting-integrations/transcript-speakers')
 const { default: router } = await import('./meeting-participant')
 const app = new Hono().route('/api/meeting-participant', router)
 
@@ -94,18 +94,20 @@ describe('roster stream', () => {
 describe('bot host events', () => {
   const post = (body: string, suffix = '/events/') => app.request(url(suffix), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
   const recall = (event: string, participant: { id: number; name: string; is_host?: boolean }) => JSON.stringify({ event: `participant_events.${event}`, data: { data: { participant } } })
-  // No connector runs in this test: the route applies the event to the roster itself.
   it('applies the event to the roster on either path spelling', async () => {
     expect(await (await post(recall('join', { id: 1, name: 'Iddo', is_host: true }))).json()).toEqual({ accepted: true })
     expect(await (await post(recall('join', { id: 2, name: 'Maya' }), '/events')).json()).toEqual({ accepted: true })
     expect(await (await post(recall('speech_on', { id: 2, name: 'Maya' }))).json()).toEqual({ accepted: true })
     expect(await meetingRoster.get(meetingId)).toEqual({ participants: [{ id: '1', name: 'Iddo', isHost: true }, { id: '2', name: 'Maya', isHost: false }], speaking: ['2'] })
+    expect((await appState().get(meetingSpeakersKey(meetingId)))?.value).toEqual([expect.objectContaining({ name: 'Maya' })])
   })
   it('acknowledges what it does not track, leaves the bot itself out, and refuses a bad token', async () => {
     expect(await (await post(JSON.stringify({ event: 'transcript.data', data: { data: {} } }))).json()).toEqual({ accepted: false })
     expect(await (await post(recall('join', { id: 3, name: 'Ada' }))).json()).toEqual({ accepted: true })
+    expect(await (await post(recall('speech_on', { id: 3, name: 'Ada' }))).json()).toEqual({ accepted: true })
     expect((await app.request(url('/events/', 'wrong'), { method: 'POST', body: recall('join', { id: 1, name: 'Iddo' }) })).status).toBe(404)
     expect(await meetingRoster.get(meetingId)).toEqual({ participants: [], speaking: [] })
+    expect(await appState().get(meetingSpeakersKey(meetingId))).toBeNull()
   })
   it('changes nothing for a meeting that has ended', async () => {
     await transitionMeeting(meetingId, 'joining')

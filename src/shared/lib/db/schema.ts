@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
+import { NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-filters'
 
 // =============================================================================
 // Better Auth tables (user, session, account, verification)
@@ -306,7 +307,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   isRecurring: integer('is_recurring', { mode: 'boolean' }).notNull().default(false),
   executionCount: integer('execution_count').notNull().default(0),
 
-  // Overlap guard (recurring tasks): consecutive poll cycles this task was held
+  // Overlap guard (recurring tasks): consecutive looks this task was held
   // because its previous run was still busy, and when it was last held. Reset on
   // any fire (scheduled or manual) and on a re-anchor (resume/reset); kept across
   // failed fire attempts. Written for skip observability — no reader yet.
@@ -347,7 +348,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration', 'session_mention'] }).notNull(),
+  type: text('type', { enum: NOTIFICATION_TYPES }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
@@ -589,6 +590,19 @@ export const dataMigrations = sqliteTable('data_migrations', {
   id: integer('id').primaryKey(),
   name: text('name').notNull(),
   appliedAt: integer('applied_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
+// App records - the deployment's small host records that used to be files in
+// the data dir (settings, tenant id, auth secret, host container tokens, …):
+// one JSON value per key, validated by the key's Zod schema on every read and
+// write (see app-records/). `revision` is 1 on insert and goes up by one on
+// every write, so a writer compares-and-sets against the revision it read
+// instead of holding a transaction open.
+export const appRecords = sqliteTable('app_records', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  revision: integer('revision').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
 // Agents - which agents exist and what they are called. The row is the

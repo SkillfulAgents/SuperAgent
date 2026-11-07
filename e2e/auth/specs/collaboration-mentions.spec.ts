@@ -93,7 +93,7 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     await saraPage.getByText(`${owner.name} mentioned you`).click()
     await expect(saraPage).toHaveURL(new RegExp(`/sessions/${sessionId}`))
     await expect(saraPage.getByTestId('message-user').filter({ hasText: 'look at this plan' }).getByTestId('mention-notified')).toBeVisible()
-    await expect.poll(async () => (await (await sara.context.request.get('/api/notifications/unread-count')).json())).toEqual({ count: 0, mentions: 0 })
+    await expect.poll(async () => (await (await sara.context.request.get('/api/notifications/unread-count')).json())).toMatchObject({ count: 0, mentions: 0 })
     await expect(bellMention).toHaveCount(0, { timeout: 15_000 })
 
     // A tag mid-message is an ordinary turn, with the teammate's email for the agent.

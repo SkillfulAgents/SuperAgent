@@ -1,4 +1,6 @@
-import { readNotifications, noteNotificationChange } from '@renderer/lib/notification-read-cache'
+import { readPlatformNotifications } from '@renderer/lib/platform-notification-read-cache'
+import { notificationChangeSchema } from '@shared/lib/notifications/notification-change-schema'
+import { readNotifications, noteNotificationChange, invalidateNotificationCaches, notificationClientId } from '@renderer/lib/notification-read-cache'
 import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
 import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -170,16 +172,7 @@ export function GlobalNotificationHandler() {
     const platformCtx = NotificationActionContextSchema.safeParse(event.context)
     if (platformCtx.success && platformCtx.data.kind === 'platform_notification') {
       const platformNotificationId = platformCtx.data.platformNotificationId
-      apiFetch('/api/platform-notifications/read', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: [platformNotificationId] }),
-      })
-        .then((res) => {
-          if (res.ok) {
-            queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
-          }
-        })
+      readPlatformNotifications(queryClient, [platformNotificationId])
         .catch(() => {
           // Best-effort: the detail view marks read on open anyway.
         })
@@ -271,6 +264,7 @@ export function GlobalNotificationHandler() {
 
         switch (data.type) {
           case 'connected':
+            noteNotificationChange(queryClient)
             // The server sends this once the stream follows every channel it
             // carries, so what changes from here on arrives as an event. What
             // changed before it did not: the queries that loaded before the
@@ -305,16 +299,19 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
             }
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            invalidateNotificationCaches(queryClient)
+            break
+          }
+
+          case 'notifications_changed': {
+            const parsed = notificationChangeSchema.safeParse(data)
+            if (!parsed.success || parsed.data.sourceClientId === notificationClientId(queryClient)) break
+            invalidateNotificationCaches(queryClient, parsed.data.agentSlug)
             break
           }
 
           case 'session_mention_withdrawn': {
-            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
-            // The message that tagged this viewer was taken back before it ran.
-            queryClient.invalidateQueries({ queryKey: ['notifications'] })
-            if (typeof data.agentSlug === 'string') queryClient.invalidateQueries({ queryKey: ['sessions', data.agentSlug] })
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            invalidateNotificationCaches(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
             break
           }
 
@@ -326,11 +323,11 @@ export function GlobalNotificationHandler() {
           }
 
           case 'os_notification': {
-            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
-            // Refresh notification list (for badge/dropdown)
-            queryClient.invalidateQueries({ queryKey: ['notifications'] })
             if (data.notificationType === 'platform_notification') {
               queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
+            } else {
+              noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
+              queryClient.invalidateQueries({ queryKey: ['notifications'] })
             }
             // Refresh sessions so unread indicators update in sidebar
             const notifAgentSlug = data.agentSlug as string | undefined
@@ -347,9 +344,11 @@ export function GlobalNotificationHandler() {
             } else if (notifType === 'session_scheduled' && data.taskId) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', data.taskId] })
               queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.taskId] })
-            } else if (notifType === 'session_mention') {
-              // No session lifecycle event follows a mention to refresh the agent row's dot.
+            }
+            if (notifType && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notifType)) {
+              // Completion enrichment may finish after the lifecycle refetch.
               queryClient.invalidateQueries({ queryKey: ['agents'] })
+              queryClient.invalidateQueries({ queryKey: ['session'] })
             }
 
             // Skip if user doesn't have access to the notification's agent
@@ -398,8 +397,7 @@ export function GlobalNotificationHandler() {
               // suppressed branch below marks the record read instead, and
               // for disabled types the server-side gate creates no record.
               // The sessions refetch invalidated above confirms; the agent
-              // rollup is confirmed by the accompanying session lifecycle
-              // event's ['agents'] invalidation (or the 60s poll).
+              // rollup and preview are confirmed by this event's agents refetch.
               if (
                 notificationType
                 && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notificationType)

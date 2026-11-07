@@ -6,9 +6,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const settings = vi.hoisted(() => ({ value: {} as Record<string, unknown> }))
+const settings = vi.hoisted(() => ({ value: {} as Record<string, unknown>, reads: 0 }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => settings.value,
+  getSettings: () => {
+    settings.reads++
+    return settings.value
+  },
   getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'review' }),
   getModelCatalogSettings: () => ({}),
 }))
@@ -32,7 +35,7 @@ const live = attachLiveSessionsHarness()
 let client: StreamClient
 let running: boolean
 const runtime = {
-  getClient: () => client as ContainerClient,
+  getClient: async () => client as ContainerClient,
   ensureRunning: vi.fn(async () => client as ContainerClient),
   getCachedInfo: () => ({ status: running ? 'running' : 'stopped' }),
 }
@@ -271,8 +274,7 @@ describe('deliver', () => {
   })
 
   it('stores a changed selection once the message went, and tells every window', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
-    send().mockResolvedValueOnce({ selection: { model: 'model-b', llmProviderId: 'conn-a' } })
+    send().mockResolvedValueOnce({ selection: { model: 'model-b', llmProviderId: 'conn-a' }, llmDefault: true })
     const events = live.collect(SLUG, SESSION).events
     const write = vi.spyOn(service, 'updateSessionMetadata')
 
@@ -284,8 +286,7 @@ describe('deliver', () => {
   })
 
   it('writes nothing when the send changed nothing', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
-    send().mockResolvedValueOnce({ selection: { model: 'model-a', llmProviderId: 'conn-a' } })
+    send().mockResolvedValueOnce({ selection: { model: 'model-a', llmProviderId: 'conn-a' }, llmDefault: true })
     const write = vi.spyOn(service, 'updateSessionMetadata')
 
     await delivery().deliver({ sessionId: SESSION, content: 'hi', options: { model: 'model-a', llmProviderId: 'conn-a' } })
@@ -293,8 +294,25 @@ describe('deliver', () => {
     expect(live.host.sent('global').filter((event) => event.type === 'session_updated')).toEqual([])
   })
 
+  it('stores the binding from what the send read, without reading the settings again', async () => {
+    // The send prepared under an app default and resolved model-b.
+    send().mockResolvedValueOnce({ selection: { model: 'model-b', llmProviderId: 'conn-a' }, llmDefault: true })
+    settings.reads = 0
+    await delivery().deliver({ sessionId: SESSION, content: 'hi', options: { model: 'model-b' } })
+    expect(settings.reads).toBe(0)
+    expect(await metadata()).toMatchObject({ model: 'model-b', llmProviderId: 'conn-a' })
+  })
+
+  it('stores what the request named when the send was prepared without an app default', async () => {
+    send().mockResolvedValueOnce({ selection: { model: 'model-c', llmProviderId: 'conn-a' }, llmDefault: false })
+    settings.reads = 0
+    await delivery().deliver({ sessionId: SESSION, content: 'hi', options: { model: 'model-d' } })
+    expect(settings.reads).toBe(0)
+    expect(await metadata()).toMatchObject({ model: 'model-d' })
+  })
+
   it('still reports a sent message as sent when storing its selection fails', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
+    send().mockResolvedValueOnce({ llmDefault: true })
     vi.spyOn(service, 'updateSessionMetadata').mockRejectedValueOnce(new Error('disk full'))
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
@@ -304,10 +322,9 @@ describe('deliver', () => {
   })
 
   it('reads the session in its own turn, after the delivery ahead of it stored its selection', async () => {
-    settings.value = { llmDefault: { model: 'model-a', llmProviderId: 'conn-a' } }
     let releaseFirst!: () => void
     send()
-      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({ selection: { model: 'model-b', llmProviderId: 'conn-a' } }) }))
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({ selection: { model: 'model-b', llmProviderId: 'conn-a' }, llmDefault: true }) }))
       .mockResolvedValueOnce({})
     const read = vi.spyOn(service, 'getSessionMetadata')
 
@@ -370,22 +387,36 @@ describe('start', () => {
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
+  it('stores the runtime the session was created with', async () => {
+    await delivery().start({
+      ...request,
+      create: { initialMessage: 'go', model: 'claude-haiku-5-5', llmProviderId: 'conn-claude-subscription', effort: 'low' as const },
+    })
+
+    expect(await sessionService.getSessionMetadata(store(), 'new-session')).toMatchObject({
+      model: 'claude-haiku-5-5',
+      llmProviderId: 'conn-claude-subscription',
+      effort: 'low',
+      isScheduledExecution: true,
+    })
+  })
+
   it('lets a session started with computer use use any app before its stream attaches', async () => {
     const computerUse = live.agents.get(SLUG).computerUse
-    let atAttach: string | undefined
+    let atAttach: Promise<string> | undefined
     vi.mocked(client.subscribeToStream).mockImplementationOnce(() => {
       atAttach = computerUse.check('use_application', 'Safari', 'new-session')
       return { unsubscribe: vi.fn(), ready: Promise.resolve() }
     })
 
     await delivery().start({ ...request, grantComputerUse: true })
-    expect(atAttach).toBe('granted')
-    expect(computerUse.check('use_application', 'Safari', 'other-session')).toBe('prompt_needed')
+    expect(await atAttach).toBe('granted')
+    expect(await computerUse.check('use_application', 'Safari', 'other-session')).toBe('prompt_needed')
   })
 
   it('grants a session started without computer use nothing', async () => {
     await delivery().start(request)
-    expect(live.agents.get(SLUG).computerUse.check('use_application', 'Safari', 'new-session')).toBe('prompt_needed')
+    expect(await live.agents.get(SLUG).computerUse.check('use_application', 'Safari', 'new-session')).toBe('prompt_needed')
   })
 
   it('stores a session a user starts without its own copy of the commands', async () => {
@@ -586,6 +617,60 @@ describe('stop', () => {
     consoleError.mockRestore()
   })
 
+  it('ends a full stop with one cancelled idle, and keeps the restarted process\'s report on the dead task out of view', async () => {
+    // The frames as captured live: a background Bash runs while the
+    // foreground turn is stopped with scope 'all'.
+    client.emit({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'p1' })
+    client.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+    client.emit({
+      type: 'user',
+      tool_use_result: { backgroundTaskId: 'bg-1' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool-bg', content: 'Running' }] },
+    })
+    const events = live.collect(SLUG, SESSION).events
+    vi.useFakeTimers()
+    try {
+      vi.mocked(client.interruptSession).mockImplementationOnce(async () => {
+        // The aborted turn ends and the runtime idles; the abort kills the task.
+        client.emit({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', num_turns: 4 })
+        client.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        client.emit({ type: 'system', subtype: 'task_updated', task_id: 'bg-1', patch: { status: 'killed' } })
+        client.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', tool_use_id: 'tool-bg', status: 'stopped' })
+        client.emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+        // Restarting the query outlasts the grace a stopped task's wake gets.
+        await vi.advanceTimersByTimeAsync(1600)
+        client.emit({ type: 'system', subtype: 'process_restarted', process_instance: 'p2' })
+        return { interrupted: true, processKept: false }
+      })
+
+      await delivery().stop(SESSION, { scope: 'all' })
+      // The restarted process reports the task the old one left, in a turn
+      // that never calls the model.
+      client.emit({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'bg-1',
+        tool_use_id: 'tool-bg',
+        status: 'stopped',
+        summary: 'Background shell command didn\'t finish before the previous session ended',
+      })
+      client.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      client.emit({ type: 'system', subtype: 'init', slash_commands: [] })
+      client.emit({ type: 'result', subtype: 'success', is_error: false, num_turns: 0, result: '' })
+      client.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      await vi.runAllTimersAsync()
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(events.filter((event) => ['session_active', 'session_idle', 'session_error', 'stream_start'].includes(event.type as string)))
+      .toEqual([expect.objectContaining({ type: 'session_idle', outcome: 'cancelled' })])
+    expect(sessions().isActive(SESSION)).toBe(false)
+    expect(sessions().turnOutcome(SESSION)).toMatchObject({ status: 'cancelled' })
+    expect(live.host.sends.filter(([name]) => name === 'notification')).toEqual([])
+    expect(live.host.sends.filter(([name, event]) => name === 'global' && (event as { type: string }).type === 'session_idle')).toHaveLength(1)
+  })
+
   it('stops everything when only untracked background work would be left', async () => {
     vi.spyOn(sessions(), 'hasOnlyUntrackedBackgroundWork').mockReturnValue(true)
     expect(await delivery().stop(SESSION, { scope: 'turn', escalateUntracked: true })).toMatchObject({ escalated: true })
@@ -598,5 +683,161 @@ describe('stop', () => {
     const mark = vi.spyOn(sessions(), 'markInterrupted')
     await delivery().stop(SESSION, { scope: 'turn' })
     expect(mark).toHaveBeenCalledWith(SESSION, { processKept: true, turnGenerationBefore: 7 })
+  })
+
+  describe('with the runtime reporting its state', () => {
+    const emitState = (state: string) => client.emit({ type: 'system', subtype: 'session_state_changed', state })
+    const startBackgroundTask = () => client.emit({
+      type: 'user',
+      tool_use_result: { backgroundTaskId: 'bg-1' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool-bg', content: 'Running' }] },
+    })
+    const cleanResult = (numTurns = 1) => client.emit({ type: 'result', subtype: 'success', is_error: false, num_turns: numTurns })
+    const idles = (events: { type?: unknown }[]) => events.filter((event) => event.type === 'session_idle')
+
+    beforeEach(() => {
+      client.emit({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'p1' })
+      emitState('running')
+    })
+
+    it.each(['completed', 'failed'])('does not settle a session whose task %s on its own during a stop that marked nothing', async (status) => {
+      startBackgroundTask()
+      cleanResult()
+      emitState('idle')
+      vi.useFakeTimers()
+      try {
+        vi.mocked(client.interruptSession).mockImplementationOnce(async () => {
+          client.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status })
+          return { interrupted: false, processKept: true }
+        })
+        const { events } = live.collect(SLUG, SESSION)
+        await delivery().stop(SESSION, { scope: 'turn', onlyIfConfirmed: true })
+        await vi.advanceTimersByTimeAsync(1600)
+        expect(idles(events)).toEqual([])
+        expect(sessions().isActive(SESSION)).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('gives a stopped task\'s settle its grace again once the stop that held it back returns having marked nothing', async () => {
+      startBackgroundTask()
+      cleanResult()
+      emitState('idle')
+      const { events } = live.collect(SLUG, SESSION)
+      vi.useFakeTimers()
+      try {
+        vi.mocked(client.interruptSession).mockImplementationOnce(async () => {
+          client.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'stopped' })
+          await vi.advanceTimersByTimeAsync(1600)
+          return { interrupted: false, processKept: true }
+        })
+        await delivery().stop(SESSION, { scope: 'turn', onlyIfConfirmed: true })
+        expect(idles(events)).toEqual([])
+        await vi.advanceTimersByTimeAsync(1600)
+        expect(idles(events)).toEqual([expect.objectContaining({ outcome: 'completed' })])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('leaves a newer wake turn running after the old stop returns', async () => {
+      startBackgroundTask()
+      vi.mocked(client.interruptSession).mockImplementationOnce(async () => {
+        client.emit({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', num_turns: 1 })
+        emitState('idle')
+        client.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'completed' })
+        emitState('running')
+        client.emit({ type: 'assistant', message: { id: 'answer', role: 'assistant', content: [{ type: 'text', text: 'Follow-up answer.' }] } })
+        return { interrupted: true, processKept: true }
+      })
+      const { events } = live.collect(SLUG, SESSION)
+      await delivery().stop(SESSION, { scope: 'turn' })
+      expect(sessions().isActive(SESSION)).toBe(true)
+      expect(idles(events)).toEqual([])
+      cleanResult()
+      emitState('idle')
+      expect(sessions().turnOutcome(SESSION)).toMatchObject({ status: 'completed', responseText: 'Follow-up answer.' })
+    })
+
+    describe('a kept process\'s wake turn, before its first output', () => {
+      // The stop settles the session, and the wake comes after the grace for one.
+      beforeEach(async () => {
+        client.emit({
+          type: 'system', subtype: 'task_started', task_id: 'bg-1', tool_use_id: 'agent-tool',
+          task_type: 'local_agent', is_backgrounded: true,
+        })
+        cleanResult()
+        emitState('idle')
+        vi.mocked(client.interruptSession).mockResolvedValueOnce({ interrupted: false, processKept: true })
+        await delivery().stop(SESSION, { scope: 'turn' })
+        vi.useFakeTimers()
+        try {
+          client.emit({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'stopped' })
+          await vi.advanceTimersByTimeAsync(1600)
+        } finally {
+          vi.useRealTimers()
+        }
+        expect(sessions().isActive(SESSION)).toBe(false)
+        emitState('running')
+      })
+
+      it('reads as running', () => {
+        expect(sessions().isActive(SESSION)).toBe(true)
+        expect(sessions().hasActive()).toBe(true)
+      })
+
+      it('is reached by a stop that only acts on a running session', async () => {
+        vi.mocked(client.interruptSession).mockResolvedValueOnce({ interrupted: true, processKept: true })
+        expect((await delivery().stop(SESSION, { scope: 'turn', ifActive: true, onlyIfConfirmed: true })).path).toBe('interrupted')
+      })
+
+      it('survives a replaying attach', async () => {
+        await delivery().attach(SESSION, { replayTerminal: true })
+        const { events } = live.collect(SLUG, SESSION)
+        client.emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'resumed' } } })
+        client.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Resumed output' } } })
+        expect(sessions().isActive(SESSION)).toBe(true)
+        expect(events.some((event) => event.type === 'stream_delta')).toBe(true)
+      })
+
+      it('queues a message behind it, keeping the runtime it runs on', async () => {
+        const sent = await delivery().deliver({
+          sessionId: SESSION,
+          content: 'Please also do this.',
+          uuid: 'follow-up',
+          options: { model: 'model-b', llmProviderId: 'conn-b' },
+        })
+        expect(sent).toMatchObject({ status: 'sent', queued: true })
+        expect(send()).toHaveBeenCalledWith(SESSION, 'Please also do this.', 'follow-up', expect.objectContaining({ preserveRuntime: true }))
+        expect(send().mock.calls.at(-1)?.[3]).not.toHaveProperty('model')
+      })
+    })
+
+    describe('a turn the runtime starts after a full stop', () => {
+      it.each(['stream', 'assistant', 'result'])('is announced once it shows output, from a %s frame', (kind) => {
+        sessions().markInterrupted(SESSION)
+        const { events } = live.collect(SLUG, SESSION)
+        emitState('running')
+        expect(sessions().isActive(SESSION)).toBe(false)
+        if (kind === 'stream') client.emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'resumed' } } })
+        if (kind === 'assistant') client.emit({ type: 'assistant', message: { id: 'answer', role: 'assistant', content: [{ type: 'text', text: 'Follow-up answer.' }] } })
+        cleanResult()
+        emitState('idle')
+        expect(events.filter((event) => event.type === 'session_active')).toHaveLength(1)
+        expect(idles(events)).toEqual([expect.objectContaining({ outcome: 'completed' })])
+      })
+
+    })
+
+    it('reports a turn the user sends after a full stop, even one that runs no model', () => {
+      sessions().markInterrupted(SESSION)
+      const { events } = live.collect(SLUG, SESSION)
+      sessions().markActive(SESSION)
+      emitState('running')
+      cleanResult(0)
+      emitState('idle')
+      expect(idles(events)).toEqual([expect.objectContaining({ outcome: 'completed' })])
+    })
   })
 })

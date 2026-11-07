@@ -15,27 +15,31 @@ vi.mock('@shared/lib/platform-attribution', () => ({
     forAgent: (slug: string) => forAgentAttribution(slug),
     requiresActingMember: () => requiresActingMember(),
   },
+  runWithAttribution: (_attribution: unknown, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/error-reporting', () => ({
   captureMessage: (...args: unknown[]) => captureMessage(...args),
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => platformAccessToken(),
-  getPlatformAuthStatus: () => platformAuthStatus(),
-  getStoredPlatformMemberId: () => null,
+  getPlatformAccessToken: async () => platformAccessToken(),
+  platformAccessTokenFrom: () => platformAccessToken(),
+  getPlatformAuthStatus: async () => platformAuthStatus(),
+  platformAuthStatusFrom: () => platformAuthStatus(),
+  getStoredPlatformMemberId: async () => null,
+  storedPlatformMemberIdFrom: () => null,
   fetchActingPlatformAccount: () => fetchActingAccount(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.example/v1',
   getPlatformBaseUrl: () => 'https://platform.example.com',
 }))
-vi.mock('../config/settings', () => ({
-  getSettings: () => ({}),
-}))
+const getSettings = vi.hoisted(() => vi.fn(async () => ({})))
+vi.mock('../config/settings', () => ({ getSettings }))
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
 import { platformPlanCache } from './platform-plan-cache'
+import { actingAttributionOnce } from './platform-plan-account'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 
 const provider = new PlatformLlmProvider()
@@ -48,18 +52,60 @@ beforeEach(() => {
   platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
   fetchActingAccount.mockReset()
+  getSettings.mockClear()
   platformPlanCache.clear()
+})
+
+// SUP-1507: given the settings its operation read, the provider reads none itself.
+describe('settings the operation already read', () => {
+  const catalog = provider.getBuiltinCatalog()
+  const settings = { platformAuth: undefined }
+
+  it('reads the settings once per availability check, and none when given them', async () => {
+    currentAttribution.mockReturnValue({ actingMemberId: () => 'member_a' })
+    fetchActingAccount.mockResolvedValue({ memberId: 'member_a', orgId: 'org_123', userId: 'u', orgName: null, orgIconUrl: null, role: null, email: null, plan: null, deniedModels: null })
+    await provider.getModelAvailability(catalog)
+    expect(getSettings).toHaveBeenCalledTimes(1)
+    getSettings.mockClear()
+    await provider.getModelAvailability(catalog, { settings })
+    await provider.getModelAvailabilityRevision(settings)
+    await provider.presentationForTurnError(429, { error: { type: 'rate_limit_error', message: 'spend cap' } }, 'rate_limit', settings)
+    expect(getSettings).not.toHaveBeenCalled()
+  })
+
+  it('resolves the acting attribution through the operation\'s resolver', async () => {
+    const acting = vi.fn(async () => ({ actingMemberId: () => 'member_b' }) as never)
+    fetchActingAccount.mockResolvedValue({ memberId: 'member_b', orgId: 'org_123', userId: 'u', orgName: null, orgIconUrl: null, role: null, email: null, plan: null, deniedModels: null })
+    await provider.getModelAvailability(catalog, { settings, acting })
+    expect(acting).toHaveBeenCalledOnce()
+    expect(currentAttribution).not.toHaveBeenCalled()
+  })
+
+  it('shares one attribution resolution across one operation, and resolves again for the next', async () => {
+    const operation = actingAttributionOnce()
+    await Promise.all([operation(), operation(), operation()])
+    expect(currentAttribution).toHaveBeenCalledTimes(1)
+    await actingAttributionOnce()()
+    expect(currentAttribution).toHaveBeenCalledTimes(2)
+  })
+
+  it('builds the container env from the given settings', async () => {
+    forAgentAttribution.mockReturnValue({ bearerToken: () => 'platform-token::member_a' })
+    const env = await provider.getContainerEnvVars({ id: 'agent-1' }, settings)
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token::member_a')
+    expect(getSettings).not.toHaveBeenCalled()
+  })
 })
 
 describe('getModelAvailability', () => {
   const catalog = provider.getBuiltinCatalog()
   const fable = catalog.find(model => model.id === 'claude-fable-5-1')!
 
-  it('scopes the public cache revision without exposing the account identity', () => {
-    expect(provider.getModelAvailabilityRevision()).toMatch(/^[a-f0-9]{64}$/)
-    expect(provider.getModelAvailabilityRevision()).not.toContain('org_123')
+  it('scopes the public cache revision without exposing the account identity', async () => {
+    expect(await provider.getModelAvailabilityRevision()).toMatch(/^[a-f0-9]{64}$/)
+    expect(await provider.getModelAvailabilityRevision()).not.toContain('org_123')
     platformAuthStatus.mockReturnValue({ connected: false })
-    expect(provider.getModelAvailabilityRevision()).toBeNull()
+    expect(await provider.getModelAvailabilityRevision()).toBeNull()
   })
 
   const account = (memberId: string, policy: { plan?: { id: string; name: string } | null; deniedModels?: string[] | null }) => ({
@@ -172,7 +218,7 @@ describe('getContainerEnvVars auth token (cold start)', () => {
 describe('PlatformLlmProvider — tool search', () => {
   // The proxy expands the CLI's deferred tools for every model it serves.
   it('turns ENABLE_TOOL_SEARCH on', async () => {
-    expect(new PlatformLlmProvider().toolSearchEnv()).toBe('true')
+    expect(await new PlatformLlmProvider().toolSearchEnv()).toBe('true')
   })
 })
 
@@ -208,7 +254,7 @@ describe('presentationForTurnError', () => {
   const INSUFFICIENT = 'API Error: 402 insufficient balance — top up to continue.'
 
   it('returns warning markdown for a workspace spend cap, linking the connected org billing page', async () => {
-    const parsed = provider.presentationForTurnError(
+    const parsed = await provider.presentationForTurnError(
       429,
       'A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.',
       'rate_limit',
@@ -223,44 +269,44 @@ describe('presentationForTurnError', () => {
 
   it('drops the billing link and paywall href when the platform is disconnected', async () => {
     platformAuthStatus.mockReturnValue({ connected: false, orgId: null })
-    expect(provider.presentationForTurnError(429, SPEND_CAP, 'rate_limit')?.message).not.toContain('](')
-    expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')).not.toHaveProperty('href')
+    expect((await provider.presentationForTurnError(429, SPEND_CAP, 'rate_limit'))?.message).not.toContain('](')
+    expect(await provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')).not.toHaveProperty('href')
   })
 
   it('attaches the org billing page as the paywall href', async () => {
-    expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')?.href).toBe(
+    expect((await provider.presentationForTurnError(402, INSUFFICIENT, 'unknown'))?.href).toBe(
       'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
     )
   })
 
   it('falls back to the generic banner for a non-spend 429', async () => {
-    const parsed = provider.presentationForTurnError(429, 'Rate limit exceeded. Slow down and retry shortly.', 'rate_limit')
+    const parsed = await provider.presentationForTurnError(429, 'Rate limit exceeded. Slow down and retry shortly.', 'rate_limit')
     expect(parsed?.severity).toBe('error')
     expect(parsed?.message).toContain('**LLM Provider Error:**')
   })
 
   it('attaches a recognized class even when the SDK code is generic', async () => {
-    const parsed = provider.presentationForTurnError(429, SPEND_CAP, 'unknown')
+    const parsed = await provider.presentationForTurnError(429, SPEND_CAP, 'unknown')
     expect(parsed?.message).toContain('**Spend Limit Reached:**')
   })
 
   it('attaches the generic banner when the SDK code marks a provider error', async () => {
-    const parsed = provider.presentationForTurnError(500, 'Overloaded', 'server_error')
+    const parsed = await provider.presentationForTurnError(500, 'Overloaded', 'server_error')
     expect(parsed?.message).toContain('**LLM Provider Error:**')
   })
 
   it('returns null for an unrecognized error with a non-provider SDK code', async () => {
-    expect(provider.presentationForTurnError(undefined, 'Output too long', 'max_output_tokens')).toBeNull()
-    expect(provider.presentationForTurnError(undefined, 'Output too long', null)).toBeNull()
+    expect(await provider.presentationForTurnError(undefined, 'Output too long', 'max_output_tokens')).toBeNull()
+    expect(await provider.presentationForTurnError(undefined, 'Output too long', null)).toBeNull()
   })
 
   it('does not let a recognized class claim a max_output_tokens failure', async () => {
-    expect(provider.presentationForTurnError(undefined, SPEND_CAP, 'max_output_tokens')).toBeNull()
+    expect(await provider.presentationForTurnError(undefined, SPEND_CAP, 'max_output_tokens')).toBeNull()
   })
 
   it('does not let a recognized class claim a turn that failed without an API error', async () => {
-    expect(provider.presentationForTurnError(undefined, INSUFFICIENT, null)).toBeNull()
-    expect(provider.presentationForTurnError(undefined, INSUFFICIENT, undefined)).toBeNull()
+    expect(await provider.presentationForTurnError(undefined, INSUFFICIENT, null)).toBeNull()
+    expect(await provider.presentationForTurnError(undefined, INSUFFICIENT, undefined)).toBeNull()
   })
 
   describe('403 model_not_in_plan (SUP-1143)', () => {
@@ -268,7 +314,7 @@ describe('presentationForTurnError', () => {
 
     it('names the model and routes to the upgrade card, not a credential or generic error', async () => {
       // The CLI may tag a 403 as an auth failure; the plan refusal still wins.
-      const parsed = provider.presentationForTurnError(403, NOT_IN_PLAN, 'authentication_failed')
+      const parsed = await provider.presentationForTurnError(403, NOT_IN_PLAN, 'authentication_failed')
       expect(parsed).toEqual({
         severity: 'warning',
         icon: 'lock',
@@ -282,17 +328,17 @@ describe('presentationForTurnError', () => {
     })
 
     it('recognizes a history row, which carries no status', async () => {
-      expect(provider.presentationForTurnError(undefined, NOT_IN_PLAN, 'unknown')?.component).toBe('platform-model-not-in-plan')
+      expect((await provider.presentationForTurnError(undefined, NOT_IN_PLAN, 'unknown'))?.component).toBe('platform-model-not-in-plan')
     })
 
     it('still names no model when the body omits it', async () => {
-      const parsed = provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"Not in plan."}}', 'unknown')
+      const parsed = await provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"model_not_in_plan","message":"Not in plan."}}', 'unknown')
       expect(parsed?.message).toMatch(/^\*\*This model isn't included in your plan\*\*/)
       expect(parsed?.model).toBeUndefined()
     })
 
     it('leaves other 403s to the generic banner', async () => {
-      const parsed = provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"Forbidden"}}', 'authentication_failed')
+      const parsed = await provider.presentationForTurnError(403, 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"Forbidden"}}', 'authentication_failed')
       expect(parsed?.component).toBeUndefined()
       expect(parsed?.message).toContain('**LLM Provider Error:**')
     })

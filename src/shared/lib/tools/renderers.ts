@@ -40,6 +40,8 @@ import {
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
 } from './browser-tools/renderer'
 import {
   createDashboardRenderer,
@@ -116,6 +118,8 @@ const toolRenderers = new Map([
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
   createDashboardRenderer,
   startDashboardRenderer,
   listDashboardsRenderer,

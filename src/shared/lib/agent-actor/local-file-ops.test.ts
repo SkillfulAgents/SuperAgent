@@ -258,7 +258,6 @@ describe('LocalFileOps — links and host files', () => {
 
       mkdir.mockClear()
       await files.write('deep/er/blob.bin', new Uint8Array([1]))
-      await files.moveHostFile(path.join(outside, 'secret.txt'), 'deep/er/moved.txt')
       expect(mkdir).not.toHaveBeenCalled()
     } finally {
       mkdir.mockRestore()
@@ -284,25 +283,6 @@ describe('LocalFileOps — links and host files', () => {
     await files.copyHostFile(path.join(outside, 'tool.sh'), 'bin/tool.sh')
     expect((await fs.promises.stat(path.join(root, 'bin', 'tool.sh'))).mode & 0o777).toBe(0o755)
     expect(await fs.promises.readFile(path.join(outside, 'tool.sh'), 'utf-8')).toBe('#!/bin/sh\n')
-  })
-
-  it('moveHostFile renames the file into the workspace and reports its size', async () => {
-    await fs.promises.writeFile(path.join(outside, 'assembled'), 'twelve bytes')
-    const { ino } = await fs.promises.stat(path.join(outside, 'assembled'))
-
-    expect(await files.moveHostFile(path.join(outside, 'assembled'), 'uploads/report.pdf')).toEqual({ size: 12 })
-
-    expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(false)
-    const moved = await fs.promises.stat(path.join(root, 'uploads', 'report.pdf'))
-    expect(moved.ino).toBe(ino) // the same file, not a copy of it
-    expect(await fs.promises.readFile(path.join(root, 'uploads', 'report.pdf'), 'utf-8')).toBe('twelve bytes')
-  })
-
-  it('moveHostFile never lands outside the workspace', async () => {
-    await fs.promises.writeFile(path.join(outside, 'assembled'), 'x')
-    expect(['invalid-path', 'outside-workspace']).toContain(await codeOf(files.moveHostFile(path.join(outside, 'assembled'), '../outside/report.pdf')))
-    expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(true)
-    expect(fs.existsSync(path.join(outside, 'report.pdf'))).toBe(false)
   })
 
   it('write rejects, without an unhandled error, when the source fails before the destination is open', async () => {
@@ -357,25 +337,6 @@ describe('LocalFileOps — links and host files', () => {
     expect((await fs.promises.lstat(path.join(root, 'uploads', 'dangling.txt'))).isSymbolicLink()).toBe(false)
     expect(await fs.promises.readFile(path.join(root, 'uploads', 'dangling.txt'), 'utf-8')).toBe('new')
     expect(await fs.promises.readFile(path.join(root, 'uploads', 'old.txt'), 'utf-8')).toBe('new')
-  })
-
-  it('moveHostFile replaces a link at the destination when the move has to copy', async () => {
-    await files.mkdir('uploads')
-    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'uploads', 'report.pdf'))
-    await fs.promises.writeFile(path.join(outside, 'assembled'), 'moved')
-    // The temp dir and the workspace on different devices: the rename is
-    // refused and the move falls back to a copy.
-    const rename = vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(Object.assign(new Error('EXDEV'), { code: 'EXDEV' }))
-    try {
-      expect(await files.moveHostFile(path.join(outside, 'assembled'), 'uploads/report.pdf')).toEqual({ size: 5 })
-    } finally {
-      rename.mockRestore()
-    }
-
-    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
-    expect((await fs.promises.lstat(path.join(root, 'uploads', 'report.pdf'))).isSymbolicLink()).toBe(false)
-    expect(await fs.promises.readFile(path.join(root, 'uploads', 'report.pdf'), 'utf-8')).toBe('moved')
-    expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(false)
   })
 })
 

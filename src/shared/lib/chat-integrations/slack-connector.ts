@@ -11,8 +11,9 @@
  * Working indicator via Slack's status line under the user's message (assistant.threads.setStatus).
  */
 
-import { App as SlackApp, SocketModeReceiver, type Receiver, type types as SlackTypes } from '@slack/bolt'
+import { App as SlackApp, SocketModeReceiver, type BlockAction, type Receiver, type types as SlackTypes } from '@slack/bolt'
 import { z } from 'zod'
+import { Marked, type Token, type Tokens } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
@@ -48,7 +49,9 @@ export type SlackConfig = StoredSlackConfig
 // ── Slack limits ────────────────────────────────────────────────────────
 
 const MAX_MESSAGE_LENGTH = 3000 // Slack's mrkdwn rendering gets unreliable past ~4000; be conservative
-const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown_text limit
+const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown block limit
+const SLACK_TABLE_MAX_ROWS = 100 // header included; Slack drops the rest silently
+const SLACK_TABLE_MAX_COLUMNS = 20
 
 // ── Markdown → Slack mrkdwn ─────────────────────────────────────────────
 
@@ -142,6 +145,20 @@ function tablesToMonospace(md: string): string {
   )
 }
 
+const slackMarked = new Marked({ async: false, gfm: true })
+const isTable = (token: Token): token is Tokens.Table => token.type === 'table'
+
+/** Markdown with each table Slack would cut turned monospace. Tables it draws whole stay as markdown. */
+export function fitSlackTables(markdown: string): string {
+  // The lexer's tokens partition its (newline-normalized) input, so their raw text joins back to it.
+  return slackMarked.lexer(markdown.replace(/\r\n?/g, '\n'))
+    .map(token => isTable(token) && (token.rows.length >= SLACK_TABLE_MAX_ROWS || token.header.length > SLACK_TABLE_MAX_COLUMNS)
+      // Every row gets outer pipes first: the monospace pass only matches piped rows.
+      ? tablesToMonospace(token.raw.replace(/^[ \t]*\|?(.*?)\|?[ \t]*$/gm, (line, cells: string) => cells.trim() ? `| ${cells} |` : line))
+      : token.raw)
+    .join('')
+}
+
 // ── Session system prompt ───────────────────────────────────────────────
 
 /**
@@ -173,11 +190,11 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
 
 /**
  * Classify a Slack (effective) chat id by shape: `channel|threadTs` composites
- * are threads, and top-level conversation ids encode their type in the prefix
+ * of a channel are threads, and top-level conversation ids encode their type in the prefix
  * (D* = DM, G* = private group/mpim, C* = channel).
  */
 export function classifySlackChatId(chatId: string): ChatConversationType | undefined {
-  if (chatId.indexOf('|') > 0) return 'thread'
+  if (/^[CG][^|]*\|\d+\.\d+$/.test(chatId)) return 'thread'
   if (chatId.startsWith('D')) return 'dm'
   if (chatId.startsWith('G')) return 'group'
   if (chatId.startsWith('C')) return 'channel'
@@ -392,7 +409,10 @@ export function statusNeedsSend(status: SlackStatus | undefined, label: string, 
 const slackAnswerSchema = z.object({ t: z.string().min(1), c: z.string(), q: z.string(), a: z.string(), n: z.number().int().positive() })
 export type SlackAnswer = z.infer<typeof slackAnswerSchema>
 
-const ANSWER_ACTION = /^answer_\d+$/
+const ANSWER_ACTION = /^answer_/
+const OTHER_ACTION = 'answer_other'
+const PICK_ACTION = 'answer_pick'
+const SUBMIT_ACTION = 'answer_submit'
 const MAX_BUTTON_VALUE = 2000
 
 /** A button value, within Slack's limit: a question too long to fit is shortened. */
@@ -413,6 +433,37 @@ export function decodeSlackAnswer(value: unknown): SlackAnswer | null {
   } catch {
     return null
   }
+}
+
+type SlackStateValues = NonNullable<BlockAction['state']>['values']
+
+/** An approval card stays Allow or Deny: typed text would decide it. */
+const isApproval = (requestId: string) => requestId.startsWith('review:')
+
+/**
+ * The answer an action on a question card gives, or null when it gives none
+ * yet (a box ticked, an empty field). As in the app, typed text wins over
+ * ticked boxes. A typed answer takes the card's identity from an option button
+ * on the same message: a text field has no value of its own.
+ */
+export function slackAnswerFromAction(
+  action: { action_id?: string; value?: string | null },
+  blocks: Array<{ type: string; elements?: Array<{ value?: string }> }>,
+  state: SlackStateValues = {},
+): SlackAnswer | null {
+  const field = (actionId: string) => Object.values(state).map((block) => block[actionId]).find(Boolean)
+  if (action.action_id === OTHER_ACTION) {
+    const card = blocks.flatMap((b) => (b.type === 'actions' ? b.elements ?? [] : [])).map((e) => decodeSlackAnswer(e.value)).find(Boolean)
+    const typed = action.value?.trim()
+    return card && typed && !isApproval(card.t) ? { ...card, a: typed } : null
+  }
+  const answer = decodeSlackAnswer(action.value)
+  if (!answer || action.action_id !== SUBMIT_ACTION) return answer
+  if (isApproval(answer.t)) return null
+  const typed = field(OTHER_ACTION)?.value?.trim()
+  const picked = field(PICK_ACTION)?.selected_options?.map((o) => o.value).join(', ')
+  const a = typed || picked
+  return a ? { ...answer, a } : null
 }
 
 // ── Installation state ──────────────────────────────────────────────────
@@ -452,6 +503,16 @@ function relayOnlyReceiver(): Receiver {
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
+
+/** Standard markdown as a block, with mrkdwn text for notifications: Slack's own text for a markdown message drops its tables. */
+function markdownMessage(md: string): { blocks: SlackTypes.MarkdownBlock[]; text: string } {
+  return { blocks: [{ type: 'markdown', text: md }], text: splitChatMessage(markdownToSlackMrkdwn(md), MARKDOWN_TEXT_LENGTH)[0] }
+}
+
+function inThread<T extends object>(args: T, threadTs: string | undefined, alsoSendToChannel: boolean) {
+  if (!threadTs) return args
+  return alsoSendToChannel ? { ...args, thread_ts: threadTs, reply_broadcast: true } : { ...args, thread_ts: threadTs }
+}
 
 export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
@@ -704,10 +765,10 @@ export class SlackConnector extends ChatAgentIntegration {
     // Buttons on cards from before answers rode in the button: their requests are gone.
     app.action(/^cb_\d+$/, async ({ ack }: { ack: any }) => { await ack() })
 
-    // Answer buttons on request cards
+    // Answers from request cards. A checkbox tick is acknowledged and gives none.
     app.action(ANSWER_ACTION, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
       await ack()
-      const answer = decodeSlackAnswer(action?.value)
+      const answer = slackAnswerFromAction(action ?? {}, body?.message?.blocks ?? [], body?.state?.values)
       if (!answer) return
 
       // Update the message to show the selected answer
@@ -716,14 +777,15 @@ export class SlackConnector extends ChatAgentIntegration {
         const messageTs = body?.message?.ts
         if (channel && messageTs) {
           const originalText = body.message.text || ''
-          // Preserve non-action blocks, only remove the buttons
+          // Keep the question, replace the controls with the answer
           const existingBlocks = (body.message.blocks || []) as Array<{ type: string }>
-          const preserved = existingBlocks.filter((b) => b.type !== 'actions')
+          const preserved = existingBlocks.filter((b) => b.type !== 'actions' && b.type !== 'input')
+          const shown = isApproval(answer.t) ? answer.a : `✅ ${answer.a}`
           await app.client.chat.update({
             channel,
             ts: messageTs,
-            text: `${originalText}\n\n:white_check_mark: *${answer.a}*`,
-            blocks: preserved,
+            text: `${originalText}\n\n${shown}`,
+            blocks: [...preserved, { type: 'section', text: { type: 'plain_text', text: shown } }],
           })
         }
       } catch {
@@ -955,8 +1017,8 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
 
     let lastTs = ''
-    for (const chunk of splitChatMessage(tablesToMonospace(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
-      lastTs = await this.postText(chatId, chunk)
+    for (const chunk of splitChatMessage(fitSlackTables(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
+      lastTs = await this.postText(chatId, chunk, message.alsoSendToChannel)
     }
 
     return lastTs
@@ -985,18 +1047,20 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
 
     const { channel } = this.resolveChannel(chatId)
-    const md = tablesToMonospace(text)
+    const md = fitSlackTables(text)
     const draft = (limit: number) => (md.length > limit
       ? md.slice(0, limit - 60) + '\n\n... (full response will appear when done)'
       : md) || ':hourglass_flowing_sand: Thinking...'
+    // Kept tables are padded only on conversion, so bound the converted draft too.
+    const converted = () => splitChatMessage(markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)), MAX_MESSAGE_LENGTH)[0]
 
     if (!existingMessageId) {
-      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), () => [markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH))])
+      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), false, () => [converted()])
     }
 
     // Edit existing message
     try {
-      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), () => markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)))
+      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), converted)
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       // Slack returns this when text hasn't changed
@@ -1011,7 +1075,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) return
 
     const { channel } = this.resolveChannel(chatId)
-    const md = tablesToMonospace(finalText || '(empty response)')
+    const md = fitSlackTables(finalText || '(empty response)')
 
     try {
       const [first, ...rest] = splitChatMessage(md, MARKDOWN_TEXT_LENGTH)
@@ -1037,30 +1101,31 @@ export class SlackConnector extends ChatAgentIntegration {
   private async postText(
     chatId: string,
     md: string,
+    alsoSendToChannel = false,
     converted = () => splitChatMessage(markdownToSlackMrkdwn(md), MAX_MESSAGE_LENGTH),
   ): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     try {
-      const result = await this.app.client.chat.postMessage({ channel, markdown_text: md, ...(threadTs ? { thread_ts: threadTs } : {}) })
+      const result = await this.app.client.chat.postMessage(inThread({ channel, ...markdownMessage(md) }, threadTs, alsoSendToChannel))
       this.posted(chatId)
       return result.ts || ''
     } catch (err: unknown) {
       if (!isSlackBlocksRejection(err)) throw err
       console.warn('[SlackConnector] Slack refused the markdown blocks, sending converted text')
-      const ts = await this.postConverted(chatId, converted())
+      const ts = await this.postConverted(chatId, converted(), alsoSendToChannel)
       this.convertedMessages.add(ts)
       return ts
     }
   }
 
   /** Post chunks of today's converted text. Returns the last ts. */
-  private async postConverted(chatId: string, chunks: string[]): Promise<string> {
+  private async postConverted(chatId: string, chunks: string[], alsoSendToChannel = false): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     let ts = ''
     for (const chunk of chunks) {
-      ts = (await this.app.client.chat.postMessage({ channel, text: chunk, mrkdwn: true, ...(threadTs ? { thread_ts: threadTs } : {}) })).ts || ''
+      ts = (await this.app.client.chat.postMessage(inThread({ channel, text: chunk, mrkdwn: true }, threadTs, alsoSendToChannel))).ts || ''
       this.posted(chatId)
     }
     return ts
@@ -1071,7 +1136,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
     if (!this.convertedMessages.has(ts)) {
       try {
-        await this.app.client.chat.update({ channel, ts, markdown_text: md })
+        await this.app.client.chat.update({ channel, ts, ...markdownMessage(md) })
         return
       } catch (err: unknown) {
         if (!isSlackBlocksRejection(err)) throw err
@@ -1234,17 +1299,34 @@ export class SlackConnector extends ChatAgentIntegration {
             text: { type: 'mrkdwn', text: q.question },
           })
 
+          const answer = (a: string) => encodeSlackAnswer({ t: event.toolUseId, c: chatId, q: q.question, a, n: event.questions.length })
           if (q.options && q.options.length > 0) {
-            const buttons = q.options.map((opt, i) => ({
-              type: 'button' as const,
-              text: { type: 'plain_text' as const, text: opt.label },
-              action_id: `answer_${i}`,
-              value: encodeSlackAnswer({ t: event.toolUseId, c: chatId, q: q.question, a: opt.label, n: event.questions.length }),
-            }))
+            const options = q.multiSelect
+              ? [{ type: 'checkboxes', action_id: PICK_ACTION, options: q.options.map((opt) => ({ text: { type: 'plain_text', text: opt.label }, value: opt.label })) }]
+              : q.options.map((opt, i) => ({
+                type: 'button' as const,
+                text: { type: 'plain_text' as const, text: opt.label },
+                action_id: `answer_${i}`,
+                value: answer(opt.label),
+              }))
             blocks.push({
               type: 'actions',
-              elements: buttons,
+              elements: options,
             })
+            if (!isApproval(event.toolUseId)) {
+              blocks.push({
+                type: 'input',
+                dispatch_action: !q.multiSelect,
+                label: { type: 'plain_text', text: 'Other' },
+                element: { type: 'plain_text_input', action_id: OTHER_ACTION, max_length: 2000, placeholder: { type: 'plain_text', text: 'Type something else' } },
+              })
+            }
+            if (q.multiSelect) {
+              blocks.push({
+                type: 'actions',
+                elements: [{ type: 'button', action_id: SUBMIT_ACTION, style: 'primary', text: { type: 'plain_text', text: 'Submit' }, value: answer('') }],
+              })
+            }
           }
 
           const result = await this.app.client.chat.postMessage({

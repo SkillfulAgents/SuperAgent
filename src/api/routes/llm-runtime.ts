@@ -4,10 +4,11 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { IsAgent } from '../middleware/auth'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { resolveExecutionSelection, storedSelection } from '@shared/lib/llm-provider/connections'
+import { resolveSelectionHierarchyFrom, storedSelection } from '@shared/lib/llm-provider/connections'
 import {
   connectionRuntime,
 } from '@shared/lib/llm-provider/connection-runtime'
+import { getSettings } from '@shared/lib/config/settings'
 
 const routes = new Hono()
 routes.use('*', IsAgent())
@@ -31,9 +32,12 @@ routes.post('/resolve', async (c) => {
     return c.json({ error: 'Session not found' }, 404)
   const metadata = await actor.sessions.metadata(input.sessionId)
   const preferences = await actor.config.get('preferences')
-  const selected = await resolveExecutionSelection(
-    storedSelection(metadata?.model, metadata?.llmProviderId),
-    storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId)
+  // One settings read per callback: the selection and the runtime use it.
+  const settings = await getSettings()
+  const selected = await resolveSelectionHierarchyFrom(
+    settings,
+    await storedSelection(metadata?.model, metadata?.llmProviderId, settings),
+    await storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId, settings)
   )
   // The caller cannot nominate another connection. The app resolves the
   // authenticated agent's current session binding on every callback.
@@ -41,7 +45,7 @@ routes.post('/resolve', async (c) => {
   if (input.llmProviderId && input.llmProviderId !== selected.llmProviderId)
     return c.json({ error: 'Session connection changed' }, 409)
   if (input.rejectedGeneration !== undefined) await resolveConnectionCredential(selected.llmProviderId, input.rejectedGeneration)
-  const runtime = await connectionRuntime(selected, slug)
+  const runtime = await connectionRuntime(selected, slug, settings)
   // The session's errors and analytics are read with it: only its non-secret facts.
   await actor.sessions.recordRuntime(input.sessionId, { provider: runtime.provider })
   return c.json(runtime)
@@ -51,10 +55,12 @@ routes.post('/resolve', async (c) => {
 routes.post('/prewarm', async (c) => {
   const slug = c.get('agentSlug' as never) as string
   const preferences = await agentRegistry.get(slug).config.get('preferences')
-  const selected = await resolveExecutionSelection(
-    storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId),
+  const settings = await getSettings()
+  const selected = await resolveSelectionHierarchyFrom(
+    settings,
+    await storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId, settings),
   )
   c.header('Cache-Control', 'no-store')
-  return c.json(await connectionRuntime(selected, slug))
+  return c.json(await connectionRuntime(selected, slug, settings))
 })
 export default routes

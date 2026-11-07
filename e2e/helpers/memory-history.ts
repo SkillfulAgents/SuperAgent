@@ -4,6 +4,7 @@ import { AGENT_MEMORY_DIR } from '../../src/shared/lib/agent-actor/memory-schema
 import { LocalAgentActor, type LocalActorDeps } from '../../src/shared/lib/agent-actor/local-agent-actor'
 import { getAgentWorkspaceDir } from '../../src/shared/lib/utils/file-storage'
 import { openHomeAdvancedSettings, openHomeSection } from './agent-home'
+import { isWebKitTeardownFetchError } from './page-errors'
 
 export interface MemoryHistoryContext {
   page: Page
@@ -80,7 +81,9 @@ async function discardHistoryMove(page: Page, delta: number, target: RegExp) {
 export async function checkMemoriesHistory(context: MemoryHistoryContext) {
   const { page, request, apiBaseUrl } = context
   const errors: string[] = []
-  const collectError = (error: Error) => errors.push(error.message)
+  const collectError = (error: Error) => {
+    if (!isWebKitTeardownFetchError(page, error)) errors.push(error.message)
+  }
   page.on('pageerror', collectError)
   try {
     const agent = await prepareHistory(context)

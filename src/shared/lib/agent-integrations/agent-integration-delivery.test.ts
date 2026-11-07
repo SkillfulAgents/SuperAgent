@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
@@ -45,7 +46,7 @@ vi.mock('../agent-actor', async () => {
   }) } }
 })
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }) }))
+vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }), effectiveModelsFrom: () => ({ agentModel: 'test' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('../notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
@@ -97,6 +98,7 @@ async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 's
   adapter = provider === 'linear' ? new Tasks((await getAgentIntegration('integration'))!) : Object.assign(new Chat(), { provider })
   const registry = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => adapter }])
   manager = new AgentIntegrationManager(registry)
+  registerTasks(manager)
   await manager.start()
 }
 async function startRelay(relay: FakeWebhookRelay) {
@@ -110,9 +112,14 @@ async function startRelay(relay: FakeWebhookRelay) {
     new AgentIntegrationRegistry([{ definition: { ...adapter.definition, transports: ['direct', 'relay'] }, policy: adapter, create: async () => adapter }]),
     id => relays.hostFor(id),
   )
+  registerTasks(manager)
   await manager.start()
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('../services/session-defaults') })
 beforeEach(async () => {
   handle = await createTestDatabase(); database = handle.db; vi.clearAllMocks()
   runtime.create.mockImplementation(async (options: CreateSessionOptions) => {
@@ -258,6 +265,7 @@ describe('shared manager durability with real integration storage', () => {
     const parked = new Promise<void>(resolve => { reached = resolve })
     manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter,
       create: async () => { reached(); await gate; return adapter } }]))
+    registerTasks(manager)
     const starting = manager.start()
     await parked
     const hints = holdHints()

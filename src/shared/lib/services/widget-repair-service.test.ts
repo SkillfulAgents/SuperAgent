@@ -44,6 +44,7 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
   getEffectiveModels: () => ({ agentModel: 'claude-x', browserModel: 'browser-x', dashboardBuilderModel: 'dash-x' }),
+  effectiveModelsFrom: () => ({ agentModel: 'claude-x', browserModel: 'browser-x', dashboardBuilderModel: 'dash-x' }),
 }))
 vi.mock('@shared/lib/container/runtime-options', () => ({
   resolveRuntimeInherit: () => ({ model: 'claude-x', effort: 'medium' }),
@@ -103,6 +104,8 @@ describe('openWidgetRepairSession', () => {
       isWidgetRepair: true,
       widgetRepairSlug: 'weather',
       automationStatus: 'running',
+      model: 'claude-x',
+      effort: 'medium',
     })
     expect(mocks.subscribe).toHaveBeenCalled()
     expect(mocks.markActive).toHaveBeenCalledWith(AGENT, 'session-new')

@@ -366,7 +366,7 @@ describe('AgentHome', () => {
     expect(contextMenu).toContainElement(screen.getByTestId('agent-name'))
   })
 
-  it('renames the agent inline for owners', async () => {
+  it('renames the agent from the name and avatar editor for owners', async () => {
     const user = userEvent.setup()
     mockCanAdminAgent = true
 
@@ -375,15 +375,15 @@ describe('AgentHome', () => {
     )
 
     await user.click(screen.getByTestId('agent-name'))
+    expect(screen.getByTestId('agent-identity-preview')).toBeInTheDocument()
     await user.clear(screen.getByTestId('agent-name-input'))
-    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent')
-    await user.click(screen.getByTestId('agent-name-save'))
+    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent{Enter}')
 
     await waitFor(() => {
-      expect(mockUpdateAgentMutateAsync).toHaveBeenCalledWith({
-        slug: 'test-agent',
-        name: 'Renamed Agent',
-      })
+      expect(mockUpdateAgentMutate).toHaveBeenCalledWith(
+        { slug: 'test-agent', name: 'Renamed Agent' },
+        expect.anything(),
+      )
     })
   })
 
@@ -610,7 +610,7 @@ describe('AgentHome', () => {
 
     expect(screen.getByTestId('view-only-banner')).toBeInTheDocument()
     expect(screen.queryByTestId('home-message-input')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('agent-avatar-picker')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-identity-trigger')).not.toBeInTheDocument()
   })
 
   it('shows agent name in view-only mode', () => {

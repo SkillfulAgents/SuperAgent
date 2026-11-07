@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, shellEscape, writeEnvFile } from './base-container-client'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { getSettings } from '@shared/lib/config/settings'
+import { getSettings, type AppSettings } from '@shared/lib/config/settings'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
 import limaPackages from './lima-packages.json'
@@ -565,13 +565,13 @@ export class LimaContainerClient extends BaseContainerClient {
    * Lima only mounts the home directory into the VM, so /var/folders/...
    * (macOS temp dir) is not accessible inside the VM.
    */
-  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): Promise<{ flag: string; cleanup: () => void }> {
+  protected async buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string, settings?: AppSettings): Promise<{ flag: string; cleanup: () => void }> {
     const home = process.env.HOME
     if (!home) {
       throw new Error('HOME environment variable is not set — cannot write container env file')
     }
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
+    return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName, settings), this.config.agentId, tmpDir)
   }
 
   /**
@@ -824,7 +824,7 @@ async function ensureLimaReadyImpl(opts: { rebuild?: boolean } = {}): Promise<vo
 
   addErrorBreadcrumb({ category: 'lima', message: 'ensureLimaReady started', data: { limaHome } })
 
-  const settings = getSettings()
+  const settings = await getSettings()
   const explicitMemory = settings.container.runtimeSettings?.lima?.vmMemory
 
   // Check if VM exists and whether its config matches
@@ -1293,7 +1293,7 @@ async function ensureContainerdProvisioned(): Promise<void> {
 }
 
 async function createLimaVm(): Promise<void> {
-  const settings = getSettings()
+  const settings = await getSettings()
   const vmMemory = settings.container.runtimeSettings?.lima?.vmMemory || DEFAULT_LIMA_VM_MEMORY
 
   const arch = process.arch === 'x64' ? 'x86_64' : 'aarch64'

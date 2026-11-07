@@ -56,7 +56,7 @@ test.describe('Capability launch review', () => {
     await sessionPage.sendMessage('launch workflow')
     await expect(reviewCard(page)).toBeVisible({ timeout: 15000 })
 
-    await page.locator('[data-testid="capability-review-run-btn"]').click()
+    await page.locator('[data-testid="capability-review-allow-once-btn"]').click()
 
     await expect(reviewCard(page)).toHaveCount(0, { timeout: 10000 })
     await sessionPage.waitForInputEnabled(15000)
@@ -66,7 +66,7 @@ test.describe('Capability launch review', () => {
     await sessionPage.sendMessage('launch workflow')
     await expect(reviewCard(page)).toBeVisible({ timeout: 15000 })
 
-    await page.locator('[data-testid="capability-review-block-btn"]').click()
+    await page.locator('[data-testid="capability-review-deny-btn"]').click()
 
     await expect(reviewCard(page)).toHaveCount(0, { timeout: 10000 })
     // The deny is a tool result the model adapts to — the session must settle,
@@ -78,8 +78,7 @@ test.describe('Capability launch review', () => {
     await sessionPage.sendMessage('launch workflow')
     await expect(reviewCard(page)).toBeVisible({ timeout: 15000 })
 
-    await page.locator('[data-testid="capability-review-run-btn-chevron"]').click()
-    await page.locator('[data-testid="capability-review-allow-session-btn"]').click()
+    await page.locator('[data-testid="capability-review-always-allow-btn"]').click()
     await expect(reviewCard(page)).toHaveCount(0, { timeout: 10000 })
     await sessionPage.waitForInputEnabled(15000)
 

@@ -205,10 +205,11 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 
 // Settings + secrets (only used by invoke for new sessions)
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => ({ app: {} }),
+  getEffectiveModels: async () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
+  effectiveModelsFrom: () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => ({ app: {} }),
 }))
 vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn(async () => []),
@@ -473,6 +474,15 @@ describe('/list', () => {
     expect(res.status).toBe(403)
   })
 
+  it('passes the reason typed with a deny to the calling agent', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.takeDenyReason).mockResolvedValueOnce('wrong agent')
+    reviewDecisions.push('deny')
+    const res = await authedFetch('/x-agent/list', {})
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('Denied by user. They said: "wrong agent"')
+  })
+
   it('filters by ACL in auth mode (caller owner can only see their agents)', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
@@ -716,10 +726,9 @@ describe('/invoke', () => {
     )
   })
 
-  it('reviews attachments even when an existing policy allows messages', async () => {
+  it('sends attachments without a review when a saved policy allows messages', async () => {
     const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
     await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
-    reviewDecisions.push('allow')
 
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
@@ -728,14 +737,8 @@ describe('/invoke', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(mockRequestXAgentReview).toHaveBeenCalledWith(
-      CALLER_SLUG,
-      TARGET_SLUG,
-      'Target',
-      'invoke',
-      'share this',
-      { kind: 'send', paths: ['/workspace/report.bin'] },
-    )
+    expect(mockSourceOpen).toHaveBeenCalledWith('/workspace/report.bin', { confined: true })
+    expect(mockRequestXAgentReview).not.toHaveBeenCalled()
   })
 
   it('removes staged attachments when session creation fails', async () => {
@@ -1006,7 +1009,7 @@ describe('/invoke', () => {
       expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
       expect.any(String),
-      { invokedByAgentSlug: CALLER_SLUG },
+      { invokedByAgentSlug: CALLER_SLUG, model: 'sonnet', effort: 'medium' },
     )
   })
 
@@ -1743,7 +1746,8 @@ describe('/invoke model and effort resolution', () => {
     })
     const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello' })
     expect(res.status).toBe(200)
-    expect(mockReadAgentPreferences).toHaveBeenCalledWith(TARGET_SLUG)
+    // With the settings the start read once, not a read of its own.
+    expect(mockReadAgentPreferences).toHaveBeenCalledWith(TARGET_SLUG, expect.objectContaining({}))
     const args = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')
@@ -2212,14 +2216,14 @@ describe('/download-file', () => {
     )
   })
 
-  it.each(['allow', 'deny'] as const)('requires fresh file approval despite a saved read grant: %s', async (decision) => {
+  it.each(['allow', 'block'] as const)('follows a saved read decision without a review: %s', async (decision) => {
     const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-    await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'allow')
-    reviewDecisions.push(decision)
+    await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, decision)
+    mockTargetOpen.mockResolvedValue(openBytes(Uint8Array.from([0, 255, 1, 128])))
     const res = await authedFetch('/x-agent/download-file', { slug: TARGET_SLUG, sessionId: 'delivered-session', deliveryId: 'delivery-1' })
     expect(res.status).toBe(decision === 'allow' ? 200 : 403)
-    expect(mockRequestXAgentReview).toHaveBeenCalledOnce()
-    if (decision === 'deny') expect(mockTargetOpen).not.toHaveBeenCalled()
+    expect(mockRequestXAgentReview).not.toHaveBeenCalled()
+    if (decision === 'block') expect(mockTargetOpen).not.toHaveBeenCalled()
     else await res.arrayBuffer()
   })
 

@@ -4,7 +4,11 @@ import { createTestDatabase, type TestDatabase } from '../db/testing/create-test
 import type { AppDatabase } from '../db/drivers/types'
 
 let handle: TestDatabase, testDb: AppDatabase
-const transport = vi.hoisted(() => ({ json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn() }))
+// The gateway client; one operation's client (a poll, a history read) is the same mock.
+const transport = vi.hoisted(() => {
+  const client = { json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn(), forOperation: () => client }
+  return client
+})
 const relayEndpoints = vi.hoisted(() => ({
   create: vi.fn(async () => ({ id: 'whep_1', url: 'https://relay.test/v1/hooks/whep_1', name: 'Email inboxes', status: 'active' })),
   disable: vi.fn(async () => {}),

@@ -3,10 +3,12 @@
  */
 
 import {
-  getEffectiveComposioApiKey,
-  getComposioUserId,
+  getSettings,
+  composioUserIdFrom,
+  effectiveComposioApiKeyFrom,
+  type AppSettings,
 } from '@shared/lib/config/settings'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { platformAccessTokenFrom } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { PlatformReconnectRequiredError } from '@shared/lib/agent-runtime-errors/platform-reconnect-required/platform-reconnect-required-error'
@@ -49,24 +51,51 @@ function getPlatformComposioBaseUrl(): string {
   return `${getPlatformProxyBaseUrl()}/v1/composio`
 }
 
-function getPlatformComposioToken(): string | null {
-  return getPlatformAccessToken()
+/**
+ * How this deployment reaches Composio: its own key, else the platform's
+ * org-managed Composio. Resolved from one settings read for one operation (a
+ * listing, a proxied request) and passed to every call in it; the next
+ * operation, or a retry after a credential refresh, resolves again. Never kept
+ * between operations.
+ */
+export interface ComposioAuth {
+  /** The deployment's own Composio key (settings, else env). Wins over the platform. */
+  localApiKey: string | null
+  /** The platform token, when there is no local key and the platform is connected. */
+  platformToken: string | null
+  /** The Composio user id (settings, else env) that local-key calls are scoped to. */
+  userId: string | null
+}
+
+/** The settings {@link ComposioAuth} comes from. */
+export type ComposioAuthSettings = Pick<AppSettings, 'apiKeys' | 'platformAuth'>
+
+/** {@link ComposioAuth} from settings already read. */
+export function composioAuthFrom(settings: ComposioAuthSettings): ComposioAuth {
+  const localApiKey = effectiveComposioApiKeyFrom(settings) || null
+  return {
+    localApiKey,
+    platformToken: localApiKey ? null : platformAccessTokenFrom(settings),
+    userId: composioUserIdFrom(settings) || null,
+  }
+}
+
+/** {@link ComposioAuth} as stored now: one settings read. */
+export async function resolveComposioAuth(): Promise<ComposioAuth> {
+  return composioAuthFrom(await getSettings())
 }
 
 /**
- * Make a request to the Composio API.
+ * Make a request to the Composio API, with `auth` when the caller's operation
+ * resolved it, else with credentials read now.
  */
-function shouldUseLocalComposioKey(): boolean {
-  return Boolean(getEffectiveComposioApiKey())
-}
-
 export async function composioFetch<T>(
   endpoint: string,
   options: RequestInit = {},
-  apiVersion: ComposioApiVersion = 'v3'
+  apiVersion: ComposioApiVersion = 'v3',
+  auth?: ComposioAuth,
 ): Promise<T> {
-  const localApiKey = getEffectiveComposioApiKey()
-  const platformToken = localApiKey ? null : getPlatformComposioToken()
+  const { localApiKey, platformToken } = auth ?? await resolveComposioAuth()
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
 
@@ -196,12 +225,16 @@ function mapAuthConfigListItem(item: AuthConfigListItem): AuthConfig {
  */
 export async function listAuthConfigs(
   toolkitSlug?: string,
+  auth?: ComposioAuth,
 ): Promise<AuthConfig[]> {
   const query = toolkitSlug
     ? `?toolkit_slug=${encodeURIComponent(toolkitSlug)}&limit=100`
     : ''
   const response = await composioFetch<ListAuthConfigsResponse>(
     `/auth_configs${query}`,
+    {},
+    'v3',
+    auth,
   )
   return (response.items || []).map(mapAuthConfigListItem)
 }
@@ -211,10 +244,13 @@ export async function listAuthConfigs(
  * Uses Composio-managed OAuth credentials.
  */
 export async function getOrCreateAuthConfig(
-  providerSlug: string
+  providerSlug: string,
+  auth?: ComposioAuth,
 ): Promise<AuthConfig> {
+  // One credential for the lookup and the create.
+  const resolved = auth ?? await resolveComposioAuth()
   // First, check if an enabled auth config already exists for this provider
-  const existing = await listAuthConfigs(providerSlug)
+  const existing = await listAuthConfigs(providerSlug, resolved)
   const matchingConfigs = existing
     .filter((config) => config.status !== 'DISABLED')
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -234,7 +270,7 @@ export async function getOrCreateAuthConfig(
         type: 'use_composio_managed_auth',
       },
     }),
-  })
+  }, 'v3', resolved)
 
   return mapAuthConfigCreateResponse(response)
 }
@@ -277,16 +313,19 @@ interface ListConnectedAccountsResponse {
 
 /**
  * List all connected accounts for the current user.
- * Handles cursor-based pagination (Composio caps at 50/page).
+ * Handles cursor-based pagination (Composio caps at 50/page). The credentials
+ * and user are resolved once for the listing and used for every page; the next
+ * listing resolves them again.
  */
 export async function listConnections(
   toolkit?: string,
-  userIdOverride?: string
+  userIdOverride?: string,
+  auth?: ComposioAuth,
 ): Promise<ComposioConnection[]> {
-  const useLocal = shouldUseLocalComposioKey()
+  const resolved = auth ?? await resolveComposioAuth()
   let baseEndpoint = '/connected_accounts?'
-  if (useLocal || !getPlatformComposioToken()) {
-    const userId = userIdOverride || getComposioUserId()
+  if (resolved.localApiKey || !resolved.platformToken) {
+    const userId = userIdOverride || resolved.userId
     if (!userId) {
       throw new ComposioApiError('Composio User ID is not configured', 401)
     }
@@ -302,7 +341,7 @@ export async function listConnections(
 
   for (let page = 0; page < 20; page++) {
     const endpoint = baseEndpoint + (cursor ? `cursor=${encodeURIComponent(cursor)}` : '')
-    const response = await composioFetch<ListConnectedAccountsResponse>(endpoint)
+    const response = await composioFetch<ListConnectedAccountsResponse>(endpoint, {}, 'v3', resolved)
 
     for (const item of response.items || []) {
       all.push({
@@ -335,10 +374,12 @@ interface InitiateConnectionResponse {
 export async function initiateConnection(
   authConfigId: string,
   callbackUrl: string,
-  userIdOverride?: string
+  userIdOverride?: string,
+  auth?: ComposioAuth,
 ): Promise<InitiateConnectionResponse> {
-  const userId = userIdOverride || getComposioUserId()
-  if (!userId && shouldUseLocalComposioKey()) {
+  const resolved = auth ?? await resolveComposioAuth()
+  const userId = userIdOverride || resolved.userId
+  if (!userId && resolved.localApiKey) {
     throw new ComposioApiError(
       'Composio User ID is required to initiate a connection',
       401
@@ -352,7 +393,7 @@ export async function initiateConnection(
       ...(userId ? { user_id: userId } : {}),
       callback_url: callbackUrl,
     }),
-  })
+  }, 'v3', resolved)
 
   const parsed = LinkResponseSchema.parse(raw)
 
@@ -366,10 +407,14 @@ export async function initiateConnection(
  * Get a specific connection by ID.
  */
 export async function getConnection(
-  connectionId: string
+  connectionId: string,
+  auth?: ComposioAuth,
 ): Promise<ComposioConnection> {
   const response = await composioFetch<ConnectedAccountGetResponse>(
-    `/connected_accounts/${connectionId}`
+    `/connected_accounts/${connectionId}`,
+    {},
+    'v3',
+    auth,
   )
   return {
     id: response.id,
@@ -435,10 +480,14 @@ function detectRedaction(token: string): RedactionPattern | null {
  * The token is in state.val based on the auth scheme.
  */
 export async function getConnectionToken(
-  connectionId: string
+  connectionId: string,
+  auth?: ComposioAuth,
 ): Promise<ConnectionTokenResponse> {
   const response = await composioFetch<ConnectedAccountWithTokenResponse>(
-    `/connected_accounts/${connectionId}`
+    `/connected_accounts/${connectionId}`,
+    {},
+    'v3',
+    auth,
   )
 
   const authScheme = response.state?.authScheme
@@ -540,7 +589,8 @@ export interface ProxyExecuteResult {
  * the request. Use this for connections whose tokens are redacted (Composio-managed).
  */
 export async function proxyExecute(
-  p: ProxyExecuteParams
+  p: ProxyExecuteParams,
+  auth?: ComposioAuth,
 ): Promise<ProxyExecuteResult> {
   const raw = await composioFetch<unknown>(
     '/tools/execute/proxy',
@@ -555,7 +605,8 @@ export async function proxyExecute(
         ...(p.binaryBody ? { binary_body: p.binaryBody } : {}),
       }),
     },
-    'v3.1'
+    'v3.1',
+    auth,
   )
   const parsed = ProxyExecuteResponseSchema.parse(raw)
   return {
@@ -775,8 +826,14 @@ export async function getAccountDisplayName(
  * Returns true when using org-managed Composio via the platform proxy,
  * false when using a local Composio API key or when not connected.
  */
-export function isPlatformComposioActive(): boolean {
-  return !shouldUseLocalComposioKey() && Boolean(getPlatformComposioToken())
+export async function isPlatformComposioActive(): Promise<boolean> {
+  return isPlatformComposioActiveFrom(await getSettings())
+}
+
+/** {@link isPlatformComposioActive} from settings already read. */
+export function isPlatformComposioActiveFrom(settings: ComposioAuthSettings): boolean {
+  const auth = composioAuthFrom(settings)
+  return !auth.localApiKey && Boolean(auth.platformToken)
 }
 
 export { ComposioApiError, ComposioRedactedTokenError }

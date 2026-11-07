@@ -25,14 +25,16 @@ export function getAccountProviderByName(name: string): BaseAccountProvider {
   return getAccountProvider(name)
 }
 
-export function getRegisteredProviders(): BaseAccountProvider[] {
-  return Array.from(providers.values())
+/** The registered providers that are configured now (see `BaseAccountProvider.isConfigured`). */
+export async function getRegisteredProviders(): Promise<BaseAccountProvider[]> {
+  const registered = Array.from(providers.values())
+  const configured = await Promise.all(registered.map((provider) => provider.isConfigured()))
+  return registered.filter((_, index) => configured[index])
 }
 
-export function getDefaultAccountProvider(): BaseAccountProvider {
-  const preferred = getDefaultAccountProviderType()
-  const p = providers.get(preferred)
-  if (p) return p
+export async function getDefaultAccountProvider(): Promise<BaseAccountProvider> {
+  const preferred = providers.get(await getDefaultAccountProviderType())
+  if (preferred && await preferred.isConfigured()) return preferred
   const composio = providers.get('composio')
   if (composio) return composio
   const first = providers.values().next()

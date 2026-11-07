@@ -1,6 +1,8 @@
 vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import * as integrationStore from './store'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { taskManager } from '@shared/lib/background-work'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import type { StopSessionOptions, StopSessionResult } from '../agent-actor/types'
 import { AgentIntegration } from './agent-integration'
 import { AgentIntegrationManager } from './agent-integration-manager'
@@ -8,6 +10,7 @@ import { AgentIntegrationRegistry } from './registry'
 import { captureException } from '../error-reporting'
 import { updateAgentIntegrationStatus } from '../services/agent-integration-service'
 import { backgroundSettled } from '../background'
+import { getRequestUserId, runWithRequestUser } from '../platform-attribution/request-context'
 import { publishIntegrationAuthorization } from './authorization-events'
 import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
 
@@ -99,7 +102,7 @@ vi.mock('@shared/lib/agent-actor', async () => {
 })
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
+  getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }), effectiveModelsFrom: () => ({ agentModel: 'test-model' }) }))
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: state.notify } }))
@@ -149,6 +152,10 @@ const loseAuthorization = (version = 1) => publishIntegrationAuthorization({ typ
 let manager: AgentIntegrationManager
 let adapter: ObjectIntegration
 let registry: AgentIntegrationRegistry
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('@shared/lib/services/session-defaults') })
 beforeEach(async () => {
   vi.clearAllMocks()
   state.rows = [record('installation-a')]
@@ -190,10 +197,18 @@ beforeEach(async () => {
   adapter = new ObjectIntegration()
   registry = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => adapter }])
   manager = new AgentIntegrationManager(registry)
+  registerTasks(manager)
 })
 afterEach(() => manager.stop())
 
 describe('AgentIntegration host contract', () => {
+  it('reports a failed start and still rejects, for the service host to log', async () => {
+    const failure = new Error('no deliveries')
+    vi.spyOn(manager['deliveries'], 'start').mockRejectedValueOnce(failure)
+    await expect(manager.start()).rejects.toBe(failure)
+    expect(captureException).toHaveBeenCalledWith(failure, expect.objectContaining({ tags: expect.objectContaining({ operation: 'startup' }) }))
+  })
+
   it('creates a session and routes subsequent events by the provider logical key', async () => {
     await manager.start()
     await adapter.input('comment-one')
@@ -416,13 +431,16 @@ describe('AgentIntegration host contract', () => {
     state.rows.push(record('installation-b'))
     const isolated = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async row => row.id === 'installation-a' ? adapter : second }])
     manager = new AgentIntegrationManager(isolated)
+    registerTasks(manager)
     await manager.start()
     await Promise.all([adapter.input('first'), second.input('second')])
-    await vi.waitFor(() => expect(state.streams.size).toBe(2))
+    // Each installation opens its stream through a session start (settings,
+    // the agent, the database): allow for a loaded test run.
+    await vi.waitFor(() => expect(state.streams.size).toBe(2), { timeout: 5_000 })
     expect(state.mappings.size).toBe(2)
     manager.stop()
     // A cancelled stream lets go of its source a moment later across a wire.
-    await vi.waitFor(() => expect(state.streams.size).toBe(0))
+    await vi.waitFor(() => expect(state.streams.size).toBe(0), { timeout: 5_000 })
     expect(adapter.connected).toBe(false)
     expect(second.connected).toBe(false)
     expect(adapter.released).toHaveLength(1)
@@ -519,6 +537,7 @@ describe('AgentIntegration host contract', () => {
     const create = vi.fn()
     const offline = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create }])
     manager = new AgentIntegrationManager(offline)
+    registerTasks(manager)
 
     const sessionId = await manager.ensureSession('installation-a', 'object-7')
     expect(state.register).toHaveBeenCalledWith(sessionId, 'Object session')
@@ -759,6 +778,7 @@ it('review: a restoration retry cannot outlive a clear that is still in progress
     create: async row => row.id === 'installation-a' ? adapter : otherAdapter,
   }])
   manager = new AgentIntegrationManager(registry)
+  registerTasks(manager)
   await manager.start()
   await adapter.input('first-chat')
   await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
@@ -1067,6 +1087,23 @@ describe('manager-owned runtime recovery', () => {
     expect((await adapter.session('unfinished'))?.activity).toBe('idle')
     expect(state.subscribeStream).toHaveBeenCalledTimes(2)
   })
+  it('retries a failed attachment 30 seconds later, acting for the same user', async () => {
+    mapping('unfinished', 'old-session')
+    await manager.start()
+    state.subscribeStream.mockRejectedValueOnce(new Error('Container temporarily unavailable'))
+    const at = vi.spyOn(taskManager(), 'at')
+    const before = Date.now()
+    await runWithRequestUser('member-1', () => adapter.session('unfinished'))
+    const [when, job, spec] = at.mock.calls.find(([, , spec]) => spec.taskType === 'agent-integrations.restore-stream')!
+    expect(when).toBeGreaterThanOrEqual(before + 30_000)
+    expect(when).toBeLessThanOrEqual(Date.now() + 30_000)
+
+    const retriedFor: Array<string | undefined> = []
+    state.subscribeStream.mockImplementationOnce(async () => { retriedFor.push(getRequestUserId()) })
+    // That wakeup, now rather than in 30 seconds.
+    await taskManager().at(Date.now(), job, spec)
+    await vi.waitFor(() => expect(retriedFor).toEqual(['member-1']))
+  })
   it('reports a missing runtime session as a terminal failure', async () => {
     mapping('unfinished', 'old-session')
     state.subscribeStream.mockRejectedValue(new Error('Session not found'))
@@ -1121,6 +1158,7 @@ it('does not cancel the connect of credentials written after the loss when the l
     if (gated) { reached(); await gate }
     return adapter
   } }]))
+  registerTasks(manager)
   await manager.start()
   state.rows[0] = { ...state.rows[0], status: 'disconnected', config: '{"revoked":true}', version: 1 }
   // A config edit: replacement credentials with the row still `disconnected`, then remove + add.
@@ -1159,6 +1197,7 @@ it('does not connect a copy of the row read before a loss it has already heard',
     if (row.id === 'installation-a') { reached(); await gate }
     return adapter
   } }]))
+  registerTasks(manager)
   const starting = manager.start()
   await parked
   // installation-b loses its authorization while installation-a is still connecting.

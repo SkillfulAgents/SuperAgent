@@ -1,8 +1,9 @@
-import { Check, ChevronRight, RotateCcw } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { cn } from '@shared/lib/utils/cn'
+import { useHomeCardLook } from './home-collapsible'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import {
@@ -112,6 +113,7 @@ function RetentionRow({
   disabled,
   onChange,
 }: RetentionRowProps) {
+  const look = useHomeCardLook()
   const isOverride = value !== undefined
   // The trigger is narrow, so it shows the compact form ("30d", "1y"); the
   // popover options keep their full labels.
@@ -119,22 +121,24 @@ function RetentionRow({
 
   return (
     <div className="flex items-center justify-between gap-2 py-2 px-4" data-testid={`${testId}-card`}>
-      <span className="text-[12px]/5 text-muted-foreground">{label}</span>
+      <span className={look.label}>{label}</span>
       <Popover>
         <PopoverTrigger asChild>
           <Button
             type="button"
-            variant="ghost"
+            variant={look.grouped ? 'ghost' : 'outline'}
             size="sm"
             disabled={disabled}
             // The side panel's row style: a value lighter than its label and a soft right chevron, like the section rows, with no frame or
             // hover fill. Right-aligned, so the values line up at their chevrons whatever they read.
-            className="-mr-1 h-8 gap-1 px-1 text-[12px]/5 font-normal text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground/70"
+            className={look.grouped
+              ? '-mr-1 h-8 gap-1 px-1 text-[12px]/5 font-normal text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground/70'
+              : 'h-[34px] w-20 justify-between gap-1.5 px-2 text-xs font-medium'}
             aria-label={`${label}: ${triggerLabel}. Click to change.`}
             data-testid={`${testId}-trigger`}
           >
             <span className="truncate">{triggerLabel}</span>
-            <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
+            {look.grouped ? <ChevronRight className="h-4 w-4 text-muted-foreground/50" /> : <ChevronDown className="h-3.5 w-3.5" />}
           </Button>
         </PopoverTrigger>
         <PopoverContent

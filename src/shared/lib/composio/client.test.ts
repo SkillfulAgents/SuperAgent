@@ -4,14 +4,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const mockGetEffectiveComposioApiKey = vi.fn()
 const mockGetComposioUserId = vi.fn()
 
+/** Settings reads; each answers with the mocked key, user and token below. */
+const mockGetSettings = vi.fn(async () => ({}))
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveComposioApiKey: () => mockGetEffectiveComposioApiKey(),
-  getComposioUserId: () => mockGetComposioUserId(),
+  getSettings: () => mockGetSettings(),
+  effectiveComposioApiKeyFrom: () => mockGetEffectiveComposioApiKey(),
+  composioUserIdFrom: () => mockGetComposioUserId(),
 }))
 
 const mockGetPlatformAccessToken = vi.fn((): string | null => null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: () => mockGetPlatformAccessToken(),
+  platformAccessTokenFrom: () => mockGetPlatformAccessToken(),
 }))
 
 const mockAddErrorBreadcrumb = vi.fn()

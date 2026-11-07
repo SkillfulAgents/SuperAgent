@@ -1,8 +1,16 @@
 import { getAgentIntegration } from '../services/agent-integration-service'
+import { getIntegrationSession } from '../agent-integrations/store'
 import { meetingProviders } from './providers'
-import { meetingRoster } from './roster'
+import { isMeetingBot, meetingRoster } from './roster'
 import { isTerminalMeetingStatus } from './schemas'
+import { meetingScreenshots } from './screenshots'
 import type { MeetingRecord } from './store'
+import { meetingSpeakerStarted } from './transcript-speakers'
+
+async function providerOf(meeting: MeetingRecord) {
+  const integration = await getAgentIntegration(meeting.integrationId)
+  return meetingProviders.find(candidate => candidate.definition.provider === integration?.provider)
+}
 
 /**
  * A callback from the bot host about the room (someone joined, left, started
@@ -13,8 +21,7 @@ import type { MeetingRecord } from './store'
  * participant event at all.
  */
 export async function receiveMeetingBotEvent(meeting: MeetingRecord, body: unknown): Promise<boolean> {
-  const integration = await getAgentIntegration(meeting.integrationId)
-  const provider = meetingProviders.find(candidate => candidate.definition.provider === integration?.provider)
+  const provider = await providerOf(meeting)
   const event = provider ? await provider.parseBotEvent(body) : null
   if (!event) return false
   // Nothing is tracked for a call that is over. A call that ends while this
@@ -22,5 +29,28 @@ export async function receiveMeetingBotEvent(meeting: MeetingRecord, body: unkno
   // late callback cannot bring it back.
   if (isTerminalMeetingStatus(meeting.status)) return true
   await meetingRoster.apply(meeting.id, event, meeting.botName)
+  // The bot's own transcript pieces are already named; only room speech changes the speaker.
+  if (event.kind === 'speech_on' && !isMeetingBot(event.participant, meeting.botName)) await meetingSpeakerStarted(meeting.id, event.participant.name)
   return true
+}
+
+/**
+ * Reads one meeting's frames-socket messages. Its provider reads each message
+ * and screenshots are files in the agent's workspace, so, like a bot event,
+ * no live connector is needed. The provider is looked up once per socket,
+ * since frames arrive several times a second. Camera frames are dropped by the
+ * provider and never stored. Null when the provider's host sends no frames.
+ */
+export async function meetingScreenFrameReceiver(meeting: MeetingRecord): Promise<((message: unknown) => Promise<void>) | null> {
+  const provider = await providerOf(meeting)
+  if (!provider?.parseScreenFrame) return null
+  let sessionId = meeting.sessionId
+  return async (message) => {
+    const frame = await provider.parseScreenFrame!(message)
+    if (!frame) return
+    // The socket can open before observeSession records the session on the meeting.
+    // Resolve the durable mapping, and try again on later frames if startup is still pending.
+    sessionId ??= (await getIntegrationSession(meeting.integrationId, meeting.id))?.sessionId ?? null
+    if (sessionId) meetingScreenshots.offer({ ...meeting, sessionId }, frame)
+  }
 }

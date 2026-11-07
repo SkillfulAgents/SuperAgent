@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { HomeCollapsible, HomePanel } from './home-collapsible'
+import { HomeCardLookContext, HomeCollapsible, HomePanel } from './home-collapsible'
 
 // The stored open state (user setting agentHomeSectionsOpen): a fake settings document and its writes.
 let storedSettings: { agentHomeSectionsOpen?: Record<string, boolean> } | undefined
@@ -28,6 +28,20 @@ function renderPanel(defaultOpen?: boolean) {
 }
 
 describe('HomeCollapsible', () => {
+  it('keeps another surface independent of Agent Home section preferences', async () => {
+    storedSettings = { agentHomeSectionsOpen: { skills: true } }
+    const user = userEvent.setup()
+    render(
+      <HomeCardLookContext.Provider value={{ card: '', section: '', media: '', label: '', defaultOpen: false }}>
+        <HomeCollapsible id="skills" title="Skills"><p>Skill list</p></HomeCollapsible>
+      </HomeCardLookContext.Provider>,
+    )
+    expect(screen.queryByText('Skill list')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Skills' }))
+    expect(screen.getByText('Skill list')).toBeVisible()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
   it('starts collapsed, showing only its header row in the panel', () => {
     renderPanel()
     expect(screen.getByTestId('home-sections-panel')).toContainElement(screen.getByRole('button', { name: 'Skills' }))

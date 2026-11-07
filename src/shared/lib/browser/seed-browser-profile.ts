@@ -66,7 +66,7 @@ export function workspaceProfileDestination(files: FileOps, workspaceDir: string
  * start; any other failure is the caller's.
  */
 export async function seedBrowserProfileFromChrome(slug: string, files: FileOps): Promise<void> {
-  const settings = getSettings()
+  const settings = await getSettings()
   const chromeProfileId = settings.app?.chromeProfileId
   if (!chromeProfileId || settings.app?.hostBrowserProvider || !drivesUserChrome(getServerFacts())) return
   try {
