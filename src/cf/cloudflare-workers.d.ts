@@ -100,7 +100,7 @@ declare module 'cloudflare:workers' {
   }
 
   export interface R2Bucket {
-    get(key: string): Promise<R2ObjectBody | null>
+    get(key: string, options?: { range?: { offset?: number; length?: number } }): Promise<R2ObjectBody | null>
     put(key: string, value: ReadableStream<Uint8Array> | ArrayBuffer | Uint8Array | string, options?: { sha256?: string }): Promise<unknown>
     delete(keys: string | string[]): Promise<void>
     list(options?: { prefix?: string; cursor?: string }): Promise<R2Objects>
