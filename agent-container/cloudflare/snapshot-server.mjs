@@ -14,9 +14,8 @@ const PORT = 8090
 const STORE = 'http://workspace.internal'
 // Top-level folders that are rebuilt, not kept.
 const EXCLUDED = new Set(['.bun-cache'])
-// Ask for a save once the workspace has been quiet this long, or has stayed busy this long.
-const QUIET_MS = 10_000
-const MAX_DIRTY_MS = 5 * 60_000
+// Changes are saved in batches, this long after the first change of a batch.
+const BATCH_MS = 2_000
 
 let agent = null
 // path -> { size, mtimeMs, hash, mode } from the last scan, so unchanged files are not rehashed.
@@ -98,21 +97,86 @@ async function upload(hashes) {
   return result
 }
 
-// Saves follow the agent's writes: a turn ends, writes stop, and the workspace is saved.
-function watchForSaves() {
-  let quiet = null
-  let dirtySince = 0
-  const requestSave = () => {
-    clearTimeout(quiet)
-    quiet = null
-    dirtySince = 0
-    fetch(`${STORE}/save`, { method: 'POST' }).catch((error) => console.error('[snapshot-server] save request failed:', error))
+const gone = (error) => (error?.code === 'ENOENT' ? null : Promise.reject(error))
+
+// The saved form of one changed path: a file, a symlink, or every file under a folder (a folder
+// moved in brings files no event names). Null when the path is gone.
+async function entriesAt(rel) {
+  const abs = path.join(WORKSPACE, rel)
+  const stat = await fs.promises.lstat(abs).catch(gone)
+  if (!stat) return null
+  if (stat.isSymbolicLink()) {
+    const target = await fs.promises.readlink(abs).catch(gone)
+    return target === null ? null : [{ path: rel, hash: '', size: 0, mode: 0o777, kind: 'symlink', target }]
+  }
+  if (stat.isDirectory()) {
+    const prefix = `${rel}/`
+    const known = new Map([...scanned].filter(([p]) => p.startsWith(prefix)).map(([p, f]) => [p.slice(prefix.length), f]))
+    const result = await scan(abs, new Set(), known)
+    for (const [p, f] of result.scanned) scanned.set(prefix + p, f)
+    return result.entries.map((entry) => ({ ...entry, path: prefix + entry.path }))
+  }
+  if (!stat.isFile()) return []
+  const known = scanned.get(rel)
+  const hash = known && known.size === stat.size && known.mtimeMs === stat.mtimeMs ? known.hash : await hashFile(abs).catch(gone)
+  if (!hash) return null
+  scanned.set(rel, { size: stat.size, mtimeMs: stat.mtimeMs, hash, mode: stat.mode & 0o777 })
+  return [{ path: rel, hash, size: stat.size, mode: stat.mode & 0o777, mtimeMs: Math.round(stat.mtimeMs), kind: 'file' }]
+}
+
+const sendChanges = (entries, removed) =>
+  fetch(`${STORE}/changes`, { method: 'POST', body: JSON.stringify({ entries, removed }) })
+
+// Saves one batch of changed paths. Bytes go up only for hashes the store says it lacks.
+async function saveBatch(paths, again) {
+  let entries = []
+  const removed = []
+  for (const rel of paths) {
+    const found = await entriesAt(rel)
+    if (found === null) {
+      removed.push(rel)
+      for (const p of scanned.keys()) if (p === rel || p.startsWith(`${rel}/`)) scanned.delete(p)
+    } else entries.push(...found)
+  }
+  if (entries.length === 0 && removed.length === 0) return
+  let response = await sendChanges(entries, removed)
+  if (response.status === 409 && response.headers.get('content-type')?.includes('json')) {
+    const { missing } = await response.json()
+    const changed = new Set()
+    await inPool(missing, async (hash) => {
+      for (const entry of entries.filter((e) => e.hash === hash)) {
+        const outcome = await put(entry.path, hash).catch((error) => (error.code === 'ENOENT' ? 'changed' : Promise.reject(error)))
+        if (outcome === 'changed') changed.add(entry.path)
+      }
+    })
+    // A file that changed while it was uploaded is saved with the next batch.
+    for (const rel of changed) again(rel)
+    entries = entries.filter((entry) => !changed.has(entry.path))
+    response = await sendChanges(entries, removed)
+  }
+  if (!response.ok) throw new Error(`saving changes: ${response.status} ${await response.text().catch(() => '')}`)
+}
+
+// Saves each change a moment after it happens, so a crash loses seconds of work. Batches go one at a time.
+function saveChanges() {
+  const changed = new Set()
+  let timer = null
+  let saving = Promise.resolve()
+  const mark = (rel) => {
+    changed.add(rel)
+    timer ??= setTimeout(() => {
+      timer = null
+      const batch = [...changed]
+      changed.clear()
+      saving = saving.then(() => saveBatch(batch, mark)).catch((error) => {
+        console.error('[snapshot-server] saving changes failed; trying again:', error)
+        for (const rel of batch) mark(rel)
+      })
+    }, BATCH_MS)
   }
   fs.watch(WORKSPACE, { recursive: true }, (_event, name) => {
-    if (name && EXCLUDED.has(String(name).split('/')[0])) return
-    dirtySince ||= Date.now()
-    clearTimeout(quiet)
-    quiet = Date.now() - dirtySince >= MAX_DIRTY_MS ? setTimeout(requestSave, 0) : setTimeout(requestSave, QUIET_MS)
+    if (!name || EXCLUDED.has(String(name).split('/')[0])) return
+    mark(String(name))
   })
 }
 
@@ -149,7 +213,7 @@ http.createServer(async (req, res) => {
           console.error(`[snapshot-server] agent exited with ${code}`)
           process.exit(code ?? 1)
         })
-        watchForSaves()
+        saveChanges()
       }
       return end(res, 200, 'launched')
     }
