@@ -36,6 +36,16 @@ vi.mock('./agent-desktop', async (importOriginal) => {
   }
 })
 
+const activated: string[] = []
+vi.mock('./windows-start-menu', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./windows-start-menu')>()
+  return {
+    ...actual,
+    startMenuApps: async () => [{ name: 'Calculator', appId: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' }],
+    activateStartMenuApp: (app: { appId: string }) => { activated.push(app.appId) },
+  }
+})
+
 let computerUseSettings: Record<string, unknown> | undefined
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: async () => ({ computerUse: computerUseSettings }),
@@ -488,6 +498,53 @@ describe('an app named two ways on Windows', () => {
     answer = notepadWindow
     await expect(executeComputerUseCommand('press', { combo: 'cmd+s', app: 'notepad', window_id: 'w-61' }, caller()))
       .rejects.toThrow(/One call acts in one app; this one names notepad, Notepad\.exe/)
+  })
+})
+
+describe('a Store app on Windows', () => {
+  const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform')!
+  beforeEach(() => { activated.length = 0 })
+  afterEach(() => { Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM) })
+  const notFound = (command: string): AgentDesktopEnvelope => ({ version: '2.6', ok: false, command, error: { code: 'APP_NOT_FOUND', message: 'not found' } })
+
+  it('launches by its Start menu name when agent-desktop knows no such executable, answering with its window', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    let listed = 0
+    answer = (args) => {
+      const command = commandOf(args)
+      if (command === 'launch') return notFound('launch')
+      if (command === 'list-windows') {
+        return ok('list-windows', listed++ === 0 ? [] : [{ id: 'w-calc', title: 'Calculator', app_name: 'CalculatorApp.exe', pid: 8 }])
+      }
+      return defaultAnswer(args)
+    }
+    const result = await executeComputerUseCommand('launch', { app: 'Calculator', activate: true }, caller())
+    expect(activated).toEqual(['Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'])
+    expect(JSON.parse(result.output)).toMatchObject({ ok: true, command: 'launch', data: { app: 'CalculatorApp.exe', window: { id: 'w-calc' }, start_menu: { name: 'Calculator' } } })
+  })
+
+  it('leaves a name the Start menu does not have, and every launch off Windows, as agent-desktop answered', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    answer = (args) => (commandOf(args) === 'launch' ? notFound('launch') : defaultAnswer(args))
+    expect(JSON.parse((await executeComputerUseCommand('launch', { app: 'Calc' }, caller())).output)).toMatchObject({ ok: false })
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    expect(JSON.parse((await executeComputerUseCommand('launch', { app: 'Calculator' }, caller())).output)).toMatchObject({ ok: false })
+    expect(activated).toEqual([])
+  })
+
+  it('captures by its window when agent-desktop cannot capture it by name', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    answer = (args) => {
+      const command = commandOf(args)
+      if (command === 'screenshot') return args.some((token) => token.startsWith('--window-id=')) ? ok('screenshot', { data: 'not-a-png' }) : notFound('screenshot')
+      if (command === 'list-windows') return ok('list-windows', [{ id: 'w-calc', title: 'Calculator', app_name: 'CalculatorApp.exe', pid: 8 }])
+      return defaultAnswer(args)
+    }
+    await executeComputerUseCommand('screenshot', { app: 'CalculatorApp.exe' }, caller())
+    const shots = runs.filter((args) => commandOf(args) === 'screenshot')
+    expect(shots).toHaveLength(2)
+    expect(shots[1]).toContain('--window-id=w-calc')
+    expect(shots[1].some((token) => token.startsWith('--app'))).toBe(false)
   })
 })
 

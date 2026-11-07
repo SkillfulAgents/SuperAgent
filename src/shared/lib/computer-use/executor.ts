@@ -53,6 +53,7 @@ import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
 import { computerUsePreferences } from './types'
 import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
 import { sameApp } from './app-identity'
+import { activateStartMenuApp, findStartMenuApp, startMenuApps, waitForActivatedWindow } from './windows-start-menu'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import * as path from 'path'
 
@@ -689,10 +690,21 @@ async function runCommand(
   // agent-desktop does not say where the window it captured is, so the window
   // list is read for that, alongside the capture rather than after it: the
   // two reads are then as close in time as they can be.
-  const placing = method === 'screenshot'
-    ? screenshotTarget(commandArgs).catch(() => ({ target: null, reason: 'the window list could not be read' }))
-    : null
-  const { stdout, envelope } = await runInBudget(session, commandArgs, signal)
+  const placeScreenshot = (args: readonly string[]) => screenshotTarget(args).catch(() => ({ target: null, reason: 'the window list could not be read' }))
+  let placing = method === 'screenshot' ? placeScreenshot(commandArgs) : null
+  let { stdout, envelope } = await runInBudget(session, commandArgs, signal)
+  if (process.platform === 'win32' && envelope?.error?.code === 'APP_NOT_FOUND') {
+    if (method === 'launch') {
+      const launched = await launchFromStartMenu(commandArgs, envelope, signal)
+      if (launched) ({ stdout, envelope } = launched)
+    } else if (method === 'screenshot') {
+      const byWindow = await screenshotArgsByWindow(commandArgs)
+      if (byWindow) {
+        placing = placeScreenshot(byWindow)
+        ;({ stdout, envelope } = await runInBudget(session, byWindow, signal))
+      }
+    }
+  }
   if (envelope?.error?.code === 'PERM_DENIED') {
     believedUntil.accessibility = 0
     believedUntil.screen_recording = 0
@@ -710,6 +722,65 @@ async function runCommand(
     ? withoutScreenshotData(envelope, method === 'screenshot')
     : null
   return { output: stripped ? JSON.stringify(stripped) : stdout, ...(app && { app }) }
+}
+
+/** How long a launch from the Start menu waits for the app's window. */
+const START_MENU_LAUNCH_WAIT_MS = 20_000
+
+/** The name a `launch` command line launches: its one positional argument. */
+function launchName(commandArgs: readonly string[]): string | undefined {
+  const separator = commandArgs.indexOf('--')
+  if (separator !== -1) return commandArgs[separator + 1]
+  const last = commandArgs.at(-1)
+  return commandArgs.length > 1 && last !== undefined && !last.startsWith('-') ? last : undefined
+}
+
+/**
+ * A Windows app agent-desktop could not launch by that name, launched by the
+ * name the Start menu shows (Calculator, Spotify, Settings): agent-desktop
+ * launches only paths and executables in the Windows directory, which no
+ * Store app has. Answers as `launch` does, with the window that came up;
+ * null when the Start menu has no app by that name.
+ */
+async function launchFromStartMenu(
+  commandArgs: readonly string[],
+  failed: AgentDesktopEnvelope,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; envelope: AgentDesktopEnvelope } | null> {
+  const name = launchName(commandArgs)
+  // A path is agent-desktop's to launch: it failed because nothing is there.
+  if (!name || name.includes('\\') || name.includes('/')) return null
+  const entry = findStartMenuApp(name, await startMenuApps().catch(() => []))
+  if (!entry || signal?.aborted) return null
+  const before = await listWindows()
+  activateStartMenuApp(entry)
+  const window = await waitForActivatedWindow(before, listWindows, START_MENU_LAUNCH_WAIT_MS, signal)
+  const startMenu = { name: entry.name, app_id: entry.appId }
+  const envelope: AgentDesktopEnvelope = {
+    ...(failed.version !== undefined && { version: failed.version }),
+    ok: true,
+    command: 'launch',
+    data: window
+      ? { app: window.app_name, window: { id: window.id, ...(window.title !== undefined && { title: window.title }) }, start_menu: startMenu }
+      : { app: entry.name, start_menu: startMenu, note: `Started from the Start menu; no window of it appeared within ${START_MENU_LAUNCH_WAIT_MS / 1000}s` },
+  }
+  return { stdout: JSON.stringify(envelope), envelope }
+}
+
+/**
+ * A screenshot of a Windows app agent-desktop could not capture by its name
+ * (a Store app, whose window a frame host owns), as a capture of that app's
+ * window: the focused one, else the first. Null when no window is the app's.
+ */
+async function screenshotArgsByWindow(commandArgs: readonly string[]): Promise<string[] | null> {
+  const app = flagValue(commandArgs, '--app')
+  if (!app || flagValue(commandArgs, '--window-id') !== undefined || flagValue(commandArgs, '--screen') !== undefined) return null
+  const windows = (await listWindows()).filter((window) => !window.minimized && sameApp(window.app_name, app))
+  const window = windows.find((candidate) => candidate.is_focused) ?? windows[0]
+  if (!window) return null
+  const [command, ...rest] = commandArgs
+  const withoutApp = rest.filter((token, i) => !token.startsWith('--app=') && token !== '--app' && rest[i - 1] !== '--app')
+  return [command, `--window-id=${window.id}`, ...withoutApp]
 }
 
 /**
