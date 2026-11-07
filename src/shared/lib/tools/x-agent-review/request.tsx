@@ -1,11 +1,13 @@
-import { xAgentReviewAttachments, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { xAgentAllowState, xAgentReviewAttachments, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import { apiFetch } from '@renderer/lib/api'
+import { useUser } from '@renderer/context/user-context'
 import { useState, useEffect, useRef } from 'react'
 import { ShieldCheck, ShieldX, MessageSquare, Paperclip } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { ApprovalActions, type ExpandedGrant } from '../requests/approval-actions'
+import { DeclineButton } from '../requests/decline-button'
 
 interface XAgentReviewRequestItemProps {
   reviewId: string
@@ -51,6 +53,7 @@ export function XAgentReviewRequestItem({
   const endBlockedRef = useRef<(() => void) | null>(null)
   const isMountedRef = useRef(true)
   const navigate = useNavigate()
+  const { isAuthMode, rolesReady, canUseAgent } = useUser()
 
   useEffect(() => {
     isMountedRef.current = true
@@ -61,11 +64,14 @@ export function XAgentReviewRequestItem({
     }
   }, [])
 
-  const targetIsActionable = xAgent.operation === 'invoke' || xAgent.operation === 'read'
+  const targetIsActionable = xAgentReviewNamesTarget(xAgent)
   const isCreate = xAgent.operation === 'create'
   const isFileDownload = xAgent.fileTransfer?.kind === 'download'
   const attachments = xAgentReviewAttachments(xAgent)
   const hasAttachments = attachments.length > 0
+  const { canAllow, lacking } = xAgentAllowState({
+    isAuthMode, rolesReady, usesCaller: canUseAgent(agentSlug), usesTarget: canUseAgent(xAgent.targetAgentSlug), review: xAgent,
+  })
 
   // Apply a terminal status + schedule onComplete, but only if the component is
   // still mounted. Avoids React's "setState on unmounted component" warning when
@@ -279,6 +285,7 @@ export function XAgentReviewRequestItem({
   return (
     <RequestItemShell
       title={titleNode}
+      subtitle={lacking.length > 0 ? `You need User access to ${lacking.join(' and ')} to allow this.` : undefined}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -295,14 +302,25 @@ export function XAgentReviewRequestItem({
       {downloadDetails}
 
       <RequestItemActions>
-        <ApprovalActions
-          testIdPrefix="xagent-review"
-          disabled={status === 'submitting'}
-          onDeny={(reason) => handleDecision('deny', reason)}
-          onAllow={() => handleDecision('allow')}
-          allowLabel={expanded ? 'Allow Once' : 'Allow'}
-          expanded={expanded}
-        />
+        {canAllow ? (
+          <ApprovalActions
+            testIdPrefix="xagent-review"
+            disabled={status === 'submitting'}
+            onDeny={(reason) => handleDecision('deny', reason)}
+            onAllow={() => handleDecision('allow')}
+            allowLabel={expanded ? 'Allow Once' : 'Allow'}
+            expanded={expanded}
+          />
+        ) : (
+          <DeclineButton
+            onDecline={(reason) => handleDecision('deny', reason)}
+            disabled={status === 'submitting'}
+            label="Deny"
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+            data-testid="xagent-review-deny-btn"
+          />
+        )}
       </RequestItemActions>
     </RequestItemShell>
   )
