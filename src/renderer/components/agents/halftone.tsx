@@ -205,7 +205,10 @@ export function Halftone({
       const elapsed = lastDrawTime === 0 ? frameInterval : now - lastDrawTime
       if (elapsed >= frameInterval - frameTolerance) {
         const frameScale = elapsed / (1000 / 60)
-        draw(frameScale)
+        // Layout can change before ResizeObserver runs later in this frame.
+        // It will resize and repaint synchronously; skip the old-size bitmap
+        // that would immediately be discarded, but advance time as usual.
+        if (wrap!.clientWidth === W && wrap!.clientHeight === H) draw(frameScale)
         // Preserve the original 60fps phase velocity while drawing half as
         // often, substantially reducing per-card field math and Canvas2D paths.
         t += speed * frameScale
