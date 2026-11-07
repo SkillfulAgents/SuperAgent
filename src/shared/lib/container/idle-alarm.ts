@@ -27,16 +27,10 @@
  * disabled, which is the only escalation this alarm never takes) leaves the
  * clock marked; the alarm then retries a minute later, as the old sweep did.
  * So does a timeout read that failed with nothing armed.
- *
- * The alarm waits on a process timer by default. A host that keeps an alarm
- * of its own for each agent, one that outlives the process, supplies the
- * timer through `setIdleAlarmTimers` and rings it when that alarm goes off.
  */
 import { background } from '../background'
 
 export interface IdleAlarmDeps {
-  /** The agent this alarm belongs to: what a host timer keys its alarm by. */
-  agentSlug(): string
   /**
    * How long the container may be idle before it sleeps, in ms; zero or less
    * disables. Read for every arm (one read shared by the marks made while it
@@ -81,50 +75,8 @@ export function idleLongerThan(idleSince: number | null, timeoutMs: number, now:
   return idleSince !== null && now - idleSince > timeoutMs
 }
 
-/** Where one agent's alarm waits. */
-export interface IdleAlarmTimer {
-  /** Ring at `at` (epoch ms), `inMs` from now, replacing any earlier time. */
-  set(at: number, inMs: number): void
-  clear(): void
-}
-
-/** Makes the timer for one agent's alarm. `ring` runs the alarm's decision and settles once it is made. */
-export type IdleAlarmTimerFactory = (agentSlug: string, ring: () => Promise<void>) => IdleAlarmTimer
-
-function processTimer(_agentSlug: string, ring: () => Promise<void>): IdleAlarmTimer {
-  let handle: NodeJS.Timeout | null = null
-  const clear = () => {
-    if (handle) clearTimeout(handle)
-    handle = null
-  }
-  return {
-    set(_at, inMs) {
-      clear()
-      handle = setTimeout(() => {
-        handle = null
-        background(ring(), { name: 'idle-alarm.sleep-if-idle' })
-      }, Math.min(inMs, MAX_TIMER_MS))
-      // An armed alarm is not a reason to keep the process alive.
-      handle.unref?.()
-    },
-    clear,
-  }
-}
-
-let timerFactory: IdleAlarmTimerFactory = processTimer
-
-/**
- * Replaces the process timer for every alarm first armed from now on: an alarm
- * keeps the timer it was first armed with, so a host sets this at boot. `null`
- * puts the process timer back.
- */
-export function setIdleAlarmTimers(factory: IdleAlarmTimerFactory | null): void {
-  timerFactory = factory ?? processTimer
-}
-
 export class IdleAlarm {
-  private timer: IdleAlarmTimer | null = null
-  private armed = false
+  private timer: NodeJS.Timeout | null = null
   private firing = false
   /**
    * Bumped by every schedule, re-arm, fire and cancel. A fire's decision
@@ -184,7 +136,7 @@ export class IdleAlarm {
    * still reads afresh before it puts anything to sleep.
    */
   ensureArmed(timeoutMs?: number): void {
-    if (this.armed || this.pendingRead) return
+    if (this.timer || this.pendingRead) return
     if (timeoutMs === undefined) this.schedule()
     else this.rearm(timeoutMs)
   }
@@ -197,7 +149,7 @@ export class IdleAlarm {
   }
 
   isArmed(): boolean {
-    return this.armed
+    return this.timer !== null
   }
 
   /**
@@ -234,7 +186,7 @@ export class IdleAlarm {
       // A completed stop reset the clock. Anything still on it means the
       // container is up (the stop did not complete, or a mark landed during
       // it and the mark's own re-arm was lost to the reset): try again soon.
-      if (this.deps.lastActivityAt() !== undefined && !this.armed) this.armIn(IDLE_ALARM_RETRY_MS)
+      if (this.deps.lastActivityAt() !== undefined && !this.timer) this.armIn(IDLE_ALARM_RETRY_MS)
     } finally {
       this.firing = false
     }
@@ -273,7 +225,7 @@ export class IdleAlarm {
       return await this.deps.timeoutMs()
     } catch (error) {
       console.error('[IdleAlarm] Could not read the auto-sleep timeout; will retry:', error)
-      if (current() && !this.armed && this.deps.lastActivityAt() !== undefined) {
+      if (current() && !this.timer && this.deps.lastActivityAt() !== undefined) {
         this.armIn(IDLE_ALARM_RETRY_MS)
       }
       return null
@@ -281,18 +233,19 @@ export class IdleAlarm {
   }
 
   private clearTimer(): void {
-    if (!this.armed) return
-    this.armed = false
-    this.timer?.clear()
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
   }
 
   private armIn(ms: number): void {
-    this.timer ??= timerFactory(this.deps.agentSlug(), () => {
-      this.armed = false
-      return this.fire()
-    })
-    this.armed = true
-    this.timer.set(this.now() + ms, ms)
+    this.timer = setTimeout(() => {
+      this.timer = null
+      background(this.fire(), { name: 'idle-alarm.sleep-if-idle' })
+    }, Math.min(ms, MAX_TIMER_MS))
+    // An armed alarm is not a reason to keep the process alive.
+    this.timer.unref?.()
   }
 
   private now(): number {
