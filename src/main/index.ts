@@ -108,11 +108,12 @@ console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
 // Initialize error reporting as early as possible (after data dir is set)
 import { initErrorReporting, captureException, flushErrorReporting, attachErrorReportingIdentity } from '@shared/lib/error-reporting'
+import { createServerProvider } from '@shared/lib/error-reporting/sentry-provider'
 import { recordFatalError, reportCrashMarkerFromLastRun, toReportableError } from './crash-marker'
 
 // Only report errors in production builds — dev mode generates too much noise
 if (app.isPackaged) {
-  initErrorReporting({ environment: 'electron' })
+  initErrorReporting(createServerProvider({ environment: 'electron' }))
   // If the last session died in a fatal handler, its Sentry event may have
   // been lost (no offline transport) — deliver the on-disk record now.
   void reportCrashMarkerFromLastRun()
@@ -128,7 +129,9 @@ import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { installDesktopKeyManager } from './keys/install-desktop-key-manager'
-import { afterBindInitialize, prepareBackgroundWork, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
+import { initializeBackgroundWork } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
+import { afterBindInitialize, registerBackgroundWork, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -1606,7 +1609,8 @@ async function startApp() {
     captureException(error, { tags: { component: 'keys', operation: 'install' } })
   }
   // Then task dispatch: a request can schedule work as soon as the bind below lands.
-  await prepareBackgroundWork()
+  await initializeBackgroundWork(new LocalTaskManager())
+  registerBackgroundWork()
   scheduleAutomaticUpdateChecks()
 
   // Download-carried enrollment nonce recovery. The channels are all

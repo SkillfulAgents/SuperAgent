@@ -40,9 +40,10 @@ if (typeof window === 'undefined') {
   // The same for scheduled work: a fresh manager with nothing registered and
   // dispatch on, so no timer crosses tests. A test registers the tasks it uses.
   beforeEach(async () => {
-    const { closeBackgroundWork, initializeLocalBackgroundWork } = await import('@shared/lib/background-work/global')
+    const { closeBackgroundWork, initializeBackgroundWork } = await import('@shared/lib/background-work/global')
+    const { LocalTaskManager } = await import('@shared/lib/background-work/local-task-manager')
     await closeBackgroundWork()
-    await initializeLocalBackgroundWork()
+    await initializeBackgroundWork(new LocalTaskManager())
   })
 }
 

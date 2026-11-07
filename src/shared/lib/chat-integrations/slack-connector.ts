@@ -13,6 +13,7 @@
 
 import { App as SlackApp, SocketModeReceiver, type BlockAction, type Receiver, type types as SlackTypes } from '@slack/bolt'
 import { z } from 'zod'
+import { Marked, type Token, type Tokens } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
@@ -48,7 +49,9 @@ export type SlackConfig = StoredSlackConfig
 // ── Slack limits ────────────────────────────────────────────────────────
 
 const MAX_MESSAGE_LENGTH = 3000 // Slack's mrkdwn rendering gets unreliable past ~4000; be conservative
-const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown_text limit
+const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown block limit
+const SLACK_TABLE_MAX_ROWS = 100 // header included; Slack drops the rest silently
+const SLACK_TABLE_MAX_COLUMNS = 20
 
 // ── Markdown → Slack mrkdwn ─────────────────────────────────────────────
 
@@ -140,6 +143,20 @@ function tablesToMonospace(md: string): string {
       return match.endsWith('\n') ? out + '\n' : out
     },
   )
+}
+
+const slackMarked = new Marked({ async: false, gfm: true })
+const isTable = (token: Token): token is Tokens.Table => token.type === 'table'
+
+/** Markdown with each table Slack would cut turned monospace. Tables it draws whole stay as markdown. */
+export function fitSlackTables(markdown: string): string {
+  // The lexer's tokens partition its (newline-normalized) input, so their raw text joins back to it.
+  return slackMarked.lexer(markdown.replace(/\r\n?/g, '\n'))
+    .map(token => isTable(token) && (token.rows.length >= SLACK_TABLE_MAX_ROWS || token.header.length > SLACK_TABLE_MAX_COLUMNS)
+      // Every row gets outer pipes first: the monospace pass only matches piped rows.
+      ? tablesToMonospace(token.raw.replace(/^[ \t]*\|?(.*?)\|?[ \t]*$/gm, (line, cells: string) => cells.trim() ? `| ${cells} |` : line))
+      : token.raw)
+    .join('')
 }
 
 // ── Session system prompt ───────────────────────────────────────────────
@@ -486,6 +503,11 @@ function relayOnlyReceiver(): Receiver {
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
+
+/** Standard markdown as a block, with mrkdwn text for notifications: Slack's own text for a markdown message drops its tables. */
+function markdownMessage(md: string): { blocks: SlackTypes.MarkdownBlock[]; text: string } {
+  return { blocks: [{ type: 'markdown', text: md }], text: splitChatMessage(markdownToSlackMrkdwn(md), MARKDOWN_TEXT_LENGTH)[0] }
+}
 
 function inThread<T extends object>(args: T, threadTs: string | undefined, alsoSendToChannel: boolean) {
   if (!threadTs) return args
@@ -995,7 +1017,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
 
     let lastTs = ''
-    for (const chunk of splitChatMessage(tablesToMonospace(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
+    for (const chunk of splitChatMessage(fitSlackTables(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
       lastTs = await this.postText(chatId, chunk, message.alsoSendToChannel)
     }
 
@@ -1025,18 +1047,20 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
 
     const { channel } = this.resolveChannel(chatId)
-    const md = tablesToMonospace(text)
+    const md = fitSlackTables(text)
     const draft = (limit: number) => (md.length > limit
       ? md.slice(0, limit - 60) + '\n\n... (full response will appear when done)'
       : md) || ':hourglass_flowing_sand: Thinking...'
+    // Kept tables are padded only on conversion, so bound the converted draft too.
+    const converted = () => splitChatMessage(markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)), MAX_MESSAGE_LENGTH)[0]
 
     if (!existingMessageId) {
-      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), false, () => [markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH))])
+      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), false, () => [converted()])
     }
 
     // Edit existing message
     try {
-      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), () => markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)))
+      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), converted)
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       // Slack returns this when text hasn't changed
@@ -1051,7 +1075,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) return
 
     const { channel } = this.resolveChannel(chatId)
-    const md = tablesToMonospace(finalText || '(empty response)')
+    const md = fitSlackTables(finalText || '(empty response)')
 
     try {
       const [first, ...rest] = splitChatMessage(md, MARKDOWN_TEXT_LENGTH)
@@ -1083,7 +1107,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     try {
-      const result = await this.app.client.chat.postMessage(inThread({ channel, markdown_text: md }, threadTs, alsoSendToChannel))
+      const result = await this.app.client.chat.postMessage(inThread({ channel, ...markdownMessage(md) }, threadTs, alsoSendToChannel))
       this.posted(chatId)
       return result.ts || ''
     } catch (err: unknown) {
@@ -1112,7 +1136,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
     if (!this.convertedMessages.has(ts)) {
       try {
-        await this.app.client.chat.update({ channel, ts, markdown_text: md })
+        await this.app.client.chat.update({ channel, ts, ...markdownMessage(md) })
         return
       } catch (err: unknown) {
         if (!isSlackBlocksRejection(err)) throw err

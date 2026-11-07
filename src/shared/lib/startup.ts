@@ -8,7 +8,7 @@ import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { background } from './background'
-import { initializeLocalBackgroundWork, isBackgroundWorkInitialized, serviceHost, type Service } from './background-work'
+import { serviceHost, stopBackgroundWork, type Service } from './background-work'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -33,7 +33,7 @@ import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
-import { attachErrorReportingIdentity, initErrorReporting, setErrorReportingUser } from './error-reporting'
+import { attachErrorReportingIdentity, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
@@ -206,13 +206,12 @@ export function getServicesInitError(): string | null {
 }
 
 /**
- * Task dispatch and the service registry. An entry point awaits this after the
- * database, AppState and key custody and before it serves anything, since a
- * request can schedule work as soon as the API is bound. Checked and installed
- * in one step, so the dev server can repeat it for each request.
+ * Registers the app's services and their Tasks on whatever the entry point
+ * installed, and starts nothing. An entry point calls this right after it installs
+ * background work and before it serves, since a request can schedule work as soon
+ * as the API is bound. The dev server repeats it for each request.
  */
-export async function prepareBackgroundWork(): Promise<void> {
-  if (!isBackgroundWorkInitialized()) await initializeLocalBackgroundWork()
+export function registerBackgroundWork(): void {
   const host = serviceHost()
   for (const service of backgroundServices()) {
     if (!host.isRegistered(service.id)) host.register(service)
@@ -289,14 +288,9 @@ async function prepareProcessInner(): Promise<void> {
 }
 
 async function initializeServicesInner() {
-  await prepareBackgroundWork()
-
-  // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
-  // initErrorReporting is a no-op if already initialized, so this is safe.
-  // Skip in dev mode — dev errors are too noisy and pollute Sentry.
+  // The entry point started error reporting (main/index.ts, web/server.ts). Re-attaching the
+  // tenant identity is harmless, and gives it to a reporter started before the database opened.
   if (process.env.NODE_ENV === 'production') {
-    initErrorReporting({ environment: 'web' })
-    // A provider started only now has no tenant identity yet; re-attaching is harmless.
     await attachErrorReportingIdentity()
   }
 
@@ -372,8 +366,5 @@ export function setupServerHandlers(server: ServerType): void {
 export async function shutdownServices() {
   stopStaleUploadCleanup()
   stopBrowserProfileCleanup()
-  // Installed here if the entry point has not got that far, so that what it goes
-  // on to start finds the host stopped.
-  await prepareBackgroundWork()
-  await serviceHost().stop()
+  await stopBackgroundWork()
 }

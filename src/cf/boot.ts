@@ -12,7 +12,7 @@ import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { runWithBackground } from '@shared/lib/background'
 import { mutateSettings } from '@shared/lib/config/settings'
-import { initializeServices, prepareBackgroundWork, prepareProcess, shutdownServices } from '@shared/lib/startup'
+import { initializeServices, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
@@ -63,7 +63,7 @@ async function start(env: Env): Promise<void> {
     tasks = new CloudflareTaskManager(env.TASK_MANAGER)
     await initializeBackgroundWork(tasks)
   }
-  await prepareBackgroundWork()
+  registerBackgroundWork()
   await seedSettings(env.APP_ORIGIN)
 
   await prepareProcess()
