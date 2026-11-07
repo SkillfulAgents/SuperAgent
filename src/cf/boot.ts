@@ -28,7 +28,7 @@ import { setIdleAlarmTimers } from '@shared/lib/container/idle-alarm'
 // eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the delete route's folder must exist on Workers (see serve)
 import { getAgentDir } from '@shared/lib/utils/file-storage'
 import type { ExecutionContext } from 'cloudflare:workers'
-import { createCloudflareAppState } from './cloudflare-app-state'
+import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './cloudflare-task-manager'
 import { withAgentObject, routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
@@ -113,7 +113,7 @@ async function start(env: Env): Promise<void> {
   wireAgents(env)
   await openDatabase({ driver: d1(env.DB) })
   // A boot retried after a later step failed finds AppState installed.
-  if (!isAppStateInitialized()) await initializeAppState(createCloudflareAppState(env.APP_STATE, { version: env.VERSION?.timestamp }))
+  if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE, { version: env.VERSION?.timestamp }))
   await ensureKeyManager(() => new CloudflareKeyManager({ env, probes: appKeyProbes }))
   // Then task dispatch, before anything is served: a request can schedule work. Every isolate registers
   // the services' Tasks; only TaskManagerDurableObject starts the services and runs the jobs.

@@ -3,8 +3,8 @@ import Database from 'better-sqlite3'
 import type { DurableObjectNamespace, DurableObjectState, SqlStorage, SqlStorageValue, WorkerWebSocket } from 'cloudflare:workers'
 import { describeAppStateConformance } from '@shared/lib/app-state/testing/conformance'
 import { backgroundSettled } from '@shared/lib/background'
-import type { KeyPolicy } from '@shared/lib/app-state/engine'
-import { AppStateDurableObject, createCloudflareAppState, type EventHub } from './cloudflare-app-state'
+import type { KeyPolicy } from '@shared/lib/app-state'
+import { AppStateDurableObject, CloudflareAppState, type EventHub } from './cloudflare-app-state'
 import type { Env } from './index'
 
 /** A Durable Object's `ctx.storage.sql` over an in-memory SQLite database. */
@@ -31,7 +31,7 @@ class TestObject extends AppStateDurableObject {
 }
 
 function testObject(sql: SqlStorage = memorySql(), sockets: unknown[] = []): TestObject {
-  const ctx = { id: { name: 'org', toString: () => 'org' }, storage: { sql }, getWebSockets: () => sockets, acceptWebSocket: () => {} }
+  const ctx = { id: { name: 'org', toString: () => 'org' }, storage: { sql, transactionSync: <T>(decide: () => T) => decide() }, getWebSockets: () => sockets, acceptWebSocket: () => {} }
   return new TestObject(ctx as unknown as DurableObjectState, {} as Env)
 }
 
@@ -66,7 +66,7 @@ describeAppStateConformance('CloudflareAppState', () => {
   const objects = namespaceOf(object)
   const hub = memoryHub()
   return {
-    open: (scope) => createCloudflareAppState(objects, { scope, hub }),
+    open: (scope) => new CloudflareAppState(objects, { scope, hub }),
     advance: (ms) => {
       object.clock += ms
     },
