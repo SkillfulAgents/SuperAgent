@@ -20,7 +20,7 @@ vi.mock('../db', () => ({
   },
 }))
 
-import { avatarDirectory, inflatedSizeUpTo, InvalidAvatarError, prepareAvatar, setAvatar } from './profile-avatar-service'
+import { inflatedSizeUpTo, InvalidAvatarError, prepareAvatar, setAvatar } from './profile-avatar-service'
 
 const { user } = schema
 const USER = 'user-1'
@@ -32,7 +32,8 @@ function png(shade: number): Buffer {
 }
 
 function storedFiles(): string[] {
-  return fs.existsSync(avatarDirectory()) ? fs.readdirSync(avatarDirectory()).sort() : []
+  const dir = path.join(dataDir, 'profile-photos')
+  return fs.existsSync(dir) ? fs.readdirSync(dir).sort() : []
 }
 
 function override(): string | null {

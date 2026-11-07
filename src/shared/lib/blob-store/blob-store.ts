@@ -1,31 +1,68 @@
 import fs from 'fs'
 import path from 'path'
+import { getDataDir } from '@shared/lib/config/data-dir'
 
 /**
- * Bytes by key that outlive this process, for a deployment whose file system does not: one
- * org's API on many short-lived isolates starts every request with an empty data dir. The
- * deployment sets the store once at boot. Desktop and the Node host never set one, and the
- * callers keep their files on disk as before.
+ * Bytes by key that outlive this process. Desktop and the Node host keep them in the data dir,
+ * where the same files lived before. A deployment whose file system does not outlive a request
+ * passes its own store to `setBlobStore` at boot.
  */
 export interface BlobStore {
   /** The bytes under `key`, or null when nothing is stored there. */
   get(key: string): Promise<Uint8Array | null>
+  /** Stores `bytes` under `key`, replacing what was there. */
   put(key: string, bytes: Uint8Array): Promise<void>
   /** A missing key is a no-op. */
   delete(key: string): Promise<void>
 }
 
-let current: BlobStore | null = null
+/** Keeps each key as a file below `root`: key `model-icons/a.svg` is `<root>/model-icons/a.svg`. */
+export class FileSystemBlobStore implements BlobStore {
+  constructor(private readonly root: () => string) {}
 
-export function setBlobStore(store: BlobStore | null): void {
-  current = store
+  private file(key: string): string {
+    const parts = key.split('/')
+    if (parts.some((part) => part === '' || part === '.' || part === '..' || part.includes('\\'))) {
+      throw new Error(`Invalid blob key: ${key}`)
+    }
+    return path.join(this.root(), ...parts)
+  }
+
+  async get(key: string): Promise<Uint8Array | null> {
+    try {
+      return await fs.promises.readFile(this.file(key))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  async put(key: string, bytes: Uint8Array): Promise<void> {
+    const file = this.file(key)
+    await fs.promises.mkdir(path.dirname(file), { recursive: true })
+    await fs.promises.writeFile(file, bytes, { mode: 0o600 })
+  }
+
+  async delete(key: string): Promise<void> {
+    await fs.promises.unlink(this.file(key)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+    })
+  }
 }
 
-export function blobStore(): BlobStore | null {
+const dataDirBlobStore = new FileSystemBlobStore(getDataDir)
+let current: BlobStore = dataDirBlobStore
+
+/** Set once at boot by a deployment with its own store. A test passes null to go back to the data dir. */
+export function setBlobStore(store: BlobStore | null): void {
+  current = store ?? dataDirBlobStore
+}
+
+export function blobStore(): BlobStore {
   return current
 }
 
-/** Small files kept by name in one folder: in the blob store when the deployment set one, else on disk. */
+/** Small files kept by name under one key prefix in the blob store. */
 export interface HostFiles {
   /** The file's bytes, or null when there is no such file. */
   read(name: string): Promise<Uint8Array | null>
@@ -35,37 +72,14 @@ export interface HostFiles {
   remove(name: string): Promise<void>
 }
 
-/** `prefix` names the folder in the blob store; `dir` is where the same files live on disk. */
-export function hostFiles(prefix: string, dir: () => string): HostFiles {
-  const checked = (name: string): string => {
+export function hostFiles(prefix: string): HostFiles {
+  const key = (name: string): string => {
     if (!name || name !== path.basename(name) || name === '.' || name === '..') throw new Error(`Invalid file name: ${name}`)
-    return name
+    return `${prefix}/${name}`
   }
-  const key = (name: string) => `${prefix}/${checked(name)}`
-  const onDisk = (name: string) => path.join(dir(), checked(name))
   return {
-    async read(name) {
-      const store = blobStore()
-      if (store) return store.get(key(name))
-      try {
-        return await fs.promises.readFile(onDisk(name))
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-        throw error
-      }
-    },
-    async write(name, bytes) {
-      const store = blobStore()
-      if (store) return store.put(key(name), bytes)
-      await fs.promises.mkdir(dir(), { recursive: true })
-      await fs.promises.writeFile(onDisk(name), bytes, { mode: 0o600, flag: 'wx' })
-    },
-    async remove(name) {
-      const store = blobStore()
-      if (store) return store.delete(key(name))
-      await fs.promises.unlink(onDisk(name)).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== 'ENOENT') throw error
-      })
-    },
+    read: async (name) => blobStore().get(key(name)),
+    write: async (name, bytes) => blobStore().put(key(name), bytes),
+    remove: async (name) => blobStore().delete(key(name)),
   }
 }

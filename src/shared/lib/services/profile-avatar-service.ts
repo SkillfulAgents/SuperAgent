@@ -6,7 +6,6 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { user } from '@shared/lib/db/schema'
-import { getDataDir } from '@shared/lib/config/data-dir'
 import { hostFiles } from '@shared/lib/blob-store/blob-store'
 import { avatarOverrideSchema, MAX_AVATAR_BYTES } from '@shared/lib/user-profile-schema'
 
@@ -78,11 +77,7 @@ export function prepareAvatar(input: Buffer): Buffer {
   }
 }
 
-export function avatarDirectory(): string {
-  return path.join(getDataDir(), 'profile-photos')
-}
-
-const avatarFiles = hostFiles('profile-photos', avatarDirectory)
+const avatarFiles = hostFiles('profile-photos')
 
 /** A stored photo's PNG bytes, or null when there is none under that name. */
 export function readStoredAvatar(filename: string): Promise<Uint8Array | null> {
