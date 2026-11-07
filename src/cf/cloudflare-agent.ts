@@ -10,8 +10,8 @@
  *
  * The agent's actor runs here too: its ops come from the rest of the org over this object's stub
  * (`remoteActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
- * the host stay in this isolate, which shares the org's database and AppState. SuperAgent's idle
- * alarm for the agent is kept in this object's alarm.
+ * the host stay in this isolate, which shares the org's database and AppState. The agent's idle
+ * check runs on this object's alarm, which outlives the isolate.
  */
 import { Container, type StopParams } from '@cloudflare/containers'
 import type { DurableObjectState } from 'cloudflare:workers'
@@ -35,8 +35,10 @@ const NEW_FILE_MODE = 0o644
 const BLOB = /^\/blobs\/([0-9a-f]{64})$/
 // remoteActor's default origin: requests for this host are the actor's ops.
 const ACTOR_HOST = 'actor'
-// The scheduled method that rings SuperAgent's idle alarm for this agent.
-const IDLE_ALARM = 'ringIdleAlarm'
+// The scheduled method that runs SuperAgent's idle check for this agent.
+const IDLE_CHECK = 'checkIdle'
+// The first idle check after a launch; each check schedules the next at the agent's deadline.
+const FIRST_IDLE_CHECK_MS = 60_000
 
 // A type, not an interface: SQL row types must be assignable to Record<string, SqlStorageValue>.
 type WorkspaceFile = {
@@ -146,25 +148,28 @@ export class AgentDurableObject extends Container<Env> {
     return super.fetch(request)
   }
 
-  /** Keeps SuperAgent's idle alarm for this agent in this object's alarm, so it goes off after the isolate is gone. */
-  setIdleAlarm(at: number): void {
-    this.deleteSchedules(IDLE_ALARM)
-    this.schedule(new Date(at), IDLE_ALARM).catch((error: unknown) => {
-      console.error(`[AgentDurableObject ${this.agentName()}] arming the idle alarm failed:`, error)
-    })
-  }
-
-  clearIdleAlarm(): void {
-    this.deleteSchedules(IDLE_ALARM)
-  }
-
-  /** SuperAgent's idle alarm for this agent went off (setIdleAlarm). */
-  async ringIdleAlarm(): Promise<void> {
+  /** SuperAgent's idle check for this agent (checkIdle in boot.ts): sleeps it if idle, else schedules the next check. */
+  async checkIdle(): Promise<void> {
     const slug = this.agentName()
-    await runAsAgentObject(slug, this, async () => {
-      const app = await import('./boot')
-      await app.boot(this.env)
-      await app.ringIdleAlarm(slug)
+    let next: number | null
+    try {
+      next = await runAsAgentObject(slug, this, async () => {
+        const app = await import('./boot')
+        await app.boot(this.env)
+        await this.syncStatus(app, slug)
+        return app.checkIdle(slug)
+      })
+    } catch (error) {
+      console.error(`[AgentDurableObject ${slug}] the idle check failed; will retry:`, error)
+      next = Date.now() + FIRST_IDLE_CHECK_MS
+    }
+    if (next !== null && (await this.agentRunning())) this.scheduleIdleCheck(next)
+  }
+
+  private scheduleIdleCheck(at: number): void {
+    this.deleteSchedules(IDLE_CHECK)
+    this.schedule(new Date(at), IDLE_CHECK).catch((error: unknown) => {
+      console.error(`[AgentDurableObject ${this.agentName()}] scheduling the idle check failed:`, error)
     })
   }
 
@@ -173,12 +178,16 @@ export class AgentDurableObject extends Container<Env> {
     return runAsAgentObject(slug, this, async () => {
       const app = await import('./boot')
       await app.boot(this.env)
-      await (this.statusSynced ??= app.syncAgentStatus(slug).catch((error: unknown) => {
-        this.statusSynced = undefined
-        console.error(`[AgentDurableObject ${slug}] syncing the container status failed:`, error)
-      }))
+      await this.syncStatus(app, slug)
       return app.serveActorRequest(request)
     })
+  }
+
+  private syncStatus(app: typeof import('./boot'), slug: string): Promise<void> {
+    return (this.statusSynced ??= app.syncAgentStatus(slug).catch((error: unknown) => {
+      this.statusSynced = undefined
+      console.error(`[AgentDurableObject ${slug}] syncing the container status failed:`, error)
+    }))
   }
 
   override onStop(params: StopParams): void {
@@ -210,6 +219,7 @@ export class AgentDurableObject extends Container<Env> {
     await this.containerFetch(new Request('http://container/launch', { method: 'POST' }), SNAPSHOT_PORT)
     await this.waitForPort({ portToCheck: CONTAINER_INTERNAL_PORT, waitInterval: BOOT_POLL_MS })
     this.launched = true
+    this.scheduleIdleCheck(Date.now() + FIRST_IDLE_CHECK_MS)
     console.log(`[AgentDurableObject ${this.agentName()}] agent launched`)
   }
 
@@ -227,6 +237,7 @@ export class AgentDurableObject extends Container<Env> {
     await this.stop()
     // The exiting container still answers /state as launched, so wait until it is gone.
     for (let i = 0; i < 60 && (await this.containerUp()); i++) await new Promise((resolve) => setTimeout(resolve, 500))
+    this.deleteSchedules(IDLE_CHECK)
   }
 
   /** What the app sees as running: a container that is up and has launched the agent. A half-started or stopping one reads as stopped. */

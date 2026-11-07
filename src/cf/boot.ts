@@ -13,7 +13,7 @@ import { initializeAppState, isAppStateInitialized } from '@shared/lib/app-state
 import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { runWithBackground } from '@shared/lib/background'
-import { mutateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { initializeServices, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
@@ -24,7 +24,9 @@ import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 // eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- a deployment's session store needs its own summary cache, as local-session-store.ts makes
 import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
-import { setIdleAlarmTimers } from '@shared/lib/container/idle-alarm'
+// eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the agent's object schedules its idle check from the same timeout the alarm reads
+import { autoSleepTimeoutMsFrom } from '@shared/lib/container/container-runtime'
+import { IDLE_ALARM_RETRY_MS } from '@shared/lib/container/idle-alarm'
 // eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the delete route's folder must exist on Workers (see serve)
 import { getAgentDir } from '@shared/lib/utils/file-storage'
 import type { ExecutionContext } from 'cloudflare:workers'
@@ -39,8 +41,6 @@ import type { Env } from './index'
 let booted: Promise<void> | undefined
 let tasks: CloudflareTaskManager | undefined
 let fetchWrapped = false
-// The decision of each agent's idle alarm armed in this isolate, by agent.
-const idleRings = new Map<AgentSlug, () => Promise<void>>()
 // The agent's actor, as its own object serves it.
 const actorOps = serveActor((slug) => agentRegistry.get(slug))
 
@@ -80,11 +80,21 @@ export async function syncAgentStatus(slug: AgentSlug): Promise<void> {
   await containerHost.runtime(slug).syncAgentStatus()
 }
 
-/** The agent's idle alarm went off in its object. Armed by an isolate that is gone, the status sync arms it again. */
-export async function ringIdleAlarm(slug: AgentSlug): Promise<void> {
-  const ring = idleRings.get(slug)
-  if (ring) return ring()
-  await syncAgentStatus(slug)
+/**
+ * The agent's idle check, in its own object: SuperAgent's idle decision puts the agent to sleep
+ * if it has been idle past the auto-sleep timeout. Returns when to check again, or null when
+ * auto-sleep is off. The object's alarm outlives this isolate, whose process timer does not.
+ */
+export async function checkIdle(slug: AgentSlug): Promise<number | null> {
+  const runtime = containerHost.runtime(slug)
+  await runtime.idleAlarm.fire()
+  const timeoutMs = autoSleepTimeoutMsFrom(await getSettings())
+  if (timeoutMs <= 0) return null
+  const now = Date.now()
+  const idleSince = runtime.idleSince()
+  // Busy: a full window from now. Quiet: the rest of the window, or a retry if a sleep did not complete.
+  if (idleSince === null) return now + timeoutMs
+  return Math.max(idleSince + timeoutMs, now + IDLE_ALARM_RETRY_MS)
 }
 
 /** This isolate's TaskManager, whose handlers the org's task manager object runs jobs through. */
@@ -179,14 +189,6 @@ function wireAgents(env: Env): void {
   // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
   setActorTransport((slug, local) => ownedHere(slug, local, remoteActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
   setSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
-  setIdleAlarmTimers((slug, ring) => {
-    idleRings.set(slug, ring)
-    // Armed from the actor, which runs only in the agent's own object.
-    return {
-      set: (at) => servingAgentObject(slug)?.setIdleAlarm(at),
-      clear: () => servingAgentObject(slug)?.clearIdleAlarm(),
-    }
-  })
 }
 
 function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionStore, 'onActivity'>): SessionStore {
