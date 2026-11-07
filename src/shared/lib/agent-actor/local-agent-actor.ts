@@ -78,12 +78,6 @@ export interface LocalActorDeps {
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
-  /**
-   * Where the agent's files, config documents and transcripts are, when the
-   * deployment keeps them somewhere other than a directory on this machine.
-   * Omitted: the local workspace.
-   */
-  readonly createSessionStore?: (slug: AgentSlug, hooks: Pick<SessionStore, 'onActivity'>) => SessionStore
 }
 
 // Dev-only capture of the sessions' frames for fixture replays: one per
@@ -136,7 +130,7 @@ export class LocalAgentActor implements AgentActor {
       state ??
       createAgentState(slug, {
         sessions: {
-          store: (deps.createSessionStore ?? ((s, hooks) => createLocalSessionStore(s, deps, hooks)))(slug, {
+          store: createLocalSessionStore(slug, deps, {
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
           }),
           host: deps.host,
