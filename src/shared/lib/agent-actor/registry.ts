@@ -151,8 +151,8 @@ let sessionStoreFactory: LocalActorDeps['createSessionStore']
 
 /**
  * How callers reach each agent: what `agentRegistry.get` hands out in place of
- * the actor in this process, such as `remoteAgentActor` to the agent's actor in
- * another process. Called once at boot, before the first `get`: a handle
+ * the actor in this process, such as a client of the agent's actor in another
+ * process. Called once at boot, before the first `get`: a handle
  * already handed out keeps what it was made with.
  */
 export function setActorTransport(make: (slug: AgentSlug, local: AgentActor) => AgentActor): void {
