@@ -8,11 +8,10 @@ import { AccountStatusBadge } from '@renderer/components/connections/account-sta
 import { useAgentConnectedAccounts, type ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useAgentRemoteMcps, type RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 import { formatDistanceToNow } from 'date-fns'
 import { safeDate } from '@renderer/components/connections/utils'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
-import { FeaturedServicesStack } from '@renderer/components/connections/featured-services-stack'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
 import { ActivitySparkChart, ActivitySparkChartSkeleton } from '@renderer/components/activity/activity-spark-chart'
 import {
@@ -187,15 +186,12 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
           ))}
         </div>
       ) : (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No connections yet</p>
-          <p className="text-xs mt-1">
-            Connect APIs or MCP servers to give your agent access to external services like Gmail or Slack.
-          </p>
-        </div>
+        <HomeEmptyState
+          title="No connections yet"
+          description="Connect APIs or MCP servers to give your agent access to external services like Gmail or Slack."
+        />
       )}
       <div className="flex items-center justify-between mt-3 px-4 pb-1">
-        {connections.length === 0 && <FeaturedServicesStack />}
         <div className="ml-auto">
           <Button
             type="button"

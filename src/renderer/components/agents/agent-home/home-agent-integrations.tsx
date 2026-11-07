@@ -1,3 +1,4 @@
+import { cn } from '@shared/lib/utils/cn'
 import { isPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { useState } from 'react'
 import { Plus } from 'lucide-react'
@@ -14,7 +15,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 
 interface HomeAgentIntegrationsProps {
   agentSlug: string
@@ -41,6 +42,9 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Agen
     </span>
   )
 }
+
+/** Service marks drawn in black, which vanish on the dark page without a light backing. */
+const DARK_MARKS = new Set(['linear', 'github', 'notion'])
 
 export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegrationsProps) {
   const { data: integrations } = useAgentIntegrations(agentSlug)
@@ -89,30 +93,35 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
           })}
         </div>
       ) : (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">Not configured yet</p>
-          <p className="text-xs mt-1">
-            {providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
-          </p>
-          {providers.length > 0 && <div className={`mt-3 grid ${providers.length === 3 ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5`}>
+        <HomeEmptyState
+          title="No accounts yet"
+          description={providers.length > 0 ? 'Give this agent accounts of its own, like an inbox or a Slack bot, so people can reach it where they already work.' : 'No external integrations have been configured for this agent.'}
+        >
+          {providers.length > 0 && <div className="mt-3 flex flex-col gap-1">
             {providers.map((tile) => (
+              // Quiet rows, like the panel's others: a faint fill rather than a bordered card, the brand mark sitting
+              // straight on it (a dark mark gets a light backing on dark, so it still reads), and just the service's
+              // name. The whole row sets it up; "Set up" shows on hover or focus.
               <button
                 key={tile.slug}
                 onClick={() => setSetupProvider(tile)}
                 aria-label={`Connect via ${tile.label}`}
-                className="flex items-center gap-2 rounded-lg border border-border bg-background p-2 shadow-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="group/integration flex h-10 items-center gap-2.5 rounded-item bg-foreground/[0.03] pl-2.5 pr-1.5 transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:bg-zinc-200 shadow-sm">
-                  <ServiceIcon slug={tile.slug} fallback="mcp" className="h-4 w-4" />
-                </div>
-                <div className="flex flex-col items-start">
-                  <span className="text-2xs font-normal text-muted-foreground">Connect via</span>
-                  <span className="text-xs font-normal text-foreground">{tile.label}</span>
-                </div>
+                <span className={cn('flex h-5 w-5 shrink-0 items-center justify-center', DARK_MARKS.has(tile.slug) && 'dark:rounded-icon dark:bg-zinc-200 dark:p-[3px]')}>
+                  <ServiceIcon slug={tile.slug} fallback="mcp" className="h-full w-full" />
+                </span>
+                <span className="min-w-0 flex-1 truncate text-left text-xs font-normal text-foreground">{tile.label}</span>
+                <span
+                  aria-hidden="true"
+                  className="rounded-control bg-background px-2 py-1 text-xs text-foreground opacity-0 shadow-sm transition-opacity dark:bg-white/10 dark:shadow-none group-hover/integration:opacity-100 group-focus-visible/integration:opacity-100"
+                >
+                  Set up
+                </span>
               </button>
             ))}
           </div>}
-        </div>
+        </HomeEmptyState>
       )}
       {rows.length > 0 && providers.length > 0 && (
         <div className="flex items-center justify-between mt-1 px-4 pb-1">

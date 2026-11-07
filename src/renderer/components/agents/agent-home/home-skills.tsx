@@ -16,7 +16,7 @@ import { SkillFilesDialog } from '../skill-files-dialog'
 import { SkillPublishDialog } from '../skill-publish-dialog'
 import { SkillPRDialog } from '../skill-pr-dialog'
 import { SkillDeleteDialog } from '../skill-delete-dialog'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 import { HomeSkillsBrowseDialog } from './home-skills-browse-dialog'
 import { useAgentSkills, useDiscoverableSkills, useUpdateSkill, useExportSkill, useImportSkillZip } from '@renderer/hooks/use-agent-skills'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
@@ -47,10 +47,10 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
   return (
     <HomeCollapsible id="skills" title="Skills" count={skillsData ? skills.length : undefined} className={className}>
       {skills.length === 0 ? (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No skills yet</p>
-          <p className="text-xs mt-1">Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works.</p>
-        </div>
+        <HomeEmptyState
+          title="No skills yet"
+          description="Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works."
+        />
       ) : (
         <div className="mt-2" data-testid="installed-skills-list">
           {skills.map((skill) => (
