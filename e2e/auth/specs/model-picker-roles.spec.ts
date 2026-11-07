@@ -95,6 +95,7 @@ test.describe('Model picker for non-admin users', () => {
 
     // Durable proof it hit the server, not just local state.
     await user2Page.reload()
+    await openHomeAdvancedSettings(user2Page)
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText(/haiku/i, { timeout: 15000 })
   })
 })
