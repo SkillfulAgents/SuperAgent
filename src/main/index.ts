@@ -128,7 +128,9 @@ import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { installDesktopKeyManager } from './keys/install-desktop-key-manager'
-import { afterBindInitialize, prepareBackgroundWork, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
+import { initializeBackgroundWork } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
+import { afterBindInitialize, registerBackgroundWork, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -1606,7 +1608,8 @@ async function startApp() {
     captureException(error, { tags: { component: 'keys', operation: 'install' } })
   }
   // Then task dispatch: a request can schedule work as soon as the bind below lands.
-  await prepareBackgroundWork()
+  await initializeBackgroundWork(new LocalTaskManager())
+  registerBackgroundWork()
   scheduleAutomaticUpdateChecks()
 
   // Download-carried enrollment nonce recovery. The channels are all

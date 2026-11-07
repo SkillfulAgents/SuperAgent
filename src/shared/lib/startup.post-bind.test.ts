@@ -151,7 +151,7 @@ vi.mock('./computer-use/executor', () => ({
 }))
 
 describe('initializeServices post-bind critical path', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules()
     reconcile.mockReset()
     validateAuth.mockReset().mockResolvedValue(undefined)
@@ -171,6 +171,9 @@ describe('initializeServices post-bind critical path', () => {
     markBoot.mockClear()
     logBootTiming.mockClear()
     isAuthMode.mockReturnValue(true)
+    // As an entry point does before it serves. The shared test setup installed the backend.
+    const { registerBackgroundWork } = await import('./startup')
+    registerBackgroundWork()
   })
 
   afterEach(() => {
@@ -375,11 +378,11 @@ describe('initializeServices post-bind critical path', () => {
       watchWebhookRelay.mockReturnValue(() => { released.push('relay-watcher') })
     }
 
-    it('registers every service and starts nothing, however often it is prepared', async () => {
-      const { prepareBackgroundWork } = await import('./startup')
+    it('registers every service and starts nothing, however often it is repeated', async () => {
+      const { registerBackgroundWork } = await import('./startup')
       const { serviceHost, taskManager } = await import('./background-work')
-      await prepareBackgroundWork()
-      await prepareBackgroundWork()
+      registerBackgroundWork()
+      registerBackgroundWork()
 
       expect(Object.keys(serviceHost().states())).toEqual([
         'computer-use', 'active-runner', 'agent-registry', 'containers',
@@ -388,7 +391,7 @@ describe('initializeServices post-bind critical path', () => {
         'session-auto-delete', 'api-log-auto-delete', 'account-sync', 'platform',
       ])
       expect(new Set(Object.values(serviceHost().states()))).toEqual(new Set(['registered']))
-      expect((taskManager() as import('./background-work').LocalTaskManager).scheduled()).toEqual([])
+      expect((taskManager() as import('./background-work/local-task-manager').LocalTaskManager).scheduled()).toEqual([])
       expect(relayState.started).toBe(false)
       expect(initializeAgents).not.toHaveBeenCalled()
       expect(ensureImageReady).not.toHaveBeenCalled()
@@ -469,17 +472,29 @@ describe('initializeServices post-bind critical path', () => {
       expect(triggerManagerStart).not.toHaveBeenCalled()
     })
 
-    it('stays shut down when it comes before the entry point installed background work', async () => {
+    it('picks no backend: registering before an entry point installs one throws', async () => {
       const { closeBackgroundWork } = await import('./background-work')
       await closeBackgroundWork()
-      const { afterBindInitialize, prepareBackgroundWork, shutdownServices } = await import('./startup')
-      await recordAgentsAndWatcher()
+      const { registerBackgroundWork } = await import('./startup')
+      expect(() => registerBackgroundWork()).toThrow('Background work is not initialized')
+    })
+
+    it('stays shut down when it comes before the entry point installed background work', async () => {
+      const { closeBackgroundWork, initializeBackgroundWork } = await import('./background-work')
+      const { LocalTaskManager } = await import('./background-work/local-task-manager')
+      await closeBackgroundWork()
+      released.length = 0
+      const { afterBindInitialize, registerBackgroundWork, shutdownServices } = await import('./startup')
       await shutdownServices()
-      // The relay watcher never started: nothing to stop there.
-      expect(released).toEqual(SHUTDOWN_ORDER.filter(name => name !== 'relay-watcher'))
+      // Nothing has started, so no service has anything to let go of.
+      expect(released).toEqual(['browser-profile-cleanup'])
 
       // The entry point was still on its way there, and carries on.
-      await prepareBackgroundWork()
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      await initializeBackgroundWork(new LocalTaskManager())
+      registerBackgroundWork()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('the host has stopped'))
+      warn.mockRestore()
       await afterBindInitialize({ degradedOnFailure: true })
       await new Promise(resolve => setTimeout(resolve, 10))
       expect(relayState.started).toBe(false)
