@@ -113,7 +113,10 @@ export function Authenticated(): MiddlewareHandler {
     }
 
     const auth = await getAuthLazy()
-    const session = await auth.api.getSession({ headers: c.req.raw.headers })
+    const { response: session, headers } = await auth.api.getSession({ headers: c.req.raw.headers, returnHeaders: true })
+    // A cache miss renews the browser's session-data cookie. Forward both
+    // renewals and expirations, preserving separate (possibly chunked) cookies.
+    for (const cookie of headers.getSetCookie()) c.header('Set-Cookie', cookie, { append: true })
     if (!session) {
       // A meeting bot's page has no account; its cookie stands for the person who
       // started the meeting, on the routes the page needs and nowhere else.

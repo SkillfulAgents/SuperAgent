@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 // A meeting bot's page carries the participant cookie instead of a session.
 // These tests pin what that credential may and may not reach.
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => true }))
-const mockGetSession = vi.fn(async () => null)
+const mockGetSession = vi.fn(async () => ({ response: null, headers: new Headers() }))
 vi.mock('@shared/lib/auth/index', () => ({ getAuth: () => ({ api: { getSession: mockGetSession } }) }))
 const participant = vi.hoisted(() => ({ value: null as null | { meetingId: string; agentSlug: string; sessionId: string; userId: string }, cookie: '' }))
 vi.mock('@shared/lib/meeting-integrations/participant-credential', async (importOriginal) => ({
@@ -81,7 +81,7 @@ describe('meeting participant credential through the auth middlewares', () => {
     expect((await app().request('/api/voice/live/agents/research/session', { method: 'POST' })).status).toBe(200)
   })
   it('is only consulted after the session check fails', async () => {
-    mockGetSession.mockResolvedValueOnce({ user: { id: 'bob' }, session: {} } as never)
+    mockGetSession.mockResolvedValueOnce({ response: { user: { id: 'bob' }, session: {} }, headers: new Headers() } as never)
     const res = await app().request('/api/me')
     expect(await res.json()).toEqual({ user: 'bob' })
     expect(participant.cookie).toBe('')
