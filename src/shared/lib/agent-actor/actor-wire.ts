@@ -1,5 +1,5 @@
 /**
- * The actor wire format, shared by both ends of the actor over HTTP.
+ * The remote actor's wire format, shared by `remoteActor` and `serveActor`.
  *
  * A body is NDJSON: a head line (`{"v": args}` going in; `{"v": result}` or
  * `{"e": error}` coming back), then a frame per chunk of each stream the head
