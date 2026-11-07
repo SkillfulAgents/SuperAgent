@@ -1,5 +1,7 @@
 import { betterAuth } from 'better-auth'
+import { createAuthMiddleware, isAPIError } from 'better-auth/api'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
+import { setCookieCache } from 'better-auth/cookies'
 import { admin, bearer } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
@@ -167,6 +169,20 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
           const origin = request?.headers.get('origin')
           return origin ? [origin] : []
         },
+    hooks: {
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== '/change-password' || !ctx.context.options.session?.cookieCache?.enabled || isAPIError(ctx.context.returned)) return
+        // The account hook clears mustChangePassword in the database, while
+        // change-password caches the user it read before that write. Refresh
+        // only after success, using the replacement session when it rotated.
+        const session = ctx.context.newSession ?? ctx.context.session
+        if (!session) return
+        const user = await ctx.context.internalAdapter.findUserById(session.user.id)
+        if (!user) return
+        const dontRememberMe = await ctx.getSignedCookie(ctx.context.authCookies.dontRememberToken.name, ctx.context.secret)
+        await setCookieCache(ctx, { session: session.session, user }, !!dontRememberMe)
+      }),
+    },
     databaseHooks: {
       user: {
         delete: {

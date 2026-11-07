@@ -12,6 +12,9 @@ vi.mock('@shared/lib/auth/mode', () => ({
 }))
 
 const mockGetSession = vi.fn()
+function mockSession(response: unknown, headers = new Headers()) {
+  mockGetSession.mockResolvedValue({ response, headers })
+}
 vi.mock('@shared/lib/auth/index', () => ({
   getAuth: () => ({ api: { getSession: mockGetSession } }),
 }))
@@ -132,7 +135,7 @@ describe('Auth Middleware', () => {
     })
 
     it('returns 401 when no session (auth mode enabled)', async () => {
-      mockGetSession.mockResolvedValue(null)
+      mockSession(null)
       const app = buildAppNoParam(Authenticated())
       const res = await request(app, '/')
       expect(res.status).toBe(401)
@@ -141,7 +144,7 @@ describe('Auth Middleware', () => {
     })
 
     it('returns 401 when getSession returns undefined', async () => {
-      mockGetSession.mockResolvedValue(undefined)
+      mockSession(undefined)
       const app = buildAppNoParam(Authenticated())
       const res = await request(app, '/')
       expect(res.status).toBe(401)
@@ -149,7 +152,7 @@ describe('Auth Middleware', () => {
 
     it('attaches user to context on valid session', async () => {
       const user = { id: 'user-1', name: 'Alice', role: 'user' }
-      mockGetSession.mockResolvedValue({ user })
+      mockSession({ user })
 
       let capturedUser: unknown = null
       const app = new Hono()
@@ -164,7 +167,7 @@ describe('Auth Middleware', () => {
     })
 
     it('passes request headers to getSession', async () => {
-      mockGetSession.mockResolvedValue(null)
+      mockSession(null)
       const app = buildAppNoParam(Authenticated())
       await app.request('http://localhost/', {
         headers: { Cookie: 'session=abc123', Authorization: 'Bearer xyz' },
@@ -173,11 +176,41 @@ describe('Auth Middleware', () => {
       const callArg = mockGetSession.mock.calls[0][0]
       expect(callArg.headers).toBeInstanceOf(Headers)
       expect(callArg.headers.get('cookie')).toBe('session=abc123')
+      expect(callArg.returnHeaders).toBe(true)
+    })
+
+    it('appends separate cache-cookie chunks without replacing route cookies or headers', async () => {
+      const cookies = [
+        'better-auth.session_data.0=first; Path=/; HttpOnly',
+        'better-auth.session_data.1=second; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/; HttpOnly',
+      ]
+      const headers = new Headers({ 'Cache-Control': 'no-store' })
+      for (const cookie of cookies) headers.append('Set-Cookie', cookie)
+      mockSession({ user: { id: 'user-1' } }, headers)
+      const app = new Hono()
+      app.use('*', async (c, next) => {
+        c.header('Set-Cookie', 'route-cookie=keep; Path=/', { append: true })
+        c.header('Cache-Control', 'private, max-age=60')
+        await next()
+      })
+      app.get('/', Authenticated(), c => c.json({ ok: true }))
+
+      const response = await request(app, '/')
+      expect(response.headers.getSetCookie()).toEqual(['route-cookie=keep; Path=/', ...cookies])
+      expect(response.headers.get('Cache-Control')).toBe('private, max-age=60')
+    })
+
+    it('forwards expired cookies even when rejecting the session', async () => {
+      const cookie = 'better-auth.session_token=; Max-Age=0; Path=/; HttpOnly'
+      mockSession(null, new Headers({ 'Set-Cookie': cookie }))
+      const response = await request(buildAppNoParam(Authenticated()), '/')
+      expect(response.status).toBe(401)
+      expect(response.headers.getSetCookie()).toEqual([cookie])
     })
 
     it('attaches admin user to context correctly', async () => {
       const adminUser = { id: 'admin-1', name: 'Admin', role: 'admin' }
-      mockGetSession.mockResolvedValue({ user: adminUser })
+      mockSession({ user: adminUser })
 
       let capturedUser: unknown = null
       const app = new Hono()
@@ -208,7 +241,7 @@ describe('Auth Middleware', () => {
     }
 
     it('returns the deviceId for a mobile session carrying one', async () => {
-      mockGetSession.mockResolvedValue({
+      mockSession({
         user: { id: 'user-1', role: 'user' },
         session: { id: 'sess-1', userId: 'user-1', deviceId: 'device-family-1' },
       })
@@ -220,7 +253,7 @@ describe('Auth Middleware', () => {
     })
 
     it('returns null for a browser/desktop session without a deviceId', async () => {
-      mockGetSession.mockResolvedValue({
+      mockSession({
         user: { id: 'user-1', role: 'user' },
         session: { id: 'sess-1', userId: 'user-1', deviceId: null },
       })
@@ -232,7 +265,7 @@ describe('Auth Middleware', () => {
     })
 
     it('returns null when the session object omits deviceId entirely', async () => {
-      mockGetSession.mockResolvedValue({
+      mockSession({
         user: { id: 'user-1', role: 'user' },
         session: { id: 'sess-1', userId: 'user-1' },
       })
@@ -1047,7 +1080,7 @@ describe('Auth Middleware', () => {
 
   describe('Middleware chaining', () => {
     it('Authenticated() + AgentRead() — blocks unauthenticated user at Authenticated', async () => {
-      mockGetSession.mockResolvedValue(null)
+      mockSession(null)
 
       const app = new Hono()
       app.get('/:id', Authenticated(), AgentRead(), (c) => c.json({ ok: true }))
@@ -1058,7 +1091,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + AgentRead() — authenticated user with viewer passes', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'user-1', role: 'user' } })
+      mockSession({ user: { id: 'user-1', role: 'user' } })
       mockAclQuery('viewer')
 
       const app = new Hono()
@@ -1069,7 +1102,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + AgentUser() — blocks viewer after auth', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'user-1', role: 'user' } })
+      mockSession({ user: { id: 'user-1', role: 'user' } })
       mockAclQuery('viewer')
 
       const app = new Hono()
@@ -1080,7 +1113,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + AgentAdmin() — blocks user role after auth', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'user-1', role: 'user' } })
+      mockSession({ user: { id: 'user-1', role: 'user' } })
       mockAclQuery('user')
 
       const app = new Hono()
@@ -1091,7 +1124,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + AgentAdmin() — allows owner after auth', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'user-1', role: 'user' } })
+      mockSession({ user: { id: 'user-1', role: 'user' } })
       mockAclQuery('owner')
 
       const app = new Hono()
@@ -1102,7 +1135,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + IsAdmin() — blocks non-admin after auth', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'user-1', role: 'user' } })
+      mockSession({ user: { id: 'user-1', role: 'user' } })
 
       const app = new Hono()
       app.get('/', Authenticated(), IsAdmin(), (c) => c.json({ ok: true }))
@@ -1112,7 +1145,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + IsAdmin() — allows admin after auth', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'admin-1', role: 'admin' } })
+      mockSession({ user: { id: 'admin-1', role: 'admin' } })
 
       const app = new Hono()
       app.get('/', Authenticated(), IsAdmin(), (c) => c.json({ ok: true }))
@@ -1122,7 +1155,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + Or(OwnsAccount(), IsAdmin()) — full chain for owner', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'user-1', role: 'user' } })
+      mockSession({ user: { id: 'user-1', role: 'user' } })
       mockOwnershipQuery('user-1')
 
       const app = new Hono()
@@ -1133,7 +1166,7 @@ describe('Auth Middleware', () => {
     })
 
     it('Authenticated() + Or(OwnsAccount(), IsAdmin()) — full chain rejects non-owner non-admin', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'user-1', role: 'user' } })
+      mockSession({ user: { id: 'user-1', role: 'user' } })
       mockOwnershipQuery('user-2')
 
       const app = new Hono()
@@ -1319,7 +1352,7 @@ describe('Auth Middleware', () => {
 
     it('middleware does not call next() twice', async () => {
       let callCount = 0
-      mockGetSession.mockResolvedValue({ user: { id: 'u1', role: 'user' } })
+      mockSession({ user: { id: 'u1', role: 'user' } })
 
       const app = new Hono()
       app.get('/', Authenticated(), (c) => {
@@ -1343,7 +1376,7 @@ describe('Auth Middleware', () => {
     })
 
     it('response body structure is consistent across all 401 errors', async () => {
-      mockGetSession.mockResolvedValue(null)
+      mockSession(null)
       const app = buildAppNoParam(Authenticated())
       const res = await request(app, '/')
       const body = await res.json()
