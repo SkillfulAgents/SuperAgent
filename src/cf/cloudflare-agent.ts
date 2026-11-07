@@ -10,7 +10,7 @@
  */
 import { Container, type StopParams } from '@cloudflare/containers'
 import type { DurableObjectState } from 'cloudflare:workers'
-import { ASLEEP_HEADER, type StoredEntry } from './cloudflare-container-control'
+import { ASLEEP_HEADER, type ByteRange, type StoredEntry } from './cloudflare-container-control'
 import type { Env } from './index'
 
 // The agent server's port: the image's PORT, SuperAgent's CONTAINER_INTERNAL_PORT. Not imported:
@@ -240,11 +240,13 @@ export class AgentDurableObject extends Container<Env> {
     return [...children.values()]
   }
 
-  async storedRead(rel: string): Promise<Uint8Array | null> {
-    const row = this.ctx.storage.sql.exec<{ hash: string }>("SELECT hash FROM workspace_file WHERE path = ? AND kind = 'file'", rel).toArray()[0]
+  // Streamed, not read whole: a large file would not fit in the object's memory.
+  async storedRead(rel: string, range?: ByteRange): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null> {
+    const row = this.ctx.storage.sql.exec<{ hash: string; size: number }>("SELECT hash, size FROM workspace_file WHERE path = ? AND kind = 'file'", rel).toArray()[0]
     if (!row) return null
-    const object = await this.env.WORKSPACES.get(this.blobKey(row.hash))
-    return object ? new Uint8Array(await object.arrayBuffer()) : null
+    const r2Range = range && { offset: range.start, ...(range.end === undefined ? {} : { length: range.end - range.start + 1 }) }
+    const object = await this.env.WORKSPACES.get(this.blobKey(row.hash), r2Range ? { range: r2Range } : undefined)
+    return object ? { size: row.size, stream: object.body } : null
   }
 
   /** False when the agent is running: the write has to go to its container. */

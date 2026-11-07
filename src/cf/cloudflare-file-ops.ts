@@ -9,7 +9,7 @@
  */
 import type { FileEntry, FileStat, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError, normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
-import { ASLEEP_HEADER, type SleepingStore, type StoredEntry } from './cloudflare-container-control'
+import { ASLEEP_HEADER, type ByteRange, type SleepingStore, type StoredEntry } from './cloudflare-container-control'
 
 /** Calls the container's API, or returns null when the container is not running. */
 export type ContainerFetch = (path: string, init?: RequestInit) => Promise<Response | null>
@@ -42,8 +42,16 @@ function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
   })
 }
 
-const slice = (bytes: Uint8Array, range?: { start: number; end?: number }) =>
+const slice = (bytes: Uint8Array, range?: ByteRange) =>
   range ? bytes.subarray(range.start, range.end === undefined ? undefined : range.end + 1) : bytes
+
+function inChunks(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  return stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      for (let offset = 0; offset < chunk.byteLength; offset += CHUNK_BYTES) controller.enqueue(chunk.subarray(offset, offset + CHUNK_BYTES))
+    },
+  }))
+}
 
 export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping: SleepingStore): StoreFileOps {
   // The container's answer, or null when it is not running or its object answers asleep.
@@ -69,13 +77,13 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
       if (!response.ok) return failed(response, rel)
       return new Uint8Array(await response.arrayBuffer())
     }
-    const bytes = await sleeping.read(rel)
-    if (!bytes) throw new WorkspaceFileError('not-found')
-    return bytes
+    const saved = await sleeping.read(rel)
+    if (!saved) throw new WorkspaceFileError('not-found')
+    return readAll(saved.stream)
   }
 
-  // Running, the container streams the file, or the range asked for; asleep, the saved copy is read whole.
-  const contentStream = async (rel: string, range?: { start: number; end?: number }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> => {
+  // The file, or the range asked for, streamed: from the container while it runs, else from the saved workspace.
+  const contentStream = async (rel: string, range?: ByteRange): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> => {
     const found = await info(rel)
     if (!found) throw new WorkspaceFileError('not-found')
     if (Array.isArray(found)) throw new WorkspaceFileError('not-a-file')
@@ -85,9 +93,9 @@ export function createCloudflareFileOps(callContainer: ContainerFetch, sleeping:
       if (!response.ok || !response.body) return failed(response, rel)
       return { size: found.size ?? 0, stream: response.body }
     }
-    const bytes = await sleeping.read(rel)
-    if (!bytes) throw new WorkspaceFileError('not-found')
-    return { size: bytes.byteLength, stream: streamOf(slice(bytes, range)) }
+    const saved = await sleeping.read(rel, range)
+    if (!saved) throw new WorkspaceFileError('not-found')
+    return { size: saved.size, stream: inChunks(saved.stream) }
   }
 
   // Asleep, the change goes to the saved workspace; if the container started meanwhile, to it.
