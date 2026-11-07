@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createInMemorySessionStore } from './testing/in-memory-session-store'
-import { loopbackActor } from './remote-actor'
+import { loopbackActor } from './remote-agent-actor'
 import type { AgentActor } from './types'
 
 vi.mock('@shared/lib/container/container-host', () => ({
