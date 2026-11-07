@@ -7,7 +7,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { apiFetch } from '@renderer/lib/api'
 import { AgentAvatar } from './agent-avatar'
-import { AgentAvatarPicker } from './agent-avatar-picker'
+import { AgentIdentityEditor } from './agent-identity-editor'
 import { OFFERED_ORBS } from './avatar-orbs'
 import { ORB_SHAPES } from './orb-shapes'
 
@@ -30,7 +30,7 @@ function Harness() {
   const { data = [] } = useQuery({ queryKey: ['agents'], queryFn: async () => [first, second] })
   const edited = data.find(agent => agent.slug === 'second')!
   return <>
-    <AgentAvatarPicker agent={edited} />
+    <AgentIdentityEditor agent={edited} />
     {data.map(agent => <span key={agent.slug} data-testid={agent.slug}><AgentAvatar agent={agent} /></span>)}
   </>
 }
@@ -44,10 +44,15 @@ function mount() {
 
 beforeEach(() => {
   second = initialSecond
-  vi.mocked(apiFetch).mockReset().mockImplementation(async (_url, init) => {
-    const avatar = agentAvatarSchema.parse(JSON.parse(String(init?.body)))
-    second = { ...second, avatar }
-    return Response.json(avatar)
+  vi.mocked(apiFetch).mockReset().mockImplementation(async (url, init) => {
+    const body = JSON.parse(String(init?.body))
+    if (String(url).endsWith('/avatar')) {
+      const avatar = agentAvatarSchema.parse(body)
+      second = { ...second, avatar }
+      return Response.json(avatar)
+    }
+    second = { ...second, name: body.name }
+    return Response.json(second)
   })
 })
 afterEach(() => {
@@ -55,28 +60,34 @@ afterEach(() => {
   clients.splice(0).forEach(client => client.clear())
 })
 
-it.each([undefined, null])('omits the avatar and picker when metadata is %s', avatar => {
-  const agent = { slug: 'legacy', name: 'Legacy Agent', avatar }
-  // An unavailable picker should not even require a mutation/query provider.
-  const { container } = render(<><AgentAvatar agent={agent} /><AgentAvatarPicker agent={agent} /></>)
-  expect(container).toBeEmptyDOMElement()
+it.each([undefined, null])('offers the name alone when avatar metadata is %s', async avatar => {
+  const user = userEvent.setup()
+  second = { ...initialSecond, avatar }
+  mount()
+  await waitFor(() => expect(clients.at(-1)!.isFetching()).toBe(0))
+  expect(screen.getByTestId('agent-identity-trigger').querySelector('[data-avatar-orb]')).toBeNull()
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
+  expect(screen.getByTestId('agent-name-input')).toHaveValue('Second')
+  expect(screen.queryByTestId('agent-identity-preview')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Bloom' })).toBeNull()
+  await user.keyboard('{Escape}')
   expect(apiFetch).not.toHaveBeenCalled()
 })
 
-it('mounts and unmounts avatar UI as refetches add and remove metadata', async () => {
+it('adds and withdraws the avatar half as refetches add and remove metadata', async () => {
   second = { ...initialSecond }
   delete second.avatar
   mount()
   await waitFor(() => expect(clients.at(-1)!.isFetching()).toBe(0))
   expect(orbOf('second')).toBeUndefined()
-  expect(screen.queryByTestId('agent-avatar-picker')).toBeNull()
+  expect(orbOf('agent-identity-trigger')).toBeUndefined()
 
   await act(async () => {
     second = initialSecond
     clients.at(-1)!.setQueryData(['agents'], [first, second])
   })
   await waitFor(() => expect(orbOf('second')).toBe('tonal-green'))
-  await userEvent.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await userEvent.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
   await userEvent.click(screen.getByRole('button', { name: 'Bloom' }))
 
   await act(async () => {
@@ -85,7 +96,7 @@ it('mounts and unmounts avatar UI as refetches add and remove metadata', async (
     clients.at(-1)!.setQueryData(['agents'], [first, second])
   })
   await waitFor(() => expect(orbOf('second')).toBeUndefined())
-  expect(screen.queryByTestId('agent-avatar-picker')).toBeNull()
+  expect(orbOf('agent-identity-trigger')).toBeUndefined()
   expect(screen.queryByRole('button', { name: 'Bloom' })).toBeNull()
   expect(apiFetch).not.toHaveBeenCalled()
 })
@@ -95,7 +106,7 @@ it('shows the persisted pair and opens with that color and shape selected', asyn
   expect(orbOf('first')).toBe('tonal-blue')
   expect(orbOf('second')).toBe('tonal-green')
   expect(shapeOf('second')).toBe('triangle')
-  await userEvent.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await userEvent.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
   expect(screen.getByRole('button', { name: 'Green' })).toHaveAttribute('aria-pressed', 'true')
   expect(screen.getByRole('button', { name: 'Triangle' })).toHaveAttribute('aria-pressed', 'true')
 })
@@ -103,13 +114,13 @@ it('shows the persisted pair and opens with that color and shape selected', asyn
 it('previews locally, saves both fields once on close, and reads the saved pair in a new client', async () => {
   const user = userEvent.setup()
   const view = mount()
-  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
   for (const orb of OFFERED_ORBS) expect(screen.getByRole('button', { name: orb.label })).toBeInTheDocument()
   for (const shape of ORB_SHAPES) expect(screen.getByRole('button', { name: shape.label })).toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Bloom' }))
   await user.click(screen.getByRole('button', { name: 'Red / Amber' }))
-  expect(shapeOf('agent-avatar-picker')).toBe('bloom')
-  expect(orbOf('agent-avatar-picker')).toBe('duo-red-amber')
+  expect(shapeOf('agent-identity-trigger')).toBe('bloom')
+  expect(orbOf('agent-identity-trigger')).toBe('duo-red-amber')
   expect(shapeOf('second')).toBe('triangle')
   expect(apiFetch).not.toHaveBeenCalled()
   await user.keyboard('{Escape}')
@@ -128,10 +139,10 @@ it('previews locally, saves both fields once on close, and reads the saved pair 
 it('saves when dismissed by clicking outside, but skips unchanged choices', async () => {
   const user = userEvent.setup()
   mount()
-  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
   await user.keyboard('{Escape}')
   expect(apiFetch).not.toHaveBeenCalled()
-  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
   await user.click(screen.getByRole('button', { name: 'Pill' }))
   await user.click(document.body)
   await waitFor(() => expect(shapeOf('second')).toBe('pill'))
@@ -140,7 +151,7 @@ it('saves when dismissed by clicking outside, but skips unchanged choices', asyn
 it('does not overwrite a remote change when an untouched picker closes', async () => {
   const user = userEvent.setup()
   mount()
-  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
   await act(async () => {
     second = { ...second, avatar: { color: 'tonal-red', shape: 'bloom' } }
     clients.at(-1)!.setQueryData(['agents'], [first, second])
@@ -148,18 +159,66 @@ it('does not overwrite a remote change when an untouched picker closes', async (
   await waitFor(() => expect(shapeOf('second')).toBe('bloom'))
   await user.keyboard('{Escape}')
   expect(apiFetch).not.toHaveBeenCalled()
-  expect(shapeOf('agent-avatar-picker')).toBe('bloom')
-  expect(orbOf('agent-avatar-picker')).toBe('tonal-red')
+  expect(shapeOf('agent-identity-trigger')).toBe('bloom')
+  expect(orbOf('agent-identity-trigger')).toBe('tonal-red')
 })
 
 it('keeps the last persisted avatar when the server rejects a save', async () => {
   vi.mocked(apiFetch).mockResolvedValue(new Response('Save failed', { status: 500 }))
   const user = userEvent.setup()
   mount()
-  await user.click(screen.getByRole('button', { name: "Change Second's avatar" }))
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
   await user.click(screen.getByRole('button', { name: 'Bloom' }))
   await user.keyboard('{Escape}')
-  await waitFor(() => expect(screen.getByTestId('agent-avatar-picker')).not.toBeDisabled())
-  expect(shapeOf('agent-avatar-picker')).toBe('triangle')
+  await waitFor(() => expect(screen.getByTestId('agent-identity-trigger')).not.toBeDisabled())
+  expect(shapeOf('agent-identity-trigger')).toBe('triangle')
   expect(shapeOf('second')).toBe('triangle')
+})
+
+it('opens with a large preview of the current avatar and the caret at the end of the name under it', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(screen.getByTestId('agent-name'))
+  const input = screen.getByTestId('agent-name-input') as HTMLInputElement
+  expect(input).toHaveFocus()
+  expect([input.selectionStart, input.selectionEnd]).toEqual(['Second'.length, 'Second'.length])
+  expect(shapeOf('agent-identity-preview')).toBe('triangle')
+  await user.click(screen.getByRole('button', { name: 'Bloom' }))
+  expect(shapeOf('agent-identity-preview')).toBe('bloom')
+  expect(shapeOf('agent-identity-trigger')).toBe('bloom')
+})
+
+it('saves a new name on Enter, showing it in the header while saving', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
+  await user.keyboard(' Renamed{Enter}')
+  expect(screen.getByTestId('agent-name')).toHaveTextContent('Second Renamed')
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/agents/second', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Second Renamed' }),
+  }))
+  expect(screen.queryByTestId('agent-identity-editor')).toBeNull()
+})
+
+it('saves name and avatar together on close, and skips a blank or unchanged name', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
+  await user.clear(screen.getByTestId('agent-name-input'))
+  await user.type(screen.getByTestId('agent-name-input'), '   ')
+  await user.click(screen.getByRole('button', { name: 'Pill' }))
+  await user.click(document.body)
+  await waitFor(() => expect(shapeOf('second')).toBe('pill'))
+  expect(apiFetch).toHaveBeenCalledOnce()
+  expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe('/api/agents/second/avatar')
+  expect(screen.getByTestId('agent-name')).toHaveTextContent('Second')
+
+  vi.mocked(apiFetch).mockClear()
+  await user.click(screen.getByRole('button', { name: "Edit Second's name and avatar" }))
+  await user.keyboard('Both')
+  await user.click(screen.getByRole('button', { name: 'Bloom' }))
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(apiFetch).mock.calls.map(([url]) => url).sort()).toEqual(['/api/agents/second', '/api/agents/second/avatar'])
 })

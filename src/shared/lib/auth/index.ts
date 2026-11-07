@@ -5,15 +5,16 @@ import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import * as schema from '@shared/lib/db/schema'
+import { createHash } from 'crypto'
 import { getOrCreateAuthSecret } from './secret'
-import { getAppBaseUrl, getTrustedOrigins } from './config'
-import { getSettings } from '@shared/lib/config/settings'
+import { appBaseUrlFrom, trustedOriginsFrom } from './config'
+import { getSettings, type AuthSettings } from '@shared/lib/config/settings'
 import { resolveAuthSettings } from './auth-settings'
 import { firstUserPromotionApplies, platformJoinRole } from './platform-role'
 import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
-import { getGenericOAuthProviderConfigs } from './provider-config'
+import { getGenericOAuthProviderConfigs, type GenericOAuthProviderConfig } from './provider-config'
 import { lazyGenericOAuth } from './lazy-generic-oauth'
 import { oidcIssuerPolicy } from './oidc-issuer-policy'
 
@@ -21,35 +22,59 @@ import { oidcIssuerPolicy } from './oidc-issuer-policy'
 // so consumers that only need the check don't pull in ESM deps.
 export { isAuthMode } from './mode'
 
-// Lazy singleton for the Better Auth instance.
-// Typed via createAuthInstance so the concrete plugin/option inference is
-// preserved (betterAuth's generic default is not assignable since 1.6).
-let _auth: ReturnType<typeof createAuthInstance> | null = null
-
-/**
- * Reset the Better Auth singleton so the next getAuth() call
- * picks up new settings (session duration, password policy, etc.).
- */
-export function resetAuth() {
-  _auth = null
+/** Everything the Better Auth instance is built from that can change while the app runs. */
+interface AuthInputs {
+  authSettings: AuthSettings
+  trustedOrigins: string[]
+  baseURL: string
+  oauthProviders: GenericOAuthProviderConfig[]
+  secret: string
 }
 
-/**
- * Get the Better Auth instance. Lazily created on first call.
- * Only valid when isAuthMode() is true.
- */
-export function getAuth() {
-  if (!_auth) {
-    _auth = createAuthInstance()
+/** Read the inputs fresh: settings, the trusted origins and base URL they give, the OIDC providers, the secret. */
+async function loadAuthInputs(): Promise<AuthInputs> {
+  const settings = await getSettings()
+  const trustedOrigins = trustedOriginsFrom(settings)
+  const baseURL = appBaseUrlFrom(trustedOrigins)
+  return {
+    authSettings: resolveAuthSettings(settings.auth),
+    trustedOrigins,
+    baseURL,
+    oauthProviders: getGenericOAuthProviderConfigs(baseURL),
+    secret: await getOrCreateAuthSecret(),
   }
-  return _auth
 }
 
-function createAuthInstance() {
-  const trustedOrigins = getTrustedOrigins()
-  const settings = getSettings()
-  const authSettings = resolveAuthSettings(settings.auth)
-  const oauthProviders = getGenericOAuthProviderConfigs()
+function inputsKey(inputs: AuthInputs): string {
+  return createHash('sha256').update(JSON.stringify(inputs)).digest('hex')
+}
+
+// The Better Auth instance and the inputs it was built from. Typed via
+// createAuthInstance so the concrete plugin/option inference is preserved
+// (betterAuth's generic default is not assignable since 1.6).
+let current: { key: string; auth: ReturnType<typeof createAuthInstance> } | null = null
+
+/** Drop the instance; the next getAuth() builds a new one. */
+export function resetAuth() {
+  current = null
+}
+
+/**
+ * Get the Better Auth instance. Every call reads its inputs fresh (settings,
+ * trusted origins, base URL, OIDC providers, secret) and builds a new
+ * instance when they differ from the ones the current instance was built
+ * from, so a settings change committed by any process takes effect here on
+ * the next call. Only valid when isAuthMode() is true.
+ */
+export async function getAuth() {
+  const inputs = await loadAuthInputs()
+  const key = inputsKey(inputs)
+  // Building is synchronous, so concurrent callers with the same inputs share one instance.
+  if (current?.key !== key) current = { key, auth: createAuthInstance(inputs) }
+  return current.auth
+}
+
+function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProviders, secret }: AuthInputs) {
   const oauthPlugin = oauthProviders.length > 0
     ? lazyGenericOAuth({
         config: oauthProviders,
@@ -129,8 +154,8 @@ function createAuthInstance() {
       // on the same request, before authorization or identity provisioning.
       ...(oauthPlugin ? [oauthPlugin, oidcIssuerPolicy()] : []),
     ],
-    secret: getOrCreateAuthSecret(),
-    baseURL: getAppBaseUrl(),
+    secret,
+    baseURL,
     // When trustedOrigins is explicitly configured, use that list.
     // Otherwise allow all origins (matches spec: "Default: allow all origins").
     trustedOrigins: trustedOrigins.length > 0
@@ -184,7 +209,7 @@ function createAuthInstance() {
               // If admin approval is required and this is NOT the first user,
               // auto-ban them pending admin review.
               // Fresh settings each time; platform-controlled forces approval off.
-              const currentAuth = resolveAuthSettings(getSettings().auth)
+              const currentAuth = resolveAuthSettings((await getSettings()).auth)
               if (!promoted && currentAuth.requireAdminApproval) {
                 await db.update(schema.user)
                   .set({ banned: true, banReason: PENDING_APPROVAL_BAN_REASON })
@@ -262,7 +287,7 @@ function createAuthInstance() {
           },
           after: async (session, context) => {
             try {
-              const sessAuth = resolveAuthSettings(getSettings().auth)
+              const sessAuth = resolveAuthSettings((await getSettings()).auth)
               await enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
             } catch (err) {
               console.error('Failed to enforce max concurrent sessions:', err)

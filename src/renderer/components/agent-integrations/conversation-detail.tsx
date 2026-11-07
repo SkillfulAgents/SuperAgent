@@ -5,6 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
+import { ArrowUpRight } from 'lucide-react'
 import { DialogTitle } from '@renderer/components/ui/dialog'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
@@ -37,6 +38,8 @@ interface ConversationDetailProps {
   /** Open a window by sessionId, or pass null to close back to the inbox list. */
   onSelectWindow: (sessionId: string | null) => void
   onNewConversation: (externalChatId: string) => void
+  /** Leave the dialog for the window's full session view. */
+  onOpenSession: (sessionId: string) => void
 }
 
 /**
@@ -55,6 +58,7 @@ export function ConversationDetail({
   canManageAccess,
   onSelectWindow,
   onNewConversation,
+  onOpenSession,
 }: ConversationDetailProps) {
   const blank = openWindowId == null
 
@@ -115,23 +119,35 @@ export function ConversationDetail({
           <span className="shrink-0 text-xs text-muted-foreground">Conversation history (read-only)</span>
         </div>
 
-        {switcherOptions.length > 1 && (
-          <Select
-            value={switcherValue}
-            onValueChange={(v) => (v === NEW_WINDOW ? onNewConversation(row.externalChatId) : onSelectWindow(v))}
-          >
-            <SelectTrigger className="h-8 w-[170px] shrink-0" aria-label="Switch conversation">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {switcherOptions.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {switcherOptions.length > 1 && (
+            <Select
+              value={switcherValue}
+              onValueChange={(v) => (v === NEW_WINDOW ? onNewConversation(row.externalChatId) : onSelectWindow(v))}
+            >
+              <SelectTrigger className="h-8 w-[170px] shrink-0" aria-label="Switch conversation">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {switcherOptions.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {!blank && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-0.5 rounded-sm text-sm text-blue-500 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onClick={() => onOpenSession(openWindowId as string)}
+            >
+              Open Session
+              <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
 
       {blank ? (

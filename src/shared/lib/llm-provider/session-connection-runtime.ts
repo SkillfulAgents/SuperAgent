@@ -4,14 +4,19 @@ import { ProviderReconnectRequiredError } from '../agent-runtime-errors/provider
 import { ProviderRefreshUnavailableError } from '../agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
 import { connectionRuntime, type ConnectionRuntime } from './connection-runtime'
 import type { ResolvedConnection } from './connections'
+import type { AppSettings } from '../config/settings'
 
 // The container's own credential endpoint (llm-runtime.ts) keeps CredentialRefreshError;
 // these wrappers are for the user-facing session start/send path only.
 
-/** A failed sign-in refresh becomes an AgentRuntimeError the user can act on. */
-export async function sessionConnectionRuntime(resolved: ResolvedConnection, agentId: string): Promise<ConnectionRuntime> {
+/**
+ * A failed sign-in refresh becomes an AgentRuntimeError the user can act on.
+ * `settings`: the global settings this send or session start already read
+ * (see {@link connectionRuntime}); read here when absent.
+ */
+export async function sessionConnectionRuntime(resolved: ResolvedConnection, agentId: string, settings?: AppSettings): Promise<ConnectionRuntime> {
   try {
-    return await connectionRuntime(resolved, agentId)
+    return await connectionRuntime(resolved, agentId, settings)
   } catch (error) {
     const refresh = findErrorInCauseChain(error, CredentialRefreshError)
     if (!refresh) throw error
@@ -22,9 +27,9 @@ export async function sessionConnectionRuntime(resolved: ResolvedConnection, age
 }
 
 /** A signed-out default provider must not block a session on another provider; it just isn't prewarmed. */
-export async function prewarmConnectionRuntime(resolved: ResolvedConnection, agentId: string): Promise<ConnectionRuntime | undefined> {
+export async function prewarmConnectionRuntime(resolved: ResolvedConnection, agentId: string, settings?: AppSettings): Promise<ConnectionRuntime | undefined> {
   try {
-    return await connectionRuntime(resolved, agentId)
+    return await connectionRuntime(resolved, agentId, settings)
   } catch (error) {
     if (findErrorInCauseChain(error, CredentialRefreshError)) return undefined
     throw error

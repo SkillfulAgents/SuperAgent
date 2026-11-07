@@ -119,6 +119,7 @@ vi.mock('fs', () => ({
 }))
 
 import xAgentChat from './x-agent-chat'
+import { chatDefinitions } from '@shared/lib/chat-integrations/definitions'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 
 const FIXED_TIME = new Date('2026-11-03T12:00:00Z')
@@ -471,6 +472,51 @@ describe('x-agent chat route', () => {
 
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toContain('post it twice')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('lets a thread session also send a takeaway to its own thread or another thread', async () => {
+    immediateTimeout()
+    mockGetConnectorClass.mockResolvedValue(chatDefinitions.slack)
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'C1|100.1', displayName: null, archivedAt: null,
+    })
+
+    for (const chat_id of [undefined, 'C1|100.1', 'C1|200.2']) {
+      const res = await sendRequest({ message: 'Decision: we pass on Acme.', chat_id, also_send_to_channel: true, session_id: 'caller-session' })
+      expect(res.status).toBe(200)
+    }
+
+    expect(connector.sendMessage.mock.calls).toEqual([
+      ['C1|100.1', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+      ['C1|100.1', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+      ['C1|200.2', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+    ])
+    expect(mockEnsureSession.mock.calls.map(([, chatId]) => chatId)).toEqual(['C1|200.2'])
+  })
+
+  it('refuses also_send_to_channel outside a thread', async () => {
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['thread_broadcast'] })
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'D1', displayName: null, archivedAt: null,
+    })
+
+    for (const target of [{}, { chat_id: 'C1' }, { chat_id: 'C1|' }, { user_id: 'U1' }]) {
+      const res = await sendRequest({ ...target, also_send_to_channel: true, session_id: 'caller-session' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('only for a thread in a channel')
+    }
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses also_send_to_channel on providers without thread_broadcast, without touching the connector', async () => {
+    mockGetConnector.mockReturnValue(undefined)
+
+    const res = await sendRequest({ chat_id: 'C1|100.1', also_send_to_channel: true })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('does not support also_send_to_channel')
+    expect(mockAddIntegration).not.toHaveBeenCalled()
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 

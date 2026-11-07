@@ -3,10 +3,8 @@ import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { rateLimitClient } from '../middleware/rate-limit'
 import { defineFixedWindow } from '@shared/lib/app-state/fixed-window'
-import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-provider/helpers'
-import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { resolveHelperSelection } from '@shared/lib/llm-provider/connections'
-import { getEffectiveModels, getSettings } from '@shared/lib/config/settings'
+import { getConfiguredLlmClientAndModel, helperSetupFrom } from '@shared/lib/llm-provider/helpers'
+import { getSettings } from '@shared/lib/config/settings'
 
 const llm = new Hono()
 
@@ -16,24 +14,22 @@ llm.use('*', Authenticated())
 const llmRequests = defineFixedWindow({ name: 'rate:llm', limit: 100, windowMs: 60_000 })
 
 /**
- * Resolve the dashboard-runtime default to the active provider's concrete wire
- * id. The iframe proxy historically used the Sonnet tier; browserModel is the
- * existing cross-provider Sonnet-tier setting, so using it preserves that cost
- * profile without hard-coding a Claude model id.
+ * The dashboard runtime's default model: the summarizer connection's model,
+ * else browserModel resolved for the active provider. The iframe proxy
+ * historically used the Sonnet tier; browserModel is the existing
+ * cross-provider Sonnet-tier setting, so using it preserves that cost profile
+ * without hard-coding a Claude model id.
  */
-function getDefaultModel(): string {
-  return resolveActiveProviderModel(getEffectiveModels().browserModel, 'browser')
-}
+const DEFAULT_MODEL_PURPOSE = 'browser'
 
-// GET /api/llm/config
+// GET /api/llm/config — one settings read.
 llm.get('/config', async (c) => {
   try {
-    const selected = getSettings().llmDefault ? await resolveHelperSelection() : null
-    const provider = selected?.provider ?? getActiveLlmProvider()
+    const helper = await helperSetupFrom(await getSettings(), DEFAULT_MODEL_PURPOSE)
     return c.json({
-      configured: provider.getApiKeyStatus().isConfigured,
-      defaultModel: selected?.wireModel ?? getDefaultModel(),
-      provider: provider.id,
+      configured: helper.configured,
+      defaultModel: helper.model,
+      provider: helper.provider.id,
     })
   } catch (error) {
     if (error instanceof HelperConfigurationError) return c.json({ configured: false, error: error.message })
@@ -73,13 +69,15 @@ llm.post('/v1/messages', async (c) => {
     return c.json({ error: 'Missing required field: messages' }, 400)
   }
 
-  let model = (body.model as string) || getDefaultModel()
   const stream = !!body.stream
 
+  // The client and the default model from one settings read.
   let client
+  let model: string
   try {
-    client = await getConfiguredLlmClient()
-    if (!body.model) model = configuredHelperModel(client) ?? model
+    const helper = await getConfiguredLlmClientAndModel(DEFAULT_MODEL_PURPOSE)
+    client = helper.client
+    model = (body.model as string) || helper.model
   } catch (error) {
     return c.json({ error: error instanceof HelperConfigurationError ? error.message : 'LLM provider not configured. Check Gamut settings.' }, 503)
   }

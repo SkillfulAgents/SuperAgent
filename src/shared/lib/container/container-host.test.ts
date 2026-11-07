@@ -124,6 +124,7 @@ const mockSettingsState = {
   containerRunner: 'docker' as string,
   chromeProfileId: undefined as string | undefined,
   hostBrowserProvider: undefined as string | undefined,
+  containerBrowserHighDpi: false,
 }
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -132,17 +133,19 @@ vi.mock('@shared/lib/config/settings', () => ({
     app: {
       chromeProfileId: mockSettingsState.chromeProfileId,
       hostBrowserProvider: mockSettingsState.hostBrowserProvider,
+      containerBrowserHighDpi: mockSettingsState.containerBrowserHighDpi,
     },
   }),
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
   // mutator to a fresh snapshot and return it (matching the real return shape).
-  mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void) => {
+  mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void | false) => {
     const s = {
       container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
       app: {},
     }
-    mutator(s)
+    // `false` writes nothing; a write persists the runner, as the store would.
+    if (mutator(s) !== false) mockSettingsState.containerRunner = s.container.containerRunner
     return s
   },
 }))
@@ -182,7 +185,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => false,
+  isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
@@ -199,6 +202,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 describe('ContainerRuntime.ensureRunning — env var construction', () => {
   beforeEach(() => {
@@ -207,6 +211,7 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
     containerHost.dropRuntime('test-agent')
     mockSettingsState.chromeProfileId = undefined
     mockSettingsState.hostBrowserProvider = undefined
+    mockSettingsState.containerBrowserHighDpi = false
 
     mockGetOrCreateProxyToken.mockResolvedValue('synth-token-123')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
@@ -340,6 +345,26 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
 
       expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
       expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
+    })
+
+    it('asks for 2x rendering only when the setting is on and the agent uses the container browser', async () => {
+      setupAccountMocks([])
+      mockSettingsState.containerBrowserHighDpi = true
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockStart.mock.calls[0][0].envVars.BROWSER_HIGH_DPI).toBe('1')
+
+      containerHost.dropRuntime('test-agent')
+      mockStart.mockClear()
+      mockSettingsState.hostBrowserProvider = 'chrome'
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockStart.mock.calls[0][0].envVars.BROWSER_HIGH_DPI).toBeUndefined()
+
+      containerHost.dropRuntime('test-agent')
+      mockStart.mockClear()
+      mockSettingsState.hostBrowserProvider = undefined
+      mockSettingsState.containerBrowserHighDpi = false
+      await containerHost.runtime('test-agent').ensureRunning()
+      expect(mockStart.mock.calls[0][0].envVars.BROWSER_HIGH_DPI).toBeUndefined()
     })
 
     it('hands the display name from the instructions to the start, and starts without one when reading fails', async () => {
@@ -1290,6 +1315,23 @@ describe('ContainerHost.ensureImageReady — state machine', () => {
     expect(checkImageExists).toHaveBeenCalledWith('podman', 'test-image')
   })
 
+  it('does not auto-switch over a runner the user picked during the availability check', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockImplementation(async () => {
+      // The user picks Lima while the (slow) availability check is running.
+      mockSettingsState.containerRunner = 'lima'
+      return [
+        { runner: 'docker', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: true },
+        { runner: 'podman', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+      ]
+    })
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerHost.ensureImageReady()
+
+    expect(mockSettingsState.containerRunner).toBe('lima')
+    expect(checkImageExists).not.toHaveBeenCalledWith('podman', 'test-image')
+  })
+
   it('reports RUNTIME_UNAVAILABLE when runner installed but not running and no alternative', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
       { runner: 'docker', installed: true, running: false, available: false, canStart: false, supportsCustomAgentImage: true },
@@ -1841,5 +1883,94 @@ describe('ContainerHost stale agents', () => {
     containerHost.runtime('a').updateCachedStatus('stopped', null)
     containerHost.dropRuntime('b')
     expect(stale()).toEqual([false, false, true])
+  })
+})
+
+describe('ContainerHost periodic passes', () => {
+  const STATUS_SYNC_MS = 300_000
+  const HEALTH_CHECK_MS = 30_000
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    registerTasks(containerHost)
+  })
+
+  afterEach(() => {
+    containerHost.stopStatusSync()
+    containerHost.stopHealthMonitor()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('syncs statuses on its interval, with no sync at the start, until stopped', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS - 1)
+    expect(sync).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sync).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS)
+    expect(sync).toHaveBeenCalledTimes(2)
+
+    containerHost.stopStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS * 2)
+    expect(sync).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('can start the status sync again after it stopped', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.stopStatusSync()
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS)
+    expect(sync).toHaveBeenCalledTimes(1)
+  })
+
+  it('logs a failed status sync and goes on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockRejectedValue(new Error('runtime gone'))
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS * 2)
+    expect(sync).toHaveBeenCalledTimes(2)
+    expect(error).toHaveBeenCalledWith('[ContainerHost] Periodic sync failed:', expect.objectContaining({ message: 'runtime gone' }))
+  })
+
+  it('checks health on its own interval, past a pass that hangs, until stopped', async () => {
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks')
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockResolvedValue(undefined)
+    containerHost.startHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS - 1)
+    expect(check).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(check).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 2)
+    expect(check).toHaveBeenCalledTimes(3)
+
+    containerHost.stopHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 3)
+    expect(check).toHaveBeenCalledTimes(3)
+  })
+
+  it('logs a failed health check and goes on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks').mockRejectedValue(new Error('runtime gone'))
+    containerHost.startHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 2)
+    expect(check).toHaveBeenCalledTimes(2)
+    expect(error).toHaveBeenCalledWith('[ContainerHost] Health check failed:', expect.objectContaining({ message: 'runtime gone' }))
+  })
+
+  it('runs the status sync and the health check as separate jobs', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.startHealthMonitor()
+    containerHost.stopStatusSync()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS)
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(sync).not.toHaveBeenCalled()
   })
 })

@@ -7,7 +7,7 @@ import { exportVaultKey } from './keys/vault-key-export'
 let mainWindowRef: BrowserWindow | null = null
 // A getter rather than a stored URL: in cloud mode the effective base is the
 // keyed proxy prefix, and which one is in force can change on a target switch.
-let getApiBaseUrlRef: (() => string) | null = null
+let getApiBaseUrlRef: (() => Promise<string>) | null = null
 let updateInterval: NodeJS.Timeout | null = null
 
 /**
@@ -119,7 +119,13 @@ let buildGeneration = 0
  */
 async function buildAppMenu(): Promise<void> {
   const generation = ++buildGeneration
-  const agents = getApiBaseUrlRef ? await fetchAgentsWithStatus(getApiBaseUrlRef()) : []
+  const agents = getApiBaseUrlRef
+    ? await getApiBaseUrlRef().then(fetchAgentsWithStatus, (error: unknown) => {
+      // Built without agents, like an unreachable API, rather than not at all.
+      console.error('Failed to resolve the API base URL for the app menu:', error)
+      return []
+    })
+    : []
   if (generation !== buildGeneration) return
 
   // Group agents by status
@@ -292,7 +298,7 @@ async function buildAppMenu(): Promise<void> {
  */
 export function createAppMenu(
   mainWindow: BrowserWindow | null,
-  getApiBaseUrl: () => string
+  getApiBaseUrl: () => Promise<string>
 ): void {
   mainWindowRef = mainWindow
   getApiBaseUrlRef = getApiBaseUrl

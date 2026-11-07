@@ -94,8 +94,10 @@ export class MainStream {
           this.isStreaming = true
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
           // A reconnect can miss content_block_start but keep message_start:
-          // take the block index from the delta when it has one.
+          // take the block index from the delta when it has one, and read as
+          // thinking until the block's stop.
           if (Number.isInteger(event.index)) this.thinkingBlockIndex = event.index!
+          this.isThinking = true
           this.sink.emit({ type: 'thinking_delta', thinkingId: this.thinkingId(), text: event.delta.thinking })
         } else if (event.delta?.type === 'input_json_delta') {
           this.currentToolInput += event.delta.partial_json || ''

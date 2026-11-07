@@ -1,24 +1,16 @@
-import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb } from './types'
-// To switch providers, change this import to a different provider module:
-import { createServerProvider } from './sentry-provider'
+import type { ErrorReportingProvider, ErrorContext, ErrorReportingUser, Breadcrumb } from './types'
 
 export type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 
 let provider: ErrorReportingProvider | null = null
 
 /**
- * Initialize error reporting for the server/main process.
- *
- * Call once at startup. Subsequent calls are no-ops (safe for multi-init paths
- * like Electron main -> startup.ts).
+ * Sets the process's error reporter. Each entry point creates the one its runtime can run
+ * (Electron and the web server: `createServerProvider`) and passes it here, once, at startup;
+ * null (a reporter that could not start) leaves reporting off. Later calls are no-ops.
  */
-export function initErrorReporting(options: ErrorReportingInitOptions): void {
-  if (provider) return
-  try {
-    provider = createServerProvider(options)
-  } catch (err) {
-    console.warn('[ErrorReporting] Failed to initialize:', err)
-  }
+export function initErrorReporting(reporter: ErrorReportingProvider | null): void {
+  provider ??= reporter
 }
 
 export function getErrorReporter(): ErrorReportingProvider | null {
@@ -41,6 +33,28 @@ export function captureMessage(message: string, context?: ErrorContext): string 
 
 export function setErrorReportingUser(user: ErrorReportingUser | null): void {
   try { provider?.setUser(user) } catch { /* never crash */ }
+}
+
+/**
+ * Attach what reports need from the database: the tenant id (the user of
+ * events with no signed-in user) and the settings part of the environment
+ * fingerprint. Error reporting starts before the database opens so a failed
+ * boot can still be reported; the entry point calls this once app records are
+ * installed. Never throws.
+ */
+export async function attachErrorReportingIdentity(): Promise<void> {
+  if (!provider) return
+  try {
+    const [{ getTenantId }, { getSettings }, { collectSettingsEnvironmentData }] = await Promise.all([
+      import('../analytics/tenant-id'),
+      import('../config/settings'),
+      import('./environment'),
+    ])
+    provider.setTenantId(await getTenantId())
+    provider.setContext('environment_settings', collectSettingsEnvironmentData(await getSettings()))
+  } catch (err) {
+    console.warn('[ErrorReporting] Could not attach the tenant identity:', err)
+  }
 }
 
 export function addErrorBreadcrumb(breadcrumb: Breadcrumb): void {

@@ -1,7 +1,7 @@
 import { SessionChatColumn } from './session-chat-column'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
-import { CalendarClock, GitFork, Wrench, Zap } from 'lucide-react'
+import { CalendarClock, GitFork, Plug, Wrench, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
 import { useEffect } from 'react'
 import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
@@ -9,6 +9,8 @@ import { HttpError } from '@renderer/lib/api'
 import { SessionNotFound } from '@renderer/router/route-fallbacks'
 import { useNavigate } from '@tanstack/react-router'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
+import { useAgentIntegration, useSessionAgentIntegrationId } from '@renderer/hooks/use-agent-integrations'
+import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
 import { usePendingMessages, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -37,6 +39,8 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
   useRenderTracker('SessionView')
   const navigate = useNavigate()
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
+  const { data: integrationId } = useSessionAgentIntegrationId(agentSlug, sessionId)
+  const { data: integration } = useAgentIntegration(integrationId ?? null)
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const clearSessionUnread = useClearSessionUnread()
@@ -133,6 +137,24 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
               void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agentSlug, webhookId } })
             },
           }}
+        />
+      )}
+      {sessionId && integrationId && (
+        <SessionProvenanceBanner
+          icon={Plug}
+          text={<>Session from {integration ? `${formatProviderName(integration.provider)} integration${integration.name ? ` "${integration.name}"` : ''}` : 'agent integration'}</>}
+          back={{
+            label: 'View integration',
+            onClick: () => {
+              void navigate({
+                to: '/agents/$slug/chat/$integrationId',
+                params: { slug: agentSlug, integrationId },
+                search: { session: sessionId },
+              })
+            },
+            testId: 'integration-session-back-button',
+          }}
+          testId="integration-session-banner"
         />
       )}
       {session?.isWidgetRepair && (

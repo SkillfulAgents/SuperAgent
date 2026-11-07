@@ -13,6 +13,7 @@ interface ConversationEvents {
   onReady: () => void
   onClosed?: () => void
   onError: (message: string) => void
+  onSpeech?: (piece: VoiceTranscriptEntry) => void
 }
 
 // Keep the speaking state through breaths and sentence gaps. Audio samples,
@@ -71,7 +72,9 @@ export class OpenAILiveConversation {
   constructor(private events: ConversationEvents, private history: VoiceHistory = [], private agentSlug?: string, private agentSessionId?: string) {
     this.bridge = new OpenAILiveBridge({
       ...events,
-      onInputTranscript: (delta) => this.detectInputWords(delta),
+      onInputTranscript: (delta) => { this.detectInputWords(delta); this.events.onSpeech?.({ role: 'user', text: delta }) },
+      // Only what the room can hear: nothing the model says while its voice is muted.
+      onOutputTranscript: (delta) => { if (!this.outputMuted) this.events.onSpeech?.({ role: 'assistant', text: delta }) },
       send: (event, delivery) => this.send(event, delivery),
       map: async (input, signal) => {
         const res = await apiFetch('/api/voice/live/map', {

@@ -20,8 +20,8 @@ export function desktopClientFacts(): ClientFacts {
   return { shell: 'electron', os: currentOs(), distribution: desktopDistribution() }
 }
 
-export function factsForRenderer(target: ApiTarget, cloud: CloudEndpoint | null): Facts {
+export async function factsForRenderer(target: ApiTarget, cloud: CloudEndpoint | null): Promise<Facts> {
   const client = desktopClientFacts()
   if (target === 'local') return { client, server: getServerFacts() }
-  return { client, server: cloud ? readCloudServerFacts(cloud.deploymentUrl) : null }
+  return { client, server: cloud ? await readCloudServerFacts(cloud.deploymentUrl) : null }
 }

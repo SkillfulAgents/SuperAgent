@@ -26,14 +26,15 @@ import { RECORD_GROUPS, RECORD_SECTIONS, splitFrontPages, type RecordGroup } fro
 import type { RecordGroupsRead } from '@renderer/hooks/use-team-brain-drive'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
-import { TEAM_BRAIN_AGENT_HOME_SEARCH } from '@renderer/lib/team-brain/team-brain-agent-home'
+import { AgentSettingsColumn } from '@renderer/components/agents/agent-home/agent-settings-column'
+import { HomeCardLookContext, type HomeCardLook } from '@renderer/components/agents/agent-home/home-collapsible'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
 import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { teamBrainSessions } from '@renderer/lib/team-brain/team-brain-sessions'
@@ -622,7 +623,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   style?: CSSProperties
 }) {
   // Turning it off and changing who uses it are an admin's, as setting it up is.
-  const { isAuthMode, isAdmin } = useUser()
+  const { isAuthMode, isAdmin, canAdminAgent } = useUser()
   const canManage = !isAuthMode || isAdmin
   const panelRef = useRef<HTMLElement>(null)
   useLayoutEffect(() => {
@@ -635,7 +636,6 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   const { data: agents = [] } = useListedAgents()
   const deleteAgent = useDeleteAgent()
   const [confirmOff, setConfirmOff] = useState(false)
-  const navigate = useNavigate()
   // Turning it off deletes the Team Brain agent; the server drops the workspace record with it, and the page
   // goes back to the pitch once the agent list no longer has it. Its drive and files stay.
   const turnOff = () =>
@@ -686,16 +686,18 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
         </div>
         <ViewsCard groups={recordGroups} views={views} onViewChange={onViewChange} />
-        {/* The rest of the agent's settings live on its Agent Home, which only this row reaches: every other way in lands here. */}
-        <button
-          type="button"
-          onClick={() => void navigate({ to: '/agents/$slug', params: { slug: agent.slug }, search: TEAM_BRAIN_AGENT_HOME_SEARCH })}
-          className={cn(SECTION_HEADER_CLASS, 'rounded-2xl', GLASS_SURFACE)}
-          data-testid="team-brain-agent-settings"
-        >
-          <span className={PANEL_LABEL_CLASS}>Agent settings</span>
-          <ChevronRight className="h-4 w-4 text-muted-foreground/50" aria-hidden="true" />
-        </button>
+        {/* The rest of the agent's settings, as its owners see them on any agent's Agent Home, without what is above. */}
+        {canAdminAgent(agent.slug) && (
+          <div className={SECTIONS_CARD_CLASS}>
+            <PanelSection title="Advanced settings" summary={null} testId="team-brain-advanced-settings"
+              titleClassName="[[data-state=open]>&]:text-foreground"
+              contentClassName="divide-y divide-border/50 border-t border-border/50 pb-0">
+              <HomeCardLookContext.Provider value={ADVANCED_LOOK}>
+                <AgentSettingsColumn agent={agent} scheduledTasks={NO_TASKS} hideConnections hiddenVolumeId={agent.teamBrain?.volumeId} />
+              </HomeCardLookContext.Provider>
+            </PanelSection>
+          </div>
+        )}
         {/* Last, on a glass row of its own: red only in its words until hovered. */}
         {canManage && <Button
           variant="ghost"
@@ -728,6 +730,8 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   )
 }
 
+const NO_TASKS: ApiScheduledTask[] = []
+
 /** How far the panel's box reaches past its cards on every side (`-m-8 p-8`), so their shadows are never clipped. */
 const PANEL_INSET = 32
 /**
@@ -742,6 +746,8 @@ const SECTIONS_CARD_CLASS = cn('overflow-hidden rounded-2xl divide-y divide-bord
 const SECTION_HEADER_CLASS = 'flex min-h-12 w-full items-center justify-between gap-2 px-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
 /** Every label in the panel: a section's title, a picker row's name. */
 const PANEL_LABEL_CLASS = 'text-[12px]/5 text-muted-foreground'
+/** Agent Home's cards as rows of the Advanced settings card, with the panel's labels, folded until opened. */
+const ADVANCED_LOOK: HomeCardLook = { card: '', section: 'py-3.5', media: 'px-4 py-3', label: PANEL_LABEL_CLASS, defaultOpen: false }
 /** How many a folded section holds, in Agent Home's style for a section's count. */
 const SECTION_COUNT_CLASS = 'text-[12px]/5 tabular-nums text-muted-foreground/50'
 
@@ -770,9 +776,9 @@ function StorageSection({ agent }: { agent: ApiAgent }) {
   const navigate = useNavigate()
   const mount = useBrainMount(agent)
   const hostPath = mount?.hostPath ?? null
-  // Back from the drive's page returns to the agent's own page, which for Team Brain is this one.
+  const here = useRouterState({ select: (s) => s.location.href })
   const openSettings = mount
-    ? () => void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: `/agents/${encodeURIComponent(agent.slug)}` } })
+    ? () => void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: here } })
     : undefined
   if (!location) return null
   const LocationIcon = location.Icon
@@ -825,17 +831,24 @@ function placeIn(label: string | null): string | null {
  * them: the title, what is in it while folded (`summary`), and a chevron; it
  * opens to its rows below. The card is `testId`, its header `${testId}-toggle`.
  */
-function PanelSection({ title, summary, testId, children }: { title: string; summary: ReactNode; testId: string; children: ReactNode }) {
+function PanelSection({ title, summary, testId, titleClassName, contentClassName, children }: {
+  title: string
+  summary: ReactNode
+  testId: string
+  titleClassName?: string
+  contentClassName?: string
+  children: ReactNode
+}) {
   return (
     <Collapsible data-testid={testId}>
       <CollapsibleTrigger className={SECTION_HEADER_CLASS} data-testid={`${testId}-toggle`}>
-        <span className={PANEL_LABEL_CLASS}>{title}</span>
+        <span className={cn(PANEL_LABEL_CLASS, titleClassName)}>{title}</span>
         <span className="flex items-center gap-2">
           <span className="flex items-center gap-2 [[data-state=open]>*>&]:hidden">{summary}</span>
           <ChevronDown className="h-4 w-4 text-muted-foreground/50 transition-transform [[data-state=closed]>*>&]:rotate-[-90deg]" aria-hidden="true" />
         </span>
       </CollapsibleTrigger>
-      <CollapsibleContent className="pb-3">{children}</CollapsibleContent>
+      <CollapsibleContent className={cn('pb-3', contentClassName)}>{children}</CollapsibleContent>
     </Collapsible>
   )
 }

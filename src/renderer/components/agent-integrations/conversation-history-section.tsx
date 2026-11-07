@@ -19,6 +19,7 @@ interface ConversationHistorySectionProps {
   onSelectWindow: (sessionId: string | null) => void
   /** Open a chat to a fresh, not-yet-created conversation (sets `?newchat=`). */
   onNewConversation: (externalChatId: string) => void
+  onOpenSession: (sessionId: string) => void
   agentSlug: string
   providerName: string
   canManageAccess: boolean
@@ -37,6 +38,7 @@ export function ConversationHistorySection({
   routeNewChatId,
   onSelectWindow,
   onNewConversation,
+  onOpenSession,
   agentSlug,
   providerName,
   canManageAccess,
@@ -110,6 +112,7 @@ export function ConversationHistorySection({
               canManageAccess={canAccess}
               onSelectWindow={onSelectWindow}
               onNewConversation={onNewConversation}
+              onOpenSession={onOpenSession}
             />
           )}
         </DialogContent>

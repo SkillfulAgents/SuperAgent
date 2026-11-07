@@ -9,19 +9,19 @@ describe('Codex subscription provider', () => {
     expect(runtime).toMatchObject({ adapter: 'codex', format: 'responses', credential: { accessToken: 'access', accountId: 'account', generation: 8 } })
     expect(JSON.stringify(runtime)).not.toContain('private-refresh')
     expect(await provider.getContainerEnvVars()).toEqual({})
-    expect(new CodexSubscriptionLlmProvider().getApiKeyStatus().isConfigured).toBe(false)
+    expect((await new CodexSubscriptionLlmProvider().getApiKeyStatus()).isConfigured).toBe(false)
   })
-  it('tells the agent to call the real image endpoints with the session credential', () => {
+  it('tells the agent to call the real image endpoints with the session credential', async () => {
     const prompt = new CodexSubscriptionLlmProvider().mediaPrompt
     expect(prompt).toContain('"/llm-runtime/resolve"')
     expect(prompt).toContain(`${CODEX_BASE_URL}/images/generations`)
     expect(prompt).toContain(`${CODEX_BASE_URL}/images/edits`)
     expect(prompt).toContain('originator: codex_cli_rs')
   })
-  it('uses code-driven subscription models and directs helpers to a separate API provider', () => {
+  it('uses code-driven subscription models and directs helpers to a separate API provider', async () => {
     const provider = new CodexSubscriptionLlmProvider()
     expect(provider.supportsDirectApi).toBe(false)
-    expect(() => provider.createClient()).toThrow('API-capable global summarizer')
+    await expect(provider.createClient()).rejects.toThrow('API-capable global summarizer')
     const models = provider.getBuiltinCatalog()
     expect(models.find(model => model.family === 'gpt-sol' && model.isLatest)?.id).toBe('gpt-6.1-sol')
     expect(models.find(model => model.family === 'gpt-terra' && model.isLatest)?.id).toBe('gpt-6.1-terra')
@@ -58,12 +58,12 @@ describe('Codex subscription provider', () => {
       expect(models.map(model => [model.id, model.contextWindow])).toEqual([['long-model', 872000], ['default-model', 272000]])
     } finally { fetchSpy.mockRestore() }
   })
-  it('distinguishes authentication, entitlement and rate limits without matching token budgets', () => {
+  it('distinguishes authentication, entitlement and rate limits without matching token budgets', async () => {
     const provider = new CodexSubscriptionLlmProvider()
-    expect(provider.presentationForTurnError(undefined, 'Invalid credential', 'authentication_failed')?.message).toContain('Reconnect in Settings')
-    expect(provider.presentationForTurnError(undefined, 'API Error: 401', 'unknown')?.message).toContain('Reconnect')
-    expect(provider.presentationForTurnError(403, 'Denied', 'unknown')?.message).toContain('access was denied')
-    expect(provider.presentationForTurnError(429, 'Limit', 'unknown')?.message).toContain('rate or subscription limit')
-    expect(provider.presentationForTurnError(400, 'max_tokens invalid', 'invalid_request')?.message).not.toContain('Reconnect')
+    expect((await provider.presentationForTurnError(undefined, 'Invalid credential', 'authentication_failed'))?.message).toContain('Reconnect in Settings')
+    expect((await provider.presentationForTurnError(undefined, 'API Error: 401', 'unknown'))?.message).toContain('Reconnect')
+    expect((await provider.presentationForTurnError(403, 'Denied', 'unknown'))?.message).toContain('access was denied')
+    expect((await provider.presentationForTurnError(429, 'Limit', 'unknown'))?.message).toContain('rate or subscription limit')
+    expect((await provider.presentationForTurnError(400, 'max_tokens invalid', 'invalid_request'))?.message).not.toContain('Reconnect')
   })
 })

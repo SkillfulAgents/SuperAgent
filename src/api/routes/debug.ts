@@ -13,7 +13,7 @@ debug.use('*', Authenticated(), IsAdmin())
 
 // GET /api/debug/runtime — VM/runtime status info
 debug.get('/runtime', async (c) => {
-  const settings = getSettings()
+  const settings = await getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
   const availability = await checkAllRunnersAvailability()
 
@@ -94,7 +94,7 @@ debug.get('/runtime', async (c) => {
 
 // GET /api/debug/containers — list all containers from the runtime
 debug.get('/containers', async (c) => {
-  const settings = getSettings()
+  const settings = await getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
 
   let runnerCmd: string
@@ -128,7 +128,7 @@ debug.get('/containers', async (c) => {
 debug.get('/containers/:name/logs', async (c) => {
   const name = c.req.param('name')
   const tail = parseInt(c.req.query('tail') || '100', 10)
-  const settings = getSettings()
+  const settings = await getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
 
   let runnerCmd: string

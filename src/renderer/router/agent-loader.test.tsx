@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import {
   createRootRouteWithContext,
   createRoute,
@@ -115,8 +115,6 @@ function buildRouter(initialPath: string) {
   const home = createRoute({
     getParentRoute: () => layout,
     path: '/',
-    validateSearch: agentHomeRoute.options.validateSearch,
-    loaderDeps: agentHomeRoute.options.loaderDeps,
     loader: agentHomeRoute.options.loader,
     component: () => <div data-testid="agent-home-stub" />,
   })
@@ -183,20 +181,9 @@ describe('agentLayoutRoute loader (access-control collapse + rethrow + cache war
     expect(router.history.length).toBe(1)
   })
 
-  it('the Team Brain agent opened from its own page → its Agent Home, no redirect', async () => {
+  it('the Team Brain agent opened from its own page → still /team-brain', async () => {
     agentQueryFn.mockResolvedValue({ slug: 'brain', name: 'Team Brain', teamBrain: { volumeId: 'v1' } })
     const router = buildRouter('/agents/brain?from=%2Fteam-brain')
-    render(<RouterProvider router={router} />)
-
-    expect(await screen.findByTestId('agent-shell-stub')).toBeInTheDocument()
-    await waitFor(() => expect(router.state.status).toBe('idle'))
-    expect(router.state.location.pathname).toBe('/agents/brain')
-    expect(screen.queryByTestId('team-brain-stub')).toBeNull()
-  })
-
-  it('the Team Brain agent from anywhere else → still /team-brain', async () => {
-    agentQueryFn.mockResolvedValue({ slug: 'brain', name: 'Team Brain', teamBrain: { volumeId: 'v1' } })
-    const router = buildRouter('/agents/brain?from=%2Fsettings')
     render(<RouterProvider router={router} />)
 
     expect(await screen.findByTestId('team-brain-stub')).toBeInTheDocument()

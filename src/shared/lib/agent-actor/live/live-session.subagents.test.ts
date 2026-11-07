@@ -731,6 +731,49 @@ describe('subagent completion detection', () => {
     }))
   })
 
+  it('keeps streaming a SendMessage-resumed run of a foreground launch after a stop that spared it', () => {
+    sessions().markActive(SESSION_ID)
+    // The first run: a foreground launch that finished.
+    mockClient.emit({
+      type: 'stream_event',
+      event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'agent-tool', name: 'Agent' } },
+    })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_stop' } })
+    mockClient.emit({
+      type: 'system', subtype: 'task_started', task_id: 'agent-resumed', tool_use_id: 'agent-tool', task_type: 'local_agent',
+    })
+    mockClient.emit({
+      type: 'user',
+      tool_use_result: { status: 'completed', agentId: 'agent-resumed' },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'agent-tool', content: 'FIRST_DONE' }] },
+    })
+    // SendMessage resumes it in the background, under its own call.
+    mockClient.emit({
+      type: 'system', subtype: 'task_started', task_id: 'agent-resumed', tool_use_id: 'send-tool', task_type: 'local_agent',
+    })
+    mockClient.emit({
+      type: 'user',
+      tool_use_result: { success: true, resumedAgentId: 'agent-resumed' },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'send-tool', content: '{"success":true}' }] },
+    })
+
+    // Stop drops the foreground launch's entry; the resumed run is spared.
+    sessions().markInterrupted(SESSION_ID, { processKept: true })
+    sseEvents.length = 0
+
+    // The resumed run's frames still name the call that first launched it.
+    mockClient.emit({
+      type: 'stream_event',
+      parent_tool_use_id: 'agent-tool',
+      agent_id: 'agent-resumed',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'still going' } },
+    })
+
+    expect(sseEvents.filter((e) => e.type === 'subagent_stream_delta')).toEqual([
+      expect.objectContaining({ parentToolId: 'send-tool', agentId: 'agent-resumed', text: 'still going' }),
+    ])
+  })
+
   it('stops a running workflow journal tailer when the session is unsubscribed', () => {
     const stop = vi.spyOn(WorkflowJournalTailer.prototype, 'stop')
     try {

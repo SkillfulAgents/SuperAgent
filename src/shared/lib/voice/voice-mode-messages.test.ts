@@ -1,3 +1,4 @@
+import { voiceModeEnteredMessage } from './voice-mode-messages'
 import { describe, expect, it } from 'vitest'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import {
@@ -31,4 +32,13 @@ describe('voice mode notices', () => {
     expect(VOICE_MODE_ENTERED_MESSAGE).toMatch(/file uploads/)
     expect(VOICE_MODE_EXITED_MESSAGE).toMatch(/normal/)
   })
+})
+
+it('announces the independent transcript only for a separate voice conversation', () => {
+  expect(voiceModeEnteredMessage()).toBe(VOICE_MODE_ENTERED_MESSAGE)
+  const notice = voiceModeEnteredMessage('/workspace/sessions/s1/transcript-1.md')
+  expect(classifyVoiceModeNotice(notice)).toBe('entered')
+  expect(notice).toContain('/workspace/sessions/s1/transcript-1.md')
+  expect(notice).toContain('may not appear in this agent session')
+  expect(notice).not.toContain('read aloud by text-to-speech')
 })

@@ -59,6 +59,8 @@ export interface OutgoingMessage {
   text: string
   parseMode?: 'html' | 'markdown'
   replyToExternalId?: string
+  /** A thread reply that also shows in the channel ("Also send to channel"). */
+  alsoSendToChannel?: boolean
 }
 
 /** Context available at chat-session creation, passed to generateSystemPrompt. */
@@ -433,14 +435,14 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     const tool = (name: string, description: string, properties: Record<string, unknown>, execute: IntegrationTool['execute']): IntegrationTool => ({
       name, description, inputSchema: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false }, execute,
     })
-    const tools = [tool('send_message', 'Send a complete message to an external conversation.', { text: { type: 'string' } }, async input => {
+    const tools = [tool('send_message', 'Send a complete message to an external conversation.', { text: { type: 'string' }, alsoSendToChannel: { type: 'boolean' } }, async input => {
       if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
-      const text = stringArgument(input, 'text')
+      const { text, alsoSendToChannel } = z.object({ text: z.string().min(1), alsoSendToChannel: z.boolean() }).parse(input)
       await this.startWorking(context.externalId, 'working').catch(() => {})
       try {
         await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 1100))
         if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
-        return await this.sendMessage(context.externalId, { text })
+        return await this.sendMessage(context.externalId, alsoSendToChannel ? { text, alsoSendToChannel } : { text })
       } finally { await this.stopWorking(context.externalId).catch(() => {}) }
     })]
     if (this.listChatUsers) tools.push(tool('list_users', 'List reachable people.', {}, () => this.listChatUsers!()))

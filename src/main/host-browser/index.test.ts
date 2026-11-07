@@ -38,7 +38,7 @@ vi.mock('./platform-provider', () => ({
 
 // The active provider is NOT chrome — proves the stop is provider-independent.
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ app: { hostBrowserProvider: 'browserbase' } }),
+  getSettings: async () => ({ app: { hostBrowserProvider: 'browserbase' } }),
 }))
 
 import { stopInstanceOnAllProviders } from './index'

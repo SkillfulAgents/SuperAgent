@@ -6,9 +6,9 @@
  */
 import type Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { createSummarizerText, getConfiguredLlmClient } from '@shared/lib/llm-provider/helpers'
+import { effectiveModelsFrom, getSettings, type AppSettings } from '@shared/lib/config/settings'
+import { activeLlmProviderFrom, resolveModelForProviderFrom } from '@shared/lib/llm-provider'
+import { configuredLlmClientFrom, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { SCOPE_MAPS } from '../scope-maps'
 import type { RuleDraft, RuleKind } from './engine'
@@ -27,10 +27,13 @@ The rule runs in an isolated sandbox: no network, no require/process/eval, the i
  * by the configured summarizer model, which is always reachable through the
  * helper client.
  */
-function directAuthoringClient(): { client: Anthropic; model: string } | null {
-  const provider = getActiveLlmProvider()
-  if (provider.supportsDirectApi === false || !provider.getApiKeyStatus().isConfigured) return null
-  return { client: provider.createClient(), model: resolveActiveProviderModel(getEffectiveModels().agentModel, 'agent') }
+async function directAuthoringClient(settings: AppSettings): Promise<{ client: Anthropic; model: string } | null> {
+  const provider = activeLlmProviderFrom(settings)
+  if (provider.supportsDirectApi === false || !provider.apiKeyStatusFrom(settings).isConfigured) return null
+  return {
+    client: await provider.createClientFrom(settings),
+    model: resolveModelForProviderFrom(effectiveModelsFrom(settings).agentModel, provider.id, 'agent', settings),
+  }
 }
 
 async function complete(params: {
@@ -47,7 +50,9 @@ async function complete(params: {
     messages: [{ role: 'user' as const, content: params.user }],
     output_config: { format: { type: 'json_schema' as const, schema: params.schema } },
   })
-  const direct = directAuthoringClient()
+  // One settings read per restatement: the direct client and the summarizer it falls back to.
+  const settings = await getSettings()
+  const direct = await directAuthoringClient(settings)
   if (direct) {
     const signal = AbortSignal.timeout(params.timeoutMs)
     try {
@@ -63,8 +68,7 @@ async function complete(params: {
       console.warn('[proxy-rules] The default model failed; falling back to the summarizer model:', error)
     }
   }
-  const client = await getConfiguredLlmClient()
-  const summarizerModel = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+  const { client, model: summarizerModel } = await configuredLlmClientFrom(settings)
   return createSummarizerText(client, request(summarizerModel), AbortSignal.timeout(params.timeoutMs))
 }
 

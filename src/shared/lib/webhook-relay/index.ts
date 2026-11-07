@@ -1,5 +1,6 @@
-import { attribution, runOutsideAttribution } from '@shared/lib/platform-attribution'
+import { runOutsideAttribution } from '@shared/lib/platform-attribution'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { SupabaseRealtimeClient } from '@shared/lib/services/supabase-realtime-client'
 import {
@@ -35,7 +36,8 @@ function createWebhookRelay(): WebhookRelayService {
       testFilter: testPlatformWebhookFilter,
     },
     getToken: () => getPlatformAccessToken(),
-    requiresMemberScope: () => attribution.requiresActingMember(),
+    // An org token claims per member (as `attribution.requiresActingMember()` decides).
+    requiresMemberScope: (token) => decodeOrgIdFromToken(token) !== null,
     createRealtime: () => new SupabaseRealtimeClient(),
     detach: runOutsideAttribution,
   })

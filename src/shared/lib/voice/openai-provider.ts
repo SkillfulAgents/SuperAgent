@@ -4,12 +4,11 @@ import { OPENAI_TTS_VOICES } from './openai-voices'
 import { OPENAI_LIVE_VOICES, resolveOpenAILiveVoice } from './openai-live-voices'
 import type { TtsVoiceInfo } from './tts-preferences'
 import type { TtsSynthesisInput, TtsSynthesisProvider } from './tts-types'
-import { BaseVoiceProvider } from './voice-provider'
-import { getEffectiveModels, type VoiceProvider } from '../config/settings'
-import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/helpers'
-import { resolveActiveProviderModel } from '../llm-provider'
+import { BaseVoiceProvider, type VoiceProviderSettings } from './voice-provider'
+import { getSettings, type AppSettings, type VoiceProvider } from '../config/settings'
+import { configuredLlmClientFrom, createSummarizerText } from '../llm-provider/helpers'
 import { background } from '../background'
-import { liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
+import { liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type LiveSessionCredentials, type VoiceHistory } from './live-types'
 import { buildLiveConversationPrompt, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
 import { windowVoiceHistory } from './voice-history-window'
 import { BYOK_VOICE_MESSAGES, type OpenaiVoiceMessages } from './openai-voice-messages'
@@ -59,8 +58,8 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
 
   override getTtsSynthesis(): TtsSynthesisProvider { return this }
 
-  async synthesizeSpeech(input: TtsSynthesisInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
-    const apiKey = this.getEffectiveApiKey()
+  async synthesizeSpeech(input: TtsSynthesisInput, signal?: AbortSignal, settings?: VoiceProviderSettings): Promise<ReadableStream<Uint8Array>> {
+    const apiKey = await this.getEffectiveApiKey(settings)
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     const response = await fetchWithIdleTimeout(fetch, `${this.apiBaseUrl()}/audio/speech`, {
       method: 'POST',
@@ -88,12 +87,18 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   getLiveVoices(): readonly TtsVoiceInfo[] { return OPENAI_LIVE_VOICES }
   resolveLiveVoice(requested?: string | null): string { return resolveOpenAILiveVoice(requested ?? undefined) }
 
-  /** The project key stays on the host; the renderer receives only an SDP answer. */
-  async createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext): Promise<LiveSessionAnswer> {
-    const apiKey = this.getEffectiveApiKey()
+  /**
+   * The project key stays on the host; the renderer receives only an SDP
+   * answer. `credentials`: the settings the request read (the key and the
+   * summarizer check come from them, read when absent), or a key to use
+   * instead of theirs.
+   */
+  async createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext, credentials: LiveSessionCredentials = {}): Promise<LiveSessionAnswer> {
+    const settings = credentials.settings ?? await getSettings()
+    const apiKey = credentials.apiKey ?? this.effectiveApiKeyFrom(settings)
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     // Check the mapping dependency before creating a billable voice session.
-    await getConfiguredLlmClient()
+    await configuredLlmClientFrom(settings)
     const input = windowVoiceHistory(history).map((message) => ({
       role: message.role,
       content: [{ type: message.role === 'user' ? 'input_text' : 'text', text: message.content }],
@@ -129,7 +134,8 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     return { session: { id: answer.session.id }, transport: { type: 'webrtc', sdp: answer.transport.sdp } }
   }
 
-  async closeLiveSession(id: string, apiKey = this.getEffectiveApiKey()): Promise<void> {
+  async closeLiveSession(id: string, key?: string): Promise<void> {
+    const apiKey = key ?? await this.getEffectiveApiKey()
     if (!apiKey) throw new Error(`Could not close ${this.name} Live session.`)
     const response = await fetch(`${this.apiBaseUrl()}/live/sessions/${encodeURIComponent(id)}/hangup`, {
       // OpenAI answers a hangup for an already-ended session with a 404 after ~6 s.
@@ -138,12 +144,16 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     if (!response.ok && response.status !== 404) throw new Error(`Could not close ${this.name} Live session.`)
   }
 
-  /** Provider-owned translation using the app's configured summarizer. */
-  async mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal) {
+  /**
+   * Provider-owned translation using the app's configured summarizer, set up
+   * from the request's `settings` (read here when absent): one read per utterance.
+   */
+  async mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal, settings?: AppSettings) {
     const deadline = AbortSignal.timeout(12_000)
     const bounded = input.kind === 'request' ? { ...input, history: windowVoiceHistory(input.history) } : input
-    const text = await createSummarizerText(await getConfiguredLlmClient(), {
-      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+    const { client, model } = await configuredLlmClientFrom(settings ?? await getSettings())
+    const text = await createSummarizerText(client, {
+      model,
       system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(bounded) }],
       ...(input.kind === 'request' ? { output_config: { format: {

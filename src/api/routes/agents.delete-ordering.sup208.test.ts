@@ -141,14 +141,18 @@ vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 const workspaceSettings = vi.hoisted(() => ({ current: {} as { teamBrain?: { agentSlug: string; volumeId: string } } }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getTeamBrain: () => workspaceSettings.current.teamBrain ?? null,
-  mutateSettings: (mutate: (settings: typeof workspaceSettings.current) => void) => mutate(workspaceSettings.current),
-  getAccountProviderUserId: () => 'test-user',
-  getEffectiveAnthropicApiKey: () => 'test-key',
-  getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => ({ container: {}, skillsets: [] }),
+  getTeamBrain: async () => workspaceSettings.current.teamBrain ?? null,
+  mutateSettings: async (mutate: (settings: typeof workspaceSettings.current) => void | false) => {
+    const draft = structuredClone(workspaceSettings.current)
+    if (mutate(draft) !== false) workspaceSettings.current = draft
+    return workspaceSettings.current
+  },
+  getAccountProviderUserId: async () => 'test-user',
+  getEffectiveAnthropicApiKey: async () => 'test-key',
+  getEffectiveModels: async () => ({ summarizerModel: 'claude-3-haiku' }),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => ({ container: {}, skillsets: [] }),
   VALID_SCRIPT_TYPES: [],
 }))
 

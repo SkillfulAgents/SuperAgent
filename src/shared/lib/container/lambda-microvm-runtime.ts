@@ -258,13 +258,22 @@ function ingressRateLimitDelayMs(attempt: number): number {
   return exp / 2 + Math.random() * (exp / 2)
 }
 
+// /health gets its own ingress connection. AWS caps each connection at 100
+// concurrent streams, so stalled media downloads on the shared connection can
+// queue a liveness probe until it times out and a live VM gets replaced.
+type H2Lane = 'requests' | 'health'
+
+function laneFor(path: string): H2Lane {
+  return path.split('?')[0] === '/health' ? 'health' : 'requests'
+}
+
 export class LocalAuthForwardProxy {
   private server: http.Server | null = null
   private port: number | null = null
   private tokenCache: { token: MicrovmAuthToken; expiresAt: number } | null = null
   private refreshing: Promise<MicrovmAuthToken> | null = null
-  private h2: http2.ClientHttp2Session | null = null
-  private h2connecting: Promise<http2.ClientHttp2Session> | null = null
+  private readonly h2: Record<H2Lane, http2.ClientHttp2Session | null> = { requests: null, health: null }
+  private readonly h2connecting: Record<H2Lane, Promise<http2.ClientHttp2Session> | null> = { requests: null, health: null }
 
   constructor(private readonly options: ProxyOptions) {}
 
@@ -288,9 +297,11 @@ export class LocalAuthForwardProxy {
     this.server = null
     this.port = null
     this.tokenCache = null
-    this.h2?.close()
-    this.h2 = null
-    this.h2connecting = null
+    for (const lane of ['requests', 'health'] as const) {
+      this.h2[lane]?.close()
+      this.h2[lane] = null
+      this.h2connecting[lane] = null
+    }
   }
 
   // Single-flight token refresh so a burst of requests can't trigger a token storm.
@@ -333,16 +344,19 @@ export class LocalAuthForwardProxy {
 
   // One HTTP/2 session = one AWS ingress connection. Agent is plaintext HTTP/1.1
   // inside the VM — do not send x-aws-proxy-force-h2; AWS translates streams.
-  private async ensureHttp2(): Promise<http2.ClientHttp2Session> {
-    if (this.h2 && !this.h2.closed && !this.h2.destroyed) return this.h2
-    if (this.h2connecting) return this.h2connecting
-    this.h2connecting = this.connectHttp2().finally(() => {
-      this.h2connecting = null
+  private async ensureHttp2(lane: H2Lane): Promise<http2.ClientHttp2Session> {
+    const current = this.h2[lane]
+    if (current && !current.closed && !current.destroyed) return current
+    const pending = this.h2connecting[lane]
+    if (pending) return pending
+    const connecting = this.connectHttp2(lane).finally(() => {
+      this.h2connecting[lane] = null
     })
-    return this.h2connecting
+    this.h2connecting[lane] = connecting
+    return connecting
   }
 
-  private connectHttp2(): Promise<http2.ClientHttp2Session> {
+  private connectHttp2(lane: H2Lane): Promise<http2.ClientHttp2Session> {
     return new Promise((resolve, reject) => {
       let settled = false
       const finishOk = (session: http2.ClientHttp2Session) => {
@@ -377,10 +391,10 @@ export class LocalAuthForwardProxy {
           finishErr(new Error('microvm http2 connect aborted: proxy stopped'))
           return
         }
-        this.h2 = session
-        session.once('close', () => { if (this.h2 === session) this.h2 = null })
+        this.h2[lane] = session
+        session.once('close', () => { if (this.h2[lane] === session) this.h2[lane] = null })
         session.on('error', (error) => {
-          if (this.h2 === session) this.h2 = null
+          if (this.h2[lane] === session) this.h2[lane] = null
           captureException(error, { tags: { area: 'container', op: 'microvm.proxy.http2.session' }, extra: { endpoint: this.options.endpoint } })
         })
         finishOk(session)
@@ -429,7 +443,7 @@ export class LocalAuthForwardProxy {
   }
 
   private async forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
-    const session = await this.ensureHttp2()
+    const session = await this.ensureHttp2(laneFor(path))
     return this.forwardOnceH2(session, method, path, headers, body)
   }
 
@@ -888,8 +902,8 @@ function isExecutableLaunchFailureError(error: unknown): boolean {
   return (error as { containerErrorClass?: unknown }).containerErrorClass === 'executable_launch_failed'
 }
 
-function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
-  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
+async function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): Promise<UnexpectedDeathPlan> {
+  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(await getSettings())) {
     return { action: 'settle' }
   }
   return plan
@@ -937,7 +951,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, installed.microvmId)
-      return honorMicrovmAutoResume(
+      // Awaited inside the try: a failed settings read falls back to the probe below, which never recovers.
+      return await honorMicrovmAutoResume(
         planFromClassification(
           classifyMicrovmDeath({
             state: mvm.state,
@@ -1011,7 +1026,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName)
+    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName, options?.settings)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp

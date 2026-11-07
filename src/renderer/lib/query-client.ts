@@ -23,6 +23,8 @@ import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
 import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
+import { AgentRuntimeRequestError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
+import { PROVIDER_RECONNECT_REQUIRED } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.
@@ -76,7 +78,7 @@ export function handleQueryError(error: unknown, meta?: QueryMeta): void {
 }
 
 export function createAppQueryClient(): QueryClient {
-  return new QueryClient({
+  const client: QueryClient = new QueryClient({
     defaultOptions: {
       queries: {
         staleTime: 5 * 1000,
@@ -85,11 +87,17 @@ export function createAppQueryClient(): QueryClient {
     },
     mutationCache: new MutationCache({
       // v5 signature: (error, variables, onMutateResult, mutation, context)
-      onError: (error, _variables, _onMutateResult, mutation) =>
-        handleMutationError(error, mutation.options.meta),
+      onError: (error, _variables, _onMutateResult, mutation) => {
+        handleMutationError(error, mutation.options.meta)
+        // The server just recorded the expired sign-in; show it in the provider lists.
+        if (error instanceof AgentRuntimeRequestError && error.code === PROVIDER_RECONNECT_REQUIRED) {
+          void client.invalidateQueries({ queryKey: ['settings'] })
+        }
+      },
     }),
     queryCache: new QueryCache({
       onError: (error, query) => handleQueryError(error, query.meta),
     }),
   })
+  return client
 }

@@ -80,6 +80,8 @@ describe('HomeExtras', () => {
 
     expect(mocks.openFolder).toHaveBeenCalledWith('/workspace', 'test-agent')
     expect(screen.getByText('Agent Directory')).toBeVisible()
+    // A page that puts its drawer away on a click off it lets this click through.
+    expect(screen.getByTestId('home-agent-directory-open-browser')).toHaveAttribute('data-drawer-opener')
   })
 
   it('opens the Agent-to-agent connections page', async () => {
