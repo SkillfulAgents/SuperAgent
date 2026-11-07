@@ -84,11 +84,7 @@ const MODEL_ICON_EXTENSION_MIME_TYPES: Record<string, string> = {
 }
 const UPLOADED_MODEL_ICON_FILENAME_RE = /^[a-f0-9-]+\.(?:svg|png|jpg|jpeg|webp)$/
 
-function getModelIconsDataDir(): string {
-  return path.join(getDataDir(), 'model-icons')
-}
-
-const modelIconFiles = hostFiles('model-icons', getModelIconsDataDir)
+const modelIconFiles = hostFiles('model-icons')
 
 function isUploadedFile(value: unknown): value is File {
   return typeof value === 'object' &&

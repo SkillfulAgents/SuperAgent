@@ -1,6 +1,6 @@
 /**
- * Keeps a skillset's cache folder in the deployment's blob store, so a process that starts
- * with an empty data dir restores it instead of downloading the skillset again. The folder is
+ * Keeps a skillset's cache folder in the blob store, so a process that starts with an empty
+ * data dir restores it instead of downloading the skillset again. The folder is
  * packed into one blob: one read restores it. `.git` is never packed: a git cache that is not
  * on disk is cloned again, as before.
  *
@@ -21,7 +21,8 @@ interface PackedFile {
   mode: number
 }
 
-const keyFor = (repoDir: string) => `skillset-cache/${path.basename(repoDir)}`
+/** Not `skillset-cache/`: in the data dir that is the cache folder itself. */
+const keyFor = (repoDir: string) => `skillset-cache-packs/${path.basename(repoDir)}`
 /** Written after the folder's blob, so a reader that sees a version can read that blob. */
 const versionKeyFor = (key: string) => `${key}.version`
 
@@ -37,8 +38,8 @@ const decode = (files: PackedFile[]): DecodedFile[] => files.map((file) => ({ pa
 
 async function storedFiles(key: string): Promise<DecodedFile[] | null> {
   const store = blobStore()
-  const marker = await store?.get(versionKeyFor(key))
-  if (!store || !marker) return null
+  const marker = await store.get(versionKeyFor(key))
+  if (!marker) return null
   const version = new TextDecoder().decode(marker)
   const kept = decoded.get(key)
   if (kept?.version === version) return kept.files
@@ -64,20 +65,19 @@ async function collect(root: string, dir: string, out: PackedFile[]): Promise<vo
   }
 }
 
-/** Saves the folder to the blob store; a no-op without a store. */
 export async function saveSkillsetCache(repoDir: string): Promise<void> {
   const store = blobStore()
-  if (!store) return
   const files: PackedFile[] = []
   await collect(repoDir, repoDir, files)
   const key = keyFor(repoDir)
   const version = randomUUID()
   await store.put(key, new TextEncoder().encode(JSON.stringify({ v: 1, version, files })))
   await store.put(versionKeyFor(key), new TextEncoder().encode(version))
-  decoded.set(key, { version, files: decode(files) })
+  // Not kept in memory here: only a process that restores needs the decoded files.
+  decoded.delete(key)
 }
 
-/** Writes the stored folder to disk; false without a store or a stored copy. */
+/** Writes the stored folder to disk; false without a stored copy. */
 export async function restoreSkillsetCache(repoDir: string): Promise<boolean> {
   const files = await storedFiles(keyFor(repoDir))
   if (!files) return false
@@ -96,7 +96,6 @@ export async function deleteSkillsetCache(repoDir: string): Promise<void> {
   const key = keyFor(repoDir)
   decoded.delete(key)
   const store = blobStore()
-  if (!store) return
   // The marker first: once it is gone, no process restores the folder.
   await store.delete(versionKeyFor(key))
   await store.delete(key)

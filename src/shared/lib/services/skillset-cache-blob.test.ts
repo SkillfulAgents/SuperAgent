@@ -2,11 +2,11 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { setBlobStore, type BlobStore } from '@shared/lib/blob-store/blob-store'
+import { FileSystemBlobStore, setBlobStore, type BlobStore } from '@shared/lib/blob-store/blob-store'
 import { memoryBlobStore as memoryStore } from '@shared/lib/blob-store/testing/memory-blob-store'
 import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
 
-const KEY = 'skillset-cache/platform--sales-playbooks'
+const KEY = 'skillset-cache-packs/platform--sales-playbooks'
 
 function skillsetDir(): string {
   const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'skillset-cache-')), 'platform--sales-playbooks')
@@ -56,7 +56,7 @@ describe('skillset cache in the blob store', () => {
     expect(await restoreSkillsetCache(dir)).toBe(false)
   })
 
-  it('reads only the version marker, not the folder, after a save in the same process', async () => {
+  it('reads the folder once after a save in the same process, then only the version marker', async () => {
     const store = memoryStore()
     const reads: string[] = []
     setBlobStore({ ...store, get: async (key) => {
@@ -71,7 +71,7 @@ describe('skillset cache in the blob store', () => {
       expect(await restoreSkillsetCache(dir)).toBe(true)
       expect(fs.readFileSync(path.join(dir, 'index.json'), 'utf-8')).toContain('lead-research')
     }
-    expect(reads).toEqual([`${KEY}.version`, `${KEY}.version`, `${KEY}.version`])
+    expect(reads).toEqual([`${KEY}.version`, KEY, `${KEY}.version`, `${KEY}.version`])
   })
 
   it('restores the folder another process saved after this one read it', async () => {
@@ -126,12 +126,20 @@ describe('skillset cache in the blob store', () => {
     expect(fs.existsSync(dir)).toBe(false)
   })
 
-  it('does nothing without a store', async () => {
+  it('keeps the packed copy next to the cache folder, not inside it, in a file system store', async () => {
     const dir = skillsetDir()
-    await saveSkillsetCache(dir)
-    fs.rmSync(dir, { recursive: true, force: true })
+    const dataDir = path.dirname(dir)
+    const cacheDir = path.join(dataDir, 'skillset-cache')
+    fs.mkdirSync(cacheDir)
+    const cached = path.join(cacheDir, path.basename(dir))
+    fs.renameSync(dir, cached)
+    setBlobStore(new FileSystemBlobStore(() => dataDir))
 
-    expect(await restoreSkillsetCache(dir)).toBe(false)
-    expect(fs.existsSync(dir)).toBe(false)
+    await saveSkillsetCache(cached)
+    fs.rmSync(cached, { recursive: true, force: true })
+
+    expect(fs.existsSync(path.join(dataDir, KEY))).toBe(true)
+    expect(await restoreSkillsetCache(cached)).toBe(true)
+    expect(skillText(cached)).toBe('# Lead research\nFind the decision maker.\n')
   })
 })
