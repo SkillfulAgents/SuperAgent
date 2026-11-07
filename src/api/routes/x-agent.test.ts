@@ -474,6 +474,15 @@ describe('/list', () => {
     expect(res.status).toBe(403)
   })
 
+  it('passes the reason typed with a deny to the calling agent', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.takeDenyReason).mockResolvedValueOnce('wrong agent')
+    reviewDecisions.push('deny')
+    const res = await authedFetch('/x-agent/list', {})
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('Denied by user. They said: "wrong agent"')
+  })
+
   it('filters by ACL in auth mode (caller owner can only see their agents)', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
