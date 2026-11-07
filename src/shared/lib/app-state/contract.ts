@@ -3,9 +3,8 @@
  * that serves one tenant. Desktop and single-tenant web keep it in this
  * process's memory (`createLocalAppState`); a deployment that serves a tenant
  * from many short-lived processes installs a remote implementation at its
- * entry point. Application code is the same for both. The `AppState` class
- * (abstract-app-state.ts) implements both halves over storage a subclass
- * supplies; docs/app-state.md describes what a subclass must guarantee.
+ * entry point. Application code is the same for both. docs/app-state.md
+ * describes what an implementation must guarantee.
  */
 import type { z } from 'zod'
 
@@ -206,4 +205,10 @@ export interface AppStatePubSub {
    * backends.
    */
   subscribe<E>(channels: readonly Channel<E>[], listener: Listener<E>, options?: SubscribeOptions): Promise<Subscription>
+}
+
+export interface AppState extends AppStateStore, AppStatePubSub {
+  readonly scope: AppStateScope
+  /** Ends this instance's subscriptions and releases its connections. Stored state stays. */
+  close(): Promise<void>
 }

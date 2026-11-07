@@ -2,25 +2,34 @@
  * AppState on Cloudflare. The org's AppStateDurableObject is the authority: it decides each keyed
  * operation in one SQLite transaction (`transactionSync`), so an operation is never a read and a
  * write split by the network. It also carries events to the sockets that subscribed. Every isolate
- * and object of the org uses CloudflareAppState, which sends each operation to that object as one call.
+ * and object of the org uses CloudflareAppState, which validates and encodes values as
+ * LocalAppState does and sends each operation to that object as one call.
  */
 import { DurableObject } from 'cloudflare:workers'
 import type { DurableObjectNamespace, DurableObjectState, WorkerWebSocket } from 'cloudflare:workers'
-import {
+import type { z } from 'zod'
+import { background } from '@shared/lib/background'
+import type {
   AppState,
-  type AppStateScope,
-  type CounterBounds,
-  type EventSink,
-  type Expiry,
-  type KeyPolicy,
-  type Revision,
-  type StoredCompareAndSet,
-  type StoredConsume,
-  type StoredEntry,
-  type StoredIncrement,
-  type StoredInsert,
+  AppStateScope,
+  Channel,
+  CompareAndSetResult,
+  ConsumeOptions,
+  ConsumeResult,
+  Entry,
+  Expiry,
+  IncrementOptions,
+  IncrementResult,
+  InsertResult,
+  Listener,
+  Namespace,
+  Revision,
+  StateKey,
+  SubscribeOptions,
+  Subscription,
+  WriteOptions,
 } from '@shared/lib/app-state'
-import { resolveExpiry } from '@shared/lib/app-state/definitions'
+import { assertStrong, decodeValue, encodeValue, resolveExpiry, scopePrefix } from '@shared/lib/app-state/definitions'
 import type { Env } from './index'
 import { reachCurrentCode, restartIfOlder } from './object-version'
 
@@ -40,6 +49,22 @@ interface Attachment {
 }
 
 type EntryRow = { json: string; revision: string; expires_at: number | null }
+
+/** What deciding a write needs of its key's namespace; only this crosses to the object. */
+export type KeyPolicy = Pick<Namespace<unknown>, 'name' | 'consistency' | 'expiry'>
+
+interface StoredEntry {
+  readonly json: string
+  readonly revision: Revision
+  readonly expiresAt: number | null
+}
+
+interface CounterBounds {
+  readonly min?: number
+  readonly max?: number
+}
+
+type EventSink = (fullChannel: string, json: string) => void
 
 /** The fewest writes between two sweeps of expired entries. */
 const SWEEP_AFTER_WRITES = 1_000
@@ -71,7 +96,7 @@ export class AppStateDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM app_state WHERE key = ?', key)
   }
 
-  insertIfAbsent(key: string, json: string, policy: KeyPolicy, expiry?: Expiry): StoredInsert {
+  insertIfAbsent(key: string, json: string, policy: KeyPolicy, expiry?: Expiry): { inserted: true; entry: StoredEntry } | { inserted: false; current: StoredEntry } {
     return this.atomically(() => {
       const current = this.read(key)
       if (current) return { inserted: false, current }
@@ -79,7 +104,7 @@ export class AppStateDurableObject extends DurableObject<Env> {
     })
   }
 
-  compareAndSet(key: string, expected: Revision | null, json: string, policy: KeyPolicy, expiry?: Expiry): StoredCompareAndSet {
+  compareAndSet(key: string, expected: Revision | null, json: string, policy: KeyPolicy, expiry?: Expiry): { ok: true; entry: StoredEntry } | { ok: false; current: StoredEntry | null } {
     return this.atomically(() => {
       const current = this.read(key)
       if ((current?.revision ?? null) !== expected) return { ok: false, current }
@@ -87,7 +112,7 @@ export class AppStateDurableObject extends DurableObject<Env> {
     })
   }
 
-  increment(key: string, delta: number, bounds: CounterBounds, limits: CounterBounds, policy: KeyPolicy, expiry?: Expiry): StoredIncrement {
+  increment(key: string, delta: number, bounds: CounterBounds, limits: CounterBounds, policy: KeyPolicy, expiry?: Expiry): { applied: true; entry: StoredEntry } | { applied: false; current: StoredEntry | null } {
     return this.atomically(() => {
       const current = this.read(key)
       const value = current ? (JSON.parse(current.json) as unknown) : 0
@@ -104,7 +129,7 @@ export class AppStateDurableObject extends DurableObject<Env> {
     })
   }
 
-  consume(key: string, revision?: Revision): StoredConsume {
+  consume(key: string, revision?: Revision): { consumed: true; entry: StoredEntry } | { consumed: false; current: StoredEntry | null } {
     return this.atomically(() => {
       const current = this.read(key)
       if (!current || (revision !== undefined && current.revision !== revision)) return { consumed: false, current }
@@ -220,16 +245,35 @@ type AppStateObject = ReturnType<DurableObjectNamespace<AppStateDurableObject>['
 /** One call on the org's object, made once the object runs this deploy's code or newer. */
 type ObjectCall = <R>(run: (object: AppStateObject) => R | Promise<R>) => Promise<Awaited<R>>
 
-/** Only the policy crosses to the object: a namespace also carries its schema and functions. */
 const keyPolicy = ({ name, consistency, expiry }: KeyPolicy): KeyPolicy => ({ name, consistency, expiry })
 
-/** Sends each operation to the org's object as one call, which the object decides atomically. */
-export class CloudflareAppState extends AppState {
+/**
+ * The integers at the ends of what a counter's number schema accepts, so the object refuses a
+ * result past them before it stores it: the object never sees the schema.
+ */
+function counterLimits(schema: z.ZodType<number>): CounterBounds {
+  const { minValue, maxValue } = schema as z.ZodNumber
+  const limit = (bound: number | null | undefined, inward: 1 | -1) => {
+    if (typeof bound !== 'number' || !Number.isFinite(bound)) return undefined
+    const value = inward > 0 ? Math.ceil(bound) : Math.floor(bound)
+    // An exclusive bound (`positive()`, `lt(n)`) reports the value it excludes.
+    return schema.safeParse(value).success ? value : value + inward
+  }
+  return { min: limit(minValue, 1), max: limit(maxValue, -1) }
+}
+
+/** AppState in every isolate and object of the org: each operation is one call to the org's object. */
+export class CloudflareAppState implements AppState {
+  readonly scope: AppStateScope
+  private readonly prefix: string
   private readonly hub: EventHub
+  private readonly subscriptions = new Set<HubSubscription<unknown>>()
   private readonly call: ObjectCall
+  private closed = false
 
   constructor(objects: DurableObjectNamespace<AppStateDurableObject>, options: CloudflareAppStateOptions = {}) {
-    super(options.scope ?? ORG_SCOPE)
+    this.scope = options.scope ?? ORG_SCOPE
+    this.prefix = scopePrefix(this.scope)
     // A new stub for each call: a Worker invocation cannot use an I/O object that another one made.
     this.call = async <R>(run: (object: AppStateObject) => R | Promise<R>): Promise<Awaited<R>> => {
       await reachCurrentCode(objects, OBJECT_NAME, options.version)
@@ -238,54 +282,143 @@ export class CloudflareAppState extends AppState {
     this.hub = options.hub ?? objectHub(this.call)
   }
 
-  protected async readEntries(fullKeys: readonly string[]): Promise<(StoredEntry | null)[]> {
-    return fullKeys.length === 0 ? [] : this.call((object) => object.readMany([...fullKeys]))
+  async get<T>(key: StateKey<T>): Promise<Entry<T> | null> {
+    const [entry] = await this.getMany([key])
+    return entry ?? null
   }
 
-  protected writeEntry(fullKey: string, json: string, policy: KeyPolicy, expiry?: Expiry): Promise<StoredEntry> {
-    return this.call((object) => object.write(fullKey, json, keyPolicy(policy), expiry))
+  async getMany<T>(keys: readonly StateKey<T>[]): Promise<(Entry<T> | null)[]> {
+    this.assertOpen()
+    if (keys.length === 0) return []
+    const stored = await this.call((object) => object.readMany(keys.map((key) => this.full(key))))
+    return Promise.all(keys.map((key, i) => this.entryOf(key, stored[i] ?? null)))
   }
 
-  protected removeEntry(fullKey: string): Promise<void> {
-    return this.call((object) => object.remove(fullKey))
+  async set<T>(key: StateKey<T>, value: T, options?: WriteOptions): Promise<Entry<T>> {
+    this.assertOpen()
+    const json = encodeValue(key.namespace.schema, value, key.path)
+    return this.decoded(key, await this.call((object) => object.write(this.full(key), json, keyPolicy(key.namespace), options?.expiry)))
   }
 
-  protected insertEntry(fullKey: string, json: string, policy: KeyPolicy, expiry?: Expiry): Promise<StoredInsert> {
-    return this.call((object) => object.insertIfAbsent(fullKey, json, keyPolicy(policy), expiry))
+  async delete<T>(key: StateKey<T>): Promise<void> {
+    this.assertOpen()
+    await this.call((object) => object.remove(this.full(key)))
   }
 
-  protected compareAndSetEntry(fullKey: string, expected: Revision | null, json: string, policy: KeyPolicy, expiry?: Expiry): Promise<StoredCompareAndSet> {
-    return this.call((object) => object.compareAndSet(fullKey, expected, json, keyPolicy(policy), expiry))
+  async insertIfAbsent<T>(key: StateKey<T, 'strong'>, value: T, options?: WriteOptions): Promise<InsertResult<T>> {
+    this.assertOpen()
+    assertStrong(key, 'insertIfAbsent')
+    const json = encodeValue(key.namespace.schema, value, key.path)
+    const answer = await this.call((object) => object.insertIfAbsent(this.full(key), json, keyPolicy(key.namespace), options?.expiry))
+    if (answer.inserted) return { inserted: true, entry: this.decoded(key, answer.entry) }
+    return { inserted: false, current: (await this.entryOf(key, answer.current))! }
   }
 
-  protected incrementEntry(
-    fullKey: string,
-    delta: number,
-    bounds: CounterBounds,
-    limits: CounterBounds,
-    policy: KeyPolicy,
-    expiry?: Expiry,
-  ): Promise<StoredIncrement> {
-    return this.call((object) => object.increment(fullKey, delta, { ...bounds }, { ...limits }, keyPolicy(policy), expiry))
+  async compareAndSet<T>(
+    key: StateKey<T, 'strong'>,
+    expected: Revision | null,
+    value: T,
+    options?: WriteOptions,
+  ): Promise<CompareAndSetResult<T>> {
+    this.assertOpen()
+    assertStrong(key, 'compareAndSet')
+    const json = encodeValue(key.namespace.schema, value, key.path)
+    const answer = await this.call((object) => object.compareAndSet(this.full(key), expected, json, keyPolicy(key.namespace), options?.expiry))
+    if (answer.ok) return { ok: true, entry: this.decoded(key, answer.entry) }
+    return { ok: false, current: await this.entryOf(key, answer.current) }
   }
 
-  protected consumeEntry(fullKey: string, revision?: Revision): Promise<StoredConsume> {
-    return this.call((object) => object.consume(fullKey, revision))
+  async increment(key: StateKey<number, 'strong'>, delta = 1, options: IncrementOptions = {}): Promise<IncrementResult> {
+    this.assertOpen()
+    assertStrong(key, 'increment')
+    if (!Number.isSafeInteger(delta)) throw new RangeError(`AppState increment of ${key.path}: the delta is a safe integer`)
+    const bounds = { min: options.min, max: options.max }
+    const limits = counterLimits(key.namespace.schema)
+    const answer = await this.call((object) => object.increment(this.full(key), delta, bounds, limits, keyPolicy(key.namespace), options.expiry))
+    if (answer.applied) return { applied: true, entry: this.decoded(key, answer.entry) }
+    return { applied: false, current: await this.entryOf(key, answer.current) }
   }
 
-  protected publishEvent(fullChannel: string, json: string): Promise<void> {
-    return this.hub.publish(fullChannel, json)
+  async decrement(key: StateKey<number, 'strong'>, delta = 1, options?: IncrementOptions): Promise<IncrementResult> {
+    return this.increment(key, -delta, options)
   }
 
-  protected async listen(fullChannels: readonly string[], sink: EventSink): Promise<() => Promise<void>> {
-    const subscription = new HubSubscription(this.hub, fullChannels, sink)
-    await subscription.open()
-    return async () => subscription.close()
+  async consume<T>(key: StateKey<T, 'strong'>, options: ConsumeOptions = {}): Promise<ConsumeResult<T>> {
+    this.assertOpen()
+    assertStrong(key, 'consume')
+    const answer = await this.call((object) => object.consume(this.full(key), options.revision))
+    if (answer.consumed) return { consumed: true, entry: (await this.entryOf(key, answer.entry))! }
+    return { consumed: false, current: await this.entryOf(key, answer.current) }
+  }
+
+  async publish<E>(channel: Channel<E>, event: E): Promise<void> {
+    this.assertOpen()
+    await this.hub.publish(this.prefix + channel.path, encodeValue(channel.topic.schema, event, channel.path))
+  }
+
+  async subscribe<E>(channels: readonly Channel<E>[], listener: Listener<E>, options: SubscribeOptions = {}): Promise<Subscription> {
+    this.assertOpen()
+    if (channels.length === 0) throw new TypeError('AppState subscribe needs at least one channel')
+    const { signal } = options
+    const onAbort = () => background(subscription.unsubscribe(), { name: 'app-state.unsubscribe-on-abort' })
+    const subscription = new HubSubscription<E>(
+      this.hub,
+      new Map(channels.map((channel) => [this.prefix + channel.path, channel])),
+      listener,
+      (ended) => {
+        this.subscriptions.delete(ended as HubSubscription<unknown>)
+        signal?.removeEventListener('abort', onAbort)
+      },
+    )
+    if (signal?.aborted) {
+      await subscription.unsubscribe()
+      return subscription
+    }
+    this.subscriptions.add(subscription as HubSubscription<unknown>)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      await subscription.open()
+    } catch (error) {
+      await subscription.unsubscribe()
+      throw error
+    }
+    return subscription
+  }
+
+  async close(): Promise<void> {
+    this.closed = true
+    await Promise.all([...this.subscriptions].map((subscription) => subscription.unsubscribe()))
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('This AppState is closed')
+  }
+
+  private full(key: StateKey<unknown>): string {
+    return this.prefix + key.path
+  }
+
+  private decoded<T>(key: StateKey<T>, stored: StoredEntry): Entry<T> {
+    return { value: decodeValue(key.namespace.schema, stored.json), revision: stored.revision, expiresAt: stored.expiresAt }
+  }
+
+  /** A fresh, validated copy. A value its schema now rejects is a miss in an eventual namespace and an error in a strong one. */
+  private async entryOf<T>(key: StateKey<T>, stored: StoredEntry | null): Promise<Entry<T> | null> {
+    if (!stored) return null
+    try {
+      return this.decoded(key, stored)
+    } catch (error) {
+      if (key.namespace.consistency === 'strong') {
+        throw new Error(`AppState ${key.path} holds a value its schema rejects`, { cause: error })
+      }
+      await this.call((object) => object.remove(this.full(key)))
+      return null
+    }
   }
 }
 
 /** One subscription's socket to the hub, connected again while subscribed if the hub drops it. */
-class HubSubscription {
+class HubSubscription<E> implements Subscription {
   private active = true
   private connection: HubConnection | null = null
   private attempts = 0
@@ -293,23 +426,40 @@ class HubSubscription {
 
   constructor(
     private readonly hub: EventHub,
-    private readonly channels: readonly string[],
-    private readonly sink: EventSink,
+    private readonly channels: ReadonlyMap<string, Channel<E>>,
+    private readonly listener: Listener<E>,
+    private readonly onEnd: (subscription: HubSubscription<E>) => void,
   ) {}
 
   async open(): Promise<void> {
-    const connection = await this.hub.connect(this.channels, this.sink, () => this.lost())
+    const connection = await this.hub.connect([...this.channels.keys()], (fullChannel, json) => this.deliver(fullChannel, json), () => this.lost())
     if (!this.active) return connection.close()
     this.connection = connection
     this.attempts = 0
   }
 
-  close(): void {
+  async unsubscribe(): Promise<void> {
+    if (!this.active) return
     this.active = false
+    this.onEnd(this)
     if (this.retry) clearTimeout(this.retry)
     this.retry = null
     this.connection?.close()
     this.connection = null
+  }
+
+  private deliver(fullChannel: string, json: string): void {
+    const channel = this.channels.get(fullChannel)
+    if (!channel) return
+    background(
+      async () => {
+        // Listeners run after publish has resolved: it acknowledges acceptance only.
+        await Promise.resolve()
+        if (!this.active) return
+        await this.listener(decodeValue(channel.topic.schema, json), channel)
+      },
+      { name: 'app-state.listener' },
+    )
   }
 
   /** The hub dropped the connection (a deploy, an eviction). Events published meanwhile are missed. */

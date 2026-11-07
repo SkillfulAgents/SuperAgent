@@ -69,11 +69,7 @@ const subscription = await appState().subscribe([roster.channel(meetingId)], onC
 
 ## Implementing a backend
 
-A backend is a subclass of the abstract `AppState` class (`abstract-app-state.ts`). The class does the typed work the same for every deployment: validation, encoding, the strong-only checks and listener delivery. The subclass implements the protected operations on full keys and encoded values (`readEntries`, `writeEntry`, `removeEntry`, `insertEntry`, `compareAndSetEntry`, `incrementEntry`, `consumeEntry`, `publishEvent`, `listen`).
-
-Each operation must be decided in one atomic step at the authority. `LocalAppState` decides each one in one synchronous turn over the process's entries. A remote subclass sends each one as one call to the authority (a tenant Durable Object, or Redis), which runs it as one transaction. Never build an operation from a read and a write that cross the network: two processes can interleave between them.
-
-Each subclass runs the shared suite:
+A backend implements `AppState` from `contract.ts` and runs the shared suite:
 
 ```ts
 describeAppStateConformance('CloudflareAppState', () => ({ open, advance, settled }))
@@ -95,7 +91,7 @@ What a backend must preserve beyond the suite:
 
 - Strong namespaces are read from and written to the authority (a tenant Durable Object, or Redis), and their records survive eviction. An eventual namespace may be served from a store with propagation delay, never past its expiry.
 - Revisions stay unique across deletion, expiry, eviction and restart. Do not derive them from a per-key counter that restarts at 1.
-- The authority uses `resolveExpiry` from `definitions.ts`, so expiry behaves identically everywhere. A counter's result is checked there against `limits`, the bounds of its schema, because the authority never sees the schema.
+- Use the shared encoders in `definitions.ts` (`scopePrefix`, `encodeValue`, `decodeValue`, `resolveExpiry`, `assertStrong`) so keys, validation and expiry behave identically everywhere.
 - Subscriptions must be rebuilt from serialized routing when a Durable Object is woken from hibernation. They must not rely on a JavaScript callback surviving eviction.
 - Secrets in a shared backend are sealed through KeyManager (SUP-1509). AppState never holds a raw root key.
 
