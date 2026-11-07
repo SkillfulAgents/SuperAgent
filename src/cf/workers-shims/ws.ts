@@ -5,6 +5,7 @@
  * style (onopen, onmessage) and ws's (on('message'), ping, terminate). `WebSocket.fromSocket` gives
  * the same API over a socket the Worker accepted.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { Buffer } from 'node:buffer'
 import type { WorkerWebSocket } from 'cloudflare:workers'
 
@@ -28,6 +29,9 @@ export class WebSocket {
 
   private socket: WorkerWebSocket | null = null
   private readonly listeners = new Map<string, Set<Listener>>()
+  // The runtime delivers socket events with no async context, so listeners run in the one the
+  // socket was made in, as with ws on Node: an agent's object keeps knowing it serves itself.
+  private readonly inCreatorContext = AsyncLocalStorage.snapshot()
 
   /** Wraps a socket this Worker accepted (the server end of a WebSocketPair). */
   static fromSocket(socket: WorkerWebSocket, protocol = ''): WebSocket {
@@ -66,13 +70,13 @@ export class WebSocket {
     // Binary frames arrive as Blob otherwise, which Buffer.from can't take.
     socket.binaryType = 'arraybuffer'
     this.socket = socket
-    socket.addEventListener('message', (event) => {
+    socket.addEventListener('message', (event) => this.inCreatorContext(() => {
       this.onmessage?.({ data: event.data })
       const binary = typeof event.data !== 'string'
       this.emit('message', binary ? Buffer.from(event.data as ArrayBuffer) : Buffer.from(event.data as string), binary)
-    })
-    socket.addEventListener('close', (event) => this.closed(event.code, event.reason))
-    socket.addEventListener('error', (event) => this.failed((event as ErrorEvent).error ?? new Error('WebSocket error')))
+    }))
+    socket.addEventListener('close', (event) => this.inCreatorContext(() => this.closed(event.code, event.reason)))
+    socket.addEventListener('error', (event) => this.inCreatorContext(() => this.failed((event as ErrorEvent).error ?? new Error('WebSocket error'))))
     this.readyState = WebSocket.OPEN
     this.onopen?.({ type: 'open' })
     this.emit('open')
