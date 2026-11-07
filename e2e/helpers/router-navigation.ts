@@ -280,7 +280,7 @@ export async function checkRenameDuringSessionRead(context: RouterNavigationCont
       const renameResponse = page.waitForResponse(response => parseUrl(response.url()).pathname === `/api/agents/${agent.slug}` && response.request().method() === 'PUT')
       await page.getByTestId('agent-name').click()
       await page.getByTestId('agent-name-input').fill(renamedName)
-      await page.getByTestId('agent-name-save').click()
+      await page.getByTestId('agent-name-input').press('Enter')
       const renamed = await renameResponse
       expect(renamed.ok()).toBe(true)
       expect(agentSchema.parse(await renamed.json()).name).toBe(renamedName)

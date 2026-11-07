@@ -21,8 +21,11 @@ const attachErrorReportingIdentity = vi.fn(async () => {
 const initializeLocalAppState = vi.fn(async () => {
   calls.push('initializeLocalAppState')
 })
-const prepareBackgroundWork = vi.fn(async () => {
-  calls.push('prepareBackgroundWork')
+const initializeBackgroundWork = vi.fn(async (_manager: object) => {
+  calls.push('initializeBackgroundWork')
+})
+const registerBackgroundWork = vi.fn(() => {
+  calls.push('registerBackgroundWork')
 })
 const bindServerWithRetry = vi.fn(async () => {
   calls.push('bind')
@@ -38,11 +41,13 @@ vi.mock('../api', async () => {
 })
 vi.mock('@shared/lib/db', () => ({ openDatabase }))
 vi.mock('@shared/lib/error-reporting', () => ({ initErrorReporting, flushErrorReporting, attachErrorReportingIdentity }))
+vi.mock('@shared/lib/error-reporting/sentry-provider', () => ({ createServerProvider: () => null }))
 vi.mock('@shared/lib/app-state', () => ({ initializeLocalAppState }))
+vi.mock('@shared/lib/background-work', () => ({ initializeBackgroundWork }))
 vi.mock('@shared/lib/server-bind', () => ({ bindServerWithRetry }))
 vi.mock('@shared/lib/startup', () => ({
   afterBindInitialize,
-  prepareBackgroundWork,
+  registerBackgroundWork,
   setupServerHandlers: vi.fn(),
   shutdownServices: vi.fn(),
 }))
@@ -85,16 +90,23 @@ describe('web server boot order', () => {
       'openDatabase',
       'attachErrorReportingIdentity',
       'initializeLocalAppState',
-      'prepareBackgroundWork',
+      'initializeBackgroundWork',
+      'registerBackgroundWork',
       'bind',
       'afterBindInitialize',
     ])
   })
 
+  it('picks the local task manager itself', async () => {
+    process.env.NODE_ENV = 'test'
+    await boot()
+    expect(initializeBackgroundWork.mock.lastCall?.[0]?.constructor.name).toBe('LocalTaskManager')
+  })
+
   it('skips error reporting outside production, as afterBindInitialize does', async () => {
     process.env.NODE_ENV = 'test'
     await boot()
-    expect(calls).toEqual(['openDatabase', 'attachErrorReportingIdentity', 'initializeLocalAppState', 'prepareBackgroundWork', 'bind', 'afterBindInitialize'])
+    expect(calls).toEqual(['openDatabase', 'attachErrorReportingIdentity', 'initializeLocalAppState', 'initializeBackgroundWork', 'registerBackgroundWork', 'bind', 'afterBindInitialize'])
   })
 
   it('flushes error reporting before exiting when the database fails to open', async () => {

@@ -3,7 +3,8 @@ import { app, ipcMain, powerMonitor } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException } from '@shared/lib/error-reporting'
-import { closeBackgroundWork, initializeLocalBackgroundWork } from '@shared/lib/background-work'
+import { closeBackgroundWork, initializeBackgroundWork } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const semver = require('semver')
 
@@ -822,7 +823,7 @@ describe('check timeout (watchdog)', () => {
     beforeEach(async () => {
       // The shared boot scheduled its checks on real timers; start over on fake ones.
       await closeBackgroundWork()
-      await initializeLocalBackgroundWork()
+      await initializeBackgroundWork(new LocalTaskManager())
       vi.useFakeTimers()
       mockAutoUpdater.checkForUpdates.mockResolvedValue({ updateInfo: { version: '0.2.5' } })
     })
@@ -874,7 +875,7 @@ describe('check timeout (watchdog)', () => {
       await boot()
       expect(captureException).not.toHaveBeenCalled()
 
-      await initializeLocalBackgroundWork()
+      await initializeBackgroundWork(new LocalTaskManager())
       const mod = await import('./auto-updater')
       mod.scheduleAutomaticUpdateChecks()
       mockAutoUpdater.checkForUpdates.mockClear()

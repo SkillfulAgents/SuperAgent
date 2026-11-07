@@ -12,7 +12,7 @@ import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { runWithBackground } from '@shared/lib/background'
 import { mutateSettings } from '@shared/lib/config/settings'
-import { initializeServices, prepareBackgroundWork, prepareProcess, shutdownServices } from '@shared/lib/startup'
+import { initializeServices, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
@@ -52,7 +52,7 @@ export function serveContainerRequest(request: Request, env: Env): Promise<Respo
 
 /** The background services, minus the ones that watch local containers: each agent's object watches its own. */
 export function startBackgroundServices(): Promise<void> {
-  return initializeServices({ localContainers: false })
+  return initializeServices()
 }
 
 export function stopBackgroundServices(): Promise<void> {
@@ -72,7 +72,7 @@ async function start(env: Env): Promise<void> {
     tasks = new CloudflareTaskManager(env.TASK_MANAGER)
     await initializeBackgroundWork(tasks)
   }
-  await prepareBackgroundWork({ localContainers: false })
+  registerBackgroundWork({ localContainers: false })
   await seedSettings(env.APP_ORIGIN)
 
   await prepareProcess()

@@ -3,8 +3,8 @@
  *
  * This file is the ONLY place that imports @sentry/node. To switch to a
  * different provider (e.g., Datadog, Bugsnag), create a new file that
- * exports `createServerProvider` with the same signature and update the
- * import in index.ts.
+ * creates an ErrorReportingProvider and pass it to `initErrorReporting`
+ * from the entry points.
  */
 
 import * as Sentry from '@sentry/node'
@@ -36,9 +36,18 @@ export function scrubCredentialRequestBody<T extends { request?: { url?: string;
  * Create and initialize the server-side error reporting provider.
  *
  * Handles SDK init, tenant identification, and environment fingerprinting.
- * Called by the abstraction layer (index.ts) — never by entry points directly.
+ * Entry points pass it to `initErrorReporting`. Null when the SDK could not start.
  */
-export function createServerProvider(options: ErrorReportingInitOptions): ErrorReportingProvider {
+export function createServerProvider(options: ErrorReportingInitOptions): ErrorReportingProvider | null {
+  try {
+    return startServerProvider(options)
+  } catch (err) {
+    console.warn('[ErrorReporting] Failed to initialize:', err)
+    return null
+  }
+}
+
+function startServerProvider(options: ErrorReportingInitOptions): ErrorReportingProvider {
   Sentry.init({
     dsn: ERROR_REPORTING_INGEST_URL,
     environment: options.environment,
