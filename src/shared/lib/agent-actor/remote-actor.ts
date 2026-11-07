@@ -1,6 +1,6 @@
 /**
- * The actor over HTTP: `remoteActor` is an `AgentActor` whose every op is one
- * request, and `serveActor` answers those requests from the actor itself. The
+ * The remote actor: `remoteActor` is an `AgentActor` whose every op is one
+ * HTTP request, and `serveActor` answers those requests from the actor itself. The
  * two meet at a `fetch`-shaped function, so the actor can sit in another
  * process or machine, or in this one behind a loopback.
  *

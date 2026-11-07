@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { remoteActor, serveActor, type ActorFetch } from './network-actor'
+import { remoteActor, serveActor, type ActorFetch } from './remote-actor'
 import { WorkspaceFileError } from './workspace-path'
 import type { AgentActor } from './types'
 
@@ -55,7 +55,7 @@ function connect(actor: object): { remote: AgentActor; send: ActorFetch } {
   return { remote: remoteActor({ name: 'sales-agent', fetch: send }), send }
 }
 
-describe('network actor', () => {
+describe('remote actor', () => {
   it('carries results that structured clone keeps: undefined, Date, Set, Map', async () => {
     const { actor } = fakeActor()
     const { remote } = connect(actor)
