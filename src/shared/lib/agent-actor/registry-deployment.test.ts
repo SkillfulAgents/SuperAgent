@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createInMemorySessionStore } from './testing/in-memory-session-store'
-import { loopbackActor } from './remote-agent-actor'
+import { serializingActor } from './serializing-actor'
 import type { AgentActor } from './types'
 
 vi.mock('@shared/lib/container/container-host', () => ({
@@ -62,7 +62,7 @@ describe('agentRegistry in a deployment', () => {
     const { agentRegistry, setActorTransport, setSessionStore } = await freshRegistry()
     const store = createInMemorySessionStore('sales-agent')
     setSessionStore(() => store)
-    const make = vi.fn((_slug: string, local: AgentActor) => loopbackActor(local))
+    const make = vi.fn((_slug: string, local: AgentActor) => serializingActor(local))
     setActorTransport(make)
 
     const actor = agentRegistry.get('sales-agent')
