@@ -5,12 +5,17 @@ import { chatIntegrations } from '../db/schema'
 import type { AgentIntegrationRecord, IntegrationInputEvent } from '../agent-integrations/types'
 import type { MeetingBotHost, MeetingBotStatus } from './bot-host'
 import type { MeetingIntegrationSettings } from './schemas'
+import { InMemoryFileOps } from '../agent-actor/testing/in-memory-file-ops'
 
 let database: AppDatabase
 let handle: TestDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))
-vi.mock('../agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) } }))
+let workspace = new InMemoryFileOps()
+vi.mock('../agent-actor', () => ({
+  agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) },
+  agentRegistry: { get: vi.fn(() => ({ files: workspace })) },
+}))
 vi.mock('../agent-integrations/app-link', () => ({ resolveInternetAppBaseUrl: vi.fn(() => 'https://app.example') }))
 let authMode = false
 let agentOwner: string | null = null
@@ -23,6 +28,7 @@ const { leaveOpenMeetings } = await import('./definitions')
 const { meetingEventPayloadSchema } = await import('./schemas')
 const { meetingRoster } = await import('./roster')
 const { backgroundSettled } = await import('../background')
+const { receiveMeetingBotEvent } = await import('./bot-events')
 
 const record: AgentIntegrationRecord = {
   id: 'integration', agentSlug: 'agent', provider: 'recall', name: null, config: '{}', status: 'active', errorMessage: null,
@@ -30,7 +36,7 @@ const record: AgentIntegrationRecord = {
 }
 
 class FakeHost implements MeetingBotHost {
-  created: Array<{ meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string }> = []
+  created: Array<{ meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string; framesUrl?: string }> = []
   status: MeetingBotStatus = { status: 'joining' }
   left: string[] = []
   chats: Array<[string, string]> = []
@@ -40,7 +46,7 @@ class FakeHost implements MeetingBotHost {
   holdCreate = false
   private releases: Array<() => void> = []
   releaseCreate() { for (const release of this.releases.splice(0)) release() }
-  async createBot(request: { meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string }) {
+  async createBot(request: { meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string; framesUrl?: string }) {
     if (this.fail) throw new Error('Recall.ai has no bot capacity right now. Try again in a moment.')
     if (this.holdCreate) await new Promise<void>(resolve => this.releases.push(resolve))
     this.created.push(request); return { botId: `bot-${this.created.length}` }
@@ -66,6 +72,7 @@ let integration: TestIntegration
 let events: IntegrationInputEvent[]
 beforeEach(async () => {
   vi.useFakeTimers()
+  workspace = new InMemoryFileOps()
   authMode = false; agentOwner = null
   handle = await createTestDatabase(); database = handle.db
   await database.insert(chatIntegrations).values({ id: 'integration', provider: 'recall', agentSlug: 'agent', config: '{"apiKey":"k","region":"us-west-2"}', status: 'active', createdAt: new Date(), updatedAt: new Date() }).run()
@@ -92,6 +99,8 @@ describe('MeetingAgentIntegration', () => {
     expect(pageUrl.origin + pageUrl.pathname).toBe(`https://app.example/meeting/${meeting.id}`)
     // The host's callback URL carries the same token, with the trailing slash Recall needs before the query.
     expect(host.created[0].eventsUrl).toBe(`https://app.example/api/meeting-participant/${meeting.id}/events/?token=${pageUrl.searchParams.get('token')}`)
+    // Shared-screen frames come back over a websocket next to it, under the same token.
+    expect(host.created[0].framesUrl).toBe(`wss://app.example/api/meeting-participant/${meeting.id}/frames/?token=${pageUrl.searchParams.get('token')}`)
     expect(await verifyParticipantToken(meeting.id, pageUrl.searchParams.get('token')!)).not.toBeNull()
     expect(await verifyParticipantToken(meeting.id, 'wrong')).toBeNull()
     expect((await getMeeting(meeting.id))?.createdByUserId).toBe('alice')
@@ -99,12 +108,17 @@ describe('MeetingAgentIntegration', () => {
     expect(prepared.text).toContain('Take notes')
     expect(prepared.text).toContain('Google Meet')
     expect(prepared.systemPrompt).toMatch(/spoken/)
+    expect(prepared.systemPrompt).toContain('/workspace/sessions/<sessionId>/screenshots/')
+    expect(prepared.systemPrompt).not.toContain(`/workspace/meetings/${meeting.id}`)
     expect(prepared.systemPrompt).not.toContain('Standing instructions')
     // The installation's standing instructions ride along in the session prompt, read at brief time.
     integration.settings = { instructions: 'Never quote prices.' }
     const briefed = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
     expect(briefed.systemPrompt).toContain('Standing instructions for every meeting you join:\nNever quote prices.')
     expect(briefed.text).not.toContain('Never quote prices')
+    const resumed = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, sessionId: 'session-1', actor: {} as never })
+    expect(resumed.systemPrompt).toContain('/workspace/sessions/session-1/screenshots/')
+    expect(resumed.systemPrompt).not.toContain('<sessionId>')
   })
 
   it("with accounts, attributes the agent's own join to the installation's creator, else the agent's owner", async () => {
@@ -305,6 +319,18 @@ describe('MeetingAgentIntegration', () => {
     await integration.deliver(quiet, { type: 'turn-completed', event: { type: 'turn_completed' } })
     await integration.deliver(quiet, { type: 'runtime', event: { type: 'tool_result_ready', toolName: 'mcp__user-input__deliver_file', toolUseId: 't', filePath: '/workspace/output/chart.png', isError: false } })
     expect(host.chats.filter(([bot]) => bot === 'bot-2').map(([, text]) => text)).toEqual([expect.stringMatching(/^Hi, I'm/)])
+  })
+
+  it('keeps meeting speaker attribution for the shared voice transcript, and points the agent to its notice', async () => {
+    const { appState } = await import('../app-state')
+    const { meetingSpeakersKey } = await import('./transcript-speakers')
+    const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
+    const prepared = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
+    expect(prepared.systemPrompt).toContain('voice conversation announces its live transcript path')
+    const speechOn = async (id: number, name: string) => receiveMeetingBotEvent((await getMeeting(meeting.id))!, { event: 'participant_events.speech_on', data: { data: { participant: { id, name } } } })
+    await speechOn(1, 'Mike')
+    await speechOn(9, 'Ada')
+    expect((await appState().get(meetingSpeakersKey(meeting.id)))?.value.map(speaker => speaker.name)).toEqual(['Mike'])
   })
 
   it('keeps the roster from host events and forgets it when the call ends', async () => {

@@ -4,7 +4,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
 import type { NotificationReadState } from '@shared/lib/notifications/read-state-schema'
-import { readNotifications, noteNotificationChange } from './notification-read-cache'
+import { NOTIFICATION_TYPES, type NotificationCounts, type NotificationTypeCounts } from '@shared/lib/notifications/notification-filters'
+import { readNotifications, noteNotificationChange, notificationClientId } from './notification-read-cache'
 import { apiFetch } from './api'
 
 vi.mock('./api', () => ({ apiFetch: vi.fn() }))
@@ -50,7 +51,198 @@ function state(preview?: string): NotificationReadState {
   }] }
 }
 
+function typeCounts(overrides: Partial<NotificationTypeCounts> = {}): NotificationTypeCounts {
+  return { ...Object.fromEntries(NOTIFICATION_TYPES.map(type => [type, { total: 0, unread: 0 }])), ...overrides } as NotificationTypeCounts
+}
+
 describe('optimistic notification reads', () => {
+  it.each([
+    { kind: 'session', sessionId: 's1' },
+    { kind: 'notification', id: 'n1' },
+    { kind: 'all', types: ['session_complete'] },
+  ] as const)('updates badge and tab counts together after a $kind read without refetching', async target => {
+    const { client } = seed()
+    const key = ['notifications', 'unread-count']
+    client.setQueryData(key, { count: 1, mentions: 0, types: typeCounts({ session_complete: { total: 1, unread: 1 } }) })
+    const updated = { count: 0, mentions: 0, types: typeCounts({ session_complete: { total: 1, unread: 0 } }) }
+    const fetchCounts = vi.fn().mockResolvedValue(updated)
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchCounts, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const pending = deferred()
+      vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+      const operation = readNotifications(client, target)
+      await waitFor(() => expect(client.getQueryData(key)).toEqual(updated))
+      pending.resolve(response({ ...state(), types: updated.types }))
+      await operation
+      expect(fetchCounts).not.toHaveBeenCalled()
+      expect(client.getQueryData(key)).toEqual(updated)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
+  })
+
+  it('reconciles a filtered page first opened while a read is pending', async () => {
+    const { client } = seed()
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+    const key = ['notifications', 15, 0, 'session_complete']
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce({ items: [notification()], total: 1 })
+      .mockResolvedValue({ items: [{ ...notification(), isRead: true }], total: 1 })
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchPage, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      await waitFor(() => expect(client.getQueryData(key)).toMatchObject({ items: [{ isRead: false }] }))
+      pending.resolve(response(state()))
+      await operation
+      expect(fetchPage).toHaveBeenCalledTimes(2)
+      expect(client.getQueryData(key)).toMatchObject({ items: [{ isRead: true }] })
+    } finally { unsubscribe(); client.clear() }
+  })
+
+  it('refreshes an initial count fetch that finishes after the read commits', async () => {
+    const { client } = seed()
+    const key = ['notifications', 'unread-count']
+    client.removeQueries({ queryKey: key })
+    const pending = deferred()
+    const oldCount = deferred()
+    const fetchCounts = vi.fn()
+      .mockImplementationOnce(async () => { await oldCount.promise; return { count: 1 } })
+      .mockResolvedValue({ count: 0 })
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchCounts, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+      const operation = readNotifications(client, { kind: 'all' })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      pending.resolve(response(state()))
+      await operation
+      expect(fetchCounts).toHaveBeenCalledTimes(1)
+      oldCount.resolve(response())
+      await waitFor(() => expect(client.getQueryData(key)).toEqual({ count: 0 }))
+      expect(fetchCounts).toHaveBeenCalledTimes(2)
+    } finally { oldCount.resolve(response()); unsubscribe(); client.clear() }
+  })
+
+  it('lets an in-flight route loader resolve and leaves its result stale for the mounted observer', async () => {
+    const { client } = seed()
+    const key = ['agents', 'new-route']
+    const initial = deferred()
+    const data = { slug: 'new-route', hasUnreadNotifications: true }
+    const loader = client.ensureQueryData({ queryKey: key, queryFn: async () => { await initial.promise; return data } })
+    vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+    try {
+      await readNotifications(client, { kind: 'notification', id: 'n1' })
+      initial.resolve(response())
+      await expect(loader).resolves.toEqual(data)
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+      const fetchAgent = vi.fn().mockResolvedValue({ ...data, hasUnreadNotifications: false })
+      const unsubscribe = new QueryObserver(client, { queryKey: key, queryFn: fetchAgent, staleTime: Infinity }).subscribe(() => {})
+      try {
+        await waitFor(() => expect(client.getQueryData(key)).toMatchObject({ hasUnreadNotifications: false }))
+      } finally { unsubscribe() }
+    } finally { initial.resolve(response()); client.clear() }
+  })
+
+  it('preserves an initial session error after retries outlast the recovery deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { client } = seed()
+    const key = ['session', 'missing', 'a']
+    const error = new Error('Session not found')
+    const fetchSession = vi.fn().mockRejectedValue(error)
+    const unsubscribe = new QueryObserver(client, {
+      queryKey: key, queryFn: fetchSession, retry: 2, retryDelay: 1000,
+    }).subscribe(() => {})
+    try {
+      vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+      await readNotifications(client, { kind: 'session', sessionId: 'missing' })
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(fetchSession).toHaveBeenCalledTimes(3)
+      expect(client.getQueryState(key)).toMatchObject({ status: 'error', error, fetchStatus: 'idle' })
+    } finally { unsubscribe(); client.clear(); vi.useRealTimers() }
+  })
+
+  it('reconciles a lost response when the server committed the read', async () => {
+    const { client } = seed()
+    const key = ['notifications', 'unread-count']
+    const fetchCounts = vi.fn().mockResolvedValue({ count: 0, mentions: 0 })
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchCounts, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      vi.mocked(apiFetch).mockRejectedValueOnce(new Error('Connection lost'))
+      await expect(readNotifications(client, { kind: 'all' })).rejects.toThrow('Connection lost')
+      expect(fetchCounts).toHaveBeenCalledTimes(1)
+      expect(client.getQueryData(key)).toEqual({ count: 0, mentions: 0 })
+    } finally { unsubscribe(); client.clear() }
+  })
+
+  it('a scope-wide change prevents an older response restoring an agent preview', async () => {
+    const { client } = seed()
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+    noteNotificationChange(client)
+    pending.resolve(response(state('old')))
+    await operation
+    expect(agent(client).notificationPreview).toBeUndefined()
+    expect(client.getQueryState(['agents'])?.isInvalidated).toBe(true)
+  })
+
+  it('clears a filtered tab including uncached rows and restores its counts on failure', async () => {
+    const { client } = seed()
+    const key = ['notifications', 'unread-count']
+    const counts: NotificationCounts = { count: 22, mentions: 0, types: typeCounts({
+      session_complete: { total: 25, unread: 20 },
+      session_waiting: { total: 2, unread: 2 },
+      session_scheduled: { total: 3, unread: 3 },
+    }) }
+    client.setQueryData(key, counts)
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all', types: ['session_complete'] })
+    const rejected = expect(operation).rejects.toThrow('offline')
+    await waitFor(() => expect(client.getQueryData(key)).toEqual({ ...counts, count: 2, types: {
+      ...counts.types, session_complete: { total: 25, unread: 0 },
+    } }))
+    pending.reject(new Error('offline'))
+    await rejected
+    expect(client.getQueryData(key)).toEqual(counts)
+  })
+
+  it('confirms uncached automation counts without adding them to the badge', async () => {
+    const { client, invalidate } = seed()
+    const key = ['notifications', 'unread-count']
+    client.setQueryData(key, { count: 1, mentions: 0, types: typeCounts({
+      session_complete: { total: 1, unread: 1 }, session_scheduled: { total: 2, unread: 2 },
+    }) })
+    const updated = typeCounts({ session_complete: { total: 1, unread: 1 }, session_scheduled: { total: 2, unread: 1 } })
+    vi.mocked(apiFetch).mockResolvedValueOnce(response({ ...state('n1'), types: updated }))
+    await readNotifications(client, { kind: 'notification', id: 'uncached-automation' })
+    expect(client.getQueryData(key)).toEqual({ count: 1, mentions: 0, types: updated })
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('preserves newer badge and type counts when an event arrives during a read', async () => {
+    const { client } = seed()
+    const key = ['notifications', 'unread-count']
+    client.setQueryData(key, { count: 1, mentions: 0, types: typeCounts({ session_complete: { total: 1, unread: 1 } }) })
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all' })
+    await waitFor(() => expect(client.getQueryData<NotificationCounts>(key)?.count).toBe(0))
+    noteNotificationChange(client, 'a')
+    const newer = { count: 1, mentions: 0, types: typeCounts({ session_complete: { total: 2, unread: 1 } }) }
+    client.setQueryData(key, newer)
+    pending.resolve(response({ ...state(), types: typeCounts({ session_complete: { total: 1, unread: 0 } }) }))
+    await operation
+    expect(client.getQueryData(key)).toEqual(newer)
+  })
+
   it('clears previews, pages and counts before the POST completes, preserving input and manual reminders', async () => {
     const { client, invalidate } = seed()
     const pending = deferred()
@@ -65,7 +257,7 @@ describe('optimistic notification reads', () => {
     expect(client.getQueryData<ApiSession>(['session', 's1', 'a'])).toMatchObject({ hasUnreadNotifications: false, isAwaitingInput: true })
     pending.resolve(response(state()))
     await operation
-    expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/notifications/read-all', { method: 'POST' })
+    expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/notifications/read-all', { method: 'POST', headers: { 'X-Notification-Client': notificationClientId(client) } })
     expect(invalidate).not.toHaveBeenCalled()
   })
 
@@ -124,6 +316,37 @@ describe('optimistic notification reads', () => {
       await readNotifications(client, target)
       expect(agent(client).notificationPreview).toBe('n1')
     }
+  })
+
+  it('a filtered read-all marks only its types, sends them, and leaves flags for the server to confirm', async () => {
+    const { client } = seed()
+    client.setQueryData(['notifications', 15, 0], {
+      items: [notification('n1', 's1'), { ...notification('n2', 's2'), type: 'session_waiting' }],
+      total: 2,
+    })
+    client.setQueryData(['notifications', 'unread-count'], { count: 2, mentions: 0 })
+    const pending = deferred()
+    vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+    const operation = readNotifications(client, { kind: 'all', types: ['session_complete'] })
+    await waitFor(() => expect(page(client).items.find(n => n.id === 'n1')?.isRead).toBe(true))
+    expect(page(client).items.find(n => n.id === 'n2')?.isRead).toBe(false)
+    expect(client.getQueryData(['notifications', 'unread-count'])).toMatchObject({ count: 1 })
+    // The preview has no type to match, so only the server's answer may clear it.
+    expect(agent(client)).toMatchObject({ notificationPreview: 'n1', hasUnreadMention: true })
+    expect(client.getQueryData<ApiSession>(['session', 's1', 'a'])).toMatchObject({ hasUnreadNotifications: true })
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith('/api/notifications/read-all', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ types: ['session_complete'] }),
+    }))
+    pending.resolve(response(state('n2')))
+    await operation
+    expect(agent(client)).toMatchObject({ notificationPreview: 'n2', hasUnreadMention: false })
+  })
+
+  it('an unfiltered read-all still sends no body', async () => {
+    const { client } = seed()
+    vi.mocked(apiFetch).mockResolvedValueOnce(response(state()))
+    await readNotifications(client, { kind: 'all' })
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith('/api/notifications/read-all', { method: 'POST', headers: { 'X-Notification-Client': notificationClientId(client) } })
   })
 
   it('rolls back a failed write while preserving a newer notification and unrelated agent edits', async () => {
@@ -186,7 +409,7 @@ describe('optimistic notification reads', () => {
     expect(client.getQueryData(['notifications', 'unread-count'])).toEqual({ count: 0, mentions: 0 })
   })
 
-  it('cancels a stale GET without cancelling an uncached initial load', async () => {
+  it('cancels pre-write GETs and leaves inactive initial loads stale for their next observer', async () => {
     const { client } = seed()
     const stale = deferred()
     const initial = deferred()
@@ -201,6 +424,7 @@ describe('optimistic notification reads', () => {
     await Promise.all([refetch, firstLoad])
     expect(agent(client).notificationPreview).toBeUndefined()
     expect(client.getQueryData(['sessions', 'other'])).toEqual([{ id: 'other-session' }])
+    expect(client.getQueryState(['sessions', 'other'])?.isInvalidated).toBe(true)
     // No observer needs this metadata now, but cancellation must not mark the
     // old value fresh: the next observer should fetch it again.
     expect(client.getQueryState(['agents'])?.isInvalidated).toBe(true)
@@ -505,7 +729,7 @@ describe('optimistic notification reads', () => {
     }
   })
 
-  it('preserves invalidation when a later read cancels a fetch patched by confirmation', async () => {
+  it('restarts a concurrent refetch after commit before the next queued read', async () => {
     const { client } = seed()
     const key = ['agents', 'agent-a']
     const first = deferred()
@@ -526,13 +750,14 @@ describe('optimistic notification reads', () => {
       const refetch = client.invalidateQueries({ queryKey: key, exact: true })
       first.resolve(response(state('n2')))
       await one
-      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: true, fetchStatus: 'fetching' })
-      expect(client.getQueryData(key)).toMatchObject({ notificationPreview: 'n2' })
+      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: false, fetchStatus: 'idle' })
+      expect(client.getQueryData(key)).toMatchObject({ name: 'Renamed' })
+      expect(fetchAgent).toHaveBeenCalledTimes(2)
 
       two = readNotifications(client, { kind: 'notification', id: 'unrelated' })
       await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2))
-      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: true, fetchStatus: 'idle' })
-      expect(client.getQueryData(key)).toMatchObject({ notificationPreview: 'n2' })
+      expect(client.getQueryState(key)).toMatchObject({ isInvalidated: false, fetchStatus: 'idle' })
+      expect(client.getQueryData(key)).toMatchObject({ name: 'Renamed' })
       second.resolve(response(state('n2')))
       await two
       expect(client.getQueryData(key)).toMatchObject({ name: 'Renamed' })
@@ -567,7 +792,7 @@ describe('optimistic notification reads', () => {
     expect(client.getQueryData(['agents'])).toEqual([{ slug: 'other-workspace' }])
   })
 
-  it('does not invalidate a recreated query with the same key during recovery', async () => {
+  it('marks a query recreated during the read stale without replacing its metadata', async () => {
     const { client } = seed()
     const stale = deferred()
     const post = deferred()
@@ -588,7 +813,7 @@ describe('optimistic notification reads', () => {
       await refetch
       expect(fetchAgent).toHaveBeenCalledTimes(1)
       expect(client.getQueryData(key)).toMatchObject({ name: 'Replacement' })
-      expect(client.getQueryState(key)?.isInvalidated).toBe(false)
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true)
     } finally {
       unsubscribe()
       client.clear()
@@ -606,7 +831,7 @@ describe('optimistic notification reads', () => {
     pending.resolve(response(state('n2')))
     await operation
     expect(agent(client).notificationPreview).toBe('n2')
-    expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/notifications/read-by-session/s1', { method: 'POST' })
+    expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/notifications/read-by-session/s1', { method: 'POST', headers: { 'X-Notification-Client': notificationClientId(client) } })
   })
 
   it.each([true, false])('does not dispatch a queued read to a newly selected workspace (readState: %s)', async (withReadState) => {

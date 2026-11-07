@@ -27,6 +27,18 @@ let mockPlatformData: {
 } = { notifications: [], total: 0, unread_count: 0, connected: false }
 let mockPlatformLoading = false
 let mockPlatformUnreadCount = 0
+let mockSearch: { filter?: string } = {}
+let mockTypeCounts: Record<string, { total: number; unread: number }> = {}
+const mockUseNotificationsCalls: { limit: number; offset: number; types?: readonly string[]; enabled?: boolean }[] = []
+
+const ZERO_TYPE_COUNTS = {
+  session_complete: { total: 0, unread: 0 },
+  session_waiting: { total: 0, unread: 0 },
+  session_scheduled: { total: 0, unread: 0 },
+  session_webhook: { total: 0, unread: 0 },
+  session_chat_integration: { total: 0, unread: 0 },
+  session_mention: { total: 0, unread: 0 },
+}
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -35,14 +47,21 @@ let mockPlatformUnreadCount = 0
 vi.mock('@renderer/hooks/use-notifications', () => ({
   // The view fetches a growing window ((page+1)*PAGE_SIZE) and paginates
   // client-side over the merged list — honor the limit like the server would.
-  useNotifications: (limit: number) => ({
-    data: mockNotificationsData
-      ? { ...mockNotificationsData, items: mockNotificationsData.items.slice(0, limit) }
-      : undefined,
-    isLoading: mockNotificationsLoading,
-  }),
+  // `types` filters like the server's `?types=`; `enabled: false` returns no data.
+  useNotifications: (limit: number, offset = 0, options: { types?: readonly string[]; enabled?: boolean } = {}) => {
+    mockUseNotificationsCalls.push({ limit, offset, ...options })
+    if (options.enabled === false) return { data: undefined, isLoading: false }
+    if (!mockNotificationsData) return { data: undefined, isLoading: mockNotificationsLoading }
+    const items = options.types
+      ? mockNotificationsData.items.filter((n) => options.types!.includes(n.type))
+      : mockNotificationsData.items
+    return {
+      data: { items: items.slice(0, limit), total: options.types ? items.length : mockNotificationsData.total },
+      isLoading: mockNotificationsLoading,
+    }
+  },
   useUnreadNotificationCount: () => ({
-    data: { count: mockUnreadCount },
+    data: { count: mockUnreadCount, types: { ...ZERO_TYPE_COUNTS, ...mockTypeCounts } },
   }),
   useMarkNotificationRead: () => ({
     mutate: mockMarkReadMutate,
@@ -84,13 +103,14 @@ vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => 'http://localhost:3000',
 }))
 
-// The back button navigates via useNavigate. Capture the navigate target via a
+// The filter tabs navigate via useNavigate. Capture the navigate target via a
 // file-level useNavigate spy (overrides the global no-op stub). The notification
 // ROWS navigate declaratively via <AppLink>, which the global stub renders as
 // <a data-to/data-params>.
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => mockNavigate,
+  useSearch: () => mockSearch,
 }))
 
 import { NotificationsView } from './notifications-view'
@@ -150,6 +170,9 @@ describe('NotificationsView', () => {
     mockPlatformData = { notifications: [], total: 0, unread_count: 0, connected: false }
     mockPlatformLoading = false
     mockPlatformUnreadCount = 0
+    mockSearch = {}
+    mockTypeCounts = {}
+    mockUseNotificationsCalls.length = 0
   })
 
   // -----------------------------------------------------------------------
@@ -267,6 +290,38 @@ describe('NotificationsView', () => {
     expect(mockMarkReadMutate).not.toHaveBeenCalled()
   })
 
+  it('offers a check that marks an unread row read without opening it', async () => {
+    const user = userEvent.setup()
+    mockNotificationsData = {
+      items: [
+        makeNotification({ id: 'n1', isRead: false }),
+        makeNotification({ id: 'n2', isRead: true }),
+      ],
+      total: 2,
+    }
+    renderWithProviders(<NotificationsView />)
+    const checks = screen.getAllByRole('button', { name: 'Mark as read' })
+    // Only the unread row has one, and it is not inside the row's link.
+    expect(checks).toHaveLength(1)
+    expect(checks[0].closest('a')).toBeNull()
+    await user.click(checks[0])
+    expect(mockMarkReadMutate).toHaveBeenCalledWith('n1')
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('marks an unread announcement read from its check', async () => {
+    const user = userEvent.setup()
+    mockPlatformData = {
+      notifications: [makePlatformNotification({ id: 'ntf_7' })],
+      total: 1,
+      unread_count: 1,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+    await user.click(screen.getByRole('button', { name: 'Mark as read' }))
+    expect(mockMarkPlatformReadMutate).toHaveBeenCalledWith(['ntf_7'])
+  })
+
   it('links a chat-integration notification to the agent home', () => {
     mockNotificationsData = {
       items: [makeNotification({
@@ -314,6 +369,13 @@ describe('NotificationsView', () => {
     expect(screen.getByTestId('notifications-mark-all-read')).toBeEnabled()
   })
 
+  it('enables mark-all-read for unread automations beyond the loaded page', () => {
+    mockNotificationsData = { items: makeNotifications(15).map(n => ({ ...n, isRead: true })), total: 16 }
+    mockTypeCounts = { session_scheduled: { total: 1, unread: 1 } }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByTestId('notifications-mark-all-read')).toBeEnabled()
+  })
+
   // -----------------------------------------------------------------------
   // Pagination
   // -----------------------------------------------------------------------
@@ -353,16 +415,10 @@ describe('NotificationsView', () => {
     expect(screen.getByText('2 / 2')).toBeTruthy()
   })
 
-  // -----------------------------------------------------------------------
-  // Back button
-  // -----------------------------------------------------------------------
-
-  it('navigates home when the back button is clicked', async () => {
-    const user = userEvent.setup()
+  it('has no back button', () => {
     mockNotificationsData = { items: [], total: 0 }
     renderWithProviders(<NotificationsView />)
-    await user.click(screen.getByTestId('notifications-back-button'))
-    expect(mockNavigate).toHaveBeenCalledWith({ to: '/' })
+    expect(screen.queryByTestId('notifications-back-button')).toBeNull()
   })
 
   // -----------------------------------------------------------------------
@@ -513,6 +569,179 @@ describe('NotificationsView', () => {
   // -----------------------------------------------------------------------
   // Date formatting
   // -----------------------------------------------------------------------
+
+  // -----------------------------------------------------------------------
+  // Type filters
+  // -----------------------------------------------------------------------
+
+  describe('type filters', () => {
+    it('resets pagination on every filter change, including returning to a previous filter', async () => {
+      const user = userEvent.setup()
+      mockNotificationsData = { items: makeNotifications(30), total: 30 }
+      const { rerender } = renderWithProviders(<NotificationsView />)
+      const next = screen.getAllByRole('button').find(b => b.querySelector('.lucide-chevron-right'))!
+      await user.click(next)
+      expect(screen.getByText('2 / 2')).toBeTruthy()
+
+      mockSearch = { filter: 'completed' }
+      rerender(<NotificationsView />)
+      expect(screen.getByText('1 / 2')).toBeTruthy()
+
+      mockSearch = {}
+      rerender(<NotificationsView />)
+      expect(screen.getByText('1 / 2')).toBeTruthy()
+      expect(screen.getByText('Notification n1')).toBeTruthy()
+    })
+
+    it('defaults to All and fetches every type', () => {
+      mockNotificationsData = { items: [makeNotification({ id: '1' })], total: 1 }
+      renderWithProviders(<NotificationsView />)
+      expect(screen.getByTestId('notifications-filter-all')).toHaveAttribute('aria-selected', 'true')
+      expect(mockUseNotificationsCalls.at(-1)?.types).toBeUndefined()
+    })
+
+    it('always offers every agent tab, and hides Announcements until there is one', () => {
+      mockNotificationsData = { items: [], total: 0 }
+      renderWithProviders(<NotificationsView />)
+      for (const filter of ['all', 'mentions', 'needs-you', 'completed', 'automations']) {
+        expect(screen.getByTestId(`notifications-filter-${filter}`)).toBeTruthy()
+      }
+      expect(screen.queryByTestId('notifications-filter-announcements')).toBeNull()
+    })
+
+    it('shows Announcements once there is one', () => {
+      mockNotificationsData = { items: [], total: 0 }
+      mockPlatformData = { notifications: [], total: 1, unread_count: 0, connected: true }
+      renderWithProviders(<NotificationsView />)
+      expect(screen.getByTestId('notifications-filter-announcements')).toBeTruthy()
+    })
+
+    it('shows a tab\'s unread count', () => {
+      mockNotificationsData = { items: [], total: 0 }
+      mockTypeCounts = { session_mention: { total: 3, unread: 2 } }
+      renderWithProviders(<NotificationsView />)
+      const tab = screen.getByTestId('notifications-filter-mentions')
+      expect(tab).toHaveTextContent('Mentions')
+      expect(screen.getByLabelText('2 unread')).toBeTruthy()
+    })
+
+    it('sums the unread count of every type a tab covers', () => {
+      mockNotificationsData = { items: [], total: 0 }
+      mockTypeCounts = {
+        session_scheduled: { total: 4, unread: 1 },
+        session_webhook: { total: 2, unread: 2 },
+        session_chat_integration: { total: 1, unread: 0 },
+      }
+      renderWithProviders(<NotificationsView />)
+      expect(screen.getByTestId('notifications-filter-automations')).toHaveTextContent('Automations3')
+    })
+
+    it('puts the chosen filter in the URL, and All clears it', async () => {
+      const user = userEvent.setup()
+      mockNotificationsData = { items: [], total: 0 }
+      const { unmount } = renderWithProviders(<NotificationsView />)
+      await user.click(screen.getByTestId('notifications-filter-needs-you'))
+      expect(mockNavigate).toHaveBeenLastCalledWith({ to: '/notifications', search: { filter: 'needs-you' } })
+      unmount()
+
+      // The mocked URL doesn't follow navigate(), so start the second click from Needs you.
+      mockSearch = { filter: 'needs-you' }
+      renderWithProviders(<NotificationsView />)
+      await user.click(screen.getByTestId('notifications-filter-all'))
+      expect(mockNavigate).toHaveBeenLastCalledWith({ to: '/notifications', search: {} })
+    })
+
+    it('a filter fetches only its types and leaves platform rows out', () => {
+      mockSearch = { filter: 'needs-you' }
+      mockNotificationsData = {
+        items: [
+          makeNotification({ id: 'w', type: 'session_waiting', title: 'Approve a request' }),
+          makeNotification({ id: 'c', type: 'session_complete', title: 'Run finished' }),
+        ],
+        total: 2,
+      }
+      mockPlatformData = {
+        notifications: [makePlatformNotification({ id: 'ntf_1', title: 'Big news' })],
+        total: 1,
+        unread_count: 1,
+        connected: true,
+      }
+      renderWithProviders(<NotificationsView />)
+      expect(mockUseNotificationsCalls.at(-1)?.types).toEqual(['session_waiting'])
+      expect(screen.getByText('Approve a request')).toBeTruthy()
+      expect(screen.queryByText('Run finished')).toBeNull()
+      expect(screen.queryByText('Big news')).toBeNull()
+    })
+
+    it('Automations covers scheduled, webhook and chat-integration rows', () => {
+      mockSearch = { filter: 'automations' }
+      mockNotificationsData = { items: [], total: 0 }
+      renderWithProviders(<NotificationsView />)
+      expect(mockUseNotificationsCalls.at(-1)?.types).toEqual([
+        'session_scheduled',
+        'session_webhook',
+        'session_chat_integration',
+      ])
+    })
+
+    it('Announcements shows platform rows only and skips the agent fetch', () => {
+      mockSearch = { filter: 'announcements' }
+      mockNotificationsData = { items: [makeNotification({ id: '1', title: 'Agent row' })], total: 1 }
+      mockPlatformData = {
+        notifications: [makePlatformNotification({ id: 'ntf_1', title: 'Big news' })],
+        total: 1,
+        unread_count: 0,
+        connected: true,
+      }
+      renderWithProviders(<NotificationsView />)
+      expect(mockUseNotificationsCalls.at(-1)?.enabled).toBe(false)
+      expect(screen.getByText('Big news')).toBeTruthy()
+      expect(screen.queryByText('Agent row')).toBeNull()
+    })
+
+    it('falls back to All for an unknown filter in the URL', () => {
+      mockSearch = { filter: 'bogus' }
+      mockNotificationsData = { items: [makeNotification({ id: '1' })], total: 1 }
+      renderWithProviders(<NotificationsView />)
+      expect(screen.getByTestId('notifications-filter-all')).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('shows a filter-specific empty state', () => {
+      mockSearch = { filter: 'needs-you' }
+      mockNotificationsData = { items: [], total: 0 }
+      renderWithProviders(<NotificationsView />)
+      expect(screen.getByText('Nothing needs you right now.')).toBeTruthy()
+    })
+
+    it('on a filter, marks only that filter\'s types read and leaves platform alone', async () => {
+      const user = userEvent.setup()
+      mockSearch = { filter: 'completed' }
+      mockNotificationsData = { items: [makeNotification({ id: '1', type: 'session_complete' })], total: 1 }
+      mockPlatformUnreadCount = 3
+      renderWithProviders(<NotificationsView />)
+      const button = screen.getByTestId('notifications-mark-all-read')
+      expect(button).toHaveTextContent('Mark these as read')
+      await user.click(button)
+      expect(mockMarkAllReadMutate).toHaveBeenCalledWith(['session_complete'])
+      expect(mockMarkAllPlatformReadMutate).not.toHaveBeenCalled()
+    })
+
+    it('on Announcements, marks only platform notifications read', async () => {
+      const user = userEvent.setup()
+      mockSearch = { filter: 'announcements' }
+      mockPlatformUnreadCount = 1
+      mockPlatformData = {
+        notifications: [makePlatformNotification({ id: 'ntf_1' })],
+        total: 1,
+        unread_count: 1,
+        connected: true,
+      }
+      renderWithProviders(<NotificationsView />)
+      await user.click(screen.getByTestId('notifications-mark-all-read'))
+      expect(mockMarkAllPlatformReadMutate).toHaveBeenCalled()
+      expect(mockMarkAllReadMutate).not.toHaveBeenCalled()
+    })
+  })
 
   describe('date formatting', () => {
     beforeEach(() => {

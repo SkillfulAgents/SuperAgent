@@ -70,7 +70,7 @@ platformAuth.get('/', async (c) => {
 // (correct per-user seat balance in auth_mode). Falls back to the non-auth
 // cache on a transient failure so a blip doesn't blank the UI.
 platformAuth.get('/billing', async (c) => {
-  if (!getPlatformAuthStatus().connected) {
+  if (!(await getPlatformAuthStatus()).connected) {
     return c.json({ connected: false })
   }
   try {
@@ -107,9 +107,9 @@ platformAuth.get('/deployments', async (c) => {
   return c.json(status)
 })
 
-platformAuth.post('/initiate', (c) => {
+platformAuth.post('/initiate', async (c) => {
   const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-  const clientInstanceId = getOrCreatePlatformClientInstanceId()
+  const clientInstanceId = await getOrCreatePlatformClientInstanceId()
   const deviceName = getPlatformDeviceName()
 
   return c.json({

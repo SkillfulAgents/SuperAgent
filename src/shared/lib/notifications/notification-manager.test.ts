@@ -10,8 +10,6 @@ const mocks = vi.hoisted(() => ({
   findLastSessionEntry: vi.fn(async () => null),
   getConfiguredLlmClient: vi.fn(() => ({ messages: {} })),
   createSummarizerText: vi.fn(),
-  resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
-  getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
   getAgentRecord: vi.fn(async () => ({ name: 'Demo Agent' })),
   getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
@@ -37,15 +35,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: mocks.getSessionMetadata,
   findLastSessionEntry: mocks.findLastSessionEntry,
 }))
+// The client and the summarizer model come from one helper setup.
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  getConfiguredLlmClient: mocks.getConfiguredLlmClient,
+  getConfiguredLlmClientAndModel: async () => ({ client: mocks.getConfiguredLlmClient(), model: 'resolved-summarizer' }),
   createSummarizerText: mocks.createSummarizerText,
-}))
-vi.mock('@shared/lib/llm-provider', () => ({
-  resolveActiveProviderModel: mocks.resolveActiveProviderModel,
-}))
-vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: mocks.getEffectiveModels,
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentRecord: mocks.getAgentRecord,

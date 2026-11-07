@@ -71,7 +71,7 @@ vi.mock('@shared/lib/composio/triggers', () => ({
   deleteComposioTrigger: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: vi.fn(() => true),
+  isPlatformComposioActive: vi.fn(() => true), isPlatformComposioActiveFrom: vi.fn(() => true),
 }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: vi.fn(() => Promise.resolve('UTC')),

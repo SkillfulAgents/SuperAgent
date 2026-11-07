@@ -20,7 +20,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
-vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({ agentCatalog: { resolve: async (slug: string) => slug === 'missing' ? null : slug } }))
+vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({ agentCatalog: { resolveRecord: async (slug: string) => slug === 'missing' ? null : { slug } } }))
 
 import { Authenticated, AgentAdmin, AgentRead, AgentUser, EntityAgentRole, IsAdmin, OwnsAccount, ResolveAgent, getAuthorizedAgentRole, getMeetingParticipant } from './auth'
 
@@ -43,6 +43,7 @@ function app() {
   api.patch('/api/agents/:id/sessions/:sessionId', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
   api.post('/api/voice/live/agents/:id/session', ResolveAgent(), AgentUser(), c => c.json(me(c)))
   api.get('/api/voice/configured', c => c.json(me(c)))
+  api.post('/api/voice/agents/:id/sessions/:sessionId/transcripts', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
   // Routes under the same prefixes that grant by account rather than agent role.
   api.get('/api/agents/:id/sessions/:sessionId/browser-credentials', ResolveAgent(), IsAdmin(), c => c.json({ ok: true }))
   api.get('/api/agents/:id/sessions/:sessionId/tasks/:taskId', ResolveAgent(), TaskRole('viewer'), c => c.json({ ok: true }))
@@ -64,6 +65,12 @@ const cookie = { headers: { cookie: 'gamut_meeting_participant=m1.tok' } }
 
 describe('meeting participant credential through the auth middlewares', () => {
   beforeEach(() => { vi.clearAllMocks(); attributed.length = 0; participant.value = scope; participant.cookie = '' })
+
+  it('confines shared voice transcript access to the meeting agent and session', async () => {
+    expect((await app().request('/api/voice/agents/research/sessions/s1/transcripts', { ...cookie, method: 'POST' })).status).toBe(200)
+    expect((await app().request('/api/voice/agents/research/sessions/s2/transcripts', { ...cookie, method: 'POST' })).status).toBe(403)
+    expect((await app().request('/api/voice/agents/another/sessions/s1/transcripts', { ...cookie, method: 'POST' })).status).toBe(403)
+  })
 
   it('stands in for the meeting owner on the voice routes the page needs, with the owner attributed', async () => {
     const res = await app().request('/api/voice/configured', cookie)

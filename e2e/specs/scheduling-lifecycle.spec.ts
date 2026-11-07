@@ -147,10 +147,10 @@ test.describe('Scheduling lifecycle with the real parser and scheduler', () => {
     }
   })
 
-  test('the real poll dispatches a due task and preserves the planned slot through successful history', async ({ page, request }) => {
-    // The application polls every 60 seconds, and activity intentionally waits
-    // 60 seconds before classifying a slot. Exercise those real clocks rather
-    // than exposing a special test-only scheduler trigger.
+  test('the real scheduler dispatches a due task and preserves the planned slot through successful history', async ({ page, request }) => {
+    // The schedule's own wakeup fires it, and activity intentionally waits 60
+    // seconds before classifying a slot. Exercise those real clocks rather than
+    // exposing a special test-only scheduler trigger.
     test.setTimeout(150_000)
     const task = await createTask(page, request)
     try {

@@ -816,7 +816,7 @@ describe('ReviewManager', () => {
       expect(await promise).toEqual({ decision: 'deny' })
     })
 
-    it('message-policy allow sweeps leave attachment reviews pending', async () => {
+    it('message-policy allow sweeps settle attachment reviews', async () => {
       const plain = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'plain message')
       const attachment = manager.requestXAgentReview(
         'caller',
@@ -830,11 +830,8 @@ describe('ReviewManager', () => {
       manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
 
       await expect(plain).resolves.toEqual({ decision: 'allow' })
-      const pending = manager.getPendingReviewsForAgent('caller')
-      expect(pending).toHaveLength(1)
-      expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
-      manager.submitDecision('caller', pending[0].id, 'allow')
       await expect(attachment).resolves.toEqual({ decision: 'allow' })
+      expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
     })
 
     it.each(['scope', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {

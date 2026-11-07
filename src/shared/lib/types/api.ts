@@ -187,6 +187,8 @@ export interface ApiSession {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  /** Auth mode, list only: the people who wrote in it, in the order they first did. */
+  participants?: ApiMessageSender[]
 }
 
 // ============================================================================

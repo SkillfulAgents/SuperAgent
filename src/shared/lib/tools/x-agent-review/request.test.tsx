@@ -33,7 +33,7 @@ describe('XAgentReviewRequestItem attachments', () => {
     expect(screen.getByText('2 files to share')).toBeInTheDocument()
     expect(screen.getByText('/workspace/reports/a.pdf')).toBeInTheDocument()
     expect(screen.getByText('/workspace/data/b.csv')).toBeInTheDocument()
-    expect(screen.queryByTestId('xagent-review-allow-menu')).not.toBeInTheDocument()
+    expect(screen.getByTestId('xagent-review-always-allow-btn')).toBeInTheDocument()
   })
 
   it('keeps attachment disclosure in read-only session views', () => {
@@ -76,7 +76,8 @@ describe('XAgentReviewRequestItem attachments', () => {
 
     expect(screen.getByText(/download a delivered file/)).toBeInTheDocument()
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
-    expect(screen.queryByTestId('xagent-review-allow-menu')).not.toBeInTheDocument()
+    if (readOnly) expect(screen.queryByTestId('xagent-review-always-allow-btn')).not.toBeInTheDocument()
+    else expect(screen.getByTestId('xagent-review-always-allow-btn')).toBeInTheDocument()
   })
 })
 
@@ -89,7 +90,7 @@ describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
       vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
       const onComplete = vi.fn()
       render(<XAgentReviewRequestItem reviewId="review-9" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke' }} onComplete={onComplete} />)
-      fireEvent.click(screen.getByTestId('xagent-review-allow-menu'))
+      fireEvent.click(screen.getByTestId('xagent-review-always-allow-btn'))
       await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-always-invoke')) })
       expect(screen.getByTestId('xagent-review-completed')).toHaveTextContent('Blocked by policy')
       expect(apiFetch).toHaveBeenCalledTimes(1)
@@ -103,7 +104,7 @@ describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
 
   const card = (onComplete = vi.fn()) => render(<XAgentReviewRequestItem reviewId="review-9" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke' }} onComplete={onComplete} />)
   const clickAlways = async () => {
-    fireEvent.click(screen.getByTestId('xagent-review-allow-menu'))
+    fireEvent.click(screen.getByTestId('xagent-review-always-allow-btn'))
     await act(async () => { fireEvent.click(screen.getByTestId('xagent-review-always-invoke')) })
   }
 
@@ -130,7 +131,7 @@ describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
     vi.mocked(apiFetch).mockReturnValueOnce(new Promise<Response>((resolve) => { answer = resolve }))
     vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
     const { unmount } = card()
-    fireEvent.click(screen.getByTestId('xagent-review-allow-menu'))
+    fireEvent.click(screen.getByTestId('xagent-review-always-allow-btn'))
     fireEvent.click(screen.getByTestId('xagent-review-always-invoke'))
     unmount()
     await act(async () => { answer(new Response(JSON.stringify({ error: 'Forbidden: this agent link is blocked', blocked: true }), { status: 403 })) })
@@ -146,5 +147,19 @@ describe('XAgentReviewRequestItem "Always allow" over a Block', () => {
     expect(screen.getByText('Error: Forbidden')).toBeInTheDocument()
     expect(screen.queryByTestId('xagent-review-completed')).not.toBeInTheDocument()
     expect(apiFetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('XAgentReviewRequestItem buttons', () => {
+  it('sit in the fixed footer and send a typed deny reason', async () => {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(null, { status: 200 }))
+    render(<XAgentReviewRequestItem reviewId="review-7" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'read' }} onComplete={vi.fn()} />)
+    expect(screen.getByTestId('xagent-review-deny-btn').closest('[data-request-item-body]')).toBeNull()
+    fireEvent.click(screen.getByTestId('xagent-review-deny-btn-chevron'))
+    const input = await screen.findByTestId('xagent-review-deny-btn-reason-input')
+    fireEvent.change(input, { target: { value: 'wrong agent' } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    expect(vi.mocked(apiFetch).mock.calls[0]).toEqual(['/api/agents/caller/proxy-review/review-7', expect.objectContaining({ body: JSON.stringify({ decision: 'deny', reason: 'wrong agent' }) })])
   })
 })

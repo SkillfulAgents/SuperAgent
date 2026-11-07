@@ -3,16 +3,14 @@
  *
  * This file is the ONLY place that imports @sentry/node. To switch to a
  * different provider (e.g., Datadog, Bugsnag), create a new file that
- * exports `createServerProvider` with the same signature and update the
- * import in index.ts.
+ * creates an ErrorReportingProvider and pass it to `initErrorReporting`
+ * from the entry points.
  */
 
 import * as Sentry from '@sentry/node'
 import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 import { ERROR_REPORTING_INGEST_URL } from './config'
-import { getSettings } from '../config/settings'
 import { collectEnvironmentData } from './environment'
-import { getTenantId } from '../analytics/tenant-id'
 import { APP_VERSION } from '../config/version'
 
 function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
@@ -38,9 +36,18 @@ export function scrubCredentialRequestBody<T extends { request?: { url?: string;
  * Create and initialize the server-side error reporting provider.
  *
  * Handles SDK init, tenant identification, and environment fingerprinting.
- * Called by the abstraction layer (index.ts) — never by entry points directly.
+ * Entry points pass it to `initErrorReporting`. Null when the SDK could not start.
  */
-export function createServerProvider(options: ErrorReportingInitOptions): ErrorReportingProvider {
+export function createServerProvider(options: ErrorReportingInitOptions): ErrorReportingProvider | null {
+  try {
+    return startServerProvider(options)
+  } catch (err) {
+    console.warn('[ErrorReporting] Failed to initialize:', err)
+    return null
+  }
+}
+
+function startServerProvider(options: ErrorReportingInitOptions): ErrorReportingProvider {
   Sentry.init({
     dsn: ERROR_REPORTING_INGEST_URL,
     environment: options.environment,
@@ -52,25 +59,23 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
         ignoreIncomingRequestBody: (url) => CREDENTIAL_BODY_ROUTE.test(url),
       }),
     ],
-    beforeSend(event) {
+    // Consent is read fresh for every event, never from an earlier read.
+    async beforeSend(event) {
       try {
-        const settings = getSettings()
+        // Loaded here, not at the top: error reporting is part of the
+        // database's boot graph, and settings reads go through the database.
+        const { getSettings } = await import('../config/settings')
+        const settings = await getSettings()
         if (settings.shareErrorReports === false) {
           return null
         }
       } catch {
-        // If we can't load settings, allow the event (fail-open for crash reports)
+        // Settings unreadable, or not available yet (a boot failure before the
+        // database opened): allow the event (fail-open for crash reports).
       }
       return scrubCredentialRequestBody(event)
     },
   })
-
-  // Set tenant ID as the default user so all events are attributable
-  try {
-    Sentry.setUser({ id: getTenantId() })
-  } catch {
-    // Non-critical — events will still be sent, just without tenant ID
-  }
 
   // Collect and attach environment fingerprint data
   try {
@@ -84,6 +89,14 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
 }
 
 class SentryServerProvider implements ErrorReportingProvider {
+  /** The deployment's tenant id once the entry point attached it; events before that have no user. */
+  private tenantId: string | null = null
+
+  setTenantId(tenantId: string): void {
+    this.tenantId = tenantId
+    // The default user, so every event is attributable to the deployment.
+    Sentry.setUser({ id: tenantId })
+  }
   captureException(error: unknown, context?: ErrorContext): string | undefined {
     return Sentry.captureException(error, {
       tags: context?.tags,
@@ -106,7 +119,7 @@ class SentryServerProvider implements ErrorReportingProvider {
     if (user) {
       Sentry.setUser({ id: user.id, email: user.email })
     } else {
-      Sentry.setUser({ id: getTenantId() })
+      Sentry.setUser(this.tenantId ? { id: this.tenantId } : null)
     }
   }
 

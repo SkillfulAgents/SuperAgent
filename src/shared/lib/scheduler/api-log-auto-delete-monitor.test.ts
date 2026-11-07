@@ -11,7 +11,12 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({
-  readAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
+  readStoredAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
+  // The resolving read costs a settings read per agent with a default model; the sweep must not use it.
+  readAgentPreferences: async (slug: string) => {
+    await mockGetSettings()
+    return mockReadAgentPreferences(slug)
+  },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -31,6 +36,9 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import { apiLogAutoDeleteMonitor } from './api-log-auto-delete-monitor'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(apiLogAutoDeleteMonitor))
 
 function makeAgent(slug: string): AgentConfig {
   return {
@@ -111,5 +119,24 @@ describe('ApiLogAutoDeleteMonitor', () => {
     await startAndTrigger()
 
     expect(mockPrune).not.toHaveBeenCalled()
+  })
+
+  it('reads the settings once per sweep, however many agents it sweeps', async () => {
+    mockGetSettings.mockReturnValue({ app: { apiLogAutoDeleteDays: 30 } })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'model-a' })
+    const readsFor = async (count: number) => {
+      mockListAgents.mockResolvedValue(Array.from({ length: count }, (_, i) => makeAgent(`agent-${i}`)))
+      mockGetSettings.mockClear()
+      await Reflect.get(apiLogAutoDeleteMonitor, 'cleanupAllAgents').call(apiLogAutoDeleteMonitor)
+      return mockGetSettings.mock.calls.length
+    }
+    expect(await readsFor(1)).toBe(1)
+    expect(await readsFor(5)).toBe(1)
+    // A change committed between two sweeps is what the next one sees.
+    mockListAgents.mockResolvedValue([makeAgent('test-agent')])
+    mockPrune.mockClear()
+    mockGetSettings.mockReturnValue({ app: { apiLogAutoDeleteDays: 7 } })
+    await Reflect.get(apiLogAutoDeleteMonitor, 'cleanupAllAgents').call(apiLogAutoDeleteMonitor)
+    expect(mockPrune.mock.calls[0][2]).toBe(Date.now() - 7 * 86_400_000)
   })
 })

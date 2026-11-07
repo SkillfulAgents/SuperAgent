@@ -72,6 +72,10 @@ vi.mock('@shared/lib/config/settings', () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+  }),
   getSettings: () => ({}),
 }))
 
@@ -134,6 +138,9 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { buildSlackSystemPrompt } from './slack-connector'
 import {
   buildTelegramSystemPrompt,

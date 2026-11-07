@@ -19,6 +19,7 @@
  *   - the trigger manager's relay registration must include the paused Composio ID
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -151,6 +152,7 @@ describe('SUP-225: paused webhook triggers stay pollable', () => {
       const relay = getWebhookRelay() as FakeWebhookRelay
       relay.reset()
       const { triggerManager } = await import('@shared/lib/scheduler/trigger-manager')
+      registerTasks(triggerManager)
 
       await triggerManager.start()
       try {

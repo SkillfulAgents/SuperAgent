@@ -3,6 +3,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { cn } from '@shared/lib/utils/cn'
+import { useHomeCardLook } from './home-collapsible'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import {
@@ -112,6 +113,7 @@ function RetentionRow({
   disabled,
   onChange,
 }: RetentionRowProps) {
+  const look = useHomeCardLook()
   const isOverride = value !== undefined
   // The trigger is narrow, so it shows the compact form ("30d", "1y"); the
   // popover options keep their full labels.
@@ -119,7 +121,7 @@ function RetentionRow({
 
   return (
     <div className="flex items-center justify-between gap-2 py-2 px-4" data-testid={`${testId}-card`}>
-      <span className="text-sm font-medium text-muted-foreground">{label}</span>
+      <span className={look.label}>{label}</span>
       <Popover>
         <PopoverTrigger asChild>
           <Button

@@ -1,5 +1,5 @@
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
-import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings, type AppSettings } from '@shared/lib/config/settings'
 
 /**
  * Persistence for "which Superagent is this desktop app driving?".
@@ -17,8 +17,13 @@ import { getSettings, mutateSettings } from '@shared/lib/config/settings'
  * nothing may act on it before `resolveApiTarget` has checked it against what
  * is actually reachable.
  */
-export function readPreferredApiTarget(): ApiTarget {
-  return coerceApiTarget(getSettings().apiTarget)
+export async function readPreferredApiTarget(): Promise<ApiTarget> {
+  return preferredApiTargetFrom(await getSettings())
+}
+
+/** {@link readPreferredApiTarget} from settings already read. */
+export function preferredApiTargetFrom(settings: Pick<AppSettings, 'apiTarget'>): ApiTarget {
+  return coerceApiTarget(settings.apiTarget)
 }
 
 /**
@@ -26,8 +31,8 @@ export function readPreferredApiTarget(): ApiTarget {
  * any live renderer: the target is frozen for a renderer's lifetime, so the
  * caller is responsible for reloading or recreating the windows.
  */
-export function writePreferredApiTarget(target: ApiTarget): void {
-  mutateSettings((settings) => {
+export async function writePreferredApiTarget(target: ApiTarget): Promise<void> {
+  await mutateSettings((settings) => {
     settings.apiTarget = target
   })
 }

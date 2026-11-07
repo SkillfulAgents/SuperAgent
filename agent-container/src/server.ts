@@ -50,6 +50,7 @@ import { registerLegacyFileRoutes } from './legacy-file-routes';
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
+import { clampViewerWidth, screencastSize } from './screencast-size';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { CdpConnection } from './login-cdp';
 import type { LoginFillDeps, PageActivity } from './login-fill';
@@ -828,6 +829,7 @@ import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, effectWantsTree, sameDocument, newDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
 import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, goneRefOf, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
 import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead, formatUnreadFrames } from './page-reader';
+import { browserScale, pinBrowserScaleArgs } from './browser-scale';
 import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
 import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
 import { parseNetworkActivity, type NetworkActivity } from './network-activity';
@@ -959,6 +961,19 @@ async function observeUrlDigest(): Promise<UrlDigest | null> {
 async function observePage(script: string): Promise<string | null> {
   const r = await execBrowser(['eval', script], browserState.cdpUrl || undefined);
   return r.exitCode === 0 ? r.stdout : null;
+}
+
+/**
+ * With 2x rendering on, what scales a capture to the page's CSS size, for the image the agent
+ * gets. Its image's pixels are then the coordinates `mouse` takes, and it costs what it does at
+ * 1x. The saved file stays as captured, because `diff screenshot` compares it with a new capture.
+ */
+async function screenshotCssScale(): Promise<number | undefined> {
+  const scale = browserScale();
+  if (!scale) return undefined;
+  const ratio = await observePage('window.devicePixelRatio');
+  // A page emulating another ratio (`set viewport`, `set device`) keeps what it asked for.
+  return ratio !== null && Number(ratio) === scale ? 1 / scale : undefined;
 }
 
 /** One observation of the current page. */
@@ -2095,7 +2110,7 @@ app.post('/browser/screenshot', async (c) => {
       if (result.exitCode !== 0) {
         return c.json({ error: result.stdout, success: false }, 500);
       }
-      return c.json({ success: true, output: result.stdout });
+      return c.json({ success: true, output: result.stdout, cssScale: await screenshotCssScale() });
     }
 
     // Otherwise only when the page looks different from the last image this
@@ -2108,7 +2123,7 @@ app.post('/browser/screenshot', async (c) => {
     const shot = parseIfChangedOutput(conditional.stdout);
     if (shot?.changed && shot.path) {
       rememberScreenshot(key, shot.path);
-      return c.json({ success: true, path: shot.path });
+      return c.json({ success: true, path: shot.path, cssScale: await screenshotCssScale() });
     }
     if (shot && !shot.changed) {
       const previous = recallScreenshot(key);
@@ -2133,7 +2148,7 @@ app.post('/browser/screenshot', async (c) => {
     }
     const path = extractScreenshotPath(result.stdout);
     if (shot && !shot.changed && path.startsWith('/')) rememberScreenshot(key, path);
-    return c.json({ success: true, output: result.stdout });
+    return c.json({ success: true, output: result.stdout, cssScale: await screenshotCssScale() });
   } catch (error: any) {
     console.error('[Browser] Error taking screenshot:', error);
     return c.json({ error: error.message || 'Failed to take screenshot' }, 500);
@@ -2787,7 +2802,10 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
       return;
     }
 
+    // The viewer's canvas width rides on the URL so the first screencast already has the right size.
+    const viewerWidth = clampViewerWidth(url.searchParams.get('width'));
     browserWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      if (viewerWidth !== undefined) viewerWidths.set(ws, viewerWidth);
       handleBrowserStreamConnection(ws);
     });
     return;
@@ -2989,7 +3007,31 @@ let cdpScreencast: {
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
   navigation: BrowserNavigation;
+  screencastStarted: boolean;
 } | null = null;
+
+/** Canvas width in device pixels each viewer last reported. */
+const viewerWidths = new WeakMap<WebSocket, number>();
+const VIEWER_WIDTH_DEBOUNCE_MS = 200;
+
+/** CDP can't resize a running screencast, so a new viewer width restarts it. */
+function setViewerWidth(ws: WebSocket, width: number): void {
+  if (width === viewerWidths.get(ws)) return;
+  viewerWidths.set(ws, width);
+  const state = cdpScreencast;
+  // Not started yet (e.g. a remote session still attaching): startScreencast reads the width.
+  if (state?.clientWs !== ws || !state.screencastStarted || state.cdpWs.readyState !== WebSocket.OPEN) return;
+  state.cdpWs.send(cdpMsg(state, 'Page.stopScreencast'));
+  startScreencast(state);
+}
+
+/** Stream frames no wider than the viewer's canvas. */
+function startScreencast(state: NonNullable<typeof cdpScreencast>): void {
+  state.cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
+    format: 'jpeg', quality: 80, everyNthFrame: 1, ...screencastSize(viewerWidths.get(state.clientWs)),
+  }));
+  state.screencastStarted = true;
+}
 
 /** Derive the CDP HTTP endpoint from the current browser state */
 function getCdpHttpEndpoint(): string {
@@ -3447,7 +3489,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
   const state: NonNullable<typeof cdpScreencast> = {
     clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
     lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
-    autoFollow: prevAutoFollow, pendingSelections: new Set(),
+    autoFollow: prevAutoFollow, pendingSelections: new Set(), screencastStarted: false,
     navigation: createBrowserNavigation({
       targetId,
       sendCommand(method, params) {
@@ -3475,9 +3517,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       }));
     } else {
       // Local Chrome: page-level WebSocket, send screencast directly
-      cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-        format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-      }));
+      startScreencast(state);
       // Enable Page domain to receive navigation lifecycle events
       cdpWs.send(cdpMsg(state, 'Page.enable'));
       // Discover the main frame ID so we only forward loading events for the
@@ -3496,9 +3536,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
         state.cdpSessionId = msg.result.sessionId;
-        cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
-          format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
-        }));
+        startScreencast(state);
         // Discover the main frame in remote session mode too.
         cdpWs.send(cdpMsg(state, 'Page.enable'));
         cdpWs.send(cdpMsg(state, 'Page.getFrameTree'));
@@ -3802,12 +3840,22 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 
   // Start tab list polling for this connection (replaces any previous viewer's timer)
   const tabPoll = startTabPolling(() => broadcastTabList());
+  let viewerWidthTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Forward input events and handle tab control messages from client
   // Protocol: see src/renderer/components/browser/browser-preview.tsx
   ws.on('message', async (rawData) => {
     try {
       const data = JSON.parse(rawData.toString());
+      if (data.type === 'viewport') {
+        // Applied once reports settle: a dragged panel sends many, and each restart makes Chrome encode a frame.
+        const width = clampViewerWidth(data.width);
+        if (width !== undefined) {
+          clearTimeout(viewerWidthTimer);
+          viewerWidthTimer = setTimeout(() => setViewerWidth(ws, width), VIEWER_WIDTH_DEBOUNCE_MS);
+        }
+        return;
+      }
       if (!cdpScreencast) return;
 
       if (data.type === 'switch_tab' && data.targetId) {
@@ -3932,11 +3980,13 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 
   ws.on('close', () => {
     stopTabPolling(tabPoll);
+    clearTimeout(viewerWidthTimer);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
   ws.on('error', () => {
     stopTabPolling(tabPoll);
+    clearTimeout(viewerWidthTimer);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
@@ -3966,6 +4016,8 @@ setInterval(() => inputManager.cleanupStale(), 60_000).unref();
 // Pin agent-browser's screenshot directory and sweep stale files (boot +
 // hourly). Every screenshot is a uniquely named PNG nothing else deletes.
 startScreenshotJanitor();
+
+pinBrowserScaleArgs();
 
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');

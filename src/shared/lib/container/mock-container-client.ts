@@ -1,6 +1,6 @@
 import { MessageNotAcceptedError } from './message-dispatch-error'
 import { getSettings } from '../config/settings'
-import { resolveSelectionHierarchy, storedSelection } from '../llm-provider/connections'
+import { resolveSelectionHierarchyFrom, storedSelection } from '../llm-provider/connections'
 import { EventEmitter } from 'events'
 import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
@@ -3074,7 +3074,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return this.getInfoFromRuntime()
   }
 
-  getHostAuthHeaders(): Record<string, string> {
+  async getHostAuthHeaders(): Promise<Record<string, string>> {
     return {}
   }
 
@@ -3542,7 +3542,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     if (!options.initialMessage) throw new Error('initialMessage is required')
     // Resolve the selection exactly as the real container client does, so E2E
     // assertions see the concrete wire id the SDK would receive.
-    const model = resolveContainerModel(options.model, 'agent')
+    const model = await resolveContainerModel(options.model, 'agent')
     // Record for E2E test assertions
     MockContainerClient.lastCreateSessionCall = {
       effort: options.effort,
@@ -3721,18 +3721,21 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     // Resolve like the real container client so E2E sees the concrete wire id.
-    let model = resolveContainerModel(options?.model, 'agent')
-    const result: SendMessageResult = {}
-    if (getSettings().llmDefault && !options?.preserveRuntime) {
+    let model = await resolveContainerModel(options?.model, 'agent')
+    // One read for the message, as the real client makes.
+    const settings = await getSettings()
+    const result: SendMessageResult = { llmDefault: Boolean(settings.llmDefault) }
+    if (settings.llmDefault && !options?.preserveRuntime) {
       const { agentRegistry } = await import('../agent-actor')
       const actor = agentRegistry.get(this.config.agentId)
       const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
-      const selected = await resolveSelectionHierarchy(
-        storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
-        storedSelection(metadata?.model, metadata?.llmProviderId),
+      const selected = await resolveSelectionHierarchyFrom(
+        settings,
+        await storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId, settings),
+        await storedSelection(metadata?.model, metadata?.llmProviderId, settings),
         async () => {
           const preferences = await actor.config.get('preferences')
-          return storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId)
+          return storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId, settings)
         },
       )
       model = selected.wireModel

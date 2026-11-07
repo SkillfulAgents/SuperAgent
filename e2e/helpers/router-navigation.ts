@@ -280,7 +280,7 @@ export async function checkRenameDuringSessionRead(context: RouterNavigationCont
       const renameResponse = page.waitForResponse(response => parseUrl(response.url()).pathname === `/api/agents/${agent.slug}` && response.request().method() === 'PUT')
       await page.getByTestId('agent-name').click()
       await page.getByTestId('agent-name-input').fill(renamedName)
-      await page.getByTestId('agent-name-save').click()
+      await page.getByTestId('agent-name-input').press('Enter')
       const renamed = await renameResponse
       expect(renamed.ok()).toBe(true)
       expect(agentSchema.parse(await renamed.json()).name).toBe(renamedName)
@@ -377,7 +377,7 @@ export async function checkAppLinkModifiers(context: RouterNavigationContext) {
       const pageCount = page.context().pages().length
       await link.click({ modifiers: [modifier] })
       await expect.poll(() => routeLocation(page)).toBe('/notifications')
-      await expect(page.getByTestId('notifications-back-button')).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Notifications', exact: true })).toBeVisible()
       expect(page.url().split('#')[0]).toBe(documentUrl)
       expect(page.context().pages()).toHaveLength(pageCount)
       await page.getByTestId('home-button').click()
@@ -410,11 +410,11 @@ export async function checkAppLinkModifiers(context: RouterNavigationContext) {
           const nativePopup = await nativePopupPromise
           console.log(`[router-native-middle] ${JSON.stringify({ openedPage: !!nativePopup, focusedBefore, openerUrl: page.url() })}`)
           if (nativePopup) {
-            await expect(nativePopup.getByTestId('notifications-back-button')).toBeVisible()
+            await expect(nativePopup.getByRole('heading', { name: 'Notifications', exact: true })).toBeVisible()
             await nativePopup.close()
             expect(routeLocation(page)).toBe('/')
           } else {
-            await expect(page.getByTestId('notifications-back-button')).toBeVisible()
+            await expect(page.getByRole('heading', { name: 'Notifications', exact: true })).toBeVisible()
             expect(routeLocation(page)).toBe('/notifications')
             nativeMiddleSameWindow = true
           }
@@ -430,7 +430,7 @@ export async function checkAppLinkModifiers(context: RouterNavigationContext) {
       if (nativeMiddleSameWindow) {
         const pageCount = page.context().pages().length
         await link.click(gesture)
-        await expect(page.getByTestId('notifications-back-button')).toBeVisible()
+        await expect(page.getByRole('heading', { name: 'Notifications', exact: true })).toBeVisible()
         await expect(page.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
         expect(routeLocation(page)).toBe('/notifications')
         expect(page.context().pages()).toHaveLength(pageCount)
@@ -444,7 +444,7 @@ export async function checkAppLinkModifiers(context: RouterNavigationContext) {
       await link.click(gesture)
       const popup = await popupPromise
       try {
-        await expect(popup.getByTestId('notifications-back-button')).toBeVisible()
+        await expect(popup.getByRole('heading', { name: 'Notifications', exact: true })).toBeVisible()
         expect(parseUrl(popup.url()).pathname).toBe('/notifications')
         expect(routeLocation(page)).toBe('/')
         await expect(page.getByTestId('home-button')).toHaveAttribute('data-active', 'true')

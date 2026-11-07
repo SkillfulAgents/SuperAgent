@@ -8,6 +8,7 @@
  * consumers of their events; they never talk to a relay provider directly.
  */
 
+import type { Service } from '@shared/lib/background-work'
 import type {
   VerificationProfile,
   WebhookEndpoint,
@@ -122,7 +123,7 @@ export interface WebhookRelaySnapshot {
   lastError: string | null
 }
 
-export interface WebhookRelayService {
+export interface WebhookRelayService extends Service {
   readonly kind: 'platform' | 'unavailable'
   snapshot(): WebhookRelaySnapshot
   /** Called on availability/transport/error changes, not on every claim. */

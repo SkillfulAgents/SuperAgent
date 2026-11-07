@@ -272,7 +272,23 @@ export function BrowserTab() {
             selected={effectiveProvider === CONTAINER_VALUE}
             disabled={isLoading}
             onSelect={() => handleSelectProvider(CONTAINER_VALUE)}
-          />
+          >
+            <FieldRow
+              name="High-Resolution Rendering"
+              subtitle="Render pages at 2x for a sharper live preview. Uses more CPU and bandwidth, and websites see a 2x display. Applies the next time an agent starts."
+              htmlFor="container-browser-high-dpi"
+              right={
+                <Switch
+                  id="container-browser-high-dpi"
+                  checked={settings?.app?.containerBrowserHighDpi ?? false}
+                  onCheckedChange={(checked) => {
+                    updateSettings.mutate({ app: { containerBrowserHighDpi: checked } })
+                  }}
+                  disabled={isLoading}
+                />
+              }
+            />
+          </HostCard>
 
           {providers.map((provider) => {
             const unavailable =

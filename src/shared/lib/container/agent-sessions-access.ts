@@ -21,6 +21,8 @@ export interface RuntimeSessions {
   subscribe(sessionId: string, client: ContainerClient, containerSessionId: string): Promise<void>
   /** Run `work` in the session's delivery turn (see `LiveSessions.inDeliveryTurn`). */
   inDeliveryTurn<T>(sessionId: string, work: () => Promise<T>): Promise<T>
+  /** The container is being stopped on purpose: every session mid-turn ends as stopped. */
+  markAllStopped(): void
   /** The container is gone: no session is running. */
   markAllInactive(options?: { settleRecovering?: boolean }): void
   hasActive(): boolean
@@ -47,6 +49,7 @@ export const NO_LIVE_SESSIONS: RuntimeSessions = {
   isSubscribed: () => false,
   subscribe: async () => {},
   inDeliveryTurn: (_sessionId, work) => work(),
+  markAllStopped: () => {},
   markAllInactive: () => {},
   hasActive: () => false,
   hasAwaitingInput: () => false,

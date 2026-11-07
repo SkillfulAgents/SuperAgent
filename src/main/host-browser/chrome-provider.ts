@@ -236,7 +236,7 @@ export class ChromeProvider implements HostBrowserProvider {
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
-  detect(): HostBrowserProviderStatus {
+  async detect(): Promise<HostBrowserProviderStatus> {
     // Unavailable rather than absent, so Settings says why.
     if (!drivesUserChrome(getServerFacts())) {
       return { id: this.id, name: this.name, available: false, reason: 'Not available in the Mac App Store edition' }
@@ -276,7 +276,7 @@ export class ChromeProvider implements HostBrowserProvider {
       await this.stop(instanceId)
     }
 
-    const status = this.detect()
+    const status = await this.detect()
     if (!status.available) {
       const err = new Error(`No supported browser detected: ${status.reason || 'unknown reason'}`)
       captureException(err, {

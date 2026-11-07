@@ -1,4 +1,3 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
@@ -10,7 +9,7 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
  * Bearer <token>. The route resolves the caller's agent slug from that token and
  * applies xAgentPolicies + ACLs accordingly.
  */
-import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -41,9 +40,9 @@ import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { captureException } from '@shared/lib/error-reporting'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import {
@@ -65,6 +64,7 @@ import {
   pageTranscript,
 } from './x-agent-transcript-view'
 import { awaitReview } from '@shared/lib/proxy/review-request'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -227,19 +227,19 @@ async function checkAgentPolicy(
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
+    if (decision === 'allow') return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
 
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+    const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
-    if (userDecision === 'deny') {
-      return { allowed: false, reason: 'Denied by user' }
+    if (review.decision === 'deny') {
+      return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }
     // A Block set while the card was open beats the approval.
     if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
@@ -957,11 +957,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
       }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
-      const agentLimits = getEffectiveAgentLimits()
-      const customEnvVars = getCustomEnvVars()
-      const targetPrefs = await readAgentPreferences(targetSlug)
-      const models = getEffectiveModels()
-      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
+      // One read of the settings for this invocation's session start.
+      const { agentLimits, customEnvVars, maxBrowserTabs, models, resolve } = await resolveSessionDefaults(await getSettings(), targetSlug)
+      const resolved = await resolve({})
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -1010,8 +1008,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           maxThinkingTokens: agentLimits.maxThinkingTokens,
           maxTurns: agentLimits.maxTurns,
           maxBudgetUsd: agentLimits.maxBudgetUsd,
-          customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-          maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+          customEnvVars,
+          maxBrowserTabs,
           metadata: { isAutomated: true },
         },
           name: `Invoked by ${callerName}`,

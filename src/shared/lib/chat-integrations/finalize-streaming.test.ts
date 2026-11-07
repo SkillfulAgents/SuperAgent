@@ -46,7 +46,7 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
     expect(mockPostMessage).toHaveBeenCalledTimes(1)
     expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({
       channel: 'C123',
-      markdown_text: 'b'.repeat(7000),
+      blocks: [{ type: 'markdown', text: 'b'.repeat(7000) }],
     }))
   })
 
@@ -57,8 +57,8 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
 
     await connector.finalizeStreamingMessage('C123', '1000.001', longText)
 
-    const updateText: string = mockUpdate.mock.calls[0][0].markdown_text
-    const postText: string = mockPostMessage.mock.calls[0][0].markdown_text
+    const updateText: string = mockUpdate.mock.calls[0][0].blocks[0].text
+    const postText: string = mockPostMessage.mock.calls[0][0].blocks[0].text
     const combined = updateText + postText
 
     expect(combined).not.toContain('truncated')

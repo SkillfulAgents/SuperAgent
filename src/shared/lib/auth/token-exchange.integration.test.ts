@@ -107,13 +107,10 @@ function wipeAuthTables(): void {
 }
 
 async function writeAuthSettings(auth: Record<string, unknown>): Promise<void> {
-  const settingsPath = path.join(tmpDir, 'settings.json')
-  const current = fs.existsSync(settingsPath)
-    ? JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    : {}
-  fs.writeFileSync(settingsPath, JSON.stringify({ ...current, auth }))
-  const { clearSettingsCache } = await import('@shared/lib/config/settings')
-  clearSettingsCache()
+  const { mutateSettings } = await import('@shared/lib/config/settings')
+  await mutateSettings((settings) => {
+    settings.auth = auth
+  })
 }
 
 beforeAll(async () => {
@@ -136,11 +133,13 @@ beforeAll(async () => {
   const { _setOidcJwksResolverForTest } = await import('./oidc-jwt')
   _setOidcJwksResolverForTest(createLocalJWKSet({ keys: [jwk] }) as never)
 
-  const { getAppBaseUrl } = await import('./config')
-  audience = getAppBaseUrl()
-
+  // Settings live in the app database, so it opens before anything reads them.
   dbModule = await import('@shared/lib/db')
   await dbModule.openDatabase()
+
+  const { getAppBaseUrl } = await import('./config')
+  audience = await getAppBaseUrl()
+
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(tmpDir, 'superagent.db'))
 
@@ -480,7 +479,7 @@ describe('provisioning and identity mapping', () => {
 
   it('links the platform identity to an existing user with the same email', async () => {
     const { getAuth } = await import('./index')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: {
         email: 'member@example.com',
         password: 'CorrectHorseBattery1!',
@@ -502,7 +501,7 @@ describe('provisioning and identity mapping', () => {
     expect((await exchangeRequest(await signGrant())).status).toBe(200)
     const original = sqlite.prepare('SELECT user_id FROM account WHERE provider_id = ?').get('platform') as { user_id: string }
     const { getAuth } = await import('./index')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { email: 'other@example.com', password: 'AnotherPassword123!', name: 'Other User' },
     })
     const response = await exchangeRequest(await signGrant({ payload: { email: 'other@example.com' } }))
@@ -608,7 +607,7 @@ describe('platform role on join', () => {
   it('keeps the role of an existing password user who links Platform', async () => {
     await seedOtherMember()
     const { getAuth } = await import('./index')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { email: 'member@example.com', password: 'CorrectHorseBattery1!', name: 'Local Member' },
     })
     await exchange({ role: 'owner' })
@@ -684,7 +683,7 @@ describe('platform role on join', () => {
 
   it('does not report a missing role when the exchange only links an existing user', async () => {
     const { getAuth } = await import('./index')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { email: 'member@example.com', password: 'CorrectHorseBattery1!', name: 'Local Member' },
     })
     await exchange({ role: undefined })
@@ -712,7 +711,7 @@ describe('approval and ban enforcement', () => {
     expect(second.banned).toBe(0)
 
     const { getAuthSettings } = await import('./auth-settings')
-    expect(getAuthSettings().signupMode).toBe('closed')
+    expect((await getAuthSettings()).signupMode).toBe('closed')
   })
 
   // No PLATFORM_TOKEN → exchange fails closed at the org pin (covered above).
@@ -729,14 +728,14 @@ describe('approval and ban enforcement', () => {
       const { getAuth, resetAuth } = await import('./index')
       resetAuth()
 
-      await getAuth().api.signUpEmail({
+      await (await getAuth()).api.signUpEmail({
         body: {
           email: 'admin@example.com',
           password: 'CorrectHorseBattery1!',
           name: 'Admin',
         },
       })
-      await getAuth().api.signUpEmail({
+      await (await getAuth()).api.signUpEmail({
         body: {
           email: 'pending@example.com',
           password: 'CorrectHorseBattery1!',
@@ -751,7 +750,7 @@ describe('approval and ban enforcement', () => {
       expect(pending.ban_reason).toBe('Pending admin approval')
 
       await expect(
-        getAuth().api.signInEmail({
+        (await getAuth()).api.signInEmail({
           body: { email: 'pending@example.com', password: 'CorrectHorseBattery1!' },
         }),
       ).rejects.toThrow()
@@ -843,7 +842,7 @@ describe('profile image propagation', () => {
 
   it('sets the photo when linking an existing local user', async () => {
     const { getAuth } = await import('./index')
-    const local = await getAuth().api.signUpEmail({ body: { name: 'Local User', email: 'member@example.com', password: 'TestPassword123!' } })
+    const local = await (await getAuth()).api.signUpEmail({ body: { name: 'Local User', email: 'member@example.com', password: 'TestPassword123!' } })
     expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/linked.png' } }))).status).toBe(200)
     expect(sqlite.prepare('SELECT id, image FROM user').get()).toEqual({ id: local.user.id, image: 'https://example.com/linked.png' })
   })

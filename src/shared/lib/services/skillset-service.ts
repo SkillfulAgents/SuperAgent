@@ -14,11 +14,9 @@ import fs from 'fs'
 import yaml from 'js-yaml'
 import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
-import { getEffectiveModels } from '@shared/lib/config/settings'
 import { runsHostGit } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
-import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   readFileOrNull,
   ensureDirectory,
@@ -46,7 +44,8 @@ import type {
 import { InstalledSkillMetadataSchema, parseSkillsetIndex } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { captureException } from '@shared/lib/error-reporting'
-import { pruneInstalledSkillIfInvalid } from './skillset-reconcile'
+import { pruneInstalledSkillIfInvalid, readSkillsetAuthScreen } from './skillset-reconcile'
+import type { SkillsetAuthContext } from '@shared/lib/skillset-provider/base-skillset-provider'
 
 const execFileAsync = promisify(execFile)
 
@@ -844,7 +843,7 @@ async function populateSkillsetCache(
 
   await ensureGitInstalled()
   const cloneUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-  const gitEnvironment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+  const gitEnvironment = await hostingProvider.getGitEnvironment(ref, GIT_ENV)
   await gitClone(cloneUrl, repoDir, gitEnvironment)
   return repoDir
 }
@@ -906,7 +905,7 @@ export async function validateSkillsetUrl(
     await ensureGitInstalled()
     const hostingProvider = getSkillsetProvider(provider)
     const cloneUrl = await hostingProvider.resolveCloneUrl(url, ref)
-    const environment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+    const environment = await hostingProvider.getGitEnvironment(ref, GIT_ENV)
     try {
       await execFileAsync('git', ['ls-remote', '--exit-code', cloneUrl, 'HEAD'], {
         timeout: 30000,
@@ -1018,7 +1017,7 @@ async function refreshSkillsetCache(
     // For platform, the URL embeds a short-lived token that needs refreshing.
     // For github, set-url is a cheap no-op when unchanged.
     const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-    const gitEnvironment = hostingProvider.getGitEnvironment(ref, getRepoGitEnv(repoDir))
+    const gitEnvironment = await hostingProvider.getGitEnvironment(ref, getRepoGitEnv(repoDir))
 
     let pullResult: GitPullResult
     try {
@@ -1197,11 +1196,14 @@ export async function updateSkillFromSkillset(
  * installed skill is no longer valid for the current auth (e.g. a platform
  * skill from a previous org), the directory is deleted and we return null.
  * That way stale installs get cleaned up on first read without needing a
- * startup sweep, and callers see the record as "not installed".
+ * startup sweep, and callers see the record as "not installed". A caller
+ * reading many records passes one `screen` ({@link readSkillsetAuthScreen})
+ * for all of them; a record it clears is kept without a settings read.
  */
 export async function getInstalledSkillMetadata(
   agentSlug: string,
   skillDirName: string,
+  screen?: SkillsetAuthContext,
 ): Promise<InstalledSkillMetadata | null> {
   const metadataPath = getSkillMetadataPath(skillDirName)
   const files = agentFiles(agentSlug)
@@ -1222,7 +1224,7 @@ export async function getInstalledSkillMetadata(
     return null
   }
 
-  const pruned = await pruneInstalledSkillIfInvalid(parsed.data, files, skillWorkspacePath(skillDirName))
+  const pruned = await pruneInstalledSkillIfInvalid(parsed.data, files, skillWorkspacePath(skillDirName), screen)
   if (pruned) return null
 
   return parsed.data as InstalledSkillMetadata
@@ -1263,6 +1265,8 @@ export async function getAgentSkillsWithStatus(
   }
 
   const entries = await files.list(skillsDir)
+  // One settings read screens every installed skill's metadata.
+  const screen = await readSkillsetAuthScreen()
 
   // First pass: collect metadata + pending queue IDs per provider. This lets
   // us ask each provider for *all* its queue statuses in one request.
@@ -1283,7 +1287,7 @@ export async function getAgentSkillsWithStatus(
     const skillMdContent = await readWorkspaceText(files, joinWorkspacePath(skillPath, 'SKILL.md'))
     if (!skillMdContent) continue
 
-    const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
+    const meta = await getInstalledSkillMetadata(agentSlug, entry.name, screen)
     prepared.push({ entryName: entry.name, skillPath, meta, skillMdContent })
 
     if (meta?.pendingQueueItemId) {
@@ -1423,10 +1427,12 @@ export async function refreshAgentSkills(
   type PendingCheck = { entryName: string; meta: InstalledSkillMetadata }
   const pendingByProvider = new Map<SkillProvider, PendingCheck[]>()
   const metaByEntry = new Map<string, InstalledSkillMetadata>()
+  // One settings read screens every installed skill's metadata.
+  const screen = await readSkillsetAuthScreen()
 
   for (const entry of entries) {
     if (entry.kind !== 'directory') continue
-    const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
+    const meta = await getInstalledSkillMetadata(agentSlug, entry.name, screen)
     if (!meta) continue
     metaByEntry.set(entry.name, meta)
     if (meta.pendingQueueItemId) {
@@ -1617,17 +1623,18 @@ async function generatePRSuggestions(
 
   if (originalContent === modifiedContent && packageDiff.changedFileCount === 0) return fallback
 
-  let client
+  let setup: Awaited<ReturnType<typeof getConfiguredLlmClientAndModel>>
   try {
-    client = await getConfiguredLlmClient()
+    // One settings read for the client and the model it runs.
+    setup = await getConfiguredLlmClientAndModel()
   } catch {
     console.warn('[PR suggestions] No LLM API key configured')
     return fallback
   }
 
-  try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+  const { client, model } = setup
 
+  try {
     const text = await createSummarizerText(client, {
       model,
       messages: [
@@ -1841,17 +1848,18 @@ async function generatePublishSuggestions(
     suggestedVersion: currentVersion,
   }
 
-  let client
+  let setup: Awaited<ReturnType<typeof getConfiguredLlmClientAndModel>>
   try {
-    client = await getConfiguredLlmClient()
+    // One settings read for the client and the model it runs.
+    setup = await getConfiguredLlmClientAndModel()
   } catch {
     console.warn('[Publish suggestions] No LLM API key configured')
     return fallback
   }
 
-  try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+  const { client, model } = setup
 
+  try {
     const text = await createSummarizerText(client, {
       model,
       messages: [

@@ -3,7 +3,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeConnections } from './home-connections'
-import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
 // Mock apiFetch so the real `useAgentConnectedAccounts` hook runs end-to-end
@@ -118,7 +117,7 @@ describe('HomeConnections — row navigation', () => {
   })
 
   it('Back returns to the page it was opened from, with what that page carries in its URL', async () => {
-    mockHere.current = `/agents/test-agent?${TEAM_BRAIN_AGENT_HOME_QUERY}`
+    mockHere.current = '/agents/test-agent?tab=files'
     const user = userEvent.setup()
     renderWithProviders(<HomeConnections agentSlug="test-agent" />)
     expect(await screen.findByText('GitHub')).toBeInTheDocument()
@@ -126,7 +125,7 @@ describe('HomeConnections — row navigation', () => {
     expect(mockNavigate).toHaveBeenCalledWith({
       to: '/agents/$slug/connections',
       params: { slug: 'test-agent' },
-      search: { detail: 'account-acc-1', source: 'home', from: `/agents/test-agent?${TEAM_BRAIN_AGENT_HOME_QUERY}` },
+      search: { detail: 'account-acc-1', source: 'home', from: '/agents/test-agent?tab=files' },
     })
   })
 

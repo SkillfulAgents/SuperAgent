@@ -19,6 +19,11 @@ export class PodmanContainerClient extends BaseContainerClient {
     return ''
   }
 
+  /** Podman names the host host.containers.internal. */
+  protected containerHostName(): string {
+    return 'host.containers.internal'
+  }
+
   /**
    * Podman needs :U on volume mounts to remap ownership to the container user.
    * Unlike Docker Desktop, Podman does not transparently handle UID mapping
