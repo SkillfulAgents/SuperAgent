@@ -18,7 +18,6 @@ import { initializeServices, prepareProcess, registerBackgroundWork, shutdownSer
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { setActorTransport, setSessionStore } from '@shared/lib/agent-actor/registry'
-import { remoteAgentActor, serveAgentActor } from '@shared/lib/agent-actor/remote-agent-actor'
 import { createConfigOps } from '@shared/lib/agent-actor/config-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
@@ -36,14 +35,12 @@ import { CloudflareTaskManager } from './cloudflare-task-manager'
 import { withAgentObject, routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
 import { createCloudflareFileOps } from './cloudflare-file-ops'
 import { ownedHere, servingAgentObject } from './agent-objects'
+import { cloudflareAgentActor, runActorOp, type ActorOutcome } from './cloudflare-agent-actor'
 import type { Env } from './index'
 
 let booted: Promise<void> | undefined
 let tasks: CloudflareTaskManager | undefined
 let fetchWrapped = false
-// The agent's actor, as its own object serves it.
-const actorOps = serveAgentActor((slug) => agentRegistry.get(slug))
-
 /** Boots SuperAgent in this isolate once; a failed boot is tried again by the next call. */
 export function boot(env: Env): Promise<void> {
   booted ??= start(env).catch((error: unknown) => {
@@ -71,8 +68,8 @@ export function serve(request: Request, env: Env, ctx: ExecutionContext): Promis
 }
 
 /** An op on the agent's actor, in the agent's own object (cloudflare-agent.ts). */
-export function serveAgentActorRequest(request: Request): Promise<Response> {
-  return actorOps(request)
+export function runAgentActorOp(slug: AgentSlug, path: string, args: unknown[]): Promise<ActorOutcome> {
+  return runActorOp(agentRegistry.get(slug), path, args)
 }
 
 /** Sets the agent's cached container status from its container, which outlives the object's memory. */
@@ -187,7 +184,7 @@ function errorOnRedirect(fetch: typeof globalThis.fetch): typeof globalThis.fetc
 /** Where each agent runs: its actor in its own object, its files in its container or, asleep, in R2. */
 function wireAgents(env: Env): void {
   // A new stub for each call: a Worker request may not use a stub another request made, and the registry keeps the handle.
-  setActorTransport((slug, local) => ownedHere(slug, local, remoteAgentActor({ name: slug, fetch: (request) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(request)) })))
+  setActorTransport((slug, local) => ownedHere(slug, local, cloudflareAgentActor(slug, (run) => withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, run))))
   setSessionStore((slug, hooks) => cloudflareSessionStore(env, slug, hooks))
 }
 

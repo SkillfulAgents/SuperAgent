@@ -8,8 +8,8 @@
  * happens, and the whole workspace again before the container stops. While the agent sleeps, its files are
  * read and written here (the stored* methods).
  *
- * The agent's actor runs here too: its ops come from the rest of the org over this object's stub
- * (`remoteAgentActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
+ * The agent's actor runs here too: its ops come from the rest of the org as RPC calls
+ * (`cloudflareAgentActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
  * the host stay in this isolate, which shares the org's database and AppState. The agent's idle
  * check runs on this object's alarm, which outlives the isolate.
  */
@@ -17,6 +17,7 @@ import { Container, type StopParams } from '@cloudflare/containers'
 import type { DurableObjectState } from 'cloudflare:workers'
 import { ASLEEP_HEADER, type ByteRange, type StoredEntry } from './cloudflare-container-control'
 import { runAsAgentObject } from './agent-objects'
+import type { ActorOutcome } from './cloudflare-agent-actor'
 import { restartIfOlder } from './object-version'
 import type { Env } from './index'
 
@@ -33,8 +34,6 @@ const DELETE_BATCH = 1000
 // Mode of a file first written while the agent sleeps.
 const NEW_FILE_MODE = 0o644
 const BLOB = /^\/blobs\/([0-9a-f]{64})$/
-// remoteAgentActor's default origin: requests for this host are the actor's ops.
-const ACTOR_HOST = 'actor'
 // The scheduled method that runs SuperAgent's idle check for this agent.
 const IDLE_CHECK = 'checkIdle'
 // The first idle check after a launch; each check schedules the next at the agent's deadline.
@@ -143,7 +142,6 @@ export class AgentDurableObject extends Container<Env> {
   // Only startAgent may start the container: anything else reaching a stopped one would start it
   // with no env, no restore and no agent. Until the agent is up it reads as asleep.
   override async fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).hostname === ACTOR_HOST) return this.serveAgentActor(request)
     if (!(await this.agentRunning())) return new Response(null, { status: 503, headers: { [ASLEEP_HEADER]: '1' } })
     return super.fetch(request)
   }
@@ -173,13 +171,14 @@ export class AgentDurableObject extends Container<Env> {
     })
   }
 
-  private serveAgentActor(request: Request): Promise<Response> {
+  /** One op on this agent's actor, for the rest of the org (cloudflareAgentActor). */
+  actorCall(path: string, args: unknown[]): Promise<ActorOutcome> {
     const slug = this.agentName()
     return runAsAgentObject(slug, this, async () => {
       const app = await import('./boot')
       await app.boot(this.env)
       await this.syncStatus(app, slug)
-      return app.serveAgentActorRequest(request)
+      return app.runAgentActorOp(slug, path, args)
     })
   }
 

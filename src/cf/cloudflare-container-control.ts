@@ -49,7 +49,7 @@ export async function withAgentObject<R>(agents: AgentObjects, agentId: string, 
 }
 
 /** The agent object's calls the rest of the org makes, as its stub answers them. */
-type AgentCalls = Pick<AgentDurableObject, 'fetch' | 'agentRunning' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
+type AgentCalls = Pick<AgentDurableObject, 'fetch' | 'actorCall' | 'agentRunning' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
 
 export function sleepingStore(agents: AgentObjects, agentId: string, version: string | undefined): SleepingStore {
   const call = <R>(run: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, run)
