@@ -8,7 +8,7 @@ import { Input } from '@renderer/components/ui/input'
 import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } from 'lucide-react'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
-import { AgentAvatarPicker } from '@renderer/components/agents/agent-avatar/agent-avatar-picker'
+import { AgentIdentityEditor, type AgentIdentityEditorHandle } from '@renderer/components/agents/agent-avatar/agent-identity-editor'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
@@ -27,7 +27,6 @@ import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { toast } from 'sonner'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
@@ -35,10 +34,9 @@ import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
-import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
 import { HomeBookmarks } from './home-bookmarks'
 import { AgentSettingsColumn } from './agent-settings-column'
-import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import {
@@ -108,10 +106,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
-  const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
-  const titleRef = useRef<InlineEditableTitleHandle>(null)
+  const identityRef = useRef<AgentIdentityEditorHandle>(null)
   // The three-dot button opens the title's context menu (see below).
   const menuTriggerRef = useRef<HTMLDivElement>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -303,40 +300,30 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
-            {isOwner
-              ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
-              : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
             <AgentContextMenu
               agent={agent}
-              onRename={() => titleRef.current?.startEditing()}
+              onRename={() => identityRef.current?.open()}
               onExport={openExport}
               onOpenDirectory={openDirectory}
               onOpenChange={setMenuOpen}
             >
-              <div ref={menuTriggerRef} className="flex-1 min-w-0 cursor-context-menu">
-                <InlineEditableTitle
-                  ref={titleRef}
-                  value={agent.name}
-                  canEdit={isOwner}
-                  isSaving={updateAgent.isPending}
-                  onSave={async (name) => {
-                    await updateAgent.mutateAsync({ slug: agent.slug, name })
-                  }}
-                  onError={(error) => {
-                    console.error('Failed to rename agent:', error)
-                    toast.error('Failed to rename agent', {
-                      description: error instanceof Error ? error.message : 'Please try again.',
-                    })
-                  }}
-                  displayClassName="text-xl font-medium"
-                  inputClassName="h-9 text-xl font-medium"
-                  saveButtonClassName="h-8 w-8"
-                  ariaLabel="Rename agent"
-                  saveAriaLabel="Save name"
-                  displayTestId="agent-name"
-                  inputTestId="agent-name-input"
-                  saveButtonTestId="agent-name-save"
-                />
+              {/* Avatar and name are one control: clicking either opens the
+                  editor for both. */}
+              <div ref={menuTriggerRef} className="flex flex-1 min-w-0 items-center cursor-context-menu">
+                {isOwner ? (
+                  <AgentIdentityEditor
+                    ref={identityRef}
+                    agent={agent}
+                    state={agentAvatarState(agent, sessionsData)}
+                    size={39}
+                    nameClassName="text-xl font-medium"
+                  />
+                ) : (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
+                    <h1 className="truncate text-xl font-medium" data-testid="agent-name">{agent.name}</h1>
+                  </div>
+                )}
               </div>
             </AgentContextMenu>
             {isAuthMode ? (
@@ -354,7 +341,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             {/* Three-dot = the same agent menu a right-click on the title (or
                 the sidebar row) opens, so the two never drift apart. A click
                 replays as a contextmenu event on the title's trigger, anchored
-                under this button; Rename hands off to the inline title above. */}
+                under this button; Rename opens the name and avatar editor. */}
             <Button
               type="button"
               size="icon"
