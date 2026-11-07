@@ -6,6 +6,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { getRequestListener } from '@hono/node-server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { taskManager } from '@shared/lib/background-work'
 const mocks = vi.hoisted(() => ({
   providerName: 'openai' as string | undefined, alternateEnabled: false, user: 'alice', authenticated: true,
   agentExists: true, agentRole: 'user', getAgent: vi.fn(),
@@ -46,6 +47,9 @@ const resolveSetting = vi.hoisted(() => vi.fn(async () => undefined as unknown))
 vi.mock('@shared/lib/agent-integrations/live-setting', () => ({ resolveLiveConversationSetting: resolveSetting }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({}) }))
 import voice from './voice'
+import { liveSessions } from '@shared/lib/voice/live-sessions'
+
+beforeEach(() => taskManager().register(liveSessions.hangUpTask))
 
 // Exercise the same error boundary as the production API.
 const app = new Hono().route('/api/voice', voice)

@@ -8,7 +8,8 @@ import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { background } from './background'
-import { serviceHost, stopBackgroundWork, type Service } from './background-work'
+import { serviceHost, stopBackgroundWork, taskManager, type Service } from './background-work'
+import { liveSessions } from './voice/live-sessions'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -171,6 +172,9 @@ export function registerBackgroundWork(): void {
   for (const service of backgroundServices()) {
     if (!host.isRegistered(service.id)) host.register(service)
   }
+  // A task on its own: nothing about it starts or stops. A session can be
+  // created as soon as the API is bound.
+  taskManager().register(liveSessions.hangUpTask)
 }
 
 /** Idempotent; call only via afterBindInitialize (or tests). */
