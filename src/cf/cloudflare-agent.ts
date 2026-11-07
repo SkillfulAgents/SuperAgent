@@ -4,8 +4,8 @@
  *
  * The container's disk is empty on every start, so the workspace lives here between runs: each
  * file's bytes in R2 under its content hash, and the list of files (path, hash, size, mode) in this
- * object's SQLite. It is restored before the agent launches, and saved when the agent's writes go
- * quiet, before the container stops, and before it sleeps. While the agent sleeps, its files are
+ * object's SQLite. It is restored before the agent launches; each change is saved a moment after it
+ * happens, and the whole workspace again before the container stops. While the agent sleeps, its files are
  * read and written here (the stored* methods).
  *
  * The agent's actor runs here too: its ops come from the rest of the org over this object's stub
@@ -256,14 +256,29 @@ export class AgentDurableObject extends Container<Env> {
     this.ctx.storage.sql.exec('INSERT OR IGNORE INTO workspace_pending (hash) VALUES (?)', hash)
   }
 
-  /** The container's save requests; its file bytes go to R2 in the Worker. */
+  /** The container's saves of what changed; its file bytes go to R2 in the Worker. */
   async workspaceRequest(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url)
-    if (pathname === '/save' && request.method === 'POST') {
-      void this.saveWorkspace()
-      return new Response(null, { status: 202 })
+    if (pathname === '/changes' && request.method === 'POST') {
+      const { entries, removed } = (await request.json()) as { entries: WorkspaceFile[]; removed: string[] }
+      return this.saveChanges(entries, removed)
     }
     return new Response(null, { status: 404 })
+  }
+
+  /**
+   * Files the running container changed or removed, saved seconds after the change, so a crash loses
+   * only those seconds. Answers 409 with the hashes R2 lacks: the container uploads them and sends again.
+   */
+  private saveChanges(entries: WorkspaceFile[], removed: string[]): Promise<Response> {
+    return this.withStore(async () => {
+      if (!(await this.agentUp())) return new Response('the agent is not running', { status: 409 })
+      const missing = await this.missingBlobs(entries)
+      if (missing.length > 0) return Response.json({ missing }, { status: 409 })
+      for (const rel of removed) await this.removeSaved(rel)
+      if (entries.length > 0) await this.recordFiles(entries)
+      return new Response(null, { status: 204 })
+    })
   }
 
   /** False when the save failed: the saved workspace is older than the container's. */
@@ -276,7 +291,8 @@ export class AgentDurableObject extends Container<Env> {
       let saved: boolean
       do {
         this.saveQueued = false
-        saved = await this.writeWorkspace()
+        // Changes the container sends meanwhile wait, then land on top: they are newer than its scan.
+        saved = await this.withStore(() => this.writeWorkspace())
       } while (this.saveQueued)
       return saved
     })().finally(() => {
@@ -320,32 +336,55 @@ export class AgentDurableObject extends Container<Env> {
       const sql = this.ctx.storage.sql
       sql.exec('INSERT OR IGNORE INTO workspace_pending (hash) VALUES (?)', hash)
       await this.env.WORKSPACES.put(this.blobKey(hash), bytes)
-      const previous = sql.exec<{ hash: string; mode: number }>('SELECT hash, mode FROM workspace_file WHERE path = ?', rel).toArray()[0]
-      this.ctx.storage.transactionSync(() => {
-        sql.exec(
-          "INSERT INTO workspace_file (path, hash, size, mode, mtime, kind, target) VALUES (?, ?, ?, ?, ?, 'file', NULL) ON CONFLICT (path) DO UPDATE SET hash = excluded.hash, size = excluded.size, mtime = excluded.mtime, kind = 'file', target = NULL",
-          rel, hash, bytes.byteLength, previous?.mode ?? NEW_FILE_MODE, Date.now(),
-        )
-        this.bumpVersion()
-      })
-      if (previous?.hash && previous.hash !== hash) await this.dropUnreferenced([previous.hash])
+      const previous = sql.exec<{ mode: number }>('SELECT mode FROM workspace_file WHERE path = ?', rel).toArray()[0]
+      await this.recordFiles([{ path: rel, hash, size: bytes.byteLength, mode: previous?.mode ?? NEW_FILE_MODE, mtimeMs: Date.now(), kind: 'file' }])
       await this.settlePending()
     })
   }
 
   /** Removes a file, or a folder with everything under it. False when the agent is running. */
   storedRemove(rel: string): Promise<boolean> {
-    return this.storeChange(async () => {
-      const sql = this.ctx.storage.sql
-      const match = 'path = ? OR substr(path, 1, ?) = ?'
-      const hashes = sql.exec<{ hash: string }>(`SELECT DISTINCT hash FROM workspace_file WHERE ${match}`, rel, rel.length + 1, `${rel}/`).toArray().map((row) => row.hash)
-      if (hashes.length === 0) return
-      this.ctx.storage.transactionSync(() => {
-        sql.exec(`DELETE FROM workspace_file WHERE ${match}`, rel, rel.length + 1, `${rel}/`)
-        this.bumpVersion()
-      })
-      await this.dropUnreferenced(hashes)
+    return this.storeChange(() => this.removeSaved(rel))
+  }
+
+  // Sets these entries in the saved file list and drops bytes no file uses any more.
+  private async recordFiles(files: WorkspaceFile[]): Promise<void> {
+    const sql = this.ctx.storage.sql
+    const replaced: string[] = []
+    this.ctx.storage.transactionSync(() => {
+      for (const file of files) {
+        const previous = sql.exec<{ hash: string }>('SELECT hash FROM workspace_file WHERE path = ?', file.path).toArray()[0]
+        if (previous?.hash && previous.hash !== file.hash) replaced.push(previous.hash)
+        sql.exec(
+          'INSERT INTO workspace_file (path, hash, size, mode, mtime, kind, target) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET hash = excluded.hash, size = excluded.size, mode = excluded.mode, mtime = excluded.mtime, kind = excluded.kind, target = excluded.target',
+          file.path, file.hash, file.size, file.mode, Math.round(file.mtimeMs ?? 0), file.kind ?? 'file', file.target ?? null,
+        )
+      }
+      this.bumpVersion()
     })
+    await this.dropUnreferenced(replaced)
+  }
+
+  // Removes a file, or a folder with everything under it, from the saved workspace.
+  private async removeSaved(rel: string): Promise<void> {
+    const sql = this.ctx.storage.sql
+    const match = 'path = ? OR substr(path, 1, ?) = ?'
+    const hashes = sql.exec<{ hash: string }>(`SELECT DISTINCT hash FROM workspace_file WHERE ${match}`, rel, rel.length + 1, `${rel}/`).toArray().map((row) => row.hash)
+    if (hashes.length === 0) return
+    this.ctx.storage.transactionSync(() => {
+      sql.exec(`DELETE FROM workspace_file WHERE ${match}`, rel, rel.length + 1, `${rel}/`)
+      this.bumpVersion()
+    })
+    await this.dropUnreferenced(hashes)
+  }
+
+  // Hashes of these files whose bytes R2 does not have.
+  private async missingBlobs(files: WorkspaceFile[]): Promise<string[]> {
+    const sql = this.ctx.storage.sql
+    const hashes = [...new Set(files.filter((file) => (file.kind ?? 'file') === 'file').map((file) => file.hash))]
+    const unknown = hashes.filter((hash) => sql.exec('SELECT 1 FROM workspace_file WHERE hash = ? LIMIT 1', hash).toArray().length === 0)
+    const stored = await Promise.all(unknown.map((hash) => this.env.WORKSPACES.head(this.blobKey(hash))))
+    return unknown.filter((_, i) => !stored[i])
   }
 
   /** Deletes the agent's saved workspace, its files in R2 and its file list, after the agent is deleted. */
