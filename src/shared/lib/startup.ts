@@ -9,6 +9,7 @@ import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { background } from './background'
+import { serviceHost, stopBackgroundWork } from './background-work'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -171,6 +172,8 @@ async function initializeServicesInner() {
   await ensureManagedPlatformConnection()
   markBoot('dbReady')
 
+  await serviceHost().start('eager')
+
   // The host's one connection to the platform webhook queue, shared by every
   // feature that receives webhooks. Cheap to start: it claims nothing until a
   // consumer registers, and follows platform connect/disconnect through the
@@ -274,6 +277,8 @@ async function initializeServicesInner() {
 
   // Refreshes platform account + billing info when connected (no-op otherwise).
   platformService.start()
+
+  background(serviceHost().start('background'), { name: 'startup.start-background-services' })
 }
 
 /** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
@@ -297,6 +302,7 @@ export function setupServerHandlers(server: ServerType): void {
 export async function shutdownServices() {
   servicesShuttingDown = true
   stopStaleUploadCleanup()
+  await stopBackgroundWork()
   stopBrowserProfileCleanup()
   agentIntegrationManager.stop()
   await credentialBroker.shutdown()
