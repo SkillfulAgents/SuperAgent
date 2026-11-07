@@ -3,7 +3,7 @@ import { app, ipcMain, powerMonitor } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException } from '@shared/lib/error-reporting'
-import { closeBackgroundWork, initializeBackgroundWork } from '@shared/lib/background-work'
+import { closeBackgroundWork, initializeBackgroundWork, isBackgroundWorkInitialized, serviceHost } from '@shared/lib/background-work'
 import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const semver = require('semver')
@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
   },
   ipcMain: { handle: vi.fn() },
   BrowserWindow: vi.fn(),
-  powerMonitor: { on: vi.fn() },
+  powerMonitor: { on: vi.fn(), off: vi.fn() },
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -123,6 +123,10 @@ async function boot({ init = true }: { init?: boolean } = {}) {
   vi.resetModules()
   const mod = await import('./auto-updater')
   mod.registerUpdateHandlers()
+  // As Electron's entry point does, once it has installed background work.
+  if (isBackgroundWorkInitialized() && !serviceHost().isRegistered(mod.automaticUpdateChecks.id)) {
+    serviceHost().register(mod.automaticUpdateChecks)
+  }
   if (init) {
     await mod.initAutoUpdater({
       isDestroyed: () => true,
@@ -877,7 +881,10 @@ describe('check timeout (watchdog)', () => {
 
       await initializeBackgroundWork(new LocalTaskManager())
       const mod = await import('./auto-updater')
-      mod.scheduleAutomaticUpdateChecks()
+      // Installed, but the service is not registered yet.
+      mod.startAutomaticUpdateChecks()
+      serviceHost().register(mod.automaticUpdateChecks)
+      mod.startAutomaticUpdateChecks()
       mockAutoUpdater.checkForUpdates.mockClear()
       await vi.advanceTimersByTimeAsync(30_000)
       expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
@@ -886,7 +893,7 @@ describe('check timeout (watchdog)', () => {
     it('waits for the updater when background work came first, and never schedules without it', async () => {
       await boot({ init: false })
       const mod = await import('./auto-updater')
-      mod.scheduleAutomaticUpdateChecks()
+      mod.startAutomaticUpdateChecks()
       await vi.advanceTimersByTimeAsync(FOUR_HOURS)
       expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
 
@@ -896,12 +903,13 @@ describe('check timeout (watchdog)', () => {
       expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
     })
 
-    it('makes no more checks once the app is quitting', async () => {
+    it('makes no more checks once the host stops, and stops listening for resume', async () => {
       await boot()
       mockAutoUpdater.checkForUpdates.mockClear()
-      appEvents['before-quit']?.()
+      await serviceHost().stop()
       await vi.advanceTimersByTimeAsync(FOUR_HOURS * 2)
       expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+      expect(powerMonitor.off).toHaveBeenCalledWith('resume', powerEvents.resume)
     })
 
     it('stays alive when reading the setting fails, instead of rejecting into the process handler', async () => {

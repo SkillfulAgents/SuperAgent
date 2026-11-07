@@ -37,7 +37,7 @@ import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { PassTask, Task, taskManager, type TaskResult } from '@shared/lib/background-work'
+import { PassTask, Task, taskManager, type Service, type TaskResult } from '@shared/lib/background-work'
 import { restoreStreamPayloadSchema, type RestoreStreamPayload } from './restore-stream-schema'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
@@ -117,7 +117,10 @@ class RestoreStreamTask extends Task<RestoreStreamPayload> {
 
 // ── Manager ─────────────────────────────────────────────────────────────
 
-export class AgentIntegrationManager {
+export class AgentIntegrationManager implements Service {
+  readonly id = 'agent-integrations'
+  readonly phase = 'background' as const
+  readonly startupIo = true
   constructor(
     private readonly registry: AgentIntegrationRegistry = agentIntegrationRegistry,
     /** The webhook relay for one connection, or null while the host has none available. */
@@ -257,6 +260,15 @@ export class AgentIntegrationManager {
   // ── Lifecycle ───────────────────────────────────────────────────────
 
   async start(): Promise<void> {
+    try {
+      await this.startIntegrations()
+    } catch (error) {
+      reportError(error, 'startup')
+      throw error
+    }
+  }
+
+  private async startIntegrations(): Promise<void> {
     if (this.isRunning) return
     this.isRunning = true
     this.authorization = new IntegrationAuthorizationWatch(change =>

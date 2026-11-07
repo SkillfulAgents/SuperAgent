@@ -1,7 +1,7 @@
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { PassTask, taskManager } from '@shared/lib/background-work'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import {
   getPlatformAuthStatus,
   refreshStoredPlatformAccount,
@@ -28,7 +28,9 @@ import { billingPlanPolicy } from '@shared/lib/llm-provider/platform-plan-policy
  * per-user and served live per request; caching it in this shared singleton
  * would leak one user's seat balance to another.
  */
-class PlatformService {
+class PlatformService implements Service {
+  readonly id = 'platform'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private startupDelayMs = 10_000

@@ -8,7 +8,8 @@ import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { background } from './background'
-import { serviceHost, stopBackgroundWork, type Service } from './background-work'
+import { serviceHost, stopBackgroundWork, taskManager, type Service } from './background-work'
+import { liveSessions } from './voice/live-sessions'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -46,20 +47,69 @@ let stopWatchingWebhookRelay: (() => void) | null = null
 // The agents boot found, for the container host to initialize.
 let discoveredAgentSlugs: string[] = []
 
+/** Nothing to start: all it has is something to let go of at shutdown. */
+class ReleasedAtShutdown implements Service {
+  constructor(readonly id: string, readonly stop: () => void | Promise<void>) {}
+}
+
+/** Brings up the agents' containers once boot knows the agents, and keeps watch on them. */
+class ContainerHostService implements Service {
+  readonly id = 'container-host'
+  readonly phase = 'eager' as const
+  readonly critical = true
+  readonly tasks = containerHost.tasks
+
+  async start(): Promise<void> {
+    await containerHost.initializeAgents(discoveredAgentSlugs)
+    // Watched once the agents are known, so containers still running from
+    // before this launch get their baseline too; from then on it marks
+    // agents stale whenever the relay's availability moves.
+    stopWatchingWebhookRelay = containerHost.watchWebhookRelay(getWebhookRelay())
+    // Stop the host browser for an agent before its container is torn down,
+    // so the browser closes gracefully instead of getting a "socket hang up".
+    containerHost.onBeforeContainerStop = async (agentId) => {
+      const provider = await getActiveProvider()
+      if (provider?.isRunning(agentId)) {
+        await provider.stop(agentId)
+      }
+    }
+    containerHost.startStatusSync()
+    containerHost.startHealthMonitor()
+  }
+
+  stop(): void {
+    stopWatchingWebhookRelay?.()
+    stopWatchingWebhookRelay = null
+    containerHost.stopStatusSync()
+    containerHost.stopHealthMonitor()
+  }
+}
+
+/** Checks for the container image, and pulls it if it has to. */
+class ContainerImageService implements Service {
+  readonly id = 'container-image'
+  readonly phase = 'background' as const
+  readonly startupIo = true
+
+  start() {
+    return containerHost.ensureImageReady()
+  }
+}
+
 /**
- * The app's background services, in registration order: `eager` ones start in
- * this order, and `startupIo` ones take the startup slots in this order, and
+ * The services every entry point runs, in registration order: `eager` ones start
+ * in this order, and `startupIo` ones take the startup slots in this order, and
  * everything stops in the reverse of it. See docs/background-work.md.
  */
 function backgroundServices(): Service[] {
   return [
     // Nothing to start, and released last, after everything that uses them.
-    { id: 'computer-use', stop: () => shutdownAC() },
-    { id: 'active-runner', stop: () => shutdownActiveRunner() },
+    new ReleasedAtShutdown('computer-use', () => shutdownAC()),
+    new ReleasedAtShutdown('active-runner', () => shutdownActiveRunner()),
     // After the containers, whose runtimes the host still needed: every agent
     // lets go of what it holds, its parked reviews and re-auth waits included.
-    { id: 'agent-registry', stop: () => agentRegistry.evictAll() },
-    { id: 'containers', stop: () => containerHost.stopAll() },
+    new ReleasedAtShutdown('agent-registry', () => agentRegistry.evictAll()),
+    new ReleasedAtShutdown('containers', () => containerHost.stopAll()),
 
     // The host's one connection to the platform webhook queue, shared by every
     // feature that receives webhooks. Cheap to start: it claims nothing until a
@@ -67,136 +117,41 @@ function backgroundServices(): Service[] {
     // auth-changed notifier. Started before anything can start a container, so
     // an agent's webhook tools see the relay's real availability. Stopped before
     // the containers, so it claims nothing during their long stop.
-    {
-      id: 'webhook-relay',
-      phase: 'eager',
-      critical: true,
-      tasks: getWebhookRelay().tasks,
-      start: () => getWebhookRelay().start(),
-      stop: () => getWebhookRelay().stop(),
-    },
-    {
-      id: 'container-host',
-      phase: 'eager',
-      critical: true,
-      tasks: containerHost.tasks,
-      start: async () => {
-        await containerHost.initializeAgents(discoveredAgentSlugs)
-        // Watched once the agents are known, so containers still running from
-        // before this launch get their baseline too; from then on it marks
-        // agents stale whenever the relay's availability moves.
-        stopWatchingWebhookRelay = containerHost.watchWebhookRelay(getWebhookRelay())
-        // Stop the host browser for an agent before its container is torn down,
-        // so the browser closes gracefully instead of getting a "socket hang up".
-        containerHost.onBeforeContainerStop = async (agentId) => {
-          const provider = await getActiveProvider()
-          if (provider?.isRunning(agentId)) {
-            await provider.stop(agentId)
-          }
-        }
-        containerHost.startStatusSync()
-        containerHost.startHealthMonitor()
-      },
-      stop: () => {
-        stopWatchingWebhookRelay?.()
-        stopWatchingWebhookRelay = null
-        containerHost.stopStatusSync()
-        containerHost.stopHealthMonitor()
-      },
-    },
+    getWebhookRelay(),
+    new ContainerHostService(),
     // Before the containers: browsers and brokers close against a live runtime.
-    {
-      id: 'host-browser',
-      stop: async () => {
-        await credentialBroker.shutdown()
-        await stopAllProviders()
-      },
-    },
+    new ReleasedAtShutdown('host-browser', async () => {
+      await credentialBroker.shutdown()
+      await stopAllProviders()
+    }),
 
-    // The startup slots go in this order, FIFO, and the last three below are
-    // open-ended (image pull on fresh installs; the task scheduler's catch-up
-    // scan boots a container per overdue task; the trigger manager's
-    // registration reads every subscribed trigger). The two user-facing
-    // connects are cheap handshakes: they go first, so chat messages and
-    // notifications cannot go dark behind minutes of catch-up work.
+    // The startup slots go in this order, FIFO, and the last three below can be
+    // slow (image pull on fresh installs; reading every schedule, whose overdue
+    // ones then fire one at a time; the trigger manager's registration reads
+    // every subscribed trigger). The two user-facing connects are cheap
+    // handshakes: they go first, so chat messages and notifications cannot go
+    // dark behind minutes of catch-up work.
 
-    // Desktop-only platform-notifications subscription (OS notifications from
-    // Supabase Realtime INSERTs). The manager self-gates on auth mode and
-    // platform connectivity; connect/disconnect after launch is handled by the
-    // platform auth-changed notifier.
-    {
-      id: 'platform-notifications',
-      phase: 'background',
-      startupIo: true,
-      tasks: platformNotificationsManager.tasks,
-      start: () => platformNotificationsManager.start(),
-      stop: () => platformNotificationsManager.stop(),
-    },
-    {
-      id: 'agent-integrations',
-      phase: 'background',
-      startupIo: true,
-      tasks: agentIntegrationManager.tasks,
-      start: () => agentIntegrationManager.start().catch((error: unknown) => {
-        // TODO add exception capturing for all other services that start in this file
-        captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
-        throw error
-      }),
-      stop: () => agentIntegrationManager.stop(),
-    },
-    // Check/pull the container image.
-    { id: 'container-image', phase: 'background', startupIo: true, start: () => containerHost.ensureImageReady() },
-    {
-      id: 'task-scheduler',
-      phase: 'background',
-      startupIo: true,
-      start: () => taskScheduler.start(),
-      stop: () => taskScheduler.stop(),
-    },
+    // OS notifications from Supabase Realtime INSERTs. The manager self-gates on
+    // auth mode and platform connectivity; connect/disconnect after launch is
+    // handled by the platform auth-changed notifier.
+    platformNotificationsManager,
+    agentIntegrationManager,
+    new ContainerImageService(),
+    taskScheduler,
     // Register webhook triggers with the relay. Unconditional: the relay only
     // claims while the platform is connected, and a connection made after
     // launch re-syncs the registrations. A personal Composio key must not
     // disable delivery either, since events are claimed with the platform token.
-    {
-      id: 'webhook-triggers',
-      phase: 'background',
-      startupIo: true,
-      tasks: triggerManager.tasks,
-      start: () => triggerManager.start(),
-      stop: () => triggerManager.stop(),
-    },
+    triggerManager,
 
     // These only schedule their first pass, so they do not take a startup slot.
-    {
-      id: 'session-auto-delete',
-      phase: 'background',
-      tasks: sessionAutoDeleteMonitor.tasks,
-      start: () => sessionAutoDeleteMonitor.start(),
-      stop: () => sessionAutoDeleteMonitor.stop(),
-    },
-    {
-      id: 'api-log-auto-delete',
-      phase: 'background',
-      tasks: apiLogAutoDeleteMonitor.tasks,
-      start: () => apiLogAutoDeleteMonitor.start(),
-      stop: () => apiLogAutoDeleteMonitor.stop(),
-    },
+    sessionAutoDeleteMonitor,
+    apiLogAutoDeleteMonitor,
     // Syncs OAuth account status with remote providers.
-    {
-      id: 'account-sync',
-      phase: 'background',
-      tasks: accountSyncService.tasks,
-      start: () => accountSyncService.start(),
-      stop: () => accountSyncService.stop(),
-    },
+    accountSyncService,
     // Refreshes platform account + billing info when connected (no-op otherwise).
-    {
-      id: 'platform',
-      phase: 'background',
-      tasks: platformService.tasks,
-      start: () => platformService.start(),
-      stop: () => platformService.stop(),
-    },
+    platformService,
   ]
 }
 
@@ -206,16 +161,20 @@ export function getServicesInitError(): string | null {
 }
 
 /**
- * Registers the app's services and their Tasks on whatever the entry point
- * installed, and starts nothing. An entry point calls this right after it installs
- * background work and before it serves, since a request can schedule work as soon
- * as the API is bound. The dev server repeats it for each request.
+ * Registers the services every entry point runs, and their Tasks, on whatever the
+ * entry point installed, and starts nothing. An entry point calls this right after
+ * it installs background work and before it serves, since a request can schedule
+ * work as soon as the API is bound, then registers any of its own. The dev server
+ * repeats it for each request.
  */
 export function registerBackgroundWork(): void {
   const host = serviceHost()
   for (const service of backgroundServices()) {
     if (!host.isRegistered(service.id)) host.register(service)
   }
+  // A task on its own: nothing about it starts or stops. A session can be
+  // created as soon as the API is bound.
+  taskManager().register(liveSessions.hangUpTask)
 }
 
 /** Idempotent; call only via afterBindInitialize (or tests). */

@@ -18,7 +18,7 @@ import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { PassTask, taskManager } from '@shared/lib/background-work'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import {
@@ -36,7 +36,10 @@ import { claimPlatformNotificationBroadcast } from './platform-notification-seen
 // cache entry that predates the userId claim).
 const JWT_REFRESH_INTERVAL_MS = 50 * 60 * 1000
 
-class PlatformNotificationsManager {
+class PlatformNotificationsManager implements Service {
+  readonly id = 'platform-notifications'
+  readonly phase = 'background' as const
+  readonly startupIo = true
   private isRunning = false
   private realtimeClient: SupabaseRealtimeClient | null = null
   private lastNotifiedAt: string | null = null
