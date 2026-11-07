@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IDLE_ALARM_RETRY_MS, IdleAlarm, MAX_TIMER_MS, idleLongerThan, setIdleAlarmTimers } from './idle-alarm'
+import { IDLE_ALARM_RETRY_MS, IdleAlarm, MAX_TIMER_MS, idleLongerThan } from './idle-alarm'
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE
@@ -19,7 +19,6 @@ function fakeContainer(options: { timeoutMs?: number; stopCompletes?: boolean } 
   // The timeout is a settings read: asynchronous, and read fresh every time.
   const timeoutMs = vi.fn(async () => state.timeoutMs)
   const alarm = new IdleAlarm({
-    agentSlug: () => 'support-agent',
     timeoutMs,
     lastActivityAt: () => state.lastActivityAt,
     isBusy: () => state.busy,
@@ -381,34 +380,5 @@ describe('IdleAlarm', () => {
     await vi.advanceTimersByTimeAsync(TIMEOUT - IDLE_ALARM_RETRY_MS + 1)
     expect(sleep).toHaveBeenCalledTimes(1)
     consoleError.mockRestore()
-  })
-})
-
-describe('IdleAlarm with a host timer', () => {
-  afterEach(() => {
-    setIdleAlarmTimers(null)
-  })
-
-  it('arms the host timer for the agent, and sleeps when the host rings it', async () => {
-    const sets: Array<{ slug: string; at: number }> = []
-    let ring: (() => Promise<void>) | undefined
-    setIdleAlarmTimers((slug, ringAlarm) => {
-      ring = ringAlarm
-      return { set: (at) => sets.push({ slug, at }), clear: () => {} }
-    })
-    let lastActivityAt: number | undefined = Date.now() - TIMEOUT - 1
-    // A completed stop resets the clock.
-    const sleep = vi.fn(async () => {
-      lastActivityAt = undefined
-    })
-    const alarm = new IdleAlarm({ agentSlug: () => 'sales-agent', timeoutMs: async () => TIMEOUT, lastActivityAt: () => lastActivityAt, isBusy: () => false, sleep })
-
-    alarm.rearm(TIMEOUT)
-    expect(sets).toEqual([{ slug: 'sales-agent', at: expect.any(Number) }])
-    expect(alarm.isArmed()).toBe(true)
-
-    await ring!()
-    expect(sleep).toHaveBeenCalledWith(TIMEOUT)
-    expect(alarm.isArmed()).toBe(false)
   })
 })
