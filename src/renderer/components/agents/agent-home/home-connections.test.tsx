@@ -5,6 +5,15 @@ import userEvent from '@testing-library/user-event'
 import { HomeConnections } from './home-connections'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
+// These tests cover the section's content; the collapsed-by-default row itself
+// is covered in home-collapsible.test.tsx, so here it always renders open.
+vi.mock('./home-collapsible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./home-collapsible')>()),
+  HomeCollapsible: ({ title, children }: { title: string; children: import('react').ReactNode }) => (
+    <div><span>{title}</span>{children}</div>
+  ),
+}))
+
 // Mock apiFetch so the real `useAgentConnectedAccounts` hook runs end-to-end
 // against a fake network.
 const mockApiFetch = vi.fn()

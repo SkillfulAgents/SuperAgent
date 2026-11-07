@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeExtras } from './home-extras'
+import { HomeCardLookContext } from './home-collapsible'
 
 // No provider locks a model here (model locks have their own tests).
 vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
@@ -52,9 +53,41 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ isAuthMode: false, isAdmin: false }),
 }))
 
+// The rows sit behind the "Show more" toggle; open it first.
+async function renderOpen(user = userEvent.setup()) {
+  render(<HomeExtras agentSlug="test-agent" />)
+  await user.click(screen.getByRole('button', { name: 'Show more' }))
+  return user
+}
+
 describe('HomeExtras', () => {
-  it('keeps the three pickers in a standalone group, apart from the navigation rows', () => {
+  it('shows the existing settings directly inside another surface’s advanced panel', () => {
+    render(
+      <HomeCardLookContext.Provider value={{ card: '', section: '', media: '', label: '', defaultOpen: false }}>
+        <HomeExtras agentSlug="test-agent" />
+      </HomeCardLookContext.Provider>,
+    )
+    expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('home-preferences-group')).toBeVisible()
+    expect(screen.getByTestId('home-agent-directory-open-browser')).toHaveAttribute('data-drawer-opener')
+  })
+
+  it('keeps everything behind a closed Show more toggle, which reads Show less once open', async () => {
+    const user = userEvent.setup()
     render(<HomeExtras agentSlug="test-agent" />)
+    const toggle = screen.getByRole('button', { name: 'Show more' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('home-preferences-group')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('home-secrets-open-page')).not.toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(toggle).toHaveAccessibleName('Show less')
+    expect(screen.getByTestId('home-preferences-group')).toBeVisible()
+    expect(screen.getByTestId('home-secrets-open-page')).toBeVisible()
+  })
+
+  it('keeps the three pickers in a standalone group, apart from the navigation rows', async () => {
+    await renderOpen()
 
     const group = within(screen.getByTestId('home-preferences-group'))
     expect(group.getByTestId('home-default-model-card')).toBeInTheDocument()
@@ -66,15 +99,13 @@ describe('HomeExtras', () => {
   })
 
   it('opens the Memories page', async () => {
-    const user = userEvent.setup()
-    render(<HomeExtras agentSlug="test-agent" />)
+    const user = await renderOpen()
     await user.click(screen.getByTestId('home-memories-open-page'))
     expect(mocks.navigate).toHaveBeenCalledWith({ to: '/agents/$slug/memories', params: { slug: 'test-agent' } })
   })
 
   it('opens Agent Directory in the built-in folder browser', async () => {
-    const user = userEvent.setup()
-    render(<HomeExtras agentSlug="test-agent" />)
+    const user = await renderOpen()
 
     await user.click(screen.getByTestId('home-agent-directory-open-browser'))
 
@@ -85,8 +116,7 @@ describe('HomeExtras', () => {
   })
 
   it('opens the Agent-to-agent connections page', async () => {
-    const user = userEvent.setup()
-    render(<HomeExtras agentSlug="test-agent" />)
+    const user = await renderOpen()
 
     await user.click(screen.getByTestId('home-x-agent-permissions-open-page'))
 
@@ -96,8 +126,8 @@ describe('HomeExtras', () => {
     })
   })
 
-  it('renders the agent default model as the first row, above System Prompt', () => {
-    render(<HomeExtras agentSlug="test-agent" />)
+  it('renders the agent default model as the first row, above System Prompt', async () => {
+    await renderOpen()
 
     const row = screen.getByTestId('home-default-model-card')
     expect(row).toBeVisible()

@@ -24,12 +24,12 @@ export function ComposerActionButton({
     const stopLabel = isWaitingBackground ? 'Stop background processes' : 'Stop the agent'
     const sendLabel = isWaitingBackground ? 'Send message' : 'Queue message'
     return (
-      <div className="flex items-center gap-2">
+      <div className="flex items-center">
         <Button
           type="button"
           size="icon"
           variant="outline"
-          className="h-[34px] w-[34px]"
+          className="h-7 w-7"
           onClick={onInterrupt}
           disabled={isInterrupting}
           aria-label={stopLabel}
@@ -45,7 +45,7 @@ export function ComposerActionButton({
         <Button
           type="submit"
           size="icon"
-          className="h-[34px] w-[34px]"
+          className="ml-1.5 h-7 w-7"
           disabled={!canSubmit || isSending}
           aria-label={sendLabel}
           title={sendLabel}
@@ -65,7 +65,8 @@ export function ComposerActionButton({
     <Button
       type="submit"
       size="icon"
-      className="h-[34px] w-[34px]"
+      // 6px before it: the plain buttons' own 6px padding is the rest of the gap (chat-composer-box.tsx).
+      className="ml-1.5 h-7 w-7"
       disabled={!canSubmit || isSending}
       aria-label="Send message"
       title="Send message"

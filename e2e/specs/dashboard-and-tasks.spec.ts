@@ -3,6 +3,7 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { createAgentWithTelegramIntegration } from '../helpers/chat-integrations'
+import { openHomeSection } from '../helpers/agent-home'
 
 async function openAgentHome(page: Page, agentPage: AgentPage, agentName: string) {
   await agentPage.selectAgent(agentName)
@@ -110,6 +111,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     // fire your agent…") also contains the word "Triggers", and bare
     // getByText trips strict mode while the task is still being created.
     await expect(main.getByRole('button', { name: 'Triggers' })).toBeVisible({ timeout: 5000 })
+    await openHomeSection(page, 'Triggers')
     await expect(getDailyIssueSummaryTaskRow(appPage)).toBeVisible({ timeout: 10000 })
   })
 
@@ -126,6 +128,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
 
     // Land on agent home where the task lives under "Triggers"
     await openAgentHome(page, agentPage, agentName)
+    await openHomeSection(page, 'Triggers')
     const taskRow = getDailyIssueSummaryTaskRow(appPage)
     await expect(taskRow).toBeVisible({ timeout: 10000 })
 
@@ -160,6 +163,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
 
     // Open the task to capture its id + the owner's slug from the URL.
     await openAgentHome(page, agentPage, ownerName)
+    await openHomeSection(page, 'Triggers')
     const taskRow = getDailyIssueSummaryTaskRow(appPage)
     await expect(taskRow).toBeVisible({ timeout: 10000 })
     await taskRow.click()

@@ -13,7 +13,7 @@ import { HomeAgentIntegrations } from './home-agent-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeHooks } from './home-hooks'
 import { HomeWidgets } from './home-widgets'
-import { useHomeCardLook } from './home-collapsible'
+import { HomePanel, useHomeCardLook } from './home-collapsible'
 
 interface AgentSettingsColumnProps {
   agent: ApiAgent
@@ -35,19 +35,11 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
     () => new Set((Array.isArray(agent.widgets) ? agent.widgets : []).filter((w) => w.hasDashboard).map((w) => w.slug)),
     [agent.widgets],
   )
-  return (
+  const hooks = <HomeHooks className={look.grouped ? undefined : 'intro-step intro-step-9'} agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
+  const sections = (
     <>
-      <HomeWidgets agentSlug={agent.slug} className={look.media} />
-      {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
-        // An artifact with a widget shows the widget instead of its screenshot.
-        .filter((d) => !replacedDashboards.has(d.slug))
-        .map((d) => (
-          <div key={d.slug} className={look.media}>
-            <DashboardCard dashboard={d} agentSlug={agent.slug} />
-          </div>
-        ))}
       <HomeTriggers
-        className="intro-step intro-step-4"
+        className={look.grouped ? undefined : 'intro-step intro-step-4'}
         agentSlug={agent.slug}
         scheduledTasks={scheduledTasks}
         onSelectTask={(taskId: string) => {
@@ -63,12 +55,26 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
           void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
         }}
       />
-      {!hideConnections && <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />}
-      <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={onRunSkill} />
-      <HomeAgentIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
-      <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} hiddenVolumeId={hiddenVolumeId} />
-      <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={(tab) => { if (tab === 'system-prompt') setSystemPromptOpen(true) }} />
-      <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
+      {!hideConnections && <HomeConnections className={look.grouped ? undefined : 'intro-step intro-step-5'} agentSlug={agent.slug} />}
+      <HomeSkills className={look.grouped ? undefined : 'intro-step intro-step-6'} agentSlug={agent.slug} onRunSkill={onRunSkill} />
+      <HomeAgentIntegrations className={look.grouped ? undefined : 'intro-step intro-step-7'} agentSlug={agent.slug} />
+      <HomeVolumes className={look.grouped ? undefined : 'intro-step intro-step-8'} agentSlug={agent.slug} hiddenVolumeId={hiddenVolumeId} />
+    </>
+  )
+  return (
+    <>
+      <HomeWidgets agentSlug={agent.slug} className={look.media} />
+      {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
+        // An artifact with a widget shows the widget instead of its screenshot.
+        .filter((d) => !replacedDashboards.has(d.slug))
+        .map((d) => (
+          <div key={d.slug} className={look.media}>
+            <DashboardCard dashboard={d} agentSlug={agent.slug} />
+          </div>
+        ))}
+      {look.grouped ? <HomePanel>{sections}{hooks}</HomePanel> : sections}
+      <HomeExtras className={look.grouped ? undefined : 'intro-step intro-step-9'} agentSlug={agent.slug} onOpenSettings={(tab) => { if (tab === 'system-prompt') setSystemPromptOpen(true) }} />
+      {!look.grouped && hooks}
       <SystemPromptDialog
         agent={agent}
         open={systemPromptOpen}

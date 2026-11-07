@@ -80,6 +80,8 @@ interface IntegrationRowProps extends Omit<HTMLAttributes<HTMLDivElement>, 'titl
   viewTransitionName?: string
   /** Muted (e.g. a deleted trigger); `disabled` also dims but blocks activation. */
   muted?: boolean
+  /** Fill the row on hover when it is interactive. Agent Home's side panel turns it off. */
+  hoverFill?: boolean
 }
 
 /**
@@ -110,6 +112,7 @@ export const IntegrationRow = forwardRef<HTMLDivElement, IntegrationRowProps>(fu
   boxed,
   viewTransitionName,
   muted,
+  hoverFill = true,
   className,
   style,
   onClick,
@@ -129,7 +132,8 @@ export const IntegrationRow = forwardRef<HTMLDivElement, IntegrationRowProps>(fu
       className={cn(
         'group relative py-3 px-4 transition-colors',
         boxed && 'rounded-card border bg-background',
-        interactive && 'hover:bg-muted/50 cursor-pointer',
+        interactive && 'cursor-pointer',
+        interactive && hoverFill && 'hover:bg-muted/50',
         (disabled || muted) && 'opacity-50',
         className,
       )}

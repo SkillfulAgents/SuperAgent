@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
+import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -24,6 +24,8 @@ interface AgentIdentityEditorProps {
   size?: number
   /** Classes for the name as the header shows it. */
   nameClassName?: string
+  /** Optional secondary text below the name, within the same identity control. */
+  subtitle?: ReactNode
 }
 
 /** Lets a parent (the agent menu's "Rename") open the editor. */
@@ -48,6 +50,7 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
   state,
   size,
   nameClassName,
+  subtitle,
 }, ref) {
   const updateName = useUpdateAgent()
   const updateAvatar = useUpdateAgentAvatar()
@@ -141,8 +144,11 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
               <AvatarView source={avatarSource(shownAvatar)} restingPhi={orbRestingPhi(agent.slug)} size={size} state={state} />
             </span>
           )}
-          <span className={cn('truncate transition-opacity group-hover:opacity-80', nameClassName)} data-testid="agent-name">
-            {shownName}
+          <span className="min-w-0">
+            <span className={cn('block truncate transition-opacity group-hover:opacity-80', nameClassName)} data-testid="agent-name">
+              {shownName}
+            </span>
+            {subtitle && <span className="block truncate text-xs text-muted-foreground">{subtitle}</span>}
           </span>
         </button>
       </PopoverTrigger>
