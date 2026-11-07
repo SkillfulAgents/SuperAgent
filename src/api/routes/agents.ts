@@ -8034,7 +8034,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   const pendingReview = await agentRegistry.get(slug).inputs.reviews.get(reviewId)
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
-    return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
+    return c.json({ error: 'Creating an agent can only be allowed once' }, 400)
   }
   // An unnamed call's scopes union every action on its path: a policy on one of them can allow a delete.
   if (body.decision === 'allow' && body.scope !== '*' && pendingReview?.endpointAmbiguous) {
