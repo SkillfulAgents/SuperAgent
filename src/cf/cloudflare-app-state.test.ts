@@ -3,8 +3,7 @@ import Database from 'better-sqlite3'
 import type { DurableObjectNamespace, DurableObjectState, SqlStorage, SqlStorageValue, WorkerWebSocket } from 'cloudflare:workers'
 import { describeAppStateConformance } from '@shared/lib/app-state/testing/conformance'
 import { backgroundSettled } from '@shared/lib/background'
-import type { KeyPolicy } from '@shared/lib/app-state'
-import { AppStateDurableObject, CloudflareAppState, type EventHub } from './cloudflare-app-state'
+import { AppStateDurableObject, CloudflareAppState, type EventHub, type KeyPolicy } from './cloudflare-app-state'
 import type { Env } from './index'
 
 /** A Durable Object's `ctx.storage.sql` over an in-memory SQLite database. */
