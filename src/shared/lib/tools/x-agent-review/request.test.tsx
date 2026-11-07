@@ -33,7 +33,7 @@ describe('XAgentReviewRequestItem attachments', () => {
     expect(screen.getByText('2 files to share')).toBeInTheDocument()
     expect(screen.getByText('/workspace/reports/a.pdf')).toBeInTheDocument()
     expect(screen.getByText('/workspace/data/b.csv')).toBeInTheDocument()
-    expect(screen.queryByTestId('xagent-review-allow-menu')).not.toBeInTheDocument()
+    expect(screen.getByTestId('xagent-review-allow-menu')).toBeInTheDocument()
   })
 
   it('keeps attachment disclosure in read-only session views', () => {
@@ -76,7 +76,8 @@ describe('XAgentReviewRequestItem attachments', () => {
 
     expect(screen.getByText(/download a delivered file/)).toBeInTheDocument()
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
-    expect(screen.queryByTestId('xagent-review-allow-menu')).not.toBeInTheDocument()
+    if (readOnly) expect(screen.queryByTestId('xagent-review-allow-menu')).not.toBeInTheDocument()
+    else expect(screen.getByTestId('xagent-review-allow-menu')).toBeInTheDocument()
   })
 })
 
