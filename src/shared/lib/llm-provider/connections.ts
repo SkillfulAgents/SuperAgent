@@ -32,6 +32,7 @@ import {
   connectionBaseUrl,
   connectionConfigSchema,
   connectionInputSchema,
+  draftConnectionInputSchema,
   mergeConnectionConfig,
   modelSelectionSchema,
   globalSelectionStateSchema,
@@ -210,8 +211,8 @@ export function assertManageConnection(row: ConnectionRow, viewer: ConnectionVie
     throw new Error('Connection not found')
 }
 
-export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, id?: string) {
-  const input = connectionInputSchema.parse(raw)
+export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, id?: string, options?: { draft?: boolean }) {
+  const input = (options?.draft ? draftConnectionInputSchema : connectionInputSchema).parse(raw)
   let previous = id ? await getConnection(id) : null
   if (id && !previous) throw new Error('Connection not found')
   if (previous) assertManageConnection(previous, viewer)

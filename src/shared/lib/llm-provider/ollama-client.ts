@@ -6,12 +6,8 @@ import { appState, defineNamespace, digestKeyPart } from '../app-state'
 import { findsHostApps } from '../facts/capabilities'
 import { getServerFacts } from '../facts/server-facts'
 import { isLoopbackUrl } from './container-url'
-import {
-  MIN_AGENT_CONTEXT_TOKENS,
-  MIN_OLLAMA_VERSION,
-  type OllamaInstalledModel,
-  type OllamaStatus,
-} from './ollama-schema'
+import { MIN_AGENT_CONTEXT_TOKENS, MIN_OLLAMA_VERSION } from './ollama-schema'
+import type { InstalledModel, ServerStatus } from './server-status-schema'
 
 const PROBE_TIMEOUT_MS = 3_000
 
@@ -69,7 +65,7 @@ async function modelInfo(baseUrl: string, model: string, digest: string | undefi
   return info
 }
 
-function unusableReason(capabilities: readonly string[] | null): OllamaInstalledModel['unusableReason'] {
+function unusableReason(capabilities: readonly string[] | null): InstalledModel['unusableReason'] {
   // Servers too old to report capabilities are refused by the version check, not here.
   if (!capabilities?.length) return undefined
   if (!capabilities.includes('completion')) return 'embedding-only'
@@ -88,7 +84,7 @@ export function isOlderOllamaVersion(version: string, minimum: string = MIN_OLLA
 
 /** What the server at `baseUrl` has installed. Throws when it cannot be asked. */
 export async function listInstalledOllamaModels(baseUrl: string): Promise<{
-  models: OllamaInstalledModel[]
+  models: InstalledModel[]
   smallContext?: { model: string; tokens: number }
 }> {
   const [tags, ps] = await Promise.all([
@@ -102,7 +98,7 @@ export async function listInstalledOllamaModels(baseUrl: string): Promise<{
     const name = loaded.model ?? loaded.name
     if (name && loaded.context_length) loadedContext.set(name, loaded.context_length)
   }
-  const models = await Promise.all((tags.models ?? []).map(async (listed): Promise<OllamaInstalledModel> => {
+  const models = await Promise.all((tags.models ?? []).map(async (listed): Promise<InstalledModel> => {
     const info = await modelInfo(baseUrl, listed.model, listed.digest).catch((): ModelInfo => ({ capabilities: null, contextLength: null }))
     const capabilities = listed.capabilities?.length ? listed.capabilities : info.capabilities
     const contextWindow = loadedContext.get(listed.model) ?? info.contextLength ?? undefined
@@ -155,7 +151,7 @@ function describeProbeError(error: unknown, baseUrl: string): string {
   return `Could not connect to ${baseUrl}`
 }
 
-export async function getOllamaStatus(baseUrl: string): Promise<OllamaStatus> {
+export async function getOllamaStatus(baseUrl: string): Promise<ServerStatus> {
   let version: string | undefined
   try {
     version = (await getJson(baseUrl, '/api/version', versionSchema)).version

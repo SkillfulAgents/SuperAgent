@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { CatalogOverrideEntry } from './model-catalog-schema'
 import { mergeInstalledModels, ollamaModelDefinition } from './ollama-catalog'
-import type { OllamaInstalledModel } from './ollama-schema'
+import type { InstalledModel } from './server-status-schema'
 
-const installed = (id: string, extra: Partial<OllamaInstalledModel> = {}): OllamaInstalledModel => ({
+const installed = (id: string, extra: Partial<InstalledModel> = {}): InstalledModel => ({
   id,
   label: id.replace(/:latest$/, ''),
   supportsThinking: true,

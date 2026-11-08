@@ -7,7 +7,8 @@ import { connectionConfigSchema, connectionModelOverridesSchema, parseConnection
 import { connectionModelOverrides, getConnection, mutateConnections } from './connections'
 import { mergeInstalledModels } from './ollama-catalog'
 import { listInstalledOllamaModels } from './ollama-client'
-import { normalizeOllamaBaseUrl, type OllamaInstalledModel } from './ollama-schema'
+import { normalizeOllamaBaseUrl } from './ollama-schema'
+import type { InstalledModel } from './server-status-schema'
 
 /** A row whose stored address no longer parses is left alone rather than failing the rest. */
 function serverOf(config: string): string | undefined {
@@ -24,7 +25,7 @@ function serverOf(config: string): string | undefined {
  * row's generation stays: the runtime's endpoint and credentials did not change,
  * so a running session has no reason to restart.
  */
-async function applyInstalledModels(id: string, installed: readonly OllamaInstalledModel[]): Promise<void> {
+async function applyInstalledModels(id: string, installed: readonly InstalledModel[]): Promise<void> {
   await mutateConnections(async () => {
     const row = await getConnection(id)
     if (row?.provider !== 'ollama') return
@@ -55,14 +56,14 @@ async function ollamaConnections() {
 }
 
 /** Every connection on `baseUrl` lists what the server just said it has. */
-export async function syncCatalogsFromStatus(baseUrl: string, installed: readonly OllamaInstalledModel[]): Promise<void> {
+export async function syncCatalogsFromStatus(baseUrl: string, installed: readonly InstalledModel[]): Promise<void> {
   for (const row of await ollamaConnections()) {
     if (row.server === baseUrl) await applyInstalledModels(row.id, installed)
   }
 }
 
 /** Ask a server what it has, and update every connection on it. Throws when it cannot be asked. */
-export async function syncCatalogsForServer(baseUrl: string): Promise<void> {
+async function syncCatalogsForServer(baseUrl: string): Promise<void> {
   await syncCatalogsFromStatus(baseUrl, (await listInstalledOllamaModels(baseUrl)).models)
 }
 

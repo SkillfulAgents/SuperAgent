@@ -6,7 +6,9 @@ import { rewriteLoopbackForContainer } from './container-url'
 import { OLLAMA_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 import type { ModelDefinition } from './model-catalog-schema'
 import { getOllamaStatus } from './ollama-client'
-import { normalizeOllamaBaseUrl } from './ollama-schema'
+import { cancelOllamaPull, listOllamaPulls, startOllamaPull } from './ollama-pull'
+import { normalizeOllamaBaseUrl, ollamaModelNameSchema } from './ollama-schema'
+import type { ModelDownload, ServerStatus } from './server-status-schema'
 
 // Ollama ignores credentials, but the SDK and the CLI refuse to start without one.
 const PLACEHOLDER_TOKEN = 'ollama'
@@ -24,6 +26,8 @@ export class OllamaLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = OLLAMA_CATALOG_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = 'OLLAMA_API_KEY'
+  override readonly supportsServerStatus = true
+  override readonly supportsModelDownloads = true
 
   /**
    * A connection needs no credential, but the unbound provider must not read as
@@ -62,5 +66,23 @@ export class OllamaLlmProvider extends BaseLlmProvider {
   async validateKey(_apiKey: string): Promise<{ valid: boolean; error?: string }> {
     const status = await getOllamaStatus(this.baseUrl)
     return status.state === 'running' ? { valid: true } : { valid: false, error: status.error }
+  }
+
+  override async getServerStatus(): Promise<ServerStatus> {
+    return getOllamaStatus(this.baseUrl)
+  }
+
+  override async listModelDownloads(): Promise<ModelDownload[]> {
+    return listOllamaPulls(this.baseUrl)
+  }
+
+  override async startModelDownload(model: string): Promise<void> {
+    const name = ollamaModelNameSchema.safeParse(model)
+    if (!name.success) throw new Error(name.error.issues[0]?.message ?? 'Invalid model name')
+    await startOllamaPull(this.baseUrl, name.data)
+  }
+
+  override async cancelModelDownload(model: string): Promise<void> {
+    await cancelOllamaPull(this.baseUrl, model)
   }
 }

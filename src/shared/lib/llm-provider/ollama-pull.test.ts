@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { taskManager } from '../background-work'
-import { cancelOllamaPull, listOllamaPulls, ollamaPullTask, startOllamaPull } from './ollama-pull'
+import { PassTask, taskManager } from '../background-work'
+import { cancelOllamaPull, listOllamaPulls, OLLAMA_CATALOG_SYNC_TASK, ollamaPullTask, startOllamaPull } from './ollama-pull'
 
-const sync = vi.hoisted(() => ({ syncCatalogsForServer: vi.fn(async () => {}) }))
-vi.mock('./ollama-catalog-sync', () => sync)
+/** Stands in for the service's catalog sync, which a finished pull asks for by name. */
+const sync = { pass: vi.fn(async () => {}) }
 
 const BASE = 'http://localhost:11434'
 const encoder = new TextEncoder()
@@ -23,8 +23,8 @@ let stream: ReturnType<typeof pullStream>
 let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
-  sync.syncCatalogsForServer.mockClear()
-  sync.syncCatalogsForServer.mockResolvedValue(undefined)
+  sync.pass.mockClear()
+  taskManager().register(new PassTask(OLLAMA_CATALOG_SYNC_TASK, sync.pass))
   stream = pullStream()
   fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
     // Stops the stream the way a real fetch does when its signal aborts.
@@ -34,7 +34,10 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
   taskManager().register(ollamaPullTask)
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
 
 describe('Ollama pulls', () => {
   it('sums layer progress, then syncs the catalog and leaves the list', async () => {
@@ -50,7 +53,7 @@ describe('Ollama pulls', () => {
     stream.send(line({ status: 'success' }))
     stream.end()
     await until(async () => (await pullsOf()).length === 0)
-    expect(sync.syncCatalogsForServer).toHaveBeenCalledWith(BASE)
+    await until(async () => sync.pass.mock.calls.length === 1)
   })
 
   it('copes with a line split across chunks', async () => {
@@ -71,7 +74,7 @@ describe('Ollama pulls', () => {
     stream.end()
     await until(async () => (await pullsOf('failed')).length === 1)
     expect((await pullsOf())[0].error).toBe('pull model manifest: file does not exist')
-    expect(sync.syncCatalogsForServer).not.toHaveBeenCalled()
+    expect(sync.pass).not.toHaveBeenCalled()
   })
 
   it('does not start a second pull of the same model', async () => {
@@ -99,7 +102,7 @@ describe('Ollama pulls', () => {
     expect(signal.aborted).toBe(true)
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(await pullsOf()).toEqual([])
-    expect(sync.syncCatalogsForServer).not.toHaveBeenCalled()
+    expect(sync.pass).not.toHaveBeenCalled()
   })
 
   it('can retry after a failure, and a failure can be dismissed', async () => {
@@ -125,8 +128,10 @@ describe('Ollama pulls', () => {
     at.mockRestore()
   })
 
-  it('a failed catalog sync does not turn a finished download into a failure', async () => {
-    sync.syncCatalogsForServer.mockRejectedValue(new Error('server went away'))
+  it('a sync that cannot be scheduled does not turn a finished download into a failure', async () => {
+    const at = taskManager().at.bind(taskManager())
+    vi.spyOn(taskManager(), 'at').mockImplementation(async (runAt, id, spec) =>
+      spec.taskType === OLLAMA_CATALOG_SYNC_TASK ? Promise.reject(new Error('stopped')) : at(runAt, id, spec))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     await startOllamaPull(BASE, 'm:latest')
     await until(async () => fetchMock.mock.calls.length === 1)

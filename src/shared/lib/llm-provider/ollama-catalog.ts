@@ -1,13 +1,13 @@
 import type { EffortLevel } from '../container/types'
 import type { CatalogOverrideEntry, ModelDefinition } from './model-catalog-schema'
-import type { OllamaInstalledModel } from './ollama-schema'
+import type { InstalledModel } from './server-status-schema'
 
 const EFFORTS_WITH_THINKING: EffortLevel[] = ['low', 'medium', 'high']
 // The schema needs one; a model that cannot think has no effort to choose.
 const EFFORTS_WITHOUT_THINKING: EffortLevel[] = ['medium']
 
 /** The catalog entry for an installed model. Local inference has no price, so none is declared. */
-export function ollamaModelDefinition(model: OllamaInstalledModel): ModelDefinition {
+export function ollamaModelDefinition(model: InstalledModel): ModelDefinition {
   return {
     id: model.id,
     label: model.label,
@@ -29,7 +29,7 @@ export function ollamaModelDefinition(model: OllamaInstalledModel): ModelDefinit
  */
 export function mergeInstalledModels(
   overrides: CatalogOverrideEntry[],
-  installed: readonly OllamaInstalledModel[],
+  installed: readonly InstalledModel[],
   options: { remove: boolean; keep?: ReadonlySet<string> },
 ): CatalogOverrideEntry[] {
   const runnable = installed.filter(model => !model.unusableReason)

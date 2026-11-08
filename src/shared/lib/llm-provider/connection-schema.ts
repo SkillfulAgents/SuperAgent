@@ -98,6 +98,9 @@ export const connectionInputSchema = z
   })
   .strict()
 
+/** A connection still being set up, which may not have its name yet. */
+export const draftConnectionInputSchema = connectionInputSchema.extend({ name: z.string().trim().max(120).default('') })
+
 /** Apply credential edits before explicit env edits so a newly supplied key
  * clears stale migrated auth, while an intentional env override can replace it. */
 export function mergeConnectionConfig(

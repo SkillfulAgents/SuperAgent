@@ -1,14 +1,20 @@
 import { z } from 'zod'
 import { appState, defineNamespace, digestKeyPart, reduceRecord } from '../app-state'
 import { Task, taskManager, type TaskContext, type TaskResult } from '../background-work'
-import { syncCatalogsForServer } from './ollama-catalog-sync'
-import { ollamaPullStateSchema, type OllamaPullState } from './ollama-schema'
+import { modelDownloadSchema, type ModelDownload } from './server-status-schema'
+
+/**
+ * The catalog sync's task type. A finished pull asks for a pass by this name
+ * rather than importing the sync, which reads connections: the provider calls
+ * into this file, and connections read providers.
+ */
+export const OLLAMA_CATALOG_SYNC_TASK = 'ollama.catalog-sync'
 
 const PROGRESS_WRITE_INTERVAL_MS = 500
 // A pull is one long read of a stream, so this bounds silence, not the download.
 const PULL_STALL_TIMEOUT_MS = 2 * 60_000
 
-const pullsSchema = z.record(z.string(), ollamaPullStateSchema)
+const pullsSchema = z.record(z.string(), modelDownloadSchema)
 type Pulls = z.infer<typeof pullsSchema>
 
 // One record per server, because the dialog asks "what is this server pulling?".
@@ -28,7 +34,7 @@ function withoutModel(pulls: Pulls, model: string): Pulls | null {
 }
 
 /** Only while the pull is still on record: a write already on its way when Cancel cleared it must not bring it back. */
-async function writePull(baseUrl: string, pull: OllamaPullState): Promise<void> {
+async function writePull(baseUrl: string, pull: ModelDownload): Promise<void> {
   await reduceRecord(pullsKey(baseUrl), current => (current?.[pull.model]
     ? { result: undefined, value: { ...current, [pull.model]: pull } }
     : { result: undefined }))
@@ -38,7 +44,7 @@ async function clearPull(baseUrl: string, model: string): Promise<void> {
   await reduceRecord(pullsKey(baseUrl), current => ({ result: undefined, value: current ? withoutModel(current, model) : null }))
 }
 
-export async function listOllamaPulls(baseUrl: string): Promise<OllamaPullState[]> {
+export async function listOllamaPulls(baseUrl: string): Promise<ModelDownload[]> {
   return Object.values((await appState().get(pullsKey(baseUrl)))?.value ?? {})
 }
 
@@ -137,7 +143,8 @@ class OllamaPullTask extends Task<PullPayload> {
       return { kind: 'done' }
     }
     // The model is on disk whatever happens next; the recurring sync catches a miss here.
-    await syncCatalogsForServer(baseUrl).catch((error: unknown) => console.warn('[ollama] Catalog sync after pull failed:', error))
+    await taskManager().at(Date.now(), `${OLLAMA_CATALOG_SYNC_TASK}:after-pull`, { taskType: OLLAMA_CATALOG_SYNC_TASK, payload: {} })
+      .catch((error: unknown) => console.warn('[ollama] Catalog sync after pull failed:', error))
     await clearPull(baseUrl, model)
     return { kind: 'done' }
   }

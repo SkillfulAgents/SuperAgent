@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { OllamaStatus } from '@shared/lib/llm-provider/ollama-schema'
+import type { ServerStatus } from '@shared/lib/llm-provider/server-status-schema'
 
 const state = vi.hoisted(() => ({
   os: 'darwin' as string | undefined,
@@ -23,8 +23,9 @@ vi.mock('@renderer/lib/api', () => ({
 import { installOptionFor, OllamaSetupPanel } from './ollama-setup-panel'
 
 const BASE = 'http://localhost:11434'
-const down = (kind: 'stopped' | 'not-found' | 'unreachable'): OllamaStatus => ({ state: kind, baseUrl: BASE, error: `Could not connect to ${BASE}` })
-const running = (extra: Partial<Extract<OllamaStatus, { state: 'running' }>> = {}): OllamaStatus => ({
+const TARGET = { connection: { provider: 'ollama' as const, userId: null, config: { apiKeys: { ollamaBaseUrl: BASE } } } }
+const down = (kind: 'stopped' | 'not-found' | 'unreachable'): ServerStatus => ({ state: kind, baseUrl: BASE, error: `Could not connect to ${BASE}` })
+const running = (extra: Partial<Extract<ServerStatus, { state: 'running' }>> = {}): ServerStatus => ({
   state: 'running',
   baseUrl: BASE,
   version: '0.40.15',
@@ -33,13 +34,13 @@ const running = (extra: Partial<Extract<OllamaStatus, { state: 'running' }>> = {
   ...extra,
 })
 
-function renderPanel(status: OllamaStatus, props: Partial<Parameters<typeof OllamaSetupPanel>[0]> = {}) {
+function renderPanel(status: ServerStatus, props: Partial<Parameters<typeof OllamaSetupPanel>[0]> = {}) {
   state.status = status
   const onBaseUrlChange = vi.fn()
   const onManageModels = vi.fn()
   render(
     <QueryClientProvider client={new QueryClient()}>
-      <OllamaSetupPanel baseUrl={BASE} onBaseUrlChange={onBaseUrlChange} onManageModels={onManageModels} canDownload {...props} />
+      <OllamaSetupPanel target={TARGET} baseUrl={BASE} onBaseUrlChange={onBaseUrlChange} onManageModels={onManageModels} canDownload {...props} />
     </QueryClientProvider>,
   )
   return { onBaseUrlChange, onManageModels }
@@ -130,7 +131,7 @@ describe('OllamaSetupPanel', () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
         <form onSubmit={onSubmit}>
-          <OllamaSetupPanel baseUrl={BASE} onBaseUrlChange={onBaseUrlChange} onManageModels={() => {}} canDownload />
+          <OllamaSetupPanel target={TARGET} baseUrl={BASE} onBaseUrlChange={onBaseUrlChange} onManageModels={() => {}} canDownload />
         </form>
       </QueryClientProvider>,
     )

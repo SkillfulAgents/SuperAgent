@@ -4,13 +4,9 @@ import { Button } from '@renderer/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
 import { Input } from '@renderer/components/ui/input'
 import { Progress } from '@renderer/components/ui/progress'
-import { useOllamaPulls, useOllamaStatus } from '@renderer/hooks/use-ollama'
-import {
-  OLLAMA_LIBRARY_URL,
-  ollamaModelNameSchema,
-  type OllamaInstalledModel,
-  type OllamaPullState,
-} from '@shared/lib/llm-provider/ollama-schema'
+import { useModelDownloads, useServerStatus, type ModelServerTarget } from '@renderer/hooks/use-model-server'
+import { OLLAMA_LIBRARY_URL, ollamaModelNameSchema } from '@shared/lib/llm-provider/ollama-schema'
+import type { InstalledModel, ModelDownload } from '@shared/lib/llm-provider/server-status-schema'
 import { ExternalAnchor } from '../ollama-setup-panel'
 
 const SECTION_HEADING = 'px-1 pb-1 text-[11px] font-medium text-muted-foreground'
@@ -25,13 +21,13 @@ export function formatBytes(bytes: number): string {
 /** Ollama's implicit tag, so `qwen3.8` and `qwen3.8:latest` compare as one model. */
 const withTag = (name: string) => (name.includes(':') ? name : `${name}:latest`)
 
-const UNUSABLE_REASON: Record<NonNullable<OllamaInstalledModel['unusableReason']>, string> = {
+const UNUSABLE_REASON: Record<NonNullable<InstalledModel['unusableReason']>, string> = {
   'no-tools': 'Can\'t run agents: no tool support',
   'embedding-only': 'Embedding model: can\'t run agents',
 }
 
 /** Without `onCancel`, the viewer may watch the download but not stop it. */
-function PullRow({ pull, onCancel }: { pull: OllamaPullState; onCancel?: () => void }) {
+function PullRow({ pull, onCancel }: { pull: ModelDownload; onCancel?: () => void }) {
   const failed = pull.state === 'failed'
   const percent = pull.totalBytes ? (pull.completedBytes / pull.totalBytes) * 100 : 0
   return (
@@ -64,23 +60,23 @@ function PullRow({ pull, onCancel }: { pull: OllamaPullState; onCancel?: () => v
  * Downloaded models, and a download by name from ollama.com's library. Pulls
  * run on the server, so closing this leaves them going and reopening picks them back up.
  */
-export function OllamaModelsDialog({ open, onOpenChange, baseUrl, canDownload }: {
+export function OllamaModelsDialog({ open, onOpenChange, target, canDownload }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  baseUrl: string
+  target: ModelServerTarget
   canDownload: boolean
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {open && <OllamaModelsBody baseUrl={baseUrl} canDownload={canDownload} />}
+      {open && <OllamaModelsBody target={target} canDownload={canDownload} />}
     </Dialog>
   )
 }
 
-function OllamaModelsBody({ baseUrl, canDownload }: { baseUrl: string; canDownload: boolean }) {
+function OllamaModelsBody({ target, canDownload }: { target: ModelServerTarget; canDownload: boolean }) {
   const [name, setName] = useState('')
-  const status = useOllamaStatus(baseUrl)
-  const { pulls, start, cancel } = useOllamaPulls(baseUrl)
+  const status = useServerStatus(target)
+  const { downloads: pulls, start, cancel } = useModelDownloads(target)
 
   const installed = status.data?.state === 'running' ? status.data.models : []
   const parsed = ollamaModelNameSchema.safeParse(name)

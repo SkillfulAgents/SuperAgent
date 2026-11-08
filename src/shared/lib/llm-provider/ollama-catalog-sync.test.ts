@@ -6,14 +6,14 @@ import { calculateCost } from '../services/usage-service'
 import { deleteConnection, getConnection, resolveExecutionSelection, saveConnection, setGlobalSelection } from './connections'
 import { syncAllOllamaCatalogs, syncCatalogsFromStatus } from './ollama-catalog-sync'
 import { ollamaModelDefinition } from './ollama-catalog'
-import type { OllamaInstalledModel } from './ollama-schema'
+import type { InstalledModel } from './server-status-schema'
 
 const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null }))
 vi.mock('../db', () => ({ get db() { return state.db } }))
 
 const viewer = { userId: null, admin: true }
 const BASE = 'http://localhost:11434'
-const model = (id: string): OllamaInstalledModel => ({ id, label: id, supportsThinking: true, supportsImageInput: false })
+const model = (id: string): InstalledModel => ({ id, label: id, supportsThinking: true, supportsImageInput: false })
 
 const save = (ollamaBaseUrl?: string) => saveConnection({
   name: 'Local', provider: 'ollama', userId: null,

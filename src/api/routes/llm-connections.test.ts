@@ -1,6 +1,7 @@
 import { PlatformLlmProvider } from '@shared/lib/llm-provider/platform-provider'
 import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
 import { BaseLlmProvider } from '@shared/lib/llm-provider/base-llm-provider'
+import { OllamaLlmProvider } from '@shared/lib/llm-provider/ollama-provider'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { Hono, type MiddlewareHandler } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -602,4 +603,48 @@ it('saves a sign-in once when two processes save it at the same time', async () 
   ])
   expect(saves.filter(save => save.status === 'fulfilled')).toHaveLength(1)
   expect(await database.db.select().from(llmConnections).where(eq(llmConnections.provider, 'grok-subscription')).all()).toHaveLength(1)
+})
+
+describe('model server routes', () => {
+  const ollama = (userId: string | null, ollamaBaseUrl = 'localhost:9000/') =>
+    ({ connection: { provider: 'ollama', userId, config: { apiKeys: { ollamaBaseUrl } } } })
+
+  it('asks the draft\'s own provider, at its normalized address, before the connection has a name', async () => {
+    const status = vi.spyOn(OllamaLlmProvider.prototype, 'getServerStatus').mockImplementation(async function (this: OllamaLlmProvider) {
+      return { state: 'running', baseUrl: (this as unknown as { baseUrl: string }).baseUrl, upgradeRequired: false, models: [] }
+    })
+    const response = await request('/server-status', 'POST', ollama(null))
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ state: 'running', baseUrl: 'http://localhost:9000' })
+    expect(status).toHaveBeenCalledOnce()
+  })
+
+  it('tells a member only that the server did not answer, not why', async () => {
+    vi.spyOn(OllamaLlmProvider.prototype, 'getServerStatus').mockResolvedValue({
+      state: 'unreachable', baseUrl: 'http://10.0.0.5:8080', error: 'http://10.0.0.5:8080/api/version returned 404',
+    })
+    const body = await (await request('/server-status', 'POST', ollama('alice', 'http://10.0.0.5:8080'), 'alice')).json() as { error: string }
+    expect(body.error).toBe('Could not reach Ollama at http://10.0.0.5:8080')
+  })
+
+  it('checks a draft like a save: a member cannot ask through a global connection', async () => {
+    expect((await request('/server-status', 'POST', ollama(null), 'alice')).status).toBe(400)
+  })
+
+  it('refuses a provider without the capability', async () => {
+    const response = await request('/server-status', 'POST', { connection: draft() })
+    expect(response.status).toBe(400)
+    expect((await response.json() as { error: string }).error).toContain('does not support')
+  })
+
+  it('lets only an admin download, and says what is wrong with a name', async () => {
+    const start = vi.spyOn(OllamaLlmProvider.prototype, 'startModelDownload')
+    expect((await request('/model-downloads', 'POST', { ...ollama('alice'), model: 'm:latest' }, 'alice')).status).toBe(403)
+    expect((await request('/model-downloads/cancel', 'POST', { ...ollama('alice'), model: 'm:latest' }, 'alice')).status).toBe(403)
+    expect(start).not.toHaveBeenCalled()
+
+    const refused = await request('/model-downloads', 'POST', { ...ollama(null), model: 'glm-5.3:cloud' })
+    expect(refused.status).toBe(400)
+    expect((await refused.json() as { error: string }).error).toContain('Cloud models')
+  })
 })

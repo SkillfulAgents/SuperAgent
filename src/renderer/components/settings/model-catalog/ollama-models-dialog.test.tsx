@@ -3,17 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 const state = vi.hoisted(() => ({ pulls: [] as unknown[], start: vi.fn() }))
-vi.mock('@renderer/hooks/use-ollama', () => ({
-  useOllamaStatus: () => ({
+vi.mock('@renderer/hooks/use-model-server', () => ({
+  useServerStatus: () => ({
     data: { state: 'running', baseUrl: 'http://localhost:11434', upgradeRequired: false, models: [{ id: 'qwen3.8:latest', label: 'qwen3.8', supportsThinking: true, supportsImageInput: false }] },
   }),
-  useOllamaPulls: () => ({ pulls: state.pulls, start: { mutate: state.start, isError: false }, cancel: { mutate: vi.fn() } }),
+  useModelDownloads: () => ({ downloads: state.pulls, start: { mutate: state.start, isError: false }, cancel: { mutate: vi.fn() } }),
 }))
 
 import { OllamaModelsDialog } from './ollama-models-dialog'
 
 function renderDialog(canDownload = true) {
-  render(<OllamaModelsDialog open onOpenChange={() => {}} baseUrl="http://localhost:11434" canDownload={canDownload} />)
+  render(<OllamaModelsDialog open onOpenChange={() => {}} target={{ connection: { provider: 'ollama', userId: null, config: { apiKeys: {} } } }} canDownload={canDownload} />)
 }
 const type = (value: string) => fireEvent.change(screen.getByTestId('ollama-model-name'), { target: { value } })
 const submit = () => screen.getByTestId('ollama-pull-submit') as HTMLButtonElement

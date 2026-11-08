@@ -3,14 +3,14 @@ import { ProviderLogo } from './provider-logo'
 import { SubscriptionSignIn } from './subscription-sign-in'
 import { OllamaSetupPanel } from './ollama-setup-panel'
 import { OllamaModelsDialog } from './model-catalog/ollama-models-dialog'
-import { useOllamaStatus } from '@renderer/hooks/use-ollama'
+import { useServerStatus, type ModelServerTarget } from '@renderer/hooks/use-model-server'
 import { mergeInstalledModels } from '@shared/lib/llm-provider/ollama-catalog'
 import { normalizeOllamaBaseUrl } from '@shared/lib/llm-provider/ollama-schema'
 import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -434,7 +434,9 @@ function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void 
   )
 }
 // Rendered only for Ollama, so another provider's editor never polls for it.
-function OllamaConnectionSection({ baseUrl, onBaseUrlChange, modelsOpen, onModelsOpenChange, canDownload, onOverrides }: {
+function OllamaConnectionSection({ connectionId, owner, baseUrl, onBaseUrlChange, modelsOpen, onModelsOpenChange, canDownload, onOverrides }: {
+  connectionId?: string
+  owner: string | null
   baseUrl: string
   onBaseUrlChange: (baseUrl: string) => void
   modelsOpen: boolean
@@ -442,7 +444,11 @@ function OllamaConnectionSection({ baseUrl, onBaseUrlChange, modelsOpen, onModel
   canDownload: boolean
   onOverrides: (update: (current: CatalogOverrideEntry[]) => CatalogOverrideEntry[]) => void
 }) {
-  const status = useOllamaStatus(baseUrl)
+  const target = useMemo<ModelServerTarget>(
+    () => ({ id: connectionId, connection: { provider: 'ollama', userId: owner, config: { apiKeys: { ollamaBaseUrl: baseUrl } } } }),
+    [connectionId, owner, baseUrl],
+  )
+  const status = useServerStatus(target)
   const installed = status.data?.state === 'running' ? status.data.models : undefined
   // Show what is installed while editing, so the default-model pickers can offer it
   // before a save. Add-only: the server drops what was uninstalled, and knows which
@@ -452,8 +458,8 @@ function OllamaConnectionSection({ baseUrl, onBaseUrlChange, modelsOpen, onModel
   }, [installed, onOverrides])
   return (
     <>
-      <OllamaSetupPanel baseUrl={baseUrl} onBaseUrlChange={onBaseUrlChange} onManageModels={() => onModelsOpenChange(true)} canDownload={canDownload} />
-      <OllamaModelsDialog open={modelsOpen} onOpenChange={onModelsOpenChange} baseUrl={baseUrl} canDownload={canDownload} />
+      <OllamaSetupPanel target={target} baseUrl={baseUrl} onBaseUrlChange={onBaseUrlChange} onManageModels={() => onModelsOpenChange(true)} canDownload={canDownload} />
+      <OllamaModelsDialog open={modelsOpen} onOpenChange={onModelsOpenChange} target={target} canDownload={canDownload} />
     </>
   )
 }
@@ -625,6 +631,8 @@ export function ConnectionEditor({
       )}
       {isOllama && (
         <OllamaConnectionSection
+          connectionId={existing?.id}
+          owner={owner}
           baseUrl={ollamaUrl}
           onBaseUrlChange={setOllamaUrl}
           modelsOpen={ollamaModelsOpen}

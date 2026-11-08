@@ -3,12 +3,13 @@ import { AlertTriangle, ChevronDown, Download, ExternalLink, Loader2 } from 'luc
 import { Button } from '@renderer/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
 import { Input } from '@renderer/components/ui/input'
-import { useOllamaStatus } from '@renderer/hooks/use-ollama'
+import { useServerStatus, type ModelServerTarget } from '@renderer/hooks/use-model-server'
 import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { serverFacts } from '@renderer/lib/facts'
 import type { ServerFacts } from '@shared/lib/facts/facts-schema'
 import { isLoopbackUrl } from '@shared/lib/llm-provider/container-url'
-import { MIN_AGENT_CONTEXT_TOKENS, MIN_OLLAMA_VERSION, normalizeOllamaBaseUrl, type OllamaStatus } from '@shared/lib/llm-provider/ollama-schema'
+import { MIN_AGENT_CONTEXT_TOKENS, MIN_OLLAMA_VERSION, normalizeOllamaBaseUrl } from '@shared/lib/llm-provider/ollama-schema'
+import type { ServerStatus } from '@shared/lib/llm-provider/server-status-schema'
 import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 
 const DOWNLOAD_PAGE = 'https://ollama.com/download'
@@ -47,7 +48,7 @@ export function ExternalAnchor({ href, children }: { href: string; children: str
   )
 }
 
-function InstallInstructions({ status }: { status: Exclude<OllamaStatus, { state: 'running' }> }) {
+function InstallInstructions({ status }: { status: Exclude<ServerStatus, { state: 'running' }> }) {
   const facts = serverFacts()
   const option = installOptionFor(facts?.os)
   // The server looks for Ollama on its own machine, which is this computer only in the desktop app.
@@ -94,7 +95,7 @@ function InstallInstructions({ status }: { status: Exclude<OllamaStatus, { state
 }
 
 function RunningStatus({ status, onManageModels, canDownload }: {
-  status: Extract<OllamaStatus, { state: 'running' }>
+  status: Extract<ServerStatus, { state: 'running' }>
   onManageModels: () => void
   canDownload: boolean
 }) {
@@ -147,17 +148,18 @@ function Warning({ children }: { children: React.ReactNode }) {
 
 /**
  * The top of the Ollama connection editor: what the server at the chosen URL is
- * doing, and how to get from there to running. Everything is keyed by URL, since
- * a connection being set up has not been saved yet.
+ * doing, and how to get from there to running. It asks about `target`, the
+ * connection as edited, since one being set up has not been saved yet.
  */
-export function OllamaSetupPanel({ baseUrl, onBaseUrlChange, onManageModels, canDownload }: {
+export function OllamaSetupPanel({ target, baseUrl, onBaseUrlChange, onManageModels, canDownload }: {
+  target: ModelServerTarget
   /** The URL last committed, already normalized. */
   baseUrl: string
   onBaseUrlChange: (baseUrl: string) => void
   onManageModels: () => void
   canDownload: boolean
 }) {
-  const status = useOllamaStatus(baseUrl)
+  const status = useServerStatus(target)
   const [draft, setDraft] = useState(baseUrl)
   const [urlError, setUrlError] = useState<string>()
   const data = status.data
