@@ -64,6 +64,7 @@ import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
 import { PlatformLlmProvider } from './platform-provider'
 import { GenericLlmProvider } from './generic-provider'
+import { OllamaLlmProvider } from './ollama-provider'
 import { getSettings, type AppSettings } from '../config/settings'
 
 const providers: Record<LlmProviderId, BaseLlmProvider> = {
@@ -76,6 +77,7 @@ const providers: Record<LlmProviderId, BaseLlmProvider> = {
   openrouter: new OpenRouterLlmProvider(),
   bedrock: new BedrockLlmProvider(),
   platform: new PlatformLlmProvider(),
+  ollama: new OllamaLlmProvider(),
   generic: new GenericLlmProvider(),
 }
 
@@ -90,6 +92,7 @@ export function createLlmProvider(id: LlmProviderId, configuration: ProviderConf
     case 'minimax-subscription': return new MinimaxSubscriptionLlmProvider(configuration)
     case 'openrouter': return new OpenRouterLlmProvider(configuration)
     case 'bedrock': return new BedrockLlmProvider(configuration)
+    case 'ollama': return new OllamaLlmProvider(configuration)
     case 'generic': return new GenericLlmProvider(configuration)
     case 'platform': return new PlatformLlmProvider()
   }

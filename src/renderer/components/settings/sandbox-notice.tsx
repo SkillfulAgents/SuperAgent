@@ -13,6 +13,7 @@ export const SANDBOX_LEAVES_OUT = [
   'Browsing in your own Chrome, with its profiles and Apple Passwords. Agents browse in their built-in browser.',
   'Private GitHub skillsets, and publishing skills and agents to GitHub',
   'Container runtimes other than the built-in one',
+  'Telling an installed Ollama that is not running from one that is not installed',
   'Keep Awake, Add to Dock, recent files in the attachment menu, and pausing your music in voice mode',
 ]
 

@@ -45,6 +45,9 @@ export const GENERIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   dashboardBuilderModel: GENERIC_FALLBACK_MODEL,
 }
 
+// No built-ins, as for Generic: a connection falls back to the first model its server has installed.
+export const OLLAMA_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = GENERIC_CATALOG_DEFAULT_MODELS
+
 export const GROK_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'grok', summarizerModel: 'grok', browserModel: 'grok', dashboardBuilderModel: 'grok' }
 
 export const CODEX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'gpt-sol', summarizerModel: 'gpt-sol', browserModel: 'gpt-sol', dashboardBuilderModel: 'gpt-sol' }
@@ -63,6 +66,7 @@ const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   openrouter: OPENROUTER_CATALOG_DEFAULT_MODELS,
   bedrock: BEDROCK_CATALOG_DEFAULT_MODELS,
   platform: PLATFORM_CATALOG_DEFAULT_MODELS,
+  ollama: OLLAMA_CATALOG_DEFAULT_MODELS,
   generic: GENERIC_CATALOG_DEFAULT_MODELS,
 }
 

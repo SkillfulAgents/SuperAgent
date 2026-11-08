@@ -3,7 +3,7 @@ import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { startOAuthLogin, pollOAuthLogin, cancelOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
 import { isOAuthProvider, OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -120,6 +120,40 @@ routes.post('/validate', async (c) => {
       baseUrl: config.apiKeys.genericBaseUrl,
     })
   )
+})
+// A provider's own model server (supportsServerStatus, supportsModelDownloads), for a
+// connection saved or still being set up: the provider reads where it is from the draft.
+const draftBody = z.object({ id: z.string().optional(), connection: z.unknown(), model: z.string().optional() })
+async function draftProvider(c: Context, capability: 'supportsServerStatus' | 'supportsModelDownloads') {
+  const body = draftBody.parse(await c.req.json())
+  const { input, config } = await prepareConnection(body.connection, viewer(c), body.id, { draft: true })
+  const provider = providerForConnection({ id: body.id, provider: input.provider, config: JSON.stringify(config) })
+  if (!provider[capability]) throw new Error(`${provider.name} does not support this`)
+  return { provider, model: body.model ?? '' }
+}
+routes.post('/server-status', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const { provider } = await draftProvider(c, 'supportsServerStatus')
+  const status = await provider.getServerStatus()
+  // Why an address failed (a timeout, a 404, something else answering) would map the server's network.
+  if (status.state !== 'running' && !viewer(c).admin) return c.json({ ...status, error: `Could not reach ${provider.name} at ${status.baseUrl}` })
+  return c.json(status)
+})
+routes.post('/model-downloads/list', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const { provider } = await draftProvider(c, 'supportsModelDownloads')
+  return c.json({ data: await provider.listModelDownloads() })
+})
+// A download writes to the server's disk.
+routes.post('/model-downloads', IsAdmin(), async (c) => {
+  const { provider, model } = await draftProvider(c, 'supportsModelDownloads')
+  await provider.startModelDownload(model)
+  return c.json({ success: true }, 202)
+})
+routes.post('/model-downloads/cancel', IsAdmin(), async (c) => {
+  const { provider, model } = await draftProvider(c, 'supportsModelDownloads')
+  await provider.cancelModelDownload(model)
+  return c.json({ success: true })
 })
 routes.get('/:id/usage', async c => {
   c.header('Cache-Control', 'no-store')

@@ -89,6 +89,7 @@ it, the renderer hides it, and the agents are never told about it.
 | The person's Chrome: CDP launch, profile copy, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the profile seed, the Apple Passwords runtime |
 | A folder by its path alone: copying a dropped folder in, or a drive of one | `readsHostFolders()`, `usesHostFolderPaths()` | the upload-folder routes, the mount offer on a drop (the folder uploads its files instead), and `prepareLocalVolume()` for a folder without its pick's bookmark |
 | Private skillsets, publishing to GitHub | `runsHostGit()`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
+| Telling a stopped Ollama from a missing one (it looks for the app and the binary) | `findsHostApps()` | `getOllamaStatus()`, which says "not found" instead of "stopped" |
 | Keep Awake, Add to Dock, recent files, music control | `keepsMacAwake()`, `addsToDock()`, `listsRecentFiles()`, `userMusicSupported()` | the settings and menus that offer them, and main's handlers |
 
 Local drives stay. The Store build's folder picker returns a security-scoped

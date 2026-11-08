@@ -389,7 +389,7 @@ describe('initializeServices post-bind critical path', () => {
 
       expect(Object.keys(serviceHost().states())).toEqual([
         'computer-use', 'active-runner', 'agent-registry', 'containers',
-        'webhook-relay', 'container-host', 'host-browser',
+        'webhook-relay', 'container-host', 'ollama-catalog', 'host-browser',
         'platform-notifications', 'agent-integrations', 'container-image', 'task-scheduler', 'webhook-triggers',
         'session-auto-delete', 'api-log-auto-delete', 'account-sync', 'platform',
       ])

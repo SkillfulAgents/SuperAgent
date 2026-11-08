@@ -50,6 +50,15 @@ export function readsHostFolders(server: ServerFacts): boolean {
 }
 
 /**
+ * Whether the server can tell an app is installed on its machine by looking for
+ * its files. A sandboxed app cannot see outside its container, so it could only
+ * ever say it found nothing, never that the app is missing.
+ */
+export function findsHostApps(server: ServerFacts): boolean {
+  return !runsInAppSandbox(server)
+}
+
+/**
  * Whether the server runs git and gh on its machine: to clone a private
  * skillset, and to publish skills and agents to one as commits and pull
  * requests. Public skillsets need neither; they download as an archive. A

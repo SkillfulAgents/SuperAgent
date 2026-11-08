@@ -29,8 +29,10 @@ import {
 import { LLM_PROVIDER_IDS, isOAuthProvider } from './provider-types'
 import { type ModelDefinition } from './model-catalog-schema'
 import {
+  connectionBaseUrl,
   connectionConfigSchema,
   connectionInputSchema,
+  draftConnectionInputSchema,
   mergeConnectionConfig,
   modelSelectionSchema,
   globalSelectionStateSchema,
@@ -184,7 +186,7 @@ async function connectionInfos(
       modelOverrides: connectionModelOverrides(row),
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,
-      baseUrl: config.apiKeys.genericBaseUrl,
+      baseUrl: connectionBaseUrl(config),
       apiFormat: config.apiFormat,
       chatTokenLimitField: config.chatTokenLimitField,
       region: config.apiKeys.bedrockRegion ?? config.oauth?.region,
@@ -209,8 +211,8 @@ export function assertManageConnection(row: ConnectionRow, viewer: ConnectionVie
     throw new Error('Connection not found')
 }
 
-export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, id?: string) {
-  const input = connectionInputSchema.parse(raw)
+export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, id?: string, options?: { draft?: boolean }) {
+  const input = (options?.draft ? draftConnectionInputSchema : connectionInputSchema).parse(raw)
   let previous = id ? await getConnection(id) : null
   if (id && !previous) throw new Error('Connection not found')
   if (previous) assertManageConnection(previous, viewer)
@@ -230,7 +232,7 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
     assertManageConnection(previous, viewer)
     oldConfig = parseConnectionJson(connectionConfigSchema, previous.config)
   }
-  const config = mergeConnectionConfig(oldConfig, input.config)
+  const config = getLlmProvider(input.provider).normalizeConnectionConfig(mergeConnectionConfig(oldConfig, input.config))
   let oauthLogin: CompletedOAuthLogin | undefined
   if (input.oauthLoginId) {
     if (!isOAuthProvider(input.provider)) throw new Error('Invalid subscription sign-in')
