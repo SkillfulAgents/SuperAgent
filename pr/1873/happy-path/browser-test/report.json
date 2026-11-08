@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified that the Gamut agent can open a browser, navigate to https://example.com, and return the page title \"Example Domain\" in the response.",
+  "steps": [
+    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut application homepage with the sidebar showing available agents.",
+    "Step 2 - Find and click the \"QA-20261108-020913-xptf\" agent in the sidebar — Successfully opened the agent chat interface. The page navigated to the agent's main chat view with model \"Opus 5.5\" and \"Medium\" effort setting selected.",
+    "Step 3 - Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed and sent the message using keyboard input and Cmd+Enter. A new session titled \"Browser Page Title Check\" was created and the message appeared in the chat.",
+    "Step 4 - Wait up to 3 minutes for a response — The agent processed the request and completed within 5 seconds. The response was returned successfully showing \"Worked for 5s · 2 tool calls · 119,293 tokens\".",
+    "Step 5 - Verify the response mentions \"Example Domain\" — Successfully verified! The agent's response states: \"The title of https://example.com is \"Example Domain\". I've left the browser open in case you want to look at the page yourself.\" The live browser preview on the right side also displays the Example Domain page at https://example.com/."
+  ],
+  "bugs": [],
+  "durationMs": 297276,
+  "sessionId": "1dc2c2e8-b80b-4fb2-92d2-bf85c8fc009c",
+  "cost": {
+    "inputTokens": 434,
+    "outputTokens": 15971,
+    "cacheCreationTokens": 73863,
+    "cacheReadTokens": 1287400,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.301358
+  }
+}
