@@ -10,6 +10,7 @@ import { captureException } from './error-reporting'
 import { background } from './background'
 import { serviceHost, stopBackgroundWork, taskManager, type Service } from './background-work'
 import { liveSessions } from './voice/live-sessions'
+import { OllamaCatalogService } from './llm-provider/ollama-service'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -119,6 +120,7 @@ function backgroundServices(): Service[] {
     // the containers, so it claims nothing during their long stop.
     getWebhookRelay(),
     new ContainerHostService(),
+    new OllamaCatalogService(),
     // Before the containers: browsers and brokers close against a live runtime.
     new ReleasedAtShutdown('host-browser', async () => {
       await credentialBroker.shutdown()

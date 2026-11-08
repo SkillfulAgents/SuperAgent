@@ -29,6 +29,7 @@ import {
 import { LLM_PROVIDER_IDS, isOAuthProvider } from './provider-types'
 import { type ModelDefinition } from './model-catalog-schema'
 import {
+  connectionBaseUrl,
   connectionConfigSchema,
   connectionInputSchema,
   mergeConnectionConfig,
@@ -184,7 +185,7 @@ async function connectionInfos(
       modelOverrides: connectionModelOverrides(row),
       browserModel: row.browserModel,
       dashboardModel: row.dashboardModel,
-      baseUrl: config.apiKeys.genericBaseUrl,
+      baseUrl: connectionBaseUrl(config),
       apiFormat: config.apiFormat,
       chatTokenLimitField: config.chatTokenLimitField,
       region: config.apiKeys.bedrockRegion ?? config.oauth?.region,
@@ -230,7 +231,7 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
     assertManageConnection(previous, viewer)
     oldConfig = parseConnectionJson(connectionConfigSchema, previous.config)
   }
-  const config = mergeConnectionConfig(oldConfig, input.config)
+  const config = getLlmProvider(input.provider).normalizeConnectionConfig(mergeConnectionConfig(oldConfig, input.config))
   let oauthLogin: CompletedOAuthLogin | undefined
   if (input.oauthLoginId) {
     if (!isOAuthProvider(input.provider)) throw new Error('Invalid subscription sign-in')

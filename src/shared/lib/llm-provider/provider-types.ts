@@ -8,6 +8,7 @@ export const LLM_PROVIDER_IDS = [
   'openrouter',
   'bedrock',
   'platform',
+  'ollama',
   'generic',
 ] as const
 

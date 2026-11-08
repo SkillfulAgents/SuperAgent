@@ -25,6 +25,7 @@ import {
   type ConnectionViewer,
 } from '@shared/lib/llm-provider/connections'
 import { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
+import ollamaRoutes from './ollama'
 
 const routes = new Hono()
 routes.use('*', Authenticated())
@@ -41,6 +42,7 @@ routes.onError((error, c) =>
     400
   )
 )
+routes.route('/ollama', ollamaRoutes)
 routes.post('/oauth/:provider/start', async c => {
   const providerId = z.enum(OAUTH_PROVIDER_IDS).parse(`${c.req.param('provider')}-subscription`)
   const input = z.object({ id: z.string().optional(), userId: z.string().nullable(), region: z.string().optional() }).parse(await c.req.json())

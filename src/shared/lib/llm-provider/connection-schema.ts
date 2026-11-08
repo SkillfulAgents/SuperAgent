@@ -34,6 +34,7 @@ export const connectionConfigSchema = z.object({
       openrouterApiKey: z.string().optional(),
       genericApiKey: z.string().optional(),
       genericBaseUrl: z.string().optional(),
+      ollamaBaseUrl: z.string().optional(),
       bedrockApiKey: z.string().optional(),
       bedrockAccessKeyId: z.string().optional(),
       bedrockSecretAccessKey: z.string().optional(),
@@ -47,6 +48,15 @@ export const connectionConfigSchema = z.object({
   env: z.record(z.string(), z.string()).default({}),
 })
 export type ConnectionConfig = z.infer<typeof connectionConfigSchema>
+
+/** The fields that hold a connection's endpoint. A provider uses at most one. */
+const BASE_URL_KEYS = ['genericBaseUrl', 'ollamaBaseUrl'] as const
+/** Fields that are not credentials: editing one keeps the runtime's auth overrides. */
+const NON_SECRET_KEYS = new Set<string>([...BASE_URL_KEYS, 'bedrockRegion'])
+
+export function connectionBaseUrl(config: Pick<ConnectionConfig, 'apiKeys'>): string | undefined {
+  return BASE_URL_KEYS.map(key => config.apiKeys[key]).find(Boolean)
+}
 
 /** Persist custom definitions and explicit disabled IDs, never built-in definitions or prices. */
 export const connectionModelOverridesSchema = z.array(catalogOverrideEntrySchema.omit({ pricing: true }))
@@ -117,13 +127,13 @@ export function mergeConnectionConfig(
   for (const key of editedKeys) {
     for (const name of keyEnvironment[key] ?? []) delete config.env[name]
   }
-  if (editedKeys.some(key => key !== 'genericBaseUrl' && key !== 'bedrockRegion')) {
+  if (editedKeys.some(key => !NON_SECRET_KEYS.has(key))) {
     for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
       'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
       delete config.runtimeEnv[key]
     }
   }
-  if (editedKeys.includes('genericBaseUrl')) delete config.runtimeEnv.ANTHROPIC_BASE_URL
+  if (editedKeys.some(key => (BASE_URL_KEYS as readonly string[]).includes(key))) delete config.runtimeEnv.ANTHROPIC_BASE_URL
   if (editedKeys.includes('bedrockRegion')) delete config.runtimeEnv.AWS_REGION
   for (const [key, value] of Object.entries(input.runtimeEnv ?? {})) {
     delete config.env[key]

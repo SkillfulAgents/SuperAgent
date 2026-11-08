@@ -203,6 +203,11 @@ export abstract class BaseLlmProvider {
    */
   abstract getBuiltinCatalog(): ModelDefinition[]
 
+  /** The config a save stores. Throws, saying what to fix, on one this provider cannot use. */
+  normalizeConnectionConfig(config: ConnectionConfig): ConnectionConfig {
+    return config
+  }
+
   /**
    * Current restrictions for a connection's catalog, for the account the
    * current request or run is attributed to. Null means unrestricted. Model
