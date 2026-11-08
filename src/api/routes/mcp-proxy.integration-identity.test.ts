@@ -36,10 +36,12 @@ const beforeAuthorization = vi.fn<() => Promise<void>>()
 let id: string
 let app: Hono
 let connectionStatus: 'active' | 'auth_required'
+let serve: ((request: Request) => Promise<Response>) | undefined
 
 beforeEach(async () => {
   handle = await createTestDatabase(); testDb = handle.db
   connectionStatus = 'active'
+  serve = undefined
   vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock)
   fetchMock.mockResolvedValue(Response.json({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'done' }] } }))
   authRequired.mockResolvedValue(undefined); reportHealth.mockResolvedValue(undefined); beforeAuthorization.mockResolvedValue(undefined)
@@ -61,6 +63,7 @@ beforeEach(async () => {
           return 'agent-secret'
         },
         authRequired, reportHealth,
+        ...(serve ? { serve } : {}),
       }
     },
   }])
@@ -84,6 +87,16 @@ describe('integration-owned MCP through the shared proxy', () => {
     expect(await testDb.select().from(remoteMcpServers)).toEqual([])
     expect(await integrationMcpProjection('other-agent', 'http://host')).toEqual([])
   })
+  it('sends the request to the server the integration runs itself, never over the network', async () => {
+    serve = vi.fn(async () => Response.json({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'served' }] } }))
+    const response = await call()
+    expect(await response.json()).toMatchObject({ result: { content: [{ text: 'served' }] } })
+    expect(serve).toHaveBeenCalledOnce()
+    const [request] = vi.mocked(serve).mock.calls[0]
+    expect(await request.json()).toMatchObject({ method: 'tools/call', params: { name: 'send_message' } })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('uses parent authorization without user policy/review and attributes the existing audit record', async () => {
     expect((await call()).status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)

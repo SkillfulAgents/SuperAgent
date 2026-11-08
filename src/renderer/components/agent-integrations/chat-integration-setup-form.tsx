@@ -21,7 +21,7 @@ import {
 } from '@renderer/hooks/use-agent-integrations'
 import { Loader2, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
-import { slackAppManifest, type SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
+import { BOT_SCOPES, slackAppManifest, type SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { SlackAppIconStep } from './slack-app-appearance'
 import { slackAppIdentity } from './slack-app-identity'
@@ -80,7 +80,7 @@ const PROVIDER_INFO: Record<ChatProvider, {
       'Settings → Socket Mode → Toggle ON',
       'Basic Information → Scroll to App-Level Tokens → Click Generate Tokens and Scopes',
       'Name your token → Click Add Scope → Select connections:write → Click Generate → Copy the xapp-… token → Paste in the App-Level Token field in the setup form',
-      'OAuth & Permissions → Scopes → Bot Token Scopes → Add: chat:write, im:history, im:read, im:write, channels:history, channels:read, groups:history, groups:read, mpim:history, mpim:read, users:read, files:read, files:write, reactions:write',
+      `OAuth & Permissions → Scopes → Bot Token Scopes → Add: ${BOT_SCOPES.join(', ')}`,
       'Event Subscriptions → Toggle ON → Subscribe to bot events → Add: message.im, message.channels, message.groups, message.mpim',
       'Interactivity & Shortcuts → Toggle ON',
       'App Home → Show Tabs → Check "Messages Tab" and "Allow users to send Slash commands and messages from the messages tab"',

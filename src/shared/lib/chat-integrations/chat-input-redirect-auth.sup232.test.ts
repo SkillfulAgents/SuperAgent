@@ -1,18 +1,17 @@
 /**
  * SUP-232 — Slack file download leaks bot token across cross-origin redirects.
  *
- * `downloadWithAuth` manually follows 3xx redirects and re-sends the Slack
+ * `downloadSlackUrl` manually follows 3xx redirects and re-sends the Slack
  * `Authorization: Bearer <botToken>` header to every redirect target with no
  * origin/host check, so a redirect to an attacker host leaks the xoxb token.
  *
  * These tests stub global.fetch with a per-call recorder and drive the private
- * `downloadWithAuth`. The cross-origin hop must NOT carry the Authorization
+ * `downloadSlackUrl`. The cross-origin hop must NOT carry the Authorization
  * header; a same-host Slack hop MUST keep it so legit downloads still auth.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { ChatInputBuilder } from './chat-input'
-const chatInput = new ChatInputBuilder(async () => undefined)
+import { downloadSlackUrl } from './chat-input'
 
 const DOWNLOAD_URL = 'https://files.slack.com/files-pri/T123-F456/secret.pdf'
 const TOKEN = 'xoxb-secret-token'
@@ -70,7 +69,7 @@ function installFetch(responses: Response[]): FetchCall[] {
   return calls
 }
 
-describe('SUP-232 downloadWithAuth redirect token handling', () => {
+describe('SUP-232 downloadSlackUrl redirect token handling', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
   })
@@ -84,7 +83,7 @@ describe('SUP-232 downloadWithAuth redirect token handling', () => {
       fakeResponse({ status: 200, body: Buffer.from('file-bytes') }),
     ])
 
-    const buf = await (chatInput as any).downloadWithAuth(DOWNLOAD_URL, TOKEN)
+    const buf = await downloadSlackUrl(DOWNLOAD_URL, TOKEN)
     expect(buf).not.toBeNull()
 
     const attackerCall = calls.find((c) => {
@@ -100,7 +99,7 @@ describe('SUP-232 downloadWithAuth redirect token handling', () => {
       fakeResponse({ status: 200, body: Buffer.from('file-bytes') }),
     ])
 
-    const buf = await (chatInput as any).downloadWithAuth(DOWNLOAD_URL, TOKEN)
+    const buf = await downloadSlackUrl(DOWNLOAD_URL, TOKEN)
     expect(buf).not.toBeNull()
 
     // First hop (the original Slack download URL) is authenticated.
