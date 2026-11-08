@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { AgentAvatar as AgentAvatarData } from '@shared/lib/types/agent-avatar'
 import { cn } from '@shared/lib/utils/cn'
 import { apiFetch } from '@renderer/lib/api'
+import { accountCandidates } from '@shared/lib/team-directory/candidate-schema'
 import type { Chip } from '@renderer/lib/chip-marker'
 import { useUser } from '@renderer/context/user-context'
 import { Popover, PopoverAnchor, PopoverContent } from '@renderer/components/ui/popover'
@@ -48,7 +49,8 @@ function useMentionCandidates({ agentSlug = '', members, agents }: ChipContext, 
       const qs = searched ? `?q=${encodeURIComponent(searched)}` : ''
       const res = await apiFetch(`/api/agents/${agentSlug}/access/search-users${qs}`)
       if (!res.ok) return []
-      return res.json()
+      // Team-directory people (no account yet) can't be mentioned yet.
+      return accountCandidates(await res.json())
     },
     enabled: canShare,
     placeholderData: (previous) => previous,

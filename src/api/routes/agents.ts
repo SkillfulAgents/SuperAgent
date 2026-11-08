@@ -15,7 +15,8 @@ import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-commen
 import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
-import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { getUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
 import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -1806,7 +1807,10 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
 
 // GET /api/agents/:id/access/search-users - List/search users for invite.
 // Without a query, returns all invitable users (teams are small enough to
-// show everyone as suggestions in the share popover).
+// show everyone as suggestions in the share popover). In auth mode, people in
+// connected team directories who have no account follow, as `kind:
+// 'directory'` with `notOnGamut`; an empty query also starts listing any
+// directory with nothing fresh cached, so the picker's next keystroke has them.
 agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
   try {
     const query = c.req.query('q')?.trim()
@@ -1820,7 +1824,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 
     const excludeIds = existingUserIds.map((r) => r.userId)
 
-    return c.json(await searchUserSummaries(query, excludeIds))
+    return c.json(await searchInviteCandidates(query, excludeIds))
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)

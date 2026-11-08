@@ -53,6 +53,7 @@ import {
   X,
 } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
+import { accountCandidates } from '@shared/lib/team-directory/candidate-schema'
 
 interface SearchUser {
   id: string
@@ -262,7 +263,8 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
       const qs = debouncedQuery ? `?q=${encodeURIComponent(debouncedQuery)}` : ''
       const res = await apiFetch(`/api/agents/${agentSlug}/access/search-users${qs}`)
       if (!res.ok) return []
-      return res.json()
+      // Team-directory people (no account yet) can't be shared with from here yet.
+      return accountCandidates(await res.json())
     },
     enabled: open && isAuthMode,
     // Keep the previous list on screen while the next query's fetch lands,

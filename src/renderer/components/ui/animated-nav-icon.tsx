@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import {
-  Activity, ArrowLeft, BadgeCheck, BarChart3, Bell, Blocks, Bolt, Brain,
+  Activity, ArrowLeft, BadgeCheck, BarChart3, Bell, Blocks, Bolt, BookUser, Brain,
   Compass, createLucideIcon, Cuboid, FlaskConical, KeyRound, Layers,
   LayoutGrid, ListTodo, LogOut, Logs, Mic, Mouse, MousePointer2, Plus,
   Route, ScrollText, Search, Settings, Shield, Smartphone, Sparkle,
@@ -116,6 +116,10 @@ const icons = {
   users: {
     icon: Users,
     motion: [move(['translateY(0)', 'translateY(-2px)', 'translateY(0)'], ':scope > *', 'center', 65)],
+  },
+  directory: {
+    icon: BookUser,
+    motion: [turn([0, -6, 4, 0], undefined, '20% 100%')],
   },
   shield: {
     icon: Shield,

@@ -1070,6 +1070,30 @@ export const todos = sqliteTable('todos', {
   sessionCheck: check('todos_session_check', sql`${table.sessionId} is null or (${table.agentSlug} is not null and ${table.status} <> 'draft')`),
 }))
 
+/**
+ * Team directories — a workspace's people as another system lists them
+ * (src/shared/lib/team-directory/). One row per connected workspace; the
+ * people themselves are never stored here, only cached in AppState.
+ */
+export const teamDirectories = sqliteTable('team_directories', {
+  id: text('id').primaryKey(),
+  provider: text('provider').notNull(), // A registered provider id, e.g. 'slack'
+  tenantId: text('tenant_id').notNull(), // The provider's workspace id (Slack team or enterprise)
+  tenantName: text('tenant_name').notNull(),
+  credentials: text('credentials').notNull(), // Sealed JSON (team-directory/credentials.ts)
+  // Bumped whenever the credentials change: cached listings are keyed by it,
+  // and a status write from a listing made with older credentials is dropped.
+  revision: integer('revision').notNull().default(1),
+  status: text('status', { enum: ['active', 'error'] }).notNull().default('active'),
+  errorMessage: text('error_message'),
+  createdByUserId: text('created_by_user_id').references(() => user.id, { onDelete: 'set null' }), // Null in local mode
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  providerTenantUnique: uniqueIndex('team_directories_provider_tenant_unique').on(table.provider, table.tenantId),
+}))
+export type TeamDirectoryRow = typeof teamDirectories.$inferSelect
+
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert

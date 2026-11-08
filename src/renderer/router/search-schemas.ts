@@ -141,6 +141,7 @@ export const SETTINGS_TABS = [
   'audit-log',
   'admin',
   'users',
+  'team-directory',
   'auth',
 ] as const
 
