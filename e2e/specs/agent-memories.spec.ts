@@ -4,6 +4,7 @@ import { AgentPage } from '../pages/agent.page'
 import { LocalAgentActor, type LocalActorDeps } from '../../src/shared/lib/agent-actor/local-agent-actor'
 import { getAgentWorkspaceDir } from '../../src/shared/lib/utils/file-storage'
 import { AGENT_MEMORY_DIR } from '../../src/shared/lib/agent-actor/memory-schema'
+import { openHomeAdvancedSettings } from '../helpers/agent-home'
 
 test('memories can be discovered, edited, and reloaded; stale saves keep the draft', async ({ page, request }) => {
   test.slow()
@@ -19,6 +20,7 @@ test('memories can be discovered, edited, and reloaded; stale saves keep the dra
   const actor = new LocalAgentActor(agent.slug, { getAgentWorkspaceDir } as LocalActorDeps)
   const files = actor.files
 
+  await openHomeAdvancedSettings(page)
   await page.getByTestId('home-memories-open-page').click()
   await expect(page.getByText('No memories yet')).toBeVisible()
   await files.putDoc(`${AGENT_MEMORY_DIR}/MEMORY.md`, '- [Writing style](style.md)\n')
@@ -67,6 +69,7 @@ test('memories can be discovered, edited, and reloaded; stale saves keep the dra
   await page.getByTestId('agent-breadcrumb').click()
   await page.getByRole('button', { name: 'Discard changes', exact: true }).click()
   await expect(page).toHaveURL(new RegExp('/agents/' + agent.slug + '$'))
+  await openHomeAdvancedSettings(page)
   await page.getByTestId('home-memories-open-page').click()
   await expect(page.getByRole('button', { name: /Writing style/ })).toBeVisible()
   await page.screenshot({ path: test.info().outputPath('memory-preview.png'), fullPage: true })

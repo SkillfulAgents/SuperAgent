@@ -1,11 +1,16 @@
 import { ProviderUsage } from './provider-usage'
 import { ProviderLogo } from './provider-logo'
 import { SubscriptionSignIn } from './subscription-sign-in'
+import { OllamaSetupPanel } from './ollama-setup-panel'
+import { OllamaModelsDialog } from './model-catalog/ollama-models-dialog'
+import { useServerStatus, type ModelServerTarget } from '@renderer/hooks/use-model-server'
+import { mergeInstalledModels } from '@shared/lib/llm-provider/ollama-catalog'
+import { normalizeOllamaBaseUrl } from '@shared/lib/llm-provider/ollama-schema'
 import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
-import { useCallback, useId, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -58,6 +63,7 @@ const providers = {
   'minimax-subscription': 'MiniMax Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
+  ollama: 'Ollama',
   generic: 'Generic',
 }
 // Example names for the connection-name placeholder.
@@ -70,6 +76,7 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'minimax-subscription': 'Personal MiniMax',
   openrouter: 'Shared OpenRouter',
   bedrock: 'Bedrock us-east-1',
+  ollama: 'Local Ollama',
   generic: 'Local vLLM server',
 }
 // Shown on the provider cards that open the Add connection flow.
@@ -82,6 +89,7 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'minimax-subscription': 'Sign in with your MiniMax account to use your Token Plan.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
+  ollama: 'Run open models on your own hardware, with no API key.',
   generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',
 }
 export function LlmConnectionsTab() {
@@ -425,6 +433,36 @@ function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void 
     </>
   )
 }
+// Rendered only for Ollama, so another provider's editor never polls for it.
+function OllamaConnectionSection({ connectionId, owner, baseUrl, onBaseUrlChange, modelsOpen, onModelsOpenChange, canDownload, onOverrides }: {
+  connectionId?: string
+  owner: string | null
+  baseUrl: string
+  onBaseUrlChange: (baseUrl: string) => void
+  modelsOpen: boolean
+  onModelsOpenChange: (open: boolean) => void
+  canDownload: boolean
+  onOverrides: (update: (current: CatalogOverrideEntry[]) => CatalogOverrideEntry[]) => void
+}) {
+  const target = useMemo<ModelServerTarget>(
+    () => ({ id: connectionId, connection: { provider: 'ollama', userId: owner, config: { apiKeys: { ollamaBaseUrl: baseUrl } } } }),
+    [connectionId, owner, baseUrl],
+  )
+  const status = useServerStatus(target)
+  const installed = status.data?.state === 'running' ? status.data.models : undefined
+  // Show what is installed while editing, so the default-model pickers can offer it
+  // before a save. Add-only: the server drops what was uninstalled, and knows which
+  // models a default still holds onto.
+  useEffect(() => {
+    if (installed) onOverrides(current => mergeInstalledModels(current, installed, { remove: false }))
+  }, [installed, onOverrides])
+  return (
+    <>
+      <OllamaSetupPanel target={target} baseUrl={baseUrl} onBaseUrlChange={onBaseUrlChange} onManageModels={() => onModelsOpenChange(true)} canDownload={canDownload} />
+      <OllamaModelsDialog open={modelsOpen} onOpenChange={onModelsOpenChange} target={target} canDownload={canDownload} />
+    </>
+  )
+}
 export function ConnectionEditor({
   existing,
   initialProvider,
@@ -494,6 +532,10 @@ export function ConnectionEditor({
   }
   const [region, setRegion] = useState(existing?.region ?? 'us-east-1')
   const [overrides, setOverrides] = useState<CatalogOverrideEntry[]>(existing?.modelOverrides ?? [])
+  const isOllama = provider === 'ollama'
+  // Only Ollama's address: another provider's saved URL need not pass Ollama's rules.
+  const [ollamaUrl, setOllamaUrl] = useState(() => normalizeOllamaBaseUrl(isOllama ? existing?.baseUrl : undefined))
+  const [ollamaModelsOpen, setOllamaModelsOpen] = useState(false)
   const catalog = withGlobalModelPricing(mergeCatalog(catalogFor(provider), overrides), modelPricing)
   const [browserModel, setBrowserModel] = useState(existing?.browserModel ?? '')
   const [dashboardModel, setDashboardModel] = useState(existing?.dashboardModel ?? '')
@@ -511,6 +553,7 @@ export function ConnectionEditor({
       if (provider === 'bedrock') apiKeys.bedrockApiKey = apiKey
     }
     if (provider === 'generic' && (!existing || baseUrl !== (existing.baseUrl ?? ''))) apiKeys.genericBaseUrl = baseUrl
+    if (isOllama && (!existing || ollamaUrl !== existing.baseUrl)) apiKeys.ollamaBaseUrl = ollamaUrl
     if (provider === 'bedrock') {
       if (!existing || region !== (existing.region ?? 'us-east-1')) apiKeys.bedrockRegion = region
       if (accessKey && secretKey && !apiKey) apiKeys.bedrockApiKey = ''
@@ -586,7 +629,19 @@ export function ConnectionEditor({
           </Select>
         </FieldRow>
       )}
-      {provider !== 'platform' && !isOAuthProvider(provider) && (
+      {isOllama && (
+        <OllamaConnectionSection
+          connectionId={existing?.id}
+          owner={owner}
+          baseUrl={ollamaUrl}
+          onBaseUrlChange={setOllamaUrl}
+          modelsOpen={ollamaModelsOpen}
+          onModelsOpenChange={setOllamaModelsOpen}
+          canDownload={admin}
+          onOverrides={setOverrides}
+        />
+      )}
+      {provider !== 'platform' && !isOAuthProvider(provider) && !isOllama && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiKey`}>{provider === 'claude-subscription' ? 'Subscription token' : 'API key'}</label>
           <div className="flex gap-2">
@@ -772,6 +827,7 @@ export function ConnectionEditor({
               providerId={provider}
               llmProviderId={existing?.id}
               supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || isOAuthProvider(provider))}
+              managedModels={isOllama ? { description: 'Every model Ollama has downloaded is listed here. Uncheck any agents should not use.', sectionLabel: 'Downloaded', priceText: 'Runs locally', addLabel: admin ? 'Download models' : 'View models', onAdd: () => setOllamaModelsOpen(true) } : undefined}
               builtinCatalog={catalogFor(provider)}
               effectiveCatalog={catalog}
               modelCatalog={{ [provider]: { overrides } }}

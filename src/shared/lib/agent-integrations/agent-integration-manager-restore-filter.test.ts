@@ -49,6 +49,9 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import type { ChatAgentIntegration } from '../chat-integrations/chat-agent-integration'
 
 const INT = 'int-restore-test'

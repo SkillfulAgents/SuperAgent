@@ -1233,7 +1233,7 @@ describe('cleanupStaleTempUploads, for the layout before manifests', () => {
 
 describe('startStaleUploadCleanup', () => {
   it('sweeps now and every 30 minutes until stopped, and a second start adds nothing', async () => {
-    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: T0 })
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], now: T0 })
     const store = memoryByteStore()
     const list = vi.spyOn(store, 'list')
     setUploadByteStore(store)
@@ -1277,13 +1277,14 @@ describe('startStaleUploadCleanup', () => {
   })
 
   it('holds no process open', async () => {
-    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
     setUploadByteStore(memoryByteStore())
 
     startStaleUploadCleanup()
     await backgroundSettled()
 
-    const timer = setIntervalSpy.mock.results[0]!.value as NodeJS.Timeout
+    const nextSweep = setTimeoutSpy.mock.calls.findIndex(([, delay]) => delay === 30 * MINUTE)
+    const timer = setTimeoutSpy.mock.results[nextSweep]!.value as NodeJS.Timeout
     expect(timer.hasRef()).toBe(false)
   })
 })

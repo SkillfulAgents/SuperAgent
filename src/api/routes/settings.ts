@@ -6,6 +6,7 @@ import { listConnectionsWithSelection } from '@shared/lib/llm-provider/connectio
 import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
 import os from 'os'
 import path from 'path'
+import { hostFiles } from '@shared/lib/blob-store/blob-store'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
@@ -14,7 +15,6 @@ import { getLlmProvider, allProviderInfoFrom, GenericLlmProvider } from '@shared
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
-import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { addAgentUsers } from '@shared/lib/services/agent-members-service'
 import { isPublicVolume } from '@shared/lib/services/volume-service'
@@ -84,9 +84,7 @@ const MODEL_ICON_EXTENSION_MIME_TYPES: Record<string, string> = {
 }
 const UPLOADED_MODEL_ICON_FILENAME_RE = /^[a-f0-9-]+\.(?:svg|png|jpg|jpeg|webp)$/
 
-function getModelIconsDataDir(): string {
-  return path.join(getDataDir(), 'model-icons')
-}
+const modelIconFiles = hostFiles('model-icons')
 
 function isUploadedFile(value: unknown): value is File {
   return typeof value === 'object' &&
@@ -118,11 +116,9 @@ async function serveUploadedModelIcon(c: Context) {
       return c.json({ error: 'Invalid model icon filename' }, 400)
     }
 
-    // Defense-in-depth: the filename regex already forbids separators/traversal,
-    // but contain the join under the icons dir before reading, per house style.
-    const iconsDir = getModelIconsDataDir()
-    const filePath = assertPathWithinDir(iconsDir, path.join(iconsDir, fileName), 'Invalid model icon filename')
-    const bytes = await fs.promises.readFile(filePath)
+    // The filename regex already forbids separators and traversal; hostFiles refuses them too.
+    const bytes = await modelIconFiles.read(fileName)
+    if (!bytes) return c.json({ error: 'Model icon not found' }, 404)
     // Names are minted as randomUUID().ext, so a name really does address one
     // immutable body — but the route is authenticated, so keep the year-long
     // entry out of shared caches and in the requesting browser only.
@@ -130,11 +126,8 @@ async function serveUploadedModelIcon(c: Context) {
     c.header('Content-Security-Policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
     c.header('Content-Type', mimeType)
     c.header('X-Content-Type-Options', 'nosniff')
-    return c.body(bytes)
+    return c.body(new Uint8Array(bytes))
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return c.json({ error: 'Model icon not found' }, 404)
-    }
     console.error('Failed to read model icon:', error)
     return c.json({ error: 'Failed to read model icon' }, 500)
   }
@@ -302,13 +295,7 @@ settings.post('/model-icons', async (c) => {
     }
 
     const fileName = `${randomUUID()}.${extension}`
-    const dataDir = getModelIconsDataDir()
-    await fs.promises.mkdir(dataDir, { recursive: true })
-    await fs.promises.writeFile(
-      path.join(dataDir, fileName),
-      Buffer.from(await maybeFile.arrayBuffer()),
-      { mode: 0o600 },
-    )
+    await modelIconFiles.write(fileName, Buffer.from(await maybeFile.arrayBuffer()))
 
     return c.json({ icon: `${MODEL_ICON_UPLOAD_PREFIX}${fileName}` })
   } catch (error) {

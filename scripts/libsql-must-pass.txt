@@ -32,6 +32,7 @@ src/api/routes/agent-integration-relay-setup.test.ts
 src/shared/lib/services/scheduled-task-service.overlap-guard.test.ts
 src/shared/lib/services/scheduled-task-service.parser-upgrade.test.ts
 src/shared/lib/scheduler/task-scheduler.parser-upgrade.test.ts
+src/shared/lib/scheduler/task-scheduler.wakeups.test.ts
 src/shared/lib/agent-integrations/lifecycle.test.ts
 src/shared/lib/task-manager-integrations/linear/client.test.ts
 src/shared/lib/task-manager-integrations/linear/linear-agent-integration.test.ts
@@ -79,6 +80,7 @@ src/shared/lib/services/notification-service-mentions.test.ts
 src/shared/lib/services/notification-service-type-filters.test.ts
 src/shared/lib/services/connection-sync-service.resume.test.ts
 src/shared/lib/auth/password-session.integration.test.ts
+src/shared/lib/auth/session-cookie-cache.integration.test.ts
 src/shared/lib/auth/oidc.integration.test.ts
 src/shared/lib/auth/oidc-issuer-policy.integration.test.ts
 src/shared/lib/auth/oidc-discovery-timeout.integration.test.ts
@@ -102,3 +104,4 @@ src/shared/lib/services/notification-service-changes.test.ts
 src/api/routes/meeting-participant.test.ts
 src/shared/lib/meeting-integrations/meeting-agent-integration.test.ts
 src/shared/lib/services/session-participants-service.test.ts
+src/shared/lib/llm-provider/ollama-catalog-sync.test.ts

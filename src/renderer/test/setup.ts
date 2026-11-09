@@ -36,6 +36,15 @@ if (typeof window === 'undefined') {
     await closeAppState()
     await initializeLocalAppState()
   })
+
+  // The same for scheduled work: a fresh manager with nothing registered and
+  // dispatch on, so no timer crosses tests. A test registers the tasks it uses.
+  beforeEach(async () => {
+    const { closeBackgroundWork, initializeBackgroundWork } = await import('@shared/lib/background-work/global')
+    const { LocalTaskManager } = await import('@shared/lib/background-work/local-task-manager')
+    await closeBackgroundWork()
+    await initializeBackgroundWork(new LocalTaskManager())
+  })
 }
 
 // jsdom has no matchMedia; components read it via useIsMobile() and

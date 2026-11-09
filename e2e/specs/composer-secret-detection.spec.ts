@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
 import { mockRecorder } from '../helpers/mock-recorder'
+import { openHomeAdvancedSettings } from '../helpers/agent-home'
 
 interface MockRecord {
   type: 'sendMessage' | 'createSession'
@@ -135,6 +136,7 @@ test.describe('composer secret detection', () => {
     await paste(input, `${prefix} ${marker}`)
     await expect(input.locator('[data-unbacked]')).toHaveCount(0)
 
+    await openHomeAdvancedSettings(page)
     await page.getByTestId('home-secrets-open-page').click()
     await page.getByTestId('secret-menu-API_KEY').click()
     await page.getByTestId('delete-secret-API_KEY').click()

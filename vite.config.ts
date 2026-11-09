@@ -76,15 +76,19 @@ export default defineConfig({
       // Before the API plugin, so its middleware runs first: the dev server is
       // an entry point like the web server and Electron main, and opening the
       // database, then initializing AppState, then installing key custody,
-      // are its first boot steps. /api requests wait for them. Re-checked per
-      // request because an edit under src/shared/lib/db (or keys) makes Vite
-      // re-instantiate that module with nothing open (AppState keeps its
-      // instance on globalThis, so it survives one).
+      // then task dispatch, are its first boot steps. /api requests wait for
+      // them. Re-checked per request because an edit under src/shared/lib/db
+      // (or keys) makes Vite re-instantiate that module with nothing open
+      // (AppState and task dispatch keep their instances on globalThis, so
+      // they survive one).
       name: 'server-lifecycle',
       configureServer(server) {
         const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')
         const appStateModule = path.resolve(__dirname, 'src/shared/lib/app-state/index.ts')
         const keysModule = path.resolve(__dirname, 'src/shared/lib/keys/install-server-key-manager.ts')
+        const backgroundWorkModule = path.resolve(__dirname, 'src/shared/lib/background-work/index.ts')
+        const localTaskManagerModule = path.resolve(__dirname, 'src/shared/lib/background-work/local-task-manager.ts')
+        const startupModule = path.resolve(__dirname, 'src/shared/lib/startup.ts')
         const ensureBooted = async () => {
           const { isDatabaseOpen, openDatabase } = await server.ssrLoadModule(dbModule)
           if (!isDatabaseOpen()) {
@@ -99,6 +103,15 @@ export default defineConfig({
           // Concurrent requests share one install (ensureKeyManager).
           const { installServerKeyManager } = await server.ssrLoadModule(keysModule)
           await installServerKeyManager()
+          // Then task dispatch, as the web server does: a request can schedule work.
+          const { isBackgroundWorkInitialized, initializeBackgroundWork } = await server.ssrLoadModule(backgroundWorkModule)
+          const { LocalTaskManager } = await server.ssrLoadModule(localTaskManagerModule)
+          // Checked and installed in one step: it is installed before the call returns.
+          if (!isBackgroundWorkInitialized()) {
+            await initializeBackgroundWork(new LocalTaskManager())
+          }
+          const { registerBackgroundWork } = await server.ssrLoadModule(startupModule)
+          registerBackgroundWork()
         }
         server.middlewares.use((req, res, next) => {
           if (!req.url?.startsWith('/api')) return next()
@@ -120,7 +133,7 @@ export default defineConfig({
         })
         if (server.httpServer) {
           ensureBooted()
-            .then(() => server.ssrLoadModule(path.resolve(__dirname, 'src/shared/lib/startup.ts')))
+            .then(() => server.ssrLoadModule(startupModule))
             .then(({ setupServerHandlers, afterBindInitialize }) => {
               setupServerHandlers(server.httpServer as any)
               void afterBindInitialize()
@@ -130,9 +143,7 @@ export default defineConfig({
             })
         }
         server.httpServer?.on('close', async () => {
-          const { shutdownServices } = await server.ssrLoadModule(
-            path.resolve(__dirname, 'src/shared/lib/startup.ts'),
-          )
+          const { shutdownServices } = await server.ssrLoadModule(startupModule)
           await shutdownServices()
           console.log('All services stopped.')
         })

@@ -9,7 +9,7 @@
  * Bearer <token>. The route resolves the caller's agent slug from that token and
  * applies xAgentPolicies + ACLs accordingly.
  */
-import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -64,6 +64,7 @@ import {
   pageTranscript,
 } from './x-agent-transcript-view'
 import { awaitReview } from '@shared/lib/proxy/review-request'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -226,19 +227,19 @@ async function checkAgentPolicy(
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
+    if (decision === 'allow') return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
 
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+    const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
-    if (userDecision === 'deny') {
-      return { allowed: false, reason: 'Denied by user' }
+    if (review.decision === 'deny') {
+      return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }
     // A Block set while the card was open beats the approval.
     if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {

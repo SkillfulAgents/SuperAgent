@@ -37,7 +37,8 @@ export function HomeHooks({ agentSlug, isOwner, className }: HomeHooksProps) {
   const hasBlockingHook = hooks.some((h) => BLOCKING_HOOK_EVENTS.has(h.event))
 
   return (
-    <HomeCollapsible title="Hooks" className={className}>
+    // Open from the start when a hook can block messages, so the warning is seen.
+    <HomeCollapsible id="hooks" title="Hooks" count={hooks.length} defaultOpen={hasBlockingHook} className={className}>
       {hasBlockingHook && (
         <div className="mt-2 mx-4 flex items-start gap-2 rounded-card bg-amber-500/10 p-2.5" data-testid="home-hooks-warning">
           <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
@@ -96,7 +97,7 @@ function HookRow({ hook, isOwner, onRemove, isRemoving }: HookRowProps) {
 
   return (
     <>
-      <div className="group relative py-3 px-4 hover:bg-muted/50 transition-colors" data-testid="home-hooks-row">
+      <div className="group relative py-3 px-4" data-testid="home-hooks-row">
         <div className="flex items-center gap-2">
           {isBlocking ? (
             <TriangleAlert className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
