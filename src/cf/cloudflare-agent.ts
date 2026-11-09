@@ -7,9 +7,12 @@
  * object's SQLite. It is restored before the agent launches; each change is saved a moment after it
  * happens, and the whole workspace again before the container stops. While the agent sleeps, its files are
  * read and written here (the stored* methods).
+ *
+ * The container app uses the durable_object scheduling policy: this object starts its container on
+ * the image the current deploy names, and Cloudflare never rolls a running container onto a new
+ * image. A running container keeps its image until it stops; the next start uses the new one.
  */
-import { Container, type StopParams } from '@cloudflare/containers'
-import type { DurableObjectState } from 'cloudflare:workers'
+import { DurableObject, type Container, type DurableObjectState, type WorkerWebSocket } from 'cloudflare:workers'
 import { ASLEEP_HEADER, type ByteRange, type StoredEntry } from './cloudflare-container-control'
 import type { Env } from './index'
 
@@ -19,8 +22,15 @@ const CONTAINER_INTERNAL_PORT = 3000
 // agent-container/cloudflare/snapshot-server.mjs: restores and saves /workspace, then launches the agent.
 const SNAPSHOT_PORT = 8090
 const SNAPSHOT_SERVER = ['node', '/opt/gamut/cloudflare/snapshot-server.mjs']
-// The library polls a starting container every 300 ms; a boot waits twice.
-const BOOT_POLL_MS = 50
+// How often a boot checks whether a port in the starting container answers, and for how long.
+const PORT_POLL_MS = 50
+const PORT_WAIT_MS = 120_000
+// The runtime stops the container once this object has been quiet this long; SuperAgent's own idle check sleeps the agent sooner.
+const INACTIVITY_TIMEOUT_MS = 30 * 60_000
+const INSTANCE = 'standard-1'
+// The hosts the container calls this deploy on: the API, and the saved workspace's bytes.
+const HOST = 'host.internal'
+const WORKSPACE = 'workspace.internal'
 // R2 deletes at most 1,000 keys per call.
 const DELETE_BATCH = 1000
 // Mode of a file first written while the agent sleeps.
@@ -51,8 +61,8 @@ export function workspaceBlobKey(objectId: string, hash: string): string {
 }
 
 /**
- * The container's requests to http://workspace.internal. They run in the Worker (the library's
- * ContainerProxy is a Worker entrypoint), so file bytes go between the container and R2 there,
+ * The container's requests to http://workspace.internal. They run in the Worker (AgentContainerOutbound
+ * is a Worker entrypoint), so file bytes go between the container and R2 there,
  * never through this object: it keeps only the file list, so a large save neither fills its
  * memory nor holds its one thread.
  */
@@ -90,13 +100,40 @@ async function serveHostRequest(request: Request, env: Env): Promise<Response> {
   return app.serveContainerRequest(request, env)
 }
 
-export class AgentDurableObject extends Container<Env> {
-  defaultPort = CONTAINER_INTERNAL_PORT
-  entrypoint = SNAPSHOT_SERVER
-  // The library stops an idle container after this long; the agent's own idle alarm is SuperAgent's.
-  sleepAfter = '30m'
-  enableInternet = true
+/** A container's call to one of this deploy's hosts (AgentContainerOutbound, in the Worker). */
+export function serveContainerCall(request: Request, env: Env, containerId: string): Promise<Response> {
+  const { hostname } = new URL(request.url)
+  if (hostname === HOST) return serveHostRequest(request, env)
+  if (hostname === WORKSPACE) return serveWorkspaceRequest(request, env, containerId)
+  return Promise.resolve(new Response(null, { status: 404 }))
+}
 
+/** A WebSocket the container answered, bridged to a new one for the caller, as a Response can carry only one this request owns. */
+function bridgeWebSocket(response: Response, containerSocket: WorkerWebSocket): Response {
+  const pair = new WebSocketPair()
+  const [client, server] = [pair[0], pair[1]]
+  containerSocket.accept()
+  server.accept()
+  const forward = (from: WorkerWebSocket, to: WorkerWebSocket) => {
+    from.addEventListener('message', (event) => {
+      try {
+        to.send(event.data)
+      } catch {
+        from.close(1011, 'the other side of the socket is gone')
+      }
+    })
+    // 1005 and 1006 are reserved: they cannot be sent in a close frame.
+    from.addEventListener('close', (event) => to.close(event.code === 1005 || event.code === 1006 ? 1000 : event.code, event.reason))
+    from.addEventListener('error', () => to.close(1011, 'socket error'))
+  }
+  forward(server, containerSocket)
+  forward(containerSocket, server)
+  return new Response(null, { status: response.status, headers: response.headers, webSocket: client } as ResponseInit)
+}
+
+export class AgentDurableObject extends DurableObject<Env> {
+  // Set while this object watches its running container, so it hears the container exit.
+  private watching: Promise<void> | undefined
   private starting: Promise<void> | undefined
   // From the moment a stop begins until the container has exited: a request reaching the exiting
   // container would get errors, not an asleep answer.
@@ -109,13 +146,6 @@ export class AgentDurableObject extends Container<Env> {
   // Restoring on wake and changing the saved workspace take turns, so a change can't land after a restore read the list.
   private storeLock: Promise<unknown> = Promise.resolve()
 
-  static {
-    this.outboundByHost = {
-      'host.internal': (request: Request, env: Env) => serveHostRequest(request, env),
-      'workspace.internal': (request: Request, env: Env, ctx: { containerId: string }) => serveWorkspaceRequest(request, env, ctx.containerId),
-    }
-  }
-
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     const sql = ctx.storage.sql
@@ -123,18 +153,20 @@ export class AgentDurableObject extends Container<Env> {
     sql.exec('CREATE TABLE IF NOT EXISTS workspace_meta (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)')
     // File bytes stored in R2 but not yet in the file list: a save or write that fails leaves them behind.
     sql.exec('CREATE TABLE IF NOT EXISTS workspace_pending (hash TEXT PRIMARY KEY)')
+    // The container outlives this object's memory: a restarted object routes its calls and watches it again.
+    if (ctx.container?.running) void ctx.blockConcurrencyWhile(() => this.adoptContainer())
   }
 
   // Only startAgent may start the container: anything else reaching a stopped one would start it
   // with no env, no restore and no agent. Until the agent is up it reads as asleep.
-  override async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request): Promise<Response> {
     if (!(await this.agentRunning())) return new Response(null, { status: 503, headers: { [ASLEEP_HEADER]: '1' } })
-    return super.fetch(request)
+    return this.containerFetch(request, CONTAINER_INTERNAL_PORT)
   }
 
-  override onStop(params: StopParams): void {
+  private onContainerExit(outcome: string): void {
     this.launched = false
-    console.log(`[AgentDurableObject ${this.agentName()}] container exited (code ${params.exitCode}, ${params.reason})`)
+    console.log(`[AgentDurableObject ${this.agentName()}] container exited (${outcome})`)
   }
 
   startAgent(envVars: Record<string, string>): Promise<void> {
@@ -152,10 +184,10 @@ export class AgentDurableObject extends Container<Env> {
       // Running without a launched agent: it was not started here, so it has neither the env nor the workspace.
       await this.destroy()
     }
-    await this.startAndWaitForPorts({ ports: SNAPSHOT_PORT, startOptions: { envVars }, cancellationOptions: { waitInterval: BOOT_POLL_MS } })
+    await this.startContainer(envVars)
     await this.withStore(() => this.restoreWorkspace())
     await this.containerFetch(new Request('http://container/launch', { method: 'POST' }), SNAPSHOT_PORT)
-    await this.waitForPort({ portToCheck: CONTAINER_INTERNAL_PORT, waitInterval: BOOT_POLL_MS })
+    await this.waitForPort(CONTAINER_INTERNAL_PORT)
     this.launched = true
     console.log(`[AgentDurableObject ${this.agentName()}] agent launched`)
   }
@@ -180,11 +212,6 @@ export class AgentDurableObject extends Container<Env> {
   async agentRunning(): Promise<boolean> {
     if (this.stopping) return false
     return this.agentUp()
-  }
-
-  // A stop that fails leaves the container running; the library renews the timeout, so it is tried again then.
-  override async onActivityExpired(): Promise<void> {
-    await this.stopAgent().catch((error: unknown) => console.error(`[AgentDurableObject ${this.agentName()}] idle stop failed:`, error))
   }
 
   /** Records bytes the Worker is about to store for this agent (serveWorkspaceRequest). */
@@ -351,8 +378,73 @@ export class AgentDurableObject extends Container<Env> {
   }
 
   private async containerUp(): Promise<boolean> {
-    const { status } = await this.getState()
-    return status === 'running' || status === 'healthy'
+    return this.container.running
+  }
+
+  private get container(): Container {
+    const container = this.ctx.container
+    if (!container) throw new Error('AgentDurableObject has no container: its Worker config links none')
+    return container
+  }
+
+  // Calls to the deploy's hosts are routed before the container starts, as it may call them at once.
+  private async startContainer(env: Record<string, string>): Promise<void> {
+    await this.routeContainerCalls()
+    this.container.start({ image: this.container.images.agent, instance: INSTANCE, enableInternet: true, entrypoint: SNAPSHOT_SERVER, env })
+    this.watchContainer()
+    await this.container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS)
+    await this.waitForPort(SNAPSHOT_PORT)
+  }
+
+  private async adoptContainer(): Promise<void> {
+    await this.routeContainerCalls()
+    await this.container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS)
+    this.watchContainer()
+  }
+
+  private async routeContainerCalls(): Promise<void> {
+    const outbound = this.ctx.exports.AgentContainerOutbound({ props: { containerId: this.ctx.id.toString() } })
+    for (const host of [HOST, WORKSPACE]) await this.container.interceptOutboundHttp(host, outbound)
+  }
+
+  private watchContainer(): void {
+    this.watching ??= this.container.monitor().then(
+      () => this.onContainerExit('code 0'),
+      (error: unknown) => this.onContainerExit(String(error)),
+    ).finally(() => {
+      this.watching = undefined
+    })
+  }
+
+  // start() returns before the process listens: a port is ready once a request to it gets any answer.
+  private async waitForPort(port: number): Promise<void> {
+    const deadline = Date.now() + PORT_WAIT_MS
+    for (;;) {
+      if (!this.container.running) throw new Error(`The container of agent ${this.agentName()} exited while starting`)
+      try {
+        const response = await this.container.getTcpPort(port).fetch(new Request('http://container/'))
+        await response.body?.cancel()
+        return
+      } catch (error) {
+        if (Date.now() > deadline) throw new Error(`Port ${port} of agent ${this.agentName()}'s container did not open`, { cause: error })
+        await new Promise((resolve) => setTimeout(resolve, PORT_POLL_MS))
+      }
+    }
+  }
+
+  private async containerFetch(request: Request, port: number): Promise<Response> {
+    const response = await this.container.getTcpPort(port).fetch(new Request(request.url.replace('https:', 'http:'), request))
+    const socket = (response as Response & { webSocket?: WorkerWebSocket | null }).webSocket
+    return socket ? bridgeWebSocket(response, socket) : response
+  }
+
+  /** Asks the container to stop (SIGTERM); its snapshot server saves the last changes, then exits. */
+  private async stop(): Promise<void> {
+    this.container.signal(15)
+  }
+
+  private async destroy(): Promise<void> {
+    await this.container.destroy()
   }
 
   private async agentLaunched(): Promise<boolean> {

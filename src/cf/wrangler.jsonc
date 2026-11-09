@@ -42,8 +42,9 @@
       { "name": "AGENT", "class_name": "AgentDurableObject" }
     ]
   },
-  // The normal agent image; it starts with agent-container/cloudflare/snapshot-server.mjs (cloudflare-agent.ts).
-  "containers": [{ "class_name": "AgentDurableObject", "image": "../../agent-container/Dockerfile", "instance_type": "standard-1", "max_instances": 20 }],
+  // The normal agent image, which each agent's object starts with agent-container/cloudflare/snapshot-server.mjs
+  // (cloudflare-agent.ts). durable_object policy: a deploy never rolls a running container onto the new image.
+  "containers": [{ "name": "superagent-agent", "class_name": "AgentDurableObject", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "../../agent-container/Dockerfile" } } }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject", "AgentDurableObject"] }],
   "observability": { "enabled": true }
 }

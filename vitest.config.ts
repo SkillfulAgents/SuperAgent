@@ -34,8 +34,6 @@ export default defineConfig({
     hookTimeout: 30_000,
     reporters: isGithubActions ? ['dot', 'github-actions', 'json'] : ['default'],
     outputFile: { json: 'test-results/unit/vitest-results.json' },
-    // Loads cloudflare:workers, which only the alias below provides.
-    server: { deps: { inline: ['@cloudflare/containers'] } },
     coverage: {
       provider: 'v8',
       reporter: isGithubActions ? ['json-summary', 'json'] : ['text', 'json-summary', 'json'],

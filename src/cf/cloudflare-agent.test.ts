@@ -126,17 +126,6 @@ describe('AgentDurableObject stop', () => {
     await expect(object.stopAgent()).rejects.toThrow('Saving the workspace of agent sales agent failed')
     expect(calls).toEqual(['save'])
   })
-
-  it('logs a failed idle stop, so the library renews the timeout and tries again', async () => {
-    const { object, calls } = agent(false)
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-
-    await object.onActivityExpired()
-
-    expect(calls).toEqual(['save'])
-    expect(error).toHaveBeenCalledWith('[AgentDurableObject sales agent] idle stop failed:', expect.any(Error))
-    error.mockRestore()
-  })
 })
 
 /** The object's SQLite in memory, with the tables its constructor makes. */

@@ -4,12 +4,11 @@
  * loads on the first API request (boot.ts): evaluating it while the Worker starts goes over the
  * startup CPU limit.
  */
-import { ContainerProxy as LibraryContainerProxy } from '@cloudflare/containers'
-import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher, R2Bucket } from 'cloudflare:workers'
+import { WorkerEntrypoint, type D1Database, type DurableObjectNamespace, type ExecutionContext, type ExportedHandler, type Fetcher, type R2Bucket } from 'cloudflare:workers'
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './cloudflare-app-state'
-import type { AgentDurableObject } from './cloudflare-agent'
+import { serveContainerCall, type AgentDurableObject } from './cloudflare-agent'
 import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
 import { logErrorsAsText } from './error-logs'
 
@@ -18,13 +17,13 @@ export { TaskManagerDurableObject } from './cloudflare-task-manager'
 export { AgentDurableObject } from './cloudflare-agent'
 
 /**
- * @cloudflare/containers routes a container's outbound requests (AgentDurableObject's
- * outboundByHost) through this entrypoint, by this name. The work they leave running keeps the
- * invocation alive.
+ * A container's calls to http://host.internal and http://workspace.internal, which its
+ * AgentDurableObject routes here (ctx.exports, by this name). The work they leave running keeps
+ * the invocation alive.
  */
-export class ContainerProxy extends LibraryContainerProxy {
-  override fetch(request: Request): Promise<Response> {
-    return runWithBackground(this.ctx, () => super.fetch(request))
+export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string }> {
+  fetch(request: Request): Promise<Response> {
+    return runWithBackground(this.ctx, () => serveContainerCall(request, this.env, this.ctx.props.containerId))
   }
 }
 
