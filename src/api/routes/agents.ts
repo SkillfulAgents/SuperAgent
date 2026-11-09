@@ -51,7 +51,6 @@ import {
   getAgentRecord,
   updateAgent,
   updateAgentAvatar,
-  deleteAgent,
   agentExists,
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
@@ -86,7 +85,6 @@ import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
 import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -246,7 +244,6 @@ import { cleanUserReason } from '@shared/lib/proxy/user-reason'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePolicy,
-  deletePoliciesForAgent,
   deleteTargetPolicy,
   evaluate as evaluateXAgentPolicy,
   listPoliciesForCaller,
@@ -282,6 +279,8 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { removeAgent } from '../lib/remove-agent'
+import { createOwnerAclOrRollback } from '../lib/owner-acl'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
@@ -289,15 +288,11 @@ import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
-import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
-import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
-import { stopInstanceOnAllProviders } from '../../main/host-browser'
-import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -1284,60 +1279,6 @@ Respond with ONLY those two lines. No labels, no quotes, no explanation.`,
 // 404s if it doesn't resolve — subsumes the old existence check.
 agents.use('/:id/*', ResolveAgent())
 
-// Create owner ACL entry when an agent is created in auth mode
-async function createOwnerAcl(c: Context, agentSlug: string) {
-  if (!isAuthMode()) return
-  const userId = getCurrentUserId(c)
-  await db.insert(agentAcl).values({
-    id: randomUUID(),
-    userId,
-    agentSlug,
-    role: 'owner',
-    createdAt: new Date(),
-  })
-  // Notification streams load the user's agents when they open; this tells
-  // the creator's open streams to load again and follow the new agent.
-  announceAgentCreated(agentSlug, [userId])
-}
-
-// Insert the owner ACL for a just-created agent, rolling back the on-disk
-// workspace if the ACL write fails. Agent creation writes the workspace
-// (directory + AGENTS.md) before the ACL row exists; without this, a transient
-// ACL insert failure would return 500 but leave an orphaned agent directory
-// with no owner ACL (SUP-207). The cleanup is best-effort and guarded so a
-// failed rollback never masks the original error. In non-auth mode
-// createOwnerAcl is a no-op, so this never rolls back there.
-async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
-  try {
-    await createOwnerAcl(c, agentSlug)
-  } catch (error) {
-    const userId = getCurrentUserId(c)
-    let rolledBack = true
-    try {
-      await deleteAgent(agentSlug)
-    } catch (cleanupError) {
-      // Rollback failed: the agent workspace is now orphaned (exists on disk with
-      // no owner ACL). This is the worst case and needs operator attention, so
-      // report it as a distinct error (the original ACL failure is reported below).
-      rolledBack = false
-      console.error(`Failed to roll back orphaned agent workspace "${agentSlug}" after owner ACL insert failed:`, cleanupError)
-      captureException(cleanupError, {
-        tags: { component: 'agents', operation: 'owner-acl-rollback' },
-        extra: { agentSlug, userId, originalError: error instanceof Error ? error.message : String(error) },
-        level: 'error',
-      })
-    }
-    // Report the ACL insert failure itself. A clean rollback is a recovered
-    // failure (warning); a failed rollback left an orphan behind (error).
-    captureException(error, {
-      tags: { component: 'agents', operation: 'owner-acl-insert' },
-      extra: { agentSlug, userId, rolledBack },
-      level: rolledBack ? 'warning' : 'error',
-    })
-    throw error
-  }
-}
-
 /**
  * Name a session opened by a system notice (voice mode started from the
  * agent home) from the first message a person sends to it. The notice must
@@ -1550,36 +1491,12 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    // The container is stopped, and its runtime forgotten, inside deleteAgent
-    // below: forgetting it here first would leave the stop to a fresh runtime
-    // while the old client's callbacks still pointed at the dropped one.
-
-    // Clean up proxy token (best-effort — a revoked token is harmless on its own).
-    try {
-      await revokeProxyToken(slug)
-    } catch (error) {
-      console.error('Failed to revoke proxy token:', error)
-    }
-
-    // Clean up x-agent invoke policies referencing this agent (caller or target).
-    await deletePoliciesForAgent(slug)
-
     // Turning Team Brain off: no other agent keeps reading a brain that no longer syncs. The drive and its files stay.
     const teamBrain = await getTeamBrain()
     // Running agents drop it on their next start.
     if (teamBrain?.agentSlug === slug) for (const agent of await releaseVolume(teamBrain.volumeId, slug)) await afterMountChange(agent)
 
-    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
-    // This runs BEFORE the irreversible workspace removal: if any peripheral
-    // cleanup throws, the route returns 500 with the workspace still intact, so
-    // the delete is safely retryable instead of leaving orphaned rows pointing
-    // at a workspace that no longer exists (SUP-208).
-    await cleanupAgentData(slug)
-
-    // Irreversible: remove the agent workspace directory. Done LAST so it only
-    // happens once every peripheral cleanup above has succeeded.
-    const deleted = await deleteAgent(slug)
-    if (!deleted) {
+    if (!(await removeAgent(slug))) {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
@@ -1588,19 +1505,6 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       if (settings.teamBrain?.agentSlug !== slug) return false
       delete settings.teamBrain
     })
-
-    // Remove the agent's dedicated host-browser Chrome profile. The container
-    // teardown above only stops the browser on the ACTIVE provider — a Chrome
-    // launched before the user switched providers survives it — so stop this
-    // agent's browser on every provider first. deleteBrowserProfile itself
-    // refuses profiles claimed by an in-flight launch. Best-effort throughout:
-    // a leftover dir is reclaimed by a later startup sweep.
-    try {
-      await stopInstanceOnAllProviders(slug)
-      await deleteBrowserProfile(slug)
-    } catch (error) {
-      console.error('Failed to delete host-browser profile:', error)
-    }
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
     return c.body(null, 204)
