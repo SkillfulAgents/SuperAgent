@@ -46,5 +46,7 @@
   // (cloudflare-agent.ts). durable_object policy: a deploy never rolls a running container onto the new image.
   "containers": [{ "name": "superagent-agent", "class_name": "AgentDurableObject", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "../../agent-container/Dockerfile" } } }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject", "AgentDurableObject"] }],
+  // An object on older code restarts when a caller on a newer deploy reaches it (object-version.ts).
+  "version_metadata": { "binding": "VERSION" },
   "observability": { "enabled": true }
 }
