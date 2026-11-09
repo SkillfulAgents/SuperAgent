@@ -73,7 +73,7 @@ afterEach(() => vi.useRealTimers())
 describe('Live session hook', () => {
   it('flushes message text while background work continues but cues only the host outcome', async () => {
     const { adapter, rerender, unmount } = setup()
-    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Research.' }) })
+    await act(async () => { await adapter.callbacks.onRequest({ text: 'Research.', mode: 'interrupt' }) })
     const render = () => rerender({ active: true, paused: false })
     mocks.stream = { ...mocks.stream, isActive: true, isWaitingBackground: false, streamingMessage: 'Starting research.' }
     render()
@@ -98,7 +98,7 @@ describe('Live session hook', () => {
     mocks.stream = { ...mocks.stream, isActive: true, isWaitingBackground: true }
     rerender({ active: true, paused: false })
     expect(result.current.hold.allowed).toBe(true)
-    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'A follow-up.' }) })
+    await act(async () => { await adapter.callbacks.onRequest({ text: 'A follow-up.', mode: 'interrupt' }) })
     expect(mocks.interrupt).not.toHaveBeenCalled()
     unmount()
   })
@@ -115,7 +115,7 @@ describe('Live session hook', () => {
 
   it('delivers work completed during a request-card pause on resume', async () => {
     const { adapter, rerender, unmount } = setup()
-    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Prepare the draft.' }) })
+    await act(async () => { await adapter.callbacks.onRequest({ text: 'Prepare the draft.', mode: 'interrupt' }) })
     mocks.stream = { ...mocks.stream, isActive: true, activeStartTime: 1, streamingMessage: 'Preparing the draft.' }
     rerender({ active: true, paused: true })
     adapter.updateReply.mockClear()
@@ -129,7 +129,7 @@ describe('Live session hook', () => {
 
   it('forwards facts first received in an error snapshot before announcing the error', async () => {
     const { adapter, rerender, unmount } = setup()
-    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Send invoice 42.' }) })
+    await act(async () => { await adapter.callbacks.onRequest({ text: 'Send invoice 42.', mode: 'interrupt' }) })
     mocks.stream = { ...mocks.stream, streamingMessage: 'Invoice 42 was sent.', error: 'Receipt upload failed.' }
     rerender({ active: true, paused: false })
     expect(adapter.updateReply).toHaveBeenCalledExactlyOnceWith('Invoice 42 was sent.', false)
@@ -141,7 +141,7 @@ describe('Live session hook', () => {
   it('finishes a followed turn with no text without replaying old history', async () => {
     mocks.stream.streamingMessage = 'Previous invoice sent.'
     const { adapter, rerender, unmount } = setup()
-    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Check its status.' }) })
+    await act(async () => { await adapter.callbacks.onRequest({ text: 'Check its status.', mode: 'interrupt' }) })
     mocks.stream = { ...mocks.stream, isActive: true, activeStartTime: 1 }
     rerender({ active: true, paused: false })
     mocks.stream = { ...mocks.stream, turnOutcome: outcome('completed'), isActive: false, isWaitingBackground: false, streamingMessage: '' }
@@ -162,7 +162,7 @@ describe('Live session hook', () => {
     const inputRequests = [question, secret]
     rerender({ active: true, paused: true, inputRequests })
     expect(adapter.setInputRequests).toHaveBeenLastCalledWith(inputRequests)
-    await act(async () => { expect(await adapter.callbacks.onRequest({ action: 'message', text: 'Not an answer.' })).toBe(false) })
+    await act(async () => { expect(await adapter.callbacks.onRequest({ text: 'Not an answer.', mode: 'interrupt' })).toBe(false) })
     expect(send).not.toHaveBeenCalled()
 
     rerender({ active: false, paused: true, inputRequests })
@@ -206,7 +206,7 @@ describe('Live session hook', () => {
 
   it('forwards execution errors without fabricating a completed reply', async () => {
     const { adapter, rerender, unmount } = setup()
-    await act(async () => { await adapter.callbacks.onRequest({ action: 'message', text: 'Prepare the draft.' }) })
+    await act(async () => { await adapter.callbacks.onRequest({ text: 'Prepare the draft.', mode: 'interrupt' }) })
     mocks.stream = { ...mocks.stream, isActive: false, error: 'Signing service unavailable.' }
     rerender({ active: true, paused: false })
     expect(adapter.reportAgentError).toHaveBeenCalledExactlyOnceWith('Signing service unavailable.')

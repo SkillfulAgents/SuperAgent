@@ -113,7 +113,7 @@ describe('OpenAI voice mapping bridge', () => {
     expect(events.onRequest).toHaveBeenCalledExactlyOnceWith({ text: 'And also Thursday.', mode: 'queue' })
     resolve({ text: 'Still working on it.' })
     await vi.advanceTimersByTimeAsync(0)
-    expect(events.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'session.commentary.append', content: 'Still working on it.' }))
+    expect(events.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'session.thinking.append', content: 'Still working on it.' }), expect.objectContaining({ kind: 'reply' }))
     bridge.close()
   })
 
@@ -178,7 +178,7 @@ describe('OpenAI voice mapping bridge', () => {
     events.map.mockResolvedValueOnce({ action: 'clarify', text: 'Which day?' })
     user('Check...'); delegate()
     await vi.advanceTimersByTimeAsync(700)
-    expect(events.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'session.commentary.append', delegation_id: 'item_1', content: 'Clarification needed: Which day?' }))
+    expect(events.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'session.commentary.append', delegation_id: 'item_1', content: 'Clarification needed: Which day?' }), undefined)
     expect(events.onRequest).not.toHaveBeenCalled()
     events.map.mockResolvedValueOnce({ action: 'message', text: 'Check Friday.' })
     user(' Friday.'); delegate('item_2')

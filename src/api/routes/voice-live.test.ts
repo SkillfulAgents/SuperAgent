@@ -235,7 +235,7 @@ describe('Live voice routes', () => {
     expect(creation.status).toBe(201)
     const input = { kind: 'request', transcript: 'user: hi', history: [], previousRequest: '', agentBusy: false }
     expect(await (await request('/live/map', input)).json()).toEqual({ action: 'message', text: 'mapped' })
-    expect(mocks.map).toHaveBeenCalledExactlyOnceWith(input, expect.any(AbortSignal))
+    expect(mocks.map).toHaveBeenCalledExactlyOnceWith(input, expect.any(AbortSignal), expect.anything())
   })
   it.each(['openai', 'platform'] as const)('creates, maps, and closes a Live session for %s', async (id) => {
     mocks.providerName = id
