@@ -22,7 +22,6 @@ import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { MonitorEventItem } from './monitor-event-item'
 import { InformationalItem } from './informational-item'
-import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
@@ -404,50 +403,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       classifyUserMessage(visible[index + 1]).kind === 'connection-replacement'
     ))
   }, [messages])
-
-  // Time flags are derived from all loaded history rather than the trailing DOM
-  // window, so scrolling/windowing cannot change which turns qualify. When an
-  // older page still exists, the first loaded user is not assumed to be the
-  // first user in the session.
-  const timeFlagState = useMemo(() => {
-    const messageIds = new Set<string>()
-    let hasSeenUser = hasOlder
-    let hasUserSinceLastAssistant = hasOlder
-    let lastAssistantAt: Date | null = null
-
-    for (const item of visibleMessages) {
-      if (item.type === 'assistant') {
-        const createdAt = new Date(item.createdAt)
-        lastAssistantAt = Number.isNaN(createdAt.getTime()) ? null : createdAt
-        hasUserSinceLastAssistant = false
-        continue
-      }
-
-      if (
-        item.type !== 'user' ||
-        item.queued ||
-        classifyUserMessage(item).kind === 'interrupt' ||
-        classifyUserMessage(item).kind === 'connection-replacement'
-      ) continue
-
-      const createdAt = new Date(item.createdAt)
-      if (
-        !hasSeenUser ||
-        (!hasUserSinceLastAssistant && isSessionTimeGap(createdAt, lastAssistantAt))
-      ) {
-        messageIds.add(item.id)
-      }
-      hasSeenUser = true
-      hasUserSinceLastAssistant = true
-    }
-
-    return {
-      messageIds,
-      hasSeenUser,
-      hasUserSinceLastAssistant,
-      lastAssistantAt,
-    }
-  }, [visibleMessages, hasOlder])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -884,39 +839,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     [peerUserMessages, messages, user?.id]
   )
 
-  // New-turn ghosts should receive the same flag immediately, before their
-  // persisted transcript entry arrives. Process them in their render order and
-  // show at most one flag before the next assistant response.
-  const optimisticTimeFlagIds = useMemo(() => {
-    const ids = new Set<string>()
-    let {
-      hasSeenUser,
-      hasUserSinceLastAssistant,
-      lastAssistantAt,
-    } = timeFlagState
-    const ghosts = [
-      ...visiblePeerMessages
-        .filter((peer) => !peer.queued)
-        .map((peer) => ({ id: peer.uuid, sentAt: peer.receivedAt })),
-      ...(pendingUserMessages ?? [])
-        .filter((pending) => !pending.queued)
-        .map((pending) => ({ id: pending.localId, sentAt: pending.sentAt })),
-    ]
-
-    for (const ghost of ghosts) {
-      const sentAt = new Date(ghost.sentAt)
-      if (
-        !hasSeenUser ||
-        (!hasUserSinceLastAssistant && isSessionTimeGap(sentAt, lastAssistantAt))
-      ) {
-        ids.add(ghost.id)
-      }
-      hasSeenUser = true
-      hasUserSinceLastAssistant = true
-    }
-
-    return ids
-  }, [timeFlagState, visiblePeerMessages, pendingUserMessages])
 
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
@@ -1215,9 +1137,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               {index === forkBoundaryAt && (
                 <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
               )}
-              {timeFlagState.messageIds.has(item.id) && (
-                <SessionTimeFlag date={new Date(item.createdAt)} />
-              )}
               {renderedItem}
             </Fragment>
           )
@@ -1238,17 +1157,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             turn's streaming output and running tools. */}
         {visiblePeerMessages.filter((p) => !p.queued).map((peer) => (
           <Fragment key={peer.uuid}>
-            {optimisticTimeFlagIds.has(peer.uuid) && (
-              <SessionTimeFlag date={new Date(peer.receivedAt)} />
-            )}
             {renderPeerGhost(peer)}
           </Fragment>
         ))}
         {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
           <Fragment key={pending.localId}>
-            {optimisticTimeFlagIds.has(pending.localId) && (
-              <SessionTimeFlag date={new Date(pending.sentAt)} />
-            )}
             <div data-turn-anchor-id={pending.localId}>
               {renderPendingGhost(pending)}
             </div>

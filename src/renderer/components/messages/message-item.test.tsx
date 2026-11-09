@@ -701,7 +701,54 @@ describe('MessageItem', () => {
       expect(screen.getByText('Alice Baker')).toBeInTheDocument()
     })
 
-    it('draws the sender avatar beside the name, from their profile image', () => {
+    it('puts when it was sent beside the sender, shown on hover only', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} />)
+      const meta = screen.getByTestId('message-meta')
+      expect(meta).toHaveTextContent(/^Alice Bakerjust now$/)
+      expect(meta).toHaveClass('opacity-0', 'group-hover/message:opacity-100')
+    })
+
+    it('keeps the time current as minutes pass', () => {
+      vi.useFakeTimers()
+      try {
+        const msg = createUserMessage({
+          content: { text: 'Hello' },
+          createdAt: new Date(),
+          sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+        })
+        render(<MessageItem message={msg} />)
+        expect(screen.getByTestId('message-meta')).toHaveTextContent('just now')
+        act(() => { vi.advanceTimersByTime(2 * 60_000) })
+        expect(screen.getByTestId('message-meta')).toHaveTextContent('2m ago')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('holds no time row without a sender (non-auth mode)', () => {
+      const msg = createUserMessage({ content: { text: 'Hello' }, createdAt: new Date() })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('message-meta')).not.toBeInTheDocument()
+      expect(screen.queryByText('just now')).not.toBeInTheDocument()
+    })
+
+    it('names the sender of a message that only carried files', () => {
+      const msg = createUserMessage({
+        content: { text: '[Attached files:]\n- /workspace/uploads/1-b.pdf' },
+        createdAt: new Date(),
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} agentSlug="a1" />)
+      expect(screen.getByTestId('sent-files')).toBeInTheDocument()
+      expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Alice Bakerjust now$/)
+    })
+
+    it('draws the sender avatar beside the bubble, from their profile image', () => {
       const msg = createUserMessage({
         content: { text: 'Hello' },
         sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com', image: 'https://example.com/alice.png' },
