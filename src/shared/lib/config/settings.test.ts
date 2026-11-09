@@ -25,6 +25,7 @@ import {
   readStoredRecord,
 } from '@shared/lib/app-records/records'
 import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import {
   getSettings,
   loadSettingsStrict,
@@ -515,6 +516,27 @@ describe('getSettings', () => {
       const result = await getSettings()
 
       expect(result.skillsets).toEqual(skillsets)
+    })
+
+    it('renames a saved built-in public library to its current name', async () => {
+      // An install created before a rebrand stored the old name.
+      const custom = {
+        id: 'test-skillset',
+        url: 'https://github.com/example/skillset.git',
+        name: 'Test Skillset',
+        description: 'A test skillset',
+        addedAt: '2026-01-01T00:00:00.000Z',
+      }
+      await storeSettings(JSON.stringify({
+        skillsets: [
+          { ...DEFAULT_PUBLIC_SKILLSET, name: 'Super Agent Public Skillset', description: 'old copy' },
+          custom,
+        ],
+      }))
+
+      const result = await getSettings()
+
+      expect(result.skillsets).toEqual([DEFAULT_PUBLIC_SKILLSET, custom])
     })
 
     it('preserves skillset credentials without copying them into skillset metadata', async () => {

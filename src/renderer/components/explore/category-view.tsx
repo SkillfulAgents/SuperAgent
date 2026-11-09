@@ -5,26 +5,30 @@ import { Skeleton } from '@renderer/components/ui/skeleton'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { ExploreTemplateCard } from './explore-template-card'
-import { NoTemplatesEmptyState, useExploreTemplates } from './explore-templates'
+import { NoTemplatesEmptyState, useExploreTemplates, useLibrarySelection } from './explore-templates'
 import { FEATURED_SECTION_LABEL, isFeaturedTemplate, templateCategory } from './template-meta'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 /**
  * `/explore/category/$category` — every template in one category, reached from
  * a section's "Show N more" tile. `Featured` is a category here too, even
- * though it comes from the developer field rather than the category one.
+ * though it comes from the developer field rather than the category one. It
+ * stays inside the library the tile was in (`?library=`), and so does the way
+ * back.
  */
 export function CategoryView({ category }: { category: string }) {
   const navigate = useNavigate()
   const { templates: all, hasSkillsets, isLoading } = useExploreTemplates()
+  const { activeLibrary } = useLibrarySelection(all)
+  const backToLibrary = () =>
+    void navigate({ to: '/explore', search: { library: activeLibrary?.id } })
 
-  const templates = useMemo(
-    () =>
-      category === FEATURED_SECTION_LABEL
-        ? all.filter(isFeaturedTemplate)
-        : all.filter((t) => templateCategory(t) === category),
-    [all, category],
-  )
+  const templates = useMemo(() => {
+    const inLibrary = activeLibrary ? all.filter((t) => t.skillsetId === activeLibrary.id) : all
+    return category === FEATURED_SECTION_LABEL
+      ? inLibrary.filter(isFeaturedTemplate)
+      : inLibrary.filter((t) => templateCategory(t) === category)
+  }, [all, category, activeLibrary])
 
   const openTemplate = (template: ApiDiscoverableAgent) => {
     void navigate({
@@ -44,7 +48,7 @@ export function CategoryView({ category }: { category: string }) {
             )}
           </div>
         }
-        back={{ onClick: () => void navigate({ to: '/explore' }), label: 'Discover New Agents' }}
+        back={{ onClick: backToLibrary, label: 'Agent Template Library' }}
       />
 
       <div data-testid="explore-category-view">
@@ -63,7 +67,7 @@ export function CategoryView({ category }: { category: string }) {
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => void navigate({ to: '/explore' })}
+              onClick={backToLibrary}
             >
               Back to all agents
             </Button>

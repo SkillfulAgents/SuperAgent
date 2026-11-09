@@ -533,10 +533,10 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                 <div className="space-y-4">
                   {/* Hero (Notion "Publish to web"-style) */}
                   <div className="space-y-1 pt-2 text-center">
-                    <p className="text-sm font-medium">Publish to a Skillset</p>
+                    <p className="text-sm font-medium">Publish to a shared Library</p>
                     <p className="text-xs text-muted-foreground">
                       <span className="block">
-                        Skillsets are shared collections of agent templates and skills.
+                        Libraries are shared collections of agent templates and skills.
                       </span>
                       <span className="block">
                         Publish this agent so teammates can install their own copy.

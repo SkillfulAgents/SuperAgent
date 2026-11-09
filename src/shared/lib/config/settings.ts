@@ -25,7 +25,10 @@ import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT, LEGACY_GLOBAL_DISPATCH_SHORTCUTS } from './shortcuts'
 import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
-import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
+import {
+  DEFAULT_PUBLIC_SKILLSET,
+  withCurrentDefaultLabels,
+} from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { EffortLevel } from '@shared/lib/container/types'
 import {
@@ -633,7 +636,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     // DEFAULT_SETTINGS.skillsets reference would poison the module constant for a
     // stored value that merely omits `skillsets`.
     skillsets: loaded.skillsets !== undefined
-      ? loaded.skillsets
+      ? loaded.skillsets.map(withCurrentDefaultLabels)
       : structuredClone(DEFAULT_SETTINGS.skillsets),
     skillsetCredentials: loaded.skillsetCredentials,
     auth: {

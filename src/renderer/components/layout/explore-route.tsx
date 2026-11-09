@@ -17,7 +17,7 @@ function useExploreShellProps() {
       isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen,
     headerContent: (
       <ScrollAwareNavTitle className="truncate text-sm font-light text-foreground">
-        Discover New Agents
+        Agent Template Library
       </ScrollAwareNavTitle>
     ),
   }

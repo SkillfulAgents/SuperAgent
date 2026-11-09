@@ -6,8 +6,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const navigate = vi.fn()
 let historyEntryKey = 'explore-entry'
+let search: { library?: string } = {}
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
+  useSearch: () => search,
   useLocation: ({ select }: { select: (location: object) => unknown }) =>
     select({ state: { __TSR_key: historyEntryKey }, href: '/explore' }),
 }))
@@ -48,6 +50,7 @@ function roster(n: number, over: Partial<ApiDiscoverableAgent> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  search = {}
   sessionStorage.clear()
   historyEntryKey = 'explore-entry'
   skillsets = [{ id: 'skillset-1', name: 'Public' }]
@@ -111,6 +114,7 @@ describe('ExploreView section overflow tile', () => {
     expect(navigate).toHaveBeenCalledWith({
       to: '/explore/category/$category',
       params: { category: 'Marketing' },
+      search: { library: 'skillset-1' },
     })
   })
 
@@ -122,36 +126,70 @@ describe('ExploreView section overflow tile', () => {
 })
 
 /**
- * "Nothing checked" has to mean "no filter" for every filter on the page,
- * skillsets included — an empty set would strand the grid on zero results with
- * no chip on screen explaining why.
+ * The heading reads "Library: <name>" and the page shows one library at a time
+ * — there is no "all". More than one library contributing templates turns the
+ * name into a menu of them; one library is a plain heading.
  */
-describe('ExploreView skillset filter', () => {
+describe('ExploreView library selector', () => {
   beforeEach(() => {
+    // Configured order decides which library opens first.
     skillsets = [
       { id: 'skillset-1', name: 'Public' },
       { id: 'skillset-2', name: 'Private' },
     ]
-    // The filter offers the skillsets that actually contribute templates.
+    // Name order would put Private first; configured order must win.
     discoverable = [
-      template('From Public'),
       template('From Private', { skillsetId: 'skillset-2', skillsetName: 'Private' }),
+      template('From Public'),
     ]
   })
 
-  it('narrows to one skillset, then falls back to all when the last is unchecked', async () => {
-    render(<ExploreView />)
-    await userEvent.click(screen.getByLabelText('Filter by skillset'))
+  const cardNames = () =>
+    screen.getAllByTestId('explore-template-card').map((c) => c.textContent)
 
-    // Both start checked. Unchecking one leaves a real filter…
-    await userEvent.click(await screen.findByText('Public'))
-    expect(screen.getAllByTestId('explore-template-card').map((c) => c.textContent)).toEqual([
-      expect.stringContaining('From Private'),
+  it('opens on the first configured library', () => {
+    render(<ExploreView />)
+    expect(screen.getByTestId('explore-library-select')).toHaveTextContent('Public')
+    expect(cardNames()).toEqual([expect.stringContaining('From Public')])
+  })
+
+  it('switches library through the URL, offering no all option', async () => {
+    const user = userEvent.setup()
+    render(<ExploreView />)
+    await user.click(screen.getByTestId('explore-library-select'))
+
+    const items = await screen.findAllByRole('menuitem')
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining('Public'),
+      expect.stringContaining('Private'),
     ])
 
-    // …and unchecking the last one means "no filter", not "match nothing".
-    await userEvent.click(screen.getByText('Private'))
-    expect(screen.getAllByTestId('explore-template-card')).toHaveLength(2)
+    await user.click(screen.getByRole('menuitem', { name: /Private/ }))
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/explore',
+      search: { library: 'skillset-2' },
+      replace: true,
+    })
+  })
+
+  it('shows the library the URL names', () => {
+    search = { library: 'skillset-2' }
+    render(<ExploreView />)
+    expect(screen.getByTestId('explore-library-select')).toHaveTextContent('Private')
+    expect(cardNames()).toEqual([expect.stringContaining('From Private')])
+  })
+
+  it('falls back to the first library when the URL names one with no templates', () => {
+    search = { library: 'gone' }
+    render(<ExploreView />)
+    expect(cardNames()).toEqual([expect.stringContaining('From Public')])
+  })
+
+  it('names a single library in a plain heading', () => {
+    discoverable = [template('From Public')]
+    render(<ExploreView />)
+    expect(screen.queryByTestId('explore-library-select')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Library: Public' })).toBeTruthy()
   })
 })
 

@@ -34,7 +34,7 @@ test('template back arrow restores the Discover page scroll position', async ({ 
 
   await page
     .getByTestId('main-content')
-    .getByRole('button', { name: 'Discover New Agents' })
+    .getByRole('button', { name: 'Agent Template Library' })
     .click()
 
   await expect(page).toHaveURL(/\/explore$/)

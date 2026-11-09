@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { useSearch } from '@tanstack/react-router'
 import { Button } from '@renderer/components/ui/button'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
@@ -43,6 +44,45 @@ export function useExploreTemplates(): {
       !skillsetsFailed &&
       !templatesFailed &&
       (skillsets === undefined || (hasSkillsets && (isLoading || discoverableAgents === undefined))),
+  }
+}
+
+export interface TemplateLibrary {
+  id: string
+  name: string
+  /** Templates this library contributes. */
+  count: number
+}
+
+/**
+ * The libraries contributing templates, in the order they are configured, and
+ * the one being browsed. There is no "all": a page always shows one library —
+ * `?library=` when it names a contributing one, otherwise the first. A library
+ * that stops contributing (removed, or its index refetched empty) falls back to
+ * the first rather than stranding an empty grid.
+ */
+export function useLibrarySelection(templates: ApiDiscoverableAgent[]): {
+  libraries: TemplateLibrary[]
+  activeLibrary: TemplateLibrary | undefined
+} {
+  const { data: skillsets } = useSkillsets()
+  const { library } = useSearch({ strict: false }) as { library?: string }
+
+  const libraries = useMemo(() => {
+    const byId = new Map<string, TemplateLibrary>()
+    for (const t of templates) {
+      const entry = byId.get(t.skillsetId)
+      if (entry) entry.count++
+      else byId.set(t.skillsetId, { id: t.skillsetId, name: t.skillsetName, count: 1 })
+    }
+    const order = new Map((skillsets ?? []).map((ss, i) => [ss.id, i]))
+    const rank = (id: string) => order.get(id) ?? Number.MAX_SAFE_INTEGER
+    return [...byId.values()].sort((a, b) => rank(a.id) - rank(b.id))
+  }, [templates, skillsets])
+
+  return {
+    libraries,
+    activeLibrary: libraries.find((l) => l.id === library) ?? libraries[0],
   }
 }
 

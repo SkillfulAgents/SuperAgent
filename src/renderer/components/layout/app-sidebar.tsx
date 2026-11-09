@@ -1895,8 +1895,8 @@ export function AppSidebar() {
                       data-testid="marketplace-button"
                     >
                       <AppLink to="/explore">
-                        <AnimatedNavIcon name="compass" className="h-4 w-4" />
-                        <span>Discover New Agents</span>
+                        <AnimatedNavIcon name="library" className="h-4 w-4" />
+                        <span>Agent Template Library</span>
                       </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
