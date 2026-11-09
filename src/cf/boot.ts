@@ -20,6 +20,7 @@ import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './cloudflare-task-manager'
+import { routeContainerFetch } from './cloudflare-container-control'
 import type { Env } from './index'
 
 let booted: Promise<void> | undefined
@@ -46,6 +47,12 @@ export function backgroundTasks(): CloudflareTaskManager {
   return tasks
 }
 
+/** A container's call to the host, from the library's outbound proxy, which holds the request lifetime. */
+export function serveContainerRequest(request: Request, env: Env): Promise<Response> {
+  return Promise.resolve(api.fetch(request, env))
+}
+
+/** The background services, minus the ones that watch local containers: each agent's object watches its own. */
 export function startBackgroundServices(): Promise<void> {
   return initializeServices()
 }
@@ -55,6 +62,8 @@ export function stopBackgroundServices(): Promise<void> {
 }
 
 async function start(env: Env): Promise<void> {
+  // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
+  routeContainerFetch(env.AGENT)
   // Its own step, not part of opening the database: D1 takes the schema migrations as one batch.
   await migrateD1(env.DB, migrationBundle)
   await runDataMigrations(await openDatabase({ driver: d1(env.DB), migrate: false }))
@@ -67,7 +76,7 @@ async function start(env: Env): Promise<void> {
     tasks = new CloudflareTaskManager(env.TASK_MANAGER)
     await initializeBackgroundWork(tasks)
   }
-  registerBackgroundWork()
+  registerBackgroundWork({ localContainers: false })
   await seedSettings(env.APP_ORIGIN)
 
   await prepareProcess()
@@ -90,6 +99,7 @@ async function seedSettings(origin: string): Promise<void> {
     settings.app = { ...settings.app, hostBrowserProvider: 'platform', setupCompleted: true }
     settings.shareAnalytics = true
     settings.shareErrorReports = true
+    settings.container = { ...settings.container, containerRunner: 'cloudflare-container' }
     settings.auth = {
       ...settings.auth,
       requireAdminApproval: false,
