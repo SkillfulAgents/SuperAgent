@@ -139,7 +139,7 @@ export function assertStrong(key: StateKey<unknown>, operation: string): void {
  * new one.
  */
 export function resolveExpiry(
-  namespace: Namespace<unknown>,
+  namespace: Pick<Namespace<unknown>, 'name' | 'consistency' | 'expiry'>,
   requested: Expiry | undefined,
   current: { expiresAt: number | null } | undefined,
   now: number,
