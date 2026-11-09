@@ -18,6 +18,9 @@ const EXCLUDED = new Set(['.bun-cache'])
 const BATCH_MS = 2_000
 
 let agent = null
+// Set once the container is told to stop: the agent's exit then waits for the last changes to be saved.
+let stopping = false
+let flushChanges = async () => {}
 // path -> { size, mtimeMs, hash, mode } from the last scan, so unchanged files are not rehashed.
 let scanned = new Map()
 
@@ -158,6 +161,7 @@ async function saveBatch(paths, again) {
 }
 
 // Saves each change a moment after it happens, so a crash loses seconds of work. Batches go one at a time.
+// Returns a flush that saves what is still waiting at once, for a stop.
 function saveChanges() {
   const changed = new Set()
   let timer = null
@@ -178,6 +182,14 @@ function saveChanges() {
     if (!name || EXCLUDED.has(String(name).split('/')[0])) return
     mark(String(name))
   })
+  return async () => {
+    clearTimeout(timer)
+    timer = null
+    const batch = [...changed]
+    changed.clear()
+    await saving
+    if (batch.length > 0) await saveBatch(batch, () => {})
+  }
 }
 
 http.createServer(async (req, res) => {
@@ -211,9 +223,9 @@ http.createServer(async (req, res) => {
         agent = spawn('gamut-start', [], { cwd: '/app', stdio: 'inherit' })
         agent.on('exit', (code) => {
           console.error(`[snapshot-server] agent exited with ${code}`)
-          process.exit(code ?? 1)
+          if (!stopping) process.exit(code ?? 1)
         })
-        saveChanges()
+        flushChanges = saveChanges()
       }
       return end(res, 200, 'launched')
     }
@@ -229,10 +241,18 @@ http.createServer(async (req, res) => {
 fetch(`${STORE}/warm`).then((response) => response.body?.cancel()).catch(() => {})
 
 // As PID 1, Node ignores SIGTERM unless it handles it, and the container would never stop.
+// Cloudflare also sends it on its own, when it rolls the container onto a new image: the changes
+// of the last seconds are saved before the container exits.
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
-    if (!agent) process.exit(0)
+    if (!agent || stopping) process.exit(0)
+    stopping = true
     agent.kill(signal)
     setTimeout(() => process.exit(0), 10_000).unref()
+    agent.once('exit', () => {
+      flushChanges()
+        .catch((error) => console.error('[snapshot-server] saving the last changes failed:', error))
+        .finally(() => process.exit(0))
+    })
   })
 }
