@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import {
   Activity, ArrowLeft, BadgeCheck, BarChart3, Bell, Blocks, Bolt, BookUser, Brain,
   createLucideIcon, Cuboid, FlaskConical, KeyRound, Layers,
-  LayoutGrid, LibraryBig, ListTodo, LogOut, Logs, Mic, Mouse, MousePointer2, Plus,
+  LayoutGrid, ListTodo, LogOut, Logs, Mic, Mouse, MousePointer2, PlayingCardsFan, Plus,
   Route, ScrollText, Search, Settings, Shield, Smartphone, Sparkle,
   Users, Workflow, type LucideIcon, type LucideProps,
 } from 'lucide-react'
@@ -75,9 +75,13 @@ const icons = {
     motion: [{ selector: 'path', keyframes: { opacity: [1, .3, 1] }, duration: 380, stagger: 45 }],
   },
   library: {
-    icon: LibraryBig,
-    // The leaning book tips out and settles back against the others.
-    motion: [turn([0, 14, -4, 0], 'path:last-child', '50% 100%')],
+    icon: PlayingCardsFan,
+    // The fan spreads: the front card swings right off its bottom-left corner,
+    // the back card left off its bottom-right, and both settle back.
+    motion: [
+      turn([0, 12, -2, 0], 'path:first-child', '0% 100%'),
+      turn([0, -10, 2, 0], 'path:last-child', '100% 100%'),
+    ],
   },
   plus: {
     icon: Plus,
