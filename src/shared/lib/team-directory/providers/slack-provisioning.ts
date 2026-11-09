@@ -1,6 +1,7 @@
 /**
- * Creating each agent its own Slack app, through Slack's App Manifest API,
- * with an app configuration token an admin pastes once.
+ * Creating Slack apps through Slack's App Manifest API, with an app
+ * configuration token an admin pastes once: the directory's own app when the
+ * directory is connected with the token, then each agent's.
  *
  * - The token belongs to the admin who generated it, lasts 12 hours, and is
  *   renewed with its refresh token (`tooling.tokens.rotate`), which hands back
@@ -17,6 +18,7 @@
 import { z } from 'zod'
 import { slackAppManifest } from '@shared/lib/chat-integrations/slack-manifest'
 import { slackVerificationProfile } from '@shared/lib/chat-integrations/slack-verification'
+import { slackDirectoryAppManifest } from './slack-directory-app'
 import {
   DirectoryConnectError,
   ProvisioningCredentialsError,
@@ -28,9 +30,15 @@ import { SlackApiError, slackCall } from './slack-api'
 /** Rotate when less than this is left; the background pass runs every 6 hours, against a 12-hour token. */
 const ROTATE_WITHIN_MS = 60 * 60_000
 
+/**
+ * An admin pastes only the refresh token: rotating it gives the access token.
+ * What is stored always has both, from that first rotation on.
+ */
 export const slackConfigTokenSchema = z.object({
-  accessToken: z.string().trim().regex(/^xoxe\./, 'Paste the app configuration access token: it starts with xoxe.'),
-  refreshToken: z.string().trim().regex(/^xoxe-/, 'Paste the refresh token: it starts with xoxe-'),
+  accessToken: z.string().regex(/^xoxe\./).optional(),
+  refreshToken: z.string().trim()
+    .refine((token) => !token.startsWith('xoxe.'), 'That’s the access token. Paste the refresh token, the one that starts with xoxe-')
+    .refine((token) => token.startsWith('xoxe-'), 'Paste the refresh token: it starts with xoxe-'),
   /** Epoch ms; unknown until the first rotation. */
   expiresAt: z.number().optional(),
   /** The workspace and the admin the token belongs to. */
@@ -92,8 +100,25 @@ function iconForm(appId: string, icon: Uint8Array): FormData {
   return form
 }
 
+/** `apps.manifest.create` with the host's OAuth callback added to the manifest. */
+async function createFromManifest(token: string, manifest: { oauth_config: Record<string, unknown> }, redirectUrl: string) {
+  const { body } = await slackCall('apps.manifest.create', token, {
+    manifest: JSON.stringify({ ...manifest, oauth_config: { ...manifest.oauth_config, redirect_urls: [redirectUrl] } }),
+  }, manifestCreatedSchema)
+  return {
+    body,
+    app: slackProvisionedAppSchema.parse({ appId: body.app_id, clientId: body.credentials.client_id, clientSecret: body.credentials.client_secret }),
+  }
+}
+
+function accessTokenOf(credentials: SlackConfigToken): string {
+  // Never stored without one: verify rotates before anything is saved.
+  if (!credentials.accessToken) throw new ProvisioningCredentialsError('The app configuration token was saved without its access token. Add it again.')
+  return credentials.accessToken
+}
+
 function provisioner(credentials: SlackConfigToken): AgentIdentityProvisioner {
-  const token = credentials.accessToken
+  const token = accessTokenOf(credentials)
   const setIcon = async (appId: string, icon: Uint8Array): Promise<boolean> => {
     try {
       await slackCall('apps.icon.set', token, iconForm(appId, icon), z.object({}))
@@ -105,15 +130,7 @@ function provisioner(credentials: SlackConfigToken): AgentIdentityProvisioner {
   }
   return {
     async createApp({ name, description, backgroundColor, icon, webhookUrl, redirectUrl }) {
-      const manifest = slackAppManifest({ name, description, backgroundColor }, webhookUrl)
-      const { body } = await slackCall('apps.manifest.create', token, {
-        manifest: JSON.stringify({ ...manifest, oauth_config: { ...manifest.oauth_config, redirect_urls: [redirectUrl] } }),
-      }, manifestCreatedSchema)
-      const app = slackProvisionedAppSchema.parse({
-        appId: body.app_id,
-        clientId: body.credentials.client_id,
-        clientSecret: body.credentials.client_secret,
-      })
+      const { body, app } = await createFromManifest(token, slackAppManifest({ name, description, backgroundColor }, webhookUrl), redirectUrl)
       return {
         app,
         config: { signingSecret: body.credentials.signing_secret },
@@ -163,34 +180,42 @@ export const slackAppProvisioning: AgentIdentityProvisioning<SlackConfigToken> =
   integrationProvider: 'slack',
   info: {
     description: 'Create each agent its own Slack app, with its name, @handle and avatar, in one click.',
-    fields: [
-      { key: 'accessToken', label: 'App configuration token', placeholder: 'xoxe.xoxp-…', secret: true },
-      { key: 'refreshToken', label: 'Refresh token', placeholder: 'xoxe-…', secret: true },
-    ],
+    fields: [{ key: 'refreshToken', label: 'Refresh token', placeholder: 'xoxe-1-…', secret: true }],
     steps: [
-      'Open Your Apps in Slack and, under Your App Configuration Tokens, generate a token for this workspace. Use an account that will stay: the apps belong to it.',
-      'Copy both the access token and the refresh token below. Gamut renews them from then on.',
+      'Open Your Apps in Slack. Under Your App Configuration Tokens, click Generate Token and pick your workspace. Use an account that will stay: the apps Gamut makes belong to it.',
+      'Copy the refresh token (it starts with xoxe-) and paste it below. Gamut renews it from then on.',
     ],
     setupLink: { label: 'Open Your Apps', href: 'https://api.slack.com/apps' },
   },
   credentialsSchema: slackConfigTokenSchema,
 
   async verify(credentials, tenant) {
-    // Rotating checks the pair and says when it expires; the pasted access token retires with it.
+    // Rotating checks the token, gives its access token and says when that expires. The pasted refresh token retires with it.
     let rotated: SlackConfigToken
     try {
       rotated = await rotate(credentials)
     } catch (error) {
-      if (error instanceof ProvisioningCredentialsError) throw new DirectoryConnectError('Slack does not accept this refresh token. Generate a new configuration token and paste both values.')
-      throw new DirectoryConnectError(`Slack could not check the configuration token${error instanceof SlackApiError ? ` (${error.code})` : ''}. Try again.`)
+      if (error instanceof ProvisioningCredentialsError) throw new DirectoryConnectError('Slack does not accept this refresh token. Generate a new token and paste its refresh token.')
+      throw new DirectoryConnectError(`Slack could not check the token${error instanceof SlackApiError ? ` (${error.code})` : ''}. Try again.`)
     }
     // Apps go to the token's workspace, which must be the directory's. A grid directory spans its workspaces.
-    if (tenant.tenantId.startsWith('T') && rotated.teamId && rotated.teamId !== tenant.tenantId) {
-      throw new DirectoryConnectError('This configuration token is for another Slack workspace than the directory’s.')
+    if (tenant?.tenantId.startsWith('T') && rotated.teamId && rotated.teamId !== tenant.tenantId) {
+      throw new DirectoryConnectError('This token is for another Slack workspace than the directory’s.')
     }
     return rotated
   },
   needsRotation: (credentials, now) => credentials.expiresAt === undefined || credentials.expiresAt - now < ROTATE_WITHIN_MS,
   rotate,
   open: provisioner,
+
+  async createDirectoryApp(credentials, { redirectUrl }) {
+    try {
+      const { body, app } = await createFromManifest(accessTokenOf(credentials), slackDirectoryAppManifest(), redirectUrl)
+      // Installing it gives the directory's bot token (`completeInstall`).
+      return { app, installUrl: body.oauth_authorize_url }
+    } catch (error) {
+      if (!(error instanceof SlackApiError)) throw error
+      throw new DirectoryConnectError(`Slack did not create the app (${error.code}). Generate a new token and try again.`)
+    }
+  },
 }

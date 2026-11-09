@@ -755,10 +755,11 @@ export const migrationBundle: readonly MigrationMeta[] = [
       "ALTER TABLE `team_directories` ADD `provisioning_credentials` text;",
       "\nALTER TABLE `team_directories` ADD `provisioning_revision` integer DEFAULT 0 NOT NULL;",
       "\nALTER TABLE `team_directories` ADD `provisioning_status` text;",
-      "\nALTER TABLE `team_directories` ADD `provisioning_error` text;"
+      "\nALTER TABLE `team_directories` ADD `provisioning_error` text;",
+      "\nALTER TABLE `team_directories` ADD `directory_app` text;"
     ],
     "bps": true,
     "folderMillis": 1794182726903,
-    "hash": "5820dd1e07d94557adb9218a744584d8f6be312c974f82a6851cad31ad55c1ce"
+    "hash": "4a2c26f37c2e6aee059d42d42d98e38f4513afa1fdefee3f9600896ec4151401"
   }
 ]

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { TeamDirectoriesResponse } from '@shared/lib/team-directory/view-schema'
+import type { DirectoryInstallStatus, TeamDirectoriesResponse } from '@shared/lib/team-directory/view-schema'
 
 const state = vi.hoisted(() => ({
   data: null as TeamDirectoriesResponse | null,
@@ -12,8 +12,19 @@ const state = vi.hoisted(() => ({
   disconnect: vi.fn(),
   connectProvisioning: vi.fn(),
   disconnectProvisioning: vi.fn(),
+  startInstall: vi.fn(),
+  installStatus: undefined as DirectoryInstallStatus | undefined,
+  loginOpen: vi.fn(),
+  loginClose: vi.fn(),
+  invalidate: vi.fn(),
+}))
+vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: state.invalidate }) }))
+vi.mock('@renderer/hooks/use-login-window', () => ({
+  useLoginWindow: () => ({ open: state.loginOpen, close: state.loginClose, pending: false, waiting: state.loginOpen.mock.calls.length > 0, canCancel: false, isLoginWindow: () => false }),
 }))
 vi.mock('@renderer/hooks/use-team-directories', () => ({
+  useStartDirectoryInstall: () => ({ mutateAsync: state.startInstall, isPending: false }),
+  useDirectoryInstallStatus: () => ({ data: state.installStatus }),
   useTeamDirectories: () => ({ data: state.data, isLoading: false, error: null }),
   useTestDirectoryCredentials: () => ({ mutateAsync: state.test, isPending: false }),
   useConnectTeamDirectory: () => ({ mutateAsync: state.connect, isPending: false }),
@@ -41,11 +52,91 @@ const acme = {
   errorMessage: null, connectedBy: 'Ada Admin', connectedAt: Date.UTC(2026, 10, 1),
 }
 
+/** Slack as it is offered when the app configuration token can connect it. */
+const slackByToken = {
+  ...slack,
+  provisioning: {
+    description: 'Create each agent its own Slack app.',
+    fields: [{ key: 'refreshToken', label: 'Refresh token', placeholder: 'xoxe-1-…', secret: true }],
+    steps: ['Generate a token under Your App Configuration Tokens.', 'Paste its refresh token below.'],
+    setupLink: { label: 'Open Your Apps', href: 'https://api.slack.com/apps' },
+    connectsDirectory: true,
+  },
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   state.data = { providers: [slack], directories: [] }
+  state.installStatus = undefined
+  state.loginOpen.mockResolvedValue('waiting')
 })
 afterEach(cleanup)
+
+describe('connecting with one token', () => {
+  it('pastes the token, then one Install connects the directory', async () => {
+    state.data = { providers: [slackByToken], directories: [] }
+    const { rerender } = render(<TeamDirectoryTab />)
+    expect(screen.getByText('Step 1 of 2 · Add a token')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Open Your Apps/ })).toHaveAttribute('href', 'https://api.slack.com/apps')
+    expect(screen.queryByLabelText('Bot User OAuth Token')).not.toBeInTheDocument()
+    const proceed = screen.getByRole('button', { name: 'Continue' })
+    expect(proceed).toBeDisabled()
+
+    state.startInstall.mockResolvedValue({ installId: 'i1', url: 'https://slack.com/oauth/v2/authorize?state=s1' })
+    await userEvent.type(screen.getByLabelText('Refresh token'), 'xoxe-1-refresh')
+    await userEvent.click(proceed)
+    expect(state.startInstall).toHaveBeenCalledWith({ provider: 'slack', credentials: { refreshToken: 'xoxe-1-refresh' } })
+
+    expect(await screen.findByText('Step 2 of 2 · Install')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Install on Slack' }))
+    expect(await state.loginOpen.mock.calls[0][0]()).toBe('https://slack.com/oauth/v2/authorize?state=s1')
+
+    state.installStatus = { status: 'connected', directoryId: 'd1', tenantName: 'Acme', notices: [] }
+    rerender(<TeamDirectoryTab />)
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Connected Acme', undefined))
+    expect(state.invalidate).toHaveBeenCalled()
+    expect(screen.getByText('Step 1 of 2 · Add a token')).toBeInTheDocument()
+    expect(screen.getByLabelText('Refresh token')).toHaveValue('')
+  })
+
+  it('keeps the Install step after a cancel, and starts again after a failure', async () => {
+    state.data = { providers: [slackByToken], directories: [] }
+    state.startInstall.mockResolvedValue({ installId: 'i1', url: 'https://slack.com/oauth/v2/authorize?state=s1' })
+    const { rerender } = render(<TeamDirectoryTab />)
+    await userEvent.type(screen.getByLabelText('Refresh token'), 'xoxe-1-refresh')
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Install on Slack' }))
+
+    state.installStatus = { status: 'cancelled', at: 1 }
+    rerender(<TeamDirectoryTab />)
+    expect(await screen.findByText('The install was cancelled. Install again when you’re ready.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Install on Slack' })).toBeEnabled()
+
+    state.installStatus = { status: 'failed', error: 'Slack did not create the app (invalid_manifest).' }
+    rerender(<TeamDirectoryTab />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Slack did not create the app (invalid_manifest).')
+    expect(screen.getByText('Step 1 of 2 · Add a token')).toBeInTheDocument()
+  })
+
+  it('shows why a token was refused', async () => {
+    state.data = { providers: [slackByToken], directories: [] }
+    state.startInstall.mockRejectedValue(new Error('Slack does not accept this refresh token.'))
+    render(<TeamDirectoryTab />)
+    await userEvent.type(screen.getByLabelText('Refresh token'), 'xoxe-1-old')
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Slack does not accept this refresh token.')
+  })
+
+  it('still takes a bot token from an app the admin made', async () => {
+    state.data = { providers: [slackByToken], directories: [] }
+    render(<TeamDirectoryTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Use a Slack app you already have' }))
+    expect(screen.getByLabelText('Bot User OAuth Token')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect Slack' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Let Gamut create the app instead' }))
+    expect(screen.getByLabelText('Refresh token')).toBeInTheDocument()
+  })
+})
 
 describe('Team Directory settings', () => {
   it('draws the connect form from what the provider describes', async () => {

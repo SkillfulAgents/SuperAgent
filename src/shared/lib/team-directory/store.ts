@@ -11,7 +11,7 @@ import { openDirectoryCredentials, sealDirectoryCredentials } from './credential
 import { getDirectoryProvider } from './registry'
 import type { DirectoryTenant, TeamDirectory } from './types'
 
-export type DirectoryConnection = Omit<TeamDirectoryRow, 'credentials' | 'provisioningCredentials'>
+export type DirectoryConnection = Omit<TeamDirectoryRow, 'credentials' | 'provisioningCredentials' | 'directoryApp'>
 
 // Built on use, not at import: the search route imports this module, and many
 // route tests stand in a partial schema for the real one.

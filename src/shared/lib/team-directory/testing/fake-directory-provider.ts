@@ -22,13 +22,21 @@ import {
 const credentialsSchema = z.object({ token: z.string().min(1) })
 type FakeCredentials = z.infer<typeof credentialsSchema>
 
-/** A rotating pair like Slack's configuration token: `generation` goes up with each rotation. */
-const provisioningSchema = z.object({ key: z.string().min(1), generation: z.number().default(0), expiresAt: z.number().optional() })
+/**
+ * A rotating pair like Slack's configuration token: `generation` goes up with
+ * each rotation. Its workspace is the directory's, or `acme` when it connects one.
+ */
+const provisioningSchema = z.object({
+  key: z.string().min(1),
+  generation: z.number().default(0),
+  expiresAt: z.number().optional(),
+  workspace: z.string().optional(),
+})
 type FakeProvisioningCredentials = z.infer<typeof provisioningSchema>
 
 export interface FakeProvisioner {
   /** Calls in order, without icons' bytes. */
-  calls: Array<{ op: 'create' | 'install' | 'delete' | 'update' | 'rotate'; detail: Record<string, unknown> }>
+  calls: Array<{ op: 'create' | 'create-directory' | 'install' | 'delete' | 'update' | 'rotate'; detail: Record<string, unknown> }>
   /** The next rotation fails like this. */
   failRotation(kind: 'broken' | 'transient' | null): void
   /** The next createApp throws. */
@@ -60,9 +68,20 @@ function fakeProvisioning(integrationProvider: string, fake: FakeProvisioner & {
     integrationProvider,
     info: { description: 'Creates agents’ apps, for tests.', fields: [{ key: 'key', label: 'Key', secret: true }], steps: ['Paste a key.'] },
     credentialsSchema: provisioningSchema,
-    async verify(credentials) {
+    async verify(credentials, tenant) {
       if (credentials.key === 'bad') throw new DirectoryConnectError('That key is no good')
-      return { ...credentials, generation: credentials.generation + 1, expiresAt: Date.now() + 12 * 60 * 60_000 }
+      return { ...credentials, generation: credentials.generation + 1, expiresAt: Date.now() + 12 * 60 * 60_000, workspace: tenant?.tenantId ?? 'acme' }
+    },
+    // Its install page is the host's own callback, with a code: a browser goes straight back.
+    async createDirectoryApp(credentials, { redirectUrl }) {
+      record('create-directory', { redirectUrl, generation: credentials.generation })
+      if (fake.createFailure) {
+        const error = fake.createFailure
+        fake.createFailure = null
+        throw error
+      }
+      const appId = `DIR${++apps}`
+      return { app: { appId, directory: true, workspace: credentials.workspace ?? 'acme' }, installUrl: `${redirectUrl}?code=approved` }
     },
     needsRotation: (credentials, now) => credentials.expiresAt === undefined || credentials.expiresAt - now < 60 * 60_000,
     async rotate(credentials) {
@@ -95,6 +114,8 @@ function fakeProvisioning(integrationProvider: string, fake: FakeProvisioner & {
         },
         async completeInstall(app: ProvisionedAppRecord, code, redirectUrl) {
           record('install', { appId: app.appId, code, redirectUrl })
+          // The directory's own app gives the directory's credentials.
+          if (app.directory) return { token: `${String(app.workspace)}-token` }
           return { botToken: `token-${String(app.appId)}-${code}` }
         },
         async deleteApp(app) { record('delete', { appId: app.appId }) },

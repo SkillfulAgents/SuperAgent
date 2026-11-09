@@ -25,8 +25,25 @@ export interface TeamDirectoryView {
 
 /** A provider, and the form for its app-creation credentials when it has one. */
 export type DirectoryProviderView = DirectoryProviderInfo & {
-  provisioning?: Omit<DirectoryProviderInfo, 'id' | 'label'>
+  provisioning?: Omit<DirectoryProviderInfo, 'id' | 'label'> & {
+    /** Those credentials alone connect the directory: Gamut creates its app, a person installs it. */
+    connectsDirectory?: boolean
+  }
 }
+
+/** POST /api/team-directories/install: the provider's page that installs the directory's new app. */
+export interface StartDirectoryInstallResponse {
+  installId: string
+  url: string
+}
+
+/** GET /api/team-directories/install/:installId */
+export type DirectoryInstallStatus =
+  | { status: 'pending' | 'expired' }
+  /** Declined on the provider's page; the same install can be tried again. `at` tells one cancel from the next. */
+  | { status: 'cancelled'; at: number }
+  | { status: 'connected'; directoryId: string; tenantName: string; notices: string[] }
+  | { status: 'failed'; error: string }
 
 export interface TeamDirectoriesResponse {
   providers: DirectoryProviderView[]

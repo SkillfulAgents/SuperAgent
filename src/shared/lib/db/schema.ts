@@ -1108,6 +1108,10 @@ export const teamDirectories = sqliteTable('team_directories', {
   provisioningRevision: integer('provisioning_revision').notNull().default(0),
   provisioningStatus: text('provisioning_status', { enum: ['active', 'needs_reconnect'] }),
   provisioningError: text('provisioning_error'),
+  // The directory's own app when Gamut created it from the provisioning
+  // credentials (team-directory/directory-app.ts), deleted with the directory.
+  // Null when an admin made the app by hand.
+  directoryApp: text('directory_app'), // Sealed JSON
 }, (table) => ({
   providerTenantUnique: uniqueIndex('team_directories_provider_tenant_unique').on(table.provider, table.tenantId),
 }))

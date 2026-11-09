@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
@@ -11,10 +13,12 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import {
-  useConnectProvisioning, useConnectTeamDirectory, useDisconnectProvisioning, useDisconnectTeamDirectory, useRefreshTeamDirectory,
-  useTeamDirectories, useTestDirectoryCredentials,
+  useConnectProvisioning, useConnectTeamDirectory, useDirectoryInstallStatus, useDisconnectProvisioning, useDisconnectTeamDirectory,
+  useRefreshTeamDirectory, useStartDirectoryInstall, useTeamDirectories, useTestDirectoryCredentials,
 } from '@renderer/hooks/use-team-directories'
-import type { DirectoryProviderInfo, DirectoryProviderView, TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
+import type {
+  DirectoryProviderInfo, DirectoryProviderView, StartDirectoryInstallResponse, TeamDirectoryView,
+} from '@shared/lib/team-directory/view-schema'
 import { SetupPanel, SetupSteps } from './setup-steps'
 import { useUser } from '@renderer/context/user-context'
 
@@ -76,8 +80,136 @@ function DirectoryRow({ directory, onDisconnect }: { directory: TeamDirectoryVie
   )
 }
 
+const STEP_HEADING = 'text-xs font-medium uppercase tracking-wide text-muted-foreground'
+
+function StepLink({ step, index, link }: { step: string; index: number; link?: DirectoryProviderInfo['setupLink'] }) {
+  return (
+    <>
+      <span>{step}</span>
+      {index === 0 && link && (
+        <a href={link.href} target="_blank" rel="noreferrer" className="mt-1 inline-flex w-fit items-center gap-1 text-xs font-medium text-primary hover:underline">
+          {link.label}
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
+    </>
+  )
+}
+
+/**
+ * Connecting with the provider's app-creation credentials alone: paste them,
+ * Gamut creates the directory's app, then one click installs it on the
+ * provider's page. Drawn from what the provider describes, like the rest.
+ */
+function AppConnectForm({ provider, onManual }: { provider: DirectoryProviderView; onManual: () => void }) {
+  const info = provider.provisioning!
+  const client = useQueryClient()
+  const start = useStartDirectoryInstall()
+  const login = useLoginWindow()
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [error, setError] = useState<string | null>(null)
+  const [install, setInstall] = useState<StartDirectoryInstallResponse | null>(null)
+  const [polling, setPolling] = useState(false)
+  const [seenCancel, setSeenCancel] = useState<number | null>(null)
+  const status = useDirectoryInstallStatus(install?.installId ?? null, polling)
+  const complete = info.fields.every((field) => values[field.key]?.trim())
+  const outcome = status.data
+
+  const closeLogin = login.close
+  const startOver = useCallback((message: string | null) => {
+    closeLogin()
+    setPolling(false)
+    setInstall(null)
+    setError(message)
+  }, [closeLogin])
+
+  useEffect(() => {
+    if (!outcome || !install) return
+    if (outcome.status === 'connected') {
+      startOver(null)
+      setValues({})
+      toast.success(`Connected ${outcome.tenantName}`, outcome.notices.length ? { description: outcome.notices.join(' ') } : undefined)
+      void client.invalidateQueries({ queryKey: ['team-directories'] })
+    } else if (outcome.status === 'failed') {
+      startOver(outcome.error)
+    } else if (outcome.status === 'expired') {
+      startOver('The install took too long. Generate a new token and start again.')
+    } else if (outcome.status === 'cancelled' && outcome.at !== seenCancel) {
+      setSeenCancel(outcome.at)
+      setPolling(false)
+      closeLogin()
+    }
+  }, [outcome, install, seenCancel, startOver, client, closeLogin])
+
+  const create = async () => {
+    setError(null)
+    try {
+      setInstall(await start.mutateAsync({ provider: provider.id, credentials: values }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create the app')
+    }
+  }
+  const openInstall = () => {
+    if (!install) return
+    setPolling(true)
+    void login.open(async () => install.url).catch((err: unknown) => {
+      setPolling(false)
+      setError(err instanceof Error ? err.message : 'Could not open the install page')
+    })
+  }
+  const cancelled = outcome?.status === 'cancelled' && outcome.at === seenCancel
+
+  if (install) {
+    return (
+      <SetupPanel data-testid={`team-directory-install-${provider.id}`}>
+        <p className={STEP_HEADING}>Step 2 of 2 · Install</p>
+        <p>Gamut created its {provider.label} app in your workspace. Install it to finish connecting.</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" onClick={openInstall} disabled={polling && login.waiting} data-testid="team-directory-install-button">
+            {polling && login.pending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            Install on {provider.label}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => startOver(null)}>Start over</Button>
+        </div>
+        {polling && login.waiting && (
+          <p role="status" className="text-xs text-muted-foreground">Approve the install in the window that opened. This page updates when it’s done.</p>
+        )}
+        {cancelled && !polling && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">The install was cancelled. Install again when you’re ready.</p>}
+        {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      </SetupPanel>
+    )
+  }
+
+  return (
+    <SetupPanel data-testid={`team-directory-connect-${provider.id}`}>
+      <p className="text-muted-foreground">{provider.description}</p>
+      <p className={STEP_HEADING}>Step 1 of 2 · Add a token</p>
+      <SetupSteps steps={info.steps.map((step, index) => <StepLink key={index} step={step} index={index} link={info.setupLink} />)} />
+      <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); if (complete && !start.isPending) void create() }}>
+        <CredentialFields idPrefix={`team-directory-${provider.id}-app`} fields={info.fields} values={values}
+          onChange={(key, value) => { setValues((previous) => ({ ...previous, [key]: value })); setError(null) }} />
+        {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+        <Button type="submit" size="sm" disabled={!complete || start.isPending}>
+          {start.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Continue
+        </Button>
+      </form>
+      <button type="button" className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onManual}>
+        Use a {provider.label} app you already have
+      </button>
+    </SetupPanel>
+  )
+}
+
+/** A provider's way in: its app-creation credentials when they can connect it, else (or on request) its own form. */
+function ConnectSection({ provider }: { provider: DirectoryProviderView }) {
+  const [manual, setManual] = useState(false)
+  if (provider.provisioning?.connectsDirectory && !manual) return <AppConnectForm provider={provider} onManual={() => setManual(true)} />
+  return <ConnectForm provider={provider} onBack={provider.provisioning?.connectsDirectory ? () => setManual(false) : undefined} />
+}
+
 /** The connect form, drawn from what the provider says it needs. */
-function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
+function ConnectForm({ provider, onBack }: { provider: DirectoryProviderInfo; onBack?: () => void }) {
   const [values, setValues] = useState<Record<string, string>>({})
   const [checked, setChecked] = useState<{ tenantName: string; notices: string[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -116,17 +248,7 @@ function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
   return (
     <SetupPanel data-testid={`team-directory-connect-${provider.id}`}>
       <p className="text-muted-foreground">{provider.description}</p>
-      <SetupSteps steps={provider.steps.map((step, index) => (
-        <>
-          <span>{step}</span>
-          {index === 0 && provider.setupLink && (
-            <a href={provider.setupLink.href} target="_blank" rel="noreferrer" className="mt-1 inline-flex w-fit items-center gap-1 text-xs font-medium text-primary hover:underline">
-              {provider.setupLink.label}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-        </>
-      ))} />
+      <SetupSteps steps={provider.steps.map((step, index) => <StepLink key={index} step={step} index={index} link={provider.setupLink} />)} />
       <form
         className="space-y-3"
         onSubmit={(event) => { event.preventDefault(); if (complete && !busy) void runConnect() }}
@@ -174,6 +296,11 @@ function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
           </Button>
         </div>
       </form>
+      {onBack && (
+        <button type="button" className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={onBack}>
+          Let Gamut create the app instead
+        </button>
+      )}
     </SetupPanel>
   )
 }
@@ -264,17 +391,7 @@ function ProvisioningPanel({ directory, provider }: { directory: TeamDirectoryVi
         </div>
       ) : (
         <>
-          <SetupSteps steps={info.steps.map((step, index) => (
-            <>
-              <span>{step}</span>
-              {index === 0 && info.setupLink && (
-                <a href={info.setupLink.href} target="_blank" rel="noreferrer" className="mt-1 inline-flex w-fit items-center gap-1 text-xs font-medium text-primary hover:underline">
-                  {info.setupLink.label}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-            </>
-          ))} />
+          <SetupSteps steps={info.steps.map((step, index) => <StepLink key={index} step={step} index={index} link={info.setupLink} />)} />
           <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); if (complete && !connect.isPending) void save() }}>
             <CredentialFields idPrefix={`provisioning-${directory.id}`} fields={info.fields} values={values}
               onChange={(key, value) => { setValues((previous) => ({ ...previous, [key]: value })); setError(null) }} />
@@ -359,7 +476,7 @@ export function TeamDirectoryTab() {
                   ))}
                 </div>
               )}
-              <ConnectForm key={provider.id} provider={provider} />
+              <ConnectSection key={provider.id} provider={provider} />
             </section>
           )}
         </>

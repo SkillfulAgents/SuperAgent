@@ -109,16 +109,33 @@ export interface AgentIdentityProvisioning<P> {
   info: Omit<DirectoryProviderInfo, 'id' | 'label'>
   credentialsSchema: z.ZodType<P>
   /**
-   * Checks credentials an admin pasted against the directory's workspace and
-   * returns what to store, rotated already where the provider rotates. Throws
-   * `DirectoryConnectError` for the admin.
+   * Checks credentials an admin pasted and returns what to store, rotated
+   * already where the provider rotates. With `tenant`, they must be for that
+   * workspace (a directory already connected); without, they name their own
+   * (a directory being connected with them). Throws `DirectoryConnectError`
+   * for the admin.
    */
-  verify(credentials: P, tenant: { tenantId: string }): Promise<P>
+  verify(credentials: P, tenant?: { tenantId: string }): Promise<P>
   /** When stored credentials should be rotated before they are next used. */
   needsRotation?(credentials: P, now: number): boolean
   /** Fresh credentials. Throws `ProvisioningCredentialsError` when they can't be renewed (the chain is broken). */
   rotate?(credentials: P): Promise<P>
   open(credentials: P): AgentIdentityProvisioner
+  /**
+   * Present when these credentials alone can connect the directory: the host
+   * creates the directory's own app with them, a person installs it, and the
+   * install (`AgentIdentityProvisioner.completeInstall`) gives the directory's
+   * credentials. The admin pastes one token instead of making an app by hand.
+   */
+  createDirectoryApp?(credentials: P, input: { redirectUrl: string }): Promise<CreatedDirectoryApp>
+}
+
+/** The directory's own app, created but not installed yet. */
+export interface CreatedDirectoryApp {
+  /** What installing and deleting it needs; never sent to a client. */
+  app: ProvisionedAppRecord
+  /** The URL that installs it; the host adds its own `state`. */
+  installUrl: string
 }
 
 /** What an agent's app is made from. */
@@ -153,7 +170,11 @@ export interface CreatedAgentApp {
 
 export interface AgentIdentityProvisioner {
   createApp(input: AgentAppIdentity & { webhookUrl: string; redirectUrl: string }): Promise<CreatedAgentApp>
-  /** Finishes the install the person approved; returns the config fields that connect the integration (Slack's bot token). */
+  /**
+   * Finishes the install the person approved. For an agent's app, returns the
+   * config fields that connect the integration (Slack's bot token); for the
+   * directory's own app, the directory's credentials.
+   */
   completeInstall(app: ProvisionedAppRecord, code: string, redirectUrl: string): Promise<Record<string, unknown>>
   deleteApp(app: ProvisionedAppRecord): Promise<void>
   /** Renames the app (name and handle) and sets a new icon; what is absent stays. */

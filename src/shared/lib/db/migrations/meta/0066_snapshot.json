@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "26a5bb42-76c1-4dc0-861b-6b764e7100ac",
+  "id": "7236b9d6-45da-4211-b416-fc8bf6a5d2fa",
   "prevId": "b4a9d4e0-8072-40c0-bcec-a9db1e354ffe",
   "tables": {
     "agent_acl": {
@@ -4076,6 +4076,13 @@
         },
         "provisioning_error": {
           "name": "provisioning_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "directory_app": {
+          "name": "directory_app",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

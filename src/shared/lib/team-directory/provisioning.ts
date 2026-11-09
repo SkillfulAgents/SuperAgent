@@ -53,20 +53,32 @@ function provisioningOf(connection: Pick<DirectoryConnection, 'provider'>): Agen
 
 // ── Credentials ─────────────────────────────────────────────────────
 
+/**
+ * Stores verified provisioning credentials on a directory, over any it had.
+ * `directoryApp` (sealed) comes along when the directory was connected with them.
+ */
+export async function saveProvisioningCredentials(
+  connection: Pick<DirectoryConnection, 'id' | 'provider' | 'tenantId'>,
+  credentials: unknown,
+  extra: { directoryApp?: string } = {},
+): Promise<void> {
+  await db.update(teamDirectories).set({
+    provisioningCredentials: await sealDirectoryCredentials(sealedAs(connection), connection.tenantId, credentials),
+    provisioningRevision: sql`${teamDirectories.provisioningRevision} + 1`,
+    provisioningStatus: 'active',
+    provisioningError: null,
+    ...extra,
+    updatedAt: new Date(),
+  }).where(eq(teamDirectories.id, connection.id)).run()
+}
+
 /** Verifies and stores an admin's provisioning credentials on a connected directory. */
 export async function connectProvisioning(directoryId: string, input: unknown): Promise<DirectoryConnection> {
   const connection = await getDirectoryConnection(directoryId)
   if (!connection) throw new DirectoryConnectError('Directory not found')
   const provisioning = provisioningOf(connection)
   if (!provisioning) throw new DirectoryConnectError('This directory can’t create agents’ apps.')
-  const verified = await provisioning.verify(provisioning.credentialsSchema.parse(input), connection)
-  await db.update(teamDirectories).set({
-    provisioningCredentials: await sealDirectoryCredentials(sealedAs(connection), connection.tenantId, verified),
-    provisioningRevision: sql`${teamDirectories.provisioningRevision} + 1`,
-    provisioningStatus: 'active',
-    provisioningError: null,
-    updatedAt: new Date(),
-  }).where(eq(teamDirectories.id, directoryId)).run()
+  await saveProvisioningCredentials(connection, await provisioning.verify(provisioning.credentialsSchema.parse(input), connection))
   return (await getDirectoryConnection(directoryId))!
 }
 
@@ -92,7 +104,7 @@ async function loadProvisioning(directoryId: string): Promise<LoadedProvisioning
   if (!row?.provisioningCredentials) return null
   const provisioning = provisioningOf(row)
   if (!provisioning) return null
-  const { credentials: _directory, provisioningCredentials, ...connection } = row
+  const { credentials: _directory, provisioningCredentials, directoryApp: _app, ...connection } = row
   const credentials = provisioning.credentialsSchema.parse(await openDirectoryCredentials(sealedAs(row), row.tenantId, provisioningCredentials))
   return { connection, provisioning, credentials, revision: row.provisioningRevision }
 }
@@ -168,7 +180,7 @@ export async function rotateAllProvisioning(): Promise<void> {
 }
 
 /** The provisioner of a directory, with credentials rotated first when they are due. */
-async function provisionerFor(directoryId: string): Promise<{ provisioner: AgentIdentityProvisioner; connection: DirectoryConnection }> {
+export async function provisionerFor(directoryId: string): Promise<{ provisioner: AgentIdentityProvisioner; connection: DirectoryConnection }> {
   let loaded = await loadProvisioning(directoryId)
   if (loaded?.provisioning.needsRotation?.(loaded.credentials, Date.now())) {
     await rotateProvisioning(directoryId)

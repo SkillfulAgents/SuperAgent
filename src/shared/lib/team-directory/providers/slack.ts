@@ -1,15 +1,16 @@
 /**
  * A Slack workspace as a team directory, read with a bot token that has
- * `users:read` and `users:read.email`.
+ * `users:read` and `users:read.email`. Gamut usually makes that app itself,
+ * from an app configuration token (slack-provisioning.ts); an admin can still
+ * paste a bot token from an app they made.
  */
 import { z } from 'zod'
 import { DirectoryConnectError, type DirectoryMessage, type DirectoryUser, type TeamDirectoryProvider } from '../types'
 import { SlackApiError, slackCall } from './slack-api'
+import { SLACK_DIRECTORY_SCOPES, SLACK_NOTIFY_SCOPES, slackDirectoryAppManifest } from './slack-directory-app'
 import { slackAppProvisioning } from './slack-provisioning'
 
-export const SLACK_DIRECTORY_SCOPES = ['users:read', 'users:read.email'] as const
-/** Optional: DMing people their invitations and mentions. */
-export const SLACK_NOTIFY_SCOPES = ['chat:write', 'im:write'] as const
+export { SLACK_DIRECTORY_SCOPES, SLACK_NOTIFY_SCOPES, slackDirectoryAppManifest }
 
 const PAGE_SIZE = 200
 /** Far past the workspaces this is for (tens to hundreds); a bigger one is listed this far. */
@@ -91,19 +92,6 @@ async function listSlackUsers(token: string, tenantId: string): Promise<Director
     cursor = body.response_metadata?.next_cursor || undefined
   } while (cursor && users.length < MAX_USERS)
   return users.slice(0, MAX_USERS)
-}
-
-/** The Slack app an admin creates for the directory, prefilled through Slack's manifest link. */
-export function slackDirectoryAppManifest() {
-  return {
-    display_information: {
-      name: 'Gamut',
-      description: 'Lets Gamut find your teammates so you can invite them.',
-    },
-    features: { bot_user: { display_name: 'Gamut', always_online: false } },
-    oauth_config: { scopes: { bot: [...SLACK_DIRECTORY_SCOPES, ...SLACK_NOTIFY_SCOPES] } },
-    settings: { org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false },
-  }
 }
 
 /** Slack mrkdwn treats these three as control characters in any text it shows. */

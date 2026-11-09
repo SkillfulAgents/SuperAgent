@@ -3,7 +3,8 @@
  * a token, check it, disconnect it. The providers describe their own connect
  * forms, so nothing here knows which provider it is handling.
  */
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { html } from 'hono/html'
 import { z } from 'zod'
 import { inArray } from 'drizzle-orm'
 import { Authenticated, IsAdmin } from '../middleware/auth'
@@ -23,10 +24,46 @@ import {
   type DirectoryConnection,
 } from '@shared/lib/team-directory/store'
 import { DirectoryConnectError, type DirectoryTenant } from '@shared/lib/team-directory/types'
-import type { DirectoryProviderView, TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
+import type { DirectoryInstallStatus, DirectoryProviderView, StartDirectoryInstallResponse, TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
 import { connectProvisioning, disconnectProvisioning } from '@shared/lib/team-directory/provisioning'
+import {
+  completeDirectoryAppConnect,
+  connectsWithProvisioning,
+  directoryAppCleanup,
+  directoryInstallOutcome,
+  startDirectoryAppConnect,
+} from '@shared/lib/team-directory/directory-app'
+import { resolvePublicAppBaseUrl } from '@shared/lib/agent-integrations/app-link'
+import { captureException } from '@shared/lib/error-reporting'
 
 const router = new Hono()
+
+const CALLBACK_PATH = '/api/team-directories/install/callback'
+
+const callbackPage = (title: string, message: string, status: 200 | 400 = 200) => (c: Context) => {
+  c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer')
+  return c.html(html`<!doctype html><html><head><title>${title}</title></head><body><h1>${title}</h1><p>${message}</p></body></html>`, status)
+}
+
+// GET /api/team-directories/install/callback - Where the provider's install page
+// returns. Before the admin check: the browser may not hold the admin's
+// session (the desktop app opens the system browser); the one-time state is
+// what identifies the install.
+router.get('/install/callback', async (c) => {
+  const state = c.req.query('state')
+  if (!state) return callbackPage('Install unavailable', 'Return to Gamut to try again.', 400)(c)
+  try {
+    const outcome = await completeDirectoryAppConnect({ state, code: c.req.query('code'), error: c.req.query('error') })
+    if (!outcome) return callbackPage('Install expired', 'Return to Gamut and start again.', 400)(c)
+    if (outcome.status === 'connected') return callbackPage(`${outcome.tenantName} connected`, 'You can close this window and return to Gamut.')(c)
+    if (outcome.status === 'failed') return callbackPage('Could not connect', `${outcome.error} Return to Gamut to try again.`, 400)(c)
+    return callbackPage('Install cancelled', 'Return to Gamut to try again.', 400)(c)
+  } catch (error) {
+    captureException(error, { tags: { component: 'team-directory', operation: 'install-callback' } })
+    return callbackPage('Could not connect', 'Return to Gamut to try again.', 400)(c)
+  }
+})
+
 router.use('*', Authenticated(), IsAdmin())
 
 const connectBodySchema = z.object({
@@ -79,7 +116,9 @@ router.get('/', async (c) => {
   return c.json({
     providers: listDirectoryProviders().map((provider): DirectoryProviderView => ({
       ...provider.info,
-      ...(provider.provisioning ? { provisioning: provider.provisioning.info } : {}),
+      ...(provider.provisioning
+        ? { provisioning: { ...provider.provisioning.info, ...(connectsWithProvisioning(provider) ? { connectsDirectory: true } : {}) } }
+        : {}),
     })),
     directories: await views(await listDirectoryConnections()),
   })
@@ -105,6 +144,28 @@ router.post('/', async (c) => {
   await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: saved.id, action: 'connected', details: { provider, tenantName: tenant.tenantName } })
   const [view] = await views([saved])
   return c.json({ directory: view, notices: tenant.notices ?? [] }, 201)
+})
+
+// POST /api/team-directories/install - Connects a directory with its provider's
+// app-creation credentials alone: creates the directory's app and returns the
+// page that installs it. The install's callback connects the directory.
+router.post('/install', async (c) => {
+  const input = connectBodySchema.parse(await c.req.json())
+  const baseUrl = await resolvePublicAppBaseUrl(c.req.raw)
+  if (!baseUrl) throw new RequestError('This app has no public URL for the install to return to.')
+  const started = await startDirectoryAppConnect({
+    provider: input.provider,
+    credentials: input.credentials,
+    redirectUrl: `${baseUrl}${CALLBACK_PATH}`,
+    userId: isAuthMode() ? getCurrentUserId(c) : null,
+  })
+  return c.json(started satisfies StartDirectoryInstallResponse)
+})
+
+// GET /api/team-directories/install/:installId - How an install started here went.
+router.get('/install/:installId', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  return c.json((await directoryInstallOutcome(c.req.param('installId'))) satisfies DirectoryInstallStatus)
 })
 
 // POST /api/team-directories/:id/refresh - Lists the directory now: how many people it has, or why it can't be read.
@@ -134,10 +195,13 @@ router.delete('/:id/provisioning', async (c) => {
   return c.body(null, 204)
 })
 
-// DELETE /api/team-directories/:id - Disconnects a directory. Its people stop appearing in searches at once.
+// DELETE /api/team-directories/:id - Disconnects a directory. Its people stop
+// appearing in searches at once, and the app Gamut made for it is deleted.
 router.delete('/:id', async (c) => {
+  const cleanup = await directoryAppCleanup(c.req.param('id'))
   const removed = await deleteDirectoryConnection(c.req.param('id'))
   if (!removed) return c.json({ error: 'Directory not found' }, 404)
+  if (cleanup) background(cleanup(), { name: 'team-directory.delete-app' })
   await forgetDirectoryUsers(removed)
   await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: removed.id, action: 'disconnected', details: { provider: removed.provider, tenantName: removed.tenantName } })
   return c.body(null, 204)

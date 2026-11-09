@@ -19,7 +19,12 @@ Nothing outside `providers/` may branch on which provider it is. This covers sea
 
 ### Slack
 
-The Slack provider (`providers/slack.ts`) uses a bot token (`xoxb-`) with `users:read` and `users:read.email`, plus `chat:write` and `im:write` to DM invitations. Settings links to Slack's "create an app" page with a manifest that asks for those four scopes. A token without the DM scopes still connects, with a notice that invitations won't go by DM.
+The Slack provider (`providers/slack.ts`) uses a bot token (`xoxb-`) with `users:read` and `users:read.email`, plus `chat:write` and `im:write` to DM invitations (`providers/slack-directory-app.ts`).
+
+- **Usually Gamut makes that app.** The admin pastes the refresh token of an app configuration token, and one Install connects the directory. See [Connecting with one token](#connecting-with-one-token).
+- **Or an admin makes it by hand.** "Use a Slack app you already have" takes a bot token. Settings links to Slack's "create an app" page with a manifest that asks for the four scopes. A token without the DM scopes still connects, with a notice that invitations won't go by DM.
+
+The rest is the same either way:
 
 - `verify` calls `auth.test` and reads the granted scopes from `x-oauth-scopes`. If that header is missing, it asks for one page of `users.list` instead.
 - The tenant is the Enterprise Grid id when there is one, because user ids span a grid's workspaces. Otherwise it is the team id.
@@ -69,12 +74,39 @@ People are never stored.
 | GET | `/` | Providers (`info`) and connected directories, without credentials |
 | POST | `/test` | Verify `{ provider, credentials }` without saving |
 | POST | `/` | Verify and connect (or replace the credentials of the same workspace), then list it in the background |
+| POST | `/install` | Connect with app-creation credentials alone: `{ installId, url }` ([Connecting with one token](#connecting-with-one-token)) |
+| GET | `/install/:installId` | How that install went: `pending`, `connected`, `cancelled`, `failed` or `expired` |
+| GET | `/install/callback` | Where the provider's install page returns. Public: the one-time state identifies the install |
 | POST | `/:id/refresh` | List now: `{ ok, userCount }` or `{ ok: false, error }` |
-| DELETE | `/:id` | Disconnect and drop the cached listing |
+| POST / DELETE | `/:id/provisioning` | Add or replace / remove the credentials for agents' apps ([Agent apps](#agent-apps)) |
+| DELETE | `/:id` | Disconnect, drop the cached listing, and delete the app Gamut made for it |
 
 Connecting and disconnecting are audited as `team_directory`.
 
-Under `E2E_MOCK=true` the registry also has a **Demo Directory** (`testing/e2e-directory.ts`, token `acme-token`) with a fixed roster, for the auth E2E suite (`e2e/auth/specs/team-directory.spec.ts`) and PR screenshots.
+Under `E2E_MOCK=true` the registry also has a **Demo Directory** (`testing/e2e-directory.ts`) with a fixed roster, for the auth E2E suite (`e2e/auth/specs/team-directory.spec.ts`) and PR screenshots. It connects with any key (its install page is the host's own callback, so the window comes straight back), or by hand with the token `acme-token`.
+
+## Connecting with one token
+
+`directory-app.ts`. When a provider's `provisioning` has `createDirectoryApp`, Settings offers its credentials as the way in. For Slack that is the refresh token of an app configuration token, the same one agents' apps need. The admin's steps:
+
+1. **Paste.** Settings → Team Directory: open Slack's Your Apps, generate a token for the workspace, paste its refresh token, Continue (`POST /install`).
+   - The host verifies the token, which rotates it once, then creates the directory's app with the host's callback as its redirect URL (`apps.manifest.create`; the app has no events, so no webhook relay).
+   - The pending install is held in AppState (`oauth:directory-app-install`, 30 minutes), with the rotated credentials and the app sealed.
+   - A failure from here on needs a new token, since the pasted one has been rotated.
+2. **Install.** One click opens the provider's install page in a window (the system browser in the desktop app).
+   - The callback consumes the state and exchanges the code (`completeInstall`). What it gives is the directory's credentials (Slack: the bot token).
+   - The provider's own `verify` names the workspace, the directory is saved, and the provisioning credentials and the app (`directory_app`, sealed) are stored on its row. Agent apps are ready from then on.
+   - Settings polls `GET /install/:installId` and closes the window once the install is done.
+3. **Done.** The directory is listed straight away, like one connected by hand.
+
+Other cases:
+
+- **Declined.** A declined install leaves the state, so the same Install button can try again until it expires.
+- **Failed.** An install that can't connect the directory deletes the app and reports why.
+- **Reconnected.** Connecting a workspace again deletes the app Gamut made for it before.
+- **Disconnected.** Disconnecting deletes the directory's app (`directoryAppCleanup`) when the provisioning credentials still work.
+- **Abandoned.** An install left unfinished leaves its app behind in Slack.
+- **HTTPS.** Slack's install page returns to the host's public URL (`HOST_PUBLIC_URL`, else the first trusted origin). Slack expects that URL to be HTTPS, so a desktop app on `http://localhost` should use a bot token.
 
 ## Invited users
 
@@ -104,7 +136,7 @@ A connected directory whose provider has `provisioning` (`AgentIdentityProvision
 
 ### Credentials
 
-They are sealed on the directory's row, apart from its own (`provisioning_credentials`, migration 0066), because they rotate and the people cache must not move with them. An admin adds them under **Agent apps** in Settings → Team Directory.
+They are sealed on the directory's row, apart from its own (`provisioning_credentials`, migration 0066), because they rotate and the people cache must not move with them. A directory [connected with one token](#connecting-with-one-token) has them from the start. For one connected by hand, an admin adds them under **Agent apps** in Settings → Team Directory.
 
 - **Rotation.** `needsRotation` says when stored credentials are due: for Slack, an hour before the 12-hour app configuration token expires. They are rotated then, before any use, and by the `team-directory-provisioning` service's pass every 6 hours, so the chain survives weeks with no new apps.
 - **One rotation at a time.** Rotations go through the lease `claim:team-directory-provisioning` per directory: Slack's rotation retires the old refresh token, so two at once would break the chain.
@@ -135,8 +167,8 @@ The client sees `provisionedApp` as `{ directoryId, installed, name, iconSet, se
 
 `providers/slack-provisioning.ts`.
 
-- **Credentials.** The app configuration access token (`xoxe.…`) and refresh token (`xoxe-…`) are verified by rotating them once, which also says when they expire. They must be for the directory's workspace (a grid directory spans its workspaces).
-- **Apps.** `apps.manifest.create` uses the manifest from `slackAppManifest` (the same one manual setup prefills), plus `oauth_config.redirect_urls`. `apps.icon.set` is multipart. `apps.manifest.export` / `apps.manifest.update` rename, and `apps.manifest.delete` deletes.
+- **Credentials.** The admin pastes only the refresh token (`xoxe-…`): `tooling.tokens.rotate` takes nothing else and returns the access token (`xoxe.…`) and when it expires, so verifying is one rotation. Pasting the access token instead is refused with a message that says so. Added to a connected directory, the token must be for its workspace (a grid directory spans its workspaces); connecting one, it names its own.
+- **Apps.** An agent's app uses the manifest from `slackAppManifest` (the same one manual setup prefills), the directory's own app `slackDirectoryAppManifest` (four scopes, no events); both add `oauth_config.redirect_urls`. `apps.icon.set` is multipart. `apps.manifest.export` / `apps.manifest.update` rename, and `apps.manifest.delete` deletes.
 - **Limits.** The Manifest API is marked beta. `apps.manifest.create` and `apps.icon.set` are Tier 1 (about one a minute); apps are made one at a time from the setup form, so there is no queue yet.
 - **Apps made by hand** have only a bot token, and Slack has no API for a bot to rename itself. The connector records the app's id (`auth.test` → `bots.info`, host-owned `appId`), and the integration page links to the app's settings in Slack instead.
 

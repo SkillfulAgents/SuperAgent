@@ -66,7 +66,6 @@ async function completeAuthorization(c: Context) {
       ?? (callback ? await callback({ state, code: c.req.query('code'), error: c.req.query('error'), parameters: c.req.query() }) : null)
     if (!result) return c.html('<h1>Authorization expired</h1><p>Return to Gamut to try again.</p>', 400)
     if (result.redirectUrl) return c.redirect(result.redirectUrl)
-    if (result.redirectUrl) return c.redirect(result.redirectUrl)
     if (result.cancelled || !result.integrationId) return c.html('<h1>Authorization cancelled</h1><p>Return to Gamut to try again.</p>', 400)
     const installed = await getAgentIntegration(result.integrationId)
     if (installed?.provider !== c.req.param('provider')) throw new Error('Authorization belongs to another provider')
