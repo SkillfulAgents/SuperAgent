@@ -452,6 +452,18 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p test-results
+          # PROBE: since #1797 the runner VM is shut down mid-suite and nothing
+          # uploads. Print machine state into the live step log every 5s so
+          # the last lines before a shutdown survive it.
+          (
+            while true; do
+              echo "[probe] $(date -u +%H:%M:%S) load=$(sysctl -n vm.loadavg) $(top -l 1 -n 0 | grep -E '^PhysMem') swap=$(sysctl -n vm.swapusage | awk '{print $6}') $(memory_pressure -Q 2>/dev/null | tail -1) disk_free=$(df -h / | awk 'NR==2{print $4}')"
+              ps -Aro pid,pcpu,rss,comm | head -6 | sed 's/^/[probe]   /'
+              sleep 5
+            done
+          ) &
+          PROBE=$!
+          trap 'kill $PROBE 2>/dev/null' EXIT
           E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit.log
 
       - name: Run WebKit navigation contracts
