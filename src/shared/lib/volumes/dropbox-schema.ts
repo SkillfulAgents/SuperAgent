@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { volumeFolderNameSchema } from './volume-folders-schema'
 
 /** Dropbox paths are relative to the account's home namespace. '' names its root. */
 export const dropboxPathSchema = z.string().max(2000)
@@ -43,3 +44,4 @@ export const dropboxErrorSchema = z.object({
   }).optional(),
 })
 export const dropboxBrowseSchema = dropboxVolumeConfigSchema
+export const dropboxCreateFolderSchema = dropboxBrowseSchema.extend({ name: volumeFolderNameSchema })

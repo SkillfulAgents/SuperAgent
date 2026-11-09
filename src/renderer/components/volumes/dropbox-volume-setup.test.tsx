@@ -8,11 +8,18 @@ Element.prototype.scrollIntoView = vi.fn()
 Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
-const state = vi.hoisted(() => ({ connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }] as { id: string; displayName: string; status: string; createdAt?: string }[] }))
+const state = vi.hoisted(() => ({ connects: [] as string[], created: [] as unknown[], accounts: [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }] as { id: string; displayName: string; status: string; createdAt?: string }[] }))
 vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false, usesHostFolderPaths: () => false, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({ data: { accounts: state.accounts }, isLoading: false }) }))
-vi.mock('@renderer/lib/api', () => ({ apiFetch: async () => Response.json({ folders: [] }) }))
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: async (_url: string, init?: RequestInit) => {
+    if (init?.method !== 'POST') return Response.json({ folders: [] })
+    const body = JSON.parse(String(init.body))
+    state.created.push(body)
+    return Response.json({ folder: { id: `${body.path}/${body.name}`, name: body.name } })
+  },
+}))
 // Connect goes straight into the provider's sign-in; here it hands back a new account at once.
 vi.mock('@renderer/hooks/use-connect-account', () => ({
   useConnectAccount: ({ onConnected }: { onConnected: (result: { accountId: string; toolkit: string }) => void }) => ({
@@ -26,7 +33,7 @@ vi.mock('@renderer/hooks/use-connect-account', () => ({
 }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 
-beforeEach(() => { state.connects = []; state.accounts = [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }, { id: 'second', displayName: 'Personal Dropbox', status: 'active' }] })
+beforeEach(() => { state.connects = []; state.created = []; state.accounts = [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }, { id: 'second', displayName: 'Personal Dropbox', status: 'active' }] })
 afterEach(cleanup)
 async function setup(save = vi.fn()) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -129,11 +136,17 @@ describe('Dropbox volume creation', () => {
   })
 })
 
-it('offers no New folder, since Dropbox does not create folders here', async () => {
-  await setup()
+it('makes a folder at the Dropbox root, picks it by its path, and saves it', async () => {
+  const save = await setup()
   await userEvent.click(screen.getByRole('radio', { name: 'Work Dropbox' }))
   await userEvent.click(screen.getByRole('button', { name: 'Next' }))
   await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
   await screen.findByText('No folders in Dropbox')
-  expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'New folder' }))
+  await userEvent.type(screen.getByRole('textbox', { name: 'New folder name' }), ' Scratch {Enter}')
+  expect(await screen.findByRole('button', { name: 'Scratch' })).toHaveAttribute('aria-pressed', 'true')
+  expect(state.created).toEqual([{ accountId: 'first', path: '', name: 'Scratch' }])
+  await userEvent.click(screen.getByRole('button', { name: 'Use “Scratch”' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ source: { type: 'dropbox', config: { accountId: 'first', path: '/Scratch' } } }))
 })

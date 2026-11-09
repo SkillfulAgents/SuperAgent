@@ -123,6 +123,16 @@ describe('Dropbox volume access and transport', () => {
     expect(JSON.parse(rows[0].config)).toEqual(config)
   })
 
+  it('makes a picker folder only in the caller\'s own account, including for admins', async () => {
+    const makeFolder = (caller: string) => app.request('/api/volume-types/dropbox/folders', {
+      method: 'POST', headers: { 'Test-User': caller, 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: 'dropbox', path: '', name: 'Scratch' }),
+    })
+    for (const caller of ['bob', 'admin']) expect((await makeFolder(caller)).status).toBe(404)
+    expect(forward).not.toHaveBeenCalled()
+    expect(await (await makeFolder('alice')).json()).toEqual({ folder: { id: '/Scratch', name: 'Scratch' } })
+    expect(forward.mock.calls.at(-1)?.[0].targetUrl).toMatch(/create_folder_v2$/)
+  })
+
   it('grants only attached agents scoped WebDAV access and audits the actual agent without account policies', async () => {
     const { id } = await (await create()).json()
     const mount = await attachMount('agent-a', id, { userId: 'alice', admin: false })

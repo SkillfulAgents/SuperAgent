@@ -4,11 +4,11 @@ import { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { dropboxRequest, requireDropboxAccount, withDropboxAccount, type DropboxEndpoint } from './dropbox-client'
-import { dropboxBrowseSchema, dropboxFileSchema, dropboxFolderSchema, dropboxListSchema, dropboxMetadataSchema, dropboxSessionSchema, type DropboxList, type DropboxMetadata, type DropboxVolumeConfig } from './dropbox-schema'
+import { dropboxBrowseSchema, dropboxCreateFolderSchema, dropboxFileSchema, dropboxFolderSchema, dropboxListSchema, dropboxMetadataSchema, dropboxSessionSchema, type DropboxList, type DropboxMetadata, type DropboxVolumeConfig } from './dropbox-schema'
 import { dropboxReadCache } from './dropbox-read-cache'
 import { dropboxHealthCache } from './dropbox-health-cache'
 import { DropboxUnavailableError } from './dropbox-error'
-import { volumeFolderBrowser } from './volume-folder-browser'
+import { volumeFolderBrowser, volumeFolderCreator } from './volume-folder-browser'
 import { serialize } from './remote-listing-cache'
 import { uploadChunks, throwIfUploadAborted } from './remote-transfer'
 import { guardDelete, guardedUpload } from './guarded-upload'
@@ -43,6 +43,13 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
     return { folders: entries.filter(entry => entry.kind === 'directory').map(entry => ({
       id: `${config.path}/${entry.name}`, name: entry.name,
     })) }
+  })
+
+  // Before a definition exists: make a folder inside the one the picker is in, the way a mount makes one.
+  static readonly createFolder = volumeFolderCreator(dropboxCreateFolderSchema, async ({ accountId, path: parent, name }, viewer) => {
+    await requireDropboxAccount(accountId, viewer)
+    await new DropboxMountableVolume('', '', { accountId, path: parent }).mkdir(name)
+    return { folder: { id: `${parent}/${name}`, name } }
   })
 
   readonly type = 'dropbox'
@@ -225,7 +232,9 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
       const response = await this.request('create_folder_v2', { path: target, autorename: false })
       const { metadata } = await json(response, z.object({ metadata: dropboxFolderSchema }))
       settle(target, { ...metadata, '.tag': 'folder' })
-    }))
+    })).catch(error => {
+      throw error instanceof WorkspaceFileError && error.code === 'already-exists' ? new WorkspaceFileError('already-exists', `“${path.posix.basename(relative)}” is already used here.`) : error
+    })
   }
 
   async delete(relative: string): Promise<void> {

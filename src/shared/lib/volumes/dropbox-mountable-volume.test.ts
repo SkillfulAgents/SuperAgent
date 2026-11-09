@@ -235,6 +235,33 @@ describe('Dropbox filesystem', () => {
   })
 })
 
+describe('Dropbox setup folder creation', () => {
+  it('makes the folder inside the one the picker is in, the account root included, after checking the account', async () => {
+    request.mockResolvedValueOnce(Response.json(folder())).mockResolvedValueOnce(Response.json(created('Scratch')))
+    await expect(DropboxMountableVolume.createFolder({ accountId: 'account', path: '/Team', name: ' Scratch ' }, { userId: 'alice' }))
+      .resolves.toEqual({ folder: { id: '/Team/Scratch', name: 'Scratch' } })
+    expect(request).toHaveBeenLastCalledWith('account', 'create_folder_v2', { path: '/Team/Scratch', autorename: false }, expect.anything())
+    expect(requireAccount).toHaveBeenCalledWith('account', { userId: 'alice' })
+    request.mockResolvedValueOnce(Response.json(page([]))).mockResolvedValueOnce(Response.json(created('Scratch')))
+    await expect(DropboxMountableVolume.createFolder({ accountId: 'account', path: '', name: 'Scratch' }, { userId: 'alice' }))
+      .resolves.toEqual({ folder: { id: '/Scratch', name: 'Scratch' } })
+    expect(request).toHaveBeenLastCalledWith('account', 'create_folder_v2', { path: '/Scratch', autorename: false }, expect.anything())
+  })
+
+  it('refuses a name already in the folder, saying which, and a name with a slash, without writing', async () => {
+    request.mockImplementation(async (_account, endpoint) => {
+      if (endpoint === 'get_metadata') return Response.json(folder())
+      throw new WorkspaceFileError('already-exists')
+    })
+    await expect(DropboxMountableVolume.createFolder({ accountId: 'account', path: '/Team', name: 'existing' }, { userId: 'alice' }))
+      .rejects.toMatchObject({ status: 409, message: '“existing” is already used here.' })
+    await expect(volume().mkdir('existing')).rejects.toMatchObject({ status: 409, message: '“existing” is already used here.' })
+    request.mockClear()
+    await expect(DropboxMountableVolume.createFolder({ accountId: 'account', path: '/Team', name: 'a/b' }, { userId: 'alice' })).rejects.toMatchObject({ name: 'ZodError' })
+    expect(request).not.toHaveBeenCalled()
+  })
+})
+
 function mutationResponse(endpoint: string, args: { path?: string; commit?: { path: string }; cursor?: { offset: number } }, options?: { bytes?: ArrayBuffer }) {
   if (endpoint === 'create_folder_v2') return Response.json(created(args.path?.split('/').at(-1)))
   if (endpoint === 'upload' || endpoint === 'upload_session/finish') return Response.json({
