@@ -36,14 +36,21 @@ const member = (id: string, overrides: Record<string, unknown> = {}) => ({
 
 describe('slack directory: verify', () => {
   it('names the workspace and checks both scopes', async () => {
-    routes['auth.test'] = () => ({ body: { ok: true, team: 'Acme', team_id: 'T1' }, headers: { 'x-oauth-scopes': 'chat:write,users:read,users:read.email' } })
+    routes['auth.test'] = () => ({ body: { ok: true, team: 'Acme', team_id: 'T1' }, headers: { 'x-oauth-scopes': 'chat:write,im:write,users:read,users:read.email' } })
     await expect(slackDirectoryProvider.verify({ botToken: 'xoxb-1' })).resolves.toEqual({ tenantId: 'T1', tenantName: 'Acme' })
     expect(calls[0].token).toBe('Bearer xoxb-1')
   })
 
   it('keys an Enterprise Grid workspace by its enterprise, since user ids span its workspaces', async () => {
-    routes['auth.test'] = () => ({ body: { ok: true, team: 'Acme East', team_id: 'T1', enterprise_id: 'E1' }, headers: { 'x-oauth-scopes': 'users:read,users:read.email' } })
+    routes['auth.test'] = () => ({ body: { ok: true, team: 'Acme East', team_id: 'T1', enterprise_id: 'E1' }, headers: { 'x-oauth-scopes': 'users:read,users:read.email,chat:write,im:write' } })
     await expect(slackDirectoryProvider.verify({ botToken: 'xoxb-1' })).resolves.toEqual({ tenantId: 'E1', tenantName: 'Acme East' })
+  })
+
+  it('connects without the DM scopes, saying invitations won’t go by DM', async () => {
+    routes['auth.test'] = () => ({ body: { ok: true, team: 'Acme', team_id: 'T1' }, headers: { 'x-oauth-scopes': 'users:read,users:read.email,chat:write' } })
+    expect(await slackDirectoryProvider.verify({ botToken: 'xoxb-1' })).toEqual({
+      tenantId: 'T1', tenantName: 'Acme', notices: ['Invitations won’t be sent by Slack DM: the token is missing im:write.'],
+    })
   })
 
   it('refuses a token without the email scope, saying what to add', async () => {
@@ -117,5 +124,34 @@ describe('slack directory: listUsers', () => {
   it('names what went wrong, for Settings', async () => {
     routes['users.list'] = () => ({ body: { ok: false, error: 'token_revoked' } })
     await expect(directory().listUsers()).rejects.toThrow('does not accept this token')
+  })
+})
+
+describe('slack directory: notifyUser', () => {
+  const directory = () => slackDirectoryProvider.open({ id: 'd1', tenantId: 'T1', credentials: { botToken: 'xoxb-1' } })
+  const dana = { provider: 'slack', tenantId: 'T1', remoteId: 'U7', name: 'Dana', email: 'dana@acme.test', emailVerified: true }
+
+  it('opens a DM with the person and posts the message, escaped, with its link', async () => {
+    routes['conversations.open'] = (form) => ({ body: { ok: true, channel: { id: `D-${form.get('users')}` } } })
+    routes['chat.postMessage'] = () => ({ body: { ok: true } })
+    await directory().notifyUser!(dana, {
+      headline: 'Ada <admin> shared the agent R&D Helper with you on Gamut.',
+      quote: 'first line\nsecond > line',
+      link: { label: 'Join Gamut', url: 'https://gamut.test/?invite=abc|def' },
+    })
+    const post = calls.find((call) => call.method === 'chat.postMessage')!
+    expect(post.form.get('channel')).toBe('D-U7')
+    expect(post.form.get('text')).toBe([
+      'Ada &lt;admin&gt; shared the agent R&amp;D Helper with you on Gamut.',
+      '>first line',
+      '>second &gt; line',
+      '<https://gamut.test/?invite=abc%7Cdef|Join Gamut>',
+    ].join('\n'))
+  })
+
+  it('says what scope a DM needs when the token lacks it', async () => {
+    routes['conversations.open'] = () => ({ body: { ok: false, error: 'missing_scope' } })
+    await expect(directory().notifyUser!(dana, { headline: 'Hi', link: { label: 'Join', url: 'https://gamut.test' } }))
+      .rejects.toThrow('chat:write and im:write')
   })
 })

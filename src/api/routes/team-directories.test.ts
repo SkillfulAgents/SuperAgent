@@ -69,7 +69,7 @@ describe('team directory routes', () => {
 
   it('tests credentials without saving them', async () => {
     const tested = await post('/test', { provider: 'fake', credentials: { token: 'acme-token' } })
-    expect(await tested.json()).toEqual({ tenantName: 'ACME' })
+    expect(await tested.json()).toEqual({ tenantName: 'ACME', notices: [] })
     const refused = await post('/test', { provider: 'fake', credentials: { token: 'nope' } })
     expect(refused.status).toBe(400)
     expect(await refused.json()).toEqual({ error: 'That is not a fake token' })

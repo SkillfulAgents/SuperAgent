@@ -737,5 +737,17 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1794169367052,
     "hash": "dd3f35ee6a917dce7b6bf20edbada511911eaca7a2bd40917a23f3e3c7b90ab5"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `user` ADD `status` text DEFAULT 'active' NOT NULL;",
+      "\nALTER TABLE `user` ADD `invited_by_user_id` text;",
+      "\nALTER TABLE `user` ADD `directory_provider` text;",
+      "\nALTER TABLE `user` ADD `directory_tenant_id` text;",
+      "\nALTER TABLE `user` ADD `directory_remote_id` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794181010721,
+    "hash": "60f97691dde6e559399e2e3d2f0db962c3d13672349219e264aa7a3489727339"
   }
 ]

@@ -78,7 +78,7 @@ function DirectoryRow({ directory, onDisconnect }: { directory: TeamDirectoryVie
 /** The connect form, drawn from what the provider says it needs. */
 function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
   const [values, setValues] = useState<Record<string, string>>({})
-  const [checked, setChecked] = useState<string | null>(null)
+  const [checked, setChecked] = useState<{ tenantName: string; notices: string[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const test = useTestDirectoryCredentials()
   const connect = useConnectTeamDirectory()
@@ -94,7 +94,8 @@ function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
   const runTest = async () => {
     setError(null)
     try {
-      setChecked((await test.mutateAsync(input)).tenantName)
+      const result = await test.mutateAsync(input)
+      setChecked({ tenantName: result.tenantName, notices: result.notices ?? [] })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not check these credentials')
     }
@@ -102,8 +103,8 @@ function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
   const runConnect = async () => {
     setError(null)
     try {
-      const { directory } = await connect.mutateAsync(input)
-      toast.success(`Connected ${directory.tenantName}`)
+      const { directory, notices } = await connect.mutateAsync(input)
+      toast.success(`Connected ${directory.tenantName}`, notices?.length ? { description: notices.join(' ') } : undefined)
       setValues({})
       setChecked(null)
     } catch (err) {
@@ -148,10 +149,18 @@ function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
         })}
         {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
         {checked && !error && (
-          <p role="status" className="inline-flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            Works with {checked}
-          </p>
+          <div role="status" className="space-y-1 text-xs">
+            <p className="inline-flex items-center gap-1.5 text-green-700 dark:text-green-400">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Works with {checked.tenantName}
+            </p>
+            {checked.notices.map((notice) => (
+              <p key={notice} className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                {notice}
+              </p>
+            ))}
+          </div>
         )}
         <div className="flex gap-2">
           <Button type="button" variant="outline" size="sm" disabled={!complete || busy} onClick={() => void runTest()}>

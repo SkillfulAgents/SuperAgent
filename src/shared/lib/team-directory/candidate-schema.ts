@@ -30,7 +30,9 @@ export interface DirectoryInviteCandidate {
 
 export type InviteCandidate = AccountInviteCandidate | DirectoryInviteCandidate
 
-/** The candidates a client can use before it knows directory people. */
-export function accountCandidates(candidates: readonly InviteCandidate[]): AccountInviteCandidate[] {
-  return candidates.filter((candidate): candidate is AccountInviteCandidate => candidate.kind !== 'directory')
+/** A stable key for a candidate: the account id, or the directory person's reference. */
+export function candidateKey(candidate: InviteCandidate): string {
+  return candidate.kind === 'directory'
+    ? `directory:${candidate.directoryRef.directoryId}:${candidate.directoryRef.remoteId}`
+    : candidate.id
 }

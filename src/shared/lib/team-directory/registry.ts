@@ -4,11 +4,18 @@
  * real provider does.
  */
 import { slackDirectoryProvider } from './providers/slack'
+import { e2eDirectoryProvider } from './testing/e2e-directory'
 import type { TeamDirectoryProvider } from './types'
 
 const providers = new Map<string, TeamDirectoryProvider<any>>([
   [slackDirectoryProvider.info.id, slackDirectoryProvider],
 ])
+
+// A mock server's end-to-end suites and screenshots get a directory with no workspace behind it.
+if (process.env.E2E_MOCK === 'true') {
+  const demo = e2eDirectoryProvider()
+  providers.set(demo.info.id, demo)
+}
 
 export function registerDirectoryProvider(provider: TeamDirectoryProvider<any>): () => void {
   providers.set(provider.info.id, provider)

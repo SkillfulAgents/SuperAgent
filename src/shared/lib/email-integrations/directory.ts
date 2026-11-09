@@ -17,7 +17,7 @@ export async function workspaceEmailContacts() {
     return { items: auth.email ? [{ email: auth.email, name: auth.email }] : [], truncated: false }
   }
   const rows = await db.select({ email: user.email, name: user.name }).from(user)
-    .where(and(eq(user.emailVerified, true), or(eq(user.banned, false), isNull(user.banned))))
+    .where(and(eq(user.emailVerified, true), or(eq(user.banned, false), isNull(user.banned)), eq(user.status, 'active')))
     .orderBy(asc(user.name), asc(user.id)).limit(1001).all()
   return { items: rows.slice(0, 1000), truncated: rows.length > 1000 }
 }

@@ -8,10 +8,10 @@ A provider implements `TeamDirectoryProvider` (`types.ts`) and is listed in `reg
 
 - `info` describes its connect form: fields, setup steps and an optional setup link. The Settings tab draws the form from this alone.
 - `credentialsSchema` validates what the form posts. The result is stored sealed.
-- `verify(credentials)` checks the credentials and names the workspace (`tenantId`, `tenantName`). It throws `DirectoryConnectError` with a message the admin can act on.
+- `verify(credentials)` checks the credentials and names the workspace (`tenantId`, `tenantName`, and `notices` for what works but is limited, like a missing optional scope). It throws `DirectoryConnectError` with a message the admin can act on.
 - `open(connection)` returns a `TeamDirectory`:
   - `listUsers()` returns everyone in the directory.
-  - `notifyUser?()` is optional, for providers that can message a person.
+  - `notifyUser?()` is optional, for providers that can message a person. It gets a `DirectoryMessage` (headline, optional quote, link) in plain text and formats and escapes it itself.
 
 The provider leaves out non-people: bots and app users, guests, people invited but not joined, and deactivated accounts. It reports `emailVerified` only when the provider vouches for the address.
 
@@ -19,7 +19,7 @@ Nothing outside `providers/` may branch on which provider it is. This covers sea
 
 ### Slack
 
-The Slack provider (`providers/slack.ts`) uses a bot token (`xoxb-`) with `users:read` and `users:read.email`. Settings links to Slack's "create an app" page with a manifest that asks for just those scopes.
+The Slack provider (`providers/slack.ts`) uses a bot token (`xoxb-`) with `users:read` and `users:read.email`, plus `chat:write` and `im:write` to DM invitations. Settings links to Slack's "create an app" page with a manifest that asks for those four scopes. A token without the DM scopes still connects, with a notice that invitations won't go by DM.
 
 - `verify` calls `auth.test` and reads the granted scopes from `x-oauth-scopes`. If that header is missing, it asks for one page of `users.list` instead.
 - The tenant is the Enterprise Grid id when there is one, because user ids span a grid's workspaces. Otherwise it is the team id.
@@ -27,6 +27,7 @@ The Slack provider (`providers/slack.ts`) uses a bot token (`xoxb-`) with `users
   - It leaves out deleted users, bots, app users, Slackbot, restricted and ultra-restricted users (guests), and invited users.
   - A user's email counts as verified only when Slack sets `is_email_confirmed`.
 - A 429 is waited out (Retry-After) up to three times.
+- `notifyUser` opens a DM (`conversations.open`) and posts the message there (`chat.postMessage`), escaping `&`, `<` and `>`.
 
 ## Storage
 
@@ -72,3 +73,26 @@ People are never stored.
 | DELETE | `/:id` | Disconnect and drop the cached listing |
 
 Connecting and disconnecting are audited as `team_directory`.
+
+Under `E2E_MOCK=true` the registry also has a **Demo Directory** (`testing/e2e-directory.ts`, token `acme-token`) with a fixed roster, for the auth E2E suite (`e2e/auth/specs/team-directory.spec.ts`) and PR screenshots.
+
+## Invited users
+
+Someone who isn't on Gamut yet becomes a real `user` row with `status: 'invited'` the first time someone shares an agent with, or mentions, them (`invited-users.ts`). Browsing a directory writes nothing.
+
+- **The row.** It is named by a verified, lowercased email, has no account (so nobody can sign in as it), `emailVerified: false` until they join, and records `invitedByUserId` and the directory person (`directory_provider`, `directory_tenant_id`, `directory_remote_id`). If the email already has a row of any status, that row is used. Two concurrent invites land on one row (`insert … on conflict do nothing`, then read by email).
+- **Everything else is unchanged.** `agent_acl`, mention chips and `notifications` key on `user.id`, so access granted and mentions made before they join are simply there when they do.
+- **Sharing.** `POST /agents/:id/access` takes `{ directoryRef, role }` as well as `{ userId, role }`. The mention menu calls `POST /agents/:id/access/invitees { directoryRef }` when a directory person is picked, so the chip names a user id like any other; the share dialog that follows passes `notify: false`, because the mention tells them itself.
+- **Telling them.** A share or a mention of an invited user sends a DM through the directory they came from (`notifyInvitedUser`), when it has `notifyUser`, with a link that opens sign-up with their email filled in (`/?join=<email>`). With no channel nothing is sent; the notification still waits in Gamut. There is no email sender (self-hosted has no SMTP), so email is not a channel yet.
+
+### Claiming
+
+`auth/claim-invited-user.ts`. The status flip is the claim (`update … where status = 'invited'`), so of two racing sign-ins one claims. A claim sets the role (the Platform role on a platform-controlled deployment, else the default role), applies admin approval when it is on (banned, pending approval, as a new member would be), sets `emailVerified` when they signed in with SSO (the provider vouched for the address), adds them to the Team Brain, and refreshes their agents' rosters.
+
+- **SSO (OIDC, Google, Platform).** Better Auth links the login to the row by email (implicit linking). Linking fires no `user.create`, so the claim runs in `databaseHooks.account.create.after`. On a Platform sign-in that hook still runs inside the request's role context (`platform-role.ts`), which is how the Platform role reaches a linked row. An existing *active* user who links Platform keeps their role, as before.
+- **Sign-up.** An email sign-up with an invited address claims the row instead of making a user. The enforcement middleware (`api/middleware/auth-enforcement.ts`) finds the invited row by email. It lets the sign-up through while sign-ups are invitation-only or limited to domains (the share was their invitation), but not while they are closed, which a platform-controlled deployment always is. `invited-sign-up.ts` then adds the credential account in one conditional statement (only while the row is invited and has none), claims, and signs in as Better Auth's sign-up would have. Owning the address isn't checked, as for any sign-up here: email verification is a separate, app-wide matter. The sign-in page opens on sign-up from the DM's link, even where sign-up is otherwise invitation-only.
+- The user-create hooks skip invited rows; invited rows are made outside Better Auth anyway.
+
+### Not members yet
+
+Invited users are left out of: the Users tab list and count (Better Auth `list-users` filtered on `status`, which is declared as a user field; they are listed apart, removable), "everyone in the workspace" (`addAgentUsers` with no ids), who an agent acts for (`countOtherMembers`), email-integration allow-lists, and web push and APNs (`getPushableAgentSlugs`). In search they are accounts with `notOnGamut: true`; in rosters they carry `invited: true` ("Invite pending").

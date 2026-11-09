@@ -100,6 +100,11 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
         sortDirection,
         limit: String(PAGE_SIZE),
         offset: String(page * PAGE_SIZE),
+        // People invited from a team directory who haven't joined are listed
+        // apart, and don't count as users.
+        filterField: 'status',
+        filterValue: 'active',
+        filterOperator: 'eq',
       }
       if (debouncedSearch.trim()) {
         params.searchValue = debouncedSearch.trim()
@@ -112,6 +117,18 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
   })
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1
+
+  const INVITED_LIMIT = 100
+  const { data: invited } = useQuery({
+    queryKey: ['admin-users', 'invited'],
+    queryFn: async () => {
+      const res = await authClient.admin.listUsers({ query: {
+        sortBy: 'createdAt', sortDirection: 'desc', limit: String(INVITED_LIMIT),
+        filterField: 'status', filterValue: 'invited', filterOperator: 'eq',
+      } })
+      return res.data as { users: AdminUser[]; total: number } | undefined
+    },
+  })
 
   const toggleSort = (column: 'createdAt' | 'name') => {
     if (sortBy === column) {
@@ -461,6 +478,44 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
               </Button>
             </div>
           )}
+        </div>
+      )}
+
+      {invited && invited.total > 0 && (
+        <div className="space-y-1 pt-2" data-testid="users-invited">
+          <p className="px-2 text-xs font-medium text-muted-foreground">
+            Invited, not joined yet ({invited.total})
+          </p>
+          <p className="px-2 text-xs text-muted-foreground">
+            Shared with or mentioned from a team directory. They join by signing in, and don’t count as users until then.
+          </p>
+          {invited.users.map((user) => (
+            <div
+              key={user.id}
+              data-testid={`invited-row-${user.email}`}
+              className={cn(
+                'grid grid-cols-[1fr_1fr_100px_80px_80px] gap-2 items-center px-2 py-1.5 rounded-item text-sm',
+                actionLoading === user.id && 'opacity-50 pointer-events-none'
+              )}
+            >
+              <span className="truncate opacity-60">{user.name}</span>
+              <span className="truncate text-muted-foreground">{user.email}</span>
+              <span className="text-2xs text-muted-foreground">Not on Gamut</span>
+              <span className="text-xs text-muted-foreground">{new Date(user.createdAt).toLocaleDateString()}</span>
+              <div className="flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0"
+                  onClick={() => setConfirmAction({ type: 'delete', user })}
+                  title="Remove invitation"
+                  data-testid={`invited-remove-${user.email}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                </Button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

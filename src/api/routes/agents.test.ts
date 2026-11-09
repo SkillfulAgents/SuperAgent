@@ -449,6 +449,14 @@ vi.mock('@shared/lib/services/user-profile-service', async (importOriginal) => (
 }))
 import { getUserSummaries, userExists } from '@shared/lib/services/user-profile-service'
 
+// Team directories: a directory person shared with becomes an invited user.
+vi.mock('@shared/lib/team-directory/invited-users', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/team-directory/invited-users')>(),
+  inviteDirectoryPerson: vi.fn(),
+  notifyInvitedUser: vi.fn(async () => 'sent'),
+}))
+import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
+
 // Auth
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
 const mockInsertAuthor = vi.fn().mockResolvedValue(true)
@@ -2772,6 +2780,62 @@ describe('ACL — POST /:id/access (invite user)', () => {
 
     const res = await postJson(app, INVITE_URL, { userId: 'user-1', role })
     expect(res.status).toBe(201)
+  })
+
+  describe('a team-directory person', () => {
+    const directoryRef = { directoryId: 'dir-1', remoteId: 'U7' }
+    beforeEach(() => {
+      mockIsAuthMode.mockReturnValue(true)
+      vi.mocked(userExists).mockResolvedValue(true)
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['test-user-id', { id: 'test-user-id', name: 'Ada Admin', email: 'ada@acme.test', image: null }]]))
+      vi.mocked(inviteDirectoryPerson).mockResolvedValue({ userId: 'invited-dana', invited: true })
+    })
+    afterEach(() => mockIsAuthMode.mockReturnValue(false))
+
+    it('is given access as an invited user, who is told through their directory', async () => {
+      mockDbSelectFrom.mockReturnValueOnce({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })
+      mockDbInsertValues.mockResolvedValueOnce(undefined)
+
+      const res = await postJson(app, INVITE_URL, { directoryRef, role: 'user' })
+      expect(res.status).toBe(201)
+      expect(await res.json()).toEqual({ ok: true, userId: 'invited-dana' })
+      expect(inviteDirectoryPerson).toHaveBeenCalledWith(directoryRef, 'test-user-id')
+      expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({ userId: 'invited-dana', agentSlug: 'test-agent', role: 'user' }))
+      // In the background, after the answer.
+      await vi.waitFor(() => expect(notifyInvitedUser).toHaveBeenCalledWith('invited-dana', expect.objectContaining({ kind: 'shared', byName: 'Ada Admin' })))
+    })
+
+    it('is not told of a share a mention will tell them about', async () => {
+      mockDbSelectFrom.mockReturnValueOnce({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })
+      mockDbInsertValues.mockResolvedValueOnce(undefined)
+      expect((await postJson(app, INVITE_URL, { userId: 'invited-dana', role: 'user', notify: false })).status).toBe(201)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(notifyInvitedUser).not.toHaveBeenCalled()
+    })
+
+    it('passes on why someone cannot be invited', async () => {
+      vi.mocked(inviteDirectoryPerson).mockRejectedValueOnce(new DirectoryInviteError('That person is no longer in the directory.', 404))
+      const res = await postJson(app, INVITE_URL, { directoryRef, role: 'user' })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'That person is no longer in the directory.' })
+    })
+
+    it('needs auth mode, where there is someone to share with', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      expect((await postJson(app, INVITE_URL, { directoryRef, role: 'user' })).status).toBe(400)
+      expect(inviteDirectoryPerson).not.toHaveBeenCalled()
+    })
+
+    it('takes a user id or a directory person, not both', async () => {
+      expect((await postJson(app, INVITE_URL, { userId: 'user-1', directoryRef, role: 'user' })).status).toBe(400)
+    })
+
+    it('names the invited user for a mention chip', async () => {
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['invited-dana', { id: 'invited-dana', name: 'Dana', email: 'dana@acme.test', image: null, invited: true }]]))
+      const res = await postJson(app, `${INVITE_URL}/invitees`, { directoryRef })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ id: 'invited-dana', name: 'Dana', email: 'dana@acme.test', image: null, invited: true })
+    })
   })
 })
 
