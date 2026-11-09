@@ -60,8 +60,6 @@ export interface ActivityCardProps {
   orbState: ActivityOrbState
   /** Whose turn this is: its avatar replaces the thought orb when it has one. */
   agent?: Pick<ApiAgent, 'slug' | 'avatar'> | null
-  /** Between turns: the avatar rests and follows the pointer. */
-  idle?: boolean
   /** Preformatted elapsed time; omitted before the turn has a start anchor. */
   elapsed?: string | null
   /** Parked on a blocking request: the card detaches from the composer. */
@@ -79,8 +77,6 @@ export interface ActivityCardProps {
   onStopTask?: (taskId: string) => Promise<void>
 }
 
-/** The idle avatar's gaze tracks the pointer within the composer footer. */
-const COMPOSER_FOLLOW_REGION = '[data-composer-footer]'
 /** The avatar rolls round its rim as the transcript scrolls. */
 const TRANSCRIPT_SCROLLER = '[data-transcript-scroller]'
 
@@ -93,7 +89,6 @@ export function ActivityCard({
   statusText,
   orbState,
   agent,
-  idle = false,
   elapsed,
   isAwaitingInput = false,
   detached = false,
@@ -163,7 +158,6 @@ export function ActivityCard({
             : 'rounded-t-dialog border-b-0 pb-8',
         )}
         data-testid="activity-indicator"
-        data-idle={idle || undefined}
       >
         {/* Header with the agent's avatar (the thought orb when it has none) —
             its animation is the status cue. The disclosure button is the row's
@@ -179,9 +173,8 @@ export function ActivityCard({
             ? (
               <AgentAvatar
                 agent={agent}
-                state={idle ? 'idle' : avatarMotionState(orbState)}
+                state={avatarMotionState(orbState)}
                 size={24}
-                followPointer={idle && COMPOSER_FOLLOW_REGION}
                 rollWithScroll={TRANSCRIPT_SCROLLER}
               />
             )

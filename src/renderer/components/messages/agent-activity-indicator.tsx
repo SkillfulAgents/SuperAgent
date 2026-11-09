@@ -14,7 +14,7 @@ import { useCallback, useMemo, useState } from 'react'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityCard, ActivityErrorCard, type ActivitySubagentItem } from './activity-card'
-import { deriveActivityStatus, deriveIdleStatus } from './activity-orb'
+import { deriveActivityStatus } from './activity-orb'
 
 interface AgentActivityIndicatorProps {
   sessionId: string
@@ -81,10 +81,6 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     }
     return null
   }, [activeStartTime, messages])
-  const turnCount = useMemo(
-    () => messages?.filter(isTurnStartingUserMessage).length ?? 0,
-    [messages]
-  )
 
   const elapsed = useElapsedTimer(isActive ? timerStartTime : null)
 
@@ -232,17 +228,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     )
   }
 
-  // Between turns the drawer stays up as the agent's seat: its avatar at
-  // rest over a line read off the session (deriveIdleStatus). Agents without an avatar keep the old behaviour and
-  // voice mode has its own surface, so both hide it.
+  // Don't render if not active
   if (!isActive) {
-    if (!agent?.avatar || voiceModeActive) return null
-    const statusText = deriveIdleStatus({
-      sessionId,
-      turnCount,
-      pendingTaskCount: todos?.filter((todo) => todo.status !== 'completed').length ?? 0,
-    })
-    return <ActivityCard statusText={statusText} orbState="working" agent={agent} idle />
+    return null
   }
 
   // One precedence order drives both the label and the orb's animation.

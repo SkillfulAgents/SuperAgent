@@ -538,50 +538,6 @@ export interface ActivityStatusFlags {
   activeForm?: string | null
 }
 
-const IDLE_LINES = [
-  'Ready when you are...',
-  "What's next?",
-  'All ears...',
-  'Standing by...',
-  'Your move...',
-  'Say the word...',
-  'Over to you...',
-  'Ready for more...',
-  'Got another one?',
-  'Fire away...',
-  'Waiting in the wings...',
-  'Here when you need me...',
-  'What shall we tackle next?',
-  'Back to you...',
-  'Ready to roll...',
-  'Anything else?',
-] as const
-
-/**
- * The resting drawer's line between turns, read off the session: a fresh
- * session invites the first message, a plan with steps left says so, and
- * otherwise one of IDLE_LINES. That pick is seeded by the session and its
- * turn count, so it holds still while the person reads and moves on after
- * each turn.
- */
-export function deriveIdleStatus({
-  sessionId,
-  turnCount,
-  pendingTaskCount,
-}: {
-  sessionId: string
-  turnCount: number
-  pendingTaskCount: number
-}): string {
-  if (turnCount === 0) return 'Ready when you are...'
-  if (pendingTaskCount > 0) {
-    return `Paused with ${pendingTaskCount} ${pendingTaskCount === 1 ? 'task' : 'tasks'} to go...`
-  }
-  let h = turnCount
-  for (let i = 0; i < sessionId.length; i++) h = (Math.imul(h, 31) + sessionId.charCodeAt(i)) >>> 0
-  return IDLE_LINES[h % IDLE_LINES.length]
-}
-
 /** One precedence order for both the label and its matching orb animation. */
 export function deriveActivityStatus({
   isAwaitingInput,

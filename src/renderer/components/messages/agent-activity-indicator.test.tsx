@@ -112,14 +112,10 @@ describe('AgentActivityIndicator', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('stays up between turns with the agent at rest when it has an avatar', () => {
+  it('still hides between turns when the agent has an avatar', () => {
     mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
     const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByTestId('activity-indicator')).toHaveAttribute('data-idle', 'true')
-    expect(screen.getByText('Ready when you are...')).toHaveClass('text-muted-foreground')
-    expect(screen.queryByText('Research Bot')).not.toBeInTheDocument()
-    expect(container.querySelector('[data-avatar-shape="circle"]')).toBeInTheDocument()
-    expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+    expect(container.innerHTML).toBe('')
   })
 
   it('shows the avatar, not the thought orb, while the agent works', () => {
