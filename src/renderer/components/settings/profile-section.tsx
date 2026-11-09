@@ -119,6 +119,7 @@ function NameRow({ currentName }: { currentName: string }) {
         <Input
           id="profile-name"
           placeholder="Your name"
+          readOnly={isSubmitting}
           className={cn(FIELD_CLASS, errors.name && 'border-destructive')}
           {...register('name')}
         />

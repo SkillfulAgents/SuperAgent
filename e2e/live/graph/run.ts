@@ -1,5 +1,5 @@
 /**
- * Runs real app graph interaction contracts in the built Electron file:// renderer.
+ * Runs real app home graph interactions in the built Electron file:// renderer.
  * The CI desktop job builds this checkout first; this harness never builds.
  *
  * E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/graph/run.ts
@@ -14,7 +14,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { _electron, expect, type ElectronApplication, type Page } from '@playwright/test'
 import type { WebContents, WebPreferences } from 'electron'
-import { graphUpgradeScenarios } from '../../helpers/graph-upgrade'
+import { homeGraphScenarios } from '../../helpers/home-graph-interactions'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const artifacts = resolve(repoRoot, 'test-results/electron-graph')
@@ -130,14 +130,14 @@ async function main() {
         await page!.screenshot({ path: join(artifacts, 'failed-before-cleanup.png'), fullPage: true })
       },
     }
-    for (const [name, scenario] of graphUpgradeScenarios) {
+    for (const [name, scenario] of homeGraphScenarios) {
       await scenario(navigationContext)
       expect(pageErrors).toEqual([])
       console.log(`PASS ${name}`)
     }
     expect(pageErrors).toEqual([])
     await page.screenshot({ path: join(artifacts, 'completed.png'), fullPage: true })
-    console.log('PASS built Electron graph contracts completed without renderer errors')
+    console.log('PASS built Electron home graph interactions completed without renderer errors')
   } catch (error) {
     console.error(logs.join('\n').slice(-12_000))
     if (page && !page.isClosed()) {
