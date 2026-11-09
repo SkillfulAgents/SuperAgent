@@ -25,11 +25,16 @@ test('a directory person is shared with and mentioned before joining, then finds
   await app.goto()
   await app.waitForAppLoaded(60_000)
 
-  // Settings → Team Directory: connect the Demo Directory with its token.
+  // Settings → Team Directory: connect the Demo Directory with one token, then
+  // one Install. Its install page is the host's own callback, so the window
+  // that opens comes straight back.
   await page.goto('/settings/team-directory')
   await page.getByRole('radio', { name: 'Demo Directory' }).click()
-  await page.getByLabel('Token').fill('acme-token')
-  await page.getByRole('button', { name: 'Connect Demo Directory' }).click()
+  await page.getByLabel('Key').fill('demo-key')
+  await page.getByRole('button', { name: 'Continue' }).click()
+  const installWindow = page.waitForEvent('popup')
+  await page.getByRole('button', { name: 'Install on Demo Directory' }).click()
+  await expect((await installWindow).getByRole('heading', { name: 'ACME connected' })).toBeVisible()
   await expect(page.getByTestId('team-directory-row')).toContainText('ACME')
 
   const agent = await (await page.request.post('/api/agents', { data: { name: 'Support Desk' } })).json() as { slug: string }

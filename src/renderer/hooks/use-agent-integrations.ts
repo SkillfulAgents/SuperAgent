@@ -413,6 +413,26 @@ export function useAgentIntegrationSetup(agentSlug: string, provider: string, na
   })
 }
 
+/** Renames the app a team directory created for an installation, and/or sets its icon (base64 PNG). */
+export function useUpdateProvisionedApp() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, name, icon }: { id: string; agentSlug: string; name?: string; icon?: string }) => {
+      const response = await apiFetch(`/api/agent-integrations/${id}/app`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(name ? { name } : {}), ...(icon ? { icon } : {}) }),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(typeof result?.error === 'string' && result.error ? result.error : 'Could not update the app')
+      return result
+    },
+    onSuccess: (_, { id, agentSlug }) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(id) }),
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) }),
+    ]),
+  })
+}
+
 export function useAuthorizeAgentIntegration() {
   const queryClient = useQueryClient()
   return useMutation({

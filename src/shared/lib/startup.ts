@@ -11,6 +11,7 @@ import { background } from './background'
 import { serviceHost, stopBackgroundWork, taskManager, type Service } from './background-work'
 import { liveSessions } from './voice/live-sessions'
 import { OllamaCatalogService } from './llm-provider/ollama-service'
+import { TeamDirectoryProvisioningService } from './team-directory/service'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -152,6 +153,8 @@ function backgroundServices(): Service[] {
     apiLogAutoDeleteMonitor,
     // Syncs OAuth account status with remote providers.
     accountSyncService,
+    // Renews team directories' app-creation credentials (Slack's 12-hour configuration token).
+    new TeamDirectoryProvisioningService(),
     // Refreshes platform account + billing info when connected (no-op otherwise).
     platformService,
   ]

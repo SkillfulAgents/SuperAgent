@@ -1,6 +1,7 @@
 import type { AgentIntegrationRecord, IntegrationStatus } from './types'
 import type { PublicAgentIntegration } from './public'
 import { agentIntegrationRegistry } from './registry'
+import { publicProvisionedApp } from './provisioned-app'
 
 /** Preserve saved intent for a provider restored by a later app version, while
  * exposing unavailable installations as settled errors to UI and agent discovery. */
@@ -17,7 +18,8 @@ export function toPublicAgentIntegration(row: AgentIntegrationRecord): PublicAge
   try {
     const provider = agentIntegrationRegistry.getProvider(row.provider)
     if (!provider.serialize) throw new Error('Integration serialization unavailable')
-    return { ...provider.serialize(row), capabilities, managementAccess }
+    const provisionedApp = publicProvisionedApp(row.config)
+    return { ...provider.serialize(row), capabilities, managementAccess, ...(provisionedApp ? { provisionedApp } : {}) }
   } catch {
     return { id: row.id, agentSlug: row.agentSlug, provider: row.provider, name: row.name,
       status: publicIntegrationStatus(row), llmProviderId: row.llmProviderId, model: row.model, effort: row.effort, speed: row.speed,

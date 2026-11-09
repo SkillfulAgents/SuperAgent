@@ -27,22 +27,35 @@ export interface SlackCallResult<T> {
   headers: Headers
 }
 
-/** Calls `method`, parsing its answer with `schema`. Throws `SlackApiError` on `ok: false`. */
+/**
+ * Calls `method`, parsing its answer with `schema`. Throws `SlackApiError` on
+ * `ok: false`. `token` is null for methods that take their credential as a
+ * parameter (`oauth.v2.access`, `tooling.tokens.rotate`). A `FormData` body
+ * goes as multipart, for files.
+ */
 export async function slackCall<T>(
   method: string,
-  token: string,
-  params: Record<string, string | number | undefined>,
+  token: string | null,
+  params: Record<string, string | number | undefined> | FormData,
   schema: z.ZodType<T>,
 ): Promise<SlackCallResult<T>> {
-  const form = new URLSearchParams()
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) form.set(key, String(value))
+  let body: URLSearchParams | FormData
+  if (params instanceof FormData) {
+    body = params
+  } else {
+    body = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) body.set(key, String(value))
+    }
   }
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
+  // fetch sets the multipart boundary itself.
+  if (!(body instanceof FormData)) headers['Content-Type'] = 'application/x-www-form-urlencoded'
   for (let attempt = 0; ; attempt++) {
     const response = await fetch(`${SLACK_API}/${method}`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form,
+      headers,
+      body,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
     if (response.status === 429) {

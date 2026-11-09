@@ -95,6 +95,9 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     // Everyone: each switch is the viewer's own.
     { id: 'experiments', label: 'Experiments', icon: <AnimatedNavIcon name="experiments" className="h-4 w-4" />, render: () => deferredTab(<ExperimentsTab />) },
     ...(isAuthMode && showAdminSettings ? [{ id: 'analytics', label: 'Analytics', icon: <AnimatedNavIcon name="analytics" className="h-4 w-4" />, render: () => deferredTab(<AnalyticsTab />) }] : []),
+    // Its people are offered when sharing and mentioning (auth mode), and it can
+    // create agents' own apps (every mode).
+    ...(showAdminSettings ? [{ id: 'team-directory', label: 'Team Directory', icon: <AnimatedNavIcon name="directory" className="h-4 w-4" />, render: () => deferredTab(<TeamDirectoryTab />) }] : []),
     ...(showAuthAdmin
       ? [
           // Keep local role/ban/remove — Platform Team cannot write Better Auth columns.
@@ -109,13 +112,6 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
                 platformInviteHref={platformTeamInviteHref}
               />
             ),
-          },
-          // Its people are offered when sharing and mentioning, which only auth mode has.
-          {
-            id: 'team-directory',
-            label: 'Team Directory',
-            icon: <AnimatedNavIcon name="directory" className="h-4 w-4" />,
-            render: () => deferredTab(<TeamDirectoryTab />),
           },
           {
             id: 'auth',

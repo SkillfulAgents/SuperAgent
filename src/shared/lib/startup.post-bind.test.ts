@@ -391,7 +391,7 @@ describe('initializeServices post-bind critical path', () => {
         'computer-use', 'active-runner', 'agent-registry', 'containers',
         'webhook-relay', 'container-host', 'ollama-catalog', 'host-browser',
         'platform-notifications', 'agent-integrations', 'container-image', 'task-scheduler', 'webhook-triggers',
-        'session-auto-delete', 'api-log-auto-delete', 'account-sync', 'platform',
+        'session-auto-delete', 'api-log-auto-delete', 'account-sync', 'team-directory-provisioning', 'platform',
       ])
       expect(new Set(Object.values(serviceHost().states()))).toEqual(new Set(['registered']))
       expect((taskManager() as import('./background-work/local-task-manager').LocalTaskManager).scheduled()).toEqual([])

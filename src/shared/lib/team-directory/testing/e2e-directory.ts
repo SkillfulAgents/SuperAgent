@@ -3,12 +3,13 @@
  * end-to-end suites and PR screenshots can connect a directory and find its
  * people without a real workspace. Connect it with the token `acme-token`.
  * It goes through every path a real provider does; its DMs stay in memory.
+ * It can also create agents' Slack apps (any key), which exist only in memory.
  */
 import { createFakeDirectoryProvider } from './fake-directory-provider'
 import type { TeamDirectoryProvider } from '../types'
 
 export function e2eDirectoryProvider(): TeamDirectoryProvider<unknown> {
-  const demo = createFakeDirectoryProvider('demo', 'Demo Directory')
+  const demo = createFakeDirectoryProvider('demo', 'Demo Directory', { provisionFor: 'slack' })
   demo.setPeople('acme', [
     demo.person('acme', 'D001', 'Dana Whitfield', 'dana@acme.test'),
     demo.person('acme', 'D002', 'Sara Kim', 'sara.kim@acme.test'),
