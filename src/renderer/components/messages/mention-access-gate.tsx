@@ -161,7 +161,8 @@ function ShareDialog({ agentSlug, people, onDone }: { agentSlug: string; people:
         const res = await apiFetch(`/api/agents/${agentSlug}/access`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: person.referent, role }),
+          // Someone not on Gamut yet hears of the mention itself, with the link to join.
+          body: JSON.stringify({ userId: person.referent, role, notify: false }),
         })
         // 409: they were given access meanwhile.
         if (!res.ok && res.status !== 409) {

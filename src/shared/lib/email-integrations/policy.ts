@@ -21,7 +21,7 @@ export async function agentUserEmails(agentSlug: string): Promise<Set<string>> {
     return new Set(address ? [address.toLowerCase()] : [])
   }
   const rows = await db.select({ email: user.email }).from(user).where(and(
-    eq(user.emailVerified, true), or(eq(user.banned, false), isNull(user.banned)),
+    eq(user.emailVerified, true), or(eq(user.banned, false), isNull(user.banned)), eq(user.status, 'active'),
     or(eq(user.role, 'admin'), inArray(user.id, db.select({ id: agentAcl.userId }).from(agentAcl).where(and(eq(agentAcl.agentSlug, agentSlug), inArray(agentAcl.role, ['owner', 'user']))))),
   )).all()
   return new Set(rows.map(row => row.email.toLowerCase()))

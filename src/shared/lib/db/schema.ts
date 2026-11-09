@@ -29,6 +29,16 @@ export const user = sqliteTable('user', {
   banReason: text('ban_reason'),
   banExpires: integer('ban_expires', { mode: 'timestamp_ms' }),
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
+  // Team directories (src/shared/lib/team-directory/invited-users.ts): someone
+  // shared with or mentioned before joining is a real row with status
+  // 'invited' and no account, so access lists, mentions and notifications
+  // keep keying on user.id. Signing in claims it (auth/claim-invited-user.ts).
+  status: text('status', { enum: ['active', 'invited'] }).notNull().default('active'),
+  invitedByUserId: text('invited_by_user_id'), // Not an FK: the inviter may be removed first
+  // The directory person the row was made for.
+  directoryProvider: text('directory_provider'),
+  directoryTenantId: text('directory_tenant_id'),
+  directoryRemoteId: text('directory_remote_id'),
 }, (table) => ({
   avatarOverrideIdx: index('user_avatar_override_idx').on(table.avatarOverride),
 }))
@@ -1069,6 +1079,43 @@ export const todos = sqliteTable('todos', {
   // and only started work has one.
   sessionCheck: check('todos_session_check', sql`${table.sessionId} is null or (${table.agentSlug} is not null and ${table.status} <> 'draft')`),
 }))
+
+/**
+ * Team directories — a workspace's people as another system lists them
+ * (src/shared/lib/team-directory/). One row per connected workspace; the
+ * people themselves are never stored here, only cached in AppState.
+ */
+export const teamDirectories = sqliteTable('team_directories', {
+  id: text('id').primaryKey(),
+  provider: text('provider').notNull(), // A registered provider id, e.g. 'slack'
+  tenantId: text('tenant_id').notNull(), // The provider's workspace id (Slack team or enterprise)
+  tenantName: text('tenant_name').notNull(),
+  credentials: text('credentials').notNull(), // Sealed JSON (team-directory/credentials.ts)
+  // Bumped whenever the credentials change: cached listings are keyed by it,
+  // and a status write from a listing made with older credentials is dropped.
+  revision: integer('revision').notNull().default(1),
+  status: text('status', { enum: ['active', 'error'] }).notNull().default('active'),
+  errorMessage: text('error_message'),
+  createdByUserId: text('created_by_user_id').references(() => user.id, { onDelete: 'set null' }), // Null in local mode
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  // Creating agents' own apps (team-directory/provisioning.ts), for a provider
+  // that can: credentials apart from the directory's own, because they rotate
+  // (Slack's app configuration token, every 12 hours) and the listing cache
+  // must not move with them. Null until an admin adds them.
+  provisioningCredentials: text('provisioning_credentials'), // Sealed JSON
+  // Bumped on every write of the credentials: a rotation saves only over the pair it rotated.
+  provisioningRevision: integer('provisioning_revision').notNull().default(0),
+  provisioningStatus: text('provisioning_status', { enum: ['active', 'needs_reconnect'] }),
+  provisioningError: text('provisioning_error'),
+  // The directory's own app when Gamut created it from the provisioning
+  // credentials (team-directory/directory-app.ts), deleted with the directory.
+  // Null when an admin made the app by hand.
+  directoryApp: text('directory_app'), // Sealed JSON
+}, (table) => ({
+  providerTenantUnique: uniqueIndex('team_directories_provider_tenant_unique').on(table.provider, table.tenantId),
+}))
+export type TeamDirectoryRow = typeof teamDirectories.$inferSelect
 
 // Type exports for convenience
 export type ConnectedAccount = typeof connectedAccounts.$inferSelect

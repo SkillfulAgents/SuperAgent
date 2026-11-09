@@ -9,5 +9,7 @@ export const integrationSetupMetadataSchema = z.object({
   emailDomain: z.string().min(1).optional(),
   creationUrl: z.string().url().optional(),
   redirectUri: z.string().url().optional(),
+  /** A connected team directory can create this installation's app; the host fills this in. */
+  provisioning: z.object({ directoryId: z.string(), workspace: z.string() }).optional(),
 })
 export type IntegrationSetupMetadata = z.infer<typeof integrationSetupMetadataSchema>

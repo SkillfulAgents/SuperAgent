@@ -53,6 +53,10 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
     environment: options.environment,
     release: APP_VERSION,
     tracesSampleRate: 0,
+    // Structured logs bypass beforeSend; preserve the existing collection policy.
+    enableLogs: false,
+    // Keep AI spans on the existing transaction path, not the new standalone stream.
+    streamGenAiSpans: false,
     integrations: (defaults) => [
       ...defaults.filter((integration) => integration.name !== 'Http'),
       Sentry.httpIntegration({

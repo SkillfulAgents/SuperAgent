@@ -15,7 +15,9 @@ import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-commen
 import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
-import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { getUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
+import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
 import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -1696,18 +1698,81 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
   }
 })
 
-// POST /api/agents/:id/access - Invite user (assign role)
+const directoryRefSchema = z.object({ directoryId: z.string().min(1).max(200), remoteId: z.string().min(1).max(200) })
+const grantAccessBodySchema = z.object({
+  userId: z.string().min(1).optional(),
+  // A team-directory person with no account: an invited user is made for them.
+  directoryRef: directoryRefSchema.optional(),
+  role: z.enum(['owner', 'user', 'viewer']),
+  // False when a mention follows, which tells them itself.
+  notify: z.boolean().optional(),
+})
+
+/** The person `directoryRef` names, as a user id: theirs, or a new invited row. */
+async function directoryPersonUserId(c: Context, directoryRef: z.infer<typeof directoryRefSchema>): Promise<string | Response> {
+  if (!isAuthMode()) return c.json({ error: 'Directory people can be invited in auth mode only' }, 400)
+  try {
+    return (await inviteDirectoryPerson(directoryRef, getCurrentUserId(c))).userId
+  } catch (error) {
+    if (error instanceof DirectoryInviteError) return c.json({ error: error.message }, error.status)
+    throw error
+  }
+}
+
+/** Tells someone not on Gamut yet, through their directory, that an agent was shared with them. */
+async function tellInvitedAboutShare(slug: string, userId: string, sharerId: string): Promise<void> {
+  const [agent, sharer] = await Promise.all([getAgent(slug), getUserSummaries([sharerId])])
+  const outcome = await notifyInvitedUser(userId, {
+    kind: 'shared',
+    agentName: agent?.frontmatter.name ?? slug,
+    byName: sharer.get(sharerId)?.name ?? 'A teammate',
+  })
+  if (outcome === 'sent') console.log(`[Agents] Told invited user ${userId} that ${slug} was shared with them`)
+}
+
+// POST /api/agents/:id/access/invitees - The user id of a team-directory person,
+// making an invited user for them if they have no account. The mention menu
+// calls it when such a person is picked, so the chip names a user like any other.
+agents.post('/:id/access/invitees', AgentAdmin(), async (c) => {
+  try {
+    const parsed = z.object({ directoryRef: directoryRefSchema }).safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'directoryRef is required' }, 400)
+    const userId = await directoryPersonUserId(c, parsed.data.directoryRef)
+    if (typeof userId !== 'string') return userId
+    const profile = (await getUserSummaries([userId])).get(userId)
+    if (!profile) return c.json({ error: 'User not found' }, 404)
+    return c.json(profile)
+  } catch (error) {
+    console.error('Failed to invite a directory person:', error)
+    return c.json({ error: 'Failed to invite them' }, 500)
+  }
+})
+
+// POST /api/agents/:id/access - Invite user (assign role). Names an account by
+// `userId`, or a team-directory person by `directoryRef`. Someone not on Gamut
+// yet is told through their directory, unless `notify` is false.
 agents.post('/:id/access', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const { userId, role } = await c.req.json()
-
-    if (!userId || !role) {
+    const raw = await c.req.json().catch(() => ({})) as Record<string, unknown>
+    if ((!raw.userId && !raw.directoryRef) || !raw.role) {
       return c.json({ error: 'userId and role are required' }, 400)
     }
-    if (!['owner', 'user', 'viewer'].includes(role)) {
+    if (!['owner', 'user', 'viewer'].includes(String(raw.role))) {
       return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
     }
+    const body = grantAccessBodySchema.safeParse(raw)
+    if (!body.success || (body.data.userId && body.data.directoryRef)) {
+      return c.json({ error: 'Give either userId or directoryRef' }, 400)
+    }
+    const { role, directoryRef, notify } = body.data
+    let userId = body.data.userId
+    if (directoryRef) {
+      const resolved = await directoryPersonUserId(c, directoryRef)
+      if (typeof resolved !== 'string') return resolved
+      userId = resolved
+    }
+    if (!userId) return c.json({ error: 'User not found' }, 404)
 
     // Check user exists
     if (!(await userExists(userId))) {
@@ -1734,7 +1799,8 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
 
     await notifyAgentMembersChanged(slug)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
-    return c.json({ ok: true }, 201)
+    if (notify !== false) background(tellInvitedAboutShare(slug, userId, getCurrentUserId(c)), { name: 'agents-route.tell-invited-about-share' })
+    return c.json({ ok: true, userId }, 201)
   } catch (error) {
     console.error('Failed to add agent access:', error)
     return c.json({ error: 'Failed to add agent access' }, 500)
@@ -1806,7 +1872,10 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
 
 // GET /api/agents/:id/access/search-users - List/search users for invite.
 // Without a query, returns all invitable users (teams are small enough to
-// show everyone as suggestions in the share popover).
+// show everyone as suggestions in the share popover). In auth mode, people in
+// connected team directories who have no account follow, as `kind:
+// 'directory'` with `notOnGamut`; an empty query also starts listing any
+// directory with nothing fresh cached, so the picker's next keystroke has them.
 agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
   try {
     const query = c.req.query('q')?.trim()
@@ -1820,7 +1889,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 
     const excludeIds = existingUserIds.map((r) => r.userId)
 
-    return c.json(await searchUserSummaries(query, excludeIds))
+    return c.json(await searchInviteCandidates(query, excludeIds))
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)

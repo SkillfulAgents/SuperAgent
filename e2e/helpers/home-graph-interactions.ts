@@ -3,7 +3,7 @@ import { expect, type APIRequestContext, type CDPSession, type Locator, type Pag
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 
-export interface GraphUpgradeContext {
+export interface HomeGraphContext {
   page: Page
   request: APIRequestContext
   apiBaseUrl: string
@@ -22,13 +22,13 @@ const policySchema = z.object({ policies: z.array(z.object({ targetAgentSlug: z.
 type Point = z.infer<typeof pointSchema>
 type Agent = z.infer<typeof agentSchema>
 
-async function readSettings(context: GraphUpgradeContext) {
+async function readSettings(context: HomeGraphContext) {
   const response = await context.request.get(`${context.apiBaseUrl}/api/user-settings`)
   expect(response.ok(), `Read user settings: ${response.status()}`).toBe(true)
   return graphSettingsSchema.parse(await response.json())
 }
 
-async function writeSettings(context: GraphUpgradeContext, settings: z.infer<typeof graphSettingsSchema>) {
+async function writeSettings(context: HomeGraphContext, settings: z.infer<typeof graphSettingsSchema>) {
   const response = await context.request.put(`${context.apiBaseUrl}/api/user-settings`, { data: settings })
   expect(response.ok(), `Save user settings: ${response.status()}`).toBe(true)
 }
@@ -116,7 +116,7 @@ export async function fitGraphViewport(page: Page, touch = false) {
  * scenario's agents after leaving the graph; no sibling can be mid-gesture.
  * Existing agents/settings are preserved, including Electron's seed agents.
  */
-async function withGraph(context: GraphUpgradeContext, run: (agents: [Agent, Agent, Agent]) => Promise<void>) {
+async function withGraph(context: HomeGraphContext, run: (agents: [Agent, Agent, Agent]) => Promise<void>) {
   const before = await readSettings(context)
   const agents: Agent[] = []
   let failure: unknown
@@ -165,7 +165,7 @@ async function withGraph(context: GraphUpgradeContext, run: (agents: [Agent, Age
 }
 
 /** Real drag writes, page reload reads, and reset clears actual API settings. */
-export async function checkGraphPositionPersistence(context: GraphUpgradeContext) {
+export async function checkGraphPositionPersistence(context: HomeGraphContext) {
   await withGraph(context, async ([source]) => {
     const { page } = context
     const before = await nodePosition(page, source)
@@ -191,7 +191,7 @@ export async function checkGraphPositionPersistence(context: GraphUpgradeContext
 }
 
 /** Panning/zooming must not create position writes or lose selected nodes. */
-export async function checkGraphViewportAndSelection(context: GraphUpgradeContext) {
+export async function checkGraphViewportAndSelection(context: HomeGraphContext) {
   await withGraph(context, async ([source, target]) => {
     const { page } = context
     const settings = await readSettings(context)
@@ -233,7 +233,7 @@ export async function checkGraphViewportAndSelection(context: GraphUpgradeContex
 }
 
 /** Dragging an unselected card must not carry the previously selected group. */
-export async function checkGraphSelectionDrag(context: GraphUpgradeContext) {
+export async function checkGraphSelectionDrag(context: HomeGraphContext) {
   await withGraph(context, async ([first, second, third]) => {
     const { page } = context
     await card(page, first).click()
@@ -274,7 +274,7 @@ export async function checkGraphSelectionDrag(context: GraphUpgradeContext) {
   })
 }
 
-async function targets(context: GraphUpgradeContext, source: Agent) {
+async function targets(context: HomeGraphContext, source: Agent) {
   const response = await context.request.get(`${context.apiBaseUrl}/api/agents/${source.slug}/x-agent-policies`)
   expect(response.ok()).toBe(true)
   return policySchema.parse(await response.json()).policies.filter(policy => policy.decision === 'allow').map(policy => policy.targetAgentSlug)
@@ -316,7 +316,7 @@ async function clickConnection(page: Page, source: Agent, target: Agent) {
 }
 
 /** Fresh click-connect must cancel on the first pane click in 12.12.1. */
-export async function checkGraphClickCancellation(context: GraphUpgradeContext) {
+export async function checkGraphClickCancellation(context: HomeGraphContext) {
   await withGraph(context, async ([source, target]) => {
     const { page } = context
     await card(page, source).click()
@@ -347,7 +347,7 @@ export async function checkGraphClickCancellation(context: GraphUpgradeContext) 
 }
 
 /** Drag cancellation must leave the next real create and revoke usable. */
-export async function checkGraphConnections(context: GraphUpgradeContext) {
+export async function checkGraphConnections(context: HomeGraphContext) {
   await withGraph(context, async ([source, target]) => {
     const { page } = context
     await cancelDragConnection(page, source)
@@ -399,7 +399,7 @@ export async function checkGraphConnections(context: GraphUpgradeContext) {
 }
 
 /** A canceled drag must not interfere with the later click-connect lifecycle. */
-export async function checkGraphMixedCancellationRecovery(context: GraphUpgradeContext) {
+export async function checkGraphMixedCancellationRecovery(context: HomeGraphContext) {
   await withGraph(context, async ([source, target]) => {
     const { page } = context
     await cancelDragConnection(page, source)
@@ -457,7 +457,7 @@ function installObserverProbe() {
   }
 }
 
-export async function checkGraphRemountCleanup(context: GraphUpgradeContext) {
+export async function checkGraphRemountCleanup(context: HomeGraphContext) {
   const { page } = context
   await page.addInitScript(installObserverProbe)
   await page.evaluate(installObserverProbe)
@@ -490,7 +490,7 @@ export async function checkGraphRemountCleanup(context: GraphUpgradeContext) {
   })
 }
 
-export const graphUpgradeScenarios = [
+export const homeGraphScenarios = [
   ['graph node positions survive reload and reset through the real API', checkGraphPositionPersistence],
   ['graph pan, wheel zoom, fit and selection preserve saved pins', checkGraphViewportAndSelection],
   ['graph unselected-node drag does not move the previous selection', checkGraphSelectionDrag],
@@ -542,7 +542,7 @@ async function touchGesture(page: Page, browserName: string, points: Point[], de
   } finally { await session?.detach() }
 }
 
-export async function checkGraphTouch(context: GraphUpgradeContext, browserName: string) {
+export async function checkGraphTouch(context: HomeGraphContext, browserName: string) {
   await withGraph(context, async ([source]) => {
     const { page } = context
     const saved = await readSettings(context)

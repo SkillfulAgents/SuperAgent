@@ -105,13 +105,28 @@ describe('getProviderCatalog', () => {
     }
   })
 
+  it('resolves the fable alias to Fable 5.2 and keeps Fable 5.1 selectable', async () => {
+    for (const providerId of ['anthropic', 'openrouter', 'platform'] as const) {
+      const catalog = getProviderCatalog(providerId)
+      expect(catalog.find((m) => m.id === 'claude-fable-5-1')!.isLatest).toBeFalsy()
+      expect(catalog.find((m) => m.id === 'claude-fable-5-2')).toMatchObject({
+        family: 'fable',
+        label: 'Fable 5.2',
+        isLatest: true,
+        pricing: { inputPerMtok: 8, outputPerMtok: 40, cacheReadPerMtok: 0.2, speedMultipliers: { fast: 2 } },
+      })
+      expect(await resolveModelForProvider('fable', providerId, 'agent')).toBe('claude-fable-5-2')
+    }
+  })
+
   it('offers fast mode on Platform for every Claude id Anthropic serves it on', async () => {
     const catalog = getProviderCatalog('platform')
-    for (const id of ['claude-opus-5', 'claude-opus-5-5']) {
+    for (const id of ['claude-opus-5', 'claude-opus-5-5', 'claude-fable-5-2']) {
       expect(catalog.find((m) => m.id === id)!.supportedSpeeds).toEqual(['normal', 'fast'])
     }
-    // Retired fast modes: 4.7's on 2026-07-24, 4.8's on 2026-11-30.
-    for (const id of ['claude-opus-4-7', 'claude-opus-4-8']) {
+    // Retired fast modes: 4.7's on 2026-07-24, 4.8's on 2026-11-30. Fable 5.1
+    // and 5 never had one.
+    for (const id of ['claude-opus-4-7', 'claude-opus-4-8', 'claude-fable-5', 'claude-fable-5-1']) {
       expect(catalog.find((m) => m.id === id)!.supportedSpeeds).toBeUndefined()
     }
   })
@@ -129,6 +144,7 @@ describe('getProviderCatalog', () => {
     ['claude-opus-5', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-opus-5-5', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['claude-fable-5-1', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-fable-5-2', ['low', 'medium', 'high', 'xhigh', 'max']],
   ])('anthropic %s accepts efforts %j', (id, efforts) => {
     const model = getProviderCatalog('anthropic').find((m) => m.id === id)!
     expect(model.supportedEfforts).toEqual(efforts)

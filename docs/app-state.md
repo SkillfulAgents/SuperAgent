@@ -264,3 +264,16 @@ A manifest moves one way through three states:
 - Files `toFile` wrote that are older than an hour go too, unless the upload is `finalizing`. So does anything left in the layout from before manifests, by age alone.
 
 With `LocalAppState` the manifests live in memory, so a restart forgets uploads in progress, and their bytes are swept later. A client that goes on sending gets 409 for its next chunk and sends the file again.
+## Team directory listings
+
+Each connected team directory's people (`src/shared/lib/team-directory/cache.ts`; [docs/team-directory.md](team-directory.md#the-cache) has the rules). The eventual namespace `cache:team-directory` is keyed by directory id and credentials revision, so reconnecting starts afresh. It is a plain, non-atomic cache: an entry is `{ listedAt, attemptedAt, users }`, fresh for 10 minutes and kept 6 hours after its last write. A stale entry is answered at once while a new listing runs in the background, and a failed listing keeps the previous people and only moves `attemptedAt`, at the entry's own expiry. Two processes may list the same stale directory at once; the later write wins. The listing in progress is a Promise in a process-local map, so concurrent searches in one process share it.
+
+## Agent app provisioning
+
+Creating agents' own apps through a team directory (`src/shared/lib/team-directory/provisioning.ts`; [docs/team-directory.md](team-directory.md#agent-apps)).
+
+- **`claim:team-directory-provisioning`** (`defineLease`, 60 s), key part the directory id, makes rotations of a directory's credentials one at a time. A holder re-reads the stored pair once it holds the lease and decides from that. It confirms the lease for the 15 s request before rotating, and saves the new pair conditional on the row's `provisioning_revision`. A holder whose lease lapsed mid-rotation may have retired the old refresh token; its save is still conditional, so a lost race leaves the directory marked for reconnect at worst, never with a stale pair over a newer one.
+- **`oauth:agent-app-install`** (strong), key part `digestKeyPart(state)`, holds an install the host started: the installation, its provider and the redirect URL. It is inserted with `insertIfAbsent` and expires 30 minutes later (`keep`). The callback `consume`s it before anything else, so of any number of callbacks with one state, one installs.
+- **`oauth:directory-app-install`** (strong), key part the install's random id, holds a directory being connected with one token (`directory-app.ts`): the digest of the secret in its `state`, the provider, who started it, the redirect URL, and the rotated credentials and the app, sealed. Inserted with `insertIfAbsent`, kept 30 minutes (`keep`). A callback with a code `consume`s it first, so one connects; a declined one only reads it, so the same install page can be tried again. Start over `consume`s it too.
+- **`oauth:directory-app-install-outcome`** (strong), same key part, is what the Settings page polls: `pending` from the start, then `connected`, `cancelled` (with a time, to tell one cancel from the next) or `failed`. Written with `set`, kept 30 minutes from the last write (`reset`). No entry, or a `pending` / `cancelled` one whose install is gone, reads as `expired`.
+

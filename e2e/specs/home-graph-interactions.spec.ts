@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test'
-import { checkGraphTouch, graphUpgradeScenarios } from '../helpers/graph-upgrade'
+import { checkGraphTouch, homeGraphScenarios } from '../helpers/home-graph-interactions'
 
 // Projects run one worker; independent cases should still run after a failure.
 test.describe.configure({ mode: 'default' })
 
-for (const [name, scenario] of graphUpgradeScenarios) {
+for (const [name, scenario] of homeGraphScenarios) {
   test(name, async ({ page, request, baseURL }, testInfo) => {
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))

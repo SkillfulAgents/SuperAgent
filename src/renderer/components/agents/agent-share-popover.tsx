@@ -42,6 +42,8 @@ import {
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
 import { AgentTemplateStatus } from '@renderer/components/agents/agent-template-status'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { useAgent } from '@renderer/hooks/use-agents'
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -53,13 +55,11 @@ import {
   X,
 } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
+import { candidateKey, type InviteCandidate } from '@shared/lib/team-directory/candidate-schema'
+import { NotOnGamutBadge } from './not-on-gamut-badge'
 
-interface SearchUser {
-  id: string
-  name: string
-  email: string
-  image?: string | null
-}
+/** Someone the agent can be shared with: an account, or a team-directory person with none yet. */
+type SearchUser = InviteCandidate
 
 interface AgentSharePopoverProps {
   agentSlug: string
@@ -199,6 +199,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
   const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const { data: agent } = useAgent(open ? agentSlug : null)
 
   useImperativeHandle(ref, () => ({
     openExport: () => {
@@ -278,13 +279,15 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
       const succeeded = new Set<string>()
       const failures: string[] = []
       for (const u of users) {
+        // A directory person has no account yet: the server makes an invited one.
+        const target = u.kind === 'directory' ? { directoryRef: u.directoryRef } : { userId: u.id }
         const res = await apiFetch(`/api/agents/${agentSlug}/access`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: u.id, role }),
+          body: JSON.stringify({ ...target, role }),
         })
         if (res.ok) {
-          succeeded.add(u.id)
+          succeeded.add(candidateKey(u))
         } else {
           const data = await res.json().catch(() => ({}))
           failures.push(`${u.name}: ${data.error || 'Failed to invite user'}`)
@@ -296,7 +299,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
     onSuccess: ({ succeeded, failures }) => {
       invalidateAccess()
       if (failures.length) {
-        setSelectedUsers((prev) => prev.filter((u) => !succeeded.has(u.id)))
+        setSelectedUsers((prev) => prev.filter((u) => !succeeded.has(candidateKey(u))))
         setError(failures.join('; '))
       } else {
         resetInvite()
@@ -343,14 +346,16 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
 
   const ownerCount = accessList?.filter((e) => e.role === 'owner').length ?? 0
 
-  const selectedIds = new Set(selectedUsers.map((u) => u.id))
+  const selectedIds = new Set(selectedUsers.map(candidateKey))
   const accessIds = new Set(accessList?.map((e) => e.id) ?? [])
+  const accessEmails = new Set(accessList?.map((e) => e.email.toLowerCase()) ?? [])
   const filter = searchQuery.trim().toLowerCase()
   // Candidates are already ACL-filtered server-side; re-filter here so the list
-  // updates instantly after an invite (before the refetch lands).
+  // updates instantly after an invite (before the refetch lands). A directory
+  // person just invited is a member by email until the refetch drops them.
   const suggested = (candidates ?? []).filter(
     (u) =>
-      !accessIds.has(u.id) &&
+      (u.kind === 'directory' ? !accessEmails.has(u.email.toLowerCase()) : !accessIds.has(u.id)) &&
       (!filter || u.name.toLowerCase().includes(filter) || u.email.toLowerCase().includes(filter))
   )
 
@@ -363,8 +368,9 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
     : []
 
   const toggleUser = (u: SearchUser) => {
+    const key = candidateKey(u)
     setSelectedUsers((prev) =>
-      prev.some((s) => s.id === u.id) ? prev.filter((s) => s.id !== u.id) : [...prev, u]
+      prev.some((s) => candidateKey(s) === key) ? prev.filter((s) => candidateKey(s) !== key) : [...prev, u]
     )
     setSearchQuery('')
     searchInputRef.current?.focus()
@@ -380,13 +386,14 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
         className="flex items-center gap-2 rounded-item px-2 py-1.5 hover:bg-accent/50"
         data-testid={`access-entry-${entry.id}`}
       >
-        <UserAvatar user={entry} />
+        <span className={cn(entry.invited && 'opacity-50')}><UserAvatar user={entry} /></span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[11px]">
-            {entry.name}
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px]">
+            <span className={cn('truncate', entry.invited && 'opacity-50')}>{entry.name}</span>
             {isSelf && <span className="text-muted-foreground"> (You)</span>}
+            {entry.invited && <NotOnGamutBadge label="Invite pending" />}
           </div>
-          <div className="truncate text-[11px] text-muted-foreground">{entry.email}</div>
+          <div className={cn('truncate text-[11px] text-muted-foreground', entry.invited && 'opacity-50')}>{entry.email}</div>
         </div>
         <TooltipProvider>
           <Tooltip>
@@ -614,9 +621,11 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
 
                     {/* The agent, Manus-pill style */}
                     <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2 rounded-card border bg-background py-2 pl-3 pr-4 shadow-sm">
-                      {/* The activity card's thought orb as the agent's avatar */}
+                      {/* The agent's avatar, or the thought orb when it has none */}
                       <div className="shrink-0">
-                        <ActivityOrb state="spinning" size={28} />
+                        {agent?.avatar
+                          ? <AgentAvatar agent={agent} state="idle" size={28} />
+                          : <ActivityOrb state="spinning" size={28} />}
                       </div>
                       <p className="min-w-0 truncate text-sm font-medium">{agentName}</p>
                     </div>
@@ -739,18 +748,21 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
                 {selectedUsers.map((u) => (
                   <span
-                    key={u.id}
-                    className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px]"
-                    data-testid={`invite-chip-${u.id}`}
+                    key={candidateKey(u)}
+                    className={cn(
+                      'flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px]',
+                      u.notOnGamut && 'border border-dashed border-muted-foreground/50 bg-transparent',
+                    )}
+                    data-testid={`invite-chip-${candidateKey(u)}`}
                   >
-                    <UserAvatar user={u} size={16} />
+                    <UserAvatar user={{ ...u, id: candidateKey(u) }} size={16} />
                     <span className="max-w-32 truncate">{u.name}</span>
                     <button
                       type="button"
                       className="text-muted-foreground hover:text-foreground"
                       onClick={(e) => {
                         e.stopPropagation()
-                        setSelectedUsers((prev) => prev.filter((s) => s.id !== u.id))
+                        setSelectedUsers((prev) => prev.filter((s) => candidateKey(s) !== candidateKey(u)))
                       }}
                       aria-label={`Remove ${u.name} from invite`}
                     >
@@ -833,21 +845,28 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     Not shared with
                   </p>
                   {suggested.map((u) => {
-                    const isSelected = selectedIds.has(u.id)
+                    const key = candidateKey(u)
+                    const isSelected = selectedIds.has(key)
                     return (
                       <button
-                        key={u.id}
+                        key={key}
                         type="button"
                         className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left text-[11px] hover:bg-accent"
                         onClick={() => toggleUser(u)}
                         role="checkbox"
                         aria-checked={isSelected}
-                        data-testid={`invite-user-result-${u.id}`}
+                        data-testid={`invite-user-result-${key}`}
                       >
-                        <UserAvatar user={u} />
+                        {/* People not on Gamut yet are drawn at half strength; picking one invites them. */}
+                        <span className={cn(u.notOnGamut && 'opacity-50')}><UserAvatar user={{ ...u, id: key }} /></span>
                         <div className="min-w-0 flex-1">
-                          <div className="truncate">{u.name}</div>
-                          <div className="truncate text-[11px] text-muted-foreground">{u.email}</div>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span className={cn('truncate', u.notOnGamut && 'opacity-50')}>{u.name}</span>
+                            {u.notOnGamut && <NotOnGamutBadge />}
+                          </div>
+                          <div className={cn('truncate text-[11px] text-muted-foreground', u.notOnGamut && 'opacity-50')}>
+                            {u.email}{u.kind === 'directory' ? ` · ${u.source}` : ''}
+                          </div>
                         </div>
                         {/* Visual-only checkbox (the row is the control) — mirrors ui/checkbox */}
                         <span

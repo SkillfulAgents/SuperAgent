@@ -1778,13 +1778,15 @@ describe('MessageInput', () => {
     it('sends a message that opens on a teammate without a turn, even while the agent works', async () => {
       mockStreamState.isActive = true
       const user = userEvent.setup()
+      const onNotifiesOnlyChange = vi.fn()
       renderWithProviders(
         <>
           <DraftSeeder sessionId="s-1" value={`${mike} look at this`} />
-          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" onNotifiesOnlyChange={onNotifiesOnlyChange} />
         </>
       )
-      expect(await screen.findByTestId('mention-notify-only-hint')).toHaveTextContent("Only notifies Mike Smith. The agent won't reply.")
+      // The column under the box says who it only notifies.
+      await waitFor(() => expect(onNotifiesOnlyChange).toHaveBeenLastCalledWith('Mike Smith'))
 
       await user.click(screen.getByTestId('send-button'))
 
@@ -1797,14 +1799,15 @@ describe('MessageInput', () => {
 
     it('runs the agent for a mention mid-message', async () => {
       const user = userEvent.setup()
+      const onNotifiesOnlyChange = vi.fn()
       renderWithProviders(
         <>
           <DraftSeeder sessionId="s-1" value={`ping ${mike} when done`} />
-          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" onNotifiesOnlyChange={onNotifiesOnlyChange} />
         </>
       )
       await waitFor(() => expect(screen.getByTestId('user-mention')).toBeInTheDocument())
-      expect(screen.queryByTestId('mention-notify-only-hint')).toBeNull()
+      expect(onNotifiesOnlyChange).not.toHaveBeenCalledWith(expect.any(String))
 
       await user.click(screen.getByTestId('send-button'))
 

@@ -1,6 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useCallback, useRef, useMemo, memo } from 'react'
-import { AtSign, Link2 } from 'lucide-react'
+import { useCallback, useRef, useMemo, memo, type ReactNode } from 'react'
+import { Link2 } from 'lucide-react'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
@@ -33,6 +33,9 @@ import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { rehypeMentions } from '@renderer/lib/rehype-mentions'
+import { formatCompactDistance } from '@renderer/components/connections/utils'
+import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
+import { format } from 'date-fns'
 import type { Mention } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
@@ -186,6 +189,44 @@ function resolveSubagentRun(
   }
 }
 
+/**
+ * When a message was sent ("5m ago"), with the exact time in its tooltip.
+ * The shared minute clock re-renders just this label, so it stays current
+ * while the message itself is memoized.
+ */
+function SentAgo({ date }: { date: Date | string }) {
+  useMinuteClock()
+  const sentAt = new Date(date)
+  const label = formatCompactDistance(sentAt)
+  if (!label) return null
+  return (
+    <time className="text-muted-foreground/70" dateTime={sentAt.toISOString()} title={format(sentAt, 'PPpp')}>
+      {label}
+    </time>
+  )
+}
+
+/** The sender's avatar beside their message, sized and spaced as in the iOS app. */
+const SENDER_AVATAR_SIZE = 28
+const SENDER_AVATAR_GAP = 8
+/** The name over the bubble stops short of the avatar and the bubble's rounded corner. */
+const SENDER_NAME_INSET = SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP + 14
+
+/**
+ * iMessage-style, as the iOS app draws a shared agent's messages: the bubble
+ * and what was sent with it in one column, the sender's avatar beside it at
+ * the bottom corner. Without a sender the children sit in the row as they are.
+ */
+function SenderAvatarGroup({ sender, children }: { sender: { id: string; name: string; image?: string | null } | null; children: ReactNode }) {
+  if (!sender) return <>{children}</>
+  return (
+    <div className="flex max-w-full items-end" style={{ gap: SENDER_AVATAR_GAP }}>
+      <div className="flex min-w-0 flex-col items-end gap-2">{children}</div>
+      <UserAvatar user={sender} size={SENDER_AVATAR_SIZE} />
+    </div>
+  )
+}
+
 function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
@@ -232,6 +273,10 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const isIntegrationMessage = userKind?.kind === 'integration'
   const CustomUserRender = userKind?.Render
   const bareUserRender = CustomUserRender && userKind?.chrome === 'bare'
+  // Who wrote it, drawn beside what they sent: known in auth mode, or lifted
+  // from a read-only mirror prefix. An integration card names its own author,
+  // and a bare kind (the interrupt marker) has nothing to sit beside.
+  const avatarSender = isUser && !isIntegrationMessage && !bareUserRender && sender?.name ? sender : null
   const renderMarkdown = useCallback((markdown: string) => (
     <div dir="auto" className={PROSE_CLASS}>
       <MarkdownBlock text={markdown} embeddedImageAliases={embeddedImageAliases} agentSlug={agentSlug} />
@@ -337,11 +382,22 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           isUser && 'items-end'
         )}
       >
-        {/* Sender name: shared agent sessions, or lifted from a read-only mirror prefix. */}
-        {isUser && !isIntegrationMessage && sender?.name && (
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            {sender.name}
-            <UserAvatar user={sender} size={18} />
+        {/* Who sent it and when, over what they sent and clear of its corner
+            as the iOS app draws it. Only with a sender: without one (non-auth
+            mode) there is no row and no space held for it. Shown on hover or
+            focus only; always on touch screens, which have no hover. Faded
+            rather than removed, so nothing moves. */}
+        {avatarSender && (
+          <span
+            className={cn(
+              '-mb-[5px] flex items-baseline gap-1.5 text-xs text-muted-foreground transition-opacity',
+              'opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100 touch:opacity-100',
+            )}
+            style={{ marginRight: SENDER_NAME_INSET }}
+            data-testid="message-meta"
+          >
+            <span>{avatarSender.name}</span>
+            <SentAgo date={message.createdAt} />
           </span>
         )}
 
@@ -363,148 +419,146 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />
         )}
 
-        {/* Message bubble - only show if there's text content */}
-        {showMessageBubble && !bareUserRender && (
-          <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined} readAloud={readAloudMenu}>
-            <div
-              dir="auto"
-              // Assistant bubbles opt into table breakout and must not clip it.
-              data-allow-table-breakout={isAssistant ? '' : undefined}
-              className={cn(
-                'rounded-card max-w-full text-foreground',
-                !isAssistant && 'overflow-hidden',
-                isUser && 'px-4 py-2',
-                isUser && !silentMention && 'bg-zinc-100 dark:bg-zinc-800/70',
-                silentMention && 'border border-dashed border-violet-300 bg-violet-50/60 dark:border-violet-400/40 dark:bg-violet-400/10',
-                // Relative for the read-aloud controls, which overlay the
-                // gap under the bubble rather than adding a row to it.
-                isAssistant && 'relative py-1'
-              )}
-            >
-              {/* Kind-specific user bubble (e.g. slash command) */}
-              {CustomUserRender && hasText && (
-                <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />
-              )}
-
-              {/* LLM provider error display */}
-              {hasText && !CustomUserRender && showInlineError && (
-                <InlineErrorComponent message={text} presentation={message.errorPresentation} />
-              )}
-
-              {/* Text content */}
-              {hasText && !CustomUserRender && !isProviderErrorMessage && (
-                <div ref={proseRef} dir="auto" className={cn(PROSE_CLASS, isBeingRead && 'read-aloud-prose')}>
-                  {streamingSplit ? (
-                    <>
-                      {streamingSplit.settled.map((block, i) => (
-                        <MarkdownBlock
-                          key={i}
-                          text={block}
-                          embeddedImageAliases={embeddedImageAliases}
-                          agentSlug={agentSlug}
-                          spoken={isBeingRead}
-                          spokenOffset={spokenOffsets?.[i]}
-                          htmlPreview={isAssistant && !isStreamingRow}
-                        />
-                      ))}
-                      {streamingSplit.tail && (
-                        <StreamingMarkdownBlock
-                          key={`tail-${streamingSplit.settled.length}`}
-                          text={streamingSplit.tail}
-                          embeddedImageAliases={embeddedImageAliases}
-                          agentSlug={agentSlug}
-                          spoken={isBeingRead}
-                          spokenOffset={spokenOffsets?.[streamingSplit.settled.length]}
-                        />
-                      )}
-                    </>
-                  ) : (
-                    <MarkdownBlock
-                      text={text}
-                      embeddedImageAliases={embeddedImageAliases}
-                      agentSlug={agentSlug}
-                      spoken={isBeingRead}
-                      htmlPreview={isAssistant && !isStreamingRow}
-                      mentions={mentions}
-                    />
-                  )}
-                  {isStreaming && (
-                    <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
-                  )}
-                </div>
-              )}
-
-              {/* Streaming indicator when no text yet */}
-              {!hasText && isStreaming && (
-                <span className="inline-block w-2 h-4 bg-current animate-pulse" />
-              )}
-
-              {/* Read-aloud controls, only while this reply is being read (or
-                  failed to be). Overlaid on the gap under the bubble: adding a
-                  row to the last reply at the live edge makes WebKit jump the
-                  transcript to its top. */}
-              {canReadAloud && (
-                <ReadAloudControls messageId={message.id} markdown={text} className="absolute left-0 top-full z-10 -mt-1" />
-              )}
-            </div>
-          </MessageContextMenu>
-        )}
-
-        {/* Who a notify-only message reached: the agent did not run for it */}
-        {silentMention && (
-          <span className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="mention-notified">
-            <AtSign className="h-3 w-3 text-violet-500" aria-hidden />
-            Notified {userParts!.mentions.flatMap((mention) => mention.kind === 'user' ? [mention.name] : []).join(', ')}
-          </span>
-        )}
-
-        {/* Attached file chips for user messages */}
-        {isUser && attachedFiles.length > 0 && agentSlug && (() => {
-          // Files and images are laid out separately so a tall picture never
-          // stretches the chips sharing its row. Chips sit right under the
-          // text; images trail below: stacked at native aspect for up to three,
-          // a 3-column grid of squares beyond that.
-          const fileAttachments = attachedFiles.filter((f) => !isPreviewableImage(f))
-          const imageAttachments = attachedFiles.filter(isPreviewableImage)
-          return (
-            <>
-              {fileAttachments.length > 0 && (
-                <div className="flex flex-wrap items-start justify-end gap-2" data-testid="sent-files">
-                  {/* Keyed by position as well as path: attaching the same file
-                      twice is legal, and two chips sharing a key drop one. */}
-                  {fileAttachments.map((filePath, index) => (
-                    <SentAttachmentChip key={`${filePath}#${index}`} filePath={filePath} agentSlug={agentSlug} />
-                  ))}
-                </div>
-              )}
-              {imageAttachments.length > 0 && (
-                <AttachedImages
-                  images={imageAttachments.map((filePath, index) => ({ key: `${filePath}#${index}`, filePath }))}
-                  agentSlug={agentSlug}
-                  align="end"
-                  data-testid="sent-images"
-                />
-              )}
-            </>
-          )
-        })()}
-
-        {/* Mounted folder pills for user messages */}
-        {isUser && mountedFolders.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 justify-end">
-            {mountedFolders.map((mount, idx) => (
+        {/* The bubble and what was sent with it, with the sender's avatar beside
+            them in shared agents */}
+        <SenderAvatarGroup sender={avatarSender}>
+          {/* Message bubble - only show if there's text content */}
+          {showMessageBubble && !bareUserRender && (
+            <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined} readAloud={readAloudMenu}>
               <div
-                key={idx}
-                className="flex items-center gap-1.5 rounded-full border bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-800 px-3 py-1 text-xs"
-                title={`Host: ${mount.hostPath}`}
+                dir="auto"
+                // Assistant bubbles opt into table breakout and must not clip it.
+                data-allow-table-breakout={isAssistant ? '' : undefined}
+                // A notify-only message (it opened on a teammate). Drawn as any other;
+                // marked for tests and anything that needs to tell.
+                data-notify-only={silentMention ? '' : undefined}
+                className={cn(
+                  'rounded-card max-w-full text-foreground',
+                  !isAssistant && 'overflow-hidden',
+                  isUser && 'px-4 py-2 bg-zinc-100 dark:bg-zinc-800/70',
+                  // Relative for the read-aloud controls, which overlay the
+                  // gap under the bubble rather than adding a row to it.
+                  isAssistant && 'relative py-1'
+                )}
               >
-                <Link2 className="h-3 w-3 text-blue-500" />
-                <span className="font-medium">{mount.containerPath}</span>
-                <span className="text-muted-foreground">drive</span>
+                {/* Kind-specific user bubble (e.g. slash command) */}
+                {CustomUserRender && hasText && (
+                  <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />
+                )}
+
+                {/* LLM provider error display */}
+                {hasText && !CustomUserRender && showInlineError && (
+                  <InlineErrorComponent message={text} presentation={message.errorPresentation} />
+                )}
+
+                {/* Text content */}
+                {hasText && !CustomUserRender && !isProviderErrorMessage && (
+                  <div ref={proseRef} dir="auto" className={cn(PROSE_CLASS, isBeingRead && 'read-aloud-prose')}>
+                    {streamingSplit ? (
+                      <>
+                        {streamingSplit.settled.map((block, i) => (
+                          <MarkdownBlock
+                            key={i}
+                            text={block}
+                            embeddedImageAliases={embeddedImageAliases}
+                            agentSlug={agentSlug}
+                            spoken={isBeingRead}
+                            spokenOffset={spokenOffsets?.[i]}
+                            htmlPreview={isAssistant && !isStreamingRow}
+                          />
+                        ))}
+                        {streamingSplit.tail && (
+                          <StreamingMarkdownBlock
+                            key={`tail-${streamingSplit.settled.length}`}
+                            text={streamingSplit.tail}
+                            embeddedImageAliases={embeddedImageAliases}
+                            agentSlug={agentSlug}
+                            spoken={isBeingRead}
+                            spokenOffset={spokenOffsets?.[streamingSplit.settled.length]}
+                          />
+                        )}
+                      </>
+                    ) : (
+                      <MarkdownBlock
+                        text={text}
+                        embeddedImageAliases={embeddedImageAliases}
+                        agentSlug={agentSlug}
+                        spoken={isBeingRead}
+                        htmlPreview={isAssistant && !isStreamingRow}
+                        mentions={mentions}
+                      />
+                    )}
+                    {isStreaming && (
+                      <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
+                    )}
+                  </div>
+                )}
+
+                {/* Streaming indicator when no text yet */}
+                {!hasText && isStreaming && (
+                  <span className="inline-block w-2 h-4 bg-current animate-pulse" />
+                )}
+
+                {/* Read-aloud controls, only while this reply is being read (or
+                    failed to be). Overlaid on the gap under the bubble: adding a
+                    row to the last reply at the live edge makes WebKit jump the
+                    transcript to its top. */}
+                {canReadAloud && (
+                  <ReadAloudControls messageId={message.id} markdown={text} className="absolute left-0 top-full z-10 -mt-1" />
+                )}
               </div>
-            ))}
-          </div>
-        )}
+            </MessageContextMenu>
+          )}
+
+          {/* Attached file chips for user messages */}
+          {isUser && attachedFiles.length > 0 && agentSlug && (() => {
+            // Files and images are laid out separately so a tall picture never
+            // stretches the chips sharing its row. Chips sit right under the
+            // text; images trail below: stacked at native aspect for up to three,
+            // a 3-column grid of squares beyond that.
+            const fileAttachments = attachedFiles.filter((f) => !isPreviewableImage(f))
+            const imageAttachments = attachedFiles.filter(isPreviewableImage)
+            return (
+              <>
+                {fileAttachments.length > 0 && (
+                  <div className="flex flex-wrap items-start justify-end gap-2" data-testid="sent-files">
+                    {/* Keyed by position as well as path: attaching the same file
+                        twice is legal, and two chips sharing a key drop one. */}
+                    {fileAttachments.map((filePath, index) => (
+                      <SentAttachmentChip key={`${filePath}#${index}`} filePath={filePath} agentSlug={agentSlug} />
+                    ))}
+                  </div>
+                )}
+                {imageAttachments.length > 0 && (
+                  <AttachedImages
+                    images={imageAttachments.map((filePath, index) => ({ key: `${filePath}#${index}`, filePath }))}
+                    agentSlug={agentSlug}
+                    align="end"
+                    data-testid="sent-images"
+                  />
+                )}
+              </>
+            )
+          })()}
+
+          {/* Mounted folder pills for user messages */}
+          {isUser && mountedFolders.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 justify-end">
+              {mountedFolders.map((mount, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center gap-1.5 rounded-full border bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-800 px-3 py-1 text-xs"
+                  title={`Host: ${mount.hostPath}`}
+                >
+                  <Link2 className="h-3 w-3 text-blue-500" />
+                  <span className="font-medium">{mount.containerPath}</span>
+                  <span className="text-muted-foreground">drive</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </SenderAvatarGroup>
+
 
         {/* What a dashboard comment told the agent beside the comment, folded */}
         {isUser && userParts?.dashboardContext && (

@@ -40,7 +40,7 @@ const webTestIgnore = [
   // the suite's top flake. Runs in playwright.graph.config.ts on its own
   // server/data dir (test:e2e:graph); web-graph below remains a legacy entry.
   '**/home-graph.spec.ts',
-  '**/graph-upgrade.spec.ts',
+  '**/home-graph-interactions.spec.ts',
   // Section drags also need a stable list; sibling specs create/delete agents
   // mid-gesture. Run on a fresh server through test:e2e:sidebar.
   '**/agent-folders.spec.ts',

@@ -50,6 +50,7 @@ import serverFactsRouter from './routes/server-facts'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
+import teamDirectoriesRouter from './routes/team-directories'
 import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
@@ -260,6 +261,7 @@ app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
+app.route('/api/team-directories', teamDirectoriesRouter)
 app.route('/api/audit-log', auditLogRouter)
 app.route('/api/connection-logs', connectionLogsRouter)
 app.route('/api/platform-auth', platformAuth)
