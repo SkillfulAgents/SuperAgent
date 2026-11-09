@@ -48,6 +48,18 @@ export type TeamBrainSetup = z.infer<typeof teamBrainSetupSchema>
 export const teamBrainStoredSchema = z.union([teamBrainSetupSchema, teamBrainRecordSchema])
 export type TeamBrainStored = z.infer<typeof teamBrainStoredSchema>
 
+/**
+ * A set-up as a page resumes it: the record, and whether what it names is still there. Its agent or drive can be
+ * deleted by hand, or a tab closed between making one and saving it; step 1 is done only when the agent has the drive.
+ */
+export interface TeamBrainSetupView {
+  readonly setup: TeamBrainSetup
+  /** The set-up's agent exists. */
+  readonly agent: boolean
+  /** The set-up's drive is attached to that agent. */
+  readonly drive: boolean
+}
+
 /** The ready Team Brain, or null: none, or a set-up still running. */
 export function readyTeamBrain(stored: TeamBrainStored | null | undefined): TeamBrainRecord | null {
   return stored && !('status' in stored) ? stored : null

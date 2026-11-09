@@ -55,7 +55,7 @@ const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
  */
 export function TeamBrainOnboarding({ open, setup }: { open: boolean; setup: TeamBrainSetupActions }) {
   const tb = useTeamBrain()
-  const waiting = driveWait(usePreparedDriveHealth(setup.setup))
+  const waiting = driveWait(usePreparedDriveHealth(setup.prepared))
   const steps = TEAM_BRAIN_STEPS
   const index = Math.max(steps.indexOf(tb.state.step), 0)
   const step = steps[index]
@@ -260,7 +260,8 @@ function LocationStep({ setup, nav }: { setup: TeamBrainSetupActions; nav: StepN
     )
   }
 
-  const ready = !!setup.setup?.volumeId && picked === setup.setup.location
+  // Step 1 is done only while the set-up's agent holds its drive: one deleted since is set up again.
+  const ready = !!setup.prepared && picked === setup.prepared.location
   // A prepared drive already has its agent, so the skillset check is for a set-up still to install it.
   const unread = !ready && skillsetsUnread
   const missingPublic = !ready && !unread && !!skillsets && !skillsets.some((s) => s.id === DEFAULT_PUBLIC_SKILLSET.id)

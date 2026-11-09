@@ -445,7 +445,6 @@ export interface GlobalSettingsResponse {
   shareErrorReports: boolean
   enableToolSearch: boolean
   agentCapabilities: AgentCapabilitySettings
-  teamBrain?: TeamBrainStored
 }
 
 /**

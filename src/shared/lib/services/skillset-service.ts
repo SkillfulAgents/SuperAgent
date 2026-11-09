@@ -155,7 +155,7 @@ type SkillsetRef = {
   credential?: SkillsetCredentialInput
 }
 
-export function toSkillsetRefFromConfig(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>): SkillsetRef {
+function toSkillsetRefFromConfig(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'provider' | 'providerData'>): SkillsetRef {
   const provider = getSkillsetProvider(config.provider)
   return {
     skillsetId: config.id,

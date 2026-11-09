@@ -12,9 +12,11 @@ import type { TeamBrainChoices, TeamBrainStep } from '@shared/lib/config/team-br
 export interface TeamBrainWindowState {
   status: 'off' | 'onboarding' | 'launching'
   step: TeamBrainStep
+  /** The agent step 1 just installed, until the set-up records it: the agent lists leave it out meanwhile. */
+  installing: string | null
 }
 
-const CLOSED: TeamBrainWindowState = { status: 'off', step: 'location' }
+const CLOSED: TeamBrainWindowState = { status: 'off', step: 'location', installing: null }
 
 const listeners = new Set<() => void>()
 let current: TeamBrainWindowState = CLOSED
@@ -45,6 +47,12 @@ export function resetTeamBrainState() {
   write(CLOSED)
 }
 
+/** The agent set-up installed but has not recorded yet, which the agent lists leave out. */
+export function useInstallingTeamBrainSlug(): string | null {
+  const select = () => read().installing
+  return useSyncExternalStore(subscribe, select, select)
+}
+
 /** Whether an agent uses Team Brain. One not switched on its own follows Every agent. */
 export function usesTeamBrain(choices: Pick<TeamBrainChoices, 'agents' | 'everyAgent'>, agentSlug: string): boolean {
   return choices.agents[agentSlug] ?? choices.everyAgent
@@ -56,8 +64,9 @@ export interface TeamBrainActions {
   /** Close the window. The set-up stays on the server. */
   close(): void
   goToStep(step: TeamBrainStep): void
-  /** Start chat closes the window while Finish runs; a failed Finish reopens it. */
+  /** Start chat closes the window while it runs; a failed Start chat reopens it. */
   setLaunching(launching: boolean): void
+  setInstalling(agentSlug: string | null): void
 }
 
 export interface TeamBrainStore extends TeamBrainActions {
@@ -66,11 +75,12 @@ export interface TeamBrainStore extends TeamBrainActions {
 }
 
 const actions: TeamBrainActions = {
-  open: (step) => write({ status: 'onboarding', step }),
+  open: (step) => write({ ...read(), status: 'onboarding', step }),
   // Keeps the step: the window still shows it while it fades out.
   close: () => write({ ...read(), status: 'off' }),
   goToStep: (step) => write({ ...read(), step }),
   setLaunching: (launching) => write({ ...read(), status: launching ? 'launching' : 'onboarding' }),
+  setInstalling: (installing) => write({ ...read(), installing }),
 }
 
 export function useTeamBrain(): TeamBrainStore {

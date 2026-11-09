@@ -24,7 +24,7 @@ async function setLinked(queryClient: QueryClient, slug: string, brainSlug: stri
 }
 
 /** Allow Team Brain to list every agent, or read every agent's sessions (agents made later too), or clear it. */
-async function setTeamBrainReach(queryClient: QueryClient, brainSlug: string, operation: 'list' | 'read', allowed: boolean) {
+export async function setTeamBrainReach(queryClient: QueryClient, brainSlug: string, operation: 'list' | 'read', allowed: boolean) {
   const res = await apiFetch(`/api/agents/${brainSlug}/x-agent-policies`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation, targetSlug: null, decision: allowed ? 'allow' : 'default' }),
   })
@@ -36,7 +36,7 @@ async function setTeamBrainReach(queryClient: QueryClient, brainSlug: string, op
  * What an agent gets when it uses Team Brain: the drive, read-only, leave to message the Team Brain agent, and Team Brain reading its sessions.
  * `mount: false` when the drive already reaches every agent.
  */
-function useGiveTeamBrain() {
+export function useGiveTeamBrain() {
   const addMount = useAddMount()
   const queryClient = useQueryClient()
   return async (slug: string, { volumeId, brainSlug, mount = true }: { volumeId: string; brainSlug: string; mount?: boolean }) => {
@@ -45,10 +45,19 @@ function useGiveTeamBrain() {
   }
 }
 
+/** Undo what `useGiveTeamBrain` gave: the agent's own attachment to the drive, when it has one, and the links both ways. */
+export function useTakeTeamBrain() {
+  const removeMount = useRemoveMount()
+  const queryClient = useQueryClient()
+  return async (slug: string, { brainSlug, mountId }: { brainSlug: string; mountId?: string }) => {
+    await Promise.all([mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }), setLinked(queryClient, slug, brainSlug, false)])
+  }
+}
+
 /** Which agents use Team Brain once it is set up, read from its drive, and the switches that change it. */
 export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefined) {
   const give = useGiveTeamBrain()
-  const removeMount = useRemoveMount()
+  const take = useTakeTeamBrain()
   const saveVolume = useSaveVolumeDefinition()
   const { data: attached } = useVolumeAgents(volumeId)
   const { data: definitions } = useVolumeDefinitions()
@@ -64,9 +73,7 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
     if (!volumeId || changing.has(slug)) return
     const mountId = mountOf(slug)
     setChanging((prev) => new Map(prev).set(slug, on))
-    const change = on
-      ? give(slug, { volumeId, brainSlug })
-      : Promise.all([mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }), setLinked(queryClient, slug, brainSlug, false)])
+    const change = on ? give(slug, { volumeId, brainSlug }) : take(slug, { brainSlug, mountId })
     void change
       .catch(failed)
       .then(() => queryClient.invalidateQueries({ queryKey: ['volume-agents', volumeId] }))
