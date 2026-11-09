@@ -51,6 +51,7 @@ const isList = (token: Token): token is Tokens.List => token.type === 'list'
 const isImage = (token: Token): token is Tokens.Image => token.type === 'image'
 const isLink = (token: Token): token is Tokens.Link => token.type === 'link'
 const isParagraph = (token: Token): token is Tokens.Paragraph => token.type === 'paragraph'
+const isCode = (token: Token): token is Tokens.Code => token.type === 'code'
 
 /**
  * Each token with its range in `block`, in order. One cursor moves past every token,
@@ -124,7 +125,45 @@ const image: ChatVisual = {
   }),
 }
 
-const CHAT_VISUALS: ChatVisual[] = [image]
+type FenceKind = 'mermaid' | 'math' | 'html'
+
+// The host waits this long for the container's queue and render, then sends the block as text.
+const RENDER_TIMEOUT_MS = 20_000
+
+/** The PNG the owning agent's container draws for a fence. Never wakes the agent. */
+async function renderInContainer(agentSlug: string, kind: FenceKind, source: string): Promise<Buffer> {
+  const { container } = agentRegistry.get(agentSlug)
+  if ((await container.status()).status !== 'running') throw new NoImageError('Agent is not running')
+  try {
+    const response = await container.fetch('/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, source }),
+      signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      const message = `Container could not render ${kind} (HTTP ${response.status})`
+      // 422 is the container refusing the source (an invalid diagram): expected, the source goes out.
+      throw response.status === 422 ? new NoImageError(message) : new Error(message)
+    }
+    return Buffer.from(await response.arrayBuffer())
+  } catch (err) {
+    // The container's queue and render outlasted the wait: expected, the source goes out.
+    throw err instanceof Error && err.name === 'TimeoutError' ? new NoImageError(err.message) : err
+  }
+}
+
+/** A fence the container draws, as the app's `RENDERED_FENCES` and html preview draw it: the language is the info string's first word, any case. */
+function fence(kind: FenceKind, languages: string[]): ChatVisual {
+  const isFence = (token: Token): token is Tokens.Code => isCode(token) && languages.includes(token.lang?.split(/\s/)[0].toLowerCase() ?? '')
+  return {
+    match: (tokens) => tokens.flatMap(({ token, start, end }) => (isFence(token)
+      ? [{ start, end, draw: async (agentSlug: string) => ({ data: await renderInContainer(agentSlug, kind, token.text), filename: `${kind}.png` }) }]
+      : [])),
+  }
+}
+
+const CHAT_VISUALS: ChatVisual[] = [image, fence('mermaid', ['mermaid']), fence('math', ['math']), fence('html', ['html', 'htm'])]
 
 /**
  * Agent markdown as ordered text and visual segments, and the tail left unsplit.

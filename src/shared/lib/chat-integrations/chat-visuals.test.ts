@@ -68,6 +68,22 @@ describe('segments', () => {
     expect(shape(text, false).segments).toEqual([{ kind: 'visual', source: text }])
   })
 
+  it('takes a mermaid, math or html fence in any case as a visual, not another language or a 4-space-indented fence', () => {
+    const kinds = (text: string) => shape(text, false).segments.map((segment) => segment.kind)
+    for (const language of ['mermaid', 'math', 'html', 'htm', 'MERMAID']) {
+      expect(kinds(`Intro\n\n\`\`\`${language}\nx\n\`\`\`\n\nAfter`)).toEqual(['text', 'visual', 'text'])
+    }
+    expect(kinds('```ts\nx\n```')).toEqual(['text'])
+    expect(kinds('    ```mermaid\n    x\n    ```')).toEqual(['text'])
+  })
+
+  it('splits a fence that follows a prose line with no blank line between', () => {
+    expect(shape('Here:\n```mermaid\nA --> B\n```', false).segments).toEqual([
+      { kind: 'text', source: 'Here:\n' },
+      { kind: 'visual', source: '```mermaid\nA --> B\n```' },
+    ])
+  })
+
   it('splits two images in a row', () => {
     expect(shape('![a](/workspace/a.png)\n![b](file:///workspace/b.jpg)', false).segments).toEqual([
       { kind: 'visual', source: '![a](/workspace/a.png)' },

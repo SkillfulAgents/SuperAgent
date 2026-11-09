@@ -24,6 +24,7 @@ import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
 import { widgetManager } from './widget-manager';
+import { registerRenderRoute } from './render-route';
 import {
   dashboardHttpForwardHeaders,
   dashboardHttpUpstreamPath,
@@ -686,6 +687,8 @@ app.get('/artifacts/:slug/widget/logs', async (c) => {
     return c.json({ error: error.message || 'Failed to get widget logs' }, 500);
   }
 });
+
+registerRenderRoute(app);
 
 // Shared handler for proxying requests to a dashboard server
 async function proxyToDashboard(c: any) {
