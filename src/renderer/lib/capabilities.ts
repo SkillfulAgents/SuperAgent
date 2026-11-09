@@ -148,3 +148,15 @@ export function capturesOwnWindow(): boolean {
 export function listsRecentFiles(): boolean {
   return !!window.electronAPI?.getRecentFiles && !runsInAppSandbox(clientFacts())
 }
+
+/**
+ * Whether signing in to the Gamut account happens in a sheet on the app's own
+ * window (macOS's ASWebAuthenticationSession) rather than in the person's
+ * browser. App Review requires it of the Mac App Store build (guideline 4);
+ * the direct build keeps the browser, where the person is usually signed in
+ * already. A question about the client: the sheet belongs to this window.
+ */
+export function signsInWithAuthSession(): boolean {
+  const client = clientFacts()
+  return client.shell === 'electron' && client.os === 'darwin' && runsInAppSandbox(client)
+}
