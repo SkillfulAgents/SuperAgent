@@ -19,6 +19,7 @@ import { z } from 'zod'
 import { slackAppManifest } from '@shared/lib/chat-integrations/slack-manifest'
 import { slackVerificationProfile } from '@shared/lib/chat-integrations/slack-verification'
 import { slackDirectoryAppManifest } from './slack-directory-app'
+import { gamutSlackIcon } from './slack-directory-icon'
 import {
   DirectoryConnectError,
   ProvisioningCredentialsError,
@@ -117,17 +118,20 @@ function accessTokenOf(credentials: SlackConfigToken): string {
   return credentials.accessToken
 }
 
+/** Sets an app's icon. A failure doesn't fail what it's part of: the icon can be set again later. */
+async function setAppIcon(token: string, appId: string, icon: Uint8Array): Promise<boolean> {
+  try {
+    await slackCall('apps.icon.set', token, iconForm(appId, icon), z.object({}))
+    return true
+  } catch (error) {
+    console.warn(`[TeamDirectory] Setting the icon of Slack app ${appId} failed:`, error instanceof Error ? error.message : error)
+    return false
+  }
+}
+
 function provisioner(credentials: SlackConfigToken): AgentIdentityProvisioner {
   const token = accessTokenOf(credentials)
-  const setIcon = async (appId: string, icon: Uint8Array): Promise<boolean> => {
-    try {
-      await slackCall('apps.icon.set', token, iconForm(appId, icon), z.object({}))
-      return true
-    } catch (error) {
-      console.warn(`[TeamDirectory] Setting the icon of Slack app ${appId} failed:`, error instanceof Error ? error.message : error)
-      return false
-    }
-  }
+  const setIcon = (appId: string, icon: Uint8Array) => setAppIcon(token, appId, icon)
   return {
     async createApp({ name, description, backgroundColor, icon, webhookUrl, redirectUrl }) {
       const { body, app } = await createFromManifest(token, slackAppManifest({ name, description, backgroundColor }, webhookUrl), redirectUrl)
@@ -207,7 +211,10 @@ export const slackAppProvisioning: AgentIdentityProvisioning<SlackConfigToken> =
 
   async createDirectoryApp(credentials, { redirectUrl }) {
     try {
-      const { body, app } = await createFromManifest(accessTokenOf(credentials), slackDirectoryAppManifest(), redirectUrl)
+      const token = accessTokenOf(credentials)
+      const { body, app } = await createFromManifest(token, slackDirectoryAppManifest(), redirectUrl)
+      // A manifest can't carry an icon: the Gamut logo goes up after, and the app works without it.
+      await setAppIcon(token, app.appId, gamutSlackIcon())
       // Installing it gives the directory's bot token (`completeInstall`).
       return { app, installUrl: body.oauth_authorize_url }
     } catch (error) {

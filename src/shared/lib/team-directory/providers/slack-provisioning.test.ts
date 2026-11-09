@@ -85,6 +85,7 @@ describe('slack directory app', () => {
       credentials: { client_id: '333.444', client_secret: 'dir-secret', signing_secret: 'unused' },
       oauth_authorize_url: 'https://slack.com/oauth/v2/authorize?client_id=333.444&scope=users:read',
     } })
+    routes['apps.icon.set'] = () => ({ body: { ok: true } })
     const created = await slackAppProvisioning.createDirectoryApp!({ ...pair, expiresAt: Date.now() + 3_600_000 }, { redirectUrl: 'https://gamut.example/api/team-directories/install/callback' })
     expect(created).toEqual({
       app: { appId: 'ADIR', clientId: '333.444', clientSecret: 'dir-secret' },
@@ -98,9 +99,30 @@ describe('slack directory app', () => {
     })
     expect(manifest.settings.event_subscriptions).toBeUndefined()
 
+    // Then the Gamut logo as its icon: a square PNG of Slack's smallest icon size.
+    expect(calls[1]).toMatchObject({ method: 'apps.icon.set', token: 'Bearer xoxe.xoxp-1-access' })
+    const form = calls[1].body as FormData
+    expect(form.get('app_id')).toBe('ADIR')
+    const png = new Uint8Array(await (form.get('file') as Blob).arrayBuffer())
+    expect([...png.subarray(1, 4)]).toEqual([0x50, 0x4e, 0x47])
+    const view = new DataView(png.buffer)
+    expect([view.getUint32(16), view.getUint32(20)]).toEqual([512, 512])
+
     // Installing it gives the directory's bot token, which is what the Slack directory connects with.
     routes['oauth.v2.access'] = () => ({ body: { ok: true, access_token: 'xoxb-directory' } })
     expect(await provisioner().completeInstall(created.app, 'code-1', 'https://gamut.example/api/team-directories/install/callback')).toEqual({ botToken: 'xoxb-directory' })
+  })
+
+  it('still creates it when the icon can’t be set', async () => {
+    routes['apps.manifest.create'] = () => ({ body: {
+      ok: true, app_id: 'ADIR',
+      credentials: { client_id: '333.444', client_secret: 'dir-secret', signing_secret: 'unused' },
+      oauth_authorize_url: 'https://slack.com/oauth/v2/authorize?client_id=333.444',
+    } })
+    routes['apps.icon.set'] = () => ({ body: { ok: false, error: 'invalid_image' } })
+    const created = await slackAppProvisioning.createDirectoryApp!({ ...pair }, { redirectUrl: 'https://gamut.example/cb' })
+    expect(created.app).toMatchObject({ appId: 'ADIR' })
+    expect(calls.map((c) => c.method)).toEqual(['apps.manifest.create', 'apps.icon.set'])
   })
 
   it('tells the admin to start again when Slack refuses to create it', async () => {
