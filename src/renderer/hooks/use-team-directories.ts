@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import type {
-  DirectoryInstallStatus, RefreshDirectoryResponse, StartDirectoryInstallResponse, TeamDirectoriesResponse, TeamDirectoryView,
+  DirectoryInstallStatus, DisconnectDirectoryResponse, RefreshDirectoryResponse, StartDirectoryInstallResponse, TeamDirectoriesResponse,
+  TeamDirectoryView,
 } from '@shared/lib/team-directory/view-schema'
 
 const QUERY_KEY = ['team-directories']
@@ -59,10 +60,8 @@ export function useDisconnectTeamDirectory() {
   const client = useQueryClient()
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (id: string) => {
-      const response = await apiFetch(`/api/team-directories/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      if (!response.ok) await json(response, 'Could not disconnect the directory')
-    },
+    mutationFn: async (id: string) =>
+      json<DisconnectDirectoryResponse>(await apiFetch(`/api/team-directories/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Could not disconnect the directory'),
     onSuccess: () => client.invalidateQueries({ queryKey: QUERY_KEY }),
   })
 }
@@ -72,6 +71,17 @@ export function useStartDirectoryInstall() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (input: DirectoryCredentialsInput) => json<StartDirectoryInstallResponse>(await post('/install', input), 'Could not create the app'),
+  })
+}
+
+/** Abandons a started install (Start over): the server deletes the app it created. */
+export function useCancelDirectoryInstall() {
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async (installId: string) => {
+      const response = await apiFetch(`/api/team-directories/install/${encodeURIComponent(installId)}`, { method: 'DELETE' })
+      if (!response.ok) await json(response, 'Could not cancel the install')
+    },
   })
 }
 

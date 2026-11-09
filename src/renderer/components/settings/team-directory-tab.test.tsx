@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   connectProvisioning: vi.fn(),
   disconnectProvisioning: vi.fn(),
   startInstall: vi.fn(),
+  cancelInstall: vi.fn(),
   installStatus: undefined as DirectoryInstallStatus | undefined,
   loginOpen: vi.fn(),
   loginClose: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('@renderer/hooks/use-login-window', () => ({
 }))
 vi.mock('@renderer/hooks/use-team-directories', () => ({
   useStartDirectoryInstall: () => ({ mutateAsync: state.startInstall, isPending: false }),
+  useCancelDirectoryInstall: () => ({ mutate: state.cancelInstall }),
   useDirectoryInstallStatus: () => ({ data: state.installStatus }),
   useTeamDirectories: () => ({ data: state.data, isLoading: false, error: null }),
   useTestDirectoryCredentials: () => ({ mutateAsync: state.test, isPending: false }),
@@ -35,7 +37,7 @@ vi.mock('@renderer/hooks/use-team-directories', () => ({
   useConnectProvisioning: () => ({ mutateAsync: state.connectProvisioning, isPending: false }),
   useDisconnectProvisioning: () => ({ mutateAsync: state.disconnectProvisioning, isPending: false }),
 }))
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true }) }))
 import { toast } from 'sonner'
 import { TeamDirectoryTab } from './team-directory-tab'
@@ -72,6 +74,7 @@ beforeEach(() => {
   state.installStatus = undefined
   state.relay = { available: true }
   state.loginOpen.mockResolvedValue('waiting')
+  state.disconnect.mockResolvedValue({ appLeftBehind: false })
 })
 afterEach(cleanup)
 
@@ -119,6 +122,23 @@ describe('connecting with one token', () => {
     rerender(<TeamDirectoryTab />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Slack did not create the app (invalid_manifest).')
     expect(screen.getByText('Step 1 of 2 · Add a token')).toBeInTheDocument()
+  })
+
+  it('starts over with an empty form, deleting the app it made, and keeps Install open after the window closes', async () => {
+    state.data = { providers: [slackByToken], directories: [] }
+    state.startInstall.mockResolvedValue({ installId: 'i1', url: 'https://slack.com/oauth/v2/authorize?state=s1' })
+    render(<TeamDirectoryTab />)
+    await userEvent.type(screen.getByLabelText('Refresh token'), 'xoxe-1-refresh')
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    const install = await screen.findByRole('button', { name: 'Install on Slack' })
+    await userEvent.click(install)
+    // The window may be closed without an answer: Install opens it again.
+    expect(screen.getByRole('button', { name: 'Install on Slack' })).toBeEnabled()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start over' }))
+    expect(state.cancelInstall).toHaveBeenCalledWith('i1')
+    // The pasted token was spent: the form doesn't offer it again.
+    expect(screen.getByLabelText('Refresh token')).toHaveValue('')
   })
 
   it('shows why a token was refused', async () => {
@@ -220,6 +240,15 @@ describe('Team Directory settings', () => {
     const panel = screen.getByTestId('team-directory-provisioning-d1')
     expect(panel).toHaveTextContent('Needs a new token')
     expect(panel).toHaveTextContent('Apps already installed keep working.')
+  })
+
+  it('warns when the app Gamut made for a directory couldn’t be deleted with it', async () => {
+    state.data = { providers: [slack], directories: [acme] }
+    state.disconnect.mockResolvedValue({ appLeftBehind: true })
+    render(<TeamDirectoryTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect Acme' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('The Slack app Gamut made for Acme couldn’t be deleted. Delete it in Slack yourself.'))
   })
 
   it('says agents are set up by hand while this host has no webhook relay', () => {

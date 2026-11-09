@@ -21,7 +21,10 @@ vi.mock('../middleware/auth', () => ({
 import routes from './team-directories'
 import { registerDirectoryProvider } from '@shared/lib/team-directory/registry'
 import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
-import { findProvisioner } from '@shared/lib/team-directory/provisioning'
+import { disconnectProvisioning, findProvisioner } from '@shared/lib/team-directory/provisioning'
+import { ExpireDirectoryInstallTask } from '@shared/lib/team-directory/directory-app'
+import { TeamDirectoryProvisioningService } from '@shared/lib/team-directory/service'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { createFakeDirectoryProvider, type FakeDirectory } from '@shared/lib/team-directory/testing/fake-directory-provider'
 import { DirectoryConnectError } from '@shared/lib/team-directory/types'
 import type { DirectoryInstallStatus, StartDirectoryInstallResponse, TeamDirectoriesResponse } from '@shared/lib/team-directory/view-schema'
@@ -66,6 +69,7 @@ beforeEach(async () => {
   fake = createFakeDirectoryProvider('fake', 'Fake Directory', { provisionFor: 'slack' })
   unregister = registerDirectoryProvider(fake.provider)
   fake.setPeople('acme', [fake.person('acme', 'f1', 'Dana Whitfield', 'dana@acme.test')])
+  registerTasks(new TeamDirectoryProvisioningService())
 })
 
 afterEach(async () => {
@@ -76,6 +80,73 @@ afterEach(async () => {
 })
 
 describe('connecting a directory with one token', () => {
+  it('is offered for a provider that only returns to HTTPS only when this app has an HTTPS address, and checked before the token is spent', async () => {
+    const strict = createFakeDirectoryProvider('strict', 'Strict Directory', { provisionFor: 'slack', httpsRedirectsOnly: true })
+    const unregisterStrict = registerDirectoryProvider(strict.provider)
+    try {
+      const offered = async () => ((await (await call('/')).json()) as TeamDirectoriesResponse).providers
+        .filter((p) => p.provisioning?.connectsDirectory).map((p) => p.id)
+      expect(await offered()).toEqual(['slack', 'fake', 'strict'])
+
+      vi.stubEnv('HOST_PUBLIC_URL', 'http://localhost:47891')
+      // Slack, and any provider like it, falls back to its own form; one that returns anywhere stays.
+      expect(await offered()).toEqual(['fake'])
+      const refused = await post('/install', { provider: 'strict', credentials: { key: 'admin-key' } })
+      expect(refused.status).toBe(400)
+      expect(await refused.json()).toEqual({ error: 'Strict Directory only returns to an HTTPS address, and this app is at http://localhost:47891. Use a Strict Directory app you already have.' })
+      expect(strict.provisioner.calls).toEqual([])
+    } finally {
+      unregisterStrict()
+    }
+  })
+
+  it('deletes the app when the admin starts over, and the install can’t be finished after', async () => {
+    const started = await start()
+    expect((await call(`/install/${started.installId}`, { method: 'DELETE' })).status).toBe(204)
+    expect(fake.provisioner.calls.at(-1)).toEqual({ op: 'delete', detail: { appId: 'DIR1' } })
+    expect(await status(started.installId)).toEqual({ status: 'expired' })
+    const late = await returnFrom(started.url)
+    expect(late.status).toBe(400)
+    expect(await late.text()).toContain('Install expired')
+    expect(await handle.db.select().from(teamDirectories).all()).toEqual([])
+  })
+
+  it('deletes the app of an install nobody finished when its time runs out', async () => {
+    const started = await start()
+    await new ExpireDirectoryInstallTask().execute({ installId: started.installId })
+    expect(fake.provisioner.calls.at(-1)).toEqual({ op: 'delete', detail: { appId: 'DIR1' } })
+    expect(await status(started.installId)).toEqual({ status: 'expired' })
+
+    // One that was installed is left alone.
+    const installed = await start('admin-key-2')
+    await returnFrom(installed.url)
+    await backgroundSettled()
+    const deletes = fake.provisioner.calls.filter((c) => c.op === 'delete').length
+    await new ExpireDirectoryInstallTask().execute({ installId: installed.installId })
+    expect(fake.provisioner.calls.filter((c) => c.op === 'delete')).toHaveLength(deletes)
+    expect(await status(installed.installId)).toMatchObject({ status: 'connected' })
+  })
+
+  it('takes only the state it handed out', async () => {
+    const started = await start()
+    const forged = await call(`/install/callback?${new URLSearchParams({ state: `${started.installId}.not-the-secret-at-all`, code: 'x' })}`, { as: null })
+    expect(forged.status).toBe(400)
+    expect(await status(started.installId)).toEqual({ status: 'pending' })
+    expect((await returnFrom(started.url)).status).toBe(200)
+  })
+
+  it('reports the app as left behind when the directory has no app-creation credentials left to delete it with', async () => {
+    const started = await start()
+    await returnFrom(started.url)
+    const [row] = await handle.db.select().from(teamDirectories).all()
+    await disconnectProvisioning(row.id)
+    const disconnected = await call(`/${row.id}`, { method: 'DELETE' })
+    expect(await disconnected.json()).toEqual({ appLeftBehind: true })
+    await backgroundSettled()
+    expect(fake.provisioner.calls.filter((c) => c.op === 'delete')).toEqual([])
+    expect((await call('/unknown', { method: 'DELETE' })).status).toBe(404)
+  })
+
   it('is offered for a provider whose app-creation credentials can make the directory’s app', async () => {
     const body = await (await call('/')).json() as TeamDirectoriesResponse
     expect(body.providers.find((p) => p.id === 'fake')?.provisioning).toMatchObject({ connectsDirectory: true, fields: [{ key: 'key' }] })
@@ -87,7 +158,8 @@ describe('connecting a directory with one token', () => {
     expect(fake.provisioner.calls).toEqual([{ op: 'create-directory', detail: { redirectUrl: CALLBACK, generation: 1 } }])
     const url = new URL(started.url)
     expect(url.searchParams.get('redirect_uri')).toBe(CALLBACK)
-    expect(url.searchParams.get('state')).toBeTruthy()
+    // The install's id, then a secret only the provider's page carries.
+    expect(url.searchParams.get('state')).toMatch(new RegExp(`^${started.installId}\\.[\\w-]{20,}$`))
     expect(await status(started.installId)).toEqual({ status: 'pending' })
     expect(await handle.db.select().from(teamDirectories).all()).toEqual([])
 
@@ -185,7 +257,8 @@ describe('connecting a directory with one token', () => {
     expect(fake.provisioner.calls.filter((c) => c.op === 'delete')).toEqual([{ op: 'delete', detail: { appId: 'DIR1' } }])
 
     const [row] = await handle.db.select().from(teamDirectories).all()
-    expect((await call(`/${row.id}`, { method: 'DELETE' })).status).toBe(204)
+    const disconnected = await call(`/${row.id}`, { method: 'DELETE' })
+    expect(await disconnected.json()).toEqual({ appLeftBehind: false })
     await backgroundSettled()
     expect(fake.provisioner.calls.filter((c) => c.op === 'delete')).toEqual([
       { op: 'delete', detail: { appId: 'DIR1' } },

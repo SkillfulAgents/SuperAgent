@@ -24,9 +24,12 @@ import {
   type DirectoryConnection,
 } from '@shared/lib/team-directory/store'
 import { DirectoryConnectError, type DirectoryTenant } from '@shared/lib/team-directory/types'
-import type { DirectoryInstallStatus, DirectoryProviderView, StartDirectoryInstallResponse, TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
+import type {
+  DirectoryInstallStatus, DirectoryProviderView, DisconnectDirectoryResponse, StartDirectoryInstallResponse, TeamDirectoryView,
+} from '@shared/lib/team-directory/view-schema'
 import { connectProvisioning, disconnectProvisioning } from '@shared/lib/team-directory/provisioning'
 import {
+  abandonDirectoryInstall,
   completeDirectoryAppConnect,
   connectsWithProvisioning,
   directoryAppCleanup,
@@ -39,6 +42,12 @@ import { captureException } from '@shared/lib/error-reporting'
 const router = new Hono()
 
 const CALLBACK_PATH = '/api/team-directories/install/callback'
+
+/** Where the provider's install page returns: this app's public URL. */
+async function callbackUrl(c: Context): Promise<string | null> {
+  const baseUrl = await resolvePublicAppBaseUrl(c.req.raw)
+  return baseUrl ? `${baseUrl}${CALLBACK_PATH}` : null
+}
 
 const callbackPage = (title: string, message: string, status: 200 | 400 = 200) => (c: Context) => {
   c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer')
@@ -113,11 +122,12 @@ async function verified(body: unknown): Promise<{ provider: string; credentials:
 // GET /api/team-directories - The providers this build offers, and the connected directories.
 router.get('/', async (c) => {
   c.header('Cache-Control', 'no-store')
+  const callback = await callbackUrl(c)
   return c.json({
     providers: listDirectoryProviders().map((provider): DirectoryProviderView => ({
       ...provider.info,
       ...(provider.provisioning
-        ? { provisioning: { ...provider.provisioning.info, ...(connectsWithProvisioning(provider) ? { connectsDirectory: true } : {}) } }
+        ? { provisioning: { ...provider.provisioning.info, ...(connectsWithProvisioning(provider, callback) ? { connectsDirectory: true } : {}) } }
         : {}),
     })),
     directories: await views(await listDirectoryConnections()),
@@ -151,12 +161,12 @@ router.post('/', async (c) => {
 // page that installs it. The install's callback connects the directory.
 router.post('/install', async (c) => {
   const input = connectBodySchema.parse(await c.req.json())
-  const baseUrl = await resolvePublicAppBaseUrl(c.req.raw)
-  if (!baseUrl) throw new RequestError('This app has no public URL for the install to return to.')
+  const redirectUrl = await callbackUrl(c)
+  if (!redirectUrl) throw new RequestError('This app has no public URL for the install to return to.')
   const started = await startDirectoryAppConnect({
     provider: input.provider,
     credentials: input.credentials,
-    redirectUrl: `${baseUrl}${CALLBACK_PATH}`,
+    redirectUrl,
     userId: isAuthMode() ? getCurrentUserId(c) : null,
   })
   return c.json(started satisfies StartDirectoryInstallResponse)
@@ -166,6 +176,12 @@ router.post('/install', async (c) => {
 router.get('/install/:installId', async (c) => {
   c.header('Cache-Control', 'no-store')
   return c.json((await directoryInstallOutcome(c.req.param('installId'))) satisfies DirectoryInstallStatus)
+})
+
+// DELETE /api/team-directories/install/:installId - Abandons an install (Start over): its app is deleted.
+router.delete('/install/:installId', async (c) => {
+  await abandonDirectoryInstall(c.req.param('installId'))
+  return c.body(null, 204)
 })
 
 // POST /api/team-directories/:id/refresh - Lists the directory now: how many people it has, or why it can't be read.
@@ -196,15 +212,17 @@ router.delete('/:id/provisioning', async (c) => {
 })
 
 // DELETE /api/team-directories/:id - Disconnects a directory. Its people stop
-// appearing in searches at once, and the app Gamut made for it is deleted.
+// appearing in searches at once, and the app Gamut made for it is deleted
+// after the response, or reported as left behind when it can't be.
 router.delete('/:id', async (c) => {
+  if (!(await getDirectoryConnection(c.req.param('id')))) return c.json({ error: 'Directory not found' }, 404)
   const cleanup = await directoryAppCleanup(c.req.param('id'))
   const removed = await deleteDirectoryConnection(c.req.param('id'))
   if (!removed) return c.json({ error: 'Directory not found' }, 404)
-  if (cleanup) background(cleanup(), { name: 'team-directory.delete-app' })
+  if (cleanup?.kind === 'delete') background(cleanup.run(), { name: 'team-directory.delete-app' })
   await forgetDirectoryUsers(removed)
   await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: removed.id, action: 'disconnected', details: { provider: removed.provider, tenantName: removed.tenantName } })
-  return c.body(null, 204)
+  return c.json({ appLeftBehind: cleanup?.kind === 'left-behind' } satisfies DisconnectDirectoryResponse)
 })
 
 export default router

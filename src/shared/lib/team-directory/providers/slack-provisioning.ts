@@ -208,6 +208,7 @@ export const slackAppProvisioning: AgentIdentityProvisioning<SlackConfigToken> =
   needsRotation: (credentials, now) => credentials.expiresAt === undefined || credentials.expiresAt - now < ROTATE_WITHIN_MS,
   rotate,
   open: provisioner,
+  httpsRedirectsOnly: true,
 
   async createDirectoryApp(credentials, { redirectUrl }) {
     try {

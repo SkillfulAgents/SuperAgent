@@ -14,14 +14,12 @@
  *   deleted with the installation.
  */
 import { randomBytes } from 'node:crypto'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { chatIntegrations, teamDirectories } from '@shared/lib/db/schema'
 import { appState, defineLease, defineNamespace, digestKeyPart } from '@shared/lib/app-state'
-import { background } from '@shared/lib/background'
-import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
 import { IntegrationSetupError } from '@shared/lib/agent-integrations/setup-types'
 import { provisionedAppConfigSchema, type ProvisionedAppConfig } from '@shared/lib/agent-integrations/provisioned-app'
@@ -37,8 +35,6 @@ import {
 } from './types'
 import type { VerificationProfile } from '@shared/lib/services/webhook-endpoint-schema'
 
-export const PROVISIONING_ROTATION_INTERVAL_MS = 6 * 60 * 60_000
-const ROTATE_TASK = 'team-directory.rotate-provisioning'
 /** A rotation is one request with a 15 s timeout, plus the write after it. */
 const ROTATE_REQUEST_MS = 15_000
 const rotations = defineLease({ name: 'claim:team-directory-provisioning', ttlMs: 60_000 })
@@ -47,7 +43,8 @@ const INSTALL_STATE_TTL_MS = 30 * 60_000
 /** The credentials are sealed as the provider's provisioning ones, so the directory's own never open as them. */
 const sealedAs = (connection: Pick<DirectoryConnection, 'provider'>) => `${connection.provider}:provisioning`
 
-function provisioningOf(connection: Pick<DirectoryConnection, 'provider'>): AgentIdentityProvisioning<unknown> | undefined {
+/** A directory provider's app creation, if it has one. */
+export function provisioningOf(connection: Pick<DirectoryConnection, 'provider'>): AgentIdentityProvisioning<unknown> | undefined {
   return getDirectoryProvider(connection.provider)?.provisioning as AgentIdentityProvisioning<unknown> | undefined
 }
 
@@ -55,21 +52,26 @@ function provisioningOf(connection: Pick<DirectoryConnection, 'provider'>): Agen
 
 /**
  * Stores verified provisioning credentials on a directory, over any it had.
- * `directoryApp` (sealed) comes along when the directory was connected with them.
+ * `directoryApp` (sealed) comes along when the directory was connected with
+ * them, written only over `replacing` (the sealed app read before, or null):
+ * false when another write changed it meanwhile.
  */
 export async function saveProvisioningCredentials(
   connection: Pick<DirectoryConnection, 'id' | 'provider' | 'tenantId'>,
   credentials: unknown,
-  extra: { directoryApp?: string } = {},
-): Promise<void> {
-  await db.update(teamDirectories).set({
+  app?: { directoryApp: string; replacing: string | null },
+): Promise<boolean> {
+  return changesOf(await db.update(teamDirectories).set({
     provisioningCredentials: await sealDirectoryCredentials(sealedAs(connection), connection.tenantId, credentials),
     provisioningRevision: sql`${teamDirectories.provisioningRevision} + 1`,
     provisioningStatus: 'active',
     provisioningError: null,
-    ...extra,
+    ...(app ? { directoryApp: app.directoryApp } : {}),
     updatedAt: new Date(),
-  }).where(eq(teamDirectories.id, connection.id)).run()
+  }).where(and(
+    eq(teamDirectories.id, connection.id),
+    ...(app ? [app.replacing === null ? isNull(teamDirectories.directoryApp) : eq(teamDirectories.directoryApp, app.replacing)] : []),
+  )).run()) > 0
 }
 
 /** Verifies and stores an admin's provisioning credentials on a connected directory. */
@@ -92,14 +94,15 @@ export async function disconnectProvisioning(directoryId: string): Promise<boole
   }).where(eq(teamDirectories.id, directoryId)).run()) > 0
 }
 
-interface LoadedProvisioning {
+export interface LoadedProvisioning {
   connection: DirectoryConnection
   provisioning: AgentIdentityProvisioning<unknown>
   credentials: unknown
   revision: number
 }
 
-async function loadProvisioning(directoryId: string): Promise<LoadedProvisioning | null> {
+/** A directory's provisioning credentials as stored, not rotated; null when it has none. */
+export async function loadProvisioning(directoryId: string): Promise<LoadedProvisioning | null> {
   const row = await db.select().from(teamDirectories).where(eq(teamDirectories.id, directoryId)).get()
   if (!row?.provisioningCredentials) return null
   const provisioning = provisioningOf(row)
@@ -347,22 +350,4 @@ export async function updateAgentApp(integrationId: string, configJson: string, 
     const current = provisionedAppConfigSchema.parse(config.provisionedApp)
     return { ...config, provisionedApp: { ...current, ...(name ? { name } : {}), ...(iconSet ? { iconSet: true } : {}) } }
   })
-}
-
-// ── The rotation pass ───────────────────────────────────────────────
-
-/** Keeps provisioning credentials renewed even when no app is made for weeks. */
-export class TeamDirectoryProvisioningService implements Service {
-  readonly id = 'team-directory-provisioning'
-  readonly phase = 'background' as const
-  private readonly rotateTask = new PassTask(ROTATE_TASK, rotateAllProvisioning)
-  readonly tasks = [this.rotateTask]
-
-  async start(): Promise<void> {
-    await taskManager().ensureEvery(this.rotateTask.type, this.rotateTask.spec, { intervalMs: PROVISIONING_ROTATION_INTERVAL_MS, initialDelayMs: 60_000 })
-  }
-
-  stop(): void {
-    background(taskManager().cancel(this.rotateTask.type), { name: 'team-directory.cancel-rotation' })
-  }
 }

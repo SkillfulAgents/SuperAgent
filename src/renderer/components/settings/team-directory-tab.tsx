@@ -14,7 +14,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import {
-  useConnectProvisioning, useConnectTeamDirectory, useDirectoryInstallStatus, useDisconnectProvisioning, useDisconnectTeamDirectory,
+  useCancelDirectoryInstall, useConnectProvisioning, useConnectTeamDirectory, useDirectoryInstallStatus, useDisconnectProvisioning, useDisconnectTeamDirectory,
   useRefreshTeamDirectory, useStartDirectoryInstall, useTeamDirectories, useTestDirectoryCredentials,
 } from '@renderer/hooks/use-team-directories'
 import type {
@@ -124,6 +124,7 @@ function AppConnectForm({ provider, onManual }: { provider: DirectoryProviderVie
   const info = provider.provisioning!
   const client = useQueryClient()
   const start = useStartDirectoryInstall()
+  const cancel = useCancelDirectoryInstall()
   const login = useLoginWindow()
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
@@ -135,18 +136,24 @@ function AppConnectForm({ provider, onManual }: { provider: DirectoryProviderVie
   const outcome = status.data
 
   const closeLogin = login.close
+  // Back to Step 1. The pasted token was spent (verifying rotates it), so it goes too.
   const startOver = useCallback((message: string | null) => {
     closeLogin()
     setPolling(false)
     setInstall(null)
+    setValues({})
     setError(message)
   }, [closeLogin])
+  // Start over by choice: the install will never finish, so its app is deleted.
+  const abandon = () => {
+    if (install) cancel.mutate(install.installId)
+    startOver(null)
+  }
 
   useEffect(() => {
     if (!outcome || !install) return
     if (outcome.status === 'connected') {
       startOver(null)
-      setValues({})
       toast.success(`Connected ${outcome.tenantName}`, outcome.notices.length ? { description: outcome.notices.join(' ') } : undefined)
       void client.invalidateQueries({ queryKey: ['team-directories'] })
     } else if (outcome.status === 'failed') {
@@ -184,14 +191,14 @@ function AppConnectForm({ provider, onManual }: { provider: DirectoryProviderVie
         <p className={STEP_HEADING}>Step 2 of 2 · Install</p>
         <p>Gamut created its {provider.label} app in your workspace. Install it to finish connecting.</p>
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" size="sm" onClick={openInstall} disabled={polling && login.waiting} data-testid="team-directory-install-button">
+          <Button type="button" size="sm" onClick={openInstall} disabled={login.pending && !login.waiting} data-testid="team-directory-install-button">
             {polling && login.pending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Install on {provider.label}
           </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={() => startOver(null)}>Start over</Button>
+          <Button type="button" variant="ghost" size="sm" onClick={abandon}>Start over</Button>
         </div>
         {polling && login.waiting && (
-          <p role="status" className="text-xs text-muted-foreground">Approve the install in the window that opened. This page updates when it’s done.</p>
+          <p role="status" className="text-xs text-muted-foreground">Approve the install in the window that opened. This page updates when it’s done. Closed it? Click Install again.</p>
         )}
         {cancelled && !polling && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">The install was cancelled. Install again when you’re ready.</p>}
         {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
@@ -447,7 +454,10 @@ export function TeamDirectoryTab() {
   const confirmDisconnect = async () => {
     if (!disconnecting) return
     try {
-      await disconnect.mutateAsync(disconnecting.id)
+      const { appLeftBehind } = await disconnect.mutateAsync(disconnecting.id)
+      if (appLeftBehind) {
+        toast.warning(`The ${disconnecting.providerLabel} app Gamut made for ${disconnecting.tenantName} couldn’t be deleted. Delete it in ${disconnecting.providerLabel} yourself.`)
+      }
       setDisconnecting(null)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not disconnect the directory')

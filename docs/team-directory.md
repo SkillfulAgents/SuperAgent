@@ -87,26 +87,30 @@ Under `E2E_MOCK=true` the registry also has a **Demo Directory** (`testing/e2e-d
 
 ## Connecting with one token
 
-`directory-app.ts`. When a provider's `provisioning` has `createDirectoryApp`, Settings offers its credentials as the way in. For Slack that is the refresh token of an app configuration token, the same one agents' apps need. The admin's steps:
+`directory-app.ts`. When a provider's `provisioning` has `createDirectoryApp`, Settings offers its credentials as the way in. For Slack that is the refresh token of an app configuration token, the same one agents' apps need.
+
+A provider with `httpsRedirectsOnly` (Slack) is offered this way only when the host's public URL (`HOST_PUBLIC_URL`, else the first trusted origin) is HTTPS, since its install page returns only there. Otherwise, as on a desktop app at `http://localhost`, Settings shows the provider's own form. `POST /install` checks the same before verifying anything, so a token is never spent on an install that can't return.
+
+The admin's steps:
 
 1. **Paste.** Settings → Team Directory: open Slack's Your Apps, generate a token for the workspace, paste its refresh token, Continue (`POST /install`).
    - The host verifies the token, which rotates it once, then creates the directory's app with the host's callback as its redirect URL (`apps.manifest.create`; the app has no events, so no webhook relay).
-   - The pending install is held in AppState (`oauth:directory-app-install`, 30 minutes), with the rotated credentials and the app sealed.
+   - The pending install is held in AppState under a random id (`oauth:directory-app-install`), with the rotated credentials and the app sealed. The provider's page carries `<id>.<secret>` as its `state`; only the secret's digest is stored.
    - A failure from here on needs a new token, since the pasted one has been rotated.
 2. **Install.** One click opens the provider's install page in a window (the system browser in the desktop app).
-   - The callback consumes the state and exchanges the code (`completeInstall`). What it gives is the directory's credentials (Slack: the bot token).
+   - The callback checks the secret, consumes the install and exchanges the code (`completeInstall`). What it gives is the directory's credentials (Slack: the bot token).
    - The provider's own `verify` names the workspace, the directory is saved, and the provisioning credentials and the app (`directory_app`, sealed) are stored on its row. Agent apps are ready from then on.
    - Settings polls `GET /install/:installId` and closes the window once the install is done.
 3. **Done.** The directory is listed straight away, like one connected by hand.
 
 Other cases:
 
-- **Declined.** A declined install leaves the state, so the same Install button can try again until it expires.
-- **Failed.** An install that can't connect the directory deletes the app and reports why.
-- **Reconnected.** Connecting a workspace again deletes the app Gamut made for it before.
-- **Disconnected.** Disconnecting deletes the directory's app (`directoryAppCleanup`) when the provisioning credentials still work.
-- **Abandoned.** An install left unfinished leaves its app behind in Slack.
-- **HTTPS.** Slack's install page returns to the host's public URL (`HOST_PUBLIC_URL`, else the first trusted origin). Slack expects that URL to be HTTPS, so a desktop app on `http://localhost` should use a bot token.
+- **Declined, or the window closed.** The install stays, so the same Install button can try again until it expires.
+- **Start over.** `DELETE /install/:installId` ends the install and deletes its app. The form forgets the pasted token, which was spent.
+- **Never finished.** An `ExpireDirectoryInstallTask` (`team-directory.expire-install`, scheduled when the install starts, 30 minutes) ends it the same way. The AppState entry outlives the task by 5 minutes so the task still finds it. The task lives in memory, like every local task, so a restart in between leaves that one app behind.
+- **Failed.** An install that can't connect the directory deletes the app and reports why. Once the directory is saved it is reported connected; if storing the token and app fails after that, a notice says to add the token under Agent apps.
+- **Reconnected.** Connecting a workspace again deletes the app Gamut made for it before. The swap is a compare-and-set on `directory_app`, so two installs finishing at once each replace what they read.
+- **Disconnected.** `DELETE /:id` deletes the directory's app after responding (`directoryAppCleanup`). It reads what it needs before the row goes and never waits on the provider: credentials that are due are renewed in the background, since nothing else renews them once the directory is gone. When the directory has no app-creation credentials left (an admin removed them), the response says `appLeftBehind` and Settings tells the admin to delete the app themselves.
 
 ## Invited users
 

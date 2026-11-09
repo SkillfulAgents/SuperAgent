@@ -127,7 +127,7 @@ describe('team directory routes', () => {
     const { directory } = await (await post('/', { provider: 'fake', credentials: { token: 'acme-token' } })).json() as { directory: { id: string } }
     await backgroundSettled()
     expect(await searchInviteCandidates('dana', [])).toHaveLength(1)
-    expect((await call(`/${directory.id}`, { method: 'DELETE' })).status).toBe(204)
+    expect(await (await call(`/${directory.id}`, { method: 'DELETE' })).json()).toEqual({ appLeftBehind: false })
     expect(await searchInviteCandidates('dana', [])).toEqual([])
     expect((await call(`/${directory.id}`, { method: 'DELETE' })).status).toBe(404)
   })

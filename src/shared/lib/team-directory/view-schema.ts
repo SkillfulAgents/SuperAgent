@@ -1,4 +1,5 @@
 /** What the Team directory settings tab reads and sends. Shared with the renderer. */
+import { z } from 'zod'
 import type { DirectoryProviderInfo } from './types'
 
 export type { DirectoryCredentialField, DirectoryProviderInfo } from './types'
@@ -37,13 +38,23 @@ export interface StartDirectoryInstallResponse {
   url: string
 }
 
-/** GET /api/team-directories/install/:installId */
-export type DirectoryInstallStatus =
-  | { status: 'pending' | 'expired' }
+/** How an install went, as the host records it (`directory-app.ts`). */
+export const directoryInstallOutcomeSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('pending') }),
+  z.object({ status: z.literal('connected'), directoryId: z.string(), tenantName: z.string(), notices: z.array(z.string()) }),
   /** Declined on the provider's page; the same install can be tried again. `at` tells one cancel from the next. */
-  | { status: 'cancelled'; at: number }
-  | { status: 'connected'; directoryId: string; tenantName: string; notices: string[] }
-  | { status: 'failed'; error: string }
+  z.object({ status: z.literal('cancelled'), at: z.number() }),
+  z.object({ status: z.literal('failed'), error: z.string() }),
+])
+
+/** GET /api/team-directories/install/:installId: the outcome, or `expired` once the install can't finish any more. */
+export type DirectoryInstallStatus = z.infer<typeof directoryInstallOutcomeSchema> | { status: 'expired' }
+
+/** DELETE /api/team-directories/:id */
+export interface DisconnectDirectoryResponse {
+  /** The app Gamut made for the directory stays, because it can't be deleted (no app-creation credentials left). */
+  appLeftBehind: boolean
+}
 
 export interface TeamDirectoriesResponse {
   providers: DirectoryProviderView[]

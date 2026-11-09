@@ -13,17 +13,17 @@ import {
   createAgentApp,
   disconnectProvisioning,
   findProvisioner,
-  PROVISIONING_ROTATION_INTERVAL_MS,
   rotateAllProvisioning,
   rotateProvisioning,
-  TeamDirectoryProvisioningService,
 } from './provisioning'
+import { PROVISIONING_ROTATION_INTERVAL_MS, TeamDirectoryProvisioningService } from './service'
 import { registerDirectoryProvider } from './registry'
 import { getDirectoryConnection, saveDirectoryConnection } from './store'
 import { openDirectoryCredentials } from './credentials'
 import { createFakeDirectoryProvider, type FakeDirectory } from './testing/fake-directory-provider'
 import { DirectoryConnectError } from './types'
 import { taskManager } from '@shared/lib/background-work'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 let handle: TestDatabase
 let fake: FakeDirectory
@@ -147,7 +147,7 @@ describe('rotation', () => {
 
   it('runs every six hours as a background pass', async () => {
     const service = new TeamDirectoryProvisioningService()
-    for (const task of service.tasks) taskManager().register(task)
+    registerTasks(service)
     await service.start()
     expect((taskManager() as unknown as { scheduled(): Array<{ id: string; recurring: boolean }> }).scheduled())
       .toEqual([expect.objectContaining({ id: 'team-directory.rotate-provisioning', recurring: true })])

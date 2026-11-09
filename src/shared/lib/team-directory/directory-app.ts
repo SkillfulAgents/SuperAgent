@@ -6,78 +6,85 @@
  * provisioning credentials stay on the directory for agents' apps, and the app
  * is deleted with the directory. The same for every provider whose
  * provisioning has `createDirectoryApp`; see docs/team-directory.md.
+ *
+ * An install is held in AppState under a random id until it is installed,
+ * started over, or runs out of time; the last two delete its app, so nobody is
+ * left with "Gamut" apps nobody installed. The provider's page carries the id
+ * and a secret as its `state`.
  */
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '@shared/lib/db'
 import { teamDirectories } from '@shared/lib/db/schema'
-import { appState, defineNamespace, digestKeyPart } from '@shared/lib/app-state'
+import { appState, defineNamespace } from '@shared/lib/app-state'
 import { background } from '@shared/lib/background'
+import { Task, taskManager, type TaskResult } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { listDirectoryNow } from './cache'
 import { openDirectoryCredentials, sealDirectoryCredentials } from './credentials'
-import { provisionerFor, saveProvisioningCredentials } from './provisioning'
+import { loadProvisioning, provisioningOf, saveProvisioningCredentials } from './provisioning'
 import { getDirectoryProvider } from './registry'
 import { saveDirectoryConnection, type DirectoryConnection } from './store'
-import {
-  DirectoryConnectError,
-  type AgentIdentityProvisioner,
-  type AgentIdentityProvisioning,
-  type ProvisionedAppRecord,
-  type TeamDirectoryProvider,
-} from './types'
+import { DirectoryConnectError, type AgentIdentityProvisioner, type ProvisionedAppRecord, type TeamDirectoryProvider } from './types'
+import { directoryInstallOutcomeSchema, type DirectoryInstallStatus } from './view-schema'
 
-const INSTALL_TTL_MS = 30 * 60_000
+/** How long an install can be finished. Its app is deleted then if it wasn't. */
+export const DIRECTORY_INSTALL_TTL_MS = 30 * 60_000
+const EXPIRE_TASK = 'team-directory.expire-install'
 /** What a pending install is sealed for, until its workspace is known. */
 const PENDING_TENANT = 'pending-install'
 
 const appRecordSchema = z.record(z.string(), z.unknown())
 const sealedPendingSchema = z.object({ credentials: z.unknown(), app: appRecordSchema })
 
-/** An install the host started, until the provider's page calls back. */
+/** An install the host started. It outlives the expiry task a little, so the task still finds it. */
 const installs = defineNamespace({
   name: 'oauth:directory-app-install',
   consistency: 'strong',
   schema: z.object({
-    installId: z.string(),
+    /** SHA-256 of the secret half of the install's `state`. */
+    secretDigest: z.string(),
     provider: z.string(),
     /** `{ credentials, app }` sealed: the provisioning credentials, rotated already, and the app made with them. */
     sealed: z.string(),
     redirectUrl: z.string().url(),
     userId: z.string().nullable(),
   }),
-  expiry: { ttlMs: INSTALL_TTL_MS, onUpdate: 'keep' },
+  expiry: { ttlMs: DIRECTORY_INSTALL_TTL_MS + 5 * 60_000, onUpdate: 'keep' },
 })
-
-export const directoryInstallOutcomeSchema = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('pending') }),
-  z.object({ status: z.literal('connected'), directoryId: z.string(), tenantName: z.string(), notices: z.array(z.string()) }),
-  /** `at` tells one cancel from the next: the install can be tried again. */
-  z.object({ status: z.literal('cancelled'), at: z.number() }),
-  z.object({ status: z.literal('failed'), error: z.string() }),
-])
-export type DirectoryInstallOutcome = z.infer<typeof directoryInstallOutcomeSchema> | { status: 'expired' }
+type PendingInstall = z.infer<typeof installs.schema>
 
 /** How an install went, for the Settings page that started it. */
 const outcomes = defineNamespace({
   name: 'oauth:directory-app-install-outcome',
   consistency: 'strong',
   schema: directoryInstallOutcomeSchema,
-  expiry: { ttlMs: INSTALL_TTL_MS, onUpdate: 'reset' },
+  expiry: { ttlMs: DIRECTORY_INSTALL_TTL_MS, onUpdate: 'reset' },
 })
 
 const sealedPendingAs = (provider: string) => `${provider}:directory-app-install`
 const sealedAppAs = (provider: string) => `${provider}:directory-app`
+const digest = (secret: string) => createHash('sha256').update(secret).digest()
+const isHttps = (url: string | null) => !!url && URL.parse(url)?.protocol === 'https:'
 
-function provisioningOf(provider: TeamDirectoryProvider<unknown> | undefined): AgentIdentityProvisioning<unknown> | undefined {
-  return provider?.provisioning as AgentIdentityProvisioning<unknown> | undefined
+/**
+ * Whether a provider's directory can be connected with its provisioning
+ * credentials alone, on this host: the install must be able to return to
+ * `redirectUrl`.
+ */
+export function connectsWithProvisioning(provider: TeamDirectoryProvider<unknown>, redirectUrl: string | null): boolean {
+  const provisioning = provisioningOf({ provider: provider.info.id })
+  return !!provisioning?.createDirectoryApp && (!provisioning.httpsRedirectsOnly || isHttps(redirectUrl))
 }
 
-/** Whether a provider's directory can be connected with its provisioning credentials alone. */
-export function connectsWithProvisioning(provider: TeamDirectoryProvider<unknown>): boolean {
-  return !!provisioningOf(provider)?.createDirectoryApp
+async function deleteQuietly(provisioner: AgentIdentityProvisioner, app: ProvisionedAppRecord, operation: string): Promise<void> {
+  try {
+    await provisioner.deleteApp(app)
+  } catch (error) {
+    captureException(error, { tags: { component: 'team-directory', operation } })
+  }
 }
 
 /**
@@ -92,8 +99,13 @@ export async function startDirectoryAppConnect(input: {
   userId: string | null
 }): Promise<{ installId: string; url: string }> {
   const provider = getDirectoryProvider(input.provider)
-  const provisioning = provisioningOf(provider)
-  if (!provider || !provisioning?.createDirectoryApp) throw new DirectoryConnectError(`${provider?.info.label ?? input.provider} can’t be connected with a token alone.`)
+  const provisioning = provider && provisioningOf({ provider: input.provider })
+  const label = provider?.info.label ?? input.provider
+  if (!provisioning?.createDirectoryApp) throw new DirectoryConnectError(`${label} can’t be connected with a token alone.`)
+  // Before verifying: that may spend the credentials.
+  if (provisioning.httpsRedirectsOnly && !isHttps(input.redirectUrl)) {
+    throw new DirectoryConnectError(`${label} only returns to an HTTPS address, and this app is at ${URL.parse(input.redirectUrl)?.origin ?? input.redirectUrl}. Use a ${label} app you already have.`)
+  }
   const credentials = await provisioning.verify(provisioning.credentialsSchema.parse(input.credentials))
   // The pasted credentials may be retired by now (a rotation): a failure from here on needs new ones.
   let created
@@ -106,93 +118,107 @@ export async function startDirectoryAppConnect(input: {
   } catch (error) {
     if (error instanceof DirectoryConnectError) throw error
     captureException(error, { tags: { component: 'team-directory', operation: 'create-directory-app' } })
-    throw new DirectoryConnectError(`${provider.info.label} did not create the app. Generate a new token and try again.`)
+    throw new DirectoryConnectError(`${label} did not create the app. Generate a new token and try again.`)
   }
   const installId = randomBytes(18).toString('base64url')
-  const state = randomBytes(24).toString('base64url')
-  await appState().insertIfAbsent(installs.key(digestKeyPart(state)), {
-    installId,
+  const secret = randomBytes(24).toString('base64url')
+  await appState().insertIfAbsent(installs.key(installId), {
+    secretDigest: digest(secret).toString('base64url'),
     provider: input.provider,
     sealed: await sealDirectoryCredentials(sealedPendingAs(input.provider), PENDING_TENANT, { credentials, app: created.app }),
     redirectUrl: input.redirectUrl,
     userId: input.userId,
   })
   await appState().set(outcomes.key(installId), { status: 'pending' })
-  url.searchParams.set('state', state)
+  try {
+    await taskManager().at(Date.now() + DIRECTORY_INSTALL_TTL_MS, `${EXPIRE_TASK}:${installId}`, { taskType: EXPIRE_TASK, payload: { installId } })
+  } catch (error) {
+    // The install still works; only its app may outlive it.
+    captureException(error, { tags: { component: 'team-directory', operation: 'schedule-install-expiry' } })
+  }
+  url.searchParams.set('state', `${installId}.${secret}`)
   url.searchParams.set('redirect_uri', input.redirectUrl)
   return { installId, url: url.toString() }
 }
 
-/** How an install the Settings page started went; `expired` once nothing is known of it. */
-export async function directoryInstallOutcome(installId: string): Promise<DirectoryInstallOutcome> {
-  return (await appState().get(outcomes.key(installId)))?.value ?? { status: 'expired' }
+/** How an install the Settings page started went; `expired` once it can't finish any more. */
+export async function directoryInstallOutcome(installId: string): Promise<DirectoryInstallStatus> {
+  const outcome = (await appState().get(outcomes.key(installId)))?.value
+  if (!outcome) return { status: 'expired' }
+  if ((outcome.status === 'pending' || outcome.status === 'cancelled') && !(await appState().get(installs.key(installId)))) return { status: 'expired' }
+  return outcome
 }
 
-async function deleteQuietly(provisioner: AgentIdentityProvisioner, app: ProvisionedAppRecord, operation: string): Promise<void> {
-  try {
-    await provisioner.deleteApp(app)
-  } catch (error) {
-    captureException(error, { tags: { component: 'team-directory', operation } })
-  }
+/** The install a callback's `state` names, if its secret matches. */
+async function pendingFor(state: string): Promise<{ installId: string; pending: PendingInstall } | null> {
+  const [installId, secret, ...rest] = state.split('.')
+  if (!installId || !secret || rest.length) return null
+  const entry = await appState().get(installs.key(installId))
+  if (!entry) return null
+  const expected = Buffer.from(entry.value.secretDigest, 'base64url')
+  const given = digest(secret)
+  return expected.length === given.length && timingSafeEqual(expected, given) ? { installId, pending: entry.value } : null
 }
 
 /**
  * Finishes an install from the provider's callback: the directory is
  * connected with what the install gave. Null when `state` isn't an install
- * this host started. The state is used up first, so a replayed callback does
- * nothing. A declined install leaves it, so the same page can be tried again
+ * this host has waiting. The install is used up first, so a replayed callback
+ * does nothing. A declined install stays, so the same page can be tried again
  * until it expires.
  */
-export async function completeDirectoryAppConnect(input: { state: string; code?: string; error?: string }): Promise<DirectoryInstallOutcome | null> {
-  const key = installs.key(digestKeyPart(input.state))
+export async function completeDirectoryAppConnect(input: { state: string; code?: string; error?: string }): Promise<DirectoryInstallStatus | null> {
+  const found = await pendingFor(input.state)
+  if (!found) return null
   if (input.error || !input.code) {
-    const waiting = await appState().get(key)
-    if (!waiting) return null
     const outcome = { status: 'cancelled' as const, at: Date.now() }
-    await appState().set(outcomes.key(waiting.value.installId), outcome)
+    await appState().set(outcomes.key(found.installId), outcome)
     return outcome
   }
-  const consumed = await appState().consume(key)
+  const consumed = await appState().consume(installs.key(found.installId))
   if (!consumed.consumed) return null
-  const pending = consumed.entry.value
-  let outcome: DirectoryInstallOutcome
+  let outcome: DirectoryInstallStatus
   try {
-    outcome = await finishInstall(pending, input.code)
+    outcome = await finishInstall(consumed.entry.value, input.code)
   } catch (error) {
     if (!(error instanceof DirectoryConnectError)) captureException(error, { tags: { component: 'team-directory', operation: 'install-directory-app' } })
     outcome = { status: 'failed', error: error instanceof DirectoryConnectError ? error.message : 'The directory could not be connected. Try again.' }
   }
-  await appState().set(outcomes.key(pending.installId), outcome)
+  await appState().set(outcomes.key(found.installId), outcome)
   return outcome
 }
 
-async function finishInstall(pending: z.infer<typeof installs.schema>, code: string): Promise<DirectoryInstallOutcome> {
-  const provider = getDirectoryProvider(pending.provider)
-  const provisioning = provisioningOf(provider)
-  if (!provider || !provisioning) throw new DirectoryConnectError('This version of the app can’t connect this directory.')
+async function openPending(pending: PendingInstall) {
+  const provisioning = provisioningOf({ provider: pending.provider })
+  if (!provisioning) throw new DirectoryConnectError('This version of the app can’t connect this directory.')
   const sealed = sealedPendingSchema.parse(await openDirectoryCredentials(sealedPendingAs(pending.provider), PENDING_TENANT, pending.sealed))
   const credentials = provisioning.credentialsSchema.parse(sealed.credentials)
-  const provisioner = provisioning.open(credentials)
+  return { credentials, app: sealed.app, provisioner: provisioning.open(credentials) }
+}
+
+async function finishInstall(pending: PendingInstall, code: string): Promise<DirectoryInstallStatus> {
+  const provider = getDirectoryProvider(pending.provider)
+  if (!provider) throw new DirectoryConnectError('This version of the app can’t connect this directory.')
+  const { credentials, app, provisioner } = await openPending(pending)
   let connection: DirectoryConnection
   let notices: string[]
   try {
-    const directoryCredentials = provider.credentialsSchema.parse(await provisioner.completeInstall(sealed.app, code, pending.redirectUrl))
+    const directoryCredentials = provider.credentialsSchema.parse(await provisioner.completeInstall(app, code, pending.redirectUrl))
     const tenant = await provider.verify(directoryCredentials)
     connection = await saveDirectoryConnection({ provider: pending.provider, tenant, credentials: directoryCredentials, createdByUserId: pending.userId })
     notices = tenant.notices ?? []
   } catch (error) {
-    background(deleteQuietly(provisioner, sealed.app, 'delete-failed-directory-app'), { name: 'team-directory.delete-failed-app' })
+    background(deleteQuietly(provisioner, app, 'delete-failed-directory-app'), { name: 'team-directory.delete-failed-app' })
     throw error
   }
-  // A workspace connected before keeps its row: an app Gamut made for it then goes.
-  const before = await db.select({ directoryApp: teamDirectories.directoryApp }).from(teamDirectories).where(eq(teamDirectories.id, connection.id)).get()
-  const previous = before?.directoryApp
-    ? await openDirectoryCredentials(sealedAppAs(connection.provider), connection.tenantId, before.directoryApp).then((app) => appRecordSchema.parse(app), () => null)
-    : null
-  await saveProvisioningCredentials(connection, credentials, {
-    directoryApp: await sealDirectoryCredentials(sealedAppAs(connection.provider), connection.tenantId, sealed.app),
-  })
-  if (previous) background(deleteQuietly(provisioner, previous, 'delete-replaced-directory-app'), { name: 'team-directory.delete-replaced-app' })
+  // The directory works from here on, so this is reported as connected whatever comes next.
+  try {
+    const previous = await attachDirectoryApp(connection, credentials, app)
+    if (previous) background(deleteQuietly(provisioner, previous, 'delete-replaced-directory-app'), { name: 'team-directory.delete-replaced-app' })
+  } catch (error) {
+    captureException(error, { tags: { component: 'team-directory', operation: 'attach-directory-app' }, extra: { directoryId: connection.id } })
+    notices = [...notices, 'Agents’ apps couldn’t be set up with this token. Add it again under Agent apps.']
+  }
   // List it now, so the first search finds it cached.
   background(listDirectoryNow(connection), { name: 'team-directory.first-listing' })
   await logAuditEvent({ userId: pending.userId, object: 'team_directory', objectId: connection.id, action: 'connected', details: { provider: pending.provider, tenantName: connection.tenantName, app: true } })
@@ -200,20 +226,85 @@ async function finishInstall(pending: z.infer<typeof installs.schema>, code: str
 }
 
 /**
- * What disconnecting a directory must also undo: deleting the app Gamut made
- * for it. Read before the row goes, run after; null when there is nothing to
- * do or it can't be done (an app made by hand, credentials that no longer renew).
+ * Stores the provisioning credentials and the new app on the directory, in
+ * place of any app Gamut made for it before, which is returned for deleting.
+ * A compare-and-set on the app: of two installs finishing at once, each
+ * replaces exactly what it read.
  */
-export async function directoryAppCleanup(directoryId: string): Promise<(() => Promise<void>) | null> {
+async function attachDirectoryApp(connection: DirectoryConnection, credentials: unknown, app: ProvisionedAppRecord): Promise<ProvisionedAppRecord | null> {
+  const directoryApp = await sealDirectoryCredentials(sealedAppAs(connection.provider), connection.tenantId, app)
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const replacing = (await db.select({ directoryApp: teamDirectories.directoryApp }).from(teamDirectories).where(eq(teamDirectories.id, connection.id)).get())?.directoryApp ?? null
+    if (await saveProvisioningCredentials(connection, credentials, { directoryApp, replacing })) {
+      if (!replacing) return null
+      return openDirectoryCredentials(sealedAppAs(connection.provider), connection.tenantId, replacing).then((previous) => appRecordSchema.parse(previous), () => null)
+    }
+  }
+  throw new Error('The directory changed concurrently')
+}
+
+/**
+ * Ends an install nobody will finish (Start over, or its time ran out): its
+ * app goes. False when it was already installed or gone.
+ */
+export async function abandonDirectoryInstall(installId: string): Promise<boolean> {
+  const consumed = await appState().consume(installs.key(installId))
+  if (!consumed.consumed) return false
+  await appState().delete(outcomes.key(installId))
+  try {
+    const { provisioner, app } = await openPending(consumed.entry.value)
+    await deleteQuietly(provisioner, app, 'delete-abandoned-directory-app')
+  } catch (error) {
+    captureException(error, { tags: { component: 'team-directory', operation: 'abandon-directory-install' } })
+  }
+  return true
+}
+
+/** Deletes the app of an install that ran out of time. */
+export class ExpireDirectoryInstallTask extends Task<{ installId: string }> {
+  readonly type = EXPIRE_TASK
+  readonly payloadSchema = z.object({ installId: z.string() })
+
+  async execute({ installId }: { installId: string }): Promise<TaskResult<{ installId: string }>> {
+    await abandonDirectoryInstall(installId)
+    return { kind: 'done' }
+  }
+}
+
+export type DirectoryAppCleanup =
+  /** Delete the app once the directory is gone. Nothing in it waits on the request. */
+  | { kind: 'delete'; run(): Promise<void> }
+  /** The app stays: there are no app-creation credentials left to delete it with. */
+  | { kind: 'left-behind' }
+
+/**
+ * What disconnecting a directory must also undo: deleting the app Gamut made
+ * for it. Read before the row goes; nothing here calls the provider. Null for
+ * a directory whose app an admin made.
+ */
+export async function directoryAppCleanup(directoryId: string): Promise<DirectoryAppCleanup | null> {
   const row = await db.select({ provider: teamDirectories.provider, tenantId: teamDirectories.tenantId, directoryApp: teamDirectories.directoryApp })
     .from(teamDirectories).where(eq(teamDirectories.id, directoryId)).get()
   if (!row?.directoryApp) return null
   try {
     const app = appRecordSchema.parse(await openDirectoryCredentials(sealedAppAs(row.provider), row.tenantId, row.directoryApp))
-    const { provisioner } = await provisionerFor(directoryId)
-    return () => deleteQuietly(provisioner, app, 'delete-directory-app')
+    const loaded = await loadProvisioning(directoryId)
+    if (!loaded || loaded.connection.provisioningStatus !== 'active') return { kind: 'left-behind' }
+    const { provisioning, credentials } = loaded
+    return {
+      kind: 'delete',
+      run: async () => {
+        try {
+          // The directory is gone, so nothing renews these any more: renew them here if they are due.
+          const fresh = provisioning.rotate && provisioning.needsRotation?.(credentials, Date.now()) ? await provisioning.rotate(credentials) : credentials
+          await provisioning.open(fresh).deleteApp(app)
+        } catch (error) {
+          captureException(error, { tags: { component: 'team-directory', operation: 'delete-directory-app' }, extra: { directoryId } })
+        }
+      },
+    }
   } catch (error) {
     console.warn(`[TeamDirectory] The app of directory ${directoryId} stays: ${error instanceof Error ? error.message : String(error)}`)
-    return null
+    return { kind: 'left-behind' }
   }
 }

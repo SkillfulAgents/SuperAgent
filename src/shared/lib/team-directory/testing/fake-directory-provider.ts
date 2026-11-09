@@ -128,7 +128,7 @@ function fakeProvisioning(integrationProvider: string, fake: FakeProvisioner & {
   }
 }
 
-export function createFakeDirectoryProvider(id = 'fake', label = 'Fake Directory', options: { provisionFor?: string } = {}): FakeDirectory {
+export function createFakeDirectoryProvider(id = 'fake', label = 'Fake Directory', options: { provisionFor?: string; httpsRedirectsOnly?: boolean } = {}): FakeDirectory {
   const people = new Map<string, DirectoryUser[]>()
   const failures = new Map<string, Error>()
   let held: Promise<void> | null = null
@@ -171,7 +171,7 @@ export function createFakeDirectoryProvider(id = 'fake', label = 'Fake Directory
         steps: ['Paste a token named after the workspace, ending in -token.'],
       },
       credentialsSchema,
-      ...(options.provisionFor ? { provisioning: fakeProvisioning(options.provisionFor, provisioner) } : {}),
+      ...(options.provisionFor ? { provisioning: { ...fakeProvisioning(options.provisionFor, provisioner), ...(options.httpsRedirectsOnly ? { httpsRedirectsOnly: true } : {}) } } : {}),
       async verify({ token }) {
         const tenantId = token.replace(/-token$/, '')
         if (tenantId === token) throw new DirectoryConnectError('That is not a fake token')

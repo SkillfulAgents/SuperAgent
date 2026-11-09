@@ -128,6 +128,12 @@ export interface AgentIdentityProvisioning<P> {
    * credentials. The admin pastes one token instead of making an app by hand.
    */
   createDirectoryApp?(credentials: P, input: { redirectUrl: string }): Promise<CreatedDirectoryApp>
+  /**
+   * The provider's install page returns only to HTTPS addresses (Slack). The
+   * host then offers `createDirectoryApp` only on an HTTPS public URL, and
+   * checks before verifying, which may spend the credentials.
+   */
+  httpsRedirectsOnly?: boolean
 }
 
 /** The directory's own app, created but not installed yet. */
