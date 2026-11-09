@@ -19,7 +19,7 @@ import {
 import { InvalidAppRecordError } from '@shared/lib/app-records/errors'
 import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { globalInstructionsSchema } from './global-instructions-schema'
-import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
+import { readyTeamBrain, teamBrainStoredSchema, type TeamBrainRecord, type TeamBrainStored } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT, LEGACY_GLOBAL_DISPATCH_SHORTCUTS } from './shortcuts'
@@ -352,8 +352,8 @@ export interface AppSettings {
    * section). Admin-edited; readable by every signed-in user.
    */
   globalInstructions?: string
-  /** The workspace's one Team Brain (team-brain experiment). Admin-written; readable by every signed-in user. */
-  teamBrain?: TeamBrainRecord
+  /** The workspace's one Team Brain (team-brain experiment), or its set-up in progress. Written by the Team Brain set-up routes. */
+  teamBrain?: TeamBrainStored
   /**
    * Desktop-only: whether the UI drives this machine or the org's cloud
    * workspace. Main-owned rather than per-renderer so the main window and the
@@ -445,7 +445,6 @@ export interface GlobalSettingsResponse {
   shareErrorReports: boolean
   enableToolSearch: boolean
   agentCapabilities: AgentCapabilitySettings
-  teamBrain?: TeamBrainRecord
 }
 
 /**
@@ -681,7 +680,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     })(),
     teamBrain: (() => {
       if (loaded.teamBrain === undefined) return undefined
-      const parsed = teamBrainRecordSchema.safeParse(loaded.teamBrain)
+      const parsed = teamBrainStoredSchema.safeParse(loaded.teamBrain)
       if (parsed.success) return parsed.data
       console.warn('Invalid teamBrain in settings; ignoring it')
       return undefined
@@ -1088,9 +1087,9 @@ export async function getGlobalInstructions(): Promise<string> {
   return (await getSettings()).globalInstructions ?? ''
 }
 
-/** The workspace's Team Brain, or null before one is set up. */
+/** The workspace's Team Brain, or null before one is set up and while its set-up runs. */
 export async function getTeamBrain(): Promise<TeamBrainRecord | null> {
-  return (await getSettings()).teamBrain ?? null
+  return readyTeamBrain((await getSettings()).teamBrain)
 }
 
 export { DEFAULT_SETTINGS }

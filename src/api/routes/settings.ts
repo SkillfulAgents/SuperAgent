@@ -16,8 +16,6 @@ import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { Authenticated, IsAdmin } from '../middleware/auth'
-import { addAgentUsers } from '@shared/lib/services/agent-members-service'
-import { isPublicVolume } from '@shared/lib/services/volume-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -363,7 +361,6 @@ async function buildSettingsResponse(
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
     agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
-    teamBrain: appSettings.teamBrain,
   }
 }
 
@@ -394,11 +391,6 @@ settings.put(
 
       if (body.llmProvider && !getLlmProvider(body.llmProvider).supportsDirectApi) {
         return c.json({ error: 'Select this provider in Settings → Model Providers, where a separate API-capable summarizer can be chosen.' }, 400)
-      }
-
-      // Every member is given the Team Brain, so every member must be able to read its drive.
-      if (body.teamBrain && !(await isPublicVolume(body.teamBrain.volumeId))) {
-        return c.json({ error: 'Team Brain needs a drive everyone in the workspace can add' }, 400)
       }
 
       const hasRunningAgents = containerHost.hasRunningAgents()
@@ -545,11 +537,6 @@ settings.put(
         action: 'updated',
         details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
-      // The Team Brain is the workspace's: every member is a user of the agent its record names, and members who join
-      // later get it when their account is made. Every write of the record gives it again, so writing the record again
-      // heals a grant that failed, and giving it twice adds no one twice. Last, so a failed grant still leaves the write
-      // audited and its other effects done.
-      if (body.teamBrain) await addAgentUsers(body.teamBrain.agentSlug)
       // Answer with the settings as committed: the sync's when it ran (it may
       // have written the app default), else this write's. No read after it.
       const responseSettings = syncedSettings ?? newSettings

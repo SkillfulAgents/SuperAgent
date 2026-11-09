@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
+import { signsInWithAuthSession } from '@renderer/lib/capabilities'
 import type {
   PlatformAuthSource,
   PlatformAuthStatus as SharedPlatformAuthStatus,
@@ -268,7 +269,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const { open, close, pending, canCancel } = useLoginWindow()
+  const { open, close, pending, canCancel } = useLoginWindow({ authSession: signsInWithAuthSession() })
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const wasConnected = !!platformAuth?.connected

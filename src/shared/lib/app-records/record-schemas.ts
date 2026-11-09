@@ -25,6 +25,11 @@ export function browserContextKey(provider: BrowserContextProvider, key: string)
   return `${browserContextKeyPrefix(provider)}${key}`
 }
 
+/** The deletion request of one account (`account-deletion/`); the account's id follows. */
+export function accountDeletionRequestKey(userId: string): string {
+  return `account-deletion-request:${userId}`
+}
+
 /** Any non-empty id: installs from before the database kept whatever the file held. */
 export const tenantIdRecordSchema = z.string().trim().min(1)
 

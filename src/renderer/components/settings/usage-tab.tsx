@@ -437,7 +437,11 @@ export function UsageTab() {
 
             <div className="px-2 pb-3 pt-5 sm:px-5">
               <ChartContainer config={chartConfig} className="h-[235px] w-full aspect-auto">
-                <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 4, bottom: 0 }}>
+                <AreaChart
+                  data={chartData}
+                  margin={{ top: 8, right: 8, left: 4, bottom: 0 }}
+                  aria-label={`Daily ${metric === 'cost' ? 'estimated cost in USD' : 'token usage'} by ${segmentation === 'byModel' ? 'model' : 'agent'}`}
+                >
                   <defs>
                     {displayedChartSegments.map((segment, index) => (
                       <linearGradient key={segment.key} id={`usage-fill-${index}`} x1="0" y1="0" x2="0" y2="1">

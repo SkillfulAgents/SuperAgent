@@ -186,6 +186,7 @@ import {
   listCancelledScheduledTasks,
   listCompletedOneTimeTasks,
   createScheduledTask,
+  updateScheduleExpression,
   getPendingWakeForSession,
   listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
@@ -283,6 +284,7 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { readyTeamBrain } from '@shared/lib/config/team-brain-schema'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
@@ -1583,9 +1585,10 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays.
+    // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays. A set-up
+    // keeps its claim: it resumes at where Team Brain lives, or Discard removes it.
     await mutateSettings((settings) => {
-      if (settings.teamBrain?.agentSlug !== slug) return false
+      if (readyTeamBrain(settings.teamBrain)?.agentSlug !== slug) return false
       delete settings.teamBrain
     })
 
@@ -5038,15 +5041,22 @@ const BRAIN_UPKEEP_PROMPT = 'Run the maintain-brain skill (scheduled upkeep). Fo
 const brainUpkeepBodySchema = z.object({ scheduleExpression: z.string().trim().min(1, 'scheduleExpression is required') })
 
 // POST /api/agents/:id/team-brain/upkeep - Schedule the Team Brain's upkeep at
-// set-up, so it never depends on the agent's first turn. Once only.
+// set-up, so it never depends on the agent's first turn. Once; again, it moves
+// the task to the schedule given, so a Start chat run again lands on the choice.
 agents.post('/:id/team-brain/upkeep', AgentUser(), zValidator('json', brainUpkeepBodySchema), async (c) => {
   const slug = getAgentId(c)
-  if ((await getTeamBrain())?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
+  // Start chat schedules it before the set-up is marked ready.
+  if ((await getSettings()).teamBrain?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
   const { scheduleExpression } = c.req.valid('json')
   if (!validateCronExpression(scheduleExpression).valid) return c.json({ error: 'Invalid cron expression' }, 400)
   try {
     const existing = (await listPendingScheduledTasks(slug)).find((task) => task.name === BRAIN_UPKEEP_NAME)
-    if (existing) return c.json({ taskId: existing.id })
+    if (existing) {
+      if (existing.scheduleExpression !== scheduleExpression && await updateScheduleExpression(existing.id, scheduleExpression)) {
+        globalFeed.publish({ type: 'scheduled_task_updated', taskId: existing.id, agentSlug: slug })
+      }
+      return c.json({ taskId: existing.id })
+    }
     const taskId = await createScheduledTask({
       agentSlug: slug,
       scheduleType: 'cron',

@@ -41,6 +41,8 @@ describe('the Mac App Store build config', () => {
     const shipped = loadConfig().mac.extraResources.map((resource) => resource.to)
     expect(shipped).not.toContain('mediaremote-adapter')
     expect(shipped).not.toContain('spotlight-bridge')
+    // The Store build signs in through this bridge (App Review guideline 4).
+    expect(shipped).toContain('web-auth-bridge')
     expect(shipped).toEqual(
       regular.build.mac.extraResources.map((resource) => resource.to).filter((to) => to !== 'mediaremote-adapter' && to !== 'spotlight-bridge'),
     )

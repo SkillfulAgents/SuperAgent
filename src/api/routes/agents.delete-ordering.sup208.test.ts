@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
+import { readyTeamBrain, type TeamBrainStored } from '@shared/lib/config/team-brain-schema'
 
 // ---------------------------------------------------------------------------
 // SUP-208: agent delete must run peripheral cleanup BEFORE the irreversible
@@ -138,10 +139,10 @@ vi.mock('@shared/lib/auth/config', () => ({
 
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 
-const workspaceSettings = vi.hoisted(() => ({ current: {} as { teamBrain?: { agentSlug: string; volumeId: string } } }))
+const workspaceSettings = vi.hoisted(() => ({ current: {} as { teamBrain?: TeamBrainStored } }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getTeamBrain: async () => workspaceSettings.current.teamBrain ?? null,
+  getTeamBrain: async () => readyTeamBrain(workspaceSettings.current.teamBrain),
   mutateSettings: async (mutate: (settings: typeof workspaceSettings.current) => void | false) => {
     const draft = structuredClone(workspaceSettings.current)
     if (mutate(draft) !== false) workspaceSettings.current = draft
@@ -352,6 +353,17 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     workspaceSettings.current = { teamBrain: { agentSlug: 'test-agent', volumeId: 'v1' } }
     expect((await deleteAgentReq()).status).toBe(204)
     expect(workspaceSettings.current.teamBrain).toBeUndefined()
+  })
+
+  it('keeps a set-up\'s claim when its agent is deleted, for Resume to set it up again or Discard to remove', async () => {
+    const setup: TeamBrainStored = {
+      status: 'setting-up', setupId: 's1', agentSlug: 'test-agent', volumeId: 'v1', location: 'local',
+      step: 'agents', schedule: 'daily', everyAgent: true, agents: {},
+    }
+    workspaceSettings.current = { teamBrain: setup }
+    expect((await deleteAgentReq()).status).toBe(204)
+    expect(workspaceSettings.current.teamBrain).toEqual(setup)
+    expect(drive.release).not.toHaveBeenCalled()
   })
 
   it('takes Team Brain\'s drive off every other agent and off global when it is turned off', async () => {

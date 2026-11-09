@@ -118,6 +118,38 @@ To see the Store build's UI without one, run the mock web server with
 change, so this shows what the server withholds and the Settings notice, not
 the desktop app's own integrations.
 
+## What the Mac App Store build does differently
+
+App Review also decides how a few things are done, not only whether they are.
+
+**Signing in to the Gamut account happens in a sheet on the app's window**
+(`signsInWithAuthSession()`), not in the default browser. Guideline 4 rejects an
+app that sends the person to their browser to sign in or register, unless it
+goes through `ASWebAuthenticationSession`. Electron has no API for it, so
+`native/macos/WebAuthBridge.swift` (built by
+`scripts/build-spotlight-bridge.sh`, loaded through koffi by
+`src/main/web-auth-session.ts`) runs one in the main process:
+
+- `usePlatformConnect` opens its login window as a sheet
+  (`useLoginWindow({ authSession })` → `prepareAuthSession` → the
+  `platform-sign-in-start` IPC). Main opens only the platform's own login page
+  this way (`isPlatformLoginUrl`).
+- The session watches for the deep-link scheme the login page ends on, and
+  main hands that URL to `handleDeepLinkUrl`, exactly as if macOS had opened
+  it. Nothing after that differs from the browser flow.
+- Closing the sheet ends the attempt quietly; a session that fails reports on
+  the usual `platform-auth-callback`. Without the bridge (a dev checkout that
+  never built it) the URL goes to the browser.
+
+Only this sign-in is moved. Connecting a third-party account (Composio, MCP,
+Slack, Linear, GitHub) still opens the browser, in every build, and the direct
+build keeps the browser for the Gamut sign-in too: the person is usually signed
+in there already.
+
+**The Account tab offers "Request account deletion"** in every build, which
+guideline 5.1.1(v) requires of an app that lets people create an account. See
+[account-deletion.md](account-deletion.md).
+
 ## Adding a fact
 
 1. Add it to `serverFactsSchema` (or `ClientFacts`) and compute it in

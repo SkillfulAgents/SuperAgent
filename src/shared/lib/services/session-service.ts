@@ -13,6 +13,7 @@ import pLimit from 'p-limit'
 import { REMOVE_SESSION, type SessionIndexEntry } from '@shared/lib/agent-actor/session-index'
 import {
   isSessionIdWellFormed,
+  sessionDirPath,
   transcriptPath,
   type SessionStore,
 } from '@shared/lib/agent-actor/session-store'
@@ -1671,8 +1672,25 @@ export async function findLastSessionEntry(
 }
 
 /**
- * Delete a session (removes JSONL file and metadata)
+ * Remove derived files only after the transcript is gone. A cleanup failure
+ * must not keep the metadata or the container's resume record: the session
+ * has been deleted, and a partial directory is not a transcript for listings.
+ * Do not sweep other transcript-less directories here: a new session can
+ * create its directory before its first transcript is written.
  */
+async function deleteSessionDirectory(store: SessionStore, sessionId: string): Promise<void> {
+  try {
+    await store.files.delete(sessionDirPath(store, sessionId), { recursive: true })
+  } catch (error) {
+    console.warn(`Failed to delete session directory ${store.slug}/${sessionId}:`, error)
+    captureException(error, {
+      tags: { area: 'session-delete', op: 'remove-directory' },
+      extra: { agentSlug: store.slug, sessionId },
+    })
+  }
+}
+
+/** Delete a session's transcript, derived directory and metadata. */
 export async function deleteSession(
   store: SessionStore,
   sessionId: string
@@ -1697,12 +1715,13 @@ export async function deleteSession(
     }
   } else {
     // No transcript to remove — e.g. it was deleted by the CLI's retention
-    // cleanup while the metadata entry lingered. Just clear the dangling
-    // metadata.
+    // cleanup while the metadata entry and derived directory lingered.
     console.warn(
-      `deleteSession: no JSONL transcript for ${store.slug}/${sessionId}; removing metadata only`
+      `deleteSession: no JSONL transcript for ${store.slug}/${sessionId}; removing remaining session data`
     )
   }
+
+  await deleteSessionDirectory(store, sessionId)
 
   // Remove the index entry regardless, so a dangling one can be cleared.
   const hadMetadata = (await getSessionMetadata(store, sessionId)) !== null
@@ -1713,7 +1732,8 @@ export async function deleteSession(
 
 /**
  * Delete multiple sessions in a single batch (one index write).
- * Returns the IDs of sessions whose JSONL files were actually removed.
+ * Returns the IDs whose transcripts were removed or already absent. Derived
+ * directory cleanup is best effort, as in the single-session path.
  */
 export async function deleteSessionsBatch(
   store: SessionStore,
@@ -1728,6 +1748,7 @@ export async function deleteSessionsBatch(
       // An absent transcript is a no-op for the store, and counts as deleted:
       // its metadata entry is dangling and goes with the batch.
       await store.files.delete(transcriptPath(store, sessionId))
+      await deleteSessionDirectory(store, sessionId)
       deleted.push(sessionId)
     } catch (error: unknown) {
       // Keep this session's index entry: its transcript is still there.

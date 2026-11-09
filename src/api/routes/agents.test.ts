@@ -606,6 +606,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listCancelledScheduledTasks: vi.fn(),
   listCompletedOneTimeTasks: vi.fn(),
   createScheduledTask: vi.fn(),
+  updateScheduleExpression: vi.fn(),
   listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
   cancelPendingWakeForSession: vi.fn(() => Promise.resolve(false)),
@@ -902,7 +903,7 @@ import { notificationManager } from '@shared/lib/notifications/notification-mana
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
+import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent, updateScheduleExpression } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
@@ -7613,13 +7614,21 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
 describe('POST /api/agents/:id/team-brain/upkeep', () => {
   const URL = '/api/agents/test-agent/team-brain/upkeep'
 
+  const DEFAULT_SETTINGS = { container: {}, skillsets: [], app: { configuredPasswordManagers: ['apple-passwords'] } }
+  const teamBrainIs = (teamBrain: object) => mockRuntimeSettings.mockReturnValue({ ...DEFAULT_SETTINGS, teamBrain } as ReturnType<typeof mockRuntimeSettings>)
+
   beforeEach(() => {
     vi.clearAllMocks()
     mockIsAuthMode.mockReturnValue(false)
     mockAgentExists.mockResolvedValue(true)
-    mockGetTeamBrain.mockReturnValue({ agentSlug: 'test-agent', volumeId: 'vol-1' })
+    teamBrainIs({ agentSlug: 'test-agent', volumeId: 'vol-1' })
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(createScheduledTask).mockResolvedValue('task-1')
+    vi.mocked(updateScheduleExpression).mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    mockRuntimeSettings.mockReturnValue(DEFAULT_SETTINGS)
   })
 
   it('schedules Brain upkeep once, only for the Team Brain agent', async () => {
@@ -7629,12 +7638,22 @@ describe('POST /api/agents/:id/team-brain/upkeep', () => {
       agentSlug: 'test-agent', scheduleType: 'cron', scheduleExpression: '0 0 * * 1', name: 'Brain upkeep', timezone: 'America/Los_Angeles',
     }))
 
-    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep', scheduleExpression: '0 0 * * 1' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
     expect(await (await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).json()).toEqual({ taskId: 'task-1' })
+    expect(vi.mocked(updateScheduleExpression)).not.toHaveBeenCalled()
 
-    mockGetTeamBrain.mockReturnValue({ agentSlug: 'other-agent', volumeId: 'vol-1' })
+    teamBrainIs({ agentSlug: 'other-agent', volumeId: 'vol-1' })
     expect((await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).status).toBe(400)
     expect(vi.mocked(createScheduledTask)).toHaveBeenCalledTimes(1)
+  })
+
+  it('schedules it for a set-up still in progress, and moves it to a changed schedule when Start chat runs again', async () => {
+    teamBrainIs({ status: 'setting-up', setupId: 's1', agentSlug: 'test-agent', volumeId: 'vol-1', location: 'local', step: 'intake', schedule: 'hourly', everyAgent: true, agents: {} })
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep', scheduleExpression: '0 0 * * *' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
+    expect(await (await postJson(createApp(), URL, { scheduleExpression: '0 * * * *' })).json()).toEqual({ taskId: 'task-1' })
+    expect(vi.mocked(updateScheduleExpression)).toHaveBeenCalledWith('task-1', '0 * * * *')
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'scheduled_task_updated', taskId: 'task-1', agentSlug: 'test-agent' })
+    expect(vi.mocked(createScheduledTask)).not.toHaveBeenCalled()
   })
 
   it('refuses a missing or invalid schedule with a 400, scheduling nothing', async () => {
