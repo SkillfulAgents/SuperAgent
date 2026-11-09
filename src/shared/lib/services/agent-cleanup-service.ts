@@ -18,6 +18,7 @@ import {
 import { eq, and, inArray } from 'drizzle-orm'
 import { cancelWebhookTriggerWithCleanup } from '@shared/lib/services/webhook-trigger-service'
 import { unlinkAgentStatements } from '@shared/lib/services/todo-service'
+import { deleteAgentThreadsStatements } from '@shared/lib/session-threads/thread-service'
 import { invalidateRuleCache } from '@shared/lib/proxy/rules/store'
 import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
 
@@ -44,6 +45,7 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
     db.delete(proxyRules).where(eq(proxyRules.agentSlug, agentSlug)),
     db.delete(agentAcl).where(eq(agentAcl.agentSlug, agentSlug)),
     db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, agentSlug)),
+    ...deleteAgentThreadsStatements(agentSlug),
     // Todo board items outlive the agent: they let go of it instead.
     ...unlinkAgentStatements(agentSlug),
   ])

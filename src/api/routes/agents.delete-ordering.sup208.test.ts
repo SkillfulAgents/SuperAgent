@@ -42,6 +42,11 @@ const { AgentContainerStopError } = vi.hoisted(() => ({
     }
   },
 }))
+vi.mock('@shared/lib/session-threads/thread-service', () => ({
+  deleteSessionThreads: vi.fn(() => Promise.resolve()),
+  deleteAgentThreadsStatements: vi.fn(() => []),
+}))
+
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgentsWithStatus: vi.fn(),
   createAgent: vi.fn(),

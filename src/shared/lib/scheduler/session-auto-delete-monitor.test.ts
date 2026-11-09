@@ -18,6 +18,11 @@ const mockUnsubscribeFromSession = vi.fn()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockDbDelete = vi.fn((..._args: any[]) => ({ where: vi.fn(() => ({ changes: 0 })) }))
 
+vi.mock('@shared/lib/session-threads/thread-service', () => ({
+  deleteSessionThreads: vi.fn(() => Promise.resolve()),
+  deleteAgentThreadsStatements: vi.fn(() => []),
+}))
+
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgents: () => mockListAgents(),
 }))

@@ -50,6 +50,11 @@ const mockIsAuthMode = vi.fn(() => false)
 const mockIsSessionActive = vi.fn((_id: string) => false)
 const mockUnsubscribeFromSession = vi.fn()
 
+vi.mock('@shared/lib/session-threads/thread-service', () => ({
+  deleteSessionThreads: vi.fn(() => Promise.resolve()),
+  deleteAgentThreadsStatements: vi.fn(() => []),
+}))
+
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgents: () => mockListAgents(),
 }))
