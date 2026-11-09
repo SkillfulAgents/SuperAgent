@@ -14,6 +14,7 @@ process is what every other process of the deployment reads next.
 | `host-container-token:<agent>` | the per-agent token the host presents to the agent's container | `getOrCreateHostToken(agent)` on first use |
 | `platform-client-instance-id` | this deployment's client id for platform device login | `getOrCreatePlatformClientInstanceId()` on first use |
 | `browser-context:<provider>:<key>` | persistent Browserbase context ids of the host-browser providers | `getOrCreateMapping()` on first open |
+| `account-deletion-request:<userId>` | an account's deletion request: its id, when it was confirmed, and whether Amplitude acknowledged it ([account-deletion.md](account-deletion.md)) | `requestAccountDeletion()` on the first confirmed request |
 
 Values are validated with Zod on every read and write
 (`app-records/record-schemas.ts`, `config/settings-schema.ts`).

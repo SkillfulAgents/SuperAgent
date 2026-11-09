@@ -12,6 +12,7 @@ import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { LoginButton } from '@renderer/components/connections/login-button'
 import { ProfileSection } from './profile-section'
 import { StaleAgentsNotice } from './stale-agents-notice'
+import { AccountDeletionSection } from './account-deletion-section'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
@@ -19,6 +20,7 @@ import { pendingPlanChangeText, usePlatformPlanUpgrade } from '@renderer/hooks/u
 import { isPlatformOrgAdmin } from '@renderer/components/provider-error/platform-paywall-cta'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
 import { isElectron } from '@renderer/lib/env'
+import { signsInWithAuthSession } from '@renderer/lib/capabilities'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { cn } from '@shared/lib/utils'
 import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '@shared/lib/services/platform-billing-copy'
@@ -466,6 +468,11 @@ function AccessKeyInput({ onClose }: { onClose: () => void }) {
   )
 }
 
+/** What the sign-in button says while the login is up: a sheet on this window, or the browser. */
+function signInPendingLabel(): string {
+  return signsInWithAuthSession() ? 'Signing in…' : 'Opening browser…'
+}
+
 interface NotConnectedEmptyStateProps {
   readOnly: boolean
   isLaunching: boolean
@@ -495,7 +502,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, o
                   onClick={onConnect}
                   className="group"
                   label={<span className="inline-flex items-center">Connect Account<HoverArrow /></span>}
-                  pendingLabel="Opening browser…"
+                  pendingLabel={signInPendingLabel()}
                   pending={isLaunching}
                   canCancel={canCancel}
                   onCancel={onCancel}
@@ -551,7 +558,7 @@ function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconn
             disabled={readOnly}
             className="group"
             label={<span className="inline-flex items-center">{connectLabel}<HoverArrow /></span>}
-            pendingLabel="Opening browser…"
+            pendingLabel={signInPendingLabel()}
             pending={isLaunching}
             canCancel={canCancel}
             onCancel={onCancel}
@@ -721,6 +728,13 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
             onCancel={cancelConnect}
           />
         </div>
+      )}
+
+      {isConnected && data?.userId && (
+        // Not part of the account's working state: never let it take down the tab.
+        <ErrorBoundary compact>
+          <AccountDeletionSection userId={data.userId} email={data.email ?? null} />
+        </ErrorBoundary>
       )}
 
       {readOnly && (

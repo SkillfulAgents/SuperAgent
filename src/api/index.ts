@@ -55,6 +55,7 @@ import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
+import accountDeletion from './routes/account-deletion'
 import platformSsoStart from './routes/platform-sso-start'
 import tokenExchange from './routes/token-exchange'
 import mobilePairing from './routes/mobile-pairing'
@@ -264,6 +265,7 @@ app.route('/api/team-directories', teamDirectoriesRouter)
 app.route('/api/audit-log', auditLogRouter)
 app.route('/api/connection-logs', connectionLogsRouter)
 app.route('/api/platform-auth', platformAuth)
+app.route('/api/account-deletion', accountDeletion)
 if (isAuthMode()) {
   // Public RP-initiated Platform SSO launcher (SUP-466). Outside /api so the
   // Platform "Open Cloud Agents" link can target a stable deployment path.

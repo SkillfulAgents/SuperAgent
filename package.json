@@ -323,6 +323,10 @@
           "to": "glass-bridge"
         },
         {
+          "from": "build/web-auth-bridge",
+          "to": "web-auth-bridge"
+        },
+        {
           "from": "build/agent-image",
           "to": "agent-image",
           "filter": [
