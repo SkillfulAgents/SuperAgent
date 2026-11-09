@@ -46,8 +46,15 @@ declare module 'cloudflare:workers' {
     deserializeAttachment(): unknown
   }
 
+  export interface SyncKvStorage {
+    get<T = unknown>(key: string): T | undefined
+    put<T>(key: string, value: T): void
+    delete(key: string): boolean
+  }
+
   export interface DurableObjectStorage {
     readonly sql: SqlStorage
+    readonly kv: SyncKvStorage
     /** Runs `closure` as one transaction: it commits all its writes, or none if it throws. */
     transactionSync<T>(closure: () => T): T
     getAlarm(): Promise<number | null>
@@ -55,8 +62,13 @@ declare module 'cloudflare:workers' {
     deleteAlarm(): Promise<void>
   }
 
+  export interface DurableObjectId {
+    readonly name?: string
+    toString(): string
+  }
+
   export interface DurableObjectState {
-    readonly id: { readonly name?: string; toString(): string }
+    readonly id: DurableObjectId
     readonly storage: DurableObjectStorage
     acceptWebSocket(socket: WorkerWebSocket): void
     getWebSockets(): WorkerWebSocket[]
@@ -71,6 +83,33 @@ declare module 'cloudflare:workers' {
 
   export interface DurableObjectNamespace<T> {
     getByName(name: string): DurableObjectStub<T>
+    idFromString(id: string): DurableObjectId
+    get(id: DurableObjectId): DurableObjectStub<T>
+  }
+
+  export interface R2ObjectBody {
+    readonly body: ReadableStream<Uint8Array>
+    arrayBuffer(): Promise<ArrayBuffer>
+  }
+
+  export interface R2Objects {
+    objects: Array<{ key: string }>
+    truncated: boolean
+    cursor?: string
+  }
+
+  export interface R2Bucket {
+    get(key: string, options?: { range?: { offset?: number; length?: number } }): Promise<R2ObjectBody | null>
+    head(key: string): Promise<unknown | null>
+    put(key: string, value: ReadableStream<Uint8Array> | ArrayBuffer | Uint8Array | string, options?: { sha256?: string }): Promise<unknown>
+    delete(keys: string | string[]): Promise<void>
+    list(options?: { prefix?: string; cursor?: string }): Promise<R2Objects>
+  }
+
+  export abstract class WorkerEntrypoint<Env = unknown, Props = unknown> {
+    protected readonly ctx: ExecutionContext & { readonly props: Props }
+    protected readonly env: Env
+    constructor(ctx: ExecutionContext, env: Env)
   }
 
   export abstract class DurableObject<Env = unknown> {
@@ -82,4 +121,9 @@ declare module 'cloudflare:workers' {
 
 declare const WebSocketPair: {
   new (): { 0: import('cloudflare:workers').WorkerWebSocket; 1: import('cloudflare:workers').WorkerWebSocket }
+}
+
+/** A pass-through stream that tells R2 its length, so R2 can store a stream it has not seen whole. */
+declare class FixedLengthStream extends TransformStream<Uint8Array, Uint8Array> {
+  constructor(length: number)
 }
