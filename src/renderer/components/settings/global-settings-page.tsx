@@ -25,6 +25,7 @@ const NewIntegrationButton = lazyRouteComponent(
 )
 const LlmTab = lazyRouteComponent(() => import('./llm-tab'), 'LlmTab')
 const UsersTab = lazyRouteComponent(() => import('./users-tab'), 'UsersTab')
+const TeamDirectoryTab = lazyRouteComponent(() => import('./team-directory-tab'), 'TeamDirectoryTab')
 const AuthTab = lazyRouteComponent(() => import('./auth-tab'), 'AuthTab')
 const AdminTab = lazyRouteComponent(() => import('./admin-tab'), 'AdminTab')
 const VoiceTab = lazyRouteComponent(() => import('./voice-tab'), 'VoiceTab')
@@ -108,6 +109,13 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
                 platformInviteHref={platformTeamInviteHref}
               />
             ),
+          },
+          // Its people are offered when sharing and mentioning, which only auth mode has.
+          {
+            id: 'team-directory',
+            label: 'Team Directory',
+            icon: <AnimatedNavIcon name="directory" className="h-4 w-4" />,
+            render: () => deferredTab(<TeamDirectoryTab />),
           },
           {
             id: 'auth',
