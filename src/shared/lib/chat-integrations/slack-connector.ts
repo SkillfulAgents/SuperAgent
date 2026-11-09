@@ -21,7 +21,7 @@ import type { IntegrationRelayAttachment, IntegrationRelayBinding } from '../age
 import { relayAcceptResult } from '../agent-integrations/relay-transport'
 import type { RelayAcceptResult, RelayEvent } from '../webhook-relay'
 import type { SlackConfig as StoredSlackConfig } from './config-schema'
-import { checkSlackWebhook, recordSlackWebhookStatus, slackRequestKey } from './slack-webhooks'
+import { checkSlackWebhook, recordSlackAppId, recordSlackWebhookStatus, slackRequestKey } from './slack-webhooks'
 import {
   ChatAgentIntegration,
   isMultiPartyChatType,
@@ -819,6 +819,15 @@ export class SlackConnector extends ChatAgentIntegration {
       this.botUserId = authResult.user_id || null
       this.workspace = { name: authResult.team || undefined, url: authResult.url || undefined }
       console.log(`[SlackConnector] Authenticated as ${authResult.user} in workspace ${authResult.team}`)
+      // Which Slack app this is, for a link to its settings (renaming an app made by hand happens there).
+      if (authResult.bot_id && !this.config.appId && this.integration) {
+        const integrationId = this.integration.id
+        const botId = authResult.bot_id
+        background(app.client.bots.info({ bot: botId })
+          .then((info) => info.bot?.app_id ? recordSlackAppId(integrationId, info.bot.app_id) : undefined)
+          .catch((error: unknown) => console.warn('[SlackConnector] Could not read the app id:', error instanceof Error ? error.message : error)),
+        { name: 'slack-connector.record-app-id' })
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack bot token invalid: ${msg}`)

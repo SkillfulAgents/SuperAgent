@@ -5,6 +5,7 @@
 import { z } from 'zod'
 import { DirectoryConnectError, type DirectoryMessage, type DirectoryUser, type TeamDirectoryProvider } from '../types'
 import { SlackApiError, slackCall } from './slack-api'
+import { slackAppProvisioning } from './slack-provisioning'
 
 export const SLACK_DIRECTORY_SCOPES = ['users:read', 'users:read.email'] as const
 /** Optional: DMing people their invitations and mentions. */
@@ -137,6 +138,7 @@ function describeSlackError(error: unknown): string {
 }
 
 export const slackDirectoryProvider: TeamDirectoryProvider<SlackDirectoryCredentials> = {
+  provisioning: slackAppProvisioning,
   info: {
     id: 'slack',
     label: 'Slack',

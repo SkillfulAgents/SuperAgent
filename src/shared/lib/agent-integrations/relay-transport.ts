@@ -60,6 +60,11 @@ export async function provisionIntegrationRelay(name: string, userId?: string, v
 }
 
 /** The URL stops accepting deliveries. */
+/** The endpoint checks posts with this from now on: a secret known only once the app behind it exists. */
+export async function updateIntegrationRelayVerification(binding: IntegrationRelayBinding, verification: VerificationProfile): Promise<void> {
+  await getWebhookRelay().updateEndpoint(binding.scope, binding.endpointId, { verification })
+}
+
 export async function disableIntegrationRelay(binding: IntegrationRelayBinding): Promise<void> {
   await getWebhookRelay().disableEndpoint(binding.scope, binding.endpointId)
 }

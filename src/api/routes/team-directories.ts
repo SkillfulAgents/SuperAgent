@@ -23,7 +23,8 @@ import {
   type DirectoryConnection,
 } from '@shared/lib/team-directory/store'
 import { DirectoryConnectError, type DirectoryTenant } from '@shared/lib/team-directory/types'
-import type { TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
+import type { DirectoryProviderView, TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
+import { connectProvisioning, disconnectProvisioning } from '@shared/lib/team-directory/provisioning'
 
 const router = new Hono()
 router.use('*', Authenticated(), IsAdmin())
@@ -58,6 +59,7 @@ async function views(connections: DirectoryConnection[]): Promise<TeamDirectoryV
       errorMessage: provider ? connection.errorMessage : 'This version of the app cannot read this directory.',
       connectedBy: connection.createdByUserId ? creators.get(connection.createdByUserId) ?? null : null,
       connectedAt: connection.createdAt.getTime(),
+      ...(provider?.provisioning ? { provisioning: { status: connection.provisioningStatus, error: connection.provisioningError } } : {}),
     }
   })
 }
@@ -75,7 +77,10 @@ async function verified(body: unknown): Promise<{ provider: string; credentials:
 router.get('/', async (c) => {
   c.header('Cache-Control', 'no-store')
   return c.json({
-    providers: listDirectoryProviders().map((provider) => provider.info),
+    providers: listDirectoryProviders().map((provider): DirectoryProviderView => ({
+      ...provider.info,
+      ...(provider.provisioning ? { provisioning: provider.provisioning.info } : {}),
+    })),
     directories: await views(await listDirectoryConnections()),
   })
 })
@@ -109,6 +114,24 @@ router.post('/:id/refresh', async (c) => {
   const result = await listDirectoryNow(connection)
   const [view] = await views([(await getDirectoryConnection(connection.id)) ?? connection])
   return c.json(result.ok ? { ok: true, userCount: result.users.length, directory: view } : { ok: false, error: result.error, directory: view })
+})
+
+// POST /api/team-directories/:id/provisioning - Adds (or replaces) the credentials
+// that let the directory create agents' own apps, verified first.
+router.post('/:id/provisioning', async (c) => {
+  const input = z.object({ credentials: z.record(z.string(), z.unknown()) }).parse(await c.req.json())
+  if (!(await getDirectoryConnection(c.req.param('id')))) return c.json({ error: 'Directory not found' }, 404)
+  const saved = await connectProvisioning(c.req.param('id'), input.credentials)
+  await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: saved.id, action: 'connected', details: { provisioning: true } })
+  const [view] = await views([saved])
+  return c.json({ directory: view })
+})
+
+// DELETE /api/team-directories/:id/provisioning - Stops creating apps through it. Apps already installed keep working.
+router.delete('/:id/provisioning', async (c) => {
+  if (!(await disconnectProvisioning(c.req.param('id')))) return c.json({ error: 'Directory not found' }, 404)
+  await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: c.req.param('id'), action: 'disconnected', details: { provisioning: true } })
+  return c.body(null, 204)
 })
 
 // DELETE /api/team-directories/:id - Disconnects a directory. Its people stop appearing in searches at once.

@@ -267,3 +267,11 @@ With `LocalAppState` the manifests live in memory, so a restart forgets uploads 
 ## Team directory listings
 
 Each connected team directory's people (`src/shared/lib/team-directory/cache.ts`; [docs/team-directory.md](team-directory.md#the-cache) has the rules). The eventual namespace `cache:team-directory` is keyed by directory id and credentials revision, so reconnecting starts afresh. It is a plain, non-atomic cache: an entry is `{ listedAt, attemptedAt, users }`, fresh for 10 minutes and kept 6 hours after its last write. A stale entry is answered at once while a new listing runs in the background, and a failed listing keeps the previous people and only moves `attemptedAt`, at the entry's own expiry. Two processes may list the same stale directory at once; the later write wins. The listing in progress is a Promise in a process-local map, so concurrent searches in one process share it.
+
+## Agent app provisioning
+
+Creating agents' own apps through a team directory (`src/shared/lib/team-directory/provisioning.ts`; [docs/team-directory.md](team-directory.md#agent-apps)).
+
+- **`claim:team-directory-provisioning`** (`defineLease`, 60 s), key part the directory id, makes rotations of a directory's credentials one at a time. A holder re-reads the stored pair once it holds the lease and decides from that. It confirms the lease for the 15 s request before rotating, and saves the new pair conditional on the row's `provisioning_revision`. A holder whose lease lapsed mid-rotation may have retired the old refresh token; its save is still conditional, so a lost race leaves the directory marked for reconnect at worst, never with a stale pair over a newer one.
+- **`oauth:agent-app-install`** (strong), key part `digestKeyPart(state)`, holds an install the host started: the installation, its provider and the redirect URL. It is inserted with `insertIfAbsent` and expires 30 minutes later (`keep`). The callback `consume`s it before anything else, so of any number of callbacks with one state, one installs.
+

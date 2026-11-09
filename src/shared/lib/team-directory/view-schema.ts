@@ -15,10 +15,21 @@ export interface TeamDirectoryView {
   /** Who connected it (auth mode); null once they are removed, and in local mode. */
   connectedBy: string | null
   connectedAt: number
+  /** Creating agents' own apps through it; absent when its provider can't. */
+  provisioning?: {
+    /** null: no credentials added yet. */
+    status: 'active' | 'needs_reconnect' | null
+    error: string | null
+  }
+}
+
+/** A provider, and the form for its app-creation credentials when it has one. */
+export type DirectoryProviderView = DirectoryProviderInfo & {
+  provisioning?: Omit<DirectoryProviderInfo, 'id' | 'label'>
 }
 
 export interface TeamDirectoriesResponse {
-  providers: DirectoryProviderInfo[]
+  providers: DirectoryProviderView[]
   directories: TeamDirectoryView[]
 }
 

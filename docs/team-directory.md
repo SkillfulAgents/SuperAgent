@@ -97,3 +97,46 @@ Someone who isn't on Gamut yet becomes a real `user` row with `status: 'invited'
 ### Not members yet
 
 Invited users are left out of: the Users tab list and count (Better Auth `list-users` filtered on `status`, which is declared as a user field; they are listed apart, removable), "everyone in the workspace" (`addAgentUsers` with no ids), who an agent acts for (`countOtherMembers`), email-integration allow-lists, and web push and APNs (`getPushableAgentSlugs`). In search they are accounts with `notOnGamut: true`; in rosters they carry `invited: true` ("Invite pending"), and their mention chips are dashed.
+
+## Agent apps
+
+A connected directory whose provider has `provisioning` (`AgentIdentityProvisioning`, types.ts) can give each agent its own app in its workspace, with the agent's name, @handle, colour and avatar. Setting one up is **Create → Install** instead of copying tokens. Slack is the only one so far; Linear and GitHub can't create apps through an API, and Notion has no route at all. The host side is `provisioning.ts` and is the same for every provider.
+
+### Credentials
+
+They are sealed on the directory's row, apart from its own (`provisioning_credentials`, migration 0066), because they rotate and the people cache must not move with them. An admin adds them under **Agent apps** in Settings → Team Directory.
+
+- **Rotation.** `needsRotation` says when stored credentials are due: for Slack, an hour before the 12-hour app configuration token expires. They are rotated then, before any use, and by the `team-directory-provisioning` service's pass every 6 hours, so the chain survives weeks with no new apps.
+- **One rotation at a time.** Rotations go through the lease `claim:team-directory-provisioning` per directory: Slack's rotation retires the old refresh token, so two at once would break the chain.
+  - The holder decides from what is stored once it holds the lease (the holder before it may have just rotated).
+  - It confirms the lease for the request's timeout before it sends.
+  - It saves the new pair before anything uses it, conditional on `provisioning_revision`. A pair an admin added meanwhile stands.
+- **A broken chain** (`ProvisioningCredentialsError`) marks the directory `needs_reconnect` with the reason. Apps already installed keep working, since their bot tokens are their own; only creating or changing apps waits for an admin to add a new token. An outage or rate limit leaves the pair as it is for the next pass.
+
+### The setup flow
+
+1. **Describe.** `GET …/providers/:provider/setup` adds `provisioning: { directoryId, workspace }` when an active directory can create that provider's apps and the provider receives webhooks. Any agent owner may use it.
+2. **Create.** The setup form posts the usual input with `provision: { directoryId, name, description?, backgroundColor?, icon? }`. `icon` is the agent's avatar as a base64 PNG, rendered by the browser as for the manual "Download icon".
+   - `prepareIntegrationSetup` takes `provision` out of what the provider sees. It requires webhooks.
+   - It mints the relay endpoint, then has the provisioner create the app with that webhook URL and the host's OAuth callback.
+   - It updates the endpoint's signature check with the app's secret.
+   - It stores the provider's fields (Slack's `signingSecret`) and `provisionedApp` (`agent-integrations/provisioned-app.ts`, host-owned). The installation waits, `disconnected`.
+   - If anything fails, the app and the endpoint are undone.
+3. **Install.** `POST /:integrationId/authorize` on an installation with an uninstalled `provisionedApp` returns the provider's install URL with a one-time `state`, held in the strong AppState namespace `oauth:agent-app-install` for 30 minutes.
+   - The callback consumes the state, then exchanges the code (Slack's `oauth.v2.access`) and writes the result (Slack's `botToken`). The installation goes `active`, and the host resumes it.
+   - A replayed callback finds no state.
+   - Installing with no click at all needs Slack's partner-only `managed_apps:install`.
+4. **Rename and icon.** `POST /:integrationId/app { name?, icon? }`. For Slack, this exports the manifest, changes `display_information.name` and `bot_user.display_name`, and updates it. `apps.icon.set` sets the icon. An icon that fails at creation leaves `iconSet: false`, and the integration page offers "Set icon".
+5. **Delete.** Deleting the installation deletes its app (`cleanupIntegrationResource`).
+
+The client sees `provisionedApp` as `{ directoryId, installed, name, iconSet, settingsUrl? }`, never the app's secrets. The integration page's **App** card (`provisioned-app-card.tsx`) is the same for every provider.
+
+### Slack specifics
+
+`providers/slack-provisioning.ts`.
+
+- **Credentials.** The app configuration access token (`xoxe.…`) and refresh token (`xoxe-…`) are verified by rotating them once, which also says when they expire. They must be for the directory's workspace (a grid directory spans its workspaces).
+- **Apps.** `apps.manifest.create` uses the manifest from `slackAppManifest` (the same one manual setup prefills), plus `oauth_config.redirect_urls`. `apps.icon.set` is multipart. `apps.manifest.export` / `apps.manifest.update` rename, and `apps.manifest.delete` deletes.
+- **Limits.** The Manifest API is marked beta. `apps.manifest.create` and `apps.icon.set` are Tier 1 (about one a minute); apps are made one at a time from the setup form, so there is no queue yet.
+- **Apps made by hand** have only a bot token, and Slack has no API for a bot to rename itself. The connector records the app's id (`auth.test` → `bots.info`, host-owned `appId`), and the integration page links to the app's settings in Slack instead.
+

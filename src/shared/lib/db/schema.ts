@@ -1099,6 +1099,15 @@ export const teamDirectories = sqliteTable('team_directories', {
   createdByUserId: text('created_by_user_id').references(() => user.id, { onDelete: 'set null' }), // Null in local mode
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  // Creating agents' own apps (team-directory/provisioning.ts), for a provider
+  // that can: credentials apart from the directory's own, because they rotate
+  // (Slack's app configuration token, every 12 hours) and the listing cache
+  // must not move with them. Null until an admin adds them.
+  provisioningCredentials: text('provisioning_credentials'), // Sealed JSON
+  // Bumped on every write of the credentials: a rotation saves only over the pair it rotated.
+  provisioningRevision: integer('provisioning_revision').notNull().default(0),
+  provisioningStatus: text('provisioning_status', { enum: ['active', 'needs_reconnect'] }),
+  provisioningError: text('provisioning_error'),
 }, (table) => ({
   providerTenantUnique: uniqueIndex('team_directories_provider_tenant_unique').on(table.provider, table.tenantId),
 }))

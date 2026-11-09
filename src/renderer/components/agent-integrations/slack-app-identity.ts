@@ -52,3 +52,11 @@ export async function slackAppIcon(agent: SlackAppAgent): Promise<Blob> {
   const svg = orbSvg({ orb, shape, restingPhi: orbRestingPhi(agent.slug), size: ICON_SIZE, fill: 0.7, background: hexMix(orb.rim, '#FFFFFF', 0.85) })
   return svgToPng(svg, ICON_SIZE)
 }
+
+/** The agent's avatar as an app icon PNG, base64, to send to the host (which uploads it to a created app). */
+export async function agentAppIconBase64(agent: SlackAppAgent): Promise<string> {
+  const bytes = new Uint8Array(await (await slackAppIcon(agent)).arrayBuffer())
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(binary)
+}

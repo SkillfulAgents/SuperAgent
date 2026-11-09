@@ -64,3 +64,26 @@ export function useDisconnectTeamDirectory() {
     onSuccess: () => client.invalidateQueries({ queryKey: QUERY_KEY }),
   })
 }
+
+/** Adds or replaces the credentials that let a directory create agents' apps. */
+export function useConnectProvisioning() {
+  const client = useQueryClient()
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, credentials }: { id: string; credentials: Record<string, string> }) =>
+      json<{ directory: TeamDirectoryView }>(await post(`/${encodeURIComponent(id)}/provisioning`, { credentials }), 'Could not save the credentials'),
+    onSuccess: () => client.invalidateQueries({ queryKey: QUERY_KEY }),
+  })
+}
+
+export function useDisconnectProvisioning() {
+  const client = useQueryClient()
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async (id: string) => {
+      const response = await apiFetch(`/api/team-directories/${encodeURIComponent(id)}/provisioning`, { method: 'DELETE' })
+      if (!response.ok) await json(response, 'Could not stop creating apps')
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: QUERY_KEY }),
+  })
+}

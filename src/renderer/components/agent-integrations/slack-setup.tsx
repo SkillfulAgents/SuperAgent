@@ -4,7 +4,7 @@ import { ExternalLink, Loader2 } from 'lucide-react'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { DialogTitle } from '@renderer/components/ui/dialog'
-import { agentIntegrationKeys, useCreateAgentIntegration, useTestAgentIntegrationCredentials, useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
+import { agentIntegrationKeys, useAgentIntegrationSetup, useCreateAgentIntegration, useTestAgentIntegrationCredentials, useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
@@ -16,6 +16,7 @@ import { IntegrationSetupFeedback, IntegrationSetupField, IntegrationSetupLayout
 import type { IntegrationSetupProps } from './setup-types'
 import { SlackAppIconStep } from './slack-app-appearance'
 import { slackAppIdentity, type SlackAppAgent } from './slack-app-identity'
+import { SlackProvisionedSetupForm } from './slack-provisioned-setup'
 
 function ExternalButton({ href, children }: { href: string; children: ReactNode }) {
   return <a className={buttonVariants({ variant: 'outline', size: 'sm' })} href={href} target="_blank" rel="noreferrer" onClick={event => {
@@ -30,12 +31,15 @@ function ExternalButton({ href, children }: { href: string; children: ReactNode 
  */
 export function SlackSetup(props: IntegrationSetupProps) {
   const { data: relay, isPending } = useWebhookRelay()
+  // A connected team directory that can create the app (Settings → Team Directory).
+  const setup = useAgentIntegrationSetup(props.agentSlug, 'slack')
+  const [manual, setManual] = useState(false)
   const [webhooks, setWebhooks] = useState(true)
   // Once its installation exists, the Slack app targets that webhook: the form
   // stays, whatever the relay does meanwhile.
   const [installed, setInstalled] = useState(false)
   // Which form depends on the relay; one that can't be read means Socket Mode.
-  if (isPending) return <>
+  if (isPending || setup.isPending) return <>
     <DialogTitle className="sr-only">Set up integration with Slack</DialogTitle>
     <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-label="Loading" /></div>
   </>
@@ -43,6 +47,10 @@ export function SlackSetup(props: IntegrationSetupProps) {
     <input type="checkbox" className="mt-1" checked={webhooks} disabled={disabled} onChange={event => setWebhooks(event.target.checked)} data-testid="slack-webhooks-choice" />
     <span>Receive through webhooks (recommended)<span className="block text-xs text-muted-foreground">Messages sent while this agent is offline are delivered when it’s back. Without them it uses Socket Mode and misses those.</span></span>
   </label>
+  // Created apps receive through webhooks, so they need the relay.
+  if (!manual && !installed && relay?.available && setup.data?.provisioning) {
+    return <SlackProvisionedSetupForm {...props} provisioning={setup.data.provisioning} onManual={() => setManual(true)} />
+  }
   return installed || (relay?.available && webhooks)
     ? <SlackWebhookSetupForm {...props} choice={choice} onCreated={() => setInstalled(true)} />
     : <ChatIntegrationSetupForm {...props} provider="slack" leading={choice()} />
@@ -171,7 +179,8 @@ export function SlackConnectionSettings({ integration }: { integration: PublicAg
   const [botToken, setBotToken] = useState('')
   const [error, setError] = useState<string | null>(null)
   const { data: agent } = useAgent(integration.agentSlug)
-  if (!slack || slack.botTokenSaved || !slack.webhook) return null
+  // An app a team directory created installs from its own card.
+  if (!slack || slack.botTokenSaved || !slack.webhook || integration.provisionedApp) return null
   const creationUrl = slackAppCreationUrl(slackAppIdentity(agent, integration.name), slack.webhook.url)
   const connect = () => {
     setError(null)

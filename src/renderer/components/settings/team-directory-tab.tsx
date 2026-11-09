@@ -11,11 +11,12 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import {
-  useConnectTeamDirectory, useDisconnectTeamDirectory, useRefreshTeamDirectory,
+  useConnectProvisioning, useConnectTeamDirectory, useDisconnectProvisioning, useDisconnectTeamDirectory, useRefreshTeamDirectory,
   useTeamDirectories, useTestDirectoryCredentials,
 } from '@renderer/hooks/use-team-directories'
-import type { DirectoryProviderInfo, TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
+import type { DirectoryProviderInfo, DirectoryProviderView, TeamDirectoryView } from '@shared/lib/team-directory/view-schema'
 import { SetupPanel, SetupSteps } from './setup-steps'
+import { useUser } from '@renderer/context/user-context'
 
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
@@ -177,7 +178,123 @@ function ConnectForm({ provider }: { provider: DirectoryProviderInfo }) {
   )
 }
 
+/** The fields of a credentials form, drawn from what a provider describes. */
+function CredentialFields({ idPrefix, fields, values, onChange }: {
+  idPrefix: string
+  fields: DirectoryProviderInfo['fields']
+  values: Record<string, string>
+  onChange: (key: string, value: string) => void
+}) {
+  return <>{fields.map((field) => {
+    const id = `${idPrefix}-${field.key}`
+    const props = {
+      id,
+      value: values[field.key] ?? '',
+      placeholder: field.placeholder,
+      autoComplete: 'off',
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => onChange(field.key, event.target.value),
+      className: 'bg-background font-mono text-xs',
+    }
+    return (
+      <div key={field.key} className="grid gap-1.5">
+        <Label htmlFor={id} className="text-xs">{field.label}</Label>
+        {field.secret ? <PasswordInput {...props} /> : <Input {...props} />}
+      </div>
+    )
+  })}</>
+}
+
+function ProvisioningBadge({ status }: { status: 'active' | 'needs_reconnect' | null }) {
+  if (status === 'active') return <span className="text-2xs px-1.5 py-0 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">Creating apps</span>
+  if (status === 'needs_reconnect') {
+    return <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400"><AlertTriangle className="h-2.5 w-2.5" />Needs a new token</span>
+  }
+  return <span className="text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">Not set up</span>
+}
+
+/**
+ * Creating agents' own apps through a connected directory: its credentials,
+ * drawn from what the provider describes, and whether they still renew.
+ */
+function ProvisioningPanel({ directory, provider }: { directory: TeamDirectoryView; provider: DirectoryProviderView }) {
+  const info = provider.provisioning
+  const connect = useConnectProvisioning()
+  const disconnect = useDisconnectProvisioning()
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [error, setError] = useState<string | null>(null)
+  const status = directory.provisioning?.status ?? null
+  const [editing, setEditing] = useState(status !== 'active')
+  if (!info) return null
+  const complete = info.fields.every((field) => values[field.key]?.trim())
+
+  const save = async () => {
+    setError(null)
+    try {
+      await connect.mutateAsync({ id: directory.id, credentials: values })
+      setValues({})
+      setEditing(false)
+      toast.success(`${directory.tenantName} can create agents’ apps now`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save the credentials')
+    }
+  }
+  const stop = async () => {
+    try {
+      await disconnect.mutateAsync(directory.id)
+      setEditing(true)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not stop creating apps')
+    }
+  }
+
+  return (
+    <SetupPanel data-testid={`team-directory-provisioning-${directory.id}`}>
+      <div className="flex items-center gap-2">
+        <span className="font-medium">{directory.tenantName}</span>
+        <ProvisioningBadge status={status} />
+      </div>
+      <p className="text-muted-foreground">{info.description}</p>
+      {status === 'needs_reconnect' && directory.provisioning?.error && (
+        <p role="status" className="text-xs text-amber-700 dark:text-amber-400">{directory.provisioning.error} Apps already installed keep working.</p>
+      )}
+      {status === 'active' && !editing ? (
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => setEditing(true)}>Replace token</Button>
+          <Button type="button" variant="ghost" size="sm" disabled={disconnect.isPending} onClick={() => void stop()}>Stop creating apps</Button>
+        </div>
+      ) : (
+        <>
+          <SetupSteps steps={info.steps.map((step, index) => (
+            <>
+              <span>{step}</span>
+              {index === 0 && info.setupLink && (
+                <a href={info.setupLink.href} target="_blank" rel="noreferrer" className="mt-1 inline-flex w-fit items-center gap-1 text-xs font-medium text-primary hover:underline">
+                  {info.setupLink.label}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </>
+          ))} />
+          <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); if (complete && !connect.isPending) void save() }}>
+            <CredentialFields idPrefix={`provisioning-${directory.id}`} fields={info.fields} values={values}
+              onChange={(key, value) => { setValues((previous) => ({ ...previous, [key]: value })); setError(null) }} />
+            {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+            <div className="flex gap-2">
+              <Button type="submit" size="sm" disabled={!complete || connect.isPending}>
+                {connect.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                Save
+              </Button>
+              {status === 'active' && <Button type="button" variant="ghost" size="sm" onClick={() => { setEditing(false); setValues({}) }}>Cancel</Button>}
+            </div>
+          </form>
+        </>
+      )}
+    </SetupPanel>
+  )
+}
+
 export function TeamDirectoryTab() {
+  const { isAuthMode } = useUser()
   const { data, isLoading, error } = useTeamDirectories()
   const disconnect = useDisconnectTeamDirectory()
   const [disconnecting, setDisconnecting] = useState<TeamDirectoryView | null>(null)
@@ -199,7 +316,9 @@ export function TeamDirectoryTab() {
   return (
     <div className="space-y-6" data-testid="team-directory-settings">
       <p className="text-sm text-muted-foreground">
-        Connect your team’s directory, and the people in it who aren’t on Gamut yet show up when someone shares an agent or mentions a teammate. Their access is ready when they join.
+        {isAuthMode
+          ? 'Connect your team’s directory, and the people in it who aren’t on Gamut yet show up when someone shares an agent or mentions a teammate. Their access is ready when they join. It can also give each agent its own app in one click.'
+          : 'Connect your team’s directory to give each agent its own app (its name, @handle and avatar) in one click.'}
       </p>
       {error && <p role="alert" className="text-sm text-destructive">{error instanceof Error ? error.message : 'Could not load team directories'}</p>}
       {isLoading ? <p role="status" className="text-sm text-muted-foreground">Loading…</p> : (
@@ -219,6 +338,15 @@ export function TeamDirectoryTab() {
               </IntegrationList>
             )}
           </section>
+          {directories.some((d) => d.provisioning) && (
+            <section className="space-y-2">
+              <h3 className={SECTION_HEADING}>Agent apps</h3>
+              {directories.filter((d) => d.provisioning).map((directory) => {
+                const directoryProvider = providers.find((p) => p.id === directory.provider)
+                return directoryProvider ? <ProvisioningPanel key={directory.id} directory={directory} provider={directoryProvider} /> : null
+              })}
+            </section>
+          )}
           {provider && (
             <section className="space-y-2">
               <h3 className={SECTION_HEADING}>Connect a directory</h3>

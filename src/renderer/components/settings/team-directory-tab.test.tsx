@@ -10,6 +10,8 @@ const state = vi.hoisted(() => ({
   connect: vi.fn(),
   refresh: vi.fn(),
   disconnect: vi.fn(),
+  connectProvisioning: vi.fn(),
+  disconnectProvisioning: vi.fn(),
 }))
 vi.mock('@renderer/hooks/use-team-directories', () => ({
   useTeamDirectories: () => ({ data: state.data, isLoading: false, error: null }),
@@ -17,8 +19,11 @@ vi.mock('@renderer/hooks/use-team-directories', () => ({
   useConnectTeamDirectory: () => ({ mutateAsync: state.connect, isPending: false }),
   useRefreshTeamDirectory: () => ({ mutateAsync: state.refresh, isPending: false }),
   useDisconnectTeamDirectory: () => ({ mutateAsync: state.disconnect, isPending: false }),
+  useConnectProvisioning: () => ({ mutateAsync: state.connectProvisioning, isPending: false }),
+  useDisconnectProvisioning: () => ({ mutateAsync: state.disconnectProvisioning, isPending: false }),
 }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true }) }))
 import { toast } from 'sonner'
 import { TeamDirectoryTab } from './team-directory-tab'
 
@@ -93,5 +98,33 @@ describe('Team Directory settings', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Disconnect Acme' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
     expect(state.disconnect).toHaveBeenCalledWith('d1')
+  })
+
+  it('adds the token that lets a directory create agents’ apps, from the form its provider describes', async () => {
+    const provisioning = {
+      description: 'Create each agent its own Slack app.',
+      fields: [{ key: 'accessToken', label: 'App configuration token', secret: true }, { key: 'refreshToken', label: 'Refresh token', secret: true }],
+      steps: ['Generate a token.'],
+    }
+    state.data = { providers: [{ ...slack, provisioning }], directories: [{ ...acme, provisioning: { status: null, error: null } }] }
+    state.connectProvisioning.mockResolvedValue({ directory: acme })
+    render(<TeamDirectoryTab />)
+    const panel = screen.getByTestId('team-directory-provisioning-d1')
+    expect(panel).toHaveTextContent('Not set up')
+    await userEvent.type(screen.getByLabelText('App configuration token'), 'xoxe.xoxp-1')
+    await userEvent.type(screen.getByLabelText('Refresh token'), 'xoxe-1')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(state.connectProvisioning).toHaveBeenCalledWith({ id: 'd1', credentials: { accessToken: 'xoxe.xoxp-1', refreshToken: 'xoxe-1' } })
+  })
+
+  it('says when the token stopped renewing, and that installed apps keep working', () => {
+    state.data = {
+      providers: [{ ...slack, provisioning: { description: 'Apps.', fields: [{ key: 'accessToken', label: 'Token' }], steps: [] } }],
+      directories: [{ ...acme, provisioning: { status: 'needs_reconnect', error: 'Slack no longer renews the app configuration token (invalid_refresh_token).' } }],
+    }
+    render(<TeamDirectoryTab />)
+    const panel = screen.getByTestId('team-directory-provisioning-d1')
+    expect(panel).toHaveTextContent('Needs a new token')
+    expect(panel).toHaveTextContent('Apps already installed keep working.')
   })
 })
