@@ -105,17 +105,20 @@ function agent(saved: boolean) {
       calls.push('stop')
     },
     containerUp: async () => false,
+    cancelIdleCheck: async () => {
+      calls.push('cancelIdleCheck')
+    },
   })
   return { object, calls }
 }
 
 describe('AgentDurableObject stop', () => {
-  it('stops the container after the workspace is saved', async () => {
+  it('stops the container after the workspace is saved, then drops its idle check', async () => {
     const { object, calls } = agent(true)
 
     await object.stopAgent()
 
-    expect(calls).toEqual(['save', 'stop'])
+    expect(calls).toEqual(['save', 'stop', 'cancelIdleCheck'])
   })
 
   it('keeps the container running when the save fails, and says so', async () => {
@@ -137,7 +140,7 @@ describe('AgentDurableObject stop', () => {
     exit()
     await stopped
 
-    expect(calls).toEqual(['save', 'stop', 'stopped'])
+    expect(calls).toEqual(['save', 'stop', 'cancelIdleCheck', 'stopped'])
   })
 
   it('drops the container of an agent being deleted without saving its workspace', async () => {
@@ -149,7 +152,7 @@ describe('AgentDurableObject stop', () => {
 
     await object.stopAgent({ discard: true })
 
-    expect(calls).toEqual(['destroy'])
+    expect(calls).toEqual(['destroy', 'cancelIdleCheck'])
   })
 
   it('stops an agent whose container never started without signalling it', async () => {

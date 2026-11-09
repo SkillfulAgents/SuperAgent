@@ -11,9 +11,17 @@
  * The container app uses the durable_object scheduling policy: this object starts its container on
  * the image the current deploy names, and Cloudflare never rolls a running container onto a new
  * image. A running container keeps its image until it stops; the next start uses the new one.
+ *
+ * The agent's actor runs here too: its ops come from the rest of the org as RPC calls
+ * (`cloudflareAgentActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
+ * the host stay in this isolate, which shares the org's database and AppState. The agent's idle
+ * check runs on this object's alarm, which outlives the isolate.
  */
 import { DurableObject, type Container, type DurableObjectState, type WorkerWebSocket } from 'cloudflare:workers'
 import { ASLEEP_HEADER, type ByteRange, type StoredEntry } from './cloudflare-container-control'
+import { runAsAgentObject } from './agent-objects'
+import type { ActorOutcome } from './cloudflare-agent-actor'
+import { restartIfOlder } from './object-version'
 import type { Env } from './index'
 
 // The agent server's port: the image's PORT, SuperAgent's CONTAINER_INTERNAL_PORT. Not imported:
@@ -38,6 +46,8 @@ const DELETE_BATCH = 1000
 // Mode of a file first written while the agent sleeps.
 const NEW_FILE_MODE = 0o644
 const BLOB = /^\/blobs\/([0-9a-f]{64})$/
+// The first idle check after a launch; each check schedules the next at the agent's deadline.
+const FIRST_IDLE_CHECK_MS = 60_000
 
 // A type, not an interface: SQL row types must be assignable to Record<string, SqlStorageValue>.
 type WorkspaceFile = {
@@ -145,6 +155,8 @@ export class AgentDurableObject extends DurableObject<Env> {
   private saveQueued = false
   // Restoring on wake and changing the saved workspace take turns, so a change can't land after a restore read the list.
   private storeLock: Promise<unknown> = Promise.resolve()
+  // The actor's cached container status starts as stopped in a new object, but the container outlives the object.
+  private statusSynced: Promise<void> | undefined
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -164,9 +176,64 @@ export class AgentDurableObject extends DurableObject<Env> {
     return this.containerFetch(request, CONTAINER_INTERNAL_PORT)
   }
 
+  /** SuperAgent's idle check for this agent (checkIdle in boot.ts): sleeps it if idle, else schedules the next check. */
+  async checkIdle(): Promise<void> {
+    const slug = this.agentName()
+    let next: number | null
+    try {
+      next = await runAsAgentObject(slug, this, async () => {
+        const app = await import('./boot')
+        await app.boot(this.env)
+        await this.syncStatus(app, slug)
+        return app.checkIdle(slug)
+      })
+    } catch (error) {
+      console.error(`[AgentDurableObject ${slug}] the idle check failed; will retry:`, error)
+      next = Date.now() + FIRST_IDLE_CHECK_MS
+    }
+    if (next !== null && (await this.agentRunning())) this.scheduleIdleCheck(next)
+  }
+
+  // The object's one alarm: it outlives the isolate, and each check sets the next.
+  private scheduleIdleCheck(at: number): void {
+    this.ctx.storage.setAlarm(at).catch((error: unknown) => {
+      console.error(`[AgentDurableObject ${this.agentName()}] scheduling the idle check failed:`, error)
+    })
+  }
+
+  private async cancelIdleCheck(): Promise<void> {
+    await this.ctx.storage.deleteAlarm()
+  }
+
+  async alarm(): Promise<void> {
+    await this.checkIdle()
+  }
+
+  /** One op on this agent's actor, for the rest of the org (cloudflareAgentActor). */
+  actorCall(path: string, args: unknown[]): Promise<ActorOutcome> {
+    const slug = this.agentName()
+    return runAsAgentObject(slug, this, async () => {
+      const app = await import('./boot')
+      await app.boot(this.env)
+      await this.syncStatus(app, slug)
+      return app.runAgentActorOp(slug, path, args)
+    })
+  }
+
+  private syncStatus(app: typeof import('./boot'), slug: string): Promise<void> {
+    return (this.statusSynced ??= app.syncAgentStatus(slug).catch((error: unknown) => {
+      this.statusSynced = undefined
+      console.error(`[AgentDurableObject ${slug}] syncing the container status failed:`, error)
+    }))
+  }
+
   private onContainerExit(outcome: string): void {
     this.launched = false
     console.log(`[AgentDurableObject ${this.agentName()}] container exited (${outcome})`)
+  }
+
+  checkVersion(callerVersion: string): boolean {
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
   }
 
   startAgent(envVars: Record<string, string>): Promise<void> {
@@ -189,6 +256,7 @@ export class AgentDurableObject extends DurableObject<Env> {
     await this.containerFetch(new Request('http://container/launch', { method: 'POST' }), SNAPSHOT_PORT)
     await this.waitForPort(CONTAINER_INTERNAL_PORT)
     this.launched = true
+    this.scheduleIdleCheck(Date.now() + FIRST_IDLE_CHECK_MS)
     console.log(`[AgentDurableObject ${this.agentName()}] agent launched`)
   }
 
@@ -207,11 +275,13 @@ export class AgentDurableObject extends DurableObject<Env> {
     await this.stop()
     // The exiting container still answers /state as launched, so wait until it is gone.
     await this.containerExit()
+    await this.cancelIdleCheck()
   }
 
   private async discardContainer(): Promise<void> {
     this.launched = false
     if (await this.containerUp()) await this.destroy()
+    await this.cancelIdleCheck()
   }
 
   // Settles when the watched container exits, or at once when none is watched; gives up after EXIT_WAIT_MS.
