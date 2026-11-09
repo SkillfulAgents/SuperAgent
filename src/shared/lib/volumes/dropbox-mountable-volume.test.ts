@@ -12,7 +12,9 @@ import { dropboxReadCache } from './dropbox-read-cache'
 import { dropboxHealthCache } from './dropbox-health-cache'
 
 const folder = (name = 'Team') => ({ '.tag': 'folder', name, id: `id:${name}` })
-const file = { '.tag': 'file', name: 'notes.txt', id: 'id:notes', size: 11, rev: 'abc123', server_modified: '2026-10-07T12:00:00Z' }
+const uploaded = { name: 'notes.txt', id: 'id:notes', size: 11, rev: 'abc123', server_modified: '2026-10-07T12:00:00Z' }
+const file = { '.tag': 'file', ...uploaded }
+const created = (name = 'new') => ({ metadata: { name, id: `id:${name}` } })
 const page = (entries: unknown[], has_more = false, cursor = 'next') => ({ entries, has_more, cursor })
 let generation = 0
 const volume = () => new DropboxMountableVolume(`attachment-${generation}`, 'Team', { accountId: 'account', path: '/Team' }, 'agent')
@@ -134,7 +136,7 @@ describe('Dropbox filesystem', () => {
       if (endpoint === 'create_folder_v2') {
         await gate
         if (fails) throw new WorkspaceFileError('already-exists')
-        return Response.json({ metadata: folder('new') })
+        return Response.json(created('new'))
       }
       return Response.json(page([{ ...file, path_lower: '/team/notes.txt' }]))
     })
@@ -195,7 +197,7 @@ describe('Dropbox filesystem', () => {
   })
 
   it('replaces existing files using their revision and supports an empty upload', async () => {
-    request.mockResolvedValueOnce(Response.json(file)).mockResolvedValueOnce(Response.json(folder())).mockResolvedValueOnce(Response.json({ ...file, size: 0 }))
+    request.mockResolvedValueOnce(Response.json(file)).mockResolvedValueOnce(Response.json(folder())).mockResolvedValueOnce(Response.json({ ...uploaded, size: 0 }))
     await volume().write('notes.txt', new Blob([]).stream())
     expect(request).toHaveBeenLastCalledWith('account', 'upload', {
       path: '/Team/notes.txt', mode: { '.tag': 'update', update: 'abc123' }, autorename: false, strict_conflict: true,
@@ -223,7 +225,7 @@ describe('Dropbox filesystem', () => {
   })
 
   it('creates and moves only within the selected folder, retaining an occupied destination', async () => {
-    request.mockResolvedValueOnce(Response.json(folder())).mockResolvedValueOnce(Response.json({ metadata: folder('new') }))
+    request.mockResolvedValueOnce(Response.json(folder())).mockResolvedValueOnce(Response.json(created('new')))
     await volume().mkdir('new')
     expect(request).toHaveBeenLastCalledWith('account', 'create_folder_v2', { path: '/Team/new', autorename: false }, expect.anything())
     request.mockResolvedValueOnce(Response.json(file)).mockResolvedValueOnce(Response.json(folder())).mockResolvedValueOnce(Response.json(folder('occupied')))
@@ -234,9 +236,9 @@ describe('Dropbox filesystem', () => {
 })
 
 function mutationResponse(endpoint: string, args: { path?: string; commit?: { path: string }; cursor?: { offset: number } }, options?: { bytes?: ArrayBuffer }) {
-  if (endpoint === 'create_folder_v2') return Response.json({ metadata: folder(args.path?.split('/').at(-1)) })
+  if (endpoint === 'create_folder_v2') return Response.json(created(args.path?.split('/').at(-1)))
   if (endpoint === 'upload' || endpoint === 'upload_session/finish') return Response.json({
-    ...file, name: (args.commit?.path ?? args.path)?.split('/').at(-1), size: args.cursor?.offset ?? options?.bytes?.byteLength ?? 0,
+    ...uploaded, name: (args.commit?.path ?? args.path)?.split('/').at(-1), size: args.cursor?.offset ?? options?.bytes?.byteLength ?? 0,
   })
   return Response.json(null)
 }

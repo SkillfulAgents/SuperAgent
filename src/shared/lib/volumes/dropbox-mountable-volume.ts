@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { dropboxRequest, requireDropboxAccount, withDropboxAccount, type DropboxEndpoint } from './dropbox-client'
-import { dropboxBrowseSchema, dropboxListSchema, dropboxMetadataSchema, dropboxSessionSchema, type DropboxList, type DropboxMetadata, type DropboxVolumeConfig } from './dropbox-schema'
+import { dropboxBrowseSchema, dropboxFileSchema, dropboxFolderSchema, dropboxListSchema, dropboxMetadataSchema, dropboxSessionSchema, type DropboxList, type DropboxMetadata, type DropboxVolumeConfig } from './dropbox-schema'
 import { dropboxReadCache } from './dropbox-read-cache'
 import { dropboxHealthCache } from './dropbox-health-cache'
 import { DropboxUnavailableError } from './dropbox-error'
@@ -193,13 +193,13 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
             const response = session
               ? await this.request('upload_session/finish', { cursor: session, commit }, undefined, undefined, signal)
               : await this.request('upload', commit, first.value ?? new ArrayBuffer(0), undefined, signal)
-            const stored = await json(response, dropboxMetadataSchema)
-            if (signal?.aborted && !previous && stored['.tag'] === 'file') {
+            const stored = await json(response, dropboxFileSchema)
+            if (signal?.aborted && !previous) {
               // Only our just-created revision can be removed, never a newer edit.
               await (await this.request('delete_v2', { path: target, parent_rev: stored.rev })).body?.cancel()
               throwIfUploadAborted(signal)
             }
-            settle(target, stored)
+            settle(target, { ...stored, '.tag': 'file' })
           }, true))
         } finally { await chunks.return(undefined) }
       })
@@ -223,8 +223,8 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
     await this.change([target], settle => withDropboxAccount(this.config.accountId, async () => {
       await this.parentOf(relative)
       const response = await this.request('create_folder_v2', { path: target, autorename: false })
-      const { metadata } = await json(response, z.object({ metadata: dropboxMetadataSchema }))
-      settle(target, metadata)
+      const { metadata } = await json(response, z.object({ metadata: dropboxFolderSchema }))
+      settle(target, { ...metadata, '.tag': 'folder' })
     }))
   }
 

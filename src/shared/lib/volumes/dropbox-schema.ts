@@ -14,13 +14,16 @@ export const dropboxVolumeConfigSchema = z.object({
 export type DropboxVolumeConfig = z.infer<typeof dropboxVolumeConfigSchema>
 
 const nameSchema = z.string().min(1).refine(name => name !== '.' && name !== '..' && !/[/\\\0]/.test(name))
+// Dropbox omits '.tag' where a route declares the concrete type: create_folder_v2's metadata, upload, upload_session/finish.
+export const dropboxFolderSchema = z.object({ name: nameSchema, id: z.string(), path_display: z.string().optional() })
+export const dropboxFileSchema = z.object({
+  name: nameSchema, id: z.string(), size: z.number().int().nonnegative(),
+  rev: z.string().min(1), server_modified: z.iso.datetime(), is_downloadable: z.boolean().optional(),
+  symlink_info: z.unknown().optional(),
+})
 export const dropboxMetadataSchema = z.discriminatedUnion('.tag', [
-  z.object({ '.tag': z.literal('folder'), name: nameSchema, id: z.string(), path_display: z.string().optional() }),
-  z.object({
-    '.tag': z.literal('file'), name: nameSchema, id: z.string(), size: z.number().int().nonnegative(),
-    rev: z.string().min(1), server_modified: z.iso.datetime(), is_downloadable: z.boolean().optional(),
-    symlink_info: z.unknown().optional(),
-  }),
+  dropboxFolderSchema.extend({ '.tag': z.literal('folder') }),
+  dropboxFileSchema.extend({ '.tag': z.literal('file') }),
 ])
 export type DropboxMetadata = z.infer<typeof dropboxMetadataSchema>
 // Continuations can report deletions made during pagination even when the
