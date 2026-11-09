@@ -137,8 +137,6 @@ export default defineConfig({
     name: project.name,
     testMatch: project.testMatch,
     use: { ...devices['Desktop Chrome'], baseURL: project.baseURL },
-    // For a spec that must reach its server's database (team-directory.spec.ts).
-    metadata: { dataDir: project.dataDir },
   })),
 
   webServer: activeProjects.map((project) => ({

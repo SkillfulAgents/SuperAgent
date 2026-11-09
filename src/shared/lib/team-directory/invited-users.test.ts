@@ -14,7 +14,6 @@ import { registerDirectoryProvider } from './registry'
 import { saveDirectoryConnection, deleteDirectoryConnection } from './store'
 import { searchInviteCandidates } from './invite-candidates'
 import { createFakeDirectoryProvider, type FakeDirectory } from './testing/fake-directory-provider'
-import { readInviteToken } from '@shared/lib/auth/invite-tokens'
 import { addAgentUsers, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { getPushableAgentSlugs } from '@shared/lib/services/notification-service'
 
@@ -95,7 +94,7 @@ describe('inviteDirectoryPerson', () => {
 })
 
 describe('notifyInvitedUser', () => {
-  it('DMs them through their directory with a link that claims their account', async () => {
+  it('DMs them through their directory with a link that opens sign-up with their email', async () => {
     const { userId } = await inviteDirectoryPerson({ directoryId, remoteId: 'u-dana' }, 'ada')
     expect(await notifyInvitedUser(userId, { kind: 'mentioned', agentName: 'Support', byName: 'Ada', text: 'can you look at this?' })).toBe('sent')
     expect(fake.sent).toHaveLength(1)
@@ -104,7 +103,7 @@ describe('notifyInvitedUser', () => {
     expect(message).toMatchObject({ headline: 'Ada mentioned you in Support on Gamut:', quote: 'can you look at this?', link: { label: 'Join Gamut to reply' } })
     const link = new URL(message.link.url)
     expect(link.origin).toBe('https://gamut.test')
-    expect(await readInviteToken(link.searchParams.get('invite')!)).toBe(userId)
+    expect(link.searchParams.get('join')).toBe('dana@acme.test')
   })
 
   it('tells nobody who has joined, or whose directory is gone', async () => {

@@ -12,14 +12,13 @@ import { eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
 import { normalizeProviderImage } from '@shared/lib/user-profile-schema'
-import { mintInviteToken } from '@shared/lib/auth/invite-tokens'
 import { resolvePublicAppBaseUrl } from '@shared/lib/agent-integrations/app-link'
 import { cachedDirectoryUsers } from './cache'
 import { getDirectoryProvider } from './registry'
 import { normalizeEmail } from './search'
 import { listDirectoryConnections, openDirectory } from './store'
 import type { DirectoryMessage, DirectoryUser } from './types'
-import { INVITE_LINK_PARAM } from './invite-schema'
+import { JOIN_LINK_PARAM } from './invite-schema'
 
 /** How long picking someone waits for their directory, when nothing is cached for it. */
 const PICK_WAIT_MS = 10_000
@@ -127,7 +126,8 @@ export async function notifyInvitedUser(userId: string, notice: InviteNotice): P
   const base = await resolvePublicAppBaseUrl()
   if (!base) return 'no-channel'
 
-  const url = `${base}/?${INVITE_LINK_PARAM}=${encodeURIComponent(await mintInviteToken(userId))}`
+  // Signing up with this email (or signing in with SSO) claims their account.
+  const url = `${base}/?${JOIN_LINK_PARAM}=${encodeURIComponent(row.email)}`
   await directory.notifyUser(
     { provider: row.provider, tenantId: row.tenantId, remoteId: row.remoteId, name: row.name, email: row.email, emailVerified: true },
     messageFor(notice, url),

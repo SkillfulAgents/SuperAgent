@@ -7,6 +7,9 @@ import { defineLockout } from '@shared/lib/app-state/lockout'
 let mockAuthSettings: Record<string, unknown> = {}
 let mockUserCount = 1 // Default: at least one user exists (not first user)
 let mockInvited: { status: string } | undefined // the user row an email sign-up names, if any
+// Claiming the account is covered against the real Better Auth (invited-user-claim.integration.test.ts).
+const signUpInvitedUser = vi.hoisted(() => vi.fn(async (c: Context) => c.json({ claimed: true })))
+vi.mock('./invited-sign-up', () => ({ signUpInvitedUser }))
 
 vi.mock('@shared/lib/config/settings', () => ({
   DEFAULT_AUTH_SETTINGS: {
@@ -72,18 +75,28 @@ describe('auth enforcement middleware', () => {
     mockAuthSettings = {}
     mockUserCount = 1 // default: not first user
     mockInvited = undefined
+    signUpInvitedUser.mockClear()
     // Lockouts live in AppState, which the shared setup installs fresh for every test.
   })
 
   // ── Signup Mode ──────────────────────────────────────────────────────
 
   describe('signup mode', () => {
-    it('sends someone invited from a team directory to their invite link instead of signing up', async () => {
-      mockAuthSettings = { signupMode: 'open' }
+    it('lets someone invited from a team directory sign up while sign-ups are invitation-only, into the account waiting for them', async () => {
+      mockAuthSettings = { signupMode: 'invitation_only' }
       mockInvited = { status: 'invited' }
       const res = await postJson(createApp(), '/api/auth/sign-up/email', { email: 'Dana@acme.test', password: 'StrongPass123!', name: 'Dana' })
-      expect(res.status).toBe(403)
-      expect(await res.json()).toMatchObject({ code: 'INVITED' })
+      expect(await res.json()).toEqual({ claimed: true })
+      expect(signUpInvitedUser).toHaveBeenCalledOnce()
+    })
+
+    it('holds an invited sign-up to the password policy, and to closed sign-ups', async () => {
+      mockInvited = { status: 'invited' }
+      mockAuthSettings = { signupMode: 'invitation_only' }
+      expect((await postJson(createApp(), '/api/auth/sign-up/email', { email: 'dana@acme.test', password: 'short', name: 'Dana' })).status).toBe(400)
+      mockAuthSettings = { signupMode: 'closed' }
+      expect((await postJson(createApp(), '/api/auth/sign-up/email', { email: 'dana@acme.test', password: 'StrongPass123!', name: 'Dana' })).status).toBe(403)
+      expect(signUpInvitedUser).not.toHaveBeenCalled()
     })
 
     it('blocks signup when mode is closed', async () => {
