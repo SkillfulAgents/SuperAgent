@@ -33,7 +33,9 @@ import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { rehypeMentions } from '@renderer/lib/rehype-mentions'
-import { formatMessageTimeExact, formatShortAgo } from '@renderer/lib/message-time'
+import { formatCompactDistance } from '@renderer/components/connections/utils'
+import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
+import { format } from 'date-fns'
 import type { Mention } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
@@ -187,7 +189,24 @@ function resolveSubagentRun(
   }
 }
 
-/** The sender's avatar beside a shared-agent message, sized and spaced as in the iOS app. */
+/**
+ * When a message was sent ("5m ago"), with the exact time in its tooltip.
+ * The shared minute clock re-renders just this label, so it stays current
+ * while the message itself is memoized.
+ */
+function SentAgo({ date }: { date: Date | string }) {
+  useMinuteClock()
+  const sentAt = new Date(date)
+  const label = formatCompactDistance(sentAt)
+  if (!label) return null
+  return (
+    <time className="text-muted-foreground/70" dateTime={sentAt.toISOString()} title={format(sentAt, 'PPpp')}>
+      {label}
+    </time>
+  )
+}
+
+/** The sender's avatar beside their message, sized and spaced as in the iOS app. */
 const SENDER_AVATAR_SIZE = 28
 const SENDER_AVATAR_GAP = 8
 /** The name over the bubble stops short of the avatar and the bubble's rounded corner. */
@@ -252,13 +271,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const userKind = isUser ? classifyUserMessage(message, hasText ? text : '') : null
   // An integration card names its own author and may carry only files.
   const isIntegrationMessage = userKind?.kind === 'integration'
-  // Who wrote it, drawn beside a person's bubble (an integration card names its own author).
-  const avatarSender = isUser && !isIntegrationMessage && sender?.name ? sender : null
-  // When it was sent, beside the sender's name.
-  const sentAt = new Date(message.createdAt)
-  const sentAtLabel = isUser ? formatShortAgo(sentAt) : ''
   const CustomUserRender = userKind?.Render
   const bareUserRender = CustomUserRender && userKind?.chrome === 'bare'
+  // Who wrote it, drawn beside what they sent: known in auth mode, or lifted
+  // from a read-only mirror prefix. An integration card names its own author,
+  // and a bare kind (the interrupt marker) has nothing to sit beside.
+  const avatarSender = isUser && !isIntegrationMessage && !bareUserRender && sender?.name ? sender : null
   const renderMarkdown = useCallback((markdown: string) => (
     <div dir="auto" className={PROSE_CLASS}>
       <MarkdownBlock text={markdown} embeddedImageAliases={embeddedImageAliases} agentSlug={agentSlug} />
@@ -364,25 +382,22 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           isUser && 'items-end'
         )}
       >
-        {/* Who sent it (shared agent sessions, or lifted from a read-only mirror
-            prefix) and when, over the bubble and clear of its corner as the iOS
-            app draws it. Shown on hover or focus only; always on touch screens,
-            which have no hover. Faded rather than removed, so nothing moves. */}
-        {isUser && !isIntegrationMessage && showMessageBubble && !bareUserRender && (avatarSender || sentAtLabel) && (
+        {/* Who sent it and when, over what they sent and clear of its corner
+            as the iOS app draws it. Only with a sender: without one (non-auth
+            mode) there is no row and no space held for it. Shown on hover or
+            focus only; always on touch screens, which have no hover. Faded
+            rather than removed, so nothing moves. */}
+        {avatarSender && (
           <span
             className={cn(
               '-mb-[5px] flex items-baseline gap-1.5 text-xs text-muted-foreground transition-opacity',
               'opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100 touch:opacity-100',
             )}
-            style={avatarSender ? { marginRight: SENDER_NAME_INSET } : undefined}
+            style={{ marginRight: SENDER_NAME_INSET }}
             data-testid="message-meta"
           >
-            {avatarSender && <span>{avatarSender.name}</span>}
-            {sentAtLabel && (
-              <time className="text-muted-foreground/70" dateTime={sentAt.toISOString()} title={formatMessageTimeExact(sentAt)}>
-                {sentAtLabel}
-              </time>
-            )}
+            <span>{avatarSender.name}</span>
+            <SentAgo date={message.createdAt} />
           </span>
         )}
 
