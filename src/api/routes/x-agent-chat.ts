@@ -19,6 +19,7 @@ import {
   getAgentIntegrationSessionBySessionId,
 } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
+import { UndeliveredMessageError } from '@shared/lib/chat-integrations/chat-delivery'
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
 import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
@@ -319,7 +320,7 @@ xAgentChat.post('/send', async (c) => {
     if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid email' }, 400)
     if (error instanceof EmailPolicyError) return c.json({ error: error.message }, 403)
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'send' } })
-    return c.json({ error: 'Failed to send chat message' }, 500)
+    return c.json({ error: error instanceof UndeliveredMessageError ? error.message : 'Failed to send chat message' }, 500)
   }
 })
 

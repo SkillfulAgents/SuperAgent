@@ -267,7 +267,14 @@ export class IMessageConnector extends ChatAgentIntegration {
     const name = integration.name?.trim() || agent.name
     const card = buildAgentContactCard({ slug: integration.agentSlug, name, description: agent.description,
       appUrl: await resolveAgentWebUrl(displaySlug(agent.name, integration.agentSlug)) })
-    await this.sendFile('', card, `${sanitizeUploadFilename(name)}.vcf`, "Save me as a contact so I'm not just a number. Text me anytime.")
+    const filename = `${sanitizeUploadFilename(name)}.vcf`
+    const caption = "Save me as a contact so I'm not just a number. Text me anytime."
+    try {
+      await this.sendFile('', card, filename, caption)
+    } catch (err) {
+      captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-send-file' } })
+      await this.sendMessage('', { text: `[File: ${filename}] — ${caption}` })
+    }
   }
 
   readonly provider = 'imessage' as const
@@ -578,41 +585,34 @@ export class IMessageConnector extends ChatAgentIntegration {
     const mimeType = guessMimeType(filename)
     const { text: captionText, decorations } = markdownToIMessage(caption ?? '')
 
-    try {
-      // 1. Request upload URL
-      const uploadInfo = await this.requestUpload({ filename, contentType: mimeType, sizeBytes: fileData.length })
+    // 1. Request upload URL
+    const uploadInfo = await this.requestUpload({ filename, contentType: mimeType, sizeBytes: fileData.length })
 
-      // 2. Upload the file
-      const uploadHeaders = new Headers(uploadInfo.requiredHeaders)
-      // Fetch computes the byte body's length; forwarding it duplicates the header with Undici's dispatcher.
-      uploadHeaders.delete('content-length')
-      const uploadRes = await fetch(uploadInfo.uploadUrl, {
-        method: 'PUT',
-        headers: uploadHeaders,
-        body: new Uint8Array(fileData),
-      })
-      if (!uploadRes.ok) {
-        throw new Error(`File upload failed: ${uploadRes.status}`)
-      }
-
-      // 3. Send message with attachment
-      const parts: GatewayMessagePart[] = [
-        { type: 'media', attachmentId: uploadInfo.attachmentId },
-      ]
-      if (captionText) {
-        parts.push({ type: 'text', value: captionText })
-      }
-
-      await this.postMessage(targetChatId, parts, decorations)
-      return `file-${Date.now()}`
-    } catch (err) {
-      console.error('[IMessageConnector] Failed to send file:', err)
-      captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-send-file' } })
-      // Fall back to a text message about the file
-      await this.postMessage(targetChatId, [{ type: 'text', value: `[File: ${filename}]${captionText ? ` — ${captionText}` : ''}` }])
-      return `file-fallback-${Date.now()}`
+    // 2. Upload the file
+    const uploadHeaders = new Headers(uploadInfo.requiredHeaders)
+    // Fetch computes the byte body's length; forwarding it duplicates the header with Undici's dispatcher.
+    uploadHeaders.delete('content-length')
+    const uploadRes = await fetch(uploadInfo.uploadUrl, {
+      method: 'PUT',
+      headers: uploadHeaders,
+      body: new Uint8Array(fileData),
+    })
+    if (!uploadRes.ok) {
+      throw new Error(`File upload failed: ${uploadRes.status}`)
     }
+
+    // 3. Send message with attachment
+    const parts: GatewayMessagePart[] = [
+      { type: 'media', attachmentId: uploadInfo.attachmentId },
+    ]
+    if (captionText) {
+      parts.push({ type: 'text', value: captionText })
+    }
+
+    await this.postMessage(targetChatId, parts, decorations)
+    return `file-${Date.now()}`
   }
+
 
   // ── User request cards ──────────────────────────────────────────────
 

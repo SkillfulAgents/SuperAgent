@@ -9,7 +9,7 @@ import { AgentIntegration } from '../agent-integrations/agent-integration'
 import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
 import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
-import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
+import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, deliverMarkdown, UndeliveredMessageError, type ManagedConnector } from './chat-delivery'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import { reviewCardFromRegistry } from './request-card'
@@ -204,6 +204,12 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   abstract finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void>
 
   /**
+   * Remove a streamed draft that no text replaces: the reply opened with an image.
+   * Default no-op for connectors that show no draft.
+   */
+  async retireStreamingMessage(_chatId: string, _messageId: string): Promise<void> {}
+
+  /**
    * Signal that the agent is busy, labeled by what it is doing (`activity`). The
    * connector owns how that maps to its surface (Telegram labels a draft, Slack
    * sets its status line) AND any keep-alive needed to survive provider-side
@@ -227,13 +233,14 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   protected async removeAcknowledgement(_chatId: string, _messageId: string): Promise<void> {}
 
   /**
-   * Send a file to the chat. Returns the external message ID.
+   * Send a file to the chat. Returns the external message ID. Throws when the file did not arrive.
    * @param chatId Target chat/channel
    * @param fileData Buffer of the file content
    * @param filename Display name for the file
    * @param caption Optional text caption to accompany the file
+   * @param options.asImage Show it as an image in the reply, not as the original file
    */
-  abstract sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string>
+  abstract sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: { asImage?: boolean }): Promise<string>
 
   /**
    * Send a rich card for user-request items.
@@ -481,7 +488,9 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
       try {
         await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 1100))
         if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
-        return await this.sendMessage(context.externalId, alsoSendToChannel ? { text, alsoSendToChannel } : { text })
+        const { messageId, undelivered } = await deliverMarkdown(this, context.integration.agentSlug, context.externalId, text, { alsoSendToChannel })
+        if (undelivered.length) throw new UndeliveredMessageError(undelivered)
+        return messageId
       } finally { await this.stopWorking(context.externalId).catch(() => {}) }
     })]
     if (this.listChatUsers) tools.push(tool('list_users', 'List reachable people.', {}, () => this.listChatUsers!()))
