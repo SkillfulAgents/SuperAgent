@@ -18,8 +18,9 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DurableObject } from 'cloudflare:workers'
-import type { DurableObjectNamespace, DurableObjectState, DurableObjectStub } from 'cloudflare:workers'
+import type { DurableObjectNamespace, DurableObjectState } from 'cloudflare:workers'
 import type { Env } from './index'
+import { reachCurrentCode, restartIfOlder } from './object-version'
 import { Task, TaskManager, type PeriodicOptions, type RetryPolicy, type TaskContext, type TaskSpec } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -71,8 +72,10 @@ export function servingTaskManager(): TaskManagerDurableObject | null {
   return serving.getStore() ?? null
 }
 
-export function taskManagerOf(objects: DurableObjectNamespace<TaskManagerDurableObject>): DurableObjectStub<TaskManagerDurableObject> {
-  return objects.getByName(OBJECT_NAME)
+/** Makes sure the org's task manager runs its services, once it runs this deploy's code or newer. */
+export async function startTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
+  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+  await env.TASK_MANAGER.getByName(OBJECT_NAME).wake()
 }
 
 export class TaskManagerDurableObject extends DurableObject<Env> {
@@ -86,6 +89,10 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     const sql = ctx.storage.sql
     sql.exec('CREATE TABLE IF NOT EXISTS job (id TEXT PRIMARY KEY, gen TEXT NOT NULL, task_type TEXT NOT NULL, payload TEXT NOT NULL, interval_ms INTEGER, jitter_ratio REAL, wake_at INTEGER, tick_at INTEGER, execution_id TEXT, attempt INTEGER NOT NULL DEFAULT 0)')
     sql.exec('CREATE TABLE IF NOT EXISTS live_check (id INTEGER PRIMARY KEY CHECK (id = 1), checked_at INTEGER NOT NULL)')
+  }
+
+  checkVersion(callerVersion: string): boolean {
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
   }
 
   /** Starts the background services unless they already run here. Each isolate of the org calls it once. */
@@ -289,7 +296,10 @@ export class CloudflareTaskManager extends TaskManager {
   private queue: Promise<unknown> = Promise.resolve()
   private stopped = false
 
-  constructor(private readonly objects: DurableObjectNamespace<TaskManagerDurableObject>) {
+  constructor(
+    private readonly objects: DurableObjectNamespace<TaskManagerDurableObject>,
+    private readonly version?: string,
+  ) {
     super()
   }
 
@@ -358,7 +368,12 @@ export class CloudflareTaskManager extends TaskManager {
 
   private inOrder(call: (schedule: Schedule) => Promise<unknown> | unknown): Promise<unknown> {
     // Inside the object itself (a task scheduling more work), the call goes to it directly: through its stub it would come back to it.
-    const run = () => call(servingTaskManager() ?? this.objects.getByName(OBJECT_NAME))
+    const run = async () => {
+      const own = servingTaskManager()
+      if (own) return call(own)
+      await reachCurrentCode(this.objects, OBJECT_NAME, this.version)
+      return call(this.objects.getByName(OBJECT_NAME))
+    }
     const next = this.queue.then(run, run)
     this.queue = next.catch(() => {})
     return next
