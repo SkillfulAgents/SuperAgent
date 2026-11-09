@@ -11,7 +11,13 @@ function overRpc(actor: Partial<Record<string, unknown>>) {
       calls.push({ path, args })
       const cloned = path === 'container.fetch' ? args : structuredClone(args)
       const outcome = await runActorOp(actor as unknown as AgentActor, path, cloned)
-      return path === 'container.fetch' ? outcome : structuredClone(outcome)
+      if (path === 'container.fetch') return outcome
+      // A stream crosses RPC only when it is a byte stream; it is transferred, not cloned.
+      if ('value' in outcome && outcome.value instanceof ReadableStream) {
+        outcome.value.getReader({ mode: 'byob' }).releaseLock()
+        return outcome
+      }
+      return structuredClone(outcome)
     },
   }
   return { client: cloudflareAgentActor('sales-agent', (run) => run(object)), calls }
@@ -61,6 +67,27 @@ describe('cloudflareAgentActor', () => {
     const response = await client.container.fetch('/files/notes.md/upload', { method: 'POST', headers: { 'x-agent': 'sales' }, body: 'Q3 pipeline' })
 
     expect(await response.text()).toBe('POST /files/notes.md/upload Q3 pipeline sales')
+  })
+
+  it("sends a viewer's frames as a byte stream and hands them back as frames", async () => {
+    const frames = [{ id: '1', data: '{"type":"snapshot"}' }, { id: '2', data: '{"type":"ping"}' }]
+    const { client } = overRpc({ messages: { follow: async () => new ReadableStream({ start: (controller) => { for (const frame of frames) controller.enqueue(frame); controller.close() } }) } })
+
+    const stream = await client.messages.follow('s1', {})
+
+    expect(await Array.fromAsync(stream as unknown as AsyncIterable<unknown>)).toEqual(frames)
+  })
+
+  it("cancels the agent's stream when the viewer stops reading", async () => {
+    const cancel = vi.fn()
+    const { client } = overRpc({ messages: { subscribe: async () => new ReadableStream({ pull: (controller) => controller.enqueue({ type: 'ping' }), cancel }) } })
+
+    const stream = await client.messages.subscribe('s1')
+    const reader = stream.getReader()
+    expect(await reader.read()).toEqual({ done: false, value: { type: 'ping' } })
+    await reader.cancel()
+
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalled())
   })
 
   it('refuses a path that is not an op on an actor group', async () => {
