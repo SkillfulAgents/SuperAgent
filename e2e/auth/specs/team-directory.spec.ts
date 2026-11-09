@@ -69,8 +69,7 @@ test('a directory person is shared with and mentioned before joining, then finds
   await expect(share).toContainText('Share this agent with Lee Park?')
   await share.getByRole('button', { name: 'Share and send' }).click()
   await expect(share).not.toBeVisible()
-  // In the transcript the mention of someone not on Gamut yet is dashed.
-  await expect(page.locator('[data-testid="user-mention"][data-invited]').last()).toContainText('@Lee Park')
+  await expect(page.getByTestId('user-mention').last()).toContainText('@Lee Park')
 
   const members = await (await page.request.get(`/api/agents/${agent.slug}/members`)).json() as Array<{ email: string; invited?: boolean }>
   expect(members.filter((m) => m.invited).map((m) => m.email).sort()).toEqual(['dana@acme.test', 'lee.park@acme.test'])

@@ -131,7 +131,7 @@ Someone who isn't on Gamut yet becomes a real `user` row with `status: 'invited'
 
 ### Not members yet
 
-Invited users are left out of: the Users tab list and count (Better Auth `list-users` filtered on `status`, which is declared as a user field; they are listed apart, removable), "everyone in the workspace" (`addAgentUsers` with no ids), who an agent acts for (`countOtherMembers`), email-integration allow-lists, and web push and APNs (`getPushableAgentSlugs`). In search they are accounts with `notOnGamut: true`; in rosters they carry `invited: true` ("Invite pending"), and their mention chips are dashed.
+Invited users are left out of: the Users tab list and count (Better Auth `list-users` filtered on `status`, which is declared as a user field; they are listed apart, removable), "everyone in the workspace" (`addAgentUsers` with no ids), who an agent acts for (`countOtherMembers`), email-integration allow-lists, and web push and APNs (`getPushableAgentSlugs`). In search they are accounts with `notOnGamut: true`; in rosters they carry `invited: true` ("Invite pending").
 
 ## Agent apps
 

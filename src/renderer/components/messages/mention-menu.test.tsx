@@ -116,21 +116,6 @@ describe('the @ menu', () => {
     expect(state.invitees).toEqual([{ url: '/api/agents/support01x/access/invitees', body: { directoryRef: { directoryId: 'dir-1', remoteId: 'U5' } } }])
   })
 
-  it('draws the chip of a member not on Gamut yet dashed', async () => {
-    state.members = [me, mike, { id: 'lee-id', name: 'Lee Park', email: 'lee@acme.com', image: null, role: 'user', invited: true }]
-    const user = userEvent.setup()
-    render(<Composer />)
-    const editor = screen.getByTestId('markdown-editor')
-    await user.type(editor, '@lee')
-    await user.keyboard('{Enter}')
-    await user.type(editor, '@mike')
-    await user.keyboard('{Enter}')
-
-    const [lee, mikeChip] = within(editor).getAllByTestId('user-mention')
-    await waitFor(() => expect(lee).toHaveAttribute('data-invited'))
-    expect(mikeChip).not.toHaveAttribute('data-invited')
-  })
-
   it('lists teammates and agents together, never you or this agent', async () => {
     const user = userEvent.setup()
     render(<Composer />)
@@ -156,8 +141,8 @@ describe('the @ menu', () => {
     )
     const chip = within(editor).getByTestId('user-mention')
     expect(chip).toHaveTextContent('@Mike Smith')
-    // The chip's avatar, drawn by React into the chip.
-    expect(within(chip).getByRole('img', { name: 'Mike Smith' })).toBeInTheDocument()
+    // A teammate's chip is just their name: no avatar.
+    expect(within(chip).queryByRole('img')).toBeNull()
   })
 
   it('moves with the arrow keys and picks with Tab', async () => {
