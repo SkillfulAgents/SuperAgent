@@ -39,9 +39,23 @@ export default {
     ctx.waitUntil(booting.catch(() => {}))
     await booting
     wakeTaskManager(env, ctx)
-    return app.serve(request, env, ctx)
+    return app.serve(withClientAddress(request), env, ctx)
   },
 } satisfies ExportedHandler<Env>
+
+/**
+ * The client's address where SuperAgent reads it (x-forwarded-for, as the cloud load balancer sets
+ * it): Cloudflare's cf-connecting-ip, which a client cannot set. Without it every client shares one
+ * address, so one client's sign-in attempts use up everyone's limit.
+ */
+export function withClientAddress(request: Request): Request {
+  const address = request.headers.get('cf-connecting-ip')
+  if (!address) return request
+  const headers = new Headers(request.headers)
+  headers.set('x-forwarded-for', address)
+  headers.delete('x-real-ip')
+  return new Request(request, { headers })
+}
 
 /** Each isolate makes sure, once, that the org's background services run. */
 function wakeTaskManager(env: Env, ctx: ExecutionContext): void {
