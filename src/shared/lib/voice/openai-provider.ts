@@ -8,8 +8,8 @@ import { BaseVoiceProvider, type VoiceProviderSettings } from './voice-provider'
 import { getSettings, type AppSettings, type VoiceProvider } from '../config/settings'
 import { configuredLlmClientFrom, createSummarizerText } from '../llm-provider/helpers'
 import { background } from '../background'
-import { liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type LiveSessionCredentials, type VoiceHistory } from './live-types'
-import { buildLiveConversationPrompt, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
+import { legacyLiveRequestSchema, liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type LiveSessionCredentials, type VoiceHistory } from './live-types'
+import { buildLiveConversationPrompt, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT, LIVE_REQUEST_PROMPT_LEGACY } from '../../prompts/voice-live'
 import { windowVoiceHistory } from './voice-history-window'
 import { BYOK_VOICE_MESSAGES, type OpenaiVoiceMessages } from './openai-voice-messages'
 import type { SttProtocol } from './stt-protocol'
@@ -151,24 +151,26 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   async mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal, settings?: AppSettings) {
     const deadline = AbortSignal.timeout(12_000)
     const bounded = input.kind === 'request' ? { ...input, history: windowVoiceHistory(input.history) } : input
+    // A client that sent no userWords predates the rewrite pipe and expects an action.
+    const legacy = input.kind === 'request' && input.userWords === undefined
+    const properties = legacy
+      ? { action: { type: 'string', enum: legacyLiveRequestSchema.shape.action.options }, text: { type: 'string' } }
+      : { text: { type: 'string' }, mode: { type: 'string', enum: liveRequestSchema.shape.mode.options } }
     const { client, model } = await configuredLlmClientFrom(settings ?? await getSettings())
     const text = await createSummarizerText(client, {
       model,
-      system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
+      system: input.kind === 'reply' ? LIVE_REPLY_PROMPT : legacy ? LIVE_REQUEST_PROMPT_LEGACY : LIVE_REQUEST_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(bounded) }],
       ...(input.kind === 'request' ? { output_config: { format: {
         type: 'json_schema' as const,
-        schema: {
-          type: 'object',
-          properties: { action: { type: 'string', enum: liveRequestSchema.shape.action.options }, text: { type: 'string' } },
-          required: ['action', 'text'], additionalProperties: false,
-        },
+        schema: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false },
       } } } : {}),
     }, signal ? AbortSignal.any([signal, deadline]) : deadline)
     if (!text) throw new Error('The configured summarizer returned no voice mapping. Please try again.')
     if (input.kind === 'reply') return { text: text.slice(0, 1800) }
     try {
-      const request = liveRequestSchema.parse(JSON.parse(text))
+      if (!legacy) return liveRequestSchema.parse(JSON.parse(text))
+      const request = legacyLiveRequestSchema.parse(JSON.parse(text))
       if (request.action !== 'none' && !request.text.trim()) throw new Error('Empty request')
       return request
     } catch {
