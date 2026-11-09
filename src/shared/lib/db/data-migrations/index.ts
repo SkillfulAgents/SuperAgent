@@ -24,6 +24,7 @@ import { importVolumeDefinitions } from './0006-import-volume-definitions'
 import { normalizeCobaltAvatarColor } from './0007-normalize-cobalt-avatar-color'
 import { moveSessionSlashCommandsMigration } from './0008-move-session-slash-commands'
 import { importHostRecords } from './0009-import-host-records'
+import { importSessionMetadataMigration } from './0010-import-session-metadata'
 
 /** The query surface a migration gets. Await every statement: the driver may answer asynchronously. */
 export type DataMigrationDb = Pick<AppDatabase, 'select' | 'insert' | 'update' | 'delete'>
@@ -36,12 +37,16 @@ export interface DataMigration {
    * Idempotent: the runner records the migration only after `run` returns,
    * so a crash in between runs it again on the next boot, over whatever it
    * already wrote. Skip rows that exist, or insert with `onConflictDoNothing`.
+   *
+   * Answering `'incomplete'` leaves it unrecorded on purpose: part of what it
+   * moves could not be reached this time (a volume that is not mounted), and
+   * the next boot runs it again. The app opens either way.
    */
-  run(db: DataMigrationDb): void | Promise<void>
+  run(db: DataMigrationDb): void | 'incomplete' | Promise<void | 'incomplete'>
 }
 
 /** Every data migration, in the order they are applied. */
-export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories, globalModelPricing, importLlmConnections, renameDefaultConnections, renameClaudeMdToAgentsMd, importVolumeDefinitions, normalizeCobaltAvatarColor, moveSessionSlashCommandsMigration, importHostRecords]
+export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories, globalModelPricing, importLlmConnections, renameDefaultConnections, renameClaudeMdToAgentsMd, importVolumeDefinitions, normalizeCobaltAvatarColor, moveSessionSlashCommandsMigration, importHostRecords, importSessionMetadataMigration]
 
 /**
  * Apply every migration in `migrations` the ledger does not list, in id
@@ -62,7 +67,7 @@ export async function runDataMigrations(
   const appliedNow: number[] = []
   for (const migration of ordered) {
     if (applied.has(migration.id)) continue
-    await migration.run(db)
+    if ((await migration.run(db)) === 'incomplete') continue
     await db.insert(dataMigrations).values({ id: migration.id, name: migration.name, appliedAt: new Date() }).run()
     appliedNow.push(migration.id)
   }

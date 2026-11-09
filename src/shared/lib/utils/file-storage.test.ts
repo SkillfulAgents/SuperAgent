@@ -24,7 +24,6 @@ import {
   getAgentInstructionsPath,
   writeFile,
   getAgentEnvPath,
-  getAgentSessionMetadataPath,
   getAgentClaudeConfigDir,
   getAgentSessionsDir,
   getSessionJsonlPath,
@@ -775,10 +774,6 @@ describe('path helpers', () => {
 
   it('getAgentEnvPath returns path ending with .env', () => {
     expect(getAgentEnvPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/\.env$/)
-  })
-
-  it('getAgentSessionMetadataPath returns path ending with session-metadata.json', () => {
-    expect(getAgentSessionMetadataPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/session-metadata\.json$/)
   })
 
   it('getAgentClaudeConfigDir returns path ending with .claude', () => {

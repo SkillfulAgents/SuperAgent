@@ -1,3 +1,5 @@
+vi.mock('@shared/lib/agent-actor/db-session-index-storage', async () =>
+  (await import('@shared/lib/agent-actor/testing/in-memory-session-index-storage')).inMemorySessionIndexModule())
 vi.mock('@shared/lib/services/agent-members-service', () => ({
   notifyAgentMembersChanged: (...args: unknown[]) => mockNotifyAgentMembersChanged(...args),
   listAgentMembers: vi.fn(() => []),
@@ -509,7 +511,6 @@ vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/lib/services/session-service')>()
   return {
   listSessions: vi.fn(),
-  listSessionsFromSummary: vi.fn(),
   listSessionsByIds: vi.fn(),
   sortSessionsNewestFirst: actual.sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT: actual.SESSIONS_LIST_MAX_LIMIT,
@@ -900,7 +901,7 @@ import { attachMount, removeMount, resolveMountPath } from '@shared/lib/services
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
-import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
@@ -6000,7 +6001,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     const res = await deleteReq(app, URL)
 
     expect(res.status).toBe(204)
-    expect(deleteNotificationsBySessionIds).toHaveBeenCalledWith(['sess-1'])
+    expect(deleteNotificationsBySessionIds).toHaveBeenCalledWith('test-agent', ['sess-1'])
   })
 
   it('cleans up every user unread mark for the deleted session', async () => {
@@ -7739,7 +7740,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 0,
       lastActivityAt: null,
     })
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
     vi.mocked(readSessionMetadata).mockResolvedValue({})
     vi.mocked(sessionExists).mockResolvedValue(true)
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
@@ -7771,13 +7772,13 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body[0]).not.toHaveProperty('latestVisibleSession')
     expect(body[0]).not.toHaveProperty('attentionOutsideLatest')
-    expect(listSessionsFromSummary).not.toHaveBeenCalled()
+    expect(listSessions).not.toHaveBeenCalled()
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
   it('returns the latest tail and excludes attention on that session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('settled-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('settled-visible')])
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
       ['agent-1', new Set(['settled-visible'])],
     ]))
@@ -7827,8 +7828,7 @@ describe('GET /api/agents (enriched summary)', () => {
       hasUnreadNotification: false,
       hasPendingInput: false,
     })
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), {
-      metadata: {},
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -7847,7 +7847,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('annotates the tail like a transcript page read', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [
         {
@@ -7878,7 +7878,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('reports unread and pending attention on an older visible session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('latest-visible'),
       sessionInfo('older-visible'),
     ])
@@ -7913,7 +7913,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores unread and pending attention from hidden automation', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'hidden-scheduled': {
         isScheduledExecution: true,
@@ -7951,7 +7951,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts promoted automation as visible outside attention', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('latest-visible'),
       sessionInfo('promoted-scheduled'),
     ])
@@ -7994,7 +7994,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts unattributed unread and agent-scoped pending attention as outside', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
       ['agent-1', new Set(['unknown-session'])],
     ]))
@@ -8025,7 +8025,7 @@ describe('GET /api/agents (enriched summary)', () => {
   // otherwise a session marked unread reads as "nothing to see here".
   it('counts a marked-unread session outside latest with no notification row', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('latest-visible'),
       sessionInfo('older-marked'),
     ])
@@ -8049,7 +8049,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('carries a marked-unread flag on the latest visible session tail', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['latest-visible'])]]),
@@ -8072,7 +8072,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores a marked-unread flag on hidden automation', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'hidden-scheduled': { isScheduledExecution: true },
     })
@@ -8096,7 +8096,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts a waiting session the visible list does not know as outside', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     // Not confirmed hidden, so not safe to ignore: iOS opens the latest session
     // directly on false/false.
     mockLiveSessions.awaitingIds.mockReturnValueOnce(['unlisted-session'])
@@ -8116,7 +8116,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns null when an agent has no visible session and skips transcript work', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
 
     const res = await getReq(
       app,
@@ -8135,7 +8135,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns null and reports a latest visible session with neither transcript nor registration', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('missing-transcript')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('missing-transcript')])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
     vi.mocked(sessionExists).mockResolvedValue(false)
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -8167,7 +8167,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('serves a registered session with an empty tail before its first transcript write', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('registered-pending')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('registered-pending')])
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'registered-pending': { name: 'Pending', createdAt: '2026-01-01T11:00:00.000Z' },
     })
@@ -8206,7 +8206,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns null attention instead of false when visible-session selection fails', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockRejectedValue(new Error('visibility unavailable'))
+    vi.mocked(listSessions).mockRejectedValue(new Error('visibility unavailable'))
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     try {
@@ -8231,7 +8231,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('keeps the latest tail but returns null when attention computation fails', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     // The route reads the agent's open requests from its actor's own store.
     const attentionRead = vi
       .spyOn(AgentInputRequests.prototype, 'getOpenRequests')
@@ -8263,7 +8263,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('hydrates every agent in one collection response without legacy full-transcript reads', async () => {
     const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
-    vi.mocked(listSessionsFromSummary).mockImplementation(async (store) => [
+    vi.mocked(listSessions).mockImplementation(async (store) => [
       sessionInfo('session-' + store.slug, store.slug),
     ])
     vi.mocked(getSessionMessagesPage).mockImplementation(async (_store, sessionId) => ({
@@ -8287,7 +8287,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body.map((agent: { latestVisibleSession: { session: { id: string } } }) =>
       agent.latestVisibleSession.session.id,
     )).toEqual(['session-agent-1', 'session-agent-2'])
-    expect(listSessionsFromSummary).toHaveBeenCalledTimes(2)
+    expect(listSessions).toHaveBeenCalledTimes(2)
     expect(getSessionMessagesPage).toHaveBeenCalledTimes(2)
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
@@ -8295,7 +8295,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('isolates a missing or corrupt transcript to its agent', async () => {
     const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
-    vi.mocked(listSessionsFromSummary).mockImplementation(async (store) => [
+    vi.mocked(listSessions).mockImplementation(async (store) => [
       sessionInfo('session-' + store.slug, store.slug),
     ])
     vi.mocked(getSessionMessagesPage).mockImplementation(async (store) => {
@@ -8345,7 +8345,7 @@ describe('GET /api/agents (enriched summary)', () => {
       where: vi.fn().mockResolvedValue([{ agentSlug: 'agent-1' }]),
     })
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('visible-session')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('visible-session')])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [],
       nextCursor: null,
@@ -8361,8 +8361,8 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body).toHaveLength(1)
     expect(body[0].slug).toBe('agent-1')
     expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['agent-1'] })
-    expect(listSessionsFromSummary).toHaveBeenCalledTimes(1)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
+    expect(listSessions).toHaveBeenCalledTimes(1)
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
       expect.objectContaining({ slug: 'agent-1' }),
       'visible-session',
@@ -8380,7 +8380,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(await res.json()).toEqual({ error: 'Invalid agent list query' })
     expect(listAgentsWithStatus).not.toHaveBeenCalled()
     expect(getSessionSummary).not.toHaveBeenCalled()
-    expect(listSessionsFromSummary).not.toHaveBeenCalled()
+    expect(listSessions).not.toHaveBeenCalled()
   })
 
   it('returns enriched agents with summary fields', async () => {
@@ -10443,11 +10443,11 @@ describe('sessions list query contract — GET /:id/sessions', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
   })
 
   it('preserves the full visible-list behavior when no query is supplied', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('newer-visible', '2026-01-02T00:00:00Z'),
       sessionInfo('older-visible', '2026-01-01T00:00:00Z'),
     ])
@@ -10460,7 +10460,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
       'newer-visible',
       'older-visible',
     ])
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
     })
   })
@@ -10469,7 +10469,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     // The three lookups feeding this projection are independent; whichever
     // order (or concurrency) the route runs them in, every row must still
     // pick up its own unread flag and wake details.
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('s-waking', '2026-01-02T00:00:00Z'),
       sessionInfo('s-unread', '2026-01-01T00:00:00Z'),
       sessionInfo('s-plain', '2025-12-31T00:00:00Z'),
@@ -10504,7 +10504,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
   })
 
   it('forwards deterministic activity ordering and limit to the visibility-safe service', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('newest-visible', '2026-01-03T00:00:00Z'),
     ])
 
@@ -10516,7 +10516,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     expect(res.status).toBe(200)
     expect((await res.json()).map((session: { id: string }) => session.id))
       .toEqual(['newest-visible'])
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 1,
@@ -10527,7 +10527,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     const res = await getReq(app, URL + '?limit=1000')
 
     expect(res.status).toBe(200)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       limit: 100,
     })
@@ -10537,7 +10537,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     const res = await getReq(app, URL + '?notable=false&limit=2')
 
     expect(res.status).toBe(200)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       limit: 2,
     })
@@ -10558,7 +10558,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
 
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'Invalid sessions query' })
-    expect(listSessionsFromSummary).not.toHaveBeenCalled()
+    expect(listSessions).not.toHaveBeenCalled()
     expect(listSessionsByIds).not.toHaveBeenCalled()
   })
 })
@@ -10791,7 +10791,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
   })
 
   it('raises hasUnreadNotifications in the session list with no notification row behind it', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       {
         id: 'sess-1',
         agentSlug: 'test-agent',
@@ -10811,7 +10811,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
 
   it("marks a session where the viewer was mentioned, in both session lists", async () => {
     mockIsAuthMode.mockReturnValue(true)
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       { id: 'sess-1', agentSlug: 'test-agent', name: 'One', createdAt: new Date(), lastActivityAt: new Date() },
       { id: 'sess-2', agentSlug: 'test-agent', name: 'Two', createdAt: new Date(), lastActivityAt: new Date() },
     ])
@@ -10826,7 +10826,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
   // Marks are per-user, so the projections must ask for the acting user's —
   // otherwise one person's reminder would raise a dot on everyone's sidebar.
   it('scopes the session-list projection to the acting user', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
 
     await getReq(app, '/api/agents/test-agent/sessions')
 

@@ -113,3 +113,11 @@ src/shared/lib/team-directory/invited-users.test.ts
 src/shared/lib/auth/invited-user-claim.integration.test.ts
 src/shared/lib/team-directory/provisioning.test.ts
 src/api/routes/agent-integration-provisioning.test.ts
+src/shared/lib/agent-actor/db-session-index-storage.test.ts
+src/shared/lib/services/session-service.metadata.test.ts
+src/shared/lib/services/session-service.summary.test.ts
+src/shared/lib/services/session-service.listing.test.ts
+src/shared/lib/services/session-service.listing-cost.test.ts
+src/shared/lib/services/session-service.lifecycle.test.ts
+src/shared/lib/db/data-migrations/0010-import-session-metadata.test.ts
+src/shared/lib/services/session-deletion.test.ts

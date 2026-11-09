@@ -19,6 +19,11 @@ const mockMarkTaskExecuted = vi.fn()
 const mockUpdateNextExecution = vi.fn()
 const mockRecordTaskSkip = vi.fn()
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...a: unknown[]) => mockGetDueTasks(...a),
   markTaskExecuted: (...a: unknown[]) => mockMarkTaskExecuted(...a),

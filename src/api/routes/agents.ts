@@ -186,7 +186,6 @@ import {
   listCancelledScheduledTasks,
   listCompletedOneTimeTasks,
   createScheduledTask,
-  cancelPendingWakeForSession,
   getPendingWakeForSession,
   listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
@@ -234,10 +233,10 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
-import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
+import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents } from '@shared/lib/services/session-unread-service'
+import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { withSessionStatus } from '@shared/lib/session-status'
@@ -718,12 +717,11 @@ async function getVisibleSessionExpansion(
   try {
     // Keep the complete visibility-filtered snapshot: its first item selects
     // latest, while the remaining metadata-only items answer the two attention
-    // booleans without loading older transcripts. Built from the summary
-    // cache with the metadata map the caller already read, so a warm poll
-    // costs one directory stat per agent instead of one stat per transcript.
+    // booleans without loading older transcripts. Listed from the agent's
+    // session index, so a warm poll costs one directory stat per agent
+    // instead of one stat per transcript.
     sessionMetadata = await sessionMetadataPromise
-    visibleSessions = await agentRegistry.get(agentSlug).sessions.listFromSummary({
-      metadata: sessionMetadata,
+    visibleSessions = await agentRegistry.get(agentSlug).sessions.list({
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -1939,8 +1937,8 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
     // Read the agent again: a rename or delete can land while the container starts, and a
-    // null answer makes the client refetch. Skip the session-summary enrichment: it stats
-    // every transcript, and the client keeps the summary it already has.
+    // null answer makes the client refetch. Skip the session-summary enrichment: it reads
+    // the agent's whole session index, and the client keeps the summary it already has.
     const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
@@ -2040,7 +2038,7 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/sessions - List sessions for an agent
 // ?notable=true means active/awaiting-input or unread. Its fast path intersects
 // those targeted IDs with server-visible sessions before sort_by and limit,
-// avoiding a stat of every transcript. Supported ordering is deterministic
+// avoiding a read of every session. Supported ordering is deterministic
 // newest-first activity via sort_by=last_activity_at.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
@@ -2099,11 +2097,11 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
-    // Independent lookups (filesystem summary, notifications table, unread
+    // Independent lookups (session index, notifications table, unread
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
     const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
-      actor.sessions.listFromSummary({
+      actor.sessions.list({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
@@ -3222,36 +3220,15 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // deleteSession is the authority for existence here: it removes the JSONL
-    // transcript and/or a lingering metadata entry and returns false only when
+    // The delete itself is the authority for existence: it removes the
+    // transcript and/or a lingering index entry and answers false only when
     // neither existed (the session is truly unknown). Deleting directly, rather
     // than gating on a prior read, keeps a dangling session with only one half
-    // left (e.g. a metadata entry whose transcript was already removed)
-    // removable instead of wrongly reported as not-found.
-    const deleted = await actor.sessions.delete(sessionId)
-    if (!deleted) {
+    // left (e.g. an entry whose transcript was already removed) removable
+    // instead of wrongly reported as not-found.
+    if (!(await deleteSessionAndRecords(agentSlug, sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
-
-    // A pending wake targeting this session would otherwise fire into nothing
-    // and be marked failed — cancel it alongside the session.
-    await cancelPendingWakeForSession(agentSlug, sessionId).catch((error) => {
-      console.error('Failed to cancel pending wake for deleted session:', error)
-    })
-
-    // Clean up message author records for this session: people (auth mode)
-    // and integrations (every mode).
-    await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
-
-    // Clean up notification rows for this session in BOTH modes (notifications
-    // are stored regardless of auth mode; userId is nullable), so deleting a
-    // session never leaves stale notification history pointing at it.
-    await deleteNotificationsBySessionIds([sessionId])
-    // A mark left behind would be an unreachable row: nothing lists the
-    // session any more, so nothing could ever clear it.
-    await deleteSessionUnreadMarks(agentSlug, [sessionId])
-    // A Todo board item started in it goes back to Drafts (or, if finished, keeps its place).
-    await unlinkTodosFromSessions(agentSlug, [sessionId])
 
     return c.body(null, 204)
   } catch (error) {

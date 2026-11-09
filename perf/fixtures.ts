@@ -271,6 +271,8 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
       longSession = { agentSlug: slug, sessionId: id, bytes: Buffer.byteLength(content), newestItemId }
     }
 
+    // As a workspace from before the session index left it: opening the
+    // database takes the file into the agent's index (data migration 0010).
     await fs.promises.writeFile(
       path.join(workspace, 'session-metadata.json'),
       JSON.stringify(metadata),

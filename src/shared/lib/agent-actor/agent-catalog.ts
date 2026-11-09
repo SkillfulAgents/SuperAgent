@@ -24,6 +24,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { LOCAL_RUNTIME } from './agent-directories'
+import { dropDbSessionIndex } from './db-session-index-storage'
 import type { AgentCatalog, AgentIdentityChanges, AgentRecord, AgentSlug } from './types'
 
 // Built on first use rather than at import: suites that stub file-storage
@@ -159,6 +160,9 @@ export function createAgentCatalog(): AgentCatalog {
         assertPathWithinDir(getAgentsDir(), dir)
         await removeDirectory(dir)
       }
+      // Its session index goes with it: a later agent that is given the
+      // slug must not inherit the sessions.
+      await dropDbSessionIndex(slug)
       await db.delete(agents).where(eq(agents.slug, slug)).run()
     },
   }

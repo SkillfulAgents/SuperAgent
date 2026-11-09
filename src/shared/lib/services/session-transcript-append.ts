@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { isAbsentFile } from '@shared/lib/agent-actor/jsonl-files'
 import { transcriptPath, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import type { JsonlSystemEntry } from '@shared/lib/types/agent'
-import { recordSessionActivity } from './session-summary-cache'
+import { recordSessionActivity } from './session-activity'
 
 /**
  * How far back (in bytes) the duplicate-uuid check scans from the end of the

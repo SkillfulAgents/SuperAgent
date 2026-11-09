@@ -40,6 +40,7 @@ import {
   type FileOps,
 } from '@shared/lib/agent-actor'
 import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
+import { SESSION_METADATA_FILE } from './session-metadata-file'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   readIndexJson,
@@ -96,7 +97,7 @@ const TEMPLATE_EXCLUDE = new Set([
   '.DS_Store',
   'node_modules',
   '__pycache__',
-  'session-metadata.json',
+  SESSION_METADATA_FILE,
   '.slash-commands.json',
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
@@ -415,10 +416,13 @@ const ZIP_APPEND_WINDOW = 4
 // and appends it. archiver starts reading a source the moment it is appended,
 // so `add` waits for the queue to drain below a small window before opening
 // the next file: a ten-thousand-file workspace never has ten thousand files
-// open at once.
+// open at once. `addBytes` appends an entry that is no file of the workspace.
 function createWorkspaceZipStream(
   files: FileOps,
-  addFiles: (add: (workspacePath: string, entryName?: string) => Promise<void>) => Promise<void>,
+  addFiles: (
+    add: (workspacePath: string, entryName?: string) => Promise<void>,
+    addBytes: (entryName: string, bytes: string) => void,
+  ) => Promise<void>,
   signal: AbortSignal | undefined,
   zlibLevel: number,
 ): Readable {
@@ -540,6 +544,12 @@ function createWorkspaceZipStream(
     })
   }
 
+  const addBytes = (entryName: string, bytes: string): void => {
+    if (stopped || signal?.aborted) return
+    inFlight += 1
+    archive.append(bytes, { name: entryName })
+  }
+
   const onAbort = () => {
     release()
     stopArchive()
@@ -552,7 +562,7 @@ function createWorkspaceZipStream(
         onAbort()
         return
       }
-      await addFiles(add)
+      await addFiles(add, addBytes)
       if (signal?.aborted || archive.destroyed) return
       await archive.finalize()
     } catch (err) {
@@ -594,11 +604,19 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
       throw new Error('Agent workspace not found')
     }
 
-    const { files } = agentRegistry.get(agentSlug)
+    const { files, sessions } = agentRegistry.get(agentSlug)
     const rootFiles = (await files.list('')).map((entry) => entry.path)
+    // The session index is not a file of the workspace: the archive carries
+    // it in its portable form, which an import takes back in.
+    const sessionMetadata = JSON.stringify(await sessions.exportMetadata(), null, 2)
     return createWorkspaceZipStream(
       files,
-      (add) => walkFullExportFiles(files, (workspacePath) => add(workspacePath, templatePathOf(workspacePath, rootFiles)), signal),
+      async (add, addBytes) => {
+        addBytes(SESSION_METADATA_FILE, sessionMetadata)
+        await walkFullExportFiles(files, async (workspacePath) => {
+          if (workspacePath !== SESSION_METADATA_FILE) await add(workspacePath, templatePathOf(workspacePath, rootFiles))
+        }, signal)
+      },
       signal,
       1, // large workspaces — level 9 pegs 0.5 vCPU hosts
     )
@@ -776,6 +794,8 @@ export async function importAgentFromTemplate(
     await normalizeTemplateInstructions(actor.files, reader.entries.map((entry) =>
       (stripPrefix ? entry.fileName.replace(stripPrefix, '') : entry.fileName).replace(/^\.\//, ''),
     ))
+    // A full archive carries the sessions' names in `session-metadata.json`.
+    await actor.sessions.ingestMetadataFile()
     // The template instructions replaced the defaults the agent was created with:
     // take the name (unless overridden) and description it carries, and
     // write the identity back into it.
@@ -914,7 +934,7 @@ export async function updateAgentFromSkillset(
 
   const actor = agentRegistry.get(agentSlug)
 
-  // Walk the template source and copy files, preserving .env/session-metadata
+  // Walk the template source and copy files, preserving the agent's own .env
   await copyTemplateFiles(agentDirInRepo, actor.files)
   // The template instructions replaced the projection; the agent keeps its name.
   await writeAgentIdentityProjection(agentSlug)

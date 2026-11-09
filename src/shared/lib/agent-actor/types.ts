@@ -51,6 +51,7 @@ import type {
   SessionMetadataMap,
 } from '@shared/lib/types/agent'
 import type { MediaRef } from '@shared/lib/services/session-media'
+import type { PortableSessionMetadataMap } from '@shared/lib/services/session-metadata-schema'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { ConfigDoc, ConfigDocId } from './config-schema'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
@@ -85,8 +86,8 @@ export interface AgentRegistry {
   /**
    * Drop the handle and forget its container runtime, releasing everything
    * the handle owns: parked reviews and re-auth waits are rejected, open
-   * input requests are settled as invalidated, in-memory grants and the
-   * summary cache are gone. Does not stop the container.
+   * input requests are settled as invalidated, in-memory grants and what
+   * the session index held in memory are gone. Does not stop the container.
    */
   evict(slug: AgentSlug): Promise<void>
   /** `evict` for every handle, at shutdown: parked callers are let go. Does not stop containers. */
@@ -329,10 +330,8 @@ export interface OpenWebSocketInit {
 export interface SessionOps {
   // Stored session data — session-service. Works without a running container.
 
-  /** `listSessions` */
+  /** `listSessions` — from the agent's session index; no transcript is read or statted again. */
   list(options?: ListSessionsOptions): Promise<SessionInfo[]>
-  /** `listSessionsFromSummary` */
-  listFromSummary(options?: ListSessionsOptions & { metadata?: SessionMetadataMap }): Promise<SessionInfo[]>
   /** `listSessionsByIds` */
   listByIds(sessionIds: string[], options?: { excludeAutomated?: boolean }): Promise<SessionInfo[]>
   /** `getSession` */
@@ -360,6 +359,10 @@ export interface SessionOps {
   metadata(sessionId: string): Promise<SessionMetadata | null>
   /** `readSessionMetadata` — the whole metadata map for the agent. */
   readMetadata(): Promise<SessionMetadataMap>
+  /** `exportSessionMetadata` — the index in its portable form, as a full export carries it. */
+  exportMetadata(): Promise<PortableSessionMetadataMap>
+  /** `ingestSessionMetadataFile` — take a `session-metadata.json` an import wrote into the workspace into the index. */
+  ingestMetadataFile(): Promise<void>
   /** `updateSessionMetadata` */
   updateMetadata(sessionId: string, updates: Partial<SessionMetadata>): Promise<SessionMetadata | undefined>
   /** `sessionFileRealPathWithinAgent` — the transcript's real location is inside the workspace, links followed. */
@@ -372,7 +375,7 @@ export interface SessionOps {
   byWebhookTrigger(webhookTriggerId: string): Promise<SessionInfo[]>
   /** `getSessionForScheduledExecution` */
   forScheduledExecution(scheduledTaskId: string, scheduledExecutionAt: Date): Promise<SessionInfo | null>
-  /** `recordSessionActivity` (session-summary-cache) — a transcript write happened that no stream frame will report. */
+  /** `recordSessionActivity` — a transcript write happened that no stream frame will report. */
   recordActivity(sessionId: string, activityAt?: Date | number): Promise<void>
   /** The model runtime the session's turns now run on (the llm-runtime callback resolved it), for its errors' presentation. */
   recordRuntime(sessionId: string, runtime: SessionModelRuntime): Promise<void>

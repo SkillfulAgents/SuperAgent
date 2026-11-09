@@ -24,7 +24,7 @@ const mockRecordProvisionalSessionActivity = vi.fn((_store: unknown, _id: string
   previous: { mtimeMs: at - 60_000, size: 10 },
 }))
 const mockRevertSessionActivity = vi.fn()
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
   recordProvisionalSessionActivity: (...args: unknown[]) =>
     mockRecordProvisionalSessionActivity(...(args as [unknown, string, number])),

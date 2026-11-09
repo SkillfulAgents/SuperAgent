@@ -6,10 +6,15 @@
  */
 import { defineHomeScenarios } from './home-scenarios'
 
-// Cold reads still stat every transcript once to build the summary; warm
-// reads (the iOS poll) and the sessions page come from the cache. Wall is
-// bounded by the per-agent critical path: the agent list, artifact lookups
-// and per-request DB reads overlap.
+// Sessions are listed from the agent's session index: a read stats the
+// transcripts directory, never a transcript, and after a restart it lists
+// the directory once more (one readdir) to compare it with the index. The
+// 5 000 transcripts are statted once in the agent's life, by the first read
+// that sees them (the harness's unmeasured warm-up here). Before the index a
+// restart, and every five minutes after it, cost a stat of each: 5 018 ops
+// and ten seconds for the agent list. Wall is bounded by the per-agent
+// critical path: the agent list, artifact lookups and per-request DB reads
+// overlap.
 defineHomeScenarios('big', {
   // The actor's file operations cost exactly what the plain reads they
   // replace cost: an existence probe is a stat where it used to be an access
@@ -20,10 +25,10 @@ defineHomeScenarios('big', {
   // resolving the `:id` of a session route no longer stats the agent's
   // directory (1 op). These counts were re-pinned when that landed; a
   // return to the old counts is a regression.
-  agentsCold: { totalOps: 5018, ops: { stat: 5012 }, wallMs: 10_400 },
-  agentsWarm: { totalOps: 12, ops: { stat: 7 }, wallMs: 170 },
-  homeCold: { totalOps: 5025, ops: { stat: 5013 }, wallMs: 10_500 },
-  homeWarm: { totalOps: 19, ops: { stat: 8 }, wallMs: 280 },
-  sessionsPage: { totalOps: 2, ops: { stat: 1 }, wallMs: 100 },
+  agentsRestarted: { totalOps: 12, ops: { stat: 7, readdir: 2 }, wallMs: 170 },
+  agentsWarm: { totalOps: 11, ops: { stat: 7, readdir: 1 }, wallMs: 170 },
+  homeRestarted: { totalOps: 20, ops: { stat: 9, readdir: 2 }, wallMs: 300 },
+  homeWarm: { totalOps: 18, ops: { stat: 8, readdir: 1 }, wallMs: 280 },
+  sessionsPage: { totalOps: 1, ops: { stat: 1 }, wallMs: 100 },
   sessionsNotable: { totalOps: 0, ops: { stat: 0 }, wallMs: 40 },
 })

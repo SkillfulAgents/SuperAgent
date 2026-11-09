@@ -1,3 +1,8 @@
+/**
+ * The session summary as read from the agent's session index: what a read
+ * costs on the filesystem, and how the index follows the transcripts
+ * directory and the writes recorded against it.
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as path from 'path'
 import * as os from 'os'
@@ -27,20 +32,25 @@ import * as fs from 'fs'
 import {
   deleteSession,
   getSessionSummary,
+  readSessionMetadata,
   registerSession,
 } from './session-service'
-import { recordSessionActivity } from './session-summary-cache'
+import { recordSessionActivity } from './session-activity'
 import { appendInformationalEntry } from './session-transcript-append'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import type { SessionStore } from '@shared/lib/agent-actor/session-store'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
 
-describe('getSessionSummary cache', () => {
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
+
+describe('getSessionSummary', () => {
   let testRoot: string
   let priorDataDir: string | undefined
   const agentSlug = 'summary-agent'
-  // The summary cache is the store's (the actor's, in the app), so every read
-  // and write of a test goes through the one store, as they would through
-  // the one actor handle.
+  // What the index learned from the directory is the store's (the actor's,
+  // in the app), so every read and write of a test goes through the one
+  // store, as they would through the one actor handle.
   let store: SessionStore
 
   const workspaceDir = () => path.join(testRoot, 'agents', agentSlug, 'workspace')
@@ -48,7 +58,7 @@ describe('getSessionSummary cache', () => {
   const transcriptPath = (sessionId: string) => path.join(sessionsDir(), `${sessionId}.jsonl`)
 
   beforeEach(async () => {
-    testRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-summary-cache-'))
+    testRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-summary-'))
     priorDataDir = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testRoot
     store = createLocalSessionStore(agentSlug)
@@ -73,7 +83,7 @@ describe('getSessionSummary cache', () => {
     await fs.promises.utimes(transcriptPath(sessionId), timestamp, timestamp)
   }
 
-  it('serves a warm summary with one directory stat and no transcript stats', async () => {
+  it('serves a summary with one directory stat and no transcript stats once the directory was read', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
 
@@ -87,7 +97,7 @@ describe('getSessionSummary cache', () => {
     expect(statProbe.paths).toEqual([sessionsDir()])
   })
 
-  it('reconciles the full map when a transcript is structurally added', async () => {
+  it('stats only the transcript it has not seen when one is added', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await getSessionSummary(store)
 
@@ -100,7 +110,7 @@ describe('getSessionSummary cache', () => {
 
     expect(changed.sessionIds.sort()).toEqual(['session-a', 'session-b'])
     expect(changed.lastActivityAt).toEqual(new Date('2026-01-03T00:00:00.000Z'))
-    expect(statProbe.paths.filter((file) => file.endsWith('.jsonl'))).toHaveLength(2)
+    expect(statProbe.paths.filter((file) => file.endsWith('.jsonl'))).toEqual([transcriptPath('session-b')])
   })
 
   it('reconciles a transcript that appears in the directory after a warm read', async () => {
@@ -109,9 +119,9 @@ describe('getSessionSummary cache', () => {
 
     await fs.promises.mkdir(sessionsDir(), { recursive: true })
     await fs.promises.writeFile(transcriptPath('session-b'), '{}\n')
-    // Advance the directory mtime explicitly. The cache reconciles when the dir
+    // Advance the directory mtime explicitly. The index reconciles when the dir
     // mtime changes; on a filesystem with coarse mtime resolution the write and
-    // the preceding warm read can share a tick, so the write alone would not
+    // the preceding read can share a tick, so the write alone would not
     // trip the reconcile. (Mirrors the structural-add test above.)
     const changedAt = new Date('2030-01-01T00:00:00.000Z')
     await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
@@ -190,16 +200,12 @@ describe('getSessionSummary cache', () => {
     expect((await getSessionSummary(store)).lastActivityAt).toEqual(new Date(firstActivity))
   })
 
-  it('drops a deleted session from an already-warm summary', async () => {
+  it('drops a deleted session', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
     await getSessionSummary(store)
 
     await deleteSession(store, 'session-b')
-    // Coarse-mtime filesystems may not advance the dir mtime on the unlink
-    // within the same tick as the warm read; force it so the reconcile fires.
-    const changedAt = new Date('2030-01-01T00:00:00.000Z')
-    await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
     const summary = await getSessionSummary(store)
 
     expect(summary.sessionIds).toEqual(['session-a'])
@@ -221,15 +227,86 @@ describe('getSessionSummary cache', () => {
     expect(summary.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
   })
 
-  it('periodically rebuilds unchanged directories to recover missed external writes', async () => {
+  it('never stats a transcript again, however long ago it saw it', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await getSessionSummary(store)
 
-    clock.mockReturnValue(1_800_000_000_000 + 10 * 60 * 1000)
+    clock.mockReturnValue(1_800_000_000_000 + 30 * 24 * 60 * 60 * 1000)
     statProbe.paths.length = 0
     await getSessionSummary(store)
 
-    expect(statProbe.paths).toContain(transcriptPath('session-a'))
+    expect(statProbe.paths).toEqual([sessionsDir()])
+  })
+
+  it('reads through a new store (a restart) without statting a transcript', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    recordSessionActivity(store, 'session-a', new Date('2026-01-05T00:00:00.000Z'))
+    await getSessionSummary(store)
+    statProbe.paths.length = 0
+
+    const restarted = await getSessionSummary(createLocalSessionStore(agentSlug))
+
+    expect(restarted.sessionIds.sort()).toEqual(['session-a', 'session-b'])
+    // The recorded activity outlived the store that recorded it.
+    expect(restarted.lastActivityAt).toEqual(new Date('2026-01-05T00:00:00.000Z'))
+    expect(statProbe.paths).toEqual([sessionsDir()])
+  })
+
+  it('drops a session whose transcript was removed behind its back, with its metadata', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    await getSessionSummary(store)
+
+    // The agent, or the CLI's own cleanup, removes a transcript.
+    await fs.promises.rm(transcriptPath('session-b'))
+    const summary = await getSessionSummary(store)
+
+    expect(summary.sessionIds).toEqual(['session-a'])
+    expect(Object.keys(await readSessionMetadata(store))).toEqual(['session-a'])
+  })
+
+  it('keeps every session while the transcripts directory is missing', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    await getSessionSummary(store)
+
+    // A workspace volume that is not mounted looks like this: no directory
+    // is no evidence that its transcripts were deleted.
+    const aside = `${sessionsDir()}.unmounted`
+    await fs.promises.rename(sessionsDir(), aside)
+    expect((await getSessionSummary(store)).sessionIds.sort()).toEqual(['session-a', 'session-b'])
+    expect(Object.keys(await readSessionMetadata(store)).sort()).toEqual(['session-a', 'session-b'])
+
+    await fs.promises.rename(aside, sessionsDir())
+    expect((await getSessionSummary(store)).sessionIds.sort()).toEqual(['session-a', 'session-b'])
+  })
+
+  it('keeps a session whose transcript the listing lacks but a stat still finds', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    await getSessionSummary(store)
+
+    // A listing that comes back short (a network filesystem under load).
+    const list = store.files.list.bind(store.files)
+    vi.spyOn(store.files, 'list').mockImplementation(async (dir) =>
+      (await list(dir)).filter((entry) => entry.name !== 'session-b.jsonl'))
+    const changedAt = new Date('2030-01-01T00:00:00.000Z')
+    await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
+
+    expect((await getSessionSummary(store)).sessionIds.sort()).toEqual(['session-a', 'session-b'])
+  })
+
+  it('shares one reconciliation between concurrent first reads', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    statProbe.paths.length = 0
+
+    const summaries = await Promise.all([getSessionSummary(store), getSessionSummary(store), getSessionSummary(store)])
+
+    for (const summary of summaries) expect(summary.sessionCount).toBe(2)
+    expect(statProbe.paths.filter((file) => file.endsWith('.jsonl')).sort())
+      .toEqual([transcriptPath('session-a'), transcriptPath('session-b')])
   })
 })

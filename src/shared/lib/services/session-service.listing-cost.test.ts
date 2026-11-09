@@ -1,9 +1,8 @@
 /**
- * listSessionsFromSummary's cost and cache-coherence properties — what makes
- * it safe to put on the per-poll request path. The contract it shares with
- * listSessions (visibility, ownership, ordering) lives in
- * session-service.listing.test.ts; this file pins what is specific to reading
- * from the summary cache.
+ * listSessions's cost and coherence properties — what makes it safe to put
+ * on the per-poll request path. Its visibility, ownership and ordering
+ * contract lives in session-service.listing.test.ts; this file pins what
+ * reading from the session index costs and how recorded activity shows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as path from 'path'
@@ -39,26 +38,29 @@ import * as fs from 'fs'
 import {
   deleteSession,
   getSessionSummary,
-  listSessionsFromSummary,
+  listSessions,
   readSessionMetadata,
   registerSession,
 } from './session-service'
 import {
-  SESSION_SUMMARY_CACHE_TTL_MS,
   recordProvisionalSessionActivity,
   recordSessionActivity,
   revertSessionActivity,
-} from './session-summary-cache'
+} from './session-activity'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import type { SessionStore } from '@shared/lib/agent-actor/session-store'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
 
-describe('listSessionsFromSummary', () => {
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
+
+describe('listSessions from the session index', () => {
   let testRoot: string
   let priorDataDir: string | undefined
   const agentSlug = 'summary-listing-agent'
-  // The summary cache is the store's (the actor's, in the app), so every read
-  // and write of a test goes through the one store, as they would through
-  // the one actor handle.
+  // What the index learned from the directory is the store's (the actor's,
+  // in the app), so every read and write of a test goes through the one
+  // store, as they would through the one actor handle.
   let store: SessionStore
 
   const workspaceDir = () => path.join(testRoot, 'agents', agentSlug, 'workspace')
@@ -97,13 +99,13 @@ describe('listSessionsFromSummary', () => {
   const ids = (sessions: { id: string }[]) => sessions.map((s) => s.id)
   const transcriptStats = () => statProbe.paths.filter((file) => file.endsWith('.jsonl'))
 
-  it('lists from a warm cache with one directory stat and no transcript stats', async () => {
+  it('lists with one directory stat and no transcript stats once the directory was read', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
     await getSessionSummary(store)
     statProbe.paths.length = 0
 
-    const sessions = await listSessionsFromSummary(store, {
+    const sessions = await listSessions(store, {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -112,16 +114,17 @@ describe('listSessionsFromSummary', () => {
     expect(statProbe.paths).toEqual([sessionsDir()])
   })
 
-  it('does not re-read metadata when the caller passes the map', async () => {
+  it('reads no file of the workspace: names come from the index', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await getSessionSummary(store)
-    const metadata = await readSessionMetadata(store)
     const readFile = vi.spyOn(fs.promises, 'readFile')
+    const open = vi.spyOn(fs.promises, 'open')
 
-    const sessions = await listSessionsFromSummary(store, { metadata, excludeAutomated: true })
+    const sessions = await listSessions(store, { excludeAutomated: true })
 
-    expect(ids(sessions)).toEqual(['session-a'])
+    expect(sessions.map((s) => s.name)).toEqual(['session-a'])
     expect(readFile).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('reorders on recorded activity without touching the filesystem', async () => {
@@ -133,45 +136,38 @@ describe('listSessionsFromSummary', () => {
     recordSessionActivity(store, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
     statProbe.paths.length = 0
 
-    const sessions = await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })
+    const sessions = await listSessions(store, { sortBy: 'last_activity_at' })
 
     expect(ids(sessions)).toEqual(['session-a', 'session-b'])
     expect(sessions[0]!.lastActivityAt).toEqual(new Date('2026-01-03T00:00:00.000Z'))
     expect(transcriptStats()).toEqual([])
   })
 
-  it('keeps activity recorded while the cache is cold: the first build folds it in', async () => {
+  it('keeps activity recorded before the index has seen the transcript', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
-    // Nothing has read the summary yet (fresh process, or invalidated). The
-    // send is recorded before the CLI touches the transcript.
+    // Nothing has listed the sessions yet, so the index has not seen the
+    // transcripts. The send is recorded before the CLI touches the transcript.
     recordSessionActivity(store, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
 
-    const sessions = await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })
+    const sessions = await listSessions(store, { sortBy: 'last_activity_at' })
 
     expect(ids(sessions)).toEqual(['session-a', 'session-b'])
     expect(sessions[0]!.lastActivityAt).toEqual(new Date('2026-01-03T00:00:00.000Z'))
   })
 
-  it('keeps activity recorded against an expired cache across the TTL rebuild', async () => {
+  it('never moves a session back when an older write is recorded after a newer one', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
     await getSessionSummary(store)
-    statProbe.paths.length = 0
 
-    // Real time moves past the TTL; the next read will rebuild from stats,
-    // which do not carry the send yet.
-    vi.useFakeTimers({ now: Date.now() + SESSION_SUMMARY_CACHE_TTL_MS + 1, toFake: ['Date'] })
-    recordSessionActivity(store, 'session-a', Date.now())
-    const recordedAt = Date.now()
+    recordSessionActivity(store, 'session-a', new Date('2026-01-05T00:00:00.000Z'))
+    await listSessions(store)
+    // A replayed frame, or a clock that disagrees.
+    recordSessionActivity(store, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
 
-    const sessions = await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })
-
-    expect(ids(sessions)).toEqual(['session-a', 'session-b'])
-    expect(sessions[0]!.lastActivityAt.getTime()).toBe(recordedAt)
-    // ...and the rebuild happened (every transcript stat'd), so this was not
-    // just the stale value surviving.
-    expect(transcriptStats().length).toBe(2)
+    const sessions = await listSessions(store, { sortBy: 'last_activity_at' })
+    expect(sessions[0]).toMatchObject({ id: 'session-a', lastActivityAt: new Date('2026-01-05T00:00:00.000Z') })
   })
 
   it('a rolled-back provisional send restores the previous order', async () => {
@@ -180,12 +176,12 @@ describe('listSessionsFromSummary', () => {
     await getSessionSummary(store)
 
     const mark = recordProvisionalSessionActivity(store, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
-    expect(ids(await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })))
+    expect(ids(await listSessions(store, { sortBy: 'last_activity_at' })))
       .toEqual(['session-a', 'session-b'])
 
     revertSessionActivity(store, 'session-a', mark)
 
-    const sessions = await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })
+    const sessions = await listSessions(store, { sortBy: 'last_activity_at' })
     expect(ids(sessions)).toEqual(['session-b', 'session-a'])
     expect(sessions[1]!.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
   })
@@ -199,22 +195,22 @@ describe('listSessionsFromSummary', () => {
     recordSessionActivity(store, 'session-a', new Date('2026-01-04T00:00:00.000Z'))
     revertSessionActivity(store, 'session-a', mark)
 
-    const sessions = await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })
+    const sessions = await listSessions(store, { sortBy: 'last_activity_at' })
     expect(ids(sessions)).toEqual(['session-a', 'session-b'])
     expect(sessions[0]!.lastActivityAt).toEqual(new Date('2026-01-04T00:00:00.000Z'))
   })
 
-  it('a rollback of a send recorded against a cold cache forces a re-stat', async () => {
+  it('rolls back a send recorded before the index has seen the transcript', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
 
     const mark = recordProvisionalSessionActivity(store, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
-    expect(ids(await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })))
+    expect(ids(await listSessions(store, { sortBy: 'last_activity_at' })))
       .toEqual(['session-a', 'session-b'])
 
     revertSessionActivity(store, 'session-a', mark)
 
-    expect(ids(await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })))
+    expect(ids(await listSessions(store, { sortBy: 'last_activity_at' })))
       .toEqual(['session-b', 'session-a'])
   })
 
@@ -222,13 +218,14 @@ describe('listSessionsFromSummary', () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
 
-    // ESTALE on both the stat and its retry: the build fails and nothing is
-    // cached — the alternative is a session hidden until the next TTL.
+    // ESTALE on both the stat and its retry: the read fails and nothing is
+    // recorded — the alternative is a session hidden until the directory
+    // next changes.
     statProbe.failures.set(transcriptPath('session-b'), { code: 'ESTALE', times: 2 })
-    await expect(listSessionsFromSummary(store)).rejects.toMatchObject({ code: 'ESTALE' })
+    await expect(listSessions(store)).rejects.toMatchObject({ code: 'ESTALE' })
 
     // The filesystem recovers; the next read is complete.
-    expect(ids(await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })))
+    expect(ids(await listSessions(store, { sortBy: 'last_activity_at' })))
       .toEqual(['session-b', 'session-a'])
   })
 
@@ -237,7 +234,7 @@ describe('listSessionsFromSummary', () => {
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
     statProbe.failures.set(transcriptPath('session-b'), { code: 'EIO', times: 1 })
 
-    expect(ids(await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })))
+    expect(ids(await listSessions(store, { sortBy: 'last_activity_at' })))
       .toEqual(['session-b', 'session-a'])
   })
 
@@ -249,7 +246,7 @@ describe('listSessionsFromSummary', () => {
     // No throw, no retry storm; session-b is no longer backed by its
     // transcript and falls through to the metadata-only branch, ranked by
     // its registration time rather than the file's mtime.
-    const sessions = await listSessionsFromSummary(store)
+    const sessions = await listSessions(store)
     expect(ids(sessions).sort()).toEqual(['session-a', 'session-b'])
     expect(sessions.find((s) => s.id === 'session-b')!.lastActivityAt)
       .not.toEqual(new Date('2026-01-02T00:00:00.000Z'))
@@ -257,29 +254,28 @@ describe('listSessionsFromSummary', () => {
   })
 
   it('treats an unregistered empty transcript as a session once activity is recorded for it', async () => {
-    // Cached as size 0 with no registration → an SDK artifact, hidden...
+    // Seen as size 0 with no registration → an SDK artifact, hidden...
     await fs.promises.writeFile(transcriptPath('became-real'), '')
     await createSession('anchor', '2026-01-01T00:00:00.000Z')
     await getSessionSummary(store)
-    expect(ids(await listSessionsFromSummary(store))).toEqual(['anchor'])
+    expect(ids(await listSessions(store))).toEqual(['anchor'])
 
     // ...until the stream reports a write to it: bytes now exist, and
-    // ownership was already established at build time.
+    // the transcript was found in the agent's own directory.
     recordSessionActivity(store, 'became-real', new Date('2026-01-05T00:00:00.000Z'))
 
-    expect(ids(await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })))
+    expect(ids(await listSessions(store, { sortBy: 'last_activity_at' })))
       .toEqual(['became-real', 'anchor'])
   })
 
-  it('picks up a transcript added after the cache was built', async () => {
+  it('picks up a transcript added after the directory was read', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await getSessionSummary(store)
 
-    // registerSession claims ownership, which invalidates the summary; the
-    // new file also bumps the directory mtime. Either alone would do.
+    // The new file bumps the directory mtime, which is what the next read compares.
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
 
-    const sessions = await listSessionsFromSummary(store, { sortBy: 'last_activity_at' })
+    const sessions = await listSessions(store, { sortBy: 'last_activity_at' })
     expect(ids(sessions)).toEqual(['session-b', 'session-a'])
   })
 
@@ -289,12 +285,8 @@ describe('listSessionsFromSummary', () => {
     await getSessionSummary(store)
 
     await deleteSession(store, 'session-b')
-    // Coarse-mtime filesystems may not advance the dir mtime on the unlink
-    // within the same tick as the warm read; force it so the reconcile fires.
-    const changedAt = new Date('2030-01-01T00:00:00.000Z')
-    await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
 
-    expect(ids(await listSessionsFromSummary(store))).toEqual(['session-a'])
+    expect(ids(await listSessions(store))).toEqual(['session-a'])
   })
 
   it('includes registered sessions with no transcript and orders them by createdAt', async () => {
@@ -306,10 +298,7 @@ describe('listSessionsFromSummary', () => {
     expect(metadata['pending-newer']?.createdAt).toBeDefined()
     statProbe.paths.length = 0
 
-    const sessions = await listSessionsFromSummary(store, {
-      metadata,
-      sortBy: 'last_activity_at',
-    })
+    const sessions = await listSessions(store, { sortBy: 'last_activity_at' })
 
     expect(ids(sessions)).toEqual(['pending-newer', 'session-a'])
     expect(transcriptStats()).toEqual([])
