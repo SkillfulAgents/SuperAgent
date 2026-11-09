@@ -49,11 +49,20 @@ async function expectKeyboardFocus(chart: Locator) {
 }
 
 async function firstDay(chart: Locator, page: Page) {
+  await page.mouse.move(0, 0)
   await chart.focus()
   // Reactivate navigation after using a control, then return to the first day.
-  await chart.press('ArrowRight')
+  // Let each key's focus/tooltip render settle before sending another input;
+  // an existing hover tooltip must not satisfy a keyboard-navigation wait.
+  const pressAndRender = async (key: string) => {
+    await chart.press(key)
+    await chart.evaluate(() => new Promise<void>(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    }))
+  }
+  await pressAndRender('ArrowRight')
   await expect(tooltip(page)).toBeVisible()
-  await chart.press('ArrowLeft')
+  await pressAndRender('ArrowLeft')
   await expect(tooltip(page)).not.toContainText('Aug 11')
   await chart.press('ArrowLeft')
   await expect(tooltip(page)).toContainText('Aug 9')
