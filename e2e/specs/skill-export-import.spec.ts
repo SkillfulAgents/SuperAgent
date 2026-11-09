@@ -142,7 +142,7 @@ test.describe('Skill Export & Import', () => {
     await download.saveAs(downloadPath)
 
     // Agent 2: import the exported skill
-    await agentPage.clickCreateAgent()
+    await agentPage.openEmptyAgent()
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
     await expect(page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 

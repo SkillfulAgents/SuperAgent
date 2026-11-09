@@ -9,11 +9,8 @@ import { useUpdateAgent, useUpdateAgentAvatar } from '@renderer/hooks/use-agents
 
 import { AvatarView, orbRestingPhi, type AvatarMotionState } from './agent-avatar'
 import { avatarSource } from './avatar-source'
-import { OFFERED_ORBS } from './avatar-orbs'
-import { ORB_SHAPES } from './orb-shapes'
+import { AvatarChoices } from './avatar-choices'
 
-// Picker options, px across.
-const OPTION_SIZE = 37
 // The large preview under the name, px across.
 const PREVIEW_SIZE = 76
 
@@ -63,7 +60,6 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
   // What the editor opened with: a remote update while open must not turn an
   // untouched draft into a save.
   const openedWith = useRef({ name: agent.name, avatar: saved })
-  const [previewing, setPreviewing] = useState<string | null>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
 
   const openChange = (next: boolean) => {
@@ -90,7 +86,6 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
         updateAvatar.mutate({ slug: agent.slug, avatar: draftAvatar })
       }
     }
-    setPreviewing(null)
     setOpen(next)
   }
 
@@ -99,34 +94,6 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
   // While editing (and saving), the header shows the draft.
   const shownName = open || updateName.isPending ? (draftName.trim() || agent.name) : agent.name
   const shownAvatar = (open || updateAvatar.isPending) && draftAvatar ? draftAvatar : saved
-
-  const option = (avatar: AgentAvatar, label: string, pressed: boolean) => {
-    const id = `${avatar.color}:${avatar.shape}`
-    return (
-      <button
-        key={id}
-        type="button"
-        aria-pressed={pressed}
-        aria-label={label}
-        title={label}
-        onClick={() => setDraftAvatar(avatar)}
-        onMouseEnter={() => setPreviewing(id)}
-        onFocus={() => setPreviewing(id)}
-        className={cn(
-          'flex items-center justify-center rounded-item p-2 outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
-          pressed && 'bg-accent',
-        )}
-      >
-        <AvatarView
-          source={avatarSource(avatar)}
-          restingPhi={orbRestingPhi(id)}
-          size={OPTION_SIZE}
-          state={previewing === id ? 'working' : 'idle'}
-          followPointer
-        />
-      </button>
-    )
-  }
 
   return (
     <Popover open={open} onOpenChange={openChange}>
@@ -163,7 +130,6 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
           input?.focus()
           input?.setSelectionRange(input.value.length, input.value.length)
         }}
-        onMouseLeave={() => setPreviewing(null)}
         data-testid="agent-identity-editor"
       >
         {draftAvatar && (
@@ -198,16 +164,11 @@ export const AgentIdentityEditor = forwardRef<AgentIdentityEditorHandle, AgentId
           )}
         />
         {draftAvatar && (
-          <>
-            <div className="px-2 pb-1 pt-3 text-xs text-muted-foreground">Shape</div>
-            <div className="grid grid-cols-4 gap-1">
-              {ORB_SHAPES.map(shape => option({ ...draftAvatar, shape: shape.name }, shape.label, draftAvatar.shape === shape.name))}
-            </div>
-            <div className="px-2 pb-1 pt-2 text-xs text-muted-foreground">Color</div>
-            <div className="grid grid-cols-4 gap-1">
-              {OFFERED_ORBS.map(orb => option({ ...draftAvatar, color: orb.name }, orb.label, draftAvatar.color === orb.name))}
-            </div>
-          </>
+          // Below the name: the same shape and colour grid the create page's
+          // name step shows.
+          <div className="pt-2.5">
+            <AvatarChoices value={draftAvatar} onChange={setDraftAvatar} />
+          </div>
         )}
       </PopoverContent>
     </Popover>

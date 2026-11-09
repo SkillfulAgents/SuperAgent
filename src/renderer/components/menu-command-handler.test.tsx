@@ -2,16 +2,16 @@
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { navigate, openSettings, createUntitledAgent, switchTo, targetSwitch } = vi.hoisted(() => ({
+const { navigate, openSettings, openCreateAgent, switchTo, targetSwitch } = vi.hoisted(() => ({
   navigate: vi.fn(),
   openSettings: vi.fn(),
-  createUntitledAgent: vi.fn(),
+  openCreateAgent: vi.fn(),
   switchTo: vi.fn(async (_target: 'local' | 'cloud') => true),
   targetSwitch: { ready: true },
 }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
 vi.mock('../context/dialog-context', () => ({ useDialogs: () => ({ openSettings }) }))
-vi.mock('../hooks/use-create-untitled-agent', () => ({ useCreateUntitledAgent: () => ({ createUntitledAgent }) }))
+vi.mock('../hooks/use-open-create-agent', () => ({ useOpenCreateAgent: () => openCreateAgent }))
 vi.mock('../hooks/use-target-switch', () => ({
   useTargetSwitch: () => ({ switchTo, ready: targetSwitch.ready }),
 }))

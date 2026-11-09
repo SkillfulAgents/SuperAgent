@@ -71,12 +71,21 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   },
 }))
 
-const mockCreateUntitledAgent = vi.fn()
-vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
-  useCreateUntitledAgent: () => ({
-    createUntitledAgent: mockCreateUntitledAgent,
-    isPending: false,
-  }),
+// The New Agent menu has its own test; here only how the sidebar wires it.
+// The stub keeps the trigger and adds a "pick" button standing in for any
+// menu option: it runs onChoose and records which menu it was.
+const mockNewAgentMenuPick = vi.fn()
+vi.mock('@renderer/components/agents/new-agent-menu', () => ({
+  NewAgentMenu: ({ children, surface, folderId, onChoose }: { children: React.ReactNode; surface: string; folderId?: string; onChoose?: () => void }) => (
+    <>
+      {children}
+      <button
+        type="button"
+        data-testid={`new-agent-menu-pick-${folderId ?? surface}`}
+        onClick={() => { onChoose?.(); mockNewAgentMenuPick({ surface, folderId }) }}
+      />
+    </>
+  ),
 }))
 
 const mockUseAgentMembers = vi.fn()
@@ -585,11 +594,11 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByTestId('home-button')).toHaveAttribute('data-to', '/')
   })
 
-  it('creates an untitled agent when New Agent is clicked', async () => {
-    const user = userEvent.setup()
+  it('opens the New Agent menu from New Agent', async () => {
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('new-agent-button'))
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'nav' })
+    expect(screen.getByTestId('new-agent-button')).toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('new-agent-menu-pick-nav'))
+    expect(mockNewAgentMenuPick).toHaveBeenCalledWith({ surface: 'nav', folderId: undefined })
   })
 
   it('keeps the title bar row in non-Electron mode, minus the traffic-light spacer', () => {
@@ -1528,7 +1537,7 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
   })
 
-  it('creates a new agent filed into the folder whose + was pressed', async () => {
+  it('opens the New Agent menu for the folder whose + was pressed', async () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
@@ -1536,14 +1545,15 @@ describe('AppSidebar — agent folders', () => {
     })
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+    expect(screen.getByTestId('new-agent-in-folder-f1')).toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('new-agent-menu-pick-f1'))
 
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
+    expect(mockNewAgentMenuPick).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
     // Already open: nothing to expand, so no settings write from the sidebar.
     expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
-  it('opens a collapsed folder before creating an agent in it', async () => {
+  it('opens a collapsed folder as a way to make its new agent is picked', async () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
@@ -1552,23 +1562,24 @@ describe('AppSidebar — agent folders', () => {
     })
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+    await userEvent.click(screen.getByTestId('new-agent-menu-pick-f1'))
 
     expect(mockUpdateSettings).toHaveBeenCalledWith(
       { collapsedAgentFolders: [] },
       expect.anything()
     )
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
+    expect(mockNewAgentMenuPick).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
     expect(screen.getByTestId('agent-item-test-agent')).toBeVisible()
   })
 
-  it('offers + on the default folder as well, creating an unfiled agent', async () => {
+  it('offers + on the default folder as well, for an unfiled agent', async () => {
     mockUserSettings.mockReturnValue({ agentOrder: ['test-agent', 'other-agent'] })
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-agent-in-folder-root'))
+    expect(screen.getByTestId('new-agent-in-folder-root')).toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('new-agent-menu-pick-root'))
 
-    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'root' })
+    expect(mockNewAgentMenuPick).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'root' })
   })
 
   it('defaults the default folder first before anything is arranged', () => {

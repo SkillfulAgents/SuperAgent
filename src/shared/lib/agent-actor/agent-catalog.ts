@@ -114,8 +114,8 @@ export function createAgentCatalog(): AgentCatalog {
     },
     exists: async (slug) => (await rowFor(slug)) !== undefined,
     mint,
-    insert: async ({ slug, name, description, createdAt }) => {
-      const avatar = randomAgentAvatar()
+    insert: async ({ slug, name, description, avatar: chosen, createdAt }) => {
+      const avatar = chosen ? agentAvatarSchema.parse(chosen) : randomAgentAvatar()
       await db.insert(agents).values({
         slug,
         name,

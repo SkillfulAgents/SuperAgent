@@ -254,10 +254,10 @@ export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): 
  * Create a new agent (returns API format with stopped status)
  */
 export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
-  const { name: rawName, description, instructions } = input
+  const { name: rawName, description, instructions, avatar } = input
   const name = String(rawName)
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
-  const record = await writeNewAgent({ name, description: description || undefined }, body)
+  const record = await writeNewAgent({ name, description: description || undefined, avatar }, body)
   return newAgentResponse(record, await getTeamBrain(), body)
 }
 
@@ -268,14 +268,14 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
  * nothing lists. A workspace write that fails takes the row with it.
  */
 async function writeNewAgent(
-  identity: { name: string; description?: string },
+  identity: { name: string; description?: string; avatar?: AgentAvatar },
   body: string,
 ): Promise<AgentRecord> {
   // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
   // promptless-create flow can't poison it.
   const slug = await agentCatalog.mint()
   const createdAt = new Date()
-  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt })
+  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, avatar: identity.avatar, createdAt })
 
   const frontmatter: AgentFrontmatter = { name: identity.name, createdAt: createdAt.toISOString() }
   if (identity.description) {

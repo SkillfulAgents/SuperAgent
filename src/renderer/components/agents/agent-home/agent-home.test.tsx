@@ -122,10 +122,6 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useCompletedOneTimeSessions: () => ({ data: [] }),
 }))
 
-// The morph one-shots live in NavTransientContext. Controllable so the
-// intro-morph test can flip justCreatedSlug and assert the clear.
-let mockJustCreatedSlug: string | null = null
-const mockSetJustCreatedSlug = vi.fn()
 // A parked "Export Agent" / "Agent Directory" from a menu elsewhere. Seeded
 // at mount by the hand-off test, which asserts it is consumed.
 let mockPendingAgentHomeAction: AgentHomeAction | null = null
@@ -133,8 +129,6 @@ const mockSetPendingAgentHomeAction = vi.fn()
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
-    justCreatedSlug: mockJustCreatedSlug,
-    setJustCreatedSlug: mockSetJustCreatedSlug,
     pendingAgentHomeAction: mockPendingAgentHomeAction,
     setPendingAgentHomeAction: mockSetPendingAgentHomeAction,
   }),
@@ -266,7 +260,6 @@ describe('AgentHome', () => {
     mockCanAdminAgent = false
     capturedComposerOptions = undefined
     mockSessionsData = []
-    mockJustCreatedSlug = null
     mockPendingAgentHomeAction = null
   })
 
@@ -400,38 +393,6 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTestId('home-send-button')).toBeInTheDocument()
-  })
-
-  // --- New-agent intro morph ---
-
-  it('plays the new-agent intro morph once when justCreatedSlug matches, then clears the tag', () => {
-    // jsdom lacks matchMedia; the morph reads prefers-reduced-motion and
-    // useIsMobile() subscribes via addEventListener, so include the listeners.
-    const originalMatchMedia = window.matchMedia
-    window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as typeof window.matchMedia
-    vi.useFakeTimers()
-    try {
-      mockJustCreatedSlug = testAgent.slug
-      const { unmount } = renderWithProviders(
-        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
-      )
-      // The intro overlay is showing.
-      expect(screen.getByText('Creating')).toBeInTheDocument()
-      // After the intro window the one-shot tag is cleared so it can't replay.
-      act(() => { vi.advanceTimersByTime(2200) })
-      expect(mockSetJustCreatedSlug).toHaveBeenCalledWith(null)
-      unmount()
-
-      // A second mount with the tag cleared does NOT replay the morph.
-      mockJustCreatedSlug = null
-      renderWithProviders(
-        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
-      )
-      expect(screen.queryByText('Creating')).not.toBeInTheDocument()
-    } finally {
-      vi.useRealTimers()
-      window.matchMedia = originalMatchMedia
-    }
   })
 
   // --- Send button disabled state ---

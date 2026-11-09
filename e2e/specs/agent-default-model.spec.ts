@@ -40,7 +40,7 @@ test.describe('Per-agent default model', () => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const initialMessage = `Agent default message ${tag}`
 
-    await agentPage.clickCreateAgent()
+    await agentPage.openEmptyAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     // Unset default: already following the app-wide fallback, so the picker's

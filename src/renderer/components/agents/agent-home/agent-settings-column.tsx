@@ -35,11 +35,11 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
     () => new Set((Array.isArray(agent.widgets) ? agent.widgets : []).filter((w) => w.hasDashboard).map((w) => w.slug)),
     [agent.widgets],
   )
-  const hooks = <HomeHooks className={look.grouped ? undefined : 'intro-step intro-step-9'} agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
+  const hooks = <HomeHooks agentSlug={agent.slug} isOwner={canAdminAgent(agent.slug)} />
   const sections = (
     <>
       <HomeTriggers
-        className={look.grouped ? undefined : 'intro-step intro-step-4'}
+       
         agentSlug={agent.slug}
         scheduledTasks={scheduledTasks}
         onSelectTask={(taskId: string) => {
@@ -55,10 +55,10 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
           void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
         }}
       />
-      {!hideConnections && <HomeConnections className={look.grouped ? undefined : 'intro-step intro-step-5'} agentSlug={agent.slug} />}
-      <HomeSkills className={look.grouped ? undefined : 'intro-step intro-step-6'} agentSlug={agent.slug} onRunSkill={onRunSkill} />
-      <HomeAgentIntegrations className={look.grouped ? undefined : 'intro-step intro-step-7'} agentSlug={agent.slug} />
-      <HomeVolumes className={look.grouped ? undefined : 'intro-step intro-step-8'} agentSlug={agent.slug} hiddenVolumeId={hiddenVolumeId} />
+      {!hideConnections && <HomeConnections agentSlug={agent.slug} />}
+      <HomeSkills agentSlug={agent.slug} onRunSkill={onRunSkill} />
+      <HomeAgentIntegrations agentSlug={agent.slug} />
+      <HomeVolumes agentSlug={agent.slug} hiddenVolumeId={hiddenVolumeId} />
     </>
   )
   return (
@@ -73,7 +73,7 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
           </div>
         ))}
       {look.grouped ? <HomePanel>{sections}{hooks}</HomePanel> : sections}
-      <HomeExtras className={look.grouped ? undefined : 'intro-step intro-step-9'} agentSlug={agent.slug} onOpenSettings={(tab) => { if (tab === 'system-prompt') setSystemPromptOpen(true) }} />
+      <HomeExtras agentSlug={agent.slug} onOpenSettings={(tab) => { if (tab === 'system-prompt') setSystemPromptOpen(true) }} />
       {!look.grouped && hooks}
       <SystemPromptDialog
         agent={agent}

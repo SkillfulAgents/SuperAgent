@@ -14,7 +14,7 @@ import { ConfigureModelStep } from './configure-model-step'
 import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
-import { CreateAgentStep } from './create-agent-step'
+import { AGENT_STEP_MAX_WIDTH, CreateAgentContinueButton, CreateAgentScreen, CreateAgentStep, useCreateAgentFlow } from './create-agent-step'
 import { PrivacyStep } from './privacy-step'
 import { RibbonWave } from './ribbon-wave'
 
@@ -62,23 +62,6 @@ export function stepsForPath(path: 'platform' | 'manual' | null) {
   return targetIsRemote() ? all.filter((step) => step.id !== 'runtime') : all
 }
 
-/**
- * The create-agent step is the one step wider than a form: it inlines the
- * template roster under the composer, which wants three card columns. It also
- * carries the only horizontal padding in the wizard — 480px of form has
- * gutters to spare in any window big enough to run the app, but the roster at
- * this width does not. `max-w` is border-box, so the cap is 760px of content
- * plus that padding.
- *
- * Unlike the other steps this one is a HEIGHT-FILLING column, not a centered
- * block, and the step container must not scroll: the composer stays pinned
- * while CreateAgentForm scrolls the template roster in the room below it, so
- * every layer between here and the form passes height down (h-full/flex-1
- * with min-h-0 at each level — any level missing min-h-0 lets flex content
- * push the column taller than the window and the pin silently breaks).
- */
-const AGENT_STEP_MAX_WIDTH = 'max-w-[808px] px-6'
-
 interface GettingStartedWizardProps {
   agentOnly?: boolean
   onClose: () => void
@@ -97,6 +80,9 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
   const { data: userSettings } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
   const updateGlobalSettings = useUpdateSettings()
+  // The agent step's name → describe steps, here so the nav row below can
+  // carry the name step's Continue and step Back within the agent step.
+  const agentFlow = useCreateAgentFlow()
 
   const steps = useMemo(() => stepsForPath(welcomePath), [welcomePath])
 
@@ -186,28 +172,22 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
 
   if (agentOnly) {
     return (
-      <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
-        {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
-        <div className="relative flex flex-col h-svh w-full">
-          <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-            <div className={`flex h-full min-h-0 w-full mx-auto flex-col pt-10 ${AGENT_STEP_MAX_WIDTH}`}>
-              <div className="min-h-0 flex-1" data-testid="wizard-step-content">
-                <CreateAgentStep onAgentCreated={handleFinish} />
-              </div>
-            </div>
-          </div>
-          <div className={`flex justify-end pb-10 w-full mx-auto ${AGENT_STEP_MAX_WIDTH}`}>
-            <Button
-              variant="outline"
-              onClick={() => void handleFinish()}
-              data-testid="wizard-skip"
-            >
-              Skip
-              <ChevronRight className="h-4 w-4 ml-1" />
-            </Button>
-          </div>
-        </div>
-      </div>
+      <CreateAgentScreen
+        data-testid="wizard-container"
+        onAgentCreated={handleFinish}
+        onNavigateAway={handleFinish}
+        footer={() => (
+          <Button
+            variant="outline"
+            className="ml-auto"
+            onClick={() => void handleFinish()}
+            data-testid="wizard-skip"
+          >
+            Skip
+            <ChevronRight className="h-4 w-4 ml-1" />
+          </Button>
+        )}
+      />
     )
   }
 
@@ -242,7 +222,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
             {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
             {activeStep?.id === 'runtime' && <DockerSetupStep onCanProceedChange={setRuntimeCanProceed} />}
             {activeStep?.id === 'privacy' && <PrivacyStep />}
-            {activeStep?.id === 'agent' && <CreateAgentStep onAgentCreated={handleFinish} />}
+            {activeStep?.id === 'agent' && <CreateAgentStep flow={agentFlow} onAgentCreated={handleFinish} onNavigateAway={handleFinish} />}
           </div>
           </div>
         </div>
@@ -255,6 +235,8 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
             <Button
               variant="outline"
               onClick={() => {
+                // Inside the agent step, Back walks its own steps first.
+                if (activeStep?.id === 'agent' && agentFlow.back()) return
                 if (currentStep === 0) {
                   setWelcomePath(null)
                   return
@@ -295,6 +277,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
                 <ChevronRight className="h-4 w-4 ml-1" />
               </Button>
             )}
+            {activeStep?.id === 'agent' && <CreateAgentContinueButton flow={agentFlow} />}
           </div>
         </div>
       </div>

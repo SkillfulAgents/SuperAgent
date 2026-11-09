@@ -140,7 +140,7 @@ export function useCreateAgent() {
 
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (data: { name: string; description?: string }) => {
+    mutationFn: async (data: { name: string; description?: string; avatar?: AgentAvatar }) => {
       const res = await apiFetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

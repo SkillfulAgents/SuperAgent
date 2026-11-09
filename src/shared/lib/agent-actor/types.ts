@@ -252,8 +252,11 @@ export interface AgentCatalog {
   exists(slug: AgentSlug): Promise<boolean>
   /** A fresh, unused agent slug. Nothing exists until `insert` records it. */
   mint(): Promise<AgentSlug>
-  /** Record a new local agent. The caller has written its workspace already. */
-  insert(record: { slug: AgentSlug; name: string; description?: string; createdAt: Date }): Promise<AgentRecord>
+  /**
+   * Record a new local agent. The caller has written its workspace already.
+   * Without an avatar it is given a random one.
+   */
+  insert(record: { slug: AgentSlug; name: string; description?: string; avatar?: AgentAvatar; createdAt: Date }): Promise<AgentRecord>
   /** Change an agent's identity or appearance; null when there is no such agent. */
   update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
   /** The agent slug for a display slug or a slug, or null when there is no such agent. */
