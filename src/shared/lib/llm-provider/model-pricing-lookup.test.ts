@@ -108,6 +108,17 @@ describe('pricingFor', () => {
     })
   })
 
+  it('exposes Fable 5.2 pricing: cheaper than Fable 5.1 with a 2x fast-mode multiplier', () => {
+    expect(pricingFor('claude-fable-5-2')).toEqual({
+      inputPerMtok: 8,
+      outputPerMtok: 40,
+      cacheCreationPerMtok: 10,
+      cacheCreation1hPerMtok: 16,
+      cacheReadPerMtok: 0.2,
+      speedMultipliers: { fast: 2 },
+    })
+  })
+
   it('charges Sonnet 5.5 cache reads at $0.10 from 2026-10-07 and $0.20 before', () => {
     const card = { inputPerMtok: 2, outputPerMtok: 10, cacheCreationPerMtok: 2.5, cacheCreation1hPerMtok: 4 }
     expect(pricingFor('claude-sonnet-5-5')).toEqual({ ...card, cacheReadPerMtok: 0.1 })
