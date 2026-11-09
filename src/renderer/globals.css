@@ -941,11 +941,14 @@ html[data-keyboard-open] [data-composer-footer] {
 
 /* The agent header's status chip and its power button (agent-header.tsx): the glass of Agent Home's buttons, so the
    background behind the header tints it. The chip is the thinner pane, with a light top edge; the button inside is the
-   brighter one, lifted off it by a soft shadow. */
+   brighter one, lifted off it by a soft shadow. The blur only over a backdrop (content-shell.tsx): over the plain
+   header it shows nothing but still costs a filter pass every frame. */
 .status-chip {
   background-color: hsl(var(--background) / 0.35);
   border: 1px solid hsl(0 0% 100% / 0.55);
   box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.5), 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+[data-backdrop] .status-chip {
   -webkit-backdrop-filter: blur(12px) saturate(1.4);
   backdrop-filter: blur(12px) saturate(1.4);
 }
