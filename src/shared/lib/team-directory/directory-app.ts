@@ -8,9 +8,8 @@
  * provisioning has `createDirectoryApp`; see docs/team-directory.md.
  *
  * An install is held in AppState under a random id until it is installed,
- * started over, or runs out of time; the last two delete its app, so nobody is
- * left with "Gamut" apps nobody installed. The provider's page carries the id
- * and a secret as its `state`.
+ * started over (which deletes its app), or runs out of time. The provider's
+ * page carries the id and a secret as its `state`.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { eq } from 'drizzle-orm'
@@ -19,7 +18,6 @@ import { db } from '@shared/lib/db'
 import { teamDirectories } from '@shared/lib/db/schema'
 import { appState, defineNamespace } from '@shared/lib/app-state'
 import { background } from '@shared/lib/background'
-import { Task, taskManager, type TaskResult } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { listDirectoryNow } from './cache'
@@ -30,16 +28,15 @@ import { saveDirectoryConnection, type DirectoryConnection } from './store'
 import { DirectoryConnectError, type AgentIdentityProvisioner, type ProvisionedAppRecord, type TeamDirectoryProvider } from './types'
 import { directoryInstallOutcomeSchema, type DirectoryInstallStatus } from './view-schema'
 
-/** How long an install can be finished. Its app is deleted then if it wasn't. */
+/** How long an install can be finished. */
 export const DIRECTORY_INSTALL_TTL_MS = 30 * 60_000
-const EXPIRE_TASK = 'team-directory.expire-install'
 /** What a pending install is sealed for, until its workspace is known. */
 const PENDING_TENANT = 'pending-install'
 
 const appRecordSchema = z.record(z.string(), z.unknown())
 const sealedPendingSchema = z.object({ credentials: z.unknown(), app: appRecordSchema })
 
-/** An install the host started. It outlives the expiry task a little, so the task still finds it. */
+/** An install the host started. */
 const installs = defineNamespace({
   name: 'oauth:directory-app-install',
   consistency: 'strong',
@@ -52,7 +49,7 @@ const installs = defineNamespace({
     redirectUrl: z.string().url(),
     userId: z.string().nullable(),
   }),
-  expiry: { ttlMs: DIRECTORY_INSTALL_TTL_MS + 5 * 60_000, onUpdate: 'keep' },
+  expiry: { ttlMs: DIRECTORY_INSTALL_TTL_MS, onUpdate: 'keep' },
 })
 type PendingInstall = z.infer<typeof installs.schema>
 
@@ -130,12 +127,6 @@ export async function startDirectoryAppConnect(input: {
     userId: input.userId,
   })
   await appState().set(outcomes.key(installId), { status: 'pending' })
-  try {
-    await taskManager().at(Date.now() + DIRECTORY_INSTALL_TTL_MS, `${EXPIRE_TASK}:${installId}`, { taskType: EXPIRE_TASK, payload: { installId } })
-  } catch (error) {
-    // The install still works; only its app may outlive it.
-    captureException(error, { tags: { component: 'team-directory', operation: 'schedule-install-expiry' } })
-  }
   url.searchParams.set('state', `${installId}.${secret}`)
   url.searchParams.set('redirect_uri', input.redirectUrl)
   return { installId, url: url.toString() }
@@ -243,10 +234,7 @@ async function attachDirectoryApp(connection: DirectoryConnection, credentials: 
   throw new Error('The directory changed concurrently')
 }
 
-/**
- * Ends an install nobody will finish (Start over, or its time ran out): its
- * app goes. False when it was already installed or gone.
- */
+/** Ends an install the admin started over: its app goes. False when it was already installed or gone. */
 export async function abandonDirectoryInstall(installId: string): Promise<boolean> {
   const consumed = await appState().consume(installs.key(installId))
   if (!consumed.consumed) return false
@@ -258,17 +246,6 @@ export async function abandonDirectoryInstall(installId: string): Promise<boolea
     captureException(error, { tags: { component: 'team-directory', operation: 'abandon-directory-install' } })
   }
   return true
-}
-
-/** Deletes the app of an install that ran out of time. */
-export class ExpireDirectoryInstallTask extends Task<{ installId: string }> {
-  readonly type = EXPIRE_TASK
-  readonly payloadSchema = z.object({ installId: z.string() })
-
-  async execute({ installId }: { installId: string }): Promise<TaskResult<{ installId: string }>> {
-    await abandonDirectoryInstall(installId)
-    return { kind: 'done' }
-  }
 }
 
 export type DirectoryAppCleanup =

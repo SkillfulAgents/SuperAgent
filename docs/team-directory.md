@@ -107,7 +107,7 @@ Other cases:
 
 - **Declined, or the window closed.** The install stays, so the same Install button can try again until it expires.
 - **Start over.** `DELETE /install/:installId` ends the install and deletes its app. The form forgets the pasted token, which was spent.
-- **Never finished.** An `ExpireDirectoryInstallTask` (`team-directory.expire-install`, scheduled when the install starts, 30 minutes) ends it the same way. The AppState entry outlives the task by 5 minutes so the task still finds it. The task lives in memory, like every local task, so a restart in between leaves that one app behind.
+- **Never finished.** After 30 minutes the install can't be finished any more, and its app stays in Slack until someone deletes it there.
 - **Failed.** An install that can't connect the directory deletes the app and reports why. Once the directory is saved it is reported connected; if storing the token and app fails after that, a notice says to add the token under Agent apps.
 - **Reconnected.** Connecting a workspace again deletes the app Gamut made for it before. The swap is a compare-and-set on `directory_app`, so two installs finishing at once each replace what they read.
 - **Disconnected.** `DELETE /:id` deletes the directory's app after responding (`directoryAppCleanup`). It reads what it needs before the row goes and never waits on the provider: credentials that are due are renewed in the background, since nothing else renews them once the directory is gone. When the directory has no app-creation credentials left (an admin removed them), the response says `appLeftBehind` and Settings tells the admin to delete the app themselves.

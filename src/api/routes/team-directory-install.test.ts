@@ -22,9 +22,6 @@ import routes from './team-directories'
 import { registerDirectoryProvider } from '@shared/lib/team-directory/registry'
 import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
 import { disconnectProvisioning, findProvisioner } from '@shared/lib/team-directory/provisioning'
-import { ExpireDirectoryInstallTask } from '@shared/lib/team-directory/directory-app'
-import { TeamDirectoryProvisioningService } from '@shared/lib/team-directory/service'
-import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { createFakeDirectoryProvider, type FakeDirectory } from '@shared/lib/team-directory/testing/fake-directory-provider'
 import { DirectoryConnectError } from '@shared/lib/team-directory/types'
 import type { DirectoryInstallStatus, StartDirectoryInstallResponse, TeamDirectoriesResponse } from '@shared/lib/team-directory/view-schema'
@@ -69,7 +66,6 @@ beforeEach(async () => {
   fake = createFakeDirectoryProvider('fake', 'Fake Directory', { provisionFor: 'slack' })
   unregister = registerDirectoryProvider(fake.provider)
   fake.setPeople('acme', [fake.person('acme', 'f1', 'Dana Whitfield', 'dana@acme.test')])
-  registerTasks(new TeamDirectoryProvisioningService())
 })
 
 afterEach(async () => {
@@ -109,22 +105,6 @@ describe('connecting a directory with one token', () => {
     expect(late.status).toBe(400)
     expect(await late.text()).toContain('Install expired')
     expect(await handle.db.select().from(teamDirectories).all()).toEqual([])
-  })
-
-  it('deletes the app of an install nobody finished when its time runs out', async () => {
-    const started = await start()
-    await new ExpireDirectoryInstallTask().execute({ installId: started.installId })
-    expect(fake.provisioner.calls.at(-1)).toEqual({ op: 'delete', detail: { appId: 'DIR1' } })
-    expect(await status(started.installId)).toEqual({ status: 'expired' })
-
-    // One that was installed is left alone.
-    const installed = await start('admin-key-2')
-    await returnFrom(installed.url)
-    await backgroundSettled()
-    const deletes = fake.provisioner.calls.filter((c) => c.op === 'delete').length
-    await new ExpireDirectoryInstallTask().execute({ installId: installed.installId })
-    expect(fake.provisioner.calls.filter((c) => c.op === 'delete')).toHaveLength(deletes)
-    expect(await status(installed.installId)).toMatchObject({ status: 'connected' })
   })
 
   it('takes only the state it handed out', async () => {
