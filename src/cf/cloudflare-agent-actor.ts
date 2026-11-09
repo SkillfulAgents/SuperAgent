@@ -1,9 +1,10 @@
 /**
  * Each agent's actor runs in its own AgentDurableObject. Everywhere else, `cloudflareAgentActor`
  * reaches it over Durable Object RPC: each op is one `actorCall` on the agent's object, which runs
- * it on the actor there (`runActorOp`). Values cross as RPC clones them (dates, maps, bytes,
+ * it on the actor there (`runActorOp`). Values cross as RPC clones them (dates, maps, bytes, byte
  * streams, requests and responses); errors cross through the actor error codec, so callers still
- * branch on their class.
+ * branch on their class. RPC carries only byte streams, so the ops that return a stream of objects
+ * send it as JSON lines.
  */
 import { decodeActorError, encodeActorError, type ActorErrorData } from '@shared/lib/agent-actor/actor-error-codec'
 import { ACTOR_GROUPS, type AgentActor, type AgentSlug } from '@shared/lib/agent-actor/types'
@@ -21,6 +22,38 @@ const NESTED_GROUPS: Record<string, readonly string[]> = {
 }
 const OP_SEGMENT = /^[a-zA-Z][a-zA-Z0-9]*$/
 const CONTAINER_FETCH = 'container.fetch'
+// The ops whose result is a stream of objects (a viewer's frames, the app's session events).
+const OBJECT_STREAM_OPS = new Set(['messages.follow', 'messages.subscribe'])
+
+/** A stream of JSON values as a byte stream of JSON lines, which RPC can carry. */
+function toJsonLines(values: ReadableStream<unknown>): ReadableStream<Uint8Array> {
+  const reader = values.getReader()
+  const encoder = new TextEncoder()
+  return new ReadableStream({
+    type: 'bytes',
+    async pull(controller) {
+      const { done, value } = await reader.read()
+      if (done) controller.close()
+      else controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`))
+    },
+    cancel: (reason) => reader.cancel(reason),
+  })
+}
+
+/** The values of a JSON-lines byte stream. */
+function fromJsonLines(bytes: ReadableStream<Uint8Array>): ReadableStream<unknown> {
+  let buffered = ''
+  return bytes.pipeThrough(new TextDecoderStream() as unknown as ReadableWritablePair<string, Uint8Array>).pipeThrough(new TransformStream<string, unknown>({
+    transform(text, controller) {
+      const lines = (buffered + text).split('\n')
+      buffered = lines.pop() ?? ''
+      for (const line of lines) if (line) controller.enqueue(JSON.parse(line))
+    },
+    flush(controller) {
+      if (buffered) controller.enqueue(JSON.parse(buffered))
+    },
+  }))
+}
 
 // An AbortSignal does not cross RPC. The reads that take one use it only as advice.
 function withoutSignal(arg: unknown): unknown {
@@ -34,7 +67,7 @@ export function cloudflareAgentActor(slug: AgentSlug, reach: (run: (agent: Actor
   const call = async (path: string, args: unknown[]): Promise<unknown> => {
     const outcome = await reach((agent) => agent.actorCall(path, args))
     if ('error' in outcome) throw decodeActorError(outcome.error)
-    return outcome.value
+    return OBJECT_STREAM_OPS.has(path) ? fromJsonLines(outcome.value as ReadableStream<Uint8Array>) : outcome.value
   }
   const group = (path: string): object => {
     const nested = new Map((NESTED_GROUPS[path] ?? []).map((name) => [name, group(`${path}.${name}`)]))
@@ -62,7 +95,8 @@ export async function runActorOp(actor: AgentActor, path: string, args: unknown[
     }
     const op = lookupOp(actor, path)
     if (!op) throw new TypeError(`No actor op ${path}`)
-    return { value: await op.fn.apply(op.owner, args) }
+    const value = await op.fn.apply(op.owner, args)
+    return { value: OBJECT_STREAM_OPS.has(path) ? toJsonLines(value as ReadableStream<unknown>) : value }
   } catch (error) {
     return { error: encodeActorError(error) }
   }
