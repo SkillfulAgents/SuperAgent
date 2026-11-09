@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   requests: [] as Array<{ url: string; method: string; body: any }>,
   provisioning: true as boolean,
   installed: false,
+  relay: true,
 }))
 const pending = () => makeChatIntegration({
   id: 'int-9', provider: 'slack', status: state.installed ? 'active' : 'disconnected', hasCredentials: state.installed,
@@ -21,7 +22,7 @@ vi.mock('@renderer/lib/api', () => {
   const apiFetch = async (url: string, options?: { method?: string; body?: string }) => {
     const method = options?.method ?? 'GET'
     if (method !== 'GET') state.requests.push({ url, method, body: JSON.parse(options?.body ?? '{}') })
-    if (url === '/api/webhook-relay') return Response.json({ available: true })
+    if (url === '/api/webhook-relay') return Response.json(state.relay ? { available: true } : { available: false, unavailableReason: 'not_configured' })
     if (url === '/api/agents/a') return Response.json(AGENT)
     if (url.startsWith('/api/agent-integrations/agents/a/providers/slack/setup')) {
       return Response.json(state.provisioning ? { transports: ['relay', 'direct'], provisioning: { directoryId: 'dir-1', workspace: 'Acme' } } : { transports: ['relay', 'direct'] })
@@ -44,7 +45,7 @@ const setup = () => render(<Dialog open><DialogContent><SlackSetup agentSlug="a"
 beforeEach(() => {
   vi.clearAllMocks()
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  Object.assign(state, { requests: [], provisioning: true, installed: false })
+  Object.assign(state, { requests: [], provisioning: true, installed: false, relay: true })
 })
 
 describe('Slack setup through a team directory', () => {
@@ -82,6 +83,14 @@ describe('Slack setup through a team directory', () => {
     state.provisioning = false
     setup()
     expect(await screen.findByTestId('slack-create-app')).toBeInTheDocument()
+    expect(screen.queryByTestId('slack-provisioned-setup')).toBeNull()
+    expect(screen.queryByTestId('slack-provisioning-needs-relay')).toBeNull()
+  })
+
+  it('says why the setup is by hand when a directory could create the app but this host has no relay', async () => {
+    state.relay = false
+    setup()
+    expect(await screen.findByTestId('slack-provisioning-needs-relay')).toHaveTextContent('One-click setup through Acme needs this host’s webhook relay')
     expect(screen.queryByTestId('slack-provisioned-setup')).toBeNull()
   })
 })

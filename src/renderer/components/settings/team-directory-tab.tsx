@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw, Users, X
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
+import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
@@ -362,6 +363,7 @@ function ProvisioningBadge({ status }: { status: 'active' | 'needs_reconnect' | 
  */
 function ProvisioningPanel({ directory, provider }: { directory: TeamDirectoryView; provider: DirectoryProviderView }) {
   const info = provider.provisioning
+  const { data: relay } = useWebhookRelay()
   const connect = useConnectProvisioning()
   const disconnect = useDisconnectProvisioning()
   const [values, setValues] = useState<Record<string, string>>({})
@@ -400,6 +402,11 @@ function ProvisioningPanel({ directory, provider }: { directory: TeamDirectoryVi
       <p className="text-muted-foreground">{info.description}</p>
       {status === 'needs_reconnect' && directory.provisioning?.error && (
         <p role="status" className="text-xs text-amber-700 dark:text-amber-400">{directory.provisioning.error} Apps already installed keep working.</p>
+      )}
+      {status === 'active' && relay && !relay.available && (
+        <p role="status" className="text-xs text-amber-700 dark:text-amber-400" data-testid="provisioning-needs-relay">
+          Agents’ apps receive through this host’s webhook relay, which comes with a Gamut Platform connection. Until it’s connected, agents are set up by hand.
+        </p>
       )}
       {status === 'active' && !editing ? (
         <div className="flex gap-2">

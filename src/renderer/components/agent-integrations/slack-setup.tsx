@@ -51,9 +51,15 @@ export function SlackSetup(props: IntegrationSetupProps) {
   if (!manual && !installed && relay?.available && setup.data?.provisioning) {
     return <SlackProvisionedSetupForm {...props} provisioning={setup.data.provisioning} onManual={() => setManual(true)} />
   }
+  // A directory could create the app, but this host can't receive its events: say why the setup is by hand.
+  const noRelay = !relay?.available && setup.data?.provisioning && (
+    <p className="rounded-item border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200" data-testid="slack-provisioning-needs-relay">
+      One-click setup through {setup.data.provisioning.workspace} needs this host’s webhook relay, which comes with a Gamut Platform connection. Until then, set the app up by hand.
+    </p>
+  )
   return installed || (relay?.available && webhooks)
     ? <SlackWebhookSetupForm {...props} choice={choice} onCreated={() => setInstalled(true)} />
-    : <ChatIntegrationSetupForm {...props} provider="slack" leading={choice()} />
+    : <ChatIntegrationSetupForm {...props} provider="slack" leading={<>{noRelay}{choice()}</>} />
 }
 
 function appSteps({ created, agent }: { created: boolean; agent?: SlackAppAgent }) {

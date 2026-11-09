@@ -17,7 +17,9 @@ const state = vi.hoisted(() => ({
   loginOpen: vi.fn(),
   loginClose: vi.fn(),
   invalidate: vi.fn(),
+  relay: { available: true } as { available: boolean },
 }))
+vi.mock('@renderer/hooks/use-webhook-relay', () => ({ useWebhookRelay: () => ({ data: state.relay }) }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: state.invalidate }) }))
 vi.mock('@renderer/hooks/use-login-window', () => ({
   useLoginWindow: () => ({ open: state.loginOpen, close: state.loginClose, pending: false, waiting: state.loginOpen.mock.calls.length > 0, canCancel: false, isLoginWindow: () => false }),
@@ -68,6 +70,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   state.data = { providers: [slack], directories: [] }
   state.installStatus = undefined
+  state.relay = { available: true }
   state.loginOpen.mockResolvedValue('waiting')
 })
 afterEach(cleanup)
@@ -217,5 +220,16 @@ describe('Team Directory settings', () => {
     const panel = screen.getByTestId('team-directory-provisioning-d1')
     expect(panel).toHaveTextContent('Needs a new token')
     expect(panel).toHaveTextContent('Apps already installed keep working.')
+  })
+
+  it('says agents are set up by hand while this host has no webhook relay', () => {
+    const directory = { ...acme, provisioning: { status: 'active' as const, error: null } }
+    state.data = { providers: [{ ...slack, provisioning: { description: 'Apps.', fields: [], steps: [] } }], directories: [directory] }
+    const { unmount } = render(<TeamDirectoryTab />)
+    expect(screen.queryByTestId('provisioning-needs-relay')).toBeNull()
+    unmount()
+    state.relay = { available: false }
+    render(<TeamDirectoryTab />)
+    expect(screen.getByTestId('provisioning-needs-relay')).toHaveTextContent('Until it’s connected, agents are set up by hand.')
   })
 })
