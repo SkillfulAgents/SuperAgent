@@ -96,6 +96,24 @@ function StepLink({ step, index, link }: { step: string; index: number; link?: D
   )
 }
 
+/** A provider's instructions: one line with its link when that is all there is, numbered steps otherwise. */
+function Steps({ steps, link }: { steps: string[]; link?: DirectoryProviderInfo['setupLink'] }) {
+  if (steps.length === 1) {
+    return (
+      <p>
+        {steps[0]}{' '}
+        {link && (
+          <a href={link.href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-primary hover:underline">
+            {link.label}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+      </p>
+    )
+  }
+  return <SetupSteps steps={steps.map((step, index) => <StepLink key={index} step={step} index={index} link={link} />)} />
+}
+
 /**
  * Connecting with the provider's app-creation credentials alone: paste them,
  * Gamut creates the directory's app, then one click installs it on the
@@ -182,9 +200,8 @@ function AppConnectForm({ provider, onManual }: { provider: DirectoryProviderVie
 
   return (
     <SetupPanel data-testid={`team-directory-connect-${provider.id}`}>
-      <p className="text-muted-foreground">{provider.description}</p>
       <p className={STEP_HEADING}>Step 1 of 2 · Add a token</p>
-      <SetupSteps steps={info.steps.map((step, index) => <StepLink key={index} step={step} index={index} link={info.setupLink} />)} />
+      <Steps steps={info.steps} link={info.setupLink} />
       <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); if (complete && !start.isPending) void create() }}>
         <CredentialFields idPrefix={`team-directory-${provider.id}-app`} fields={info.fields} values={values}
           onChange={(key, value) => { setValues((previous) => ({ ...previous, [key]: value })); setError(null) }} />
@@ -248,7 +265,7 @@ function ConnectForm({ provider, onBack }: { provider: DirectoryProviderInfo; on
   return (
     <SetupPanel data-testid={`team-directory-connect-${provider.id}`}>
       <p className="text-muted-foreground">{provider.description}</p>
-      <SetupSteps steps={provider.steps.map((step, index) => <StepLink key={index} step={step} index={index} link={provider.setupLink} />)} />
+      <Steps steps={provider.steps} link={provider.setupLink} />
       <form
         className="space-y-3"
         onSubmit={(event) => { event.preventDefault(); if (complete && !busy) void runConnect() }}
@@ -391,7 +408,7 @@ function ProvisioningPanel({ directory, provider }: { directory: TeamDirectoryVi
         </div>
       ) : (
         <>
-          <SetupSteps steps={info.steps.map((step, index) => <StepLink key={index} step={step} index={index} link={info.setupLink} />)} />
+          <Steps steps={info.steps} link={info.setupLink} />
           <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); if (complete && !connect.isPending) void save() }}>
             <CredentialFields idPrefix={`provisioning-${directory.id}`} fields={info.fields} values={values}
               onChange={(key, value) => { setValues((previous) => ({ ...previous, [key]: value })); setError(null) }} />

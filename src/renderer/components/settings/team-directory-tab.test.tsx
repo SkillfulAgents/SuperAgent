@@ -58,8 +58,8 @@ const slackByToken = {
   provisioning: {
     description: 'Create each agent its own Slack app.',
     fields: [{ key: 'refreshToken', label: 'Refresh token', placeholder: 'xoxe-1-…', secret: true }],
-    steps: ['Generate a token under Your App Configuration Tokens.', 'Paste its refresh token below.'],
-    setupLink: { label: 'Open Your Apps', href: 'https://api.slack.com/apps' },
+    steps: ['Generate a token in Slack, then paste its refresh token below.'],
+    setupLink: { label: 'Open Slack', href: 'https://api.slack.com/apps' },
     connectsDirectory: true,
   },
 }
@@ -77,7 +77,7 @@ describe('connecting with one token', () => {
     state.data = { providers: [slackByToken], directories: [] }
     const { rerender } = render(<TeamDirectoryTab />)
     expect(screen.getByText('Step 1 of 2 · Add a token')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Open Your Apps/ })).toHaveAttribute('href', 'https://api.slack.com/apps')
+    expect(screen.getByRole('link', { name: /Open Slack/ })).toHaveAttribute('href', 'https://api.slack.com/apps')
     expect(screen.queryByLabelText('Bot User OAuth Token')).not.toBeInTheDocument()
     const proceed = screen.getByRole('button', { name: 'Continue' })
     expect(proceed).toBeDisabled()

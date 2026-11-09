@@ -181,11 +181,8 @@ export const slackAppProvisioning: AgentIdentityProvisioning<SlackConfigToken> =
   info: {
     description: 'Create each agent its own Slack app, with its name, @handle and avatar, in one click.',
     fields: [{ key: 'refreshToken', label: 'Refresh token', placeholder: 'xoxe-1-…', secret: true }],
-    steps: [
-      'Open Your Apps in Slack. Under Your App Configuration Tokens, click Generate Token and pick your workspace. Use an account that will stay: the apps Gamut makes belong to it.',
-      'Copy the refresh token (it starts with xoxe-) and paste it below. Gamut renews it from then on.',
-    ],
-    setupLink: { label: 'Open Your Apps', href: 'https://api.slack.com/apps' },
+    steps: ['Generate a token under Your App Configuration Tokens in Slack, then paste its refresh token below.'],
+    setupLink: { label: 'Open Slack', href: 'https://api.slack.com/apps' },
   },
   credentialsSchema: slackConfigTokenSchema,
 
