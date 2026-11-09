@@ -3,6 +3,7 @@ import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { useMessages, useStopBackgroundTask } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { useAgent } from '@renderer/hooks/use-agents'
 import { usePendingUserRequests } from '@shared/lib/tools/requests/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
@@ -30,6 +31,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     'completedSubagents', 'apiRetry', 'computerUseApp', 'computerUseAppIcon', 'backgroundTasks', 'isThinking',
   ])
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
+  const { data: agent } = useAgent(agentSlug)
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -244,6 +246,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     <ActivityCard
       statusText={statusText}
       orbState={orbState}
+      agent={agent}
       elapsed={elapsed}
       isAwaitingInput={isAwaitingInput}
       detached={voiceModeActive}
