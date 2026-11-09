@@ -51,7 +51,6 @@ import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
 import teamDirectoriesRouter from './routes/team-directories'
-import inviteClaim from './routes/invite-claim'
 import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
@@ -144,12 +143,6 @@ if (isAuthMode()) {
 // wins the route match, after the rate limiter + enforcement middleware above.
 if (isAuthMode()) {
   app.route('/api/auth/token', tokenExchange)
-}
-
-// Joining from a team-directory invite link — same placement rationale as the
-// token endpoint: public, rate limited, before the Better Auth wildcard.
-if (isAuthMode()) {
-  app.route('/api/auth/invite', inviteClaim)
 }
 
 // Mobile pairing endpoints — same placement rationale as the token endpoint:

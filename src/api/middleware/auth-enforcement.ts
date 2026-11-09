@@ -6,6 +6,8 @@ import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth
 import { digestKeyPart, type StateKey } from '@shared/lib/app-state'
 import { defineLockout, type LockoutPolicy, type LockoutRecord, type UnlockedStatus } from '@shared/lib/app-state/lockout'
 import { captureException } from '@shared/lib/error-reporting'
+import { invitedUserByEmail } from '@shared/lib/auth/claim-invited-user'
+import { signUpInvitedUser } from './invited-sign-up'
 
 /**
  * Failed email sign-ins per account, keyed by the lowercased email as sent
@@ -74,23 +76,16 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
         return c.json({ code: 'LOCAL_AUTH_DISABLED', message: 'Email authentication is disabled' }, 403)
       }
 
-      // Someone shared an agent with this address before they joined: the
-      // account exists and is claimed through the invite link (or SSO), never
-      // by signing up, which would prove nothing about the address.
-      if (typeof body?.email === 'string') {
-        const invited = await db.select({ status: user.status }).from(user)
-          .where(sql`lower(${user.email}) = ${body.email.trim().toLowerCase()}`).get()
-        if (invited?.status === 'invited') {
-          return c.json({ code: 'INVITED', message: 'You’ve been invited. Use the link in your invitation to join, or sign in with single sign-on.' }, 403)
-        }
-      }
+      // Someone shared an agent with this address, or mentioned it, before
+      // they joined (team directories): that is their invitation.
+      const invited = typeof body?.email === 'string' ? await invitedUserByEmail(body.email) : null
 
       const mode = authSettings.signupMode ?? 'invitation_only'
-      if (mode === 'closed' || mode === 'invitation_only') {
+      if (mode === 'closed' || (mode === 'invitation_only' && !invited)) {
         return c.json({ code: 'SIGNUPS_DISABLED', message: 'Signups are currently disabled' }, 403)
       }
 
-      if (mode === 'domain_restricted' && body?.email) {
+      if (mode === 'domain_restricted' && !invited && body?.email) {
         const email = String(body.email)
         const domain = email.split('@')[1]?.toLowerCase()
         const allowedDomains = (authSettings.allowedSignupDomains ?? []).map(d => d.toLowerCase())
@@ -113,6 +108,9 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
           }
         }
       }
+
+      // Their account exists already: the sign-up claims it.
+      if (invited && body) return signUpInvitedUser(c, invited, body, { passwordMaxLength: authSettings.passwordMaxLength ?? 128 })
     }
   }
 

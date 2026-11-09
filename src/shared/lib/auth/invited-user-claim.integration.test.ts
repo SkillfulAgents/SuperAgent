@@ -1,8 +1,8 @@
 /**
  * Claiming an invited user (team directories) through the real Better Auth:
- * a Platform OIDC sign-in links to the invited row and gets its role, an
- * invite link sets a password on it, and either way the access and the
- * notification made for them before they joined are theirs.
+ * a Platform OIDC sign-in links to the invited row and gets its role, a plain
+ * sign-up with its email sets a password on it, and either way the access and
+ * the notification made for them before they joined are theirs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
@@ -15,7 +15,10 @@ import { completeOidcLogin, createOidcTestServer, responseCookies, type OidcTest
 let handle: TestDatabase
 let testDb: AppDatabase
 let oidc: OidcTestServer
-const authSettings = vi.hoisted(() => ({ requireAdminApproval: false, maxConcurrentSessions: 12, allowLocalAuth: true, passwordMinLength: 8, passwordRequireComplexity: false }))
+const authSettings = vi.hoisted(() => ({
+  requireAdminApproval: false, maxConcurrentSessions: 12, allowLocalAuth: true, passwordMinLength: 8, passwordMaxLength: 128,
+  passwordRequireComplexity: false, signupMode: 'invitation_only' as 'invitation_only' | 'closed' | 'open',
+}))
 
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/config/settings', async (importOriginal) => ({
@@ -26,14 +29,16 @@ vi.mock('@shared/lib/config/settings', async (importOriginal) => ({
 
 import { resetAuth } from './index'
 import { handleAuthRequest } from './handler'
-import { mintInviteToken, readInviteToken } from './invite-tokens'
-import inviteClaim from '../../../api/routes/invite-claim'
+import { authEnforcementMiddleware } from '../../../api/middleware/auth-enforcement'
 
 const BASE = 'http://localhost:47892'
 const ORG = 'org_invited_test'
 const ROLE_CLAIM = 'https://platform.skillfulagents.dev/claims/role'
 const INVITED_ID = 'invited-ada'
-const app = new Hono().route('/api/auth/invite', inviteClaim)
+// The sign-up route as the app mounts it: enforcement, then Better Auth.
+const app = new Hono()
+app.use('/api/auth/*', authEnforcementMiddleware)
+app.on(['POST', 'GET'], '/api/auth/*', (c) => handleAuthRequest(c.req.raw))
 
 function auth(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
   return handleAuthRequest(new Request(`${BASE}/api/auth/${endpoint}`, {
@@ -43,8 +48,8 @@ function auth(endpoint: string, body?: Record<string, unknown>, headers: Record<
   }))
 }
 
-const claim = (body: Record<string, unknown>) => app.request('/api/auth/invite/claim', {
-  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+const signUp = (body: Record<string, unknown>) => app.request(`${BASE}/api/auth/sign-up/email`, {
+  method: 'POST', headers: { 'content-type': 'application/json', origin: BASE }, body: JSON.stringify(body),
 })
 
 async function seed() {
@@ -76,6 +81,7 @@ async function agentsOf(userId: string) {
 beforeEach(async () => {
   authSettings.requireAdminApproval = false
   authSettings.allowLocalAuth = true
+  authSettings.signupMode = 'invitation_only'
   oidc = await createOidcTestServer()
   oidc.state.acceptedRedirectUri = `${BASE}/api/auth/oauth2/callback/platform`
   vi.stubEnv('AUTH_MODE', 'true')
@@ -134,10 +140,11 @@ describe('claiming through a Platform sign-in (platform-controlled)', () => {
     expect(await session.json()).toMatchObject({ user: { id: INVITED_ID, role } })
   })
 
-  it('offers no password join there: members come from Platform', async () => {
-    const token = await mintInviteToken(INVITED_ID)
-    expect(await (await app.request(`/api/auth/invite/${token}`)).json()).toMatchObject({ passwordJoin: false })
-    expect((await claim({ token, name: 'Ada', password: 'Password123!' })).status).toBe(403)
+  it('takes no password sign-up there: members come from Platform', async () => {
+    const res = await signUp({ name: 'Ada', email: 'ada@example.com', password: 'Password123!' })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'SIGNUPS_DISABLED' })
+    expect((await invitedRow())?.status).toBe('invited')
   })
 })
 
@@ -150,61 +157,51 @@ describe('claiming through single sign-on with admin approval on', () => {
   })
 })
 
-describe('claiming with a password from the invite link', () => {
-  it('greets them, sets the password, and lets them sign in to what was waiting', async () => {
-    const token = await mintInviteToken(INVITED_ID)
-    expect(await (await app.request(`/api/auth/invite/${token}`)).json()).toEqual({
-      name: 'Ada (from Slack)', email: 'ada@example.com', invitedBy: 'Grace Inviter',
-      passwordJoin: true, passwordMinLength: 8, passwordRequireComplexity: false,
-    })
+describe('claiming by signing up with their email', () => {
+  it('signs them up into the account waiting for them, while sign-ups are otherwise invitation-only', async () => {
+    const stranger = await signUp({ name: 'Mallory', email: 'mallory@example.com', password: 'Password123!' })
+    expect(stranger.status).toBe(403)
 
-    const claimed = await claim({ token, name: 'Ada Lovelace', password: 'Password123!' })
-    expect(claimed.status).toBe(200)
-    expect(await claimed.json()).toEqual({ email: 'ada@example.com', pendingApproval: false })
-    expect(await invitedRow()).toMatchObject({ status: 'active', name: 'Ada Lovelace', emailVerified: true })
+    const joined = await signUp({ name: 'Ada Lovelace', email: 'ADA@example.com', password: 'Password123!' })
+    expect(joined.status).toBe(200)
+    expect(await joined.json()).toMatchObject({ user: { id: INVITED_ID } })
+    // Joined, as anyone who signs up with a password: the address isn't verified.
+    expect(await invitedRow()).toMatchObject({ status: 'active', name: 'Ada Lovelace', emailVerified: false, banned: false })
     expect(await agentsOf(INVITED_ID)).toEqual(['support', 'team-brain'])
+    expect((await testDb.select().from(notifications).where(eq(notifications.recipientUserId, INVITED_ID)).all()).map((n) => n.id)).toEqual(['mention-1'])
+    const session = await auth('get-session', undefined, { cookie: responseCookies(joined) })
+    expect(await session.json()).toMatchObject({ user: { id: INVITED_ID } })
 
-    const signIn = await auth('sign-in/email', { email: 'ada@example.com', password: 'Password123!' })
-    expect(signIn.status).toBe(200)
-    expect(await signIn.json()).toMatchObject({ user: { id: INVITED_ID } })
-
-    // The link is spent, and so is every other link they were sent.
-    expect(await readInviteToken(token)).toBeNull()
-    expect((await claim({ token, name: 'Mallory', password: 'Password456!' })).status).toBe(404)
+    // One account: signing up again is an ordinary sign-up, which invitation-only refuses.
+    expect((await signUp({ name: 'Ada', email: 'ada@example.com', password: 'Password456!' })).status).toBe(403)
+    expect((await auth('sign-in/email', { email: 'ada@example.com', password: 'Password123!' })).status).toBe(200)
   })
 
   it('joins pending approval when an admin must approve', async () => {
     authSettings.requireAdminApproval = true
-    const token = await mintInviteToken(INVITED_ID)
-    expect(await (await claim({ token, name: 'Ada', password: 'Password123!' })).json()).toEqual({ email: 'ada@example.com', pendingApproval: true })
+    expect((await signUp({ name: 'Ada', email: 'ada@example.com', password: 'Password123!' })).status).toBe(403)
+    expect(await invitedRow()).toMatchObject({ status: 'active', banned: true, banReason: 'Pending admin approval' })
     expect((await auth('sign-in/email', { email: 'ada@example.com', password: 'Password123!' })).status).toBe(403)
   })
 
-  it('refuses a short password and an unknown link, changing nothing', async () => {
-    const token = await mintInviteToken(INVITED_ID)
-    expect((await claim({ token, name: 'Ada', password: 'short' })).status).toBe(400)
-    expect((await claim({ token: 'x'.repeat(43), name: 'Ada', password: 'Password123!' })).status).toBe(404)
-    expect((await app.request(`/api/auth/invite/${'y'.repeat(43)}`)).status).toBe(404)
+  it('refuses a short password, and any sign-up while sign-ups are closed, changing nothing', async () => {
+    expect((await signUp({ name: 'Ada', email: 'ada@example.com', password: 'short' })).status).toBe(400)
+    authSettings.signupMode = 'closed'
+    expect((await signUp({ name: 'Ada', email: 'ada@example.com', password: 'Password123!' })).status).toBe(403)
     expect((await invitedRow())?.status).toBe('invited')
     expect(await testDb.select().from(authAccount).all()).toEqual([])
   })
 
-  it('gives the password to one of two claims at once', async () => {
-    const token = await mintInviteToken(INVITED_ID)
+  it('gives the password to one of two sign-ups at once', async () => {
     const results = await Promise.all([
-      claim({ token, name: 'Ada', password: 'Password123!' }),
-      claim({ token, name: 'Ada', password: 'Password456!' }),
+      signUp({ name: 'Ada', email: 'ada@example.com', password: 'Password123!' }),
+      signUp({ name: 'Ada', email: 'ada@example.com', password: 'Password456!' }),
     ])
-    // The other finds the row taken (410), or already joined (404).
+    // The other finds the account taken: by the claim, or already joined.
     const statuses = results.map((r) => r.status)
     expect(statuses.filter((status) => status === 200)).toHaveLength(1)
-    expect(statuses.filter((status) => status !== 200)).toEqual([expect.toBeOneOf([404, 410])])
+    expect(statuses.filter((status) => status !== 200)).toEqual([expect.toBeOneOf([403, 422])])
     expect(await testDb.select().from(authAccount).where(eq(authAccount.userId, INVITED_ID)).all()).toHaveLength(1)
-  })
-
-  it('does not open for someone who already joined', async () => {
-    const token = await mintInviteToken('inviter')
-    expect((await app.request(`/api/auth/invite/${token}`)).status).toBe(404)
   })
 })
 

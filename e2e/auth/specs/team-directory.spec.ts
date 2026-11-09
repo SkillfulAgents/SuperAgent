@@ -1,34 +1,13 @@
 /**
  * Team directories end to end, on the mock server's Demo Directory (E2E_MOCK):
  * an admin connects it, a directory person is shared with and mentioned before
- * they join, and then they join from their invite link to find both waiting.
+ * they join, and then they sign up with their email, from the link their DM
+ * carries, to find both waiting.
  */
 import { test, expect, type Page } from '@playwright/test'
-import path from 'node:path'
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import Database from 'better-sqlite3'
 import { AppPage } from '../../pages/app.page'
 
 const PASSWORD = 'DirectoryTesting123!'
-
-/**
- * The invite link a DM would carry. The Demo Directory keeps its DMs in the
- * server's memory, so the test writes a link for the person the way the server does.
- */
-function inviteLinkFor(dataDir: string, email: string): string {
-  const db = new Database(path.join(dataDir, 'superagent.db'))
-  try {
-    const row = db.prepare(`select id from user where email = ? and status = 'invited'`).get(email) as { id: string } | undefined
-    expect(row, `${email} is an invited user`).toBeTruthy()
-    const token = randomBytes(32).toString('base64url')
-    const now = Date.now()
-    db.prepare('insert into verification (id, identifier, value, expires_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?)')
-      .run(randomUUID(), `team-invite:${createHash('sha256').update(token).digest('base64url')}`, row!.id, now + 3_600_000, now, now)
-    return `/?invite=${token}`
-  } finally {
-    db.close()
-  }
-}
 
 async function openShare(page: Page) {
   await page.getByTestId('agent-share-button').click()
@@ -37,7 +16,6 @@ async function openShare(page: Page) {
 
 test('a directory person is shared with and mentioned before joining, then finds both waiting', async ({ page, browser, baseURL }) => {
   test.setTimeout(180_000)
-  const dataDir = test.info().project.metadata.dataDir as string
 
   // The first user of this server is its admin.
   const signUp = await page.request.post('/api/auth/sign-up/email', { data: { name: 'Ada Admin', email: 'ada@acme.test', password: PASSWORD } })
@@ -92,17 +70,19 @@ test('a directory person is shared with and mentioned before joining, then finds
   const members = await (await page.request.get(`/api/agents/${agent.slug}/members`)).json() as Array<{ email: string; invited?: boolean }>
   expect(members.filter((m) => m.invited).map((m) => m.email).sort()).toEqual(['dana@acme.test', 'lee.park@acme.test'])
 
-  // Lee joins from the invite link and is signed in to what was waiting. (This
-  // server's data dir has admin approval off; joining pending approval is in
-  // invited-user-claim.integration.test.ts.)
+  // Lee signs up with their email from the DM's link (the Demo Directory keeps
+  // its DMs in memory, so the test opens the link the DM would carry) and is
+  // signed in to what was waiting. (This server's data dir has admin approval
+  // off; joining pending approval is in invited-user-claim.integration.test.ts.)
   const leeContext = await browser.newContext({ baseURL })
   try {
     const leePage = await leeContext.newPage()
-    await leePage.goto(inviteLinkFor(dataDir, 'lee.park@acme.test'))
-    await expect(leePage.getByTestId('invite-join-greeting')).toContainText('Ada Admin invited you to Gamut.')
+    await leePage.goto(`/?join=${encodeURIComponent('lee.park@acme.test')}`)
+    await expect(leePage.getByLabel('Email')).toHaveValue('lee.park@acme.test')
+    await leePage.getByLabel('Name').fill('Lee Park')
     await leePage.getByLabel('Password', { exact: true }).fill(PASSWORD)
     await leePage.getByLabel('Confirm Password').fill(PASSWORD)
-    await leePage.getByTestId('invite-join-submit').click()
+    await leePage.getByTestId('signup-submit').click()
     await expect(leePage.getByTestId('app-sidebar')).toContainText('Support Desk', { timeout: 30_000 })
     await expect(leePage.getByText('Mentioned you')).toBeVisible()
 
