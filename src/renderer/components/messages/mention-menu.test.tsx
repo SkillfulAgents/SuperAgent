@@ -101,8 +101,8 @@ describe('the @ menu', () => {
     )
     const chip = within(editor).getByTestId('user-mention')
     expect(chip).toHaveTextContent('@Mike Smith')
-    // The chip's avatar, drawn by React into the chip.
-    expect(within(chip).getByRole('img', { name: 'Mike Smith' })).toBeInTheDocument()
+    // A teammate's chip is just their name: no avatar.
+    expect(within(chip).queryByRole('img')).toBeNull()
   })
 
   it('moves with the arrow keys and picks with Tab', async () => {
