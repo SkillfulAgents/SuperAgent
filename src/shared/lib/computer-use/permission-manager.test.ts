@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, onTestFinished, vi } from 'vitest'
 import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
 import { AgentComputerUse } from './agent-permissions'
 import { ComputerUsePermissionManager } from './permission-manager'
@@ -611,7 +611,10 @@ describe('ComputerUsePermissionManager', () => {
       expect(await pm.checkPermission('agent-1', 'use_application', 'Calculator')).toBe('prompt_needed')
     })
 
-    it('case-sensitive appName matching', async () => {
+    it('case-sensitive appName matching on macOS', async () => {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+      onTestFinished(() => { Object.defineProperty(process, 'platform', platform) })
       await pm.grantPermission('agent-1', 'use_application', 'once', 'Calculator')
       expect(await pm.checkPermission('agent-1', 'use_application', 'calculator')).toBe('prompt_needed')
       expect(await pm.checkPermission('agent-1', 'use_application', 'CALCULATOR')).toBe('prompt_needed')
