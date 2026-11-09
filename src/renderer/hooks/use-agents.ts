@@ -9,7 +9,6 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
-import { usePreparedTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
 import { agentQuery } from './query-options'
 
 // Re-export for convenience
@@ -113,13 +112,10 @@ export function useAgents<TData = ApiAgent[]>(options?: {
   })
 }
 
-/** The agents the sidebar and Home list: all but the Team Brain agent, which is reached only through its own sidebar item. */
+/** The agents the sidebar and Home list: all but the Team Brain agent, reached only through its own sidebar item, and a set-up's. */
+const withoutTeamBrain = (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && !agent.teamBrainSettingUp)
+
 export function useListedAgents() {
-  const preparedSlug = usePreparedTeamBrainSlug()
-  const withoutTeamBrain = useCallback(
-    (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && agent.slug !== preparedSlug),
-    [preparedSlug],
-  )
   return useAgents({ select: withoutTeamBrain })
 }
 

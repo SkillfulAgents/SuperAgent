@@ -1,4 +1,4 @@
-import { TEAM_BRAIN_SCHEDULES, type TeamBrainSchedule } from './team-brain-schema'
+import { TEAM_BRAIN_SCHEDULES, type TeamBrainSchedule } from '@shared/lib/config/team-brain-schema'
 
 /** The upkeep task's cron for each schedule. */
 export const TEAM_BRAIN_CRON: Record<TeamBrainSchedule, string> = {

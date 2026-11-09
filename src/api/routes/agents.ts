@@ -181,7 +181,6 @@ import {
   listPendingScheduledTasks,
   listCancelledScheduledTasks,
   listCompletedOneTimeTasks,
-  createScheduledTask,
   cancelPendingWakeForSession,
   getPendingWakeForSession,
   listPendingWakesByAgent,
@@ -190,8 +189,6 @@ import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { validateCronExpression } from '@shared/lib/services/schedule-parser'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -279,6 +276,7 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { readyTeamBrain } from '@shared/lib/config/team-brain-schema'
 import { removeAgent } from '../lib/remove-agent'
 import { createOwnerAclOrRollback } from '../lib/owner-acl'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
@@ -1279,6 +1277,7 @@ Respond with ONLY those two lines. No labels, no quotes, no explanation.`,
 // 404s if it doesn't resolve — subsumes the old existence check.
 agents.use('/:id/*', ResolveAgent())
 
+
 /**
  * Name a session opened by a system notice (voice mode started from the
  * agent home) from the first message a person sends to it. The notice must
@@ -1500,11 +1499,14 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays.
-    await mutateSettings((settings) => {
-      if (settings.teamBrain?.agentSlug !== slug) return false
-      delete settings.teamBrain
-    })
+    // The Team Brain names its agent; with the agent gone there is no Team Brain. Its drive stays. A set-up stays
+    // for Discard to remove.
+    if (teamBrain?.agentSlug === slug) {
+      await mutateSettings((settings) => {
+        if (readyTeamBrain(settings.teamBrain)?.agentSlug !== slug) return false
+        delete settings.teamBrain
+      })
+    }
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
     return c.body(null, 204)
@@ -4887,38 +4889,6 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
   } catch (error) {
     console.error('Failed to revoke computer use:', error)
     return c.json({ error: 'Failed to revoke computer use' }, 500)
-  }
-})
-
-const BRAIN_UPKEEP_NAME = 'Brain upkeep'
-const BRAIN_UPKEEP_PROMPT = 'Run the maintain-brain skill (scheduled upkeep). Follow your system prompt. If no brain location is set up yet, end quietly without a message or a sync summary.'
-
-const brainUpkeepBodySchema = z.object({ scheduleExpression: z.string().trim().min(1, 'scheduleExpression is required') })
-
-// POST /api/agents/:id/team-brain/upkeep - Schedule the Team Brain's upkeep at
-// set-up, so it never depends on the agent's first turn. Once only.
-agents.post('/:id/team-brain/upkeep', AgentUser(), zValidator('json', brainUpkeepBodySchema), async (c) => {
-  const slug = getAgentId(c)
-  if ((await getTeamBrain())?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
-  const { scheduleExpression } = c.req.valid('json')
-  if (!validateCronExpression(scheduleExpression).valid) return c.json({ error: 'Invalid cron expression' }, 400)
-  try {
-    const existing = (await listPendingScheduledTasks(slug)).find((task) => task.name === BRAIN_UPKEEP_NAME)
-    if (existing) return c.json({ taskId: existing.id })
-    const taskId = await createScheduledTask({
-      agentSlug: slug,
-      scheduleType: 'cron',
-      scheduleExpression,
-      prompt: BRAIN_UPKEEP_PROMPT,
-      name: BRAIN_UPKEEP_NAME,
-      createdByUserId: getCurrentUserId(c),
-      timezone: await resolveTimezoneForAgent(slug),
-    })
-    globalFeed.publish({ type: 'scheduled_task_created', taskId, agentSlug: slug })
-    return c.json({ taskId }, 201)
-  } catch (error) {
-    console.error('Failed to schedule Brain upkeep:', error)
-    return c.json({ error: 'Failed to schedule Brain upkeep' }, 500)
   }
 })
 

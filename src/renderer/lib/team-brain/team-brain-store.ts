@@ -1,27 +1,29 @@
 import { useMemo, useSyncExternalStore } from 'react'
-import {
-  TEAM_BRAIN_INITIAL_STATE,
-  type TeamBrainLocationId,
-  type TeamBrainPrepared,
-  type TeamBrainSchedule,
-  type TeamBrainState,
-  type TeamBrainStep,
-} from './team-brain-schema'
+import type { TeamBrainChoices, TeamBrainStep } from '@shared/lib/config/team-brain-schema'
 
 /**
- * The set-up modal's choices, in memory. A tiny external store (same shape as
- * use-minute-clock) lets the page and the modal read one value without a
- * provider: any write notifies every subscriber. Start chat applies them.
+ * The set-up window, in memory: whether it is open and which step it shows.
+ * The set-up itself (its agent, drive and choices) lives on the server. A tiny
+ * external store (same shape as use-minute-clock) lets the page and the window
+ * read one value without a provider.
  */
 
-const listeners = new Set<() => void>()
-let current: TeamBrainState = TEAM_BRAIN_INITIAL_STATE
+/** `off` (the page) → `onboarding` (the set-up window open) → `launching` (after Start chat). */
+export interface TeamBrainWindowState {
+  status: 'off' | 'onboarding' | 'launching'
+  step: TeamBrainStep
+}
 
-function read(): TeamBrainState {
+const CLOSED: TeamBrainWindowState = { status: 'off', step: 'location' }
+
+const listeners = new Set<() => void>()
+let current: TeamBrainWindowState = CLOSED
+
+function read(): TeamBrainWindowState {
   return current
 }
 
-function write(next: TeamBrainState) {
+function write(next: TeamBrainWindowState) {
   current = next
   listeners.forEach((listener) => listener())
 }
@@ -33,68 +35,42 @@ function subscribe(listener: () => void) {
   }
 }
 
-function patch(changes: Partial<TeamBrainState>) {
-  write({ ...read(), ...changes })
-}
-
-/** Read the current state outside React (tests, handlers). */
-export function getTeamBrainState(): TeamBrainState {
+/** Read the window outside React (tests, handlers). */
+export function getTeamBrainState(): TeamBrainWindowState {
   return read()
 }
 
-/** Replace the state wholesale. For tests. */
-export function setTeamBrainState(next: TeamBrainState) {
-  write(next)
-}
-
-/** Back to the start. Used between tests. */
+/** Back to closed. Used between tests. */
 export function resetTeamBrainState() {
-  write(TEAM_BRAIN_INITIAL_STATE)
+  write(CLOSED)
 }
 
 /** Whether an agent uses Team Brain. One not switched on its own follows Every agent. */
-export function usesTeamBrain(state: TeamBrainState, agentSlug: string): boolean {
-  return state.agents[agentSlug] ?? state.everyAgent
-}
-
-/** The agent set-up created but the record does not mark yet, which the agent lists leave out. */
-export function usePreparedTeamBrainSlug(): string | undefined {
-  const select = () => read().prepared?.agentSlug ?? read().installing ?? undefined
-  return useSyncExternalStore(subscribe, select, select)
+export function usesTeamBrain(choices: Pick<TeamBrainChoices, 'agents' | 'everyAgent'>, agentSlug: string): boolean {
+  return choices.agents[agentSlug] ?? choices.everyAgent
 }
 
 export interface TeamBrainActions {
-  /** Opt in: open the set-up modal at its first step, nothing preselected. */
-  start(): void
-  /** Leave set-up. Nothing is kept; the caller discards what was prepared. */
-  cancelSetup(): void
+  /** Open the set-up window at `step`. */
+  open(step: TeamBrainStep): void
+  /** Close the window. The set-up stays on the server. */
+  close(): void
   goToStep(step: TeamBrainStep): void
-  setLocation(id: TeamBrainLocationId): void
-  setPrepared(prepared: TeamBrainPrepared | null): void
-  setInstalling(agentSlug: string | null): void
-  /** Start chat closes the modal while the prepared agent launches; a failed launch reopens it. */
+  /** Start chat closes the window while Finish runs; a failed Finish reopens it. */
   setLaunching(launching: boolean): void
-  setSchedule(schedule: TeamBrainSchedule): void
-  setUsesTeamBrain(agentSlug: string, on: boolean): void
-  setEveryAgent(on: boolean): void
 }
 
 export interface TeamBrainStore extends TeamBrainActions {
-  state: TeamBrainState
+  state: TeamBrainWindowState
   isOnboarding: boolean
 }
 
 const actions: TeamBrainActions = {
-  start: () => patch({ status: 'onboarding', step: 'location', location: null, prepared: null }),
-  cancelSetup: () => write(TEAM_BRAIN_INITIAL_STATE),
-  goToStep: (step) => patch({ step }),
-  setLocation: (location) => patch({ location }),
-  setPrepared: (prepared) => patch({ prepared, installing: null }),
-  setInstalling: (installing) => patch({ installing }),
-  setLaunching: (launching) => patch({ status: launching ? 'launching' : 'onboarding' }),
-  setSchedule: (schedule) => patch({ schedule }),
-  setUsesTeamBrain: (agentSlug, on) => patch({ agents: { ...read().agents, [agentSlug]: on } }),
-  setEveryAgent: (everyAgent) => patch({ everyAgent }),
+  open: (step) => write({ status: 'onboarding', step }),
+  // Keeps the step: the window still shows it while it fades out.
+  close: () => write({ ...read(), status: 'off' }),
+  goToStep: (step) => write({ ...read(), step }),
+  setLaunching: (launching) => write({ ...read(), status: launching ? 'launching' : 'onboarding' }),
 }
 
 export function useTeamBrain(): TeamBrainStore {

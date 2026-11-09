@@ -24,7 +24,7 @@ async function setLinked(queryClient: QueryClient, slug: string, brainSlug: stri
 }
 
 /** Allow Team Brain to list every agent, or read every agent's sessions (agents made later too), or clear it. */
-export async function setTeamBrainReach(queryClient: QueryClient, brainSlug: string, operation: 'list' | 'read', allowed: boolean) {
+async function setTeamBrainReach(queryClient: QueryClient, brainSlug: string, operation: 'list' | 'read', allowed: boolean) {
   const res = await apiFetch(`/api/agents/${brainSlug}/x-agent-policies`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation, targetSlug: null, decision: allowed ? 'allow' : 'default' }),
   })
@@ -36,7 +36,7 @@ export async function setTeamBrainReach(queryClient: QueryClient, brainSlug: str
  * What an agent gets when it uses Team Brain: the drive, read-only, leave to message the Team Brain agent, and Team Brain reading its sessions.
  * `mount: false` when the drive already reaches every agent.
  */
-export function useGiveTeamBrain() {
+function useGiveTeamBrain() {
   const addMount = useAddMount()
   const queryClient = useQueryClient()
   return async (slug: string, { volumeId, brainSlug, mount = true }: { volumeId: string; brainSlug: string; mount?: boolean }) => {

@@ -30,6 +30,8 @@ export interface ApiAgent {
   name: string
   /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
   teamBrain?: { volumeId: string }
+  /** The agent of a Team Brain set-up still in progress: no list shows it. */
+  teamBrainSettingUp?: true
   /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
   avatar?: AgentAvatar | null
   description?: string

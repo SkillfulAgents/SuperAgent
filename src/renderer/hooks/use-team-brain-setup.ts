@@ -1,122 +1,192 @@
 import { useEffect, useRef } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useOnboarding } from '@renderer/context/onboarding-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import { fillTeamBrainSetupBlock, setUpByOf, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
-import type { TeamBrainPrepared } from '@renderer/lib/team-brain/team-brain-schema'
-import { getTeamBrainState, usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
+import { useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
 import type { VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
+import { TEAM_BRAIN_STEPS, type TeamBrainChoices, type TeamBrainSetup, type TeamBrainStep } from '@shared/lib/config/team-brain-schema'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
-import type { ApiAgent } from '@shared/lib/types/api'
+import { setUpByOf } from '@shared/lib/team-brain/team-brain-setup-block'
 import type { MountSummaryWithHealth } from '@shared/lib/types/mount'
-import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
-import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-templates'
-import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
+import { useStartAgent } from './use-agents'
 import { useConnectedAccounts } from './use-connected-accounts'
 import { usePlatformAuthStatus } from './use-platform-auth'
-import { useAddMount, useAgentMounts } from './use-mounts'
-import { setTeamBrainReach, useGiveTeamBrain } from './use-team-brain-access'
+import { useAgentMounts } from './use-mounts'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
-import { useSettings, useUpdateSettings } from './use-settings'
 import { useAddSkillset } from './use-skillsets'
-import { useDeleteVolumeDefinition, useSaveVolumeDefinition } from './use-volume-definitions'
 
-const TEAM_BRAIN_TEMPLATE_PATH = 'agents/team-brain/'
+/** The set-up in progress, as `GET /api/team-brain/setup` answers. */
+export interface TeamBrainSetupView {
+  setup: TeamBrainSetup
+}
+
+const SETUP_KEY = ['team-brain-setup']
+
+/** Choices before the first save, as the server claims a set-up with. */
+const FIRST_CHOICES: TeamBrainChoices = { step: 'location', schedule: 'daily', everyAgent: true, agents: {} }
+
+/** A refused set-up request, with the server's reason and the set-up it holds instead. */
+class SetupRefusal extends Error {
+  constructor(message: string, readonly reason: string | undefined, readonly setup: TeamBrainSetup | null) {
+    super(message)
+  }
+}
+
+async function send<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await apiFetch(`/api/team-brain/setup${path}`, {
+    method,
+    ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  })
+  if (res.ok) return res.status === 204 ? (undefined as T) : res.json()
+  const answer = await res.json().catch(() => ({}))
+  throw new SetupRefusal(answer.error ?? 'Team Brain set-up failed', answer.reason, answer.setup ?? null)
+}
 
 /**
- * Team Brain set-up for the page that hosts the modal. Saving the drive
- * prepares the agent and its drive, and the agent warm-starts once the drive can
- * mount, as the new-agent form does; Start chat launches them. Leaving the page
- * mid-set-up cancels it.
+ * Team Brain set-up for the page that hosts the window. The set-up lives on
+ * the server: step 1 claims it and makes the agent and drive into it, choices
+ * save as they change, and Start chat finishes it. Closing the window or
+ * leaving the page keeps it; Discard removes it.
  */
 export function useTeamBrainSetup() {
   const tb = useTeamBrain()
   const { setOnboarding } = useOnboarding()
-  const { user } = useUser()
+  const { user, isAuthMode, isAdmin } = useUser()
+  const canSetUp = !isAuthMode || isAdmin
   const { data: platform } = usePlatformAuthStatus()
   const { data: connected } = useConnectedAccounts()
   const queryClient = useQueryClient()
-  // Also warms the skillset cache the install reads from.
-  const { data: templates } = useDiscoverableAgents()
-  const { data: agents } = useAgents()
-  const install = useInstallAgentFromSkillset()
-  const addMount = useAddMount()
-  const giveTeamBrain = useGiveTeamBrain()
   const startAgent = useStartAgent()
-  const deleteAgent = useDeleteAgent()
-  const deleteVolume = useDeleteVolumeDefinition()
-  const saveVolume = useSaveVolumeDefinition()
-  const updateAgent = useUpdateAgent()
-  const updateSettings = useUpdateSettings()
   const addSkillset = useAddSkillset()
   const startOnboardingSession = useStartOnboardingSession()
-  const template = templates?.find((t) => t.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && t.path === TEAM_BRAIN_TEMPLATE_PATH)
-  const setUpSlug = agents?.find((agent) => agent.teamBrain)?.slug
-  const { isAuthMode, isAdmin } = useUser()
-  const settings = useSettings({ enabled: !isAuthMode || isAdmin })
-  const mounted = useRef(true)
-  // Bumped by each prepare and each cancel: work that finds it moved on belongs to an attempt that ended.
-  const attempt = useRef(0)
-  // A start mounts only drives that are ready, so a drive still making its first copy waits for the agent's start.
-  const draft = tb.state.prepared
-  const driveHealth = usePreparedDriveHealth(draft).health
-  const warmed = useRef<TeamBrainPrepared | null>(null)
-  const warm = startAgent.mutate
-  useEffect(() => {
-    if (!draft || driveHealth !== 'ok' || warmed.current === draft) return
-    warmed.current = draft
-    warm({ slug: draft.agentSlug, source: 'warm-start' }, {
-      onError: (error) => captureRendererException(error, { tags: { area: 'team-brain', op: 'warm-start' } }),
-    })
-  }, [draft, driveHealth, warm])
 
-  const discard = async ({ agentSlug, volumeId }: TeamBrainPrepared) => {
-    // The drive delete refuses while the agent still has it attached.
-    await deleteAgent.mutateAsync(agentSlug)
-    await deleteVolume.mutateAsync(volumeId)
+  // Focus reads it again for the page, not under an open window: a set-up gone meanwhile surfaces as the refusal of its next save.
+  const query = useQuery({
+    queryKey: SETUP_KEY,
+    enabled: canSetUp,
+    refetchOnWindowFocus: !tb.isOnboarding,
+    queryFn: async (): Promise<TeamBrainSetupView | null> => {
+      const res = await apiFetch('/api/team-brain/setup')
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error('Could not read Team Brain set-up')
+      return res.json()
+    },
+  })
+  const view = query.data ?? null
+  const setup = view?.setup ?? null
+  const showSetup = (next: TeamBrainSetup | null) => {
+    // A new or reattached drive keeps the agent: read its drives again, or the old drive's health stays on show.
+    if (next?.agentSlug && next.volumeId !== queryClient.getQueryData<TeamBrainSetupView | null>(SETUP_KEY)?.setup.volumeId) {
+      void queryClient.invalidateQueries({ queryKey: ['mounts'] })
+    }
+    const data: TeamBrainSetupView | null = next ? { setup: next } : null
+    queryClient.setQueryData(SETUP_KEY, data)
   }
 
-  const prepare = async (source: VolumeSource, details: VolumeDetails) => {
-    // The agent list holds only the agents shared with this admin; the workspace record says whether one exists.
-    const run = ++attempt.current
-    if (setUpSlug || (await settings.refetch({ throwOnError: true })).data?.teamBrain) throw new Error('Team Brain is already set up.')
-    if (!template) throw new Error('The Team Brain template is not available yet. Try again in a moment.')
-    const previous = getTeamBrainState().prepared
-    if (previous) {
-      await discard(previous)
-      if (run === attempt.current) tb.setPrepared(null)
-    }
-    if (run !== attempt.current) return false
-    const agent = await install.mutateAsync({
-      skillsetId: template.skillsetId, agentPath: template.path, agentName: template.name, agentVersion: template.version,
+  // A start mounts only drives that are ready, so a drive still making its first copy waits for the agent's start.
+  const driveHealth = usePreparedDriveHealth(setup).health
+  const warmed = useRef<string | null>(null)
+  const warm = startAgent.mutate
+  const agentSlug = setup?.agentSlug
+  useEffect(() => {
+    if (!tb.isOnboarding || !agentSlug || driveHealth !== 'ok' || warmed.current === agentSlug) return
+    warmed.current = agentSlug
+    warm({ slug: agentSlug, source: 'warm-start' }, {
+      onError: (error) => captureRendererException(error, { tags: { area: 'team-brain', op: 'warm-start' } }),
     })
-    if (run !== attempt.current) {
-      void deleteAgent.mutateAsync(agent.slug).catch(() => {})
-      return false
+  }, [tb.isOnboarding, agentSlug, driveHealth, warm])
+
+  /** A refusal that names what happened instead: another admin's set-up, none any more, or a Team Brain finished meanwhile. Others show as errors. */
+  const settle = (error: unknown): boolean => {
+    if (!(error instanceof SetupRefusal)) return false
+    if (error.reason === 'stale' && error.setup) {
+      showSetup(error.setup)
+      tb.open(error.setup.step)
+      toast.info('Another admin already started setting up Team Brain. You’re continuing it.')
+      return true
     }
-    // Before the install's agent-list refresh lands, so the list never shows it.
-    tb.setInstalling(agent.slug)
-    let prepared: TeamBrainPrepared
+    if (error.reason === 'ready') {
+      showSetup(null)
+      tb.close()
+      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      toast.info('Another admin finished setting up Team Brain.')
+      return true
+    }
+    if (error.reason === 'discarded') {
+      showSetup(null)
+      tb.close()
+      toast.info('Team Brain set-up was discarded.')
+      return true
+    }
+    return false
+  }
+
+  /** Step 1: claim the set-up and make its drive. False when the window now shows another set-up instead. */
+  const prepare = async (source: VolumeSource, details: VolumeDetails): Promise<boolean> => {
     try {
-      const mount = await addMount.mutateAsync({ agentSlug: agent.slug, ...source, name: details.name, visibility: details.visibility })
-      prepared = { agentSlug: agent.slug, volumeId: mount.volumeId, brainPath: mountPathOf(mount.name), firstPrompt: agent.onboardingFirstPrompt }
+      const { setup: next } = await send<{ setup: TeamBrainSetup }>('POST', '', { setupId: setup?.setupId ?? null, drive: { source, details } })
+      showSetup(next)
+      if (!view) void query.refetch()
+      return true
     } catch (error) {
-      void deleteAgent.mutateAsync(agent.slug).catch(() => {})
-      if (run !== attempt.current) return false
-      tb.setInstalling(null)
+      // A failure after the claim leaves the claim: read it, so a retry continues it.
+      void query.refetch()
+      if (settle(error)) return false
       throw error
     }
-    // Left or cancelled while the drive was made: nothing should keep it.
-    if (!mounted.current || run !== attempt.current) {
-      void discard(prepared).catch(() => {})
-      return false
+  }
+
+  /** Save a change as it is made (F4). The window shows it at once. */
+  // Saves go one after another, and Start chat waits for the last: Finish must apply every choice made before it.
+  const saves = useRef<Promise<boolean>>(Promise.resolve(true))
+  const choose = (changes: Partial<TeamBrainChoices>) => {
+    if (!setup) return
+    showSetup({ ...setup, ...changes, agents: { ...setup.agents, ...changes.agents } })
+    const { setupId } = setup
+    saves.current = saves.current.then(() => send<{ setup: TeamBrainSetup }>('PATCH', '', { setupId, ...changes }))
+      .then(({ setup: next }) => {
+        showSetup(next)
+        return true
+      }, (error: unknown) => {
+        if (settle(error)) return false
+        toast.error('Could not save Team Brain set-up', { description: error instanceof Error ? error.message : undefined })
+        // What the server holds is what Finish applies: show it and let Start chat go on.
+        return query.refetch().then(() => true)
+      })
+  }
+
+  /** Next: show the step, and save it when it is further than any reached. Back only shows it. */
+  const goForward = (step: TeamBrainStep) => {
+    tb.goToStep(step)
+    if (setup && TEAM_BRAIN_STEPS.indexOf(step) > TEAM_BRAIN_STEPS.indexOf(setup.step)) choose({ step })
+  }
+
+  const start = () => tb.open('location')
+
+  /** Resume at the saved step, with the saved choices. */
+  const resume = () => {
+    if (setup) tb.open(setup.step)
+  }
+
+  const discard = async () => {
+    if (!setup) return
+    try {
+      await send('DELETE', `?setupId=${encodeURIComponent(setup.setupId)}`)
+    } catch (error) {
+      if (settle(error)) return
+      toast.error('Could not discard Team Brain set-up', { description: error instanceof Error ? error.message : undefined })
+      return
     }
-    tb.setPrepared(prepared)
-    return true
+    showSetup(null)
+    tb.close()
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['agents'] }),
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] }),
+    ])
   }
 
   // The built-in default's provider: a URL alone saves a GitHub skillset wherever git is installed.
@@ -128,121 +198,50 @@ export function useTeamBrainSetup() {
         queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] }),
       ]).then(() => { throw error }))
 
-  const cancel = () => {
-    attempt.current++
-    const { prepared } = getTeamBrainState()
-    tb.cancelSetup()
-    if (prepared) {
-      discard(prepared).catch((error: unknown) => {
-        toast.error('Could not remove the Team Brain agent', { description: error instanceof Error ? error.message : undefined })
-      })
-    }
-  }
-
-  /** Launches the prepared Team Brain; false when another admin's set-up took the record first. */
-  const launch = async (prepared: TeamBrainPrepared, onRecordWrite: () => void) => {
-    const state = getTeamBrainState()
-    const { schedule, everyAgent } = state
-    const chosen = (agents ?? [])
-      .filter((agent) => agent.slug !== prepared.agentSlug && (everyAgent || usesTeamBrain(state, agent.slug)))
-      .map((agent) => agent.slug)
-    const res = await apiFetch(`/api/agents/${prepared.agentSlug}`)
-    if (!res.ok) throw new Error('Could not read the Team Brain agent')
-    const { instructions = '' }: ApiAgent = await res.json()
-    await updateAgent.mutateAsync({
-      slug: prepared.agentSlug,
-      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: setUpByOf(user, platform), accounts: connected?.accounts }),
-    })
-    // Only a refusal says the record is not this set-up's: after any other failure it may have been saved.
-    onRecordWrite()
-    const taken = await updateSettings.mutateAsync({ teamBrain: { agentSlug: prepared.agentSlug, volumeId: prepared.volumeId } })
-      .then(() => false, (error: unknown) => {
-        if (typeof error === 'object' && error !== null && 'status' in error && error.status === 409) return true
-        throw error
-      })
-    if (taken) {
-      await discard(prepared).catch((error: unknown) => captureRendererException(error, { tags: { area: 'team-brain', op: 'discard-losing-setup' } }))
-      await queryClient.invalidateQueries({ queryKey: ['settings'] })
-      return false
-    }
-    // Published once the record is this set-up's. Team Brain's own read-write attachment wins over the global read-only one.
-    if (everyAgent) await saveVolume.mutateAsync({ id: prepared.volumeId, global: 'read' })
-    const upkeep = await apiFetch(`/api/agents/${prepared.agentSlug}/team-brain/upkeep`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scheduleExpression: TEAM_BRAIN_CRON[schedule] }),
-    }).catch(() => null)
-    // Past the record Team Brain exists, so a failure here is reported, never thrown back into a set-up that would delete it.
-    if (!upkeep?.ok) toast.error('Could not schedule Brain upkeep', { description: 'Team Brain is set up but will not sync on its own yet.' })
-    // The record marks the agent; the list must carry the mark before set-up stops hiding it.
-    await queryClient.invalidateQueries({ queryKey: ['agents'] })
-
-    // Running agents pick the drive up on their next start. Team Brain can list and read them before its first chat.
-    const [attached, reached] = await Promise.all([
-      Promise.allSettled(chosen.map((slug) => giveTeamBrain(slug, { volumeId: prepared.volumeId, brainSlug: prepared.agentSlug, mount: !everyAgent }))),
-      Promise.allSettled([
-        setTeamBrainReach(queryClient, prepared.agentSlug, 'list', true),
-        everyAgent && setTeamBrainReach(queryClient, prepared.agentSlug, 'read', true),
-      ]).then((results) => results.every((result) => result.status === 'fulfilled')),
-    ])
-    await startOnboardingSession(prepared.agentSlug, prepared.firstPrompt)
-    const failed = attached.filter((result) => result.status === 'rejected').length
-    if (failed > 0) {
-      toast.error(`Team Brain could not be added to ${failed} ${failed === 1 ? 'agent' : 'agents'}`, {
-        description: 'Add the Team Brain drive to them from each agent’s Drives. Their first message to Team Brain will ask for approval.',
-      })
-    }
-    if (!reached) {
-      toast.error('Team Brain cannot see your other agents yet', { description: 'Allow it from Team Brain’s “Connect this agent to others” settings.' })
-    }
-    return true
-  }
-
   const startChat = async () => {
-    const { prepared } = getTeamBrainState()
-    if (!prepared) return
-    // The modal gives way to the app's "Setting up your agent..." card, which the onboarding session closes.
+    if (!setup || !(await saves.current)) return
+    // The window gives way to the app's "Setting up your agent..." card, which the onboarding session closes.
     tb.setLaunching(true)
     setOnboarding(true)
-    let recordWritten = false
     try {
-      // Stays `launching`, the page blank, until the session replaces the page.
-      if (!(await launch(prepared, () => { recordWritten = true }))) {
-        setOnboarding(false)
-        toast.info('Another admin already set up Team Brain', { description: 'This set-up was removed. The page shows theirs.' })
+      const result = await send<{ agentSlug: string; firstPrompt?: string; failedAgents: number }>('POST', '/finish', {
+        setupId: setup.setupId, setUpBy: setUpByOf(user, platform), accounts: connected?.accounts,
+      })
+      showSetup(null)
+      // The record now marks the agent; the list must carry the mark before the page shows Team Brain.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['agents'] }),
+        queryClient.invalidateQueries({ queryKey: ['x-agent-policies'] }),
+        queryClient.invalidateQueries({ queryKey: ['volume-definitions'] }),
+      ])
+      await startOnboardingSession(result.agentSlug, result.firstPrompt)
+      if (result.failedAgents > 0) {
+        toast.error(`Team Brain could not be added to ${result.failedAgents} ${result.failedAgents === 1 ? 'agent' : 'agents'}`, {
+          description: 'Add the Team Brain drive to them from each agent’s Drives. Their first message to Team Brain will ask for approval.',
+        })
       }
-      // Set-up is over whether or not the session opened; without it the page shows Team Brain.
-      tb.cancelSetup()
+      tb.close()
     } catch (error) {
       setOnboarding(false)
-      // Once the record was written the draft may be the Team Brain: forget it, so leaving cannot delete it.
-      if (recordWritten) tb.cancelSetup()
-      else tb.setLaunching(false)
+      tb.setLaunching(false)
+      if (settle(error)) return
       toast.error('Could not start Team Brain', { description: error instanceof Error ? error.message : 'Please try again.' })
     }
   }
 
-  // Leaving mid-set-up cancels it; leaving for the launched session just resets the modal.
-  const leave = useRef(() => {})
-  leave.current = () => {
-    const { status } = getTeamBrainState()
-    if (status === 'onboarding') cancel()
-    if (status === 'launching') tb.cancelSetup()
+  return {
+    setup,
+    choices: setup ?? FIRST_CHOICES,
+    isPending: canSetUp && query.isPending,
+    start, resume, discard, prepare, choose, goForward, addPublicSkillset, startChat,
   }
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-      leave.current()
-    }
-  }, [])
-
-  return { agentSlug: setUpSlug, prepare, addPublicSkillset, cancel, startChat }
 }
 
 /**
- * The prepared drive's health: 'preparing' while its first copy runs, undefined until known. A drive list that can't be
+ * The set-up drive's health: 'preparing' while its first copy runs, undefined until known. A drive list that can't be
  * read gives 'unread': what it said before may be out of date. `recheck` reads it again.
  */
-export function usePreparedDriveHealth(prepared: TeamBrainPrepared | null): { health: MountSummaryWithHealth['health'] | 'unread' | undefined; recheck: () => void } {
-  const { data: mounts, isError, refetch } = useAgentMounts(prepared?.agentSlug ?? '')
-  return { health: isError ? 'unread' : mounts?.find((mount) => mount.volumeId === prepared?.volumeId)?.health, recheck: () => void refetch() }
+export function usePreparedDriveHealth(setup: Pick<TeamBrainSetup, 'agentSlug' | 'volumeId'> | null): { health: MountSummaryWithHealth['health'] | 'unread' | undefined; recheck: () => void } {
+  const { data: mounts, isError, refetch } = useAgentMounts(setup?.agentSlug ?? '')
+  return { health: isError ? 'unread' : mounts?.find((mount) => mount.volumeId === setup?.volumeId)?.health, recheck: () => void refetch() }
 }

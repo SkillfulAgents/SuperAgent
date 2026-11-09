@@ -893,7 +893,7 @@ import { notificationManager } from '@shared/lib/notifications/notification-mana
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
+import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
@@ -7542,41 +7542,6 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
       }],
       callers: [],
     })
-  })
-})
-
-describe('POST /api/agents/:id/team-brain/upkeep', () => {
-  const URL = '/api/agents/test-agent/team-brain/upkeep'
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mockIsAuthMode.mockReturnValue(false)
-    mockAgentExists.mockResolvedValue(true)
-    mockGetTeamBrain.mockReturnValue({ agentSlug: 'test-agent', volumeId: 'vol-1' })
-    vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
-    vi.mocked(createScheduledTask).mockResolvedValue('task-1')
-  })
-
-  it('schedules Brain upkeep once, only for the Team Brain agent', async () => {
-    const res = await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })
-    expect(res.status).toBe(201)
-    expect(vi.mocked(createScheduledTask)).toHaveBeenCalledWith(expect.objectContaining({
-      agentSlug: 'test-agent', scheduleType: 'cron', scheduleExpression: '0 0 * * 1', name: 'Brain upkeep', timezone: 'America/Los_Angeles',
-    }))
-
-    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
-    expect(await (await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).json()).toEqual({ taskId: 'task-1' })
-
-    mockGetTeamBrain.mockReturnValue({ agentSlug: 'other-agent', volumeId: 'vol-1' })
-    expect((await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).status).toBe(400)
-    expect(vi.mocked(createScheduledTask)).toHaveBeenCalledTimes(1)
-  })
-
-  it('refuses a missing or invalid schedule with a 400, scheduling nothing', async () => {
-    for (const body of [{}, { scheduleExpression: null }, { scheduleExpression: 7 }, { scheduleExpression: '  ' }, { scheduleExpression: 'every so often' }]) {
-      expect((await postJson(createApp(), URL, body)).status).toBe(400)
-    }
-    expect(vi.mocked(createScheduledTask)).not.toHaveBeenCalled()
   })
 })
 
