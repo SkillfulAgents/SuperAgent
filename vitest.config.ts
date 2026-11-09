@@ -46,6 +46,8 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
       '@shared': path.resolve(__dirname, './src/shared'),
       '@renderer': path.resolve(__dirname, './src/renderer'),
+      // Node has no Workers runtime: just enough of it to load src/cf's modules under test.
+      'cloudflare:workers': path.resolve(__dirname, './src/cf/testing/cloudflare-workers.ts'),
     },
   },
 })
