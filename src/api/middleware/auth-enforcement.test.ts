@@ -6,6 +6,7 @@ import { defineLockout } from '@shared/lib/app-state/lockout'
 // Mock getSettings to return configurable auth settings
 let mockAuthSettings: Record<string, unknown> = {}
 let mockUserCount = 1 // Default: at least one user exists (not first user)
+let mockInvited: { status: string } | undefined // the user row an email sign-up names, if any
 
 vi.mock('@shared/lib/config/settings', () => ({
   DEFAULT_AUTH_SETTINGS: {
@@ -33,6 +34,7 @@ vi.mock('@shared/lib/db', () => ({
     select: () => ({
       from: () => ({
         get: () => ({ count: mockUserCount }),
+        where: () => ({ get: () => mockInvited }),
       }),
     }),
   },
@@ -69,12 +71,21 @@ describe('auth enforcement middleware', () => {
   beforeEach(() => {
     mockAuthSettings = {}
     mockUserCount = 1 // default: not first user
+    mockInvited = undefined
     // Lockouts live in AppState, which the shared setup installs fresh for every test.
   })
 
   // ── Signup Mode ──────────────────────────────────────────────────────
 
   describe('signup mode', () => {
+    it('sends someone invited from a team directory to their invite link instead of signing up', async () => {
+      mockAuthSettings = { signupMode: 'open' }
+      mockInvited = { status: 'invited' }
+      const res = await postJson(createApp(), '/api/auth/sign-up/email', { email: 'Dana@acme.test', password: 'StrongPass123!', name: 'Dana' })
+      expect(res.status).toBe(403)
+      expect(await res.json()).toMatchObject({ code: 'INVITED' })
+    })
+
     it('blocks signup when mode is closed', async () => {
       mockAuthSettings = { signupMode: 'closed' }
       const app = createApp()

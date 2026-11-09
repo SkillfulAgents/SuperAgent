@@ -83,7 +83,7 @@ router.get('/', async (c) => {
 // POST /api/team-directories/test - Checks credentials without saving them.
 router.post('/test', async (c) => {
   const { tenant } = await verified(await c.req.json())
-  return c.json({ tenantName: tenant.tenantName })
+  return c.json({ tenantName: tenant.tenantName, notices: tenant.notices ?? [] })
 })
 
 // POST /api/team-directories - Connects a directory (or replaces the credentials of one already connected).
@@ -99,7 +99,7 @@ router.post('/', async (c) => {
   background(listDirectoryNow(saved), { name: 'team-directory.first-listing' })
   await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: saved.id, action: 'connected', details: { provider, tenantName: tenant.tenantName } })
   const [view] = await views([saved])
-  return c.json({ directory: view }, 201)
+  return c.json({ directory: view, notices: tenant.notices ?? [] }, 201)
 })
 
 // POST /api/team-directories/:id/refresh - Lists the directory now: how many people it has, or why it can't be read.

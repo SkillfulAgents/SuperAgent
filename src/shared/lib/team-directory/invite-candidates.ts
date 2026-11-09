@@ -32,7 +32,7 @@ export async function searchInviteCandidates(query: string | undefined, excludeU
     name: profile.name,
     email: profile.email,
     image: profile.image,
-    notOnGamut: false,
+    notOnGamut: profile.invited === true,
   }))
   if (!isAuthMode()) return accounts
 

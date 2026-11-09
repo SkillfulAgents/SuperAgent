@@ -3,10 +3,12 @@
  * `users:read` and `users:read.email`.
  */
 import { z } from 'zod'
-import { DirectoryConnectError, type DirectoryUser, type TeamDirectoryProvider } from '../types'
+import { DirectoryConnectError, type DirectoryMessage, type DirectoryUser, type TeamDirectoryProvider } from '../types'
 import { SlackApiError, slackCall } from './slack-api'
 
 export const SLACK_DIRECTORY_SCOPES = ['users:read', 'users:read.email'] as const
+/** Optional: DMing people their invitations and mentions. */
+export const SLACK_NOTIFY_SCOPES = ['chat:write', 'im:write'] as const
 
 const PAGE_SIZE = 200
 /** Far past the workspaces this is for (tens to hundreds); a bigger one is listed this far. */
@@ -43,6 +45,8 @@ const memberSchema = z.object({
   }).optional(),
 })
 type SlackMember = z.infer<typeof memberSchema>
+
+const conversationOpenSchema = z.object({ channel: z.object({ id: z.string() }) })
 
 const usersListSchema = z.object({
   members: z.array(memberSchema).optional(),
@@ -96,9 +100,21 @@ export function slackDirectoryAppManifest() {
       description: 'Lets Gamut find your teammates so you can invite them.',
     },
     features: { bot_user: { display_name: 'Gamut', always_online: false } },
-    oauth_config: { scopes: { bot: [...SLACK_DIRECTORY_SCOPES] } },
+    oauth_config: { scopes: { bot: [...SLACK_DIRECTORY_SCOPES, ...SLACK_NOTIFY_SCOPES] } },
     settings: { org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false },
   }
+}
+
+/** Slack mrkdwn treats these three as control characters in any text it shows. */
+function escapeSlack(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+export function slackMessageText(message: DirectoryMessage): string {
+  const lines = [escapeSlack(message.headline)]
+  if (message.quote) lines.push(...message.quote.split('\n').map((line) => `>${escapeSlack(line)}`))
+  lines.push(`<${message.link.url.replace(/[|>]/g, encodeURIComponent)}|${escapeSlack(message.link.label)}>`)
+  return lines.join('\n')
 }
 
 function describeSlackError(error: unknown): string {
@@ -110,7 +126,9 @@ function describeSlackError(error: unknown): string {
     case 'account_inactive':
       return 'Slack does not accept this token. Copy the Bot User OAuth Token again from the app’s OAuth & Permissions page.'
     case 'missing_scope':
-      return `The token is missing a scope. Add ${SLACK_DIRECTORY_SCOPES.join(' and ')} under OAuth & Permissions, reinstall the app, and paste the new token.`
+      return error.method === 'users.list' || error.method === 'auth.test'
+        ? `The token is missing a scope. Add ${SLACK_DIRECTORY_SCOPES.join(' and ')} under OAuth & Permissions, reinstall the app, and paste the new token.`
+        : `The token can’t send DMs. Add ${SLACK_NOTIFY_SCOPES.join(' and ')} under OAuth & Permissions, reinstall the app, and paste the new token.`
     case 'ratelimited':
       return 'Slack is rate limiting this app. Try again in a minute.'
     default:
@@ -125,7 +143,7 @@ export const slackDirectoryProvider: TeamDirectoryProvider<SlackDirectoryCredent
     description: 'Find people in your Slack workspace when you share an agent or mention someone.',
     fields: [{ key: 'botToken', label: 'Bot User OAuth Token', placeholder: 'xoxb-…', secret: true }],
     steps: [
-      'Create the Slack app from the prefilled manifest, or add the users:read and users:read.email bot scopes to an app you already have.',
+      'Create the Slack app from the prefilled manifest, or add the users:read and users:read.email bot scopes to an app you already have (and chat:write and im:write, to send invitations by DM).',
       'Install the app to your workspace.',
       'Copy the Bot User OAuth Token from OAuth & Permissions and paste it below.',
     ],
@@ -160,7 +178,11 @@ export const slackDirectoryProvider: TeamDirectoryProvider<SlackDirectoryCredent
         throw new DirectoryConnectError(describeSlackError(error))
       }
     }
-    return tenant
+    const unsent = granted && SLACK_NOTIFY_SCOPES.filter((scope) => !granted.includes(scope))
+    return {
+      ...tenant,
+      ...(unsent?.length ? { notices: [`Invitations won’t be sent by Slack DM: the token is missing ${unsent.join(' and ')}.`] } : {}),
+    }
   },
 
   open({ tenantId, credentials }) {
@@ -168,6 +190,18 @@ export const slackDirectoryProvider: TeamDirectoryProvider<SlackDirectoryCredent
       async listUsers() {
         try {
           return await listSlackUsers(credentials.botToken, tenantId)
+        } catch (error) {
+          throw new DirectoryConnectError(describeSlackError(error))
+        }
+      },
+      async notifyUser(user, message) {
+        try {
+          const { body } = await slackCall('conversations.open', credentials.botToken, { users: user.remoteId }, conversationOpenSchema)
+          await slackCall('chat.postMessage', credentials.botToken, {
+            channel: body.channel.id,
+            text: slackMessageText(message),
+            unfurl_links: 'false',
+          }, z.object({}))
         } catch (error) {
           throw new DirectoryConnectError(describeSlackError(error))
         }

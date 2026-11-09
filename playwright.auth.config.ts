@@ -82,6 +82,14 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'collaboration'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'collaboration'),
   },
+  {
+    // Its own server: connecting a directory takes an admin, the first user of a fresh data dir.
+    name: 'auth-team-directory',
+    testMatch: '**/team-directory.spec.ts',
+    port: e2ePort + 10,
+    dataDir: path.join(e2eDataDir, 'team-directory'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'team-directory'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL
@@ -129,6 +137,8 @@ export default defineConfig({
     name: project.name,
     testMatch: project.testMatch,
     use: { ...devices['Desktop Chrome'], baseURL: project.baseURL },
+    // For a spec that must reach its server's database (team-directory.spec.ts).
+    metadata: { dataDir: project.dataDir },
   })),
 
   webServer: activeProjects.map((project) => ({

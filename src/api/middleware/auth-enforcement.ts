@@ -74,6 +74,17 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
         return c.json({ code: 'LOCAL_AUTH_DISABLED', message: 'Email authentication is disabled' }, 403)
       }
 
+      // Someone shared an agent with this address before they joined: the
+      // account exists and is claimed through the invite link (or SSO), never
+      // by signing up, which would prove nothing about the address.
+      if (typeof body?.email === 'string') {
+        const invited = await db.select({ status: user.status }).from(user)
+          .where(sql`lower(${user.email}) = ${body.email.trim().toLowerCase()}`).get()
+        if (invited?.status === 'invited') {
+          return c.json({ code: 'INVITED', message: 'You’ve been invited. Use the link in your invitation to join, or sign in with single sign-on.' }, 403)
+        }
+      }
+
       const mode = authSettings.signupMode ?? 'invitation_only'
       if (mode === 'closed' || mode === 'invitation_only') {
         return c.json({ code: 'SIGNUPS_DISABLED', message: 'Signups are currently disabled' }, 403)

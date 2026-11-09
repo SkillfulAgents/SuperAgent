@@ -108,3 +108,5 @@ src/shared/lib/llm-provider/ollama-catalog-sync.test.ts
 src/shared/lib/team-directory/cache.test.ts
 src/shared/lib/team-directory/invite-candidates.test.ts
 src/api/routes/team-directories.test.ts
+src/shared/lib/team-directory/invited-users.test.ts
+src/shared/lib/auth/invited-user-claim.integration.test.ts

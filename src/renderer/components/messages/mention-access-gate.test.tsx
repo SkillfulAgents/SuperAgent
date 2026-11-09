@@ -99,7 +99,7 @@ describe('the user and agent chips before a send', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Share and send' }))
 
     const next = await result
-    expect(writes()).toEqual([{ method: 'POST', url: '/api/agents/support01x/access', body: { userId: 'sara-id', role: 'viewer' } }])
+    expect(writes()).toEqual([{ method: 'POST', url: '/api/agents/support01x/access', body: { userId: 'sara-id', role: 'viewer', notify: false } }])
     // Sent with the fresh roster, so the agent gets Sara's email.
     expect(next?.members?.get('sara-id')?.email).toBe('sara@acme.com')
   })

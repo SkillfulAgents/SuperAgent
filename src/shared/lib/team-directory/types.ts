@@ -23,10 +23,15 @@ export interface DirectoryUser {
   avatarUrl?: string
 }
 
-/** What `notifyUser` sends: a short notice with a link back into Gamut. */
+/**
+ * What `notifyUser` sends: one line saying what happened, an optional quote
+ * (the message someone was mentioned in), and a link into Gamut. Plain text:
+ * the provider formats and escapes it.
+ */
 export interface DirectoryMessage {
-  text: string
-  url?: string
+  headline: string
+  quote?: string
+  link: { label: string; url: string }
 }
 
 /** A connected directory, opened with its credentials. */
@@ -62,6 +67,8 @@ export interface DirectoryProviderInfo {
 export interface DirectoryTenant {
   tenantId: string
   tenantName: string
+  /** What works but is limited (a missing optional scope), for the admin. */
+  notices?: string[]
 }
 
 export interface StoredDirectoryConnection<C> {

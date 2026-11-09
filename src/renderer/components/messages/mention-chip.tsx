@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useLayoutEffect, useMemo, useRef } from 'react'
 import { Bot } from 'lucide-react'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { Mention } from '@shared/lib/utils/mentions'
@@ -11,7 +11,7 @@ import type { ChipAgent, ChipContext, ChipPerson } from './composer-chips'
 
 /** A mention reads the same in the composer and in a sent bubble. */
 export const MENTION_CHIP_CLASS =
-  'inline-flex items-baseline gap-1 rounded-full bg-violet-500/10 px-1.5 font-medium text-violet-700 dark:bg-violet-400/15 dark:text-violet-300 [&_[data-chip-icon]]:self-center'
+  'inline-flex items-baseline gap-1 rounded-full bg-violet-500/10 px-1.5 font-medium text-violet-700 dark:bg-violet-400/15 dark:text-violet-300 [&_[data-chip-icon]]:self-center data-[invited]:border data-[invited]:border-dashed data-[invited]:border-violet-500/60 data-[invited]:bg-transparent'
 
 const AVATAR_SIZE = 18
 
@@ -48,7 +48,17 @@ function AgentIcon({ agent }: { agent: ChipAgent | undefined }) {
 }
 
 export function UserMentionIcon({ chip, context }: { chip: Chip; context: ChipContext }) {
-  return <PersonAvatar id={chip.referent} name={chip.label} members={context.members} />
+  const invited = context.members?.get(chip.referent)?.invited === true
+  const anchor = useRef<HTMLSpanElement>(null)
+  // The editor draws the chip itself; only its icon is React. Mark the chip
+  // from here so someone not on Gamut yet reads dashed in the draft as well.
+  useLayoutEffect(() => {
+    const root = anchor.current?.closest<HTMLElement>('[data-testid="user-mention"]')
+    if (!root) return
+    if (invited) root.dataset.invited = ''
+    else delete root.dataset.invited
+  }, [invited])
+  return <span ref={anchor} className="contents"><PersonAvatar id={chip.referent} name={chip.label} members={context.members} /></span>
 }
 
 export function AgentMentionIcon({ chip, context }: { chip: Chip; context: ChipContext }) {
@@ -58,8 +68,10 @@ export function AgentMentionIcon({ chip, context }: { chip: Chip; context: ChipC
 /** A mention in a sent message: the same chip the composer drew. */
 export function MentionChip({ mention, agentSlug }: { mention: Mention; agentSlug?: string }) {
   const { members, agents } = useMentionDirectory(agentSlug)
+  const invited = mention.kind === 'user' && members?.get(mention.id)?.invited === true
   return (
-    <span className={MENTION_CHIP_CLASS} data-testid={`${mention.kind}-mention`}>
+    <span className={MENTION_CHIP_CLASS} data-testid={`${mention.kind}-mention`} data-invited={invited ? '' : undefined}
+      title={invited ? `${mention.name} isn’t on Gamut yet` : undefined}>
       <span data-chip-icon="">
         {mention.kind === 'user'
           ? <PersonAvatar id={mention.id} name={mention.name} members={members} />

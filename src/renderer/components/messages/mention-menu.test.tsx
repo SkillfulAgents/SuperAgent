@@ -10,8 +10,9 @@ import { formatChipMarker } from '@renderer/lib/chip-marker'
 const state = vi.hoisted(() => ({
   isAuthMode: true,
   canAdmin: true,
-  members: [] as Array<{ id: string; name: string; email: string; image: string | null; role: 'owner' | 'user' | 'viewer' }>,
-  outsiders: [] as Array<{ id: string; name: string; email: string; image: string | null }>,
+  members: [] as Array<{ id: string; name: string; email: string; image: string | null; role: 'owner' | 'user' | 'viewer'; invited?: true }>,
+  outsiders: [] as Array<Record<string, unknown>>,
+  invitees: [] as Array<{ url: string; body: unknown }>,
   agents: [] as Array<Pick<ApiAgent, 'slug' | 'displaySlug' | 'name' | 'avatar'>>,
 }))
 
@@ -27,7 +28,13 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   }),
 }))
 vi.mock('@renderer/lib/api', () => ({
-  apiFetch: vi.fn(async () => new Response(JSON.stringify(state.outsiders))),
+  apiFetch: vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/access/invitees')) {
+      state.invitees.push({ url, body: JSON.parse(String(init?.body)) })
+      return new Response(JSON.stringify({ id: 'invited-lee', name: 'Lee Park', email: 'lee@acme.com', image: null, invited: true }))
+    }
+    return new Response(JSON.stringify(state.outsiders))
+  }),
 }))
 
 import { MarkdownComposerEditor } from './markdown-composer-editor'
@@ -73,7 +80,55 @@ describe('the @ menu', () => {
     state.canAdmin = true
     state.members = [me, mike]
     state.outsiders = []
+    state.invitees = []
     state.agents = [support, minutes]
+  })
+
+  it('offers people from a team directory after accounts, marked as not on Gamut', async () => {
+    state.outsiders = [
+      { kind: 'user', id: 'sara-id', name: 'Sara Kim', email: 'sara@acme.com', image: null, notOnGamut: false },
+      { kind: 'user', id: 'sam-id', name: 'Sam Invited', email: 'sam@acme.com', image: null, notOnGamut: true },
+      { kind: 'directory', directoryRef: { directoryId: 'dir-1', remoteId: 'U9' }, name: 'Saoirse Byrne', email: 'saoirse@acme.com', image: null, notOnGamut: true, source: 'Slack · Acme' },
+    ]
+    const user = userEvent.setup()
+    render(<Composer />)
+    await user.type(screen.getByTestId('markdown-editor'), '@sa')
+
+    await waitFor(() => expect(listed()).toEqual(['mention-option-user-sara-id', 'mention-option-user-sam-id', 'mention-option-directory-dir-1:U9']))
+    expect(options()[0]).toHaveTextContent('No access yet')
+    expect(options()[1]).toHaveTextContent('Not on Gamut')
+    expect(options()[2]).toHaveTextContent('Not on Gamut')
+  })
+
+  it('makes a picked directory person an invited user, so the chip names them like anyone', async () => {
+    state.outsiders = [
+      { kind: 'directory', directoryRef: { directoryId: 'dir-1', remoteId: 'U5' }, name: 'Lee Park', email: 'lee@acme.com', image: null, notOnGamut: true, source: 'Slack · Acme' },
+    ]
+    const user = userEvent.setup()
+    render(<Composer />)
+    await user.type(screen.getByTestId('markdown-editor'), '@lee')
+    await waitFor(() => expect(listed()).toEqual(['mention-option-directory-dir-1:U5']))
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByTestId('markdown-value').textContent).toBe(
+      `${formatChipMarker({ kind: 'user', referent: 'invited-lee', label: 'Lee Park' })} `,
+    ))
+    expect(state.invitees).toEqual([{ url: '/api/agents/support01x/access/invitees', body: { directoryRef: { directoryId: 'dir-1', remoteId: 'U5' } } }])
+  })
+
+  it('draws the chip of a member not on Gamut yet dashed', async () => {
+    state.members = [me, mike, { id: 'lee-id', name: 'Lee Park', email: 'lee@acme.com', image: null, role: 'user', invited: true }]
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByTestId('markdown-editor')
+    await user.type(editor, '@lee')
+    await user.keyboard('{Enter}')
+    await user.type(editor, '@mike')
+    await user.keyboard('{Enter}')
+
+    const [lee, mikeChip] = within(editor).getAllByTestId('user-mention')
+    await waitFor(() => expect(lee).toHaveAttribute('data-invited'))
+    expect(mikeChip).not.toHaveAttribute('data-invited')
   })
 
   it('lists teammates and agents together, never you or this agent', async () => {

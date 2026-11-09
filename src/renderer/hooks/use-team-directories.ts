@@ -31,7 +31,7 @@ export function useTeamDirectories() {
 export function useTestDirectoryCredentials() {
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (input: DirectoryCredentialsInput) => json<{ tenantName: string }>(await post('/test', input), 'Could not check these credentials'),
+    mutationFn: async (input: DirectoryCredentialsInput) => json<{ tenantName: string; notices?: string[] }>(await post('/test', input), 'Could not check these credentials'),
   })
 }
 
@@ -39,7 +39,7 @@ export function useConnectTeamDirectory() {
   const client = useQueryClient()
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (input: DirectoryCredentialsInput) => json<{ directory: TeamDirectoryView }>(await post('', input), 'Could not connect the directory'),
+    mutationFn: async (input: DirectoryCredentialsInput) => json<{ directory: TeamDirectoryView; notices?: string[] }>(await post('', input), 'Could not connect the directory'),
     onSuccess: () => client.invalidateQueries({ queryKey: QUERY_KEY }),
   })
 }

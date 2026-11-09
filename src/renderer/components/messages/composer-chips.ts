@@ -15,6 +15,8 @@ export interface ChipPerson {
   name: string
   email?: string
   image?: string | null
+  /** Invited from a team directory, not on Gamut yet: their chip is dashed. */
+  invited?: boolean
 }
 
 /** Another agent, as the agents tools know it. */

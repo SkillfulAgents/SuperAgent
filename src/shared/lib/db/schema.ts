@@ -29,6 +29,16 @@ export const user = sqliteTable('user', {
   banReason: text('ban_reason'),
   banExpires: integer('ban_expires', { mode: 'timestamp_ms' }),
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
+  // Team directories (src/shared/lib/team-directory/invited-users.ts): someone
+  // shared with or mentioned before joining is a real row with status
+  // 'invited' and no account, so access lists, mentions and notifications
+  // keep keying on user.id. Signing in claims it (auth/claim-invited-user.ts).
+  status: text('status', { enum: ['active', 'invited'] }).notNull().default('active'),
+  invitedByUserId: text('invited_by_user_id'), // Not an FK: the inviter may be removed first
+  // The directory person the row was made for.
+  directoryProvider: text('directory_provider'),
+  directoryTenantId: text('directory_tenant_id'),
+  directoryRemoteId: text('directory_remote_id'),
 }, (table) => ({
   avatarOverrideIdx: index('user_avatar_override_idx').on(table.avatarOverride),
 }))

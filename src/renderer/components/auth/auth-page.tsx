@@ -12,6 +12,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2 } from 'lucide-react'
 import type { PublicAuthProviderConfig } from '@shared/lib/auth/provider-config'
+import { InviteJoinForm, useInviteLinkToken } from './invite-join-form'
 
 // --- Public auth config (fetched from server) ---
 
@@ -373,6 +374,9 @@ function SignUpForm({ onSwitchToSignIn, config, onPendingApproval }: { onSwitchT
 export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?: boolean) => void } = {}) {
   const { config, isLoading, error } = useAuthConfig()
   const [tab, setTab] = useState<string>('signin')
+  // Opened from a team-directory invite link: joining comes first.
+  const inviteToken = useInviteLinkToken()
+  const [joining, setJoining] = useState(inviteToken !== null)
   const [providerError, setProviderError] = useState<string | null>(null)
   const [providerLoadingId, setProviderLoadingId] = useState<string | null>(null)
   const hasProviders = config.providers.length > 0
@@ -445,7 +449,7 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
             </div>
           )}
 
-          {hasProviders && showLocalAuth && (
+          {(hasProviders && (showLocalAuth || (joining && inviteToken))) && (
             <div className="relative" aria-hidden="true">
               <div className="absolute inset-0 flex items-center">
                 <span className="w-full border-t" />
@@ -456,7 +460,9 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
             </div>
           )}
 
-          {showLocalAuth && signupAllowed ? (
+          {joining && inviteToken ? (
+            <InviteJoinForm token={inviteToken} onDone={() => setJoining(false)} onPendingApproval={onPendingApproval} />
+          ) : showLocalAuth && signupAllowed ? (
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList className="w-full mb-4">
                 <TabsTrigger value="signin" className="flex-1" data-testid="auth-tab-signin">Sign In</TabsTrigger>

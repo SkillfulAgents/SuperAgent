@@ -146,6 +146,14 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
           defaultValue: false,
           input: false, // users cannot set this on self-registration
         },
+        // 'invited': a row made for a team-directory person before they joined
+        // (claim-invited-user.ts). Declared so admin list-users can filter on it.
+        status: {
+          type: 'string',
+          required: false,
+          defaultValue: 'active',
+          input: false,
+        },
       },
     },
     plugins: [
@@ -207,6 +215,9 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
             return role ? { data: { ...newUser, role } } : undefined
           },
           after: async (createdUser) => {
+            // Invited rows are made outside Better Auth and join when claimed
+            // (claim-invited-user.ts), which does what this hook does for them.
+            if ((createdUser as { status?: unknown }).status === 'invited') return
             try {
               // Atomic: only promote if this is the sole user in the table.
               // Platform-controlled deployments skip it, since members join
@@ -246,6 +257,15 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         },
       },
       account: {
+        create: {
+          // An invited user's first account is them joining. Linking a login to
+          // an existing row fires no user.create, so their claim runs here; on
+          // a Platform sign-in it is still inside the request's role context.
+          after: async (account) => {
+            const { claimInvitedUser } = await import('./claim-invited-user')
+            await claimInvitedUser(account.userId)
+          },
+        },
         delete: {
           // Remove-user deletes the account rows before the user row, so keep the
           // Platform member id now for the revoke in user.delete.before.

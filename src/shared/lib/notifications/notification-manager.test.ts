@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
 }))
 
+const notifyInvitedUser = vi.hoisted(() => vi.fn(async () => 'not-invited'))
+vi.mock('@shared/lib/team-directory/invited-users', () => ({ notifyInvitedUser }))
 vi.mock('@shared/lib/services/notification-service', () => ({
   createNotification: mocks.createNotification,
   deleteMessageNotifications: mocks.deleteMessageNotifications,
@@ -585,6 +587,22 @@ describe('triggerSessionMention', () => {
     const [{ body }] = mockCreateNotification.mock.calls[0] as unknown as [{ body: string }]
     expect(body).toHaveLength(280)
     expect(body.endsWith('…')).toBe(true)
+  })
+
+  it('tells someone not on Gamut yet through their team directory, with the whole message', async () => {
+    const { backgroundSettled } = await import('@shared/lib/background')
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'invited-dana',
+      senderName: 'Ada Admin',
+      text: '@Dana can you take this one?',
+    })
+    await backgroundSettled()
+    expect(notifyInvitedUser).toHaveBeenCalledWith('invited-dana', expect.objectContaining({
+      kind: 'mentioned', byName: 'Ada Admin', text: '@Dana can you take this one?',
+    }))
   })
 })
 
