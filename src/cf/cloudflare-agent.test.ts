@@ -105,17 +105,20 @@ function agent(saved: boolean) {
       calls.push('stop')
     },
     containerUp: async () => false,
+    cancelIdleCheck: async () => {
+      calls.push('cancelIdleCheck')
+    },
   })
   return { object, calls }
 }
 
 describe('AgentDurableObject stop', () => {
-  it('stops the container after the workspace is saved', async () => {
+  it('stops the container after the workspace is saved, then drops its idle check', async () => {
     const { object, calls } = agent(true)
 
     await object.stopAgent()
 
-    expect(calls).toEqual(['save', 'stop'])
+    expect(calls).toEqual(['save', 'stop', 'cancelIdleCheck'])
   })
 
   it('keeps the container running when the save fails, and says so', async () => {

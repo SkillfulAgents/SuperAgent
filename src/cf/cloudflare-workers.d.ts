@@ -98,11 +98,12 @@ declare module 'cloudflare:workers' {
     readonly exports: Record<string, (options: { props: unknown }) => Fetcher>
     blockConcurrencyWhile<T>(closure: () => Promise<T>): Promise<T>
     acceptWebSocket(socket: WorkerWebSocket): void
+    abort(reason?: string): void
     getWebSockets(): WorkerWebSocket[]
   }
 
-  /** A Durable Object's methods as its stub calls them: each one answers asynchronously. */
-  export type DurableObjectStub<T> = {
+  /** A Durable Object's methods as its stub calls them: each one answers asynchronously. A stub got by name carries that name. */
+  export type DurableObjectStub<T> = { readonly name?: string } & {
     [K in keyof T as T[K] extends (...args: never[]) => unknown ? K : never]: T[K] extends (...args: infer A) => infer R
       ? (...args: A) => Promise<Awaited<R>>
       : never
