@@ -129,6 +129,18 @@ async function setAppIcon(token: string, appId: string, icon: Uint8Array): Promi
   }
 }
 
+/** Exchanges an install's code for the bot token (`oauth.v2.access`): the same for an agent's app and the directory's. */
+async function exchangeInstallCode(record: Record<string, unknown>, code: string, redirectUrl: string): Promise<string> {
+  const app = slackProvisionedAppSchema.parse(record)
+  const { body } = await slackCall('oauth.v2.access', null, {
+    client_id: app.clientId,
+    client_secret: app.clientSecret,
+    code,
+    redirect_uri: redirectUrl,
+  }, installedSchema)
+  return body.access_token
+}
+
 function provisioner(credentials: SlackConfigToken): AgentIdentityProvisioner {
   const token = accessTokenOf(credentials)
   const setIcon = (appId: string, icon: Uint8Array) => setAppIcon(token, appId, icon)
@@ -146,14 +158,7 @@ function provisioner(credentials: SlackConfigToken): AgentIdentityProvisioner {
     },
 
     async completeInstall(record, code, redirectUrl) {
-      const app = slackProvisionedAppSchema.parse(record)
-      const { body } = await slackCall('oauth.v2.access', null, {
-        client_id: app.clientId,
-        client_secret: app.clientSecret,
-        code,
-        redirect_uri: redirectUrl,
-      }, installedSchema)
-      return { botToken: body.access_token }
+      return { botToken: await exchangeInstallCode(record, code, redirectUrl) }
     },
 
     async deleteApp(record) {
@@ -210,17 +215,22 @@ export const slackAppProvisioning: AgentIdentityProvisioning<SlackConfigToken> =
   open: provisioner,
   httpsRedirectsOnly: true,
 
-  async createDirectoryApp(credentials, { redirectUrl }) {
-    try {
-      const token = accessTokenOf(credentials)
-      const { body, app } = await createFromManifest(token, slackDirectoryAppManifest(), redirectUrl)
-      // A manifest can't carry an icon: the Gamut logo goes up after, and the app works without it.
-      await setAppIcon(token, app.appId, gamutSlackIcon())
-      // Installing it gives the directory's bot token (`completeInstall`).
-      return { app, installUrl: body.oauth_authorize_url }
-    } catch (error) {
-      if (!(error instanceof SlackApiError)) throw error
-      throw new DirectoryConnectError(`Slack did not create the app (${error.code}). Generate a new token and try again.`)
-    }
+  directoryApp: {
+    async create(credentials, { redirectUrl }) {
+      try {
+        const token = accessTokenOf(credentials)
+        const { body, app } = await createFromManifest(token, slackDirectoryAppManifest(), redirectUrl)
+        // A manifest can't carry an icon: the Gamut logo goes up after, and the app works without it.
+        await setAppIcon(token, app.appId, gamutSlackIcon())
+        return { app, installUrl: body.oauth_authorize_url }
+      } catch (error) {
+        if (!(error instanceof SlackApiError)) throw error
+        throw new DirectoryConnectError(`Slack did not create the app (${error.code}). Generate a new token and try again.`)
+      }
+    },
+    // The directory's credentials: its bot token (`slackDirectoryCredentialsSchema`).
+    async completeInstall(_credentials, record, code, redirectUrl) {
+      return { botToken: await exchangeInstallCode(record, code, redirectUrl) }
+    },
   },
 }

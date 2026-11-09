@@ -7,7 +7,8 @@ import { useAgent } from '@renderer/hooks/use-agents'
 import { ChatSetupBehavior, DEFAULT_CHAT_SETUP_BEHAVIOR, slackBehaviorConfig } from './chat-integration-setup-form'
 import { IntegrationSetupFeedback, IntegrationSetupField, IntegrationSetupLayout } from './integration-setup-layout'
 import type { IntegrationSetupProps } from './setup-types'
-import { agentAppIconBase64, slackAppIdentity } from './slack-app-identity'
+import { agentAppIconBase64 } from './agent-app-icon'
+import { slackAppIdentity } from './slack-app-identity'
 import { useInstallProvisionedApp } from './provisioned-app-card'
 
 /**

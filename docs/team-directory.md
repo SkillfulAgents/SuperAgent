@@ -87,7 +87,7 @@ Under `E2E_MOCK=true` the registry also has a **Demo Directory** (`testing/e2e-d
 
 ## Connecting with one token
 
-`directory-app.ts`. When a provider's `provisioning` has `createDirectoryApp`, Settings offers its credentials as the way in. For Slack that is the refresh token of an app configuration token, the same one agents' apps need.
+`directory-app.ts`. When a provider's `provisioning` has `directoryApp` (`create`, and `completeInstall`, which returns the directory's credentials), Settings offers its credentials as the way in. For Slack that is the refresh token of an app configuration token, the same one agents' apps need.
 
 A provider with `httpsRedirectsOnly` (Slack) is offered this way only when the host's public URL (`HOST_PUBLIC_URL`, else the first trusted origin) is HTTPS, since its install page returns only there. Otherwise, as on a desktop app at `http://localhost`, Settings shows the provider's own form. `POST /install` checks the same before verifying anything, so a token is never spent on an install that can't return.
 

@@ -5,7 +5,7 @@
  * provider's page, and the install gives the directory's credentials. The
  * provisioning credentials stay on the directory for agents' apps, and the app
  * is deleted with the directory. The same for every provider whose
- * provisioning has `createDirectoryApp`; see docs/team-directory.md.
+ * provisioning has `directoryApp`; see docs/team-directory.md.
  *
  * An install is held in AppState under a random id until it is installed,
  * started over (which deletes its app), or runs out of time. The provider's
@@ -73,7 +73,7 @@ const isHttps = (url: string | null) => !!url && URL.parse(url)?.protocol === 'h
  */
 export function connectsWithProvisioning(provider: TeamDirectoryProvider<unknown>, redirectUrl: string | null): boolean {
   const provisioning = provisioningOf({ provider: provider.info.id })
-  return !!provisioning?.createDirectoryApp && (!provisioning.httpsRedirectsOnly || isHttps(redirectUrl))
+  return !!provisioning?.directoryApp && (!provisioning.httpsRedirectsOnly || isHttps(redirectUrl))
 }
 
 async function deleteQuietly(provisioner: AgentIdentityProvisioner, app: ProvisionedAppRecord, operation: string): Promise<void> {
@@ -98,7 +98,7 @@ export async function startDirectoryAppConnect(input: {
   const provider = getDirectoryProvider(input.provider)
   const provisioning = provider && provisioningOf({ provider: input.provider })
   const label = provider?.info.label ?? input.provider
-  if (!provisioning?.createDirectoryApp) throw new DirectoryConnectError(`${label} can’t be connected with a token alone.`)
+  if (!provisioning?.directoryApp) throw new DirectoryConnectError(`${label} can’t be connected with a token alone.`)
   // Before verifying: that may spend the credentials.
   if (provisioning.httpsRedirectsOnly && !isHttps(input.redirectUrl)) {
     throw new DirectoryConnectError(`${label} only returns to an HTTPS address, and this app is at ${URL.parse(input.redirectUrl)?.origin ?? input.redirectUrl}. Use a ${label} app you already have.`)
@@ -108,7 +108,7 @@ export async function startDirectoryAppConnect(input: {
   let created
   let url: URL
   try {
-    created = await provisioning.createDirectoryApp(credentials, { redirectUrl: input.redirectUrl })
+    created = await provisioning.directoryApp.create(credentials, { redirectUrl: input.redirectUrl })
     const parsed = URL.parse(created.installUrl)
     if (!parsed) throw new Error(`The provider returned an install URL that does not parse: ${created.installUrl}`)
     url = parsed
@@ -184,17 +184,18 @@ async function openPending(pending: PendingInstall) {
   if (!provisioning) throw new DirectoryConnectError('This version of the app can’t connect this directory.')
   const sealed = sealedPendingSchema.parse(await openDirectoryCredentials(sealedPendingAs(pending.provider), PENDING_TENANT, pending.sealed))
   const credentials = provisioning.credentialsSchema.parse(sealed.credentials)
-  return { credentials, app: sealed.app, provisioner: provisioning.open(credentials) }
+  return { credentials, app: sealed.app, provisioning, provisioner: provisioning.open(credentials) }
 }
 
 async function finishInstall(pending: PendingInstall, code: string): Promise<DirectoryInstallStatus> {
   const provider = getDirectoryProvider(pending.provider)
   if (!provider) throw new DirectoryConnectError('This version of the app can’t connect this directory.')
-  const { credentials, app, provisioner } = await openPending(pending)
+  const { credentials, app, provisioning, provisioner } = await openPending(pending)
+  if (!provisioning.directoryApp) throw new DirectoryConnectError('This version of the app can’t connect this directory.')
   let connection: DirectoryConnection
   let notices: string[]
   try {
-    const directoryCredentials = provider.credentialsSchema.parse(await provisioner.completeInstall(app, code, pending.redirectUrl))
+    const directoryCredentials = provider.credentialsSchema.parse(await provisioning.directoryApp.completeInstall(credentials, app, code, pending.redirectUrl))
     const tenant = await provider.verify(directoryCredentials)
     connection = await saveDirectoryConnection({ provider: pending.provider, tenant, credentials: directoryCredentials, createdByUserId: pending.userId })
     notices = tenant.notices ?? []

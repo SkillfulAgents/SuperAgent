@@ -72,16 +72,23 @@ function fakeProvisioning(integrationProvider: string, fake: FakeProvisioner & {
       if (credentials.key === 'bad') throw new DirectoryConnectError('That key is no good')
       return { ...credentials, generation: credentials.generation + 1, expiresAt: Date.now() + 12 * 60 * 60_000, workspace: tenant?.tenantId ?? 'acme' }
     },
-    // Its install page is the host's own callback, with a code: a browser goes straight back.
-    async createDirectoryApp(credentials, { redirectUrl }) {
-      record('create-directory', { redirectUrl, generation: credentials.generation })
-      if (fake.createFailure) {
-        const error = fake.createFailure
-        fake.createFailure = null
-        throw error
-      }
-      const appId = `DIR${++apps}`
-      return { app: { appId, directory: true, workspace: credentials.workspace ?? 'acme' }, installUrl: `${redirectUrl}?code=approved` }
+    directoryApp: {
+      // Its install page is the host's own callback, with a code: a browser goes straight back.
+      async create(credentials, { redirectUrl }) {
+        record('create-directory', { redirectUrl, generation: credentials.generation })
+        if (fake.createFailure) {
+          const error = fake.createFailure
+          fake.createFailure = null
+          throw error
+        }
+        const appId = `DIR${++apps}`
+        return { app: { appId }, installUrl: `${redirectUrl}?code=approved` }
+      },
+      // The directory's credentials: a token naming the workspace the credentials are for.
+      async completeInstall(credentials, app, code, redirectUrl) {
+        record('install', { appId: app.appId, code, redirectUrl })
+        return { token: `${credentials.workspace ?? 'acme'}-token` }
+      },
     },
     needsRotation: (credentials, now) => credentials.expiresAt === undefined || credentials.expiresAt - now < 60 * 60_000,
     async rotate(credentials) {
@@ -114,8 +121,6 @@ function fakeProvisioning(integrationProvider: string, fake: FakeProvisioner & {
         },
         async completeInstall(app: ProvisionedAppRecord, code, redirectUrl) {
           record('install', { appId: app.appId, code, redirectUrl })
-          // The directory's own app gives the directory's credentials.
-          if (app.directory) return { token: `${String(app.workspace)}-token` }
           return { botToken: `token-${String(app.appId)}-${code}` }
         },
         async deleteApp(app) { record('delete', { appId: app.appId }) },

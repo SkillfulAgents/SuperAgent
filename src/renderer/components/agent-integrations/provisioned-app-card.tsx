@@ -9,7 +9,7 @@ import { agentIntegrationKeys, useAuthorizeAgentIntegration, useUpdateProvisione
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { IntegrationSetupFeedback, IntegrationSetupField } from './integration-setup-layout'
-import { agentAppIconBase64 } from './slack-app-identity'
+import { agentAppIconBase64 } from './agent-app-icon'
 
 /** Starts the install of an installation's provisioned app in a login window; resolves once it is open. */
 export function useInstallProvisionedApp(integration: Pick<PublicAgentIntegration, 'id' | 'agentSlug'> | null) {

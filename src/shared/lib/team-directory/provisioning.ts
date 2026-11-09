@@ -191,7 +191,7 @@ export async function provisionerFor(directoryId: string): Promise<{ provisioner
   }
   if (!loaded) throw new IntegrationSetupError('The team directory that created this app can’t manage it any more. Ask an admin to check Settings → Team Directory.')
   if (loaded.connection.provisioningStatus !== 'active') {
-    throw new IntegrationSetupError(`The ${loaded.connection.tenantName} directory needs a new app configuration token before it can create or change apps. Ask an admin to add one in Settings → Team Directory.`)
+    throw new IntegrationSetupError(`The ${loaded.connection.tenantName} directory can’t create or change apps until an admin adds a new token for it under Settings → Team Directory → Agent apps.`)
   }
   return { provisioner: loaded.provisioning.open(loaded.credentials), connection: loaded.connection }
 }

@@ -124,7 +124,7 @@ describe('rotation', () => {
     expect(await getDirectoryConnection(directoryId)).toMatchObject({ provisioningStatus: 'needs_reconnect', provisioningError: 'The fake chain is broken' })
     expect(await findProvisioner('test-app')).toBeNull()
     await expect(createAgentApp({ directoryId, integrationProvider: 'test-app', identity: { name: 'Agent' }, webhookUrl: 'https://relay.test/h', redirectUrl: 'https://app.test/cb' }))
-      .rejects.toThrow('needs a new app configuration token')
+      .rejects.toThrow('can’t create or change apps until an admin adds a new token')
 
     // An admin adds a new one, and it works again.
     await connectProvisioning(directoryId, { key: 'fresh-key' })

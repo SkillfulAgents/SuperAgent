@@ -18,8 +18,8 @@ vi.mock('@renderer/lib/api', () => {
   return { apiFetch, apiJson: async (url: string) => (await apiFetch(url)).json() }
 })
 vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
-vi.mock('./slack-app-identity', async (importOriginal) => ({
-  ...await importOriginal<typeof import('./slack-app-identity')>(),
+vi.mock('./agent-app-icon', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./agent-app-icon')>(),
   agentAppIconBase64: async () => 'iVBORw0KGgo=',
 }))
 import { ProvisionedAppCard } from './provisioned-app-card'

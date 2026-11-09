@@ -123,17 +123,24 @@ export interface AgentIdentityProvisioning<P> {
   open(credentials: P): AgentIdentityProvisioner
   /**
    * Present when these credentials alone can connect the directory: the host
-   * creates the directory's own app with them, a person installs it, and the
-   * install (`AgentIdentityProvisioner.completeInstall`) gives the directory's
-   * credentials. The admin pastes one token instead of making an app by hand.
+   * creates the directory's own app with them and a person installs it. The
+   * admin pastes one token instead of making an app by hand. It is deleted as
+   * agents' apps are (`AgentIdentityProvisioner.deleteApp`).
    */
-  createDirectoryApp?(credentials: P, input: { redirectUrl: string }): Promise<CreatedDirectoryApp>
+  directoryApp?: DirectoryAppProvisioning<P>
   /**
    * The provider's install page returns only to HTTPS addresses (Slack). The
-   * host then offers `createDirectoryApp` only on an HTTPS public URL, and
-   * checks before verifying, which may spend the credentials.
+   * host then offers `directoryApp` only on an HTTPS public URL, and checks
+   * before verifying, which may spend the credentials.
    */
   httpsRedirectsOnly?: boolean
+}
+
+/** Creating and installing the directory's own app with app-creation credentials. */
+export interface DirectoryAppProvisioning<P> {
+  create(credentials: P, input: { redirectUrl: string }): Promise<CreatedDirectoryApp>
+  /** Finishes the install the person approved; returns the directory's credentials (what the provider's `credentialsSchema` takes). */
+  completeInstall(credentials: P, app: ProvisionedAppRecord, code: string, redirectUrl: string): Promise<unknown>
 }
 
 /** The directory's own app, created but not installed yet. */
@@ -176,11 +183,7 @@ export interface CreatedAgentApp {
 
 export interface AgentIdentityProvisioner {
   createApp(input: AgentAppIdentity & { webhookUrl: string; redirectUrl: string }): Promise<CreatedAgentApp>
-  /**
-   * Finishes the install the person approved. For an agent's app, returns the
-   * config fields that connect the integration (Slack's bot token); for the
-   * directory's own app, the directory's credentials.
-   */
+  /** Finishes the install the person approved; returns the config fields that connect the integration (Slack's bot token). */
   completeInstall(app: ProvisionedAppRecord, code: string, redirectUrl: string): Promise<Record<string, unknown>>
   deleteApp(app: ProvisionedAppRecord): Promise<void>
   /** Renames the app (name and handle) and sets a new icon; what is absent stays. */
