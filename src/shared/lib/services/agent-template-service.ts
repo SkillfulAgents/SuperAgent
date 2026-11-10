@@ -79,8 +79,8 @@ import type { SkillsetAuthContext } from '@shared/lib/skillset-provider/base-ski
 // Constants
 // ============================================================================
 
-const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
-export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
+const MAX_UNCOMPRESSED_SIZE = 2 * 1024 * 1024 * 1024 // 2GB
+export const MAX_COMPRESSED_SIZE = 2 * 1024 * 1024 * 1024 // 2GB
 const MAX_FILE_COUNT = 10_000
 export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
 
@@ -612,7 +612,7 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
 /**
  * ZIP input for validation/import: either raw bytes, or a path to a ZIP
  * already on disk. Prefer the file form when available — it reads entries on
- * demand instead of pinning the whole (up to 500MB) buffer in memory for the
+ * demand instead of pinning the whole (up to 2GB) buffer in memory for the
  * entire extraction.
  */
 export type TemplateZipSource = Buffer | { filePath: string }
@@ -1041,7 +1041,7 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<{
     if (!stat || stat.kind !== 'file') return { hasOnboarding: false }
     if (stat.size === 0) return { hasOnboarding: true }
 
-    // Frontmatter is at the top. Do not load a 500MB skill body into the heap:
+    // Frontmatter is at the top. Do not load a huge skill body into the heap:
     // read only the leading bytes.
     const readLen = Math.min(stat.size, ONBOARDING_SKILL_READ_LIMIT)
     const head = await readStreamToBuffer(await files.read(ONBOARDING_SKILL_PATH, { start: 0, end: readLen - 1 }))
