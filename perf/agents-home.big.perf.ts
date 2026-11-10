@@ -25,7 +25,8 @@ defineHomeScenarios('big', {
   // resolving the `:id` of a session route no longer stats the agent's
   // directory (1 op). These counts were re-pinned when that landed; a
   // return to the old counts is a regression.
-  agentsRestarted: { totalOps: 12, ops: { stat: 7, readdir: 2 }, wallMs: 170 },
+  // +1 readFile per agent on its actor's first use: a session-metadata.json still in the workspace is taken in.
+  agentsRestarted: { totalOps: 13, ops: { stat: 7, readdir: 2 }, wallMs: 170 },
   agentsWarm: { totalOps: 11, ops: { stat: 7, readdir: 1 }, wallMs: 170 },
   homeRestarted: { totalOps: 20, ops: { stat: 9, readdir: 2 }, wallMs: 300 },
   homeWarm: { totalOps: 18, ops: { stat: 8, readdir: 1 }, wallMs: 280 },

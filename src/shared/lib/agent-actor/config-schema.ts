@@ -55,8 +55,8 @@ export const CONFIG_DOCS = {
   /**
    * The portable form of the agent's session index (names, stars, how each
    * session was started): what a full export carries and what an import, or
-   * a workspace from before the index, is ingested from. Not read at
-   * runtime; see `session-metadata-file`.
+   * a workspace from before the index, is ingested from. Read at runtime
+   * only to be taken in; see `session-metadata-file`.
    */
   sessionMetadata: {
     kind: 'json',

@@ -46,13 +46,13 @@ A session is registered (an entry with metadata, no transcript) a moment before 
 
 ## `session-metadata.json` today
 
-The file is the index's portable form (`services/session-metadata-file.ts`). Nothing reads it at runtime.
+The file is the index's portable form (`services/session-metadata-file.ts`). Its only runtime reader is the local actor, which takes in one it finds in the workspace before it first uses the index (`beforeFirstUse`, once per workspace).
 
-- **A full export** writes it into the archive from the index, each entry carrying `lastActivityAt`. Nothing is written into the workspace.
+- **A full export** takes in a file still in the workspace first, then writes it into the archive from the index, each entry carrying `lastActivityAt`. Nothing is written into the workspace.
 - **A full import** takes the archive's file into the new agent's index and removes it from the workspace. `lastActivityAt` is trusted, since an extracted transcript's mtime is the time of the import; a transcript the file does not mention is statted when first listed. A template import never carries the file.
-- **A workspace from an older build** has one. Data migration `0010-import-session-metadata` takes every local agent's file into its index and removes it. It reads only the file; the transcripts are statted by the first listing. Nothing else ever reads the file, so while some agent's could not be taken in (an error, or a workspace with nothing in it, which is how one whose volume is not mounted looks), the migration answers `'incomplete'`, is not recorded, and runs again on the next boot.
+- **A workspace from an older build** has one. Data migration `0010-import-session-metadata` takes every local agent's file into its index and removes it. It reads only the file; the transcripts are statted by the first listing. While some agent's could not be taken in (an error, or a workspace with nothing in it, which is how one whose volume is not mounted looks), the migration answers `'incomplete'`, is not recorded, and runs again on the next boot. The actor's own check covers a file that appears later: a volume mounted after boot, an import that stopped before taking its file in, or a file an older build wrote after a downgrade.
 
-Ingesting never replaces metadata the index already holds, so running it again over a half-ingested file changes nothing. A file that does not fit is set aside as `session-metadata.corrupt-<time>.json`, and every entry of it that does fit is still taken: the file was the agent's to edit, and one bad entry must not cost the others their names. The same goes for a stored row whose metadata cannot be read: that session lists as one without metadata, and the agent's listing does not fail.
+Ingesting never replaces metadata the index already holds, so running it again over a half-ingested file changes nothing. A file that does not fit is set aside as `session-metadata.corrupt-<hash of its content>.json` (so taking it in again does not set it aside twice, and templates leave out every file with that prefix), and every entry of it that does fit is still taken: the file was the agent's to edit, and one bad entry must not cost the others their names. The same goes for a stored row whose metadata cannot be read: that session lists as one without metadata, and the agent's listing does not fail.
 
 ## The agent's own view
 

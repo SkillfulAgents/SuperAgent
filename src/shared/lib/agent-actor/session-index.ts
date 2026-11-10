@@ -94,6 +94,12 @@ export interface SessionIndexDeps {
   storage: SessionIndexStorage
   /** {@link DIRECTORY_TICK_MS}, for a test over a filesystem whose clock it knows. */
   directoryTickMs?: number
+  /**
+   * Work every read and write of the index waits for, once per workspace
+   * (`key`): the local actor takes in a `session-metadata.json` still in the
+   * workspace. It must not reject; it reports its own failures.
+   */
+  beforeFirstUse?: () => Promise<void>
 }
 
 /**
@@ -197,16 +203,32 @@ export class SessionIndex {
   private steps: Promise<unknown> = Promise.resolve()
   /** Activity of sends that may still be taken back: shown, never stored. */
   private readonly provisional = new Map<string, number>()
+  /** {@link SessionIndexDeps.beforeFirstUse}, run or running, and for which workspace. */
+  private firstUse: { key: string; done: Promise<void> } | undefined
 
   constructor(private readonly deps: SessionIndexDeps) {
     this.storage = remembering(deps.storage)
   }
 
-  get(sessionId: string): Promise<SessionIndexEntry | null> {
+  async get(sessionId: string): Promise<SessionIndexEntry | null> {
+    await this.ready()
     return this.storage.get(sessionId)
   }
 
-  update(...args: Parameters<SessionIndexStorage['update']>): Promise<void> {
+  /**
+   * One entry carrying all recorded activity, as {@link entries} lists it,
+   * without reconciling with the directory: a single-session read answers
+   * the same time as the listing.
+   */
+  async entry(sessionId: string): Promise<SessionIndexEntry | null> {
+    await this.ready()
+    await this.flush()
+    const entry = await this.storage.get(sessionId)
+    return entry && this.withProvisional(entry)
+  }
+
+  async update(...args: Parameters<SessionIndexStorage['update']>): Promise<void> {
+    await this.ready()
     return this.storage.update(...args)
   }
 
@@ -238,11 +260,12 @@ export class SessionIndex {
       this.awaitingTranscript.delete(sessionId)
     }
     if (this.reconciled) this.reconciled.present = undefined
-    return this.storage.delete(sessionIds)
+    return this.ready().then(() => this.storage.delete(sessionIds))
   }
 
   /** What the app keeps about every session it knows of. No storage beyond the index is touched. */
   async metadata(): Promise<SessionMetadataMap> {
+    await this.ready()
     const entries = await this.storage.list()
     return Object.fromEntries(entries.flatMap(({ sessionId, meta }) => (meta ? [[sessionId, meta]] : [])))
   }
@@ -321,9 +344,22 @@ export class SessionIndex {
    * activity that was waiting for a transcript the directory just gave up.
    */
   private async upToDate(): Promise<void> {
+    await this.ready()
     await this.flush()
     await this.reconcile()
     await this.flush()
+  }
+
+  /**
+   * {@link SessionIndexDeps.beforeFirstUse}, once for the workspace the
+   * store points at. Not for `fill`: what it does is fill the index.
+   */
+  private ready(): Promise<void> {
+    const { beforeFirstUse } = this.deps
+    if (!beforeFirstUse) return Promise.resolve()
+    const key = this.deps.key()
+    if (this.firstUse?.key !== key) this.firstUse = { key, done: beforeFirstUse() }
+    return this.firstUse.done
   }
 
   /** Store the recorded activity. Concurrent callers share one run. */

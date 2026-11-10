@@ -294,6 +294,59 @@ describe('a session, from creation to deletion', () => {
   })
 })
 
+describe('a session-metadata.json left in the workspace', () => {
+  const legacyFile = () => path.join(workspaceDir(), 'session-metadata.json')
+
+  it('is taken into the index before the index is first used, and removed', async () => {
+    writeTranscript('s1', '2026-11-01T09:00:00Z')
+    fs.writeFileSync(legacyFile(), JSON.stringify({ s1: { name: 'Pricing decision', createdAt: '2026-11-01T08:00:00Z' } }))
+
+    expect((await listSessions(store)).map((s) => [s.id, s.name])).toEqual([['s1', 'Pricing decision']])
+    expect(fs.existsSync(legacyFile())).toBe(false)
+  })
+
+  it('keeps what the file says about a session renamed before anything was read', async () => {
+    writeTranscript('s1', '2026-11-01T09:00:00Z')
+    fs.writeFileSync(legacyFile(), JSON.stringify({
+      s1: { name: 'Old name', createdAt: '2026-11-01T08:00:00Z', scheduledTaskId: 'task-1', isScheduledExecution: true },
+    }))
+
+    await updateSessionName(store, 's1', 'New name')
+
+    expect(await getSessionMetadata(store, 's1')).toMatchObject({ name: 'New name', scheduledTaskId: 'task-1' })
+    expect((await getSessionsByScheduledTask(store, 'task-1')).map((s) => s.id)).toEqual(['s1'])
+  })
+
+  it('sets a file that does not fit aside once, however often taking it in stops before removing it', async () => {
+    fs.writeFileSync(legacyFile(), JSON.stringify({ kept: { name: 'Kept', createdAt: new Date().toISOString() }, bad: { name: 42 } }))
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.spyOn(store.files, 'delete').mockRejectedValueOnce(new Error('EACCES: permission denied'))
+
+    await listSessions(store)
+    expect(fs.existsSync(legacyFile())).toBe(true)
+
+    // The next actor, after a restart, takes the same file in again.
+    const restarted = createLocalSessionStore(AGENT)
+    expect((await listSessions(restarted)).map((s) => s.name)).toEqual(['Kept'])
+    const left = fs.readdirSync(workspaceDir()).filter((name) => name.startsWith('session-metadata'))
+    expect(left).toEqual([expect.stringMatching(/^session-metadata\.corrupt-[0-9a-f]{16}\.json$/)])
+  })
+})
+
+describe('the time a single read answers', () => {
+  it('is the listing\'s, after a transcript write the host did not see', async () => {
+    writeTranscript('s1', '2026-11-01T09:00:00Z')
+    expect((await listSessions(store))[0].lastActivityAt).toEqual(new Date('2026-11-01T09:00:00Z'))
+    // A resume rewrote the transcript while the host was down.
+    fs.utimesSync(transcriptFile('s1'), new Date('2026-11-01T10:00:00Z'), new Date('2026-11-01T10:00:00Z'))
+
+    expect((await getSession(store, 's1'))?.lastActivityAt).toEqual(new Date('2026-11-01T09:00:00Z'))
+    expect((await listSessionsByIds(store, ['s1']))[0].lastActivityAt).toEqual(new Date('2026-11-01T09:00:00Z'))
+    expect((await listSessions(store))[0].lastActivityAt).toEqual(new Date('2026-11-01T09:00:00Z'))
+  })
+})
+
 describe('many sessions', () => {
   const COUNT = 1500
 

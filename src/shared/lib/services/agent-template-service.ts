@@ -40,7 +40,7 @@ import {
   type FileOps,
 } from '@shared/lib/agent-actor'
 import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
-import { SESSION_METADATA_FILE } from './session-metadata-file'
+import { SESSION_METADATA_FILE, SET_ASIDE_SESSION_METADATA_PREFIX } from './session-metadata-file'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   readIndexJson,
@@ -105,6 +105,12 @@ const TEMPLATE_EXCLUDE = new Set([
   'agent-preferences.json',
 ])
 
+/** Whether a file or directory of this name is left out of templates, at any level. */
+function isExcludedFromTemplates(name: string): boolean {
+  // A set-aside session-metadata file holds every session's name and who started it.
+  return TEMPLATE_EXCLUDE.has(name) || name.startsWith(SET_ASIDE_SESSION_METADATA_PREFIX)
+}
+
 /** File extensions excluded from templates at any level */
 const TEMPLATE_EXCLUDE_EXTENSIONS = new Set([
   '.pyc',
@@ -139,7 +145,7 @@ const CLAUDE_DIR_ALLOWLIST = new Set([
 function isTemplateEntry(entryPath: string): boolean {
   const normalized = entryPath.replace(/^\.\//, '')
   const parts = normalized.split('/')
-  if (parts.some((part) => TEMPLATE_EXCLUDE.has(part))) return false
+  if (parts.some(isExcludedFromTemplates)) return false
   if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(normalized))) return false
   if (TEMPLATE_EXCLUDE_TOP_DIRS.has(parts[0])) return false
   // Session transcripts, subagents, workflows, and derived runtime state live
@@ -287,7 +293,7 @@ async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
       const relativePath = joinTreePath(dir, entry.name)
 
       // Skip excluded files at any level
-      if (TEMPLATE_EXCLUDE.has(entry.name)) continue
+      if (isExcludedFromTemplates(entry.name)) continue
 
       if (entry.kind === 'directory') {
         // Skip top-level excluded directories
@@ -318,7 +324,7 @@ async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
     }
 
     for (const entry of entries) {
-      if (TEMPLATE_EXCLUDE.has(entry.name)) continue
+      if (isExcludedFromTemplates(entry.name)) continue
 
       if (entry.kind === 'directory') {
         // Only recurse into allowlisted subdirectories of .claude/
@@ -605,6 +611,9 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
     }
 
     const { files, sessions } = agentRegistry.get(agentSlug)
+    // A file the actor did not find when it first used the index (its
+    // volume came back since) would otherwise be skipped below, not exported.
+    await sessions.ingestMetadataFile()
     const rootFiles = (await files.list('')).map((entry) => entry.path)
     // The session index is not a file of the workspace: the archive carries
     // it in its portable form, which an import takes back in.

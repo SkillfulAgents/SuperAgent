@@ -128,7 +128,7 @@ describe('import-session-metadata', () => {
     expect((await rows()).map((row) => `${row.agentSlug}/${row.sessionId}`)).toEqual(['fine/run'])
     for (const [slug, content] of [['corrupt', '{ "user-chat": { '], ['wrong-shape', JSON.stringify({ 'user-chat': 'not an object' }, null, 2)]]) {
       const left = fs.readdirSync(workspaceOf(slug)).filter((name) => name !== 'AGENTS.md')
-      expect(left).toEqual([expect.stringMatching(/^session-metadata\.corrupt-\d+\.json$/)])
+      expect(left).toEqual([expect.stringMatching(/^session-metadata\.corrupt-[0-9a-f]{16}\.json$/)])
       expect(fs.readFileSync(path.join(workspaceOf(slug), left[0]), 'utf-8')).toBe(content)
     }
   })
@@ -147,7 +147,7 @@ describe('import-session-metadata', () => {
 
     expect((await rows()).map(({ sessionId, metadata }) => [sessionId, metadata.name])).toEqual([['also-good', 'Also good'], ['good', 'Good']])
     const left = fs.readdirSync(workspaceOf('edited')).filter((name) => name !== 'AGENTS.md')
-    expect(left).toEqual([expect.stringMatching(/^session-metadata\.corrupt-\d+\.json$/)])
+    expect(left).toEqual([expect.stringMatching(/^session-metadata\.corrupt-[0-9a-f]{16}\.json$/)])
     expect(JSON.parse(fs.readFileSync(path.join(workspaceOf('edited'), left[0]), 'utf-8'))).toEqual(file)
   })
 

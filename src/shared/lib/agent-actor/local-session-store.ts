@@ -4,6 +4,8 @@
  * index in the app database, and the transcripts directory the CLI uses with
  * the workspace mounted at `/workspace`.
  */
+import { captureException } from '@shared/lib/error-reporting'
+import { ingestSessionMetadataFile } from '@shared/lib/services/session-metadata-file'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { createLocalConfigOps } from './local-config-ops'
 import { createDbSessionIndexStorage } from './db-session-index-storage'
@@ -39,7 +41,7 @@ export function createLocalSessionStore(
   // deployments change the data directory in-process, and what was learned
   // from a directory must follow the directory, not the slug.
   const key = () => deps.getAgentWorkspaceDir(slug)
-  return {
+  const store: SessionStore = {
     slug,
     files,
     config,
@@ -49,10 +51,21 @@ export function createLocalSessionStore(
       transcriptsDir: CLI_TRANSCRIPTS_DIR,
       key,
       storage: (deps.sessionIndexStorage ?? createDbSessionIndexStorage)(slug),
+      // A `session-metadata.json` still in the workspace is taken in before
+      // the index is used: data migration 0010 could not reach it (a volume
+      // not mounted at boot), an import stopped before taking it in, or an
+      // older build wrote it after a downgrade. Taking it in is idempotent.
+      // A failure must not stop the agent's sessions from being read; the
+      // next actor tries again.
+      beforeFirstUse: () => ingestSessionMetadataFile(store).catch((error: unknown) => {
+        console.warn(`Could not take in the session metadata file of agent ${slug}:`, error)
+        captureException(error, { tags: { area: 'session-index', op: 'ingest-when-present' }, extra: { agentSlug: slug } })
+      }),
     }),
     onActivity: hooks.onActivity,
     get key() {
       return key()
     },
   }
+  return store
 }

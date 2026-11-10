@@ -133,9 +133,10 @@ describe('session create + send — small profile', () => {
     // Secrets and preferences for the container. The registration and the
     // name the first message gives the session are rows of the session
     // index: no file is written for either.
+    // One readFile is the actor's first use of the index: a session-metadata.json still in the workspace is taken in.
     expectWithinBudget('small: create session', measurement, {
-      totalOps: 6,
-      ops: { readFile: 2, rename: 0, 'handle.sync': 0 },
+      totalOps: 7,
+      ops: { readFile: 3, rename: 0, 'handle.sync': 0 },
       wallMs: 100,
     })
   })

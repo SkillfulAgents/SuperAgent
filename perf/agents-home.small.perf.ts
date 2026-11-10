@@ -24,7 +24,8 @@ import { defineHomeScenarios } from './home-scenarios'
 // directory (1 op). These counts were re-pinned when that landed; a return
 // to the old counts is a regression.
 defineHomeScenarios('small', {
-  agentsRestarted: { totalOps: 45, ops: { stat: 25, readdir: 10 }, wallMs: 160 },
+  // +1 readFile per agent on its actor's first use: a session-metadata.json still in the workspace is taken in.
+  agentsRestarted: { totalOps: 50, ops: { stat: 25, readdir: 10 }, wallMs: 160 },
   agentsWarm: { totalOps: 40, ops: { stat: 25, readdir: 5 }, wallMs: 160 },
   homeRestarted: { totalOps: 85, ops: { stat: 35, readdir: 10 }, wallMs: 280 },
   homeWarm: { totalOps: 75, ops: { stat: 30, readdir: 5 }, wallMs: 260 },

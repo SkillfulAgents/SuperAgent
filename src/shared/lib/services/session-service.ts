@@ -329,9 +329,11 @@ function parseStoredDate(value: string | undefined): Date | null {
 
 /**
  * Build the SessionInfo for a session whose transcript exists, from its
- * metadata entry and one stat of the transcript — never its contents, which
- * routinely reach 100MB+. Shared by every list and getSession so the list and
- * a single-session read report the same name and timestamps.
+ * metadata entry and its transcript as the index last saw it (a stat where
+ * the index has not seen it yet) — never its contents, which routinely reach
+ * 100MB+. Shared by every list and getSession, which all take the index's
+ * time, so the list and a single-session read report the same name and
+ * timestamps.
  */
 function sessionFromTranscriptStat(
   sessionId: string,
@@ -585,7 +587,8 @@ export async function listSessionsByIds(
     [...new Set(sessionIds)].map((sessionId) =>
       limit(async (): Promise<SessionInfo | null> => {
         if (!isSessionIdWellFormed(sessionId)) return null
-        const meta = (await getSessionMetadata(store, sessionId)) ?? undefined
+        const entry = await store.index.entry(sessionId)
+        const meta = entry?.meta ?? undefined
         if (options?.excludeAutomated && isHiddenAutomatedSession(meta)) return null
         let stat: Awaited<ReturnType<typeof store.files.stat>>
         try {
@@ -597,7 +600,7 @@ export async function listSessionsByIds(
           // Same rule as listSessions: unregistered empty JSONLs are SDK
           // subagent artifacts, not sessions.
           if (stat.size === 0 && !meta) return null
-          return sessionFromTranscriptStat(sessionId, store.slug, meta, stat)
+          return sessionFromTranscriptStat(sessionId, store.slug, meta, entry?.transcript ?? stat)
         }
         if (meta && metadataOnlySession(meta, now) === 'new') {
           return emptySessionFromMetadata(sessionId, store.slug, meta)
@@ -622,7 +625,8 @@ export async function getSession(
   // so a planted link to another agent's transcript resolves to null, not that
   // agent's session summary.
   if (!(await sessionFileRealPathWithinAgent(store, sessionId))) return null
-  const metadata = already ? already.metadata : await getSessionMetadata(store, sessionId)
+  const entry = await store.index.entry(sessionId)
+  const metadata = already ? already.metadata : entry?.meta ?? null
 
   let stat: Awaited<ReturnType<typeof store.files.stat>>
   try {
@@ -631,7 +635,8 @@ export async function getSession(
     stat = null
   }
   if (stat?.kind === 'file') {
-    return sessionFromTranscriptStat(sessionId, store.slug, metadata ?? undefined, stat)
+    // The index's time when it has seen the transcript: it is what every listing shows.
+    return sessionFromTranscriptStat(sessionId, store.slug, metadata ?? undefined, entry?.transcript ?? stat)
   }
 
   // No transcript yet, but the session is registered → it was just created and

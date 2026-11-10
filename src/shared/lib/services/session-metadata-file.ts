@@ -6,8 +6,10 @@
  * import reads it back. It is also the form the index had before it existed:
  * a workspace from an older build carries one, which a data migration
  * ingests the same way. Nothing reads the file at runtime, and it is gone
- * from a workspace once ingested.
+ * from a workspace once ingested: a local actor takes in one it finds
+ * before it first uses the index.
  */
+import { createHash } from 'crypto'
 import { CONFIG_DOCS, ConfigDocError } from '@shared/lib/agent-actor/config-schema'
 import type { SessionIndexEntry } from '@shared/lib/agent-actor/session-index'
 import { isSessionIdWellFormed, type SessionStore } from '@shared/lib/agent-actor/session-store'
@@ -16,6 +18,14 @@ import { portableSessionMetadataSchema, type PortableSessionMetadataMap } from '
 
 /** Workspace path of the file, and its name in an archive. */
 export const SESSION_METADATA_FILE = CONFIG_DOCS.sessionMetadata.path
+
+/** How a file that does not fit is named once set aside. Templates leave such files out. */
+export const SET_ASIDE_SESSION_METADATA_PREFIX = 'session-metadata.corrupt-'
+
+/** Named by content, so taking the same file in again sets it aside under the same name. */
+function setAsideName(bytes: Uint8Array): string {
+  return `${SET_ASIDE_SESSION_METADATA_PREFIX}${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}.json`
+}
 
 /** What a full export carries as `session-metadata.json`: each session's metadata and when its transcript was last written. */
 export async function exportSessionMetadata(store: SessionStore): Promise<PortableSessionMetadataMap> {
@@ -48,7 +58,8 @@ function entriesThatFit(bytes: Uint8Array): PortableSessionMetadataMap {
 /**
  * Take the workspace's `session-metadata.json` into the index, then remove
  * it. Metadata the index already holds wins, so running this again over a
- * half-ingested file (a crash before the removal) changes nothing.
+ * half-ingested file (a crash before the removal) changes nothing, and a
+ * file set aside is named by its content, so it is not set aside twice.
  *
  * An entry that says when its transcript was last written is trusted on
  * that: the transcript is not statted, whose mtime after an import is the
@@ -71,7 +82,7 @@ export async function ingestSessionMetadataFile(store: SessionStore): Promise<vo
     console.error(`Corrupt ${SESSION_METADATA_FILE} for agent ${store.slug}; setting it aside`, error)
     captureException(error, { tags: { area: 'session-index', op: 'ingest' }, extra: { agentSlug: store.slug } })
     const bytes = await store.files.getDoc(SESSION_METADATA_FILE)
-    if (bytes !== null) await store.files.putDoc(`session-metadata.corrupt-${Date.now()}.json`, bytes)
+    if (bytes !== null) await store.files.putDoc(setAsideName(bytes), bytes)
     file = bytes === null ? null : entriesThatFit(bytes)
   }
   if (file === null) return
