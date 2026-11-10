@@ -7380,6 +7380,7 @@ describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sess
       recipientUserId: 'mike-id',
       senderName: 'Test User',
       text: '@Mike Smith look at this',
+      relayToInvited: true,
     })
   })
 

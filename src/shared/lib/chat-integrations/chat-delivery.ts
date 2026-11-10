@@ -9,6 +9,7 @@ import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 import { background } from '@shared/lib/background'
 import { NO_REPLY_TOKEN } from './chat-session-context'
+import { plainUserTags } from '@shared/lib/utils/mentions'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -279,11 +280,14 @@ export async function processSSEEvent(
 
       const now = Date.now()
       const { currentMessageId, accumulatedText, lastUpdateTime } = managed.streamingState
-      if (now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)) {
+      const visibleText = now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)
+        ? plainUserTags(accumulatedText, { streaming: true })
+        : ''
+      if (visibleText) {
         try {
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
-            managed.streamingState.accumulatedText,
+            visibleText,
             managed.streamingState.currentMessageId ?? undefined,
           )
           managed.streamingState.currentMessageId = msgId
@@ -468,8 +472,9 @@ export async function resolvePendingToolMessages(managed: ManagedConnector): Pro
 }
 
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
-  const finalText = managed.streamingState.accumulatedText
-  if (!finalText) return
+  const streamedText = managed.streamingState.accumulatedText
+  if (!streamedText) return
+  const finalText = plainUserTags(streamedText)
   const messageId = managed.streamingState.currentMessageId
 
   // Claim the buffer synchronously, before the first await, so a concurrent
@@ -481,7 +486,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     accumulatedText: '',
     lastUpdateTime: 0,
   }
-  if (finalText.trim() === NO_REPLY_TOKEN) return
+  if (!finalText || finalText.trim() === NO_REPLY_TOKEN) return
 
   try {
     if (messageId) {
@@ -499,7 +504,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     // is still empty, so we never overwrite newer streamed text (a later stream_delta
     // repopulated it). Re-throw so callers log/handle the failure exactly as before.
     if (!managed.streamingState.accumulatedText) {
-      managed.streamingState = { currentMessageId: messageId, accumulatedText: finalText, lastUpdateTime: 0 }
+      managed.streamingState = { currentMessageId: messageId, accumulatedText: streamedText, lastUpdateTime: 0 }
     }
     throw err
   }

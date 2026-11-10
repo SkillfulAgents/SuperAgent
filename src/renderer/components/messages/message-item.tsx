@@ -36,7 +36,7 @@ import { rehypeMentions } from '@renderer/lib/rehype-mentions'
 import { formatCompactDistance } from '@renderer/components/connections/utils'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import { format } from 'date-fns'
-import type { Mention } from '@shared/lib/utils/mentions'
+import { parseUserTags, plainUserTags, type Mention } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -237,7 +237,6 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // the sender prefix into the sender label and the mentions block into chips,
   // leaving just the typed text. Memoized so the mentions keep their identity.
   const userParts = useMemo(() => (isUser ? parseUserMessageParts(rawText) : null), [isUser, rawText])
-  const mentions = userParts?.mentions.length ? userParts.mentions : undefined
   // A message that opened on a teammate only notified them: the agent did not run.
   const silentMention = !!userParts?.silent
   const senderFromPrefix = userParts?.sender ?? null
@@ -251,7 +250,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
     ? parseTaskNotifications(cleanText)
     : { cleanText, workflowResults: [] }
-  const text = textAfterNotifs
+  // An agent tags with `[@Name](user:<id>)`: read as `@Name` plus the person,
+  // the text and list a person's tag gives, so the same chips draw.
+  const agentParts = useMemo(() => (isAssistant ? parseUserTags(textAfterNotifs) : null), [isAssistant, textAfterNotifs])
+  const mentionList = userParts?.mentions ?? agentParts?.mentions ?? []
+  const mentions = mentionList.length ? mentionList : undefined
+  const text = !agentParts ? textAfterNotifs : isStreaming ? plainUserTags(textAfterNotifs, { streaming: true }) : agentParts.text
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
   // Persisted extended-thinking blocks. Defensive shape check — this field

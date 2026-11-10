@@ -28,6 +28,7 @@ import {
 } from './store'
 import { meetingRoster } from './roster'
 import { meetingScreenshotsDir, meetingScreenshots } from './screenshots'
+import { plainUserTags } from '../utils/mentions'
 
 export { MEETING_RECORDING_RETENTION_HOURS }
 
@@ -162,7 +163,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
       this.writtenReplies.set(meeting.id, ((this.writtenReplies.get(meeting.id) ?? '') + (event?.success && event.data.type === 'stream_delta' ? event.data.text : '')).slice(-MAX_WRITTEN_REPLY_CHARS))
       return
     }
-    const text = this.writtenReplies.get(meeting.id)?.trim()
+    const text = plainUserTags(this.writtenReplies.get(meeting.id) ?? '').trim()
     this.writtenReplies.delete(meeting.id)
     if (!text || !meeting.botId || meeting.status !== 'in_call') return
     try { await this.bots.sendChatMessage(meeting.botId, text.slice(0, MAX_CHAT_MESSAGE_CHARS)) }

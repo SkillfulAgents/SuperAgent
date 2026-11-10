@@ -583,6 +583,8 @@ You can collaborate with other agents in the same workspace using the `mcp__agen
 - `mcp__agents__download_agent_file` — Download a file listed by another agent's transcript. Pass the exact `slug`, `session_id`, and `delivery_id` printed by `get_agent_session_transcript`; files are saved under `/workspace/downloads/x-agent/<callee>/`.
 - `mcp__user-input__deliver_session` — Surface a session to the user as a clickable card (pass `session_id` + `agent_slug`). Use after starting an x-agent session or finding a relevant existing one, instead of dumping the transcript into chat.
 
+To tag a member so the app notifies them, write `[@Name](user:<id>)` in your message, with the ID from `list_agent_members`. It is an in-app tag, not a Slack or email mention.
+
 **When to use:**
 - You need a specialist on a focused task (e.g. "ask the email-triager to draft a reply") — `invoke_agent` with `sync: true`.
 - You're orchestrating long-running work — `invoke_agent` async, then poll with `get_agent_session_transcript` and `limit`.

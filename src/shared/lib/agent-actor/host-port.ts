@@ -140,6 +140,18 @@ export type SessionNotification =
       responseText: string
       /** Where the transcript ended when the turn did; bounds the body's context lookup. */
       responseTranscriptEndOffset: number | null
+      /** Who the run's messages tagged. */
+      taggedUserIds: string[]
+    }
+  | {
+      /** An agent message that tags people: each member it tags is told. */
+      kind: 'message_mentions'
+      agentSlug: string
+      sessionId: string
+      messageUuid: string
+      userIds: string[]
+      /** The message as plain text, each tag as @Name. */
+      text: string
     }
   | {
       kind: 'session_waiting_input'

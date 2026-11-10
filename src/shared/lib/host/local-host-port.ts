@@ -25,7 +25,10 @@ function notify(notification: SessionNotification): Promise<void> {
       return notificationManager.triggerSessionComplete(notification.sessionId, notification.agentSlug, {
         responseText: notification.responseText,
         responseTranscriptEndOffset: notification.responseTranscriptEndOffset,
+        taggedUserIds: notification.taggedUserIds,
       })
+    case 'message_mentions':
+      return notificationManager.triggerAgentMentions(notification)
     case 'session_waiting_input':
       return notificationManager.triggerSessionWaitingInput(notification.sessionId, notification.agentSlug, notification.request)
     case 'api_review_waiting':
