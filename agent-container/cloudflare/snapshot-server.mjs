@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { spawn } from 'node:child_process'
-import { hashFile, inPool, scan } from './workspace-scan.mjs'
+import { hashFile, inPool, scan, watchTree } from './workspace-scan.mjs'
 
 const WORKSPACE = '/workspace'
 const PORT = 8090
@@ -178,10 +178,7 @@ function saveChanges() {
       })
     }, BATCH_MS)
   }
-  fs.watch(WORKSPACE, { recursive: true }, (_event, name) => {
-    if (!name || EXCLUDED.has(String(name).split('/')[0])) return
-    mark(String(name))
-  })
+  watchTree(WORKSPACE, EXCLUDED, mark)
   return async () => {
     clearTimeout(timer)
     timer = null
