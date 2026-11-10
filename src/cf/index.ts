@@ -8,6 +8,7 @@ import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHand
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import type { AppStateDurableObject } from './cloudflare-app-state'
 import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
+import { logErrorsAsText } from './error-logs'
 
 export { AppStateDurableObject } from './cloudflare-app-state'
 export { TaskManagerDurableObject } from './cloudflare-task-manager'
@@ -26,6 +27,8 @@ export interface Env {
   /** The origin browsers reach this Worker at. */
   APP_ORIGIN: string
 }
+
+logErrorsAsText()
 
 const SERVICE_WORKER = '/sw.js'
 let taskManagerWoken = false
