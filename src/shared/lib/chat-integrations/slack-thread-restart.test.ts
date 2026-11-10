@@ -6,14 +6,15 @@ import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { chatProviders } from './providers'
 import * as threadState from './slack-thread-state'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
+import { incomingMessageSchema } from './message-schema'
 
-type SlackMessage = { text: string; ts: string; thread_ts?: string; channel?: string; channel_type?: string }
-type MessageListener = (event: { message: Record<string, string>; say: unknown }) => Promise<void>
+type SlackMessage = { text: string; ts: string; thread_ts?: string; channel?: string; channel_type?: string; attachments?: unknown[] }
+type MessageListener = (event: { message: Record<string, unknown>; say: unknown }) => Promise<void>
 
 const slack = vi.hoisted(() => ({
   listeners: [] as MessageListener[],
   onStart: undefined as (() => Promise<void>) | undefined,
-  replies: vi.fn(async () => ({ ok: true, messages: [] })),
+  replies: vi.fn(async () => ({ ok: true, messages: [] as unknown[] })),
   postMessage: vi.fn(async (_message: unknown) => ({ ok: true, ts: '2000.001' })),
 }))
 
@@ -233,5 +234,48 @@ describe('Slack inbound message and tool groups', () => {
 
     const groupPosts = slack.postMessage.mock.calls.filter(([message]) => (message as { blocks?: unknown }).blocks)
     expect(groupPosts).toHaveLength(2)
+  })
+})
+
+// Trimmed from a real forward: the forwarded text and files ride in an attachment, not in text/files.
+const forwarded = {
+  text: '<@U_BOT> can you publish this?',
+  ts: '1000.002',
+  attachments: [{
+    is_share: true,
+    author_name: 'Ada Author',
+    from_url: 'https://example.slack.com/archives/D0SOURCE01/p1000001',
+    text: 'Yes, right here, cc <@U0PERSON02>',
+    files: [{ name: 'draft.md', mimetype: 'text/plain', url_private_download: 'https://files.slack.com/files-pri/T0-F01/download/draft.md' }],
+  }],
+}
+const SHARED_QUOTE = '[Shared message from Ada Author: https://example.slack.com/archives/D0SOURCE01/p1000001]\n> Yes, right here, cc @Tester'
+
+describe('Slack forwarded messages', () => {
+  it('gives the agent the forwarded text and files', async () => {
+    const slackChat = await connect({}, memoryStore())
+    await slackChat.receive({ ...forwarded, channel: 'D0DIRECT01', channel_type: 'im' })
+
+    const payload = incomingMessageSchema.parse(slackChat.received.mock.calls[0][0])
+    expect(payload.text).toBe(`<@U_BOT> can you publish this?\n\n${SHARED_QUOTE}`)
+    expect(payload.files).toEqual([{ name: 'draft.md', url: 'https://files.slack.com/files-pri/T0-F01/download/draft.md', mimeType: 'text/plain' }])
+  })
+
+  it('does not wake on a mention that is only inside the forwarded text', async () => {
+    const slackChat = await connect({}, memoryStore())
+    await slackChat.receive({ ...forwarded, text: 'fyi', attachments: [{ ...forwarded.attachments[0], text: '<@U_BOT> please look' }] })
+
+    expect(slackChat.received).not.toHaveBeenCalled()
+  })
+
+  it('includes a forward in the thread history it backfills', async () => {
+    const slackChat = await connect({}, memoryStore())
+    slack.replies.mockResolvedValueOnce({ ok: true, messages: [
+      { ...forwarded, user: 'U0PERSON01', ts: '1000.001' },
+      { user: 'U0PERSON01', ts: '1000.003', text: '<@U_BOT> what did they send?' },
+    ] })
+    await slackChat.receive({ text: '<@U_BOT> what did they send?', ts: '1000.003', thread_ts: '1000.001' })
+
+    expect(slackChat.received.mock.calls[0][0].text).toContain(`Tester: <@U_BOT> can you publish this?\n\n${SHARED_QUOTE}`)
   })
 })
