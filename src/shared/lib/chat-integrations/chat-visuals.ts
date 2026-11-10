@@ -12,8 +12,8 @@ interface PlacedToken {
   parents: Token[]
 }
 
-/** A visual's image. Throws when there is none. */
-type Draw = (agentSlug: string) => Promise<{ data: Buffer; filename: string; alt?: string }>
+/** A visual's image, given up on at `deadline` (epoch ms). Throws when there is none. */
+type Draw = (agentSlug: string, deadline?: number) => Promise<{ data: Buffer; filename: string; alt?: string }>
 
 /** A kind of visual the app draws and a chat shows as an image. */
 interface ChatVisual {
@@ -131,15 +131,17 @@ type FenceKind = 'mermaid' | 'math' | 'html'
 const RENDER_TIMEOUT_MS = 20_000
 
 /** The PNG the owning agent's container draws for a fence. Never wakes the agent. */
-async function renderInContainer(agentSlug: string, kind: FenceKind, source: string): Promise<Buffer> {
+async function renderInContainer(agentSlug: string, kind: FenceKind, source: string, deadline = Infinity): Promise<Buffer> {
   const { container } = agentRegistry.get(agentSlug)
   if ((await container.status()).status !== 'running') throw new NoImageError('Agent is not running')
+  const wait = Math.min(RENDER_TIMEOUT_MS, deadline - Date.now())
+  if (wait <= 0) throw new NoImageError('No time left to render')
   try {
     const response = await container.fetch('/render', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind, source }),
-      signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
+      signal: AbortSignal.timeout(wait),
     })
     if (!response.ok) {
       const message = `Container could not render ${kind} (HTTP ${response.status})`
@@ -153,12 +155,15 @@ async function renderInContainer(agentSlug: string, kind: FenceKind, source: str
   }
 }
 
-/** A fence the container draws, as the app's `RENDERED_FENCES` and html preview draw it: the language is the info string's first word, any case. */
+/**
+ * A fence the container draws, as the app's `RENDERED_FENCES` and html preview draw it: the language is the
+ * info string's first word, any case. Only a top-level fence: cut out of a list or a quote, it would break it.
+ */
 function fence(kind: FenceKind, languages: string[]): ChatVisual {
   const isFence = (token: Token): token is Tokens.Code => isCode(token) && languages.includes(token.lang?.split(/\s/)[0].toLowerCase() ?? '')
   return {
-    match: (tokens) => tokens.flatMap(({ token, start, end }) => (isFence(token)
-      ? [{ start, end, draw: async (agentSlug: string) => ({ data: await renderInContainer(agentSlug, kind, token.text), filename: `${kind}.png` }) }]
+    match: (tokens) => tokens.flatMap(({ token, start, end, parents }) => (isFence(token) && !parents.length
+      ? [{ start, end, draw: async (agentSlug: string, deadline?: number) => ({ data: await renderInContainer(agentSlug, kind, token.text, deadline), filename: `${kind}.png` }) }]
       : [])),
   }
 }

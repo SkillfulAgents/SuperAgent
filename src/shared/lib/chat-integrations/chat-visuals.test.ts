@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest'
-import { segments } from './chat-visuals'
+import { describe, it, expect, vi } from 'vitest'
+
+const fetchMock = vi.hoisted(() => vi.fn())
+vi.mock('../agent-actor', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-actor')>()),
+  agentRegistry: { get: () => ({ container: { status: async () => ({ status: 'running' }), fetch: fetchMock } }) },
+}))
+
+const { segments, NoImageError } = await import('./chat-visuals')
 
 const shape = (text: string, settledOnly: boolean) => {
   const split = segments(text, { settledOnly })
@@ -75,6 +82,26 @@ describe('segments', () => {
     }
     expect(kinds('```ts\nx\n```')).toEqual(['text'])
     expect(kinds('    ```mermaid\n    x\n    ```')).toEqual(['text'])
+  })
+
+  it('leaves a fence in a list or a quote as text, where cutting it out would break them', () => {
+    for (const text of ['- step\n  ```mermaid\n  A --> B\n  ```', '- ```mermaid\nA --> B\n```', '> ```mermaid\nA --> B\n```', '> ```mermaid\n> A --> B\n> ```']) {
+      expect(shape(text, false)).toEqual({ segments: [{ kind: 'text', source: text }], tail: '' })
+    }
+  })
+
+  it('gives up on a render when the send it is part of runs out of time', async () => {
+    // A render that answers only when its request is aborted.
+    fetchMock.mockImplementation((_path: string, init: RequestInit) => new Promise((_, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+    }))
+    const [visual] = segments('```mermaid\nA --> B\n```', { settledOnly: false }).segments
+    if (visual.kind !== 'visual') throw new Error('expected a visual')
+
+    await expect(visual.draw('agent', Date.now() + 50)).rejects.toBeInstanceOf(NoImageError)
+    fetchMock.mockClear()
+    await expect(visual.draw('agent', Date.now() - 1)).rejects.toBeInstanceOf(NoImageError)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('splits a fence that follows a prose line with no blank line between', () => {

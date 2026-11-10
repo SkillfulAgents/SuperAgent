@@ -11,8 +11,8 @@ import { rasterizeHtml } from './rasterize-html'
 const VIEWPORT = { width: 720, height: 400 }
 
 // The app's light theme (src/renderer/globals.css) as values: nothing here resolves the app's stylesheet.
-const MERMAID_THEME = { bg: 'hsl(0 0% 100%)', fg: 'hsl(0 0% 3.9%)', muted: 'hsl(0 0% 45.1%)', accent: 'hsl(204 100% 50%)', transparent: true }
-const HTML_THEME_TOKENS =
+export const MERMAID_THEME = { bg: 'hsl(0 0% 100%)', fg: 'hsl(0 0% 3.9%)', muted: 'hsl(0 0% 45.1%)', accent: 'hsl(204 100% 50%)', transparent: true }
+export const HTML_THEME_TOKENS =
   '--background:0 0% 100%;--foreground:0 0% 3.9%;--card:0 0% 100%;--card-foreground:0 0% 3.9%;--primary:0 0% 9%;' +
   '--primary-foreground:0 0% 98%;--muted:0 0% 96.1%;--muted-foreground:0 0% 45.1%;--accent:0 0% 96.1%;' +
   '--destructive:0 84.2% 60.2%;--border:0 0% 89.8%;--ring:0 0% 63.9%;--radius:0.5rem;--chart-1:12 76% 61%;' +

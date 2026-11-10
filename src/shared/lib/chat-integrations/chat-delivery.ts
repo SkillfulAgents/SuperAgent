@@ -603,7 +603,7 @@ async function sendVisual(
   deadline?: number,
 ): Promise<string> {
   try {
-    const { data, filename, alt } = await segment.draw(agentSlug)
+    const { data, filename, alt } = await segment.draw(agentSlug, deadline)
     const messageId = await connector.sendFile(chatId, data, filename, undefined, { asImage: true, alsoSendToChannel, altText: alt, deadline })
     if (draftId) await connector.retireStreamingMessage(chatId, draftId).catch((err) => console.error('[ChatAgentIntegration] Failed to retire draft:', err))
     return messageId
