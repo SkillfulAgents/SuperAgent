@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: s \"4\" and take screenshot — Response \"2 + 2 = 4.\" received and displayed. Response explicitly contains \"4\" as required. Screenshot taken showing complete conversation with user message \"Hello! What is 2+2?\" and agent response \"2 + 2 = 4.\"\n\n---\n\n**All test steps passed successfully. No bugs found.**\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 70340,
+  "sessionId": "a31aeb5c-7ccf-46bc-b3d7-c36397fb0b1f",
+  "cost": {
+    "inputTokens": 430,
+    "outputTokens": 11883,
+    "cacheCreationTokens": 126418,
+    "cacheReadTokens": 1216374,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.339505
+  }
+}
