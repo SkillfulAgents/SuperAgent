@@ -4,15 +4,16 @@ import { splitStreamingMarkdown } from '../split-streaming-markdown'
 import { getFileExtension } from '../utils/mime'
 import { localFilePath } from '../utils/workspace-file-url'
 
-/** A token and where it sits in its block. */
+/** A token, where it sits in its block, and the tokens it sits inside, outermost first. */
 interface PlacedToken {
   token: Token
   start: number
   end: number
+  parents: Token[]
 }
 
 /** A visual's image. Throws when there is none. */
-type Draw = (agentSlug: string) => Promise<{ data: Buffer; filename: string }>
+type Draw = (agentSlug: string) => Promise<{ data: Buffer; filename: string; alt?: string }>
 
 /** A kind of visual the app draws and a chat shows as an image. */
 interface ChatVisual {
@@ -48,6 +49,8 @@ function isChatImage(filename: string): boolean {
 const chatMarked = new Marked({ async: false, gfm: true })
 const isList = (token: Token): token is Tokens.List => token.type === 'list'
 const isImage = (token: Token): token is Tokens.Image => token.type === 'image'
+const isLink = (token: Token): token is Tokens.Link => token.type === 'link'
+const isParagraph = (token: Token): token is Tokens.Paragraph => token.type === 'paragraph'
 
 /**
  * Each token with its range in `block`, in order. One cursor moves past every token,
@@ -56,16 +59,32 @@ const isImage = (token: Token): token is Tokens.Image => token.type === 'image'
  * image's alt text: an image is one visual. A token not contiguous in the block (a
  * blockquote's lines) has no range; its children do.
  */
-function place(block: string, tokens: Token[], cursor = { at: 0 }): PlacedToken[] {
+function place(block: string, tokens: Token[], cursor = { at: 0 }, parents: Token[] = []): PlacedToken[] {
   return tokens.flatMap((token) => {
     const children = isList(token) ? token.items : token.type !== 'table' && !isImage(token) && 'tokens' in token && token.tokens ? token.tokens : []
     const start = block.indexOf(token.raw, cursor.at)
-    if (start === -1) return place(block, children, cursor)
+    if (start === -1) return place(block, children, cursor, [...parents, token])
     cursor.at = start
-    const inner = place(block, children, cursor)
+    const inner = place(block, children, cursor, [...parents, token])
     cursor.at = start + token.raw.length
-    return [{ token, start, end: cursor.at }, ...inner]
+    return [{ token, start, end: cursor.at, parents }, ...inner]
   })
+}
+
+/**
+ * Where an image can be cut out with valid markdown left on both sides: the image itself in a
+ * top-level paragraph, or the whole link it is the only content of. Inside emphasis, a list, a
+ * quote, a heading, inline HTML or brackets a later block resolves, a cut would break the
+ * markup, so there the image stays as it is.
+ */
+function imageRange(image: PlacedToken, placed: PlacedToken[]): PlacedToken | null {
+  const [paragraph, link, ...deeper] = image.parents
+  if (!paragraph || !isParagraph(paragraph) || deeper.length) return null
+  const cut = link ? (isLink(link) && link.tokens.length === 1 ? link : null) : image.token
+  if (!cut || paragraph.tokens.some(({ type }) => type === 'html')) return null
+  const at = paragraph.tokens.indexOf(cut)
+  if (paragraph.tokens[at - 1]?.raw.endsWith('[') || paragraph.tokens[at + 1]?.raw.startsWith(']')) return null
+  return placed.find(({ token }) => token === cut) ?? null
 }
 
 /** The workspace path of an image the app draws inline (`workspaceImageUrl`): an absolute `/workspace` or `file:///workspace` path. */
@@ -87,18 +106,21 @@ async function readWorkspaceFile(agentSlug: string, path: string, maxBytes: numb
   return Buffer.from(await new Response(stream).arrayBuffer())
 }
 
-async function workspaceImage(agentSlug: string, path: string): Promise<{ data: Buffer; filename: string }> {
+async function workspaceImage(agentSlug: string, path: string, alt: string): Promise<{ data: Buffer; filename: string; alt?: string }> {
   const data = await readWorkspaceFile(agentSlug, path, MAX_INLINE_IMAGE_BYTES).catch((err: unknown) => {
     // Missing, outside the workspace, not a file, or too large: the link stays, as it did before.
     throw err instanceof WorkspaceFileError ? new NoImageError(err.message) : err
   })
-  return { data, filename: workspaceBasename(path) }
+  return { data, filename: workspaceBasename(path), alt: alt || undefined }
 }
 
 const image: ChatVisual = {
-  match: (tokens) => tokens.flatMap(({ token, start, end }) => {
-    const path = isImage(token) ? workspaceImagePath(token.href) : null
-    return path ? [{ start, end, draw: (agentSlug: string) => workspaceImage(agentSlug, path) }] : []
+  match: (tokens) => tokens.flatMap((placed) => {
+    const { token } = placed
+    if (!isImage(token)) return []
+    const path = workspaceImagePath(token.href)
+    const range = path ? imageRange(placed, tokens) : null
+    return path && range ? [{ start: range.start, end: range.end, draw: (agentSlug: string) => workspaceImage(agentSlug, path, token.text) }] : []
   }),
 }
 

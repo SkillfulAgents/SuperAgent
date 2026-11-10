@@ -319,8 +319,12 @@ xAgentChat.post('/send', async (c) => {
   } catch (error) {
     if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid email' }, 400)
     if (error instanceof EmailPolicyError) return c.json({ error: error.message }, 403)
+    if (error instanceof UndeliveredMessageError) {
+      captureException(error.cause, { tags: { component: 'x-agent-chat', operation: 'send' } })
+      return c.json({ error: `Not sent: ${error.undeliveredText}` }, 500)
+    }
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'send' } })
-    return c.json({ error: error instanceof UndeliveredMessageError ? error.message : 'Failed to send chat message' }, 500)
+    return c.json({ error: 'Failed to send chat message' }, 500)
   }
 })
 

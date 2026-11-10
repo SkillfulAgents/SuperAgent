@@ -532,11 +532,13 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
   throw error
 }
 
-/** A proactive send that did not fully arrive, naming what was not sent. */
+/** A proactive send that did not fully arrive. The message stays free of the agent's text, which only the agent gets back. */
 export class UndeliveredMessageError extends Error {
-  constructor(undelivered: ChatSegment[]) {
-    super(`Not sent: ${undelivered.map((segment) => segment.source).join('').trim()}`)
+  readonly undeliveredText: string
+  constructor(undelivered: ChatSegment[], cause: unknown) {
+    super('Message not fully sent', { cause })
     this.name = 'UndeliveredMessageError'
+    this.undeliveredText = undelivered.map((segment) => segment.source).join('').trim()
   }
 }
 
@@ -551,15 +553,22 @@ export async function deliverMarkdown(
   agentSlug: string,
   chatId: string,
   text: string,
-  options: { draftId?: string | null; alsoSendToChannel?: boolean },
+  options: { draftId?: string | null; alsoSendToChannel?: boolean; deadline?: number },
 ): Promise<{ messageId: string; undelivered: ChatSegment[]; error?: unknown; draftId?: string | null }> {
   const all = segments(text, { settledOnly: false }).segments
+  const { deadline = Infinity } = options
   let draftId = options.draftId
   let messageId = ''
   for (const [index, segment] of all.entries()) {
     try {
+      if (Date.now() >= deadline) {
+        // Out of time: the rest goes out as one text, any visual in it as its source.
+        const rest = all.slice(index).map(({ source }) => source).join('')
+        if (rest.trim()) messageId = await sendText(connector, chatId, rest, draftId, options.alsoSendToChannel)
+        return { messageId, undelivered: [] }
+      }
       if (segment.kind === 'visual') {
-        messageId = await sendVisual(connector, agentSlug, chatId, segment, draftId, options.alsoSendToChannel)
+        messageId = await sendVisual(connector, agentSlug, chatId, segment, draftId, options.alsoSendToChannel, options.deadline)
         draftId = null
       } else if (segment.source.trim() || all.length === 1) {
         // A reply of only whitespace still goes out, as before: the connector words it.
@@ -591,10 +600,11 @@ async function sendVisual(
   segment: VisualSegment,
   draftId: string | null | undefined,
   alsoSendToChannel?: boolean,
+  deadline?: number,
 ): Promise<string> {
   try {
-    const { data, filename } = await segment.draw(agentSlug)
-    const messageId = await connector.sendFile(chatId, data, filename, undefined, { asImage: true })
+    const { data, filename, alt } = await segment.draw(agentSlug)
+    const messageId = await connector.sendFile(chatId, data, filename, undefined, { asImage: true, alsoSendToChannel, altText: alt, deadline })
     if (draftId) await connector.retireStreamingMessage(chatId, draftId).catch((err) => console.error('[ChatAgentIntegration] Failed to retire draft:', err))
     return messageId
   } catch (err) {

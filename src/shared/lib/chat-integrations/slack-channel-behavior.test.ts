@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { routeSlackMessage, resolveSlackChannel, fitSlackTables, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, slackAnswerFromAction, slackMessageContent, type SlackMessageRoutingParams } from './slack-connector'
+import { NoImageError } from './chat-visuals'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -630,9 +631,12 @@ describe('SlackConnector text', () => {
     const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
     const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '200.1' })
     const update = vi.fn().mockResolvedValue({ ok: true })
-    ;(connector as any).app = { client: { chat: { postMessage, update }, assistant: { threads: { setStatus: vi.fn() } } } }
-    return { connector, postMessage, update }
+    const filesUploadV2 = vi.fn().mockResolvedValue({ files: [{ files: [{ id: 'F1' }] }] })
+    const deleteFile = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = { client: { chat: { postMessage, update }, filesUploadV2, files: { delete: deleteFile }, assistant: { threads: { setStatus: vi.fn() } } } }
+    return { connector, postMessage, update, deleteFile }
   }
+  const fileNotReady = { code: 'slack_webapi_platform_error', data: { error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] invalid slack file [json-pointer:/blocks/0/slack_file.id/slack_file]'] } } }
 
   it('posts an answer up to 12,000 chars as one markdown block, its table for Slack to draw and its cells in the text', async () => {
     const { connector, postMessage } = makeConnector()
@@ -705,6 +709,33 @@ describe('SlackConnector text', () => {
     expect(postMessage.mock.calls.map(([args]) => [args.thread_ts, args.reply_broadcast])).toEqual([
       ['100.1', true], ['100.1', true], ['100.1', true], ['100.1', undefined],
     ])
+  })
+
+  it('an image in a reply sent to the channel goes to the channel too, described by its alt text', async () => {
+    const { connector, postMessage } = makeConnector()
+    await connector.sendFile('C1|100.1', Buffer.from('png'), 'chart.png', undefined, { asImage: true, alsoSendToChannel: true, altText: 'Revenue by month' })
+    await connector.sendFile('C1|100.1', Buffer.from('png'), 'chart.png', undefined, { asImage: true })
+
+    expect(postMessage.mock.calls.map(([args]) => [args.reply_broadcast, args.blocks[0].alt_text])).toEqual([
+      [true, 'Revenue by month'], [undefined, 'chart.png'],
+    ])
+  })
+
+  it('stops waiting for Slack to process an image at the send\'s deadline, as an expected miss', async () => {
+    const { connector, postMessage, deleteFile } = makeConnector()
+    postMessage.mockRejectedValue(fileNotReady)
+
+    await expect(connector.sendFile('D1', Buffer.from('png'), 'chart.png', undefined, { asImage: true, deadline: Date.now() })).rejects.toBeInstanceOf(NoImageError)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(deleteFile).toHaveBeenCalledWith({ file: 'F1' })
+  })
+
+  it('keeps waiting for Slack to process an image when the send has no deadline', async () => {
+    const { connector, postMessage } = makeConnector()
+    postMessage.mockRejectedValueOnce(fileNotReady)
+
+    await connector.sendFile('D1', Buffer.from('png'), 'chart.png', undefined, { asImage: true })
+    expect(postMessage).toHaveBeenCalledTimes(2)
   })
 
   it('a table followed by prose keeps the closing fence on its own line', async () => {

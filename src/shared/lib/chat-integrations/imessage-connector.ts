@@ -613,7 +613,6 @@ export class IMessageConnector extends ChatAgentIntegration {
     return `file-${Date.now()}`
   }
 
-
   // ── User request cards ──────────────────────────────────────────────
 
   async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {

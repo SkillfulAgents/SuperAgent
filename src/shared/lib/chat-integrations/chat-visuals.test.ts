@@ -41,12 +41,26 @@ describe('segments', () => {
     ])
   })
 
-  it('splits a list around an image in one of its items', () => {
-    expect(shape('- one\n- ![a](/workspace/a.png)\n- three', false).segments).toEqual([
-      { kind: 'text', source: '- one\n- ' },
-      { kind: 'visual', source: '![a](/workspace/a.png)' },
-      { kind: 'text', source: '\n- three' },
+  it('takes a link whose only content is an image as the visual', () => {
+    expect(shape('See [![a](/workspace/a.png)](https://example.com) here', false).segments).toEqual([
+      { kind: 'text', source: 'See ' },
+      { kind: 'visual', source: '[![a](/workspace/a.png)](https://example.com)' },
+      { kind: 'text', source: ' here' },
     ])
+  })
+
+  it('leaves an image as text where a cut would break the markup around it', () => {
+    for (const text of [
+      '**See ![a](/workspace/a.png) here**',
+      '[See ![a](/workspace/a.png)](https://example.com)',
+      '- one\n- ![a](/workspace/a.png)\n- three',
+      '> ![a](/workspace/a.png)',
+      '# Title ![a](/workspace/a.png)',
+      '[![a](/workspace/a.png)][docs]',
+      '<span>![a](/workspace/a.png)</span>',
+    ]) {
+      expect(shape(text, false)).toEqual({ segments: [{ kind: 'text', source: text }], tail: '' })
+    }
   })
 
   it('takes an image whose alt text holds another image as one visual', () => {

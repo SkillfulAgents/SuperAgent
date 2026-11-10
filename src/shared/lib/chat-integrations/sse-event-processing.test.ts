@@ -1344,6 +1344,27 @@ describe('workspace images in a reply', () => {
     expect(mock.finalizedMessages.map((m) => [m.messageId, m.finalText])).toEqual([['draft-1', IMAGE]])
   })
 
+  it('sends a channel-wide reply\'s image to the channel too, with its alt text', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `Before.\n\n${IMAGE}\n\nAfter.`, { alsoSendToChannel: true })
+
+    expect(mock.sentFiles.map((f) => f.options)).toEqual([{ asImage: true, alsoSendToChannel: true, altText: 'chart' }])
+    expect(mock.sentMessages.map((m) => m.message.alsoSendToChannel)).toEqual([true, true])
+  })
+
+  it('sends the rest as one text, visuals as their source, once the send\'s time is spent', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const text = `Before.\n\n${IMAGE}\n\nAfter.`
+
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, text, { deadline: Date.now() })
+
+    expect(mock.sentFiles).toEqual([])
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual([text])
+  })
+
   it('names what did not arrive when a proactive send fails after its first part', async () => {
     await writeImage()
     const mock = getMock(managed)
@@ -1355,10 +1376,14 @@ describe('workspace images in a reply', () => {
       throw new Error('chat down')
     })
 
-    const { undelivered } = await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `Before.\n\n${IMAGE}\n\nAfter.`, {})
+    const { undelivered, error } = await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `Before.\n\n${IMAGE}\n\nAfter.`, {})
+    const undeliveredError = new UndeliveredMessageError(undelivered, error)
 
     expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['Before.\n\n'])
-    expect(new UndeliveredMessageError(undelivered).message).toBe(`Not sent: ${IMAGE}\n\nAfter.`)
+    expect(undeliveredError.undeliveredText).toBe(`${IMAGE}\n\nAfter.`)
+    // Errors are reported, so the agent's text stays out of the message, and the chat's own error is the cause.
+    expect(undeliveredError.message).not.toContain('After.')
+    expect(undeliveredError.cause).toEqual(new Error('chat down'))
   })
 
   it('keeps the draft for the retry when nothing of the reply went out', async () => {

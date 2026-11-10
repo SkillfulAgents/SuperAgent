@@ -130,6 +130,12 @@ const CHAT_EVENT_LABELS: Record<IntegrationMessageSource['kind'], string> = {
 
 // ── Abstract class ──────────────────────────────────────────────────────
 
+export interface SendFileOptions { asImage?: boolean; alsoSendToChannel?: boolean; altText?: string; deadline?: number }
+
+// The agent waits on send_message, and on the cloud runtime agent-to-host requests are cut at 30 s
+// while the host carries on, so the agent would retry and post twice. It gets its answer by this budget.
+const SEND_MESSAGE_BUDGET_MS = 20_000
+
 export abstract class ChatAgentIntegration extends AgentIntegration {
   abstract readonly provider: ChatProvider
 
@@ -239,8 +245,11 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    * @param filename Display name for the file
    * @param caption Optional text caption to accompany the file
    * @param options.asImage Show it as an image in the reply, not as the original file
+   * @param options.alsoSendToChannel Broadcast it from a thread to its channel, as the message's text is
+   * @param options.altText The image's description, where the platform shows one
+   * @param options.deadline When to stop waiting on the platform (epoch ms), past which the send fails
    */
-  abstract sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: { asImage?: boolean }): Promise<string>
+  abstract sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: SendFileOptions): Promise<string>
 
   /**
    * Send a rich card for user-request items.
@@ -483,13 +492,23 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     })
     const tools = [tool('send_message', 'Send a complete message to an external conversation.', { text: { type: 'string' }, alsoSendToChannel: { type: 'boolean' } }, async input => {
       if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
+      const deadline = Date.now() + SEND_MESSAGE_BUDGET_MS
       const { text, alsoSendToChannel } = z.object({ text: z.string().min(1), alsoSendToChannel: z.boolean() }).parse(input)
       await this.startWorking(context.externalId, 'working').catch(() => {})
       try {
         await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 1100))
         if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
-        const { messageId, undelivered } = await deliverMarkdown(this, context.integration.agentSlug, context.externalId, text, { alsoSendToChannel })
-        if (undelivered.length) throw new UndeliveredMessageError(undelivered)
+        const delivery = deliverMarkdown(this, context.integration.agentSlug, context.externalId, text, { alsoSendToChannel, deadline })
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const outOfTime = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), deadline - Date.now()) })
+        const delivered = await Promise.race([delivery, outOfTime]).finally(() => clearTimeout(timer))
+        if (!delivered) {
+          // The agent gets its answer within the budget. A post still in flight finishes behind it, and a failure there is reported.
+          background(delivery.then(({ undelivered, error }) => { if (undelivered.length) throw error }), { name: 'chat-integration.send-message-tail' })
+          return ''
+        }
+        const { messageId, undelivered, error } = delivered
+        if (undelivered.length) throw new UndeliveredMessageError(undelivered, error)
         return messageId
       } finally { await this.stopWorking(context.externalId).catch(() => {}) }
     })]

@@ -34,7 +34,9 @@ import {
   type OutgoingMessage,
   type SystemPromptContext,
   type ToolOutcome,
+  type SendFileOptions,
 } from './chat-agent-integration'
+import { NoImageError } from './chat-visuals'
 import { buildSessionContextPrompt } from './chat-session-context'
 import { SLACK_AGENT_INSTRUCTIONS } from './definitions'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
@@ -520,6 +522,7 @@ const PENDING_QUESTIONS_TTL_MS = 24 * 60 * 60 * 1000
 // Slack processes an uploaded image for a few seconds before a block can show it.
 const IMAGE_READY_MS = 10_000
 const IMAGE_RETRY_MS = 500
+const MAX_ALT_TEXT_LENGTH = 2000
 const MAX_HANDLED_REQUESTS = 1000
 
 /** The installation's state; a connector without one keeps its own. */
@@ -1067,9 +1070,9 @@ export class SlackConnector extends ChatAgentIntegration {
     return lastTs
   }
 
-  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: { asImage?: boolean }): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: SendFileOptions): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
-    if (options?.asImage) return this.postImage(chatId, fileData, filename)
+    if (options?.asImage) return this.postImage(chatId, fileData, filename, options)
 
     const { channel, threadTs } = this.resolveChannel(chatId)
     const result = await this.app.client.filesUploadV2({
@@ -1091,17 +1094,17 @@ export class SlackConnector extends ChatAgentIntegration {
    * An image goes up unshared, then posts as an image block: a shared upload
    * lands after text posted later, so it would break the reply's order.
    */
-  private async postImage(chatId: string, fileData: Buffer, filename: string): Promise<string> {
+  private async postImage(chatId: string, fileData: Buffer, filename: string, { altText, alsoSendToChannel = false, deadline: sendDeadline = Infinity }: SendFileOptions): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     const upload = await this.app.client.filesUploadV2({ file: fileData, filename })
     const id = upload.files[0]?.files?.[0]?.id
     if (!id) throw new Error('Slack returned no file id for the upload')
-    const block: SlackTypes.ImageBlock = { type: 'image', slack_file: { id }, alt_text: filename }
-    const deadline = Date.now() + IMAGE_READY_MS
+    const block: SlackTypes.ImageBlock = { type: 'image', slack_file: { id }, alt_text: (altText || filename).slice(0, MAX_ALT_TEXT_LENGTH) }
+    const deadline = Math.min(Date.now() + IMAGE_READY_MS, sendDeadline)
     for (;;) {
       try {
-        const result = await this.app.client.chat.postMessage(inThread({ channel, text: filename, blocks: [block] }, threadTs, false))
+        const result = await this.app.client.chat.postMessage(inThread({ channel, text: filename, blocks: [block] }, threadTs, alsoSendToChannel))
         this.posted(chatId)
         return result.ts || ''
       } catch (err: unknown) {
@@ -1109,6 +1112,8 @@ export class SlackConnector extends ChatAgentIntegration {
           // Slack refused the block, so the file was never shared and would only sit in the bot's files.
           // A lost response may have posted it, so anything else keeps the file.
           if (isSlackBlocksRejection(err)) await this.app.client.files.delete({ file: id }).catch(() => {})
+          // The send ran out of time, not Slack: expected, so the image goes out as its source unreported.
+          if (isSlackFileNotReady(err) && Date.now() >= sendDeadline) throw new NoImageError('Out of time while Slack processed the image')
           throw err
         }
         await new Promise(resolve => setTimeout(resolve, IMAGE_RETRY_MS))
