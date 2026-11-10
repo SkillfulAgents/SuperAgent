@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
   collectDeliveredFiles,
-  pageTranscript,
+  findDeliveredFile,
+  readTranscriptView,
   toTranscriptView,
   type CompactedMessage,
 } from './x-agent-transcript-view'
 
 type Entry = Parameters<typeof collectDeliveredFiles>[0][number]
+
+/** The transcript as the actor hands it over: one entry at a time. */
+async function* stream(entries: Entry[]): AsyncGenerator<Entry> {
+  for (const entry of entries) yield entry
+}
 
 const assistantEntry = (
   uuid: string,
@@ -119,7 +125,7 @@ describe('toTranscriptView', () => {
   })
 })
 
-describe('pageTranscript', () => {
+describe('readTranscriptView', () => {
   const entries = [
     {
       type: 'assistant' as const,
@@ -143,18 +149,48 @@ describe('pageTranscript', () => {
     },
   ]
 
-  it('defaults to the quiet view and slices after it', () => {
-    const page = pageTranscript(entries as never, { limit: 1 })
+  it('defaults to the quiet view and slices after it', async () => {
+    const page = await readTranscriptView(stream(entries as never), { limit: 1 })
     expect(page.total).toBe(2)
     expect(page.messages).toEqual([{ role: 'assistant', content: 'final' }])
     expect(JSON.stringify(page)).not.toContain('do not leak this')
     expect(JSON.stringify(page)).not.toContain('secret')
   })
 
-  it('counts thinking and tool_use as messages when fullTranscript is true', () => {
-    const page = pageTranscript(entries as never, { fullTranscript: true, limit: 1 })
+  it('counts thinking and tool_use as messages when fullTranscript is true', async () => {
+    const page = await readTranscriptView(stream(entries as never), { fullTranscript: true, limit: 1 })
     expect(page.total).toBe(3)
     expect(page.messages).toEqual([{ role: 'assistant', content: 'final' }])
+  })
+
+  it('finds the same delivered files as the whole transcript, keeping only delivery lines', async () => {
+    const callLine = assistantEntry('assistant-1', 'message-1', [
+      { id: 'bash-1', name: 'Bash', input: { command: 'ls' } },
+      { id: 'delivery-1', input: { filePath: '/workspace/output/report.pdf', description: 'Quarterly report' } },
+    ])
+    const entries = [
+      callLine,
+      resultEntry('result-bash', 'bash-1', 'report.pdf'),
+      assistantEntry('assistant-2', 'message-2', [{ id: 'delivery-2', input: { filePath: '/workspace/failed.txt' } }]),
+      resultEntry('result-1', 'delivery-1', currentResult(12345)),
+      resultEntry('result-2', 'delivery-2', 'Error: missing', true),
+      assistantEntry('assistant-3', 'message-3', [{ id: 'delivery-3', input: { filePath: '/workspace/notes.md' } }]),
+      { ...assistantEntry('assistant-4', 'message-4', []), message: { role: 'assistant', content: 'Sent both files.' } },
+      resultEntry('result-3', 'delivery-3', legacyResult('notes.md', 7)),
+    ] as Entry[]
+
+    const view = await readTranscriptView(stream(entries))
+    expect(view.deliveredFiles).toEqual(collectDeliveredFiles(entries))
+    expect(view.deliveredFiles.map((file) => file.deliveryId)).toEqual(['delivery-1', 'delivery-3'])
+
+    expect(await findDeliveredFile(stream(entries), 'delivery-3')).toEqual({
+      deliveryId: 'delivery-3',
+      filePath: '/workspace/notes.md',
+      filename: 'notes.md',
+      sizeBytes: 7,
+    })
+    expect(await findDeliveredFile(stream(entries), 'delivery-2')).toBeUndefined()
+    expect(await findDeliveredFile(stream(entries), 'bash-1')).toBeUndefined()
   })
 })
 
@@ -272,7 +308,7 @@ describe('collectDeliveredFiles', () => {
     expect(collectDeliveredFiles(entries)).toEqual([])
   })
 
-  it('uses transformed result metadata and remains independent of transcript pagination', () => {
+  it('uses transformed result metadata and remains independent of transcript pagination', async () => {
     const entries = [
       assistantEntry('assistant-1', 'message-1', [{
         id: 'delivery-1',
@@ -282,11 +318,13 @@ describe('collectDeliveredFiles', () => {
       { ...assistantEntry('assistant-2', 'message-2', []), message: { role: 'assistant', content: 'latest' } },
     ] as Entry[]
 
-    expect(pageTranscript(entries, { limit: 1 }).messages).toEqual([
+    const view = await readTranscriptView(stream(entries), { limit: 1 })
+    expect(view.messages).toEqual([
       { role: 'assistant', content: 'latest' },
     ])
-    expect(collectDeliveredFiles(entries)).toEqual([
+    expect(view.deliveredFiles).toEqual([
       { deliveryId: 'delivery-1', filename: 'first.txt', sizeBytes: 101 },
     ])
+    expect(collectDeliveredFiles(entries)).toEqual(view.deliveredFiles)
   })
 })

@@ -26,6 +26,14 @@ export interface ResolvedDeliveredAgentFile extends DeliveredAgentFile {
   filePath: string
 }
 
+export interface TranscriptView {
+  messages: TranscriptMessage[]
+  total: number
+  deliveredFiles: DeliveredAgentFile[]
+}
+
+type TranscriptEntry = JsonlMessageEntry | JsonlSystemEntry
+
 const DELIVER_FILE_TOOL = 'mcp__user-input__deliver_file'
 
 /** Project completed file deliveries from the full persisted transcript. */
@@ -71,11 +79,38 @@ export function collectDeliveredFiles(
   return collectResolvedDeliveredFiles(entries).map(({ filePath: _filePath, ...file }) => file)
 }
 
-export function findDeliveredFile(
-  entries: Array<JsonlMessageEntry | JsonlSystemEntry>,
+/**
+ * Whether `entry` is part of a delivery: a line with a `deliver_file` call
+ * (`onlyCallId` narrows it to one call), or a line with a result for a call
+ * seen so far. These are the only lines `collectResolvedDeliveredFiles` reads
+ * a delivery from, so they alone give it the same answer as the whole
+ * transcript. A result line follows its call line.
+ */
+function isDeliveryLine(entry: TranscriptEntry, calls: Set<string>, onlyCallId?: string): boolean {
+  if (entry.type === 'system' || typeof entry.message.content === 'string') return false
+  let delivery = false
+  for (const block of entry.message.content) {
+    if (block.type === 'tool_use' && block.name === DELIVER_FILE_TOOL && (onlyCallId === undefined || block.id === onlyCallId)) {
+      calls.add(block.id)
+      delivery = true
+    } else if (block.type === 'tool_result' && calls.has(block.tool_use_id)) {
+      delivery = true
+    }
+  }
+  return delivery
+}
+
+/** The delivered file `deliveryId`, holding only the lines of that delivery. */
+export async function findDeliveredFile(
+  entries: AsyncIterable<TranscriptEntry>,
   deliveryId: string,
-): ResolvedDeliveredAgentFile | undefined {
-  return collectResolvedDeliveredFiles(entries).find((file) => file.deliveryId === deliveryId)
+): Promise<ResolvedDeliveredAgentFile | undefined> {
+  const lines: TranscriptEntry[] = []
+  const calls = new Set<string>()
+  for await (const entry of entries) {
+    if (isDeliveryLine(entry, calls, deliveryId)) lines.push(entry)
+  }
+  return collectResolvedDeliveredFiles(lines).find((file) => file.deliveryId === deliveryId)
 }
 
 const INTERNAL_STUB: TranscriptMessage = {
@@ -166,16 +201,27 @@ export function toTranscriptView(
   return out
 }
 
-export function pageTranscript(
-  entries: Array<JsonlMessageEntry | JsonlSystemEntry>,
+/**
+ * The view of a transcript (`toTranscriptView`, newest `limit` messages) and
+ * its delivered files, in one pass that holds each message's compact form and
+ * the delivery lines, never the parsed transcript.
+ */
+export async function readTranscriptView(
+  entries: AsyncIterable<TranscriptEntry>,
   opts: { fullTranscript?: boolean; limit?: number } = {},
-): { messages: TranscriptMessage[]; total: number } {
-  const compacted = entries
-    .map(compactMessage)
-    .filter((message): message is CompactedMessage => message !== null)
+): Promise<TranscriptView> {
+  const compacted: CompactedMessage[] = []
+  const deliveryLines: TranscriptEntry[] = []
+  const deliveryCalls = new Set<string>()
+  for await (const entry of entries) {
+    const message = compactMessage(entry)
+    if (message) compacted.push(message)
+    if (isDeliveryLine(entry, deliveryCalls)) deliveryLines.push(entry)
+  }
   const view = toTranscriptView(compacted, opts.fullTranscript === true)
   return {
     messages: opts.limit ? view.slice(-opts.limit) : view,
     total: view.length,
+    deliveredFiles: collectDeliveredFiles(deliveryLines),
   }
 }

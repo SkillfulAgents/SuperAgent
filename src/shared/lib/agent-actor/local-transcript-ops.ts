@@ -215,11 +215,15 @@ async function repointForkContextRefs(store: SessionStore, sourceSessionId: stri
 /** Source uuid → its copy's uuid, from the copied transcript. */
 async function copiedEntryUuids(store: SessionStore, sourceSessionId: string, targetSessionId: string): Promise<Map<string, string>> {
   const uuids = new Map<string, string>()
-  for (const entry of await readJsonl<unknown>(store.files, transcriptPath(store, targetSessionId))) {
-    const parsed = forkedEntrySchema.safeParse(entry)
-    if (parsed.success && parsed.data.forkedFrom.sessionId === sourceSessionId) {
-      uuids.set(parsed.data.forkedFrom.messageUuid, parsed.data.uuid)
+  try {
+    for await (const entry of streamJsonl<unknown>(store.files, transcriptPath(store, targetSessionId))) {
+      const parsed = forkedEntrySchema.safeParse(entry)
+      if (parsed.success && parsed.data.forkedFrom.sessionId === sourceSessionId) {
+        uuids.set(parsed.data.forkedFrom.messageUuid, parsed.data.uuid)
+      }
     }
+  } catch (error) {
+    if (!isAbsentFile(error)) throw error
   }
   return uuids
 }
