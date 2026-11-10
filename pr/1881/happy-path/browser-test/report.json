@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and closed the browser.",
+  "reason": "Verified that the agent can execute browser tools and retrieve page titles successfully, with proper response containing \"Example Domain\".",
   "steps": [
-    "Navigated to http://localhost:47891 using Playwright - Successfully loaded the Gamut agent application page with title \"Gamut\"",
-    "Found and clicked the \"QA-20261110-025012-znqh\" agent in the sidebar - Successfully navigated to the agent's chat page (URL changed to /agents/qa-20261110-025012-znqh-q7gjomhg6k/sessions/...)",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" to the agent - Message successfully submitted and agent began processing",
-    "Waited for response (timeout: 3 minutes) - Agent response received within ~5 seconds",
-    "Verified response mentions \"Example Domain\" - Confirmed the response states: \"The page title is 'Example Domain'. The page loaded normally (HTTP 200), and I closed the browser afterward.\"",
-    "Viewed tool call cards - Confirmed 3 successful browser tool calls: ToolSearch, Open Browser (→ https://example.com), and Close Browser, all marked as completed with green checkmarks"
+    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut interface showing two agents in the sidebar and main content area.",
+    "Found and clicked the \"QA-20261110-175431-o8hw\" agent in the sidebar — Successfully navigated to the agent page with message input interface ready.",
+    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was entered in the input box and sent successfully, with page transitioning to the session view.",
+    "Waited up to 3 minutes for agent response — Agent successfully processed the request in approximately 7 seconds, performing 3 tool calls as indicated in the work summary.",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The title of https://example.com is 'Example Domain'. I've closed the browser.\" confirming the browser-use feature is working correctly. Screenshot captured showing the complete interaction and response."
   ],
   "bugs": [],
-  "durationMs": 213527,
-  "sessionId": "771cf619-645a-4f45-b63c-ddf2ce1ef3ef",
+  "durationMs": 122540,
+  "sessionId": "87071ed3-b073-4e4d-a353-af0f9dc2dcca",
   "cost": {
-    "inputTokens": 452,
-    "outputTokens": 15025,
-    "cacheCreationTokens": 101704,
-    "cacheReadTokens": 1145671,
+    "inputTokens": 564,
+    "outputTokens": 13528,
+    "cacheCreationTokens": 82193,
+    "cacheReadTokens": 1701794,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.317274
+    "totalCostUsd": 0.341125
   }
 }
