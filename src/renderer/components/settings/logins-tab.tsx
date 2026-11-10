@@ -9,6 +9,7 @@ import { useFullWidthSettingsContent, useHideSettingsHeader } from '@renderer/co
 import { Button } from '@renderer/components/ui/button'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { SiteFavicon } from '@renderer/components/ui/site-favicon'
+import { Switch } from '@renderer/components/ui/switch'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,7 +28,9 @@ import {
   useDeleteBrowserAccount,
   useForgetBrowserAccountSessions,
   useGrantBrowserAccount,
+  useRemoveAuthenticator,
   useRenameBrowserAccount,
+  useRequestSignInMethod,
   useRevokeBrowserAccount,
   type BrowserAccount,
 } from '@renderer/hooks/use-browser-accounts'
@@ -44,9 +47,10 @@ function partNames(account: Pick<BrowserAccount, 'parts'>): string[] {
 
 /** What the account signs in with, in a few words. */
 function describeAccount(account: BrowserAccount): string {
-  if (account.via) return `Signs in with ${account.via.providerName} (${account.via.username})`
+  const app = account.signInMethods.authenticator ? ', authenticator app' : ''
+  if (account.via) return `Signs in with ${account.via.providerName} (${account.via.username})${app}`
   const parts = partNames(account)
-  const saved = parts.length ? parts.join(', ') : 'Username only'
+  const saved = parts.length ? `${parts.join(', ')}${app}` : app ? 'Authenticator app' : 'Username only'
   return account.rejectedAt ? `${saved} · rejected by the site` : saved
 }
 
@@ -354,6 +358,7 @@ function LoginDetailPage({ account, onBack, onDelete }: { account: BrowserAccoun
             Saved values are never shown. An agent signs in with them; when the site rejects one, it asks you again and what you enter replaces it.
             {account.sessions.length > 0 && ' A saved session signs an agent in without them, in the same kind of browser it was saved in.'}
           </p>
+          <AuthenticatorSection account={account} />
         </section>
       </div>
 
@@ -371,6 +376,80 @@ function LoginDetailPage({ account, onBack, onDelete }: { account: BrowserAccoun
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  )
+}
+
+/**
+ * The authenticator app an agent added to the account (its codes then need no
+ * one), or the switch that asks agents to add one at their next sign-in.
+ */
+function AuthenticatorSection({ account }: { account: BrowserAccount }) {
+  const request = useRequestSignInMethod()
+  const removeApp = useRemoveAuthenticator()
+  const { authenticator, requestedAt, unavailable } = account.signInMethods
+  return (
+    <div className="space-y-2 pt-2" data-testid="login-authenticator">
+      <h3 className="text-xs font-normal text-muted-foreground">Authenticator app</h3>
+      <div className="divide-y divide-border/50 overflow-hidden rounded-xl border bg-background text-xs">
+        {authenticator ? (
+          <>
+            <div className="flex items-center gap-3 px-4 py-2.5" data-testid="login-authenticator-saved">
+              <span className="min-w-0 flex-1">
+                Added by an agent {formatCompactDistance(safeDate(authenticator.addedAt))}
+                {authenticator.name ? <span className="text-muted-foreground"> · named {authenticator.name}</span> : null}
+                {authenticator.issuer ? <span className="text-muted-foreground"> · {authenticator.issuer}</span> : null}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-my-1 h-6 shrink-0 px-2 text-2xs"
+                disabled={removeApp.isPending}
+                onClick={() => {
+                  removeApp.mutateAsync(account.id)
+                    .then(() => toast.success('Removed the authenticator app', { description: `Agents ask you for its codes again. ${account.site} still lists it: remove it there too.` }))
+                    .catch((error: unknown) => toast.error('Could not remove the authenticator app', { description: error instanceof Error ? error.message : 'Please try again.' }))
+                }}
+                data-testid="login-authenticator-remove"
+              >
+                Remove
+              </Button>
+            </div>
+            {authenticator.rejectedAt && (
+              <div className="px-4 py-2.5 text-amber-700 dark:text-amber-400" data-testid="login-authenticator-rejected">
+                An agent said the site rejected a code from it, {formatCompactDistance(safeDate(authenticator.rejectedAt))}. Agents ask you for codes until one is added again.
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="flex items-start gap-3 px-4 py-2.5">
+            <span className="min-w-0 flex-1 space-y-0.5">
+              <span className="block">Have an agent add one</span>
+              <span className="block text-2xs text-muted-foreground">
+                The next agent that signs in with this login adds an app next to the two-step verification the account already has; it never turns it on or replaces a method.
+              </span>
+            </span>
+            <Switch
+              checked={requestedAt !== null}
+              disabled={request.isPending}
+              onCheckedChange={(requested) => {
+                request.mutateAsync({ accountId: account.id, requested })
+                  .catch((error: unknown) => toast.error('Could not change this', { description: error instanceof Error ? error.message : 'Please try again.' }))
+              }}
+              aria-label="Have an agent add an authenticator app"
+              data-testid="login-authenticator-request"
+            />
+          </div>
+        )}
+        {!authenticator && unavailable && (
+          <div className="px-4 py-2.5 text-muted-foreground" data-testid="login-authenticator-unavailable">
+            An agent found none it could add, {formatCompactDistance(safeDate(unavailable.at))}: {unavailable.reason}
+          </div>
+        )}
+      </div>
+      <p className="px-1 text-2xs text-muted-foreground">
+        With an authenticator app here, the vault holds both this login&apos;s password and its codes: agents sign in without your phone.
+      </p>
     </div>
   )
 }

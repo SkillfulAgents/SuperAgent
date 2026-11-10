@@ -11,7 +11,7 @@ export const AUDIT_EVENT_MAP = {
   mcp:              ['created', 'updated', 'deleted', 'assigned', 'unassigned'],
   // Browser Vault accounts: `used` is an agent signing in with one (never the
   // values); `rejected`, an agent saying the site turned it down.
-  browser_account:  ['created', 'updated', 'deleted', 'assigned', 'unassigned', 'used', 'rejected'],
+  browser_account:  ['created', 'updated', 'deleted', 'assigned', 'unassigned', 'used', 'rejected', 'method_added', 'method_removed'],
   trigger:          ['created', 'updated', 'deleted', 'paused', 'resumed'],
   task:             ['created', 'updated', 'deleted', 'paused', 'resumed'],
   chat_integration: ['created', 'updated', 'deleted'],

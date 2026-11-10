@@ -93,6 +93,7 @@ export const HOST_TOOL_NAMES = [
   'create_webhook_endpoint',
   'update_webhook_endpoint',
   'inspect_webhook_events',
+  'add_sign_in_method',
 ] as const
 
 export type HostToolName = (typeof HOST_TOOL_NAMES)[number]

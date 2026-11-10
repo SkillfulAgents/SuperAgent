@@ -40,6 +40,7 @@ import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
 import { createRequestLoginTool } from './tools/request-login'
+import { createAddSignInMethodTool } from './tools/add-sign-in-method'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { createBrowserTools } from './tools/browser'
 import { computerUseTools } from './tools/computer-use'
@@ -99,6 +100,7 @@ export function createUserInputMcpServer(
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       createRequestLoginTool(getSessionId),
+      createAddSignInMethodTool(),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints

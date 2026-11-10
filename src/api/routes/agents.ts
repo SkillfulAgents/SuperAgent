@@ -106,6 +106,7 @@ import {
   answerLoginRequest,
   fillLoginInContainer,
   isFirstSignInPage,
+  methodNotes,
   noteUsername,
   fieldsWentIn,
   partsFrom,
@@ -130,7 +131,9 @@ import {
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
 import { beginSignInStep, restoreSavedSession, sessionBaseline, watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
-import { partKeyOf } from '@shared/lib/browser-vault/vault-schemas'
+import { askForSignInMethod } from '@shared/lib/browser-vault/method-request'
+import { freshTotpCode } from '@shared/lib/browser-vault/totp'
+import { fillKeyOf, partKeyOf, TOTP_FILL_KEY } from '@shared/lib/browser-vault/vault-schemas'
 import {
   clearAccountRejected,
   findOwnedProviderAccount,
@@ -141,9 +144,10 @@ import {
   listGrantedAccountIds,
   listOwnedAccountsElsewhere,
   listOwnedAccountsOnSite,
-  readAccountValues,
+  readAccountFill,
   recordAccountUse,
   saveAccount,
+  setSignInMethodRequest,
   switchAccountToVia,
   MAX_USERNAME,
   VaultConflictError,
@@ -4313,6 +4317,16 @@ async function saveAndGrant(
   return result.account
 }
 
+/**
+ * "Also add an authenticator app": the request stays on the account until an
+ * agent answers it, and this session's agent is asked now, as the user's own
+ * message (method-request).
+ */
+async function requestSignInMethod(viewer: VaultOwner, agentSlug: string, sessionId: string, account: VaultAccount): Promise<void> {
+  await setSignInMethodRequest(viewer, account.id, true, 'card')
+  background(askForSignInMethod({ agentSlug, sessionId, account, from: 'card' }), { name: 'fill-login.ask-for-sign-in-method' })
+}
+
 // POST /api/agents/:id/sessions/:sessionId/fill-login - Write the user's values into the page
 agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
   let claimed: { id: string; token: string } | null = null
@@ -4399,7 +4413,12 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
         return c.json({ success: true, session: { restored: restored.restored, username: picked.username } })
       }
     }
-    const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
+    const accountFill = account && vaultFillsInto(account.origin, context.origin) ? await readAccountFill(account.id) : null
+    // The authenticator app's code, for a field the form left to the vault (the host covered it).
+    const code = accountFill?.totp && context.fields.some((field, index) => !body.values[index] && fillKeyOf(field) === TOTP_FILL_KEY)
+      ? await freshTotpCode(accountFill.totp)
+      : null
+    const saved: Record<string, string> = { ...(accountFill?.values ?? {}), ...(code ? { [TOTP_FILL_KEY]: code } : {}) }
     const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
     const values = body.values.map((value, index) => value || fallback[index])
     // A field the form left to the vault that it cannot fill now (what was
@@ -4432,6 +4451,8 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const heldParts = partsFrom(context.held, heldValues)
     const heldLabels = context.held.filter((field, index) => heldValues[index] && heldParts[partKeyOf(field) ?? '']).map((field) => field.label)
     const saving = Boolean(body.save && identity)
+    // "Also add an authenticator app": asked of the agents that sign in with the account it saves.
+    const requesting = saving && body.addSignInMethod === true
 
     // What was held goes into one page only: this fill takes it before sending it.
     let heldClaim: HeldClaim | null = null
@@ -4462,6 +4483,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
         source: account && !body.values.some(Boolean) ? 'vault' : 'user',
         saved: saving,
         held: heldLabels,
+        ...methodNotes(account),
       })
     } catch (error) {
       // No answer: the values may be in the page, so what was held for it is used.
@@ -4531,6 +4553,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       try {
         // What the user typed here, by part: the username is the account itself.
         savedAccount = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: partsFrom(context.fields, body.values) })
+        if (requesting) await requestSignInMethod(viewer, agentSlug, sessionId, savedAccount)
       } catch (error) {
         // The page has the values either way; the user is told it was not saved.
         console.error('[fill-login] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
@@ -4555,7 +4578,16 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // password tried counts toward how often the vault fills it without the user.
     const usedAccount = savedAccount ?? account
     if (usedAccount && wentIn.some(Boolean)) {
-      await recordAccountUse({ agentSlug, accountId: usedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
+      const codeWentIn = code !== null && context.fields.some((field, index) => !body.values[index] && fillKeyOf(field) === TOTP_FILL_KEY && wentIn[index])
+      await recordAccountUse({
+        agentSlug,
+        accountId: usedAccount.id,
+        sessionId,
+        userId: viewer,
+        password: passwordWentIn,
+        by: 'user',
+        ...(codeWentIn ? { code: true as const } : {}),
+      })
     }
     // Its session, as the sign-in leaves it: saved to that account, and only
     // when it is the one that signed in. The user may have typed another, or
@@ -4735,6 +4767,7 @@ agents.post(
     // "Save for later" copies the whole login into the vault, also on a step
     // that shows only the username: the next step then needs no one.
     const saving = Boolean(body.save && site && identity && credential.password)
+    const requesting = saving && body.addSignInMethod === true
     const shown = noteUsername(identity)
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
     // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
@@ -4776,6 +4809,7 @@ agents.post(
     if (saving && site && identity) {
       try {
         savedAccount = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { password: credential.password } })
+        if (requesting) await requestSignInMethod(viewer, agentSlug, sessionId, savedAccount)
       } catch (error) {
         // The page has the login either way; the user is told it was not saved.
         console.error('[fill-login-credential] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')

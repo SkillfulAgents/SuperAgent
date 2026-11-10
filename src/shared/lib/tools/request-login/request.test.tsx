@@ -269,6 +269,24 @@ describe('LoginRequestItem', () => {
     expect(mockToast.warning).not.toHaveBeenCalled()
   })
 
+  it('asks the agent to add an authenticator app to the account it saves when the user ticks the box', async () => {
+    const user = userEvent.setup()
+    render(<LoginRequestItem {...props()} />)
+    const username = await ready()
+    // Only while "Save for later" is on: the app goes to the saved account.
+    await user.click(screen.getByTestId('login-save'))
+    expect(screen.queryByTestId('login-add-method')).toBeNull()
+    await user.click(screen.getByTestId('login-save'))
+    await user.click(screen.getByTestId('login-add-method'))
+
+    await user.type(username, 'octocat')
+    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
+    await user.type(screen.getByLabelText('Authentication code'), '482913')
+    await user.click(screen.getByTestId('login-submit'))
+    await waitFor(() => expect(posted('/fill-login')).toHaveLength(1))
+    expect(posted('/fill-login')[0]).toMatchObject({ save: true, addSignInMethod: true })
+  })
+
   it('says what was kept when the browser had closed before the user answered', async () => {
     const user = userEvent.setup()
     const onComplete = vi.fn()

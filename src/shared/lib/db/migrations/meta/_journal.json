@@ -470,6 +470,13 @@
       "when": 1794182726903,
       "tag": "0066_team_directory_provisioning",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "6",
+      "when": 1794277667274,
+      "tag": "0067_browser_vault_sign_in_methods",
+      "breakpoints": true
     }
   ]
 }

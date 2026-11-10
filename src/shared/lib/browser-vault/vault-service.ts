@@ -10,7 +10,7 @@ import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { providerOf } from './providers'
 import { registrableDomain, usernameKey } from './site'
 import { openJson, sealJson, VaultSealError } from './vault-crypto'
-import { accountPartsSchema, accountSecretsSchema, MAX_PARTS, type AccountSecrets } from './vault-schemas'
+import { accountPartsSchema, accountSecretsSchema, MAX_PARTS, signInMethodsSchema, type AccountSecrets, type SignInMethods, type TotpSeed } from './vault-schemas'
 
 /**
  * The Browser Vault's accounts and grants. An account is an owner's identity
@@ -39,6 +39,8 @@ export interface VaultAccount extends VaultAccountRef {
   via: VaultAccountRef | null
   /** An agent said the site rejected what the vault filled: the user is asked until they enter its password again. */
   rejectedAt: Date | null
+  /** Its sign-in methods beyond the parts: the authenticator app the vault holds, the owner's request for one. */
+  signInMethods: SignInMethods
   createdAt: Date
   updatedAt: Date
   lastUsedAt: Date | null
@@ -68,6 +70,15 @@ function partsOf(row: Pick<BrowserAccount, 'parts'>): string[] {
   }
 }
 
+function methodsOf(row: Pick<BrowserAccount, 'signInMethods'>): SignInMethods {
+  try {
+    const parsed = signInMethodsSchema.safeParse(JSON.parse(row.signInMethods))
+    return parsed.success ? parsed.data : {}
+  } catch {
+    return {}
+  }
+}
+
 function toAccount(row: BrowserAccount, via: BrowserAccount | null): VaultAccount {
   return {
     id: row.id,
@@ -79,6 +90,7 @@ function toAccount(row: BrowserAccount, via: BrowserAccount | null): VaultAccoun
     parts: partsOf(row),
     via: via ? { id: via.id, site: via.site, username: via.username, label: via.label } : null,
     rejectedAt: row.rejectedAt,
+    signInMethods: methodsOf(row),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lastUsedAt: row.lastUsedAt,
@@ -163,6 +175,18 @@ export async function readAccountValues(accountId: string): Promise<Record<strin
   return row ? (await readAccountSecrets(row)).values : {}
 }
 
+/**
+ * An account's saved values, and the seed of the authenticator app it holds
+ * (null when it holds none, or an agent said the site rejected its codes).
+ */
+export async function readAccountFill(accountId: string): Promise<{ values: Record<string, string>; totp: TotpSeed | null }> {
+  const row = await accountRow(accountId)
+  if (!row) return { values: {}, totp: null }
+  const secrets = await readAccountSecrets(row)
+  const authenticator = methodsOf(row).authenticator
+  return { values: secrets.values, totp: authenticator && !authenticator.rejectedAt ? secrets.totp ?? null : null }
+}
+
 // ── Agent side: what an agent may use ──────────────────────────────────────
 
 /** The accounts on `site` granted to the agent, most recently used first. */
@@ -219,6 +243,8 @@ export async function recordAccountUse(input: {
   password: boolean
   by: 'vault' | 'user'
   session?: true
+  /** A code from the authenticator app the vault holds went in. */
+  code?: true
 }): Promise<void> {
   const now = new Date()
   await batch([
@@ -232,18 +258,25 @@ export async function recordAccountUse(input: {
     object: 'browser_account',
     objectId: input.accountId,
     action: 'used',
-    details: { agentSlug: input.agentSlug, sessionId: input.sessionId, password: input.password, by: input.by, ...(input.session ? { session: true } : {}) },
+    details: {
+      agentSlug: input.agentSlug,
+      sessionId: input.sessionId,
+      password: input.password,
+      by: input.by,
+      ...(input.session ? { session: true } : {}),
+      ...(input.code ? { code: true } : {}),
+    },
   })
 }
 
-const usedDetailsSchema = z.object({ password: z.boolean().optional(), by: z.enum(['vault', 'user']).optional() }).loose()
+const usedDetailsSchema = z.object({ password: z.boolean().optional(), code: z.boolean().optional(), by: z.enum(['vault', 'user']).optional() }).loose()
 
 /**
- * When the account's password went into a page within the last `withinMs`,
- * newest first, by any agent in any session (the audit log), and whether
- * the vault filled it without the user.
+ * When the account's password (or a code from its authenticator app) went
+ * into a page within the last `withinMs`, newest first, by any agent in any
+ * session (the audit log), and whether the vault filled it without the user.
  */
-export async function recentPasswordFills(accountId: string, withinMs: number, now = Date.now()): Promise<Array<{ at: Date; unattended: boolean }>> {
+export async function recentPasswordFills(accountId: string, withinMs: number, now = Date.now(), what: 'password' | 'code' = 'password'): Promise<Array<{ at: Date; unattended: boolean }>> {
   const rows = await db.select({ createdAt: auditLog.createdAt, details: auditLog.details })
     .from(auditLog)
     .where(and(
@@ -262,7 +295,7 @@ export async function recentPasswordFills(accountId: string, withinMs: number, n
       return []
     }
     const details = usedDetailsSchema.safeParse(parsed)
-    return details.success && details.data.password ? [{ at: row.createdAt, unattended: details.data.by === 'vault' }] : []
+    return details.success && details.data[what] ? [{ at: row.createdAt, unattended: details.data.by === 'vault' }] : []
   })
 }
 
@@ -290,6 +323,117 @@ export async function markAccountRejected(input: { agentSlug: string; accountId:
 /** The user chose to use the account as it is saved: the vault fills it again. */
 export async function clearAccountRejected(accountId: string): Promise<void> {
   await db.update(browserAccounts).set({ rejectedAt: null }).where(eq(browserAccounts.id, accountId)).run()
+}
+
+// ── Sign-in methods (part 4): an authenticator app the vault holds ─────────
+
+/** `value` without `keys`. */
+function without<T extends object, K extends keyof T>(value: T, ...keys: K[]): Omit<T, K> {
+  const copy = { ...value }
+  for (const key of keys) delete copy[key]
+  return copy
+}
+
+/**
+ * Change an account's `signInMethods`, and its sealed `secrets` when the
+ * change gives them, with a compare-and-set on `revision`. False when the
+ * account is gone or `change` leaves it as it is (null).
+ */
+async function updateSignInMethods(
+  accountId: string,
+  change: (methods: SignInMethods, row: BrowserAccount) => Promise<{ methods: SignInMethods; secrets?: string | null } | null>,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const row = await accountRow(accountId)
+    if (!row) return false
+    const next = await change(methodsOf(row), row)
+    if (!next) return false
+    const updated = await db.update(browserAccounts).set({
+      signInMethods: JSON.stringify(signInMethodsSchema.parse(next.methods)),
+      ...(next.secrets !== undefined ? { secrets: next.secrets } : {}),
+      revision: row.revision + 1,
+      updatedAt: new Date(),
+    }).where(and(eq(browserAccounts.id, row.id), eq(browserAccounts.revision, row.revision))).run()
+    if (changesOf(updated) > 0) return true
+  }
+  throw new VaultConflictError('The account kept changing while it was saved. Try again.')
+}
+
+/**
+ * An agent added an authenticator app to the account on its site: the seed is
+ * sealed with the account's other secrets (in place of an app it held
+ * before), and the owner's request for one is answered. Only an account the
+ * agent may use; one whose seal does not open here is left as it is, since
+ * sealing anew would lose the parts it holds.
+ */
+export async function saveAuthenticator(input: {
+  agentSlug: string
+  accountId: string
+  sessionId: string
+  setup: { seed: TotpSeed; issuer: string | null; accountName: string | null }
+  /** What the agent named it on the site, when the site asked. */
+  name?: string | null
+  /** Why the agent added it: the owner's standing request, or what the user said in the conversation. */
+  asked: { request: true } | { words: string }
+}): Promise<void> {
+  if (!(await isAccountGranted(input.agentSlug, input.accountId))) throw new VaultConflictError('That saved account is no longer available to this agent')
+  const saved = await updateSignInMethods(input.accountId, async (methods, row) => {
+    const secrets = await openAccountSecrets(row)
+    if (!secrets) throw new VaultConflictError('This saved account cannot be unlocked here, so nothing was added to it. Delete it in Settings → Logins and save it again.')
+    const { issuer, accountName } = input.setup
+    return {
+      methods: { ...without(methods, 'requested', 'unavailable'), authenticator: { addedAt: Date.now(), issuer, accountName, name: input.name ?? null } },
+      secrets: await sealSecrets({ ...secrets, totp: input.setup.seed }, row),
+    }
+  })
+  if (!saved) throw new VaultConflictError('That saved account was not found')
+  await logAuditEvent({
+    userId: null,
+    object: 'browser_account',
+    objectId: input.accountId,
+    action: 'method_added',
+    details: {
+      method: 'authenticator_app',
+      agentSlug: input.agentSlug,
+      sessionId: input.sessionId,
+      ...('words' in input.asked ? { askedInChat: input.asked.words.slice(0, 300) } : { asked: 'request' }),
+    },
+  })
+}
+
+/**
+ * An agent said the site rejected a code the vault's authenticator app made:
+ * its codes are not filled without the user until an app is added again.
+ * Only an account the agent may use.
+ */
+export async function markAuthenticatorRejected(input: { agentSlug: string; accountId: string; sessionId: string }): Promise<void> {
+  if (!(await isAccountGranted(input.agentSlug, input.accountId))) return
+  const marked = await updateSignInMethods(input.accountId, async (methods) => (
+    methods.authenticator && !methods.authenticator.rejectedAt
+      ? { methods: { ...methods, authenticator: { ...methods.authenticator, rejectedAt: Date.now() } } }
+      : null
+  ))
+  if (!marked) return
+  await logAuditEvent({
+    userId: null,
+    object: 'browser_account',
+    objectId: input.accountId,
+    action: 'rejected',
+    details: { agentSlug: input.agentSlug, sessionId: input.sessionId, method: 'authenticator_app' },
+  })
+}
+
+/**
+ * An agent found no sign-in method it may add on the site (two-step
+ * verification is off there, or adding one would replace another): the
+ * owner's request is answered with why, in the agent's words. Only an account
+ * the agent may use.
+ */
+export async function markSignInMethodUnavailable(input: { agentSlug: string; accountId: string; reason: string }): Promise<boolean> {
+  if (!(await isAccountGranted(input.agentSlug, input.accountId))) return false
+  return updateSignInMethods(input.accountId, async (methods) => ({
+    methods: { ...without(methods, 'requested'), unavailable: { at: Date.now(), reason: input.reason.trim().slice(0, 500) } },
+  }))
 }
 
 // ── Owner side: the vault itself ───────────────────────────────────────────
@@ -556,6 +700,52 @@ export async function revokeAccount(input: { owner: VaultOwner; accountId: strin
     inArray(agentBrowserAccounts.accountId, owned),
   )).run()
   return changesOf(result) > 0
+}
+
+/**
+ * Whether the agent in this session is yet to be asked for the sign-in method
+ * the owner requested (method-request): true once, the first time for the
+ * session, after which the request notes that session.
+ */
+export async function markSignInMethodAsked(accountId: string, sessionId: string): Promise<boolean> {
+  return updateSignInMethods(accountId, async (methods) => (
+    methods.requested && methods.requested.askedIn !== sessionId
+      ? { methods: { ...methods, requested: { ...methods.requested, askedIn: sessionId } } }
+      : null
+  ))
+}
+
+/**
+ * The owner asks agents to add a sign-in method to the account when one next
+ * signs in with it (the sign-in card's box, or Settings → Logins), or takes
+ * that back. Either way an earlier "none to add" answer goes.
+ */
+export async function setSignInMethodRequest(owner: VaultOwner, accountId: string, on: boolean, from: 'card' | 'logins'): Promise<boolean> {
+  if (!(await getOwnedAccount(owner, accountId))) return false
+  return updateSignInMethods(accountId, async (methods) => {
+    const rest = without(methods, 'requested', 'unavailable')
+    return { methods: on ? { ...rest, requested: { at: Date.now(), from } } : rest }
+  })
+}
+
+/** The owner removed the account's authenticator app from the vault (the site still lists it). */
+export async function removeAuthenticator(owner: VaultOwner, accountId: string): Promise<boolean> {
+  if (!(await getOwnedAccount(owner, accountId))?.signInMethods.authenticator) return false
+  const removed = await updateSignInMethods(accountId, async (methods, row) => {
+    if (!methods.authenticator) return null
+    const rest = without(methods, 'authenticator')
+    const secrets = await openAccountSecrets(row)
+    // Unreadable here: nothing in it can be used, and without its plain
+    // record (which every use checks) neither can its seed.
+    if (!secrets) return { methods: rest }
+    const kept = without(secrets, 'totp')
+    const empty = Object.keys(kept.values).length === 0 && !kept.passkeys?.length
+    return { methods: rest, secrets: empty ? null : await sealSecrets(kept, row) }
+  })
+  if (removed) {
+    await logAuditEvent({ userId: owner, object: 'browser_account', objectId: accountId, action: 'method_removed', details: { method: 'authenticator_app' } })
+  }
+  return removed
 }
 
 export async function renameAccount(owner: VaultOwner, id: string, label: string | null): Promise<boolean> {

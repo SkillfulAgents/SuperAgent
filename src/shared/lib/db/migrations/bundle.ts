@@ -761,5 +761,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1794182726903,
     "hash": "4a2c26f37c2e6aee059d42d42d98e38f4513afa1fdefee3f9600896ec4151401"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `browser_accounts` ADD `sign_in_methods` text DEFAULT '{}' NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1794277667274,
+    "hash": "109901b115f99f73f721670b26d4837958d6703ee9f6b5cbd72dfd1176ca7e45"
   }
 ]
