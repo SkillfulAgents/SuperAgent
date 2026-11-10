@@ -7,21 +7,26 @@ import { forgetPreparedLogin } from '../login-requests'
 import { elementRefSchema, signInMethodResolutionSchema, type SignInMethodResolution } from '../login-schema'
 import { formatLoginResolution } from './request-login'
 
-const DESCRIPTION = `Add a sign-in method to a saved account, so later sign-ins need no code from the user: the vault keeps it and request_login uses it. Only when the user asked you for one, in their own message (also one sent from the sign-in form or Settings → Logins); pass their words in user_request.
+const DESCRIPTION = `Add a sign-in method to a saved account, so later sign-ins need nobody: the vault keeps it and request_login uses it. Only when the user asked you for one, in their own message (also one sent from the sign-in form or Settings → Logins); pass their words in user_request.
+
+Add a passkey when the site offers passkeys (sites keep several, and one changes nothing else about the account); else an authenticator app.
 
 Never weaken or change the user's own sign-in. Add a method only next to the two-step verification the account already has: never turn two-step verification on where it is off, and never replace or remove a method the account has. When the site offers nothing that fits (two-step verification is off, or the page says adding an app replaces the current one), call this tool with method "none" and the reason instead: the user is told, and agents stop being asked. Not for a page that fails to load or shows an error: tell the user that instead, and the request stays for a later try.
+
+method "passkey": sign in (request_login), open the site's security settings and find where it adds a passkey. Call this tool with the account's username and the ref of the button that starts it (click): the browser gets ready to create the passkey, clicks it, and saves the passkey the site creates to the vault. Name it "Gamut" if the page asks for a name (pass it as name). If the site asks for its password or a code first, sign in with request_login, then call this tool again (without click) once the page says the passkey was added: the browser stays ready for ten minutes.
 
 method "authenticator_app": sign in (request_login), open the site's security settings and start adding an authenticator app (a "TOTP" or "2FA" app). When the page shows the setup QR code and asks for the code from the app, call this tool with the account's username and the ref of the field for that code in code_field (and the button that confirms it in submit). When the page also asks for a name for the app (a device name), type "Gamut" there first and pass it as name: at sign-in, a site that lists the apps by name shows that one. Do not open "Can't scan it?" or copy the key: the tool reads the setup from the page itself, saves it to the account, and fills the app's current code to confirm it. When the page shows more than one QR code, pass the setup QR code's ref as qr. If the site asks for the password or a code first, sign in with request_login as usual.
 
 The result says what was saved and what the page did after the code went in. It never contains the key or the code.`
 
 const inputSchema = {
-  method: z.enum(['authenticator_app', 'none']).describe('authenticator_app: add an authenticator app now. none: the site offers no method you may add (say why in reason); not for a page that failed.'),
+  method: z.enum(['passkey', 'authenticator_app', 'none']).describe('passkey: add a passkey (preferred where the site offers them). authenticator_app: add an authenticator app now. none: the site offers no method you may add (say why in reason); not for a page that failed.'),
+  click: elementRefSchema.optional().describe('passkey: ref of the site\'s button that starts adding a passkey ("Add a passkey", "Create passkey").'),
   username: z.string().trim().min(1).max(320).describe('The saved account, exactly as a request_login result named it.'),
   code_field: elementRefSchema.optional().describe('authenticator_app: ref of the field for the code that confirms the app, from your latest snapshot.'),
   submit: elementRefSchema.optional().describe('authenticator_app: ref of the button that confirms the app. Omit it to press Enter in the code field.'),
   qr: elementRefSchema.optional().describe('authenticator_app: ref of the setup QR code, when the page shows more than one QR code.'),
-  name: z.string().trim().min(1).max(64).optional().describe('authenticator_app: the name you typed for the app on the page, when it asked for one ("Gamut").'),
+  name: z.string().trim().min(1).max(64).optional().describe('The name you typed for the passkey or app on the page, when it asked for one ("Gamut").'),
   reason: z.string().trim().min(1).max(500).optional().describe('none: why no method can be added, as the page shows it (e.g. "Two-factor authentication is off for this account").'),
   user_request: z.string().trim().min(1).max(300).optional().describe('The user\'s words asking for it.'),
 }
@@ -75,6 +80,24 @@ async function addSignInMethod(args: Args, name: (username: string) => string): 
 /** The tool result: observations, never the key or the code. */
 export function formatSignInMethodResolution(resolution: SignInMethodResolution, named: (username: string) => string = (username) => username): Result {
   const account = named(resolution.username)
+  if (resolution.type === 'passkey_added') {
+    return {
+      content: [{
+        type: 'text',
+        text: `Saved the passkey the page created for ${account} on ${resolution.site} (for ${resolution.rpId}) to the vault. Check that the page lists it. From now on, signing in with request_login holds it in the browser: use the page's passkey option then.`,
+      }],
+    }
+  }
+  if (resolution.type === 'passkey_pending') {
+    const click = resolution.clickError ? ` Clicking the button failed (${resolution.clickError}).` : ''
+    return {
+      content: [{
+        type: 'text',
+        text: `No passkey was created yet.${click} The browser stays ready to create one for ten minutes: go through what the page asks (sign in with request_login if it asks for the password or a code), and once it says the passkey was added, call add_sign_in_method again with method "passkey" and no click to save it.`,
+      }],
+      isError: true,
+    }
+  }
   if (resolution.type === 'unavailable_noted') {
     return { content: [{ type: 'text', text: `Noted: no sign-in method can be added to ${account} on ${resolution.site}. The user sees why in Settings → Logins, and agents are no longer asked to add one.` }] }
   }

@@ -269,7 +269,7 @@ describe('LoginRequestItem', () => {
     expect(mockToast.warning).not.toHaveBeenCalled()
   })
 
-  it('asks the agent to add an authenticator app to the account it saves when the user ticks the box', async () => {
+  it('asks the agent to add a passkey or authenticator app to the account it saves when the user ticks the box', async () => {
     const user = userEvent.setup()
     render(<LoginRequestItem {...props()} />)
     const username = await ready()

@@ -115,7 +115,7 @@ export function SaveForLater({
 }: {
   checked: boolean
   onCheckedChange: (checked: boolean) => void
-  /** "Also add an authenticator app": the agent adds one to the saved account. */
+  /** "Also add a passkey or authenticator app": the agent adds one to the saved account. */
   addMethod: boolean
   onAddMethodChange: (checked: boolean) => void
   site: string
@@ -157,9 +157,9 @@ export function SaveForLater({
             aria-describedby="login-add-method-hint"
           />
           <span className="min-w-0">
-            <span className="block font-medium">Also add an authenticator app</span>
+            <span className="block font-medium">Also add a passkey or authenticator app</span>
             <span id="login-add-method-hint" className="block text-2xs text-muted-foreground">
-              Once signed in, the agent adds one next to the two-step verification this account already has, so later sign-ins need no code from you. The vault then holds both its password and its codes.
+              Once signed in, the agent adds a passkey, or an authenticator app next to the two-step verification this account already has, so later sign-ins need nothing from you. The vault then holds everything that signs in to it.
             </span>
           </span>
         </label>

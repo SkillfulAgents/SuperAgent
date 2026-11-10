@@ -544,3 +544,26 @@ describe('the vault\'s authenticator apps', () => {
       .toBe('Noted: no sign-in method can be added to octocat on github.com. The user sees why in Settings → Logins, and agents are no longer asked to add one.')
   })
 })
+
+describe('the vault\'s passkeys', () => {
+  it('tells the agent the browser holds the passkey: use the page\'s option, else call again', () => {
+    const { content, isError } = formatLoginResolution({ type: 'passkey', site: 'github.com', username: 'octocat', name: 'Gamut' })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toContain('Nothing was filled: the browser now holds the passkey of octocat on github.com (named "Gamut" on the site) for this sign-in.')
+    expect(content[0].text).toContain('Use the page\'s passkey option')
+    expect(content[0].text).toContain('call request_login again with username "octocat"')
+  })
+
+  it('lists the passkey an account holds', () => {
+    const text = formatLoginResolution({ type: 'accounts', site: 'github.com', accounts: [{ username: 'octocat', label: null, parts: ['password'], via: null, passkeys: 1 }] }).content[0].text
+    expect(text).toContain('- octocat: holds a password; the vault also holds a passkey for it: signing in with it holds the passkey in the browser for you')
+  })
+
+  it('says what add_sign_in_method saved, or that the tab stays ready for the page to create one', () => {
+    expect(formatSignInMethodResolution({ type: 'passkey_added', site: 'github.com', username: 'octocat', rpId: 'github.com' }).content[0].text)
+      .toBe('Saved the passkey the page created for octocat on github.com (for github.com) to the vault. Check that the page lists it. From now on, signing in with request_login holds it in the browser: use the page\'s passkey option then.')
+    const pending = formatSignInMethodResolution({ type: 'passkey_pending', site: 'github.com', username: 'octocat', clickError: "✗ Element '@e7' not found" })
+    expect(pending.isError).toBe(true)
+    expect(pending.content[0].text).toBe("No passkey was created yet. Clicking the button failed (✗ Element '@e7' not found). The browser stays ready to create one for ten minutes: go through what the page asks (sign in with request_login if it asks for the password or a code), and once it says the passkey was added, call add_sign_in_method again with method \"passkey\" and no click to save it.")
+  })
+})

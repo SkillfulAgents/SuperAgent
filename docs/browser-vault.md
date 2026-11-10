@@ -8,13 +8,14 @@ saved, filled by the host on the agent's request, step by step, only for the
 agents the user granted them to. Part 3 saves each account's signed-in
 session (cookies and web storage) after a sign-in and restores it into
 another agent's browser, so a sign-in the user completed once (a code, a
-phone prompt) does not need them again. Part 4 adds second factors: an
-authenticator app an agent adds to an account when the user asks, whose codes
-the vault then makes (passkeys follow).
+phone prompt) does not need them again. Part 4 adds what signs in without
+the user: a passkey, or an authenticator app whose codes the vault makes, that
+an agent adds to an account when the user asks.
 
 Code: `src/shared/lib/browser-vault/` (host), `agent-container/src/login-*.ts`,
 `agent-container/src/browser-session*.ts`, `agent-container/src/session-routes.ts`,
 `agent-container/src/browser-gate.ts`, `agent-container/src/authenticator-setup.ts`,
+`agent-container/src/passkey-keeper.ts`, `agent-container/src/passkey-routes.ts`,
 `agent-container/src/tools/add-sign-in-method.ts`
 and `agent-container/src/tools/request-login.ts` (container),
 `src/shared/lib/tools/request-login/` (the card), Settings → Logins
@@ -438,7 +439,8 @@ Logins, and once none remain, a new key is made on the next save.
 
 The vault can hold an account's authenticator app (TOTP, RFC 6238): an agent
 adds one in the site's security settings, and from then on the vault makes its
-codes, so a sign-in that asks for one needs nobody. Passkeys follow (part 4b).
+codes, so a sign-in that asks for one needs nobody. Where the site offers
+passkeys, the agent adds a passkey instead (part 4b, below).
 
 **Asking for one.** Only the user asks, and an agent adds one only next to the
 two-step verification the account already has: never turning it on where it is
@@ -491,3 +493,52 @@ asking the user. When the agent says the site rejected a code
 
 Settings → Logins shows the app (added when, its names) and removes it from the
 vault (the site still lists it); nothing here shows a code or the key.
+
+## Passkeys (part 4b)
+
+The vault can hold an account's passkeys: an agent adds one in the site's
+security settings when the user asks (as for an authenticator app, and before
+one: a passkey changes nothing else about the account), and a sign-in with the
+account then needs nobody.
+
+**Chrome's virtual authenticator** (CDP `WebAuthn`, `passkey-keeper.ts`)
+answers the page's passkey prompts on the agent's tab, with no dialog. The
+container holds one on the tab for a while, over a browser-level connection of
+its own: "record" while the agent adds a passkey (it keeps the one the page
+creates, private key and all, for the host to take), "present" while a sign-in
+with the account runs (the account's passkeys for that site in it). What it
+does, probed on Chrome 156: it belongs to one tab and survives the tab's
+navigations; any DevTools session that attaches to the tab and then detaches
+turns it off, whoever enabled it (our own fills and captures do; agent-browser's
+commands do not), so the keeper arms it again right after our connections
+close and on a one-second check. Without one, Chrome headless refuses a
+discoverable passkey prompt at once and lets a named one wait out the site's
+timeout, which is why agents handed passkeys to the user before.
+
+**Adding one** (`add_sign_in_method`, `method: "passkey"`): the host has the
+container arm the tab in record mode (ten minutes) and click the site's
+button (`click`); the passkey the page creates comes to the host, which seals
+it into the account's `secrets` with its plain record (the site it is for, its
+name on the site, when). One the page made for another site is not saved. A
+site that first asks for its password gets it signed in with request_login
+meanwhile: the tab stays ready, and the agent's next call takes the passkey.
+
+**Signing in with it.** The first request_login call with the account's
+username on a page of a site its passkey works on (its `rpId`, or a host under
+it) holds the account's passkeys on the agent's tab for five minutes, fills
+nothing, and tells the agent to use the page's passkey option (`type:
+passkey`). Its next call (a page with no passkey option, one that asks who
+first) goes on as usual, the passkey still there for a prompt further on (a
+passkey as a second step); a call from another tab (a window the site opened
+for the prompt) holds them there instead. It is a sign-in step for the account: the session
+it leaves is watched as the account's (Saved sessions), and the use is in the
+audit log.
+
+**The sign count.** Each use counts one up from the count the passkey went in
+with, and sites refuse a count that does not go up (a clone). The vault puts
+it in with the current time in seconds (never less than it had), so two agents,
+or two browsers, using one passkey a second apart never send a count the site
+already saw, with nothing written back.
+
+Settings → Logins lists the account's passkeys (when, the site, the name) and
+removes one from the vault (the site still lists it); never a key.

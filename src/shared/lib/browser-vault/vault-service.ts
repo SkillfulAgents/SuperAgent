@@ -10,7 +10,10 @@ import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { providerOf } from './providers'
 import { registrableDomain, usernameKey } from './site'
 import { openJson, sealJson, VaultSealError } from './vault-crypto'
-import { accountPartsSchema, accountSecretsSchema, MAX_PARTS, signInMethodsSchema, type AccountSecrets, type SignInMethods, type TotpSeed } from './vault-schemas'
+import { accountPartsSchema, accountSecretsSchema, MAX_PARTS, signInMethodsSchema, type AccountSecrets, type Passkey, type SignInMethods, type TotpSeed } from './vault-schemas'
+
+/** The most passkeys one account holds (the sealed schema's limit). */
+const MAX_PASSKEYS = 20
 
 /**
  * The Browser Vault's accounts and grants. An account is an owner's identity
@@ -245,6 +248,8 @@ export async function recordAccountUse(input: {
   session?: true
   /** A code from the authenticator app the vault holds went in. */
   code?: true
+  /** The account's passkey was held on the agent's tab for the sign-in. */
+  passkey?: true
 }): Promise<void> {
   const now = new Date()
   await batch([
@@ -265,6 +270,7 @@ export async function recordAccountUse(input: {
       by: input.by,
       ...(input.session ? { session: true } : {}),
       ...(input.code ? { code: true } : {}),
+      ...(input.passkey ? { passkey: true } : {}),
     },
   })
 }
@@ -399,6 +405,74 @@ export async function saveAuthenticator(input: {
       ...('words' in input.asked ? { askedInChat: input.asked.words.slice(0, 300) } : { asked: 'request' }),
     },
   })
+}
+
+/** Whether a passkey made for `rpId` works on a page of `hostname` (the site or a host under it, as WebAuthn allows). */
+export function passkeyWorksOn(rpId: string, hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  const rp = rpId.toLowerCase()
+  return host === rp || host.endsWith(`.${rp}`)
+}
+
+/**
+ * An agent added a passkey to the account on its site: its private key is
+ * sealed with the account's other secrets (in place of one with the same id),
+ * and the owner's request for a sign-in method is answered. Only an account
+ * the agent may use; one whose seal does not open here is left as it is.
+ */
+export async function savePasskey(input: {
+  agentSlug: string
+  accountId: string
+  sessionId: string
+  passkey: Passkey
+  /** What the agent named it on the site, when the site asked. */
+  name?: string | null
+  asked: { request: true } | { words: string }
+}): Promise<void> {
+  if (!(await isAccountGranted(input.agentSlug, input.accountId))) throw new VaultConflictError('That saved account is no longer available to this agent')
+  const { passkey } = input
+  const saved = await updateSignInMethods(input.accountId, async (methods, row) => {
+    const secrets = await openAccountSecrets(row)
+    if (!secrets) throw new VaultConflictError('This saved account cannot be unlocked here, so nothing was added to it. Delete it in Settings → Logins and save it again.')
+    const passkeys = [...(secrets.passkeys ?? []).filter((held) => held.credentialId !== passkey.credentialId), passkey]
+    if (passkeys.length > MAX_PASSKEYS) throw new VaultConflictError('This saved account already holds as many passkeys as it can')
+    const listed = (methods.passkeys ?? []).filter((held) => held.credentialId !== passkey.credentialId)
+    return {
+      methods: {
+        ...without(methods, 'requested', 'unavailable'),
+        passkeys: [...listed, { credentialId: passkey.credentialId, rpId: passkey.rpId, addedAt: Date.now(), name: input.name ?? null, userName: passkey.userName ?? null }],
+      },
+      secrets: await sealSecrets({ ...secrets, passkeys }, row),
+    }
+  })
+  if (!saved) throw new VaultConflictError('That saved account was not found')
+  await logAuditEvent({
+    userId: null,
+    object: 'browser_account',
+    objectId: input.accountId,
+    action: 'method_added',
+    details: {
+      method: 'passkey',
+      rpId: passkey.rpId,
+      agentSlug: input.agentSlug,
+      sessionId: input.sessionId,
+      ...('words' in input.asked ? { askedInChat: input.asked.words.slice(0, 300) } : { asked: 'request' }),
+    },
+  })
+}
+
+/**
+ * The account's passkeys that work on a page of `hostname`, with their
+ * private keys: only for the container, to hold on the agent's tab. Only
+ * the ones its plain record lists (Remove takes a passkey off that list).
+ */
+export async function readAccountPasskeys(accountId: string, hostname: string): Promise<Passkey[]> {
+  const row = await accountRow(accountId)
+  if (!row) return []
+  const listed = new Set((methodsOf(row).passkeys ?? []).map((held) => held.credentialId))
+  if (listed.size === 0) return []
+  const secrets = await readAccountSecrets(row)
+  return (secrets.passkeys ?? []).filter((held) => listed.has(held.credentialId) && passkeyWorksOn(held.rpId, hostname))
 }
 
 /**
@@ -744,6 +818,28 @@ export async function removeAuthenticator(owner: VaultOwner, accountId: string):
   })
   if (removed) {
     await logAuditEvent({ userId: owner, object: 'browser_account', objectId: accountId, action: 'method_removed', details: { method: 'authenticator_app' } })
+  }
+  return removed
+}
+
+/** The owner removed a passkey from the vault (the site still lists it). */
+export async function removePasskey(owner: VaultOwner, accountId: string, credentialId: string): Promise<boolean> {
+  const account = await getOwnedAccount(owner, accountId)
+  if (!account?.signInMethods.passkeys?.some((held) => held.credentialId === credentialId)) return false
+  const removed = await updateSignInMethods(accountId, async (methods, row) => {
+    const listed = (methods.passkeys ?? []).filter((held) => held.credentialId !== credentialId)
+    if (listed.length === (methods.passkeys ?? []).length) return null
+    const rest = listed.length ? { ...methods, passkeys: listed } : without(methods, 'passkeys')
+    const secrets = await openAccountSecrets(row)
+    // Unreadable here: its key stays sealed, and with no plain record nothing uses it.
+    if (!secrets) return { methods: rest }
+    const kept = (secrets.passkeys ?? []).filter((held) => held.credentialId !== credentialId)
+    const next: AccountSecrets = kept.length ? { ...secrets, passkeys: kept } : without(secrets, 'passkeys')
+    const empty = Object.keys(next.values).length === 0 && !next.totp && !next.passkeys?.length
+    return { methods: rest, secrets: empty ? null : await sealSecrets(next, row) }
+  })
+  if (removed) {
+    await logAuditEvent({ userId: owner, object: 'browser_account', objectId: accountId, action: 'method_removed', details: { method: 'passkey' } })
   }
   return removed
 }

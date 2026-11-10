@@ -23,7 +23,7 @@ vi.mock('../middleware/auth', () => ({
 }))
 
 const { default: browserAccounts, agentBrowserAccountRoutes } = await import('./browser-accounts')
-const { saveAccount, grantAccount, listOwnedAccounts, readAccountFill, saveAuthenticator } = await import('@shared/lib/browser-vault/vault-service')
+const { saveAccount, grantAccount, listOwnedAccounts, readAccountFill, readAccountPasskeys, saveAuthenticator, savePasskey } = await import('@shared/lib/browser-vault/vault-service')
 const { saveAccountSession, listAccountSessions } = await import('@shared/lib/browser-vault/session-service')
 
 let handle: TestDatabase
@@ -170,10 +170,10 @@ describe('an account\'s authenticator app in settings', () => {
 
   it('asks agents to add one at their next sign-in, and takes it back', async () => {
     const { account } = await saveAccount({ owner: null, site: 'github.com', origin: 'https://github.com', username: 'octocat', values: { password: 'pw' } })
-    expect(await listed()).toEqual({ authenticator: null, requestedAt: null, unavailable: null })
+    expect(await listed()).toEqual({ authenticator: null, passkeys: [], requestedAt: null, unavailable: null })
 
     expect((await app.request(`/api/browser-accounts/${account.id}/sign-in-method-request`, put({ requested: true }))).status).toBe(200)
-    expect(await listed()).toEqual({ authenticator: null, requestedAt: expect.any(String), unavailable: null })
+    expect(await listed()).toEqual({ authenticator: null, passkeys: [], requestedAt: expect.any(String), unavailable: null })
     expect((await app.request(`/api/browser-accounts/${account.id}/sign-in-method-request`, put({ requested: false }))).status).toBe(200)
     expect((await listed()).requestedAt).toBeNull()
     const audit = await testDb.select({ action: auditLog.action, details: auditLog.details }).from(auditLog).all()
@@ -190,6 +190,7 @@ describe('an account\'s authenticator app in settings', () => {
     expect(text).not.toContain(SEED.secret)
     expect(JSON.parse(text).accounts[0].signInMethods).toEqual({
       authenticator: { addedAt: expect.any(String), issuer: 'GitHub', accountName: 'octocat', name: null, rejectedAt: null },
+      passkeys: [],
       requestedAt: null,
       unavailable: null,
     })
@@ -206,5 +207,29 @@ describe('an account\'s authenticator app in settings', () => {
     const { account: bobs } = await saveAccount({ owner: 'bob', site: 'github.com', origin: 'https://github.com', username: 'bob' })
     expect((await app.request(`/api/browser-accounts/${bobs.id}/sign-in-method-request`, put({ requested: true }))).status).toBe(404)
     expect((await app.request(`/api/browser-accounts/${bobs.id}/authenticator`, { method: 'DELETE' })).status).toBe(404)
+  })
+})
+
+describe('an account\'s passkeys in settings', () => {
+  const PASSKEY = { credentialId: 'Y3JlZC0x', rpId: 'github.com', privateKey: 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg' + 'A'.repeat(120), userHandle: 'dXNlci0x', signCount: 1, userName: 'octocat' }
+  const remove = (credentialId: string) => ({ method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentialId }) })
+
+  it('lists the passkeys, never a key, and removes one from the vault', async () => {
+    const { account } = await saveAccount({ owner: null, site: 'github.com', origin: 'https://github.com', username: 'octocat', values: { password: 'pw' } })
+    await grantAccount({ accountId: account.id, agentSlug: 'agent-a', grantedBy: null })
+    await savePasskey({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-1', passkey: PASSKEY, name: 'Gamut', asked: { request: true } })
+
+    const text = await (await app.request('/api/browser-accounts')).text()
+    expect(text).not.toContain(PASSKEY.privateKey)
+    expect(JSON.parse(text).accounts[0].signInMethods.passkeys).toEqual([
+      { credentialId: 'Y3JlZC0x', rpId: 'github.com', addedAt: expect.any(String), name: 'Gamut', userName: 'octocat' },
+    ])
+
+    expect((await app.request(`/api/browser-accounts/${account.id}/passkeys`, remove('Y3JlZC0x'))).status).toBe(200)
+    expect(JSON.parse(await (await app.request('/api/browser-accounts')).text()).accounts[0].signInMethods.passkeys).toEqual([])
+    expect(await readAccountPasskeys(account.id, 'github.com')).toEqual([])
+    // Its password stays.
+    expect(await readAccountFill(account.id)).toEqual({ values: { password: 'pw' }, totp: null })
+    expect((await app.request(`/api/browser-accounts/${account.id}/passkeys`, remove('Y3JlZC0x'))).status).toBe(404)
   })
 })

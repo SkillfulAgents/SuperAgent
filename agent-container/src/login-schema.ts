@@ -136,6 +136,8 @@ const vaultAccountViewSchema = z.object({
   authenticator: z.enum(['ready', 'rejected']).optional(),
   /** The name the vault's app has on the site, when the site asked for one. */
   authenticatorName: z.string().optional(),
+  /** How many passkeys the vault holds for it. */
+  passkeys: z.number().int().min(1).optional(),
 })
 export type VaultAccountView = z.infer<typeof vaultAccountViewSchema>
 
@@ -205,6 +207,18 @@ export const loginAuthenticatorReportSchema = z.object({
   username: z.string(),
 })
 
+/**
+ * The vault holds a passkey of the account for this site: the browser holds it
+ * on the agent's tab for the rest of the sign-in, and nothing was filled.
+ */
+export const loginPasskeyReportSchema = z.object({
+  type: z.literal('passkey'),
+  site: z.string(),
+  username: z.string(),
+  /** Its name on the site, when the site asked for one. */
+  name: z.string().optional(),
+})
+
 export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginFillReportSchema,
   loginManualReportSchema,
@@ -213,6 +227,7 @@ export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginBrowserClosedReportSchema,
   loginSessionReportSchema,
   loginAuthenticatorReportSchema,
+  loginPasskeyReportSchema,
 ])
 export type LoginResolution = z.infer<typeof loginResolutionSchema>
 
@@ -223,9 +238,13 @@ export type LoginResolution = z.infer<typeof loginResolutionSchema>
  * - authenticator_not_added: the key was read, but its code did not go in,
  *   so nothing was saved;
  * - unavailable_noted: the agent found none to add; the user's request is
- *   answered with why.
+ *   answered with why;
+ * - passkey_added: the page created a passkey on the agent's tab, saved to the
+ *   account; passkey_pending: none yet (the tab stays ready a while).
  */
 export const signInMethodResolutionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('passkey_added'), site: z.string(), username: z.string(), rpId: z.string() }),
+  z.object({ type: z.literal('passkey_pending'), site: z.string(), username: z.string(), clickError: z.string().optional() }),
   z.object({ type: z.literal('authenticator_added'), site: z.string(), username: z.string(), issuer: z.string().nullable(), report: loginFillReportSchema }),
   z.object({ type: z.literal('authenticator_not_added'), site: z.string(), username: z.string(), report: loginFillReportSchema }),
   z.object({ type: z.literal('unavailable_noted'), site: z.string(), username: z.string() }),

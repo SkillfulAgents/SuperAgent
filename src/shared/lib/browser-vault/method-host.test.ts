@@ -29,6 +29,8 @@ const container = vi.hoisted(() => ({
   prepareStatus: 200,
   setup: { status: 200, body: {} as Record<string, unknown> },
   fillOutcome: 'filled',
+  /** What /browser/passkey/created hands over: the passkey the page created, or none yet. */
+  created: null as Record<string, unknown> | null,
   calls: [] as Array<{ path: string; body?: unknown }>,
 }))
 
@@ -45,6 +47,8 @@ vi.mock('@shared/lib/agent-actor', () => ({
             return new Response(JSON.stringify({ origin: container.origin, url: `${container.origin}/settings`, topOrigin: container.origin, fields: [], held: [] }), { status: 200 })
           }
           if (url === '/browser/login/authenticator') return new Response(JSON.stringify(container.setup.body), { status: container.setup.status })
+          if (url === '/browser/passkey/arm') return new Response(JSON.stringify({ armed: true, origin: container.origin }), { status: 200 })
+          if (url === '/browser/passkey/created') return new Response(JSON.stringify({ credential: container.created }), { status: 200 })
           if (url === '/browser/login/fill') {
             const outcomes = [container.fillOutcome]
             const report = { ...REPORT, outcomes: [{ ...REPORT.outcomes[0], status: container.fillOutcome }] }
@@ -58,7 +62,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 
 const { addSignInMethod } = await import('./method-host')
-const { grantAccount, getOwnedAccount, readAccountFill, saveAccount, setSignInMethodRequest } = await import('./vault-service')
+const { grantAccount, getOwnedAccount, readAccountFill, readAccountPasskeys, saveAccount, setSignInMethodRequest } = await import('./vault-service')
 const { totpCode } = await import('./totp')
 
 let handle: TestDatabase
@@ -84,6 +88,7 @@ beforeEach(async () => {
   container.prepareStatus = 200
   container.setup = { status: 200, body: { key: SETUP_URI, source: 'qr' } }
   container.fillOutcome = 'filled'
+  container.created = null
   container.calls = []
   vi.useFakeTimers({ toFake: ['Date'] })
   // Ten seconds into a period: its code has twenty left.
@@ -147,7 +152,10 @@ describe('add_sign_in_method on the host', () => {
 
   it('adds one the user asked for in the conversation, and logs their words', async () => {
     await grantedAccount('octocat', false)
-    expect((await call({ method: 'authenticator_app', username: 'octocat', code_field: '@e4' })).status).toBe('rejected')
+    expect(await call({ method: 'authenticator_app', username: 'octocat', code_field: '@e4' })).toEqual({
+      status: 'rejected',
+      reason: 'the user has not asked for a sign-in method on octocat. Add one only when the user asked you (then pass their words in user_request)',
+    })
     expect(sent('/browser/login/authenticator')).toEqual([])
 
     container.calls = []
@@ -208,7 +216,53 @@ describe('add_sign_in_method on the host', () => {
     await grantedAccount()
     container.origin = 'http://localhost:47891'
     vi.stubEnv('PORT', '47891')
-    expect((await call({ method: 'authenticator_app', username: 'octocat', code_field: '@e4' })).status).toBe('rejected')
+    expect(await call({ method: 'authenticator_app', username: 'octocat', code_field: '@e4' })).toEqual({
+      status: 'rejected',
+      reason: 'the page (http://localhost:47891) is not a site the vault keeps accounts for',
+    })
     expect(sent('/browser/login/authenticator')).toEqual([])
+  })
+})
+
+describe('add_sign_in_method on the host: a passkey', () => {
+  const PASSKEY = { credentialId: 'Y3JlZC0x', rpId: 'github.com', privateKey: 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg' + 'A'.repeat(120), userHandle: 'dXNlci0x', signCount: 1, userName: 'octocat' }
+
+  it('records the passkey the page creates after clicking the site\'s button, and saves it to the account', async () => {
+    const account = await grantedAccount()
+    container.created = PASSKEY
+    const result = await call({ method: 'passkey', username: 'octocat', click: '@e7', name: 'Gamut' })
+
+    expect(resolution(result)).toEqual({ type: 'passkey_added', site: 'github.com', username: 'octocat', rpId: 'github.com' })
+    expect(sent('/browser/passkey/arm')).toEqual([{ sessionId: 's-1', mode: 'record', ttlMs: 600_000, keep: true, clickRef: '@e7' }])
+    expect(sent('/browser/passkey/created')).toEqual([{ waitMs: 45_000 }])
+    expect((await getOwnedAccount(null, account.id))?.signInMethods).toEqual({
+      passkeys: [{ credentialId: 'Y3JlZC0x', rpId: 'github.com', addedAt: Date.now(), name: 'Gamut', userName: 'octocat' }],
+    })
+    expect(await readAccountPasskeys(account.id, 'github.com')).toEqual([PASSKEY])
+    expect(await readAccountPasskeys(account.id, 'gist.github.com')).toEqual([PASSKEY])
+    expect(await readAccountPasskeys(account.id, 'evilgithub.com')).toEqual([])
+    const audit = await testDb.select({ action: auditLog.action, details: auditLog.details }).from(auditLog).all()
+    expect(JSON.parse(audit.at(-1)!.details!)).toMatchObject({ method: 'passkey', rpId: 'github.com', asked: 'request' })
+    // The private key only ever sealed.
+    expect(JSON.stringify([result, audit])).not.toContain(PASSKEY.privateKey)
+  })
+
+  it('keeps the tab ready when the page created none yet, and takes it on the next call', async () => {
+    const account = await grantedAccount()
+    expect(resolution(await call({ method: 'passkey', username: 'octocat', click: '@e7' }))).toEqual({ type: 'passkey_pending', site: 'github.com', username: 'octocat' })
+    expect((await getOwnedAccount(null, account.id))?.signInMethods.passkeys).toBeUndefined()
+    container.created = PASSKEY
+    expect(resolution(await call({ method: 'passkey', username: 'octocat' })).type).toBe('passkey_added')
+    expect(sent('/browser/passkey/arm').at(-1)).toEqual({ sessionId: 's-1', mode: 'record', ttlMs: 600_000, keep: true })
+  })
+
+  it('saves no passkey the page made for another site', async () => {
+    const account = await grantedAccount()
+    container.created = { ...PASSKEY, rpId: 'evil.example' }
+    expect(await call({ method: 'passkey', username: 'octocat' })).toEqual({
+      status: 'rejected',
+      reason: 'the page created a passkey for evil.example, not for github.com, so it was not saved to octocat',
+    })
+    expect((await getOwnedAccount(null, account.id))?.signInMethods.passkeys).toBeUndefined()
   })
 })

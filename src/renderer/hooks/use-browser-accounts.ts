@@ -32,11 +32,19 @@ const browserAccountSchema = z.object({
       /** An agent said the site rejected a code from it: agents ask the user for codes. */
       rejectedAt: z.string().nullable(),
     }).nullable(),
+    /** The passkeys an agent added: the site each is for, and its names. */
+    passkeys: z.array(z.object({
+      credentialId: z.string(),
+      rpId: z.string(),
+      addedAt: z.string(),
+      name: z.string().nullable(),
+      userName: z.string().nullable(),
+    })).default([]),
     /** Agents are asked to add one at their next sign-in with the account. */
     requestedAt: z.string().nullable(),
     /** An agent found none it may add on the site, and why. */
     unavailable: z.object({ at: z.string(), reason: z.string() }).nullable(),
-  }).default({ authenticator: null, requestedAt: null, unavailable: null }),
+  }).default({ authenticator: null, passkeys: [], requestedAt: null, unavailable: null }),
 })
 export type BrowserAccount = z.infer<typeof browserAccountSchema>
 
@@ -124,6 +132,16 @@ export function useRequestSignInMethod() {
 export function useRemoveAuthenticator() {
   return useAccountMutation((accountId: string) =>
     send(`/api/browser-accounts/${encodeURIComponent(accountId)}/authenticator`, { method: 'DELETE' }))
+}
+
+/** Remove a passkey from the vault: agents no longer sign in with it. */
+export function useRemovePasskey() {
+  return useAccountMutation(({ accountId, credentialId }: { accountId: string; credentialId: string }) =>
+    send(`/api/browser-accounts/${encodeURIComponent(accountId)}/passkeys`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credentialId }),
+    }))
 }
 
 export function useDeleteBrowserAccount() {
