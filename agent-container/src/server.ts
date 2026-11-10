@@ -58,6 +58,9 @@ import type { FieldBox } from './login-form-script';
 import { closePreparedLogins } from './login-requests';
 import type { LoginFillReport } from './login-schema';
 import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
+import { registerSessionRoutes } from './session-routes';
+import { isSessionStubTarget } from './browser-session';
+import { browserCommand } from './browser-gate';
 import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -887,9 +890,14 @@ function cleanupAgentBrowserDaemon(): void {
   try { fs.unlinkSync(path.join(profile, 'SingletonLock')); } catch { /* ignore */ }
 }
 
-// Execute an agent-browser CLI command and return the result.
+// Execute an agent-browser CLI command and return the result: never while a
+// saved-session operation runs (browser-gate.ts).
+function execBrowser(...args: Parameters<typeof runBrowserCommand>): ReturnType<typeof runBrowserCommand> {
+  return browserCommand(() => runBrowserCommand(...args));
+}
+
 // Uses execFile (no shell) to prevent command injection.
-async function execBrowser(
+async function runBrowserCommand(
   args: string[],
   cdpUrl?: string,
   opts: { timeoutMs?: number; outputCap?: number } = {},
@@ -1411,9 +1419,11 @@ function broadcastBrowserEvent(active: boolean, targetSessionId: string | null =
 
 // validateBrowserSession is imported from ./browser-state
 
-// GET /browser/status - Check if browser is running
+// GET /browser/status - Check if browser is running. `generation` names this
+// opening of it: a saved-session watch on the host tells a browser closed and
+// opened again between two of its looks.
 app.get('/browser/status', (c) => {
-  return c.json(_getBrowserState());
+  return c.json({ ..._getBrowserState(), generation: browserOpenGeneration });
 });
 
 
@@ -3070,8 +3080,12 @@ async function listPageTargetsStrict(): Promise<Array<{ type: string }>> {
   return targets.filter(t => t.type === 'page');
 }
 
-/** Get ALL CDP page targets across all strategies */
+/** Get ALL CDP page targets across all strategies, except the tabs a saved session is read on */
 async function getAllPageTargets(): Promise<PageTarget[]> {
+  return (await discoverPageTargets()).filter((target) => !isSessionStubTarget(target.id));
+}
+
+async function discoverPageTargets(): Promise<PageTarget[]> {
   // Try Chrome's HTTP /json endpoint first (works for local Chrome)
   const endpoint = getCdpHttpEndpoint();
   try {
@@ -3178,7 +3192,7 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
           clearTimeout(timeout);
           ws.close();
           const pages = (msg.result?.targetInfos || []).filter(
-            (t: { type: string }) => t.type === 'page'
+            (t: { type: string; targetId: string }) => t.type === 'page' && !isSessionStubTarget(t.targetId)
           );
           if (pages.length === 0) { resolve(null); return; }
           const target = pages[pages.length - 1];
@@ -3472,6 +3486,39 @@ registerLoginRoutes(app, {
     return digest ? { ...digest } : null;
   },
   notifyBrowserAction,
+});
+
+/** The browser's own CDP endpoint, not a page's: a host browser's is the one it launched with. */
+async function browserWsUrl(): Promise<string> {
+  if (browserState.cdpUrl) return browserState.cdpUrl;
+  const endpoint = getCdpHttpEndpoint();
+  const response = await fetch(`${endpoint}/json/version`);
+  if (!response.ok) throw new Error(`CDP /json/version answered ${response.status}`);
+  const { webSocketDebuggerUrl } = await response.json() as { webSocketDebuggerUrl?: string };
+  if (!webSocketDebuggerUrl) throw new Error('the browser named no endpoint');
+  return webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${endpoint.replace(/^https?:\/\//, '')}`);
+}
+
+// ── Saved sessions ──────────────────────────────────────────────────────────
+// The endpoints live in session-routes.ts; reading or replacing a site's
+// state goes over a browser-level connection of our own.
+
+registerSessionRoutes(app, {
+  hostAuthEnabled,
+  validateSession: validateBrowserSessionWithRecovery,
+  browserActive: () => browserState.active,
+  // A remote browser answers slower; a database read is one call.
+  connectBrowser: async () => CdpConnection.openBrowser(await browserWsUrl(), { callTimeoutMs: 20_000 }),
+  activeTabId: async () => (await findActivePageTarget())?.id ?? null,
+  keepActiveTab: (work) => tabManager.keepActiveTab(work),
+  observeUrl: async () => {
+    const digest = await observeUrlDigest();
+    return digest ? { ...digest } : null;
+  },
+  pageReplaced: () => {
+    resetTreeBaseline();
+    notifyBrowserAction();
+  },
 });
 
 /** Helper to build a CDP message, adding sessionId when in session mode */

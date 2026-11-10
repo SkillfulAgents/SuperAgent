@@ -34,6 +34,11 @@ function browserClosedLabel(kept: LoginKept | null): string {
   return kept.how === 'saved' ? 'Saved for the agent' : 'Kept for the agent'
 }
 
+/** The picked account's saved session went in instead of its values. */
+function sessionLabel(restored: boolean): string {
+  return restored ? 'Signed in with the saved session' : 'The saved session did not restore'
+}
+
 export function LoginRequestItem({
   toolUseId,
   message,
@@ -48,7 +53,8 @@ export function LoginRequestItem({
   // Viewers who cannot answer do not read the form's context (they may not).
   const context = useLoginContext(agentSlug, sessionId, toolUseId, !readOnly)
   const origin = context.data?.origin ?? null
-  const done = state.status === 'filled' || state.status === 'via' || state.status === 'manual' || state.status === 'declined' || state.status === 'settled' || state.status === 'browser_closed'
+  const done = state.status === 'filled' || state.status === 'via' || state.status === 'manual' || state.status === 'declined' ||
+    state.status === 'settled' || state.status === 'browser_closed' || state.status === 'session'
   // Here, not in the form: the shell swaps the form for its completed row in
   // the same render that settles the request, so the form never sees it.
   const onCompleteRef = useRef(onComplete)
@@ -68,6 +74,10 @@ export function LoginRequestItem({
       })
     }
   }, [result])
+  const sessionFailed = state.status === 'session' && !state.restored
+  useEffect(() => {
+    if (sessionFailed) toast.warning('The saved session did not restore', { description: 'Nothing was filled. The agent has been told what the page showed.' })
+  }, [sessionFailed])
   const closedKept = state.status === 'browser_closed' ? state.kept : undefined
   useEffect(() => {
     if (closedKept === undefined) return
@@ -101,8 +111,12 @@ export function LoginRequestItem({
                 />
               ),
               label: <span className="text-sm">{origin ? siteLabel(origin) : 'Sign in'}</span>,
-              statusLabel: state.status === 'browser_closed' ? browserClosedLabel(state.kept) : STATUS_LABELS[state.status],
-              isSuccess: state.status === 'browser_closed' ? state.kept !== null : state.status !== 'declined',
+              statusLabel: state.status === 'browser_closed'
+                ? browserClosedLabel(state.kept)
+                : state.status === 'session' ? sessionLabel(state.restored) : STATUS_LABELS[state.status],
+              isSuccess: state.status === 'browser_closed'
+                ? state.kept !== null
+                : state.status === 'session' ? state.restored : state.status !== 'declined',
             }
           : null
       }

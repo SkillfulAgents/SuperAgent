@@ -11,8 +11,9 @@ import {
   type LoginVaultPayload,
 } from '@shared/lib/tools/request-login/login-request'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { claimHeldParts, heldLoginFor, rememberSignInIdentity, settleHeldClaim, type HeldClaim, type HeldLoginRead } from './held-values'
+import { claimHeldParts, heldLoginFor, recentSignInIdentity, rememberSignInIdentity, settleHeldClaim, type HeldClaim, type HeldLoginRead } from './held-values'
 import { providerName } from './providers'
+import { beginSignInStep, restoreSavedSession, sessionBaseline, watchSignIn } from './session-host'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
 import {
   findGrantedAccount,
@@ -266,6 +267,55 @@ function fillsWithoutPassword(account: VaultAccount, fields: LoginContext['field
   })
 }
 
+/**
+ * Whether the page is the first of a sign-in: it asks who is signing in, or
+ * offers signing in with another account. Not a password asked again on a
+ * page that is signed in ("Confirm access"), nor a later step.
+ */
+export function isFirstSignInPage(context: Pick<LoginContext, 'fields' | 'providers'>): boolean {
+  return context.fields.some((field) => field.kind === 'username') || context.providers.length > 0
+}
+
+/**
+ * Whether the session a step leaves is watched as the account's
+ * (session-host): from a sign-in's first page, or a later step of the one
+ * this session began on the site with the same username. Elsewhere the
+ * browser may be signed in as another account (its password asked again,
+ * "Confirm access"), which is not this one's to save.
+ */
+export async function watchesStep(input: {
+  agentSlug: string
+  sessionId: string
+  site: string
+  context: Pick<LoginContext, 'fields' | 'providers'>
+  username: string | null
+}): Promise<boolean> {
+  if (isFirstSignInPage(input.context)) return true
+  const last = await recentSignInIdentity(input.agentSlug, input.sessionId, input.site)
+  return last !== null && input.username !== null && usernameKey(last) === usernameKey(input.username)
+}
+
+/**
+ * Whether a session saved from an earlier sign-in may sign the account in on
+ * this page, in place of its values: a sign-in that has not begun for it (its
+ * first page, nothing held for the step, not a code, not this account's step
+ * again), and never a session saved on an encrypted page into a plain-HTTP one.
+ * The agent naming the account, or the user picking it in the card.
+ */
+export async function restoresHere(input: {
+  agentSlug: string
+  sessionId: string
+  account: Pick<VaultAccount, 'site' | 'origin' | 'username'>
+  context: Pick<LoginContext, 'origin' | 'fields' | 'providers'>
+  held: HeldLoginRead | null
+}): Promise<boolean> {
+  const { agentSlug, sessionId, account, context, held } = input
+  if (held || !isFirstSignInPage(context) || context.fields.some((field) => field.kind === 'otp')) return false
+  if (!vaultFillsInto(account.origin, context.origin)) return false
+  const lastIdentity = await recentSignInIdentity(agentSlug, sessionId, account.site)
+  return lastIdentity === null || usernameKey(lastIdentity) !== usernameKey(account.username)
+}
+
 /** How long the host waits for the container to locate the fields before leaving the request to the form. */
 const LOCATE_WAIT_MS = 45_000
 
@@ -292,7 +342,10 @@ function ask(vault: LoginVaultPayload, context?: LoginContext): LoginDecision {
  *   is filled), or the form opens when it has none.
  * - A username: that account's parts (and what the user entered earlier for
  *   this step) fill the mapped fields, and the page is submitted. What the
- *   account lacks opens the form for just that.
+ *   account lacks opens the form for just that. On a sign-in's first page,
+ *   a session saved from an earlier one goes in first, when the agent's
+ *   browser has not had it (session-host): nothing is filled then. Each
+ *   step is watched for the session it leaves (session-host).
  * - ask_user (or a reason): always the form. With a username, the agent says
  *   the site turned that account down: the user enters it again, and until
  *   they do the vault does not fill its password without them.
@@ -362,17 +415,34 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   // An account the agent may not use (or that does not exist): the user decides.
   if (username && !account && !held) return ask({ mode: 'ask', username }, context)
   const identity = account?.username ?? username ?? held?.username ?? null
+  const asksCode = context.fields.some((field) => field.kind === 'otp')
+  const firstPage = isFirstSignInPage(context)
+
+  // A sign-in that has not begun for this account: a session saved from an
+  // earlier one may sign the agent in with nothing filled.
+  if (username && account && await restoresHere({ agentSlug, sessionId, account, context, held })) {
+    const restored = await restoreSavedSession({ agentSlug, sessionId, account })
+    if (restored) {
+      if (await answerLoginRequest(agentSlug, toolUseId, restored)) return { action: 'settled' }
+      return ask({ mode: 'ask', username: account.username }, context)
+    }
+  }
 
   // An account that signs in through another one: the user has nothing to
   // type here, even where the page also shows a password form, unless the
   // step asks only for what it holds besides (a workspace), or for a code:
   // the site's own check after the provider's, which the user answers. The
   // agent is told which provider account to use.
-  const asksCode = context.fields.some((field) => field.kind === 'otp')
   if (account?.via && !asksCode && !fillsWithoutPassword(account, context.fields)) {
     const via = { site: account.via.site, username: account.via.username, name: providerName(account.via.site) }
+    beginSignInStep(agentSlug, { site: account.site, username: account.username, accountId: account.id })
+    // Watched only from a sign-in's first page: elsewhere the browser may be
+    // signed in as another account, which is not this one's to save.
+    const baseline = firstPage ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
     if (await answerLoginRequest(agentSlug, toolUseId, { type: 'via', site, username: account.username, provider: via, saved: true })) {
       await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password: false, by: 'vault' })
+      // The site's own session, once the provider sends the agent back signed in.
+      watchSignIn({ agentSlug, sessionId, account, baseline })
       return { action: 'settled' }
     }
     return ask({ mode: 'ask', username: account.username }, context)
@@ -409,6 +479,11 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   }
   const values = valuesFor(context.fields, identity, { ...saved, ...(claim?.values ?? {}) })
   const shown = noteUsername(identity)
+  // Nothing watched before the step watches what it leaves; the site as it is
+  // before the step is what the watch after it compares with.
+  const watched = account !== null && await watchesStep({ agentSlug, sessionId, site, context, username: identity })
+  beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
+  const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
   let filled: Awaited<ReturnType<typeof fillLoginInContainer>>
   try {
     filled = await fillLoginInContainer(agentSlug, sessionId, toolUseId, context, values, {
@@ -447,6 +522,7 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   if (account && wentIn.some(Boolean)) {
     const password = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
     await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password, by: fromHeld.includes('password') ? 'user' : 'vault' })
+    watchSignIn({ agentSlug, sessionId, account, baseline })
   }
   return { action: 'settled' }
 }

@@ -6,6 +6,7 @@
 
 import * as net from 'net';
 import * as path from 'path';
+import { browserCommand } from './browser-gate';
 
 const DEFAULT_MAX_TABS = 10;
 
@@ -56,8 +57,19 @@ class TabManager {
 
   // --- Daemon Queries ---
 
-  /** Query the agent-browser daemon for its tab list via Unix socket */
-  async queryTabs(): Promise<TabInfo[]> {
+  /** Query the agent-browser daemon for its tab list via Unix socket: a command like any other (browser-gate.ts). */
+  queryTabs(): Promise<TabInfo[]> {
+    return browserCommand(() => this.queryDaemonTabs());
+  }
+
+  private async queryDaemonTabs(): Promise<TabInfo[]> {
+    const tabs = (await this.daemonTabList()).data?.tabs;
+    if (!tabs) throw new Error('No tabs');
+    return tabs;
+  }
+
+  /** A `tab_list` over the daemon's Unix socket, with what else the command carries (`pinTab`). */
+  private daemonTabList(extra: Record<string, unknown> = {}): Promise<{ data?: { tabs?: TabInfo[] } }> {
     const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
       || (process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'agent-browser') : null)
       || path.join(process.env.HOME || '/home/claude', '.agent-browser');
@@ -67,7 +79,7 @@ class TabManager {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => { client.destroy(); reject(new Error('Timeout')); }, 3000);
       const client = net.createConnection(socketPath, () => {
-        client.write(JSON.stringify({ id: 'tab-q', action: 'tab_list' }) + '\n');
+        client.write(JSON.stringify({ id: 'tab-q', action: 'tab_list', ...extra }) + '\n');
       });
       let buf = '';
       client.on('data', (chunk: Buffer) => {
@@ -76,12 +88,30 @@ class TabManager {
           const resp = JSON.parse(buf);
           clearTimeout(timeout);
           client.end();
-          const tabs = resp.data?.tabs;
-          resp.success && tabs ? resolve(tabs) : reject(new Error(resp.error || 'No tabs'));
+          resp.success ? resolve(resp) : reject(new Error(resp.error || 'No tabs'));
         } catch { /* incomplete JSON, wait for more */ }
       });
       client.on('error', (err: Error) => { clearTimeout(timeout); reject(err); });
     });
+  }
+
+  /**
+   * Run a saved-session operation (browser-session.ts) with agent-browser
+   * pinned to the agent's tab. The operation opens tabs of its own, and the
+   * daemon makes a tab it discovers the active one by itself, with no command
+   * (agent-browser 0.39), then falls back to the last tab once it closes.
+   * Pinned (its `pinTab`), it never adopts one; and a command applies the tab
+   * events the daemon has before anything else, so the unpin comes after it
+   * has seen the operation's tabs, while still pinned. Asks the daemon
+   * directly: the operation already holds the browser (browser-gate.ts).
+   */
+  async keepActiveTab<T>(work: () => Promise<T>): Promise<T> {
+    const pinned = await this.daemonTabList({ pinTab: true }).then(() => true, () => false);
+    try {
+      return await work();
+    } finally {
+      if (pinned) await this.daemonTabList({ pinTab: false }).catch(() => {});
+    }
   }
 
   /** Re-query daemon and update the cached tab count */

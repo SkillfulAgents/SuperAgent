@@ -36,8 +36,10 @@ const WORLD_NAME = 'superagent-login'
 
 /**
  * One CDP connection to a page, with the page's out-of-process frames
- * auto-attached as flat sessions. Errors never carry call arguments: they
- * name the method only, since arguments can be field values.
+ * auto-attached as flat sessions — or to the browser itself, for work across
+ * its tabs (saved sessions), where only the sessions the caller attaches
+ * exist. Errors never carry call arguments: they name the method only, since
+ * arguments can be field values.
  */
 export class CdpConnection {
   private nextId = 0
@@ -50,7 +52,12 @@ export class CdpConnection {
   /** The page's session, or undefined when the socket is the page's own. */
   pageSession: string | undefined
 
-  private constructor(private readonly ws: WebSocket) {
+  private constructor(
+    private readonly ws: WebSocket,
+    /** Whether the frames of attached targets attach too (a page connection's). */
+    private readonly followFrames: boolean,
+    private readonly callTimeoutMs: number,
+  ) {
     ws.on('message', (raw) => this.onMessage(raw.toString()))
     // Closed from the other end: later calls fail at once instead of each
     // waiting out its timeout on a socket that drops what it is sent.
@@ -58,17 +65,28 @@ export class CdpConnection {
     ws.on('error', () => this.failAll('CDP connection failed'))
   }
 
-  static async open(target: CdpPageTarget): Promise<CdpConnection> {
-    const ws = new WebSocket(target.wsUrl)
+  private static async connect(wsUrl: string, failure: string): Promise<WebSocket> {
+    const ws = new WebSocket(wsUrl)
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         ws.terminate()
-        reject(new Error('Could not connect to the browser page'))
+        reject(new Error(failure))
       }, OPEN_TIMEOUT_MS)
       ws.once('open', () => { clearTimeout(timer); resolve() })
-      ws.once('error', () => { clearTimeout(timer); reject(new Error('Could not connect to the browser page')) })
+      ws.once('error', () => { clearTimeout(timer); reject(new Error(failure)) })
     })
-    const connection = new CdpConnection(ws)
+    return ws
+  }
+
+  /** A connection to the browser's own endpoint, with no page attached. */
+  static async openBrowser(wsUrl: string, options: { callTimeoutMs?: number } = {}): Promise<CdpConnection> {
+    const ws = await CdpConnection.connect(wsUrl, 'Could not connect to the browser')
+    return new CdpConnection(ws, false, options.callTimeoutMs ?? CALL_TIMEOUT_MS)
+  }
+
+  static async open(target: CdpPageTarget): Promise<CdpConnection> {
+    const ws = await CdpConnection.connect(target.wsUrl, 'Could not connect to the browser page')
+    const connection = new CdpConnection(ws, true, CALL_TIMEOUT_MS)
     try {
       if (target.requiresSession) {
         const attached = await connection.send<{ sessionId: string }>('Target.attachToTarget', { targetId: target.id, flatten: true })
@@ -91,7 +109,7 @@ export class CdpConnection {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`${method}: timed out`))
-      }, CALL_TIMEOUT_MS)
+      }, this.callTimeoutMs)
       this.pending.set(id, { resolve, reject: (error) => reject(new Error(`${method}: ${error.message}`)), timer, sessionId })
       this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
     })
@@ -155,7 +173,7 @@ export class CdpConnection {
       const event: CdpEvent = { method: message.method, params: message.params ?? {}, sessionId: message.sessionId }
       for (const listener of this.listeners) listener(event)
     }
-    if (message.method === 'Target.attachedToTarget') {
+    if (message.method === 'Target.attachedToTarget' && this.followFrames) {
       const { sessionId, targetInfo } = message.params ?? {}
       if (typeof sessionId !== 'string' || typeof targetInfo?.targetId !== 'string') return
       this.children.set(targetInfo.targetId, sessionId)

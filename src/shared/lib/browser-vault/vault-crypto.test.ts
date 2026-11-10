@@ -114,7 +114,7 @@ describe('vault sealing', () => {
       site: 'github.com',
       capturedAt: '2026-10-23T00:00:00.000Z',
       cookies: [{ name: 'user_session', value: 'abc', domain: '.github.com', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' as const }],
-      origins: [{ origin: 'https://github.com', localStorage: [['k', 'v']] as Array<[string, string]>, indexedDB: [], unsupported: [] }],
+      origins: [{ origin: 'https://github.com', localStorage: [['k', 'v']] as Array<[string, string]>, indexedDB: [] }],
     }
     const sessionBinding = { purpose: 'account-session' as const, id: 'session-1', site: 'github.com' }
     const sealed = await sealJson<SessionBundle>(bundle, sessionBinding, sessionBundleSchema)
