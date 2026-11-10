@@ -30,6 +30,7 @@ import {
   type ChatDirectoryPage,
   type ChatDirectoryUser,
   type ChatClassifyContext,
+  type IncomingMessage,
   type OutgoingMessage,
   type SystemPromptContext,
   type ToolOutcome,
@@ -250,6 +251,37 @@ export function slackLinks(workspaceUrl: string | undefined, channel: string, ts
     return { messageUrl: message.toString(), conversationUrl: conversation.toString() }
   } catch {
     return {}
+  }
+}
+
+interface SlackFileLike { name?: string; mimetype?: string; url_private_download?: string; url_private?: string; permalink?: string }
+interface SlackAttachmentLike { is_share?: boolean; is_msg_unfurl?: boolean; text?: string; fallback?: string; author_name?: string; from_url?: string; files?: SlackFileLike[] }
+
+/**
+ * A message's text and files with the Slack messages shared into it: a forward
+ * (is_share) brings its text and files, a pasted message link (is_msg_unfurl)
+ * its text only. Website previews carry neither flag and stay out.
+ */
+export function slackMessageContent(msg: { text?: string; files?: SlackFileLike[]; attachments?: SlackAttachmentLike[] }): {
+  text: string
+  files: NonNullable<IncomingMessage['files']>
+} {
+  const shared = (msg.attachments ?? []).filter(a => a.is_share || a.is_msg_unfurl)
+  const quotes = shared.map(a => {
+    // A `]` or line break in the name would end the label early, as in formatSenderPrefix.
+    const author = a.author_name?.replace(/[\]\r\n]/g, ' ').trim()
+    const header = `[Shared message${author ? ` from ${author}` : ''}${a.from_url ? `: ${a.from_url}` : ''}]`
+    const body = a.text || a.fallback
+    return body ? `${header}\n${body.split('\n').map(line => `> ${line}`).join('\n')}` : header
+  })
+  const files = [...(msg.files ?? []), ...shared.filter(a => a.is_share).flatMap(a => a.files ?? [])]
+  return {
+    text: [msg.text, ...quotes].filter(Boolean).join('\n\n'),
+    files: files.map(f => ({
+      name: f.name || 'file',
+      url: f.url_private_download || f.url_private || f.permalink || '',
+      mimeType: f.mimetype,
+    })),
   }
 }
 
@@ -724,8 +756,9 @@ export class SlackConnector extends ChatAgentIntegration {
       const userName = await this.resolveUserName(userId)
       const chatName = await this.resolveChannelName(chatId)
 
+      const content = slackMessageContent(msg)
       // Resolve <@U123>, <#C123|name>, links, and special mentions in the text
-      let text = await this.resolveMentionsInText(rawText)
+      let text = await this.resolveMentionsInText(content.text)
       const requestText = text
 
       // When joining a thread mid-conversation, fetch earlier messages as context.
@@ -735,13 +768,6 @@ export class SlackConnector extends ChatAgentIntegration {
         if (history) text = history + '\n\n' + text
       }
 
-      // Handle file uploads
-      const files = msg.files?.map((f: any) => ({
-        name: f.name || 'file',
-        url: f.url_private_download || f.url_private || f.permalink || '',
-        mimeType: f.mimetype,
-      }))
-
       const input = this.emitMessage({
         externalMessageId: ts,
         text,
@@ -749,7 +775,7 @@ export class SlackConnector extends ChatAgentIntegration {
         userId,
         userName,
         chatName,
-        files: files?.length ? files : undefined,
+        files: content.files.length ? content.files : undefined,
         timestamp: new Date(Number(ts) * 1000),
         display: {
           requestText,
@@ -1502,7 +1528,8 @@ export class SlackConnector extends ChatAgentIntegration {
       const lines: string[] = []
       for (const m of previous) {
         const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
-        const text = m.text ? await this.resolveMentionsInText(m.text) : ''
+        const content = slackMessageContent(m).text
+        const text = content ? await this.resolveMentionsInText(content) : ''
         if (text) lines.push(`${name}: ${text}`)
       }
       if (lines.length === 0) return null
