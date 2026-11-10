@@ -3,6 +3,7 @@ import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-a
 import { splitStreamingMarkdown } from '../split-streaming-markdown'
 import { getFileExtension } from '../utils/mime'
 import { localFilePath } from '../utils/workspace-file-url'
+import { fencePage, type FenceKind } from './fence-page'
 
 /** A token, where it sits in its block, and the tokens it sits inside, outermost first. */
 interface PlacedToken {
@@ -125,7 +126,6 @@ const image: ChatVisual = {
   }),
 }
 
-type FenceKind = 'mermaid' | 'math' | 'html'
 
 // The host waits this long for the container's queue and render, then sends the block as text.
 const RENDER_TIMEOUT_MS = 20_000
@@ -140,7 +140,7 @@ async function renderInContainer(agentSlug: string, kind: FenceKind, source: str
     const response = await container.fetch('/render', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind, source }),
+      body: JSON.stringify(fencePage(kind, source)),
       signal: AbortSignal.timeout(wait),
     })
     if (!response.ok) {

@@ -1,5 +1,5 @@
 // The policy and shell an html fence renders in: the app's preview and the
-// container's chat render share them. Import-free: the app imports it too.
+// page the host builds for a chat render share them.
 
 // Scripts and styles are inline; nothing is fetched, posted, or framed. The app's web font
 // would need a network exception a script could leak data through, so text uses the font stack's fallbacks.

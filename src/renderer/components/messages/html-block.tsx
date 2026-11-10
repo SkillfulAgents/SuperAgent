@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { useIsDark } from '@renderer/hooks/use-theme'
-import { htmlPreviewBodyStyle, htmlPreviewDocument } from '../../../../agent-container/src/html-preview'
+import { htmlPreviewBodyStyle, htmlPreviewDocument } from '@shared/lib/html-preview'
 
 const HEIGHT_MESSAGE = 'superagent:html-block-height'
 const WHEEL_MESSAGE = 'superagent:html-block-wheel'
