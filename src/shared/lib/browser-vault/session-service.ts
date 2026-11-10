@@ -1,7 +1,8 @@
-import { and, asc, eq, inArray, isNotNull, ne, sql, type SQL } from 'drizzle-orm'
+import { and, asc, eq, inArray, like, ne, sql, type SQL } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch } from '@shared/lib/db/batch'
 import { agentBrowserAccounts, browserAccounts, browserAccountSessions } from '@shared/lib/db/schema'
+import { registrableDomain } from './site'
 import { openJson, sealJson, VaultSealError } from './vault-crypto'
 import { sessionBundleSchema, type BrowserType, type SessionBundle } from './vault-schemas'
 import type { VaultOwner } from './vault-service'
@@ -15,7 +16,9 @@ import type { VaultOwner } from './vault-service'
  * agent's browser holds (it was restored there, or captured from there), and
  * the vault restores a session into a browser only when it holds another.
  * Of an agent's accounts on one site, only one can be in its browser: the
- * others' marks go when one is restored or captured.
+ * others' marks go when one is restored or captured, on every site that
+ * shares its cookies (a parent domain's reach acme.slack.com and
+ * beta.slack.com alike).
  */
 
 /** One row per account and browser type: its id says which, and the seal is bound to it. */
@@ -23,24 +26,45 @@ function sessionRowId(accountId: string, browserType: BrowserType): string {
   return `${accountId}:${browserType}`
 }
 
-/** The next capture's version: past every saved session's. */
+/**
+ * The next capture's version: past every saved session's, and every one a
+ * browser is marked as holding, so a version never names two captures (a
+ * session forgotten, or one restored as it was forgotten).
+ */
 function nextVersion(): SQL<number> {
-  return sql<number>`(select coalesce(max(${browserAccountSessions.version}), 0) + 1 from ${browserAccountSessions})`
+  return sql<number>`(select max(
+    (select coalesce(max(${browserAccountSessions.version}), 0) from ${browserAccountSessions}),
+    (select coalesce(max(${agentBrowserAccounts.appliedSessionVersion}), 0) from ${agentBrowserAccounts})
+  ) + 1)`
 }
 
-/** The statements that make `accountId` the account on `site` the agent's browser holds, at `version`. */
-function holdStatements(agentSlug: string, accountId: string, site: string, version: number | SQL<number>) {
-  const sameSite = db.select({ id: browserAccounts.id }).from(browserAccounts).where(eq(browserAccounts.site, site))
+/**
+ * The accounts on sites that share cookies with `site`: those of its
+ * registrable domain. Read before the write: SQL cannot tell the domain, and
+ * an account saved meanwhile holds no mark to clear.
+ */
+async function accountsSharingCookies(site: string): Promise<string[]> {
+  const domain = registrableDomain(site)
+  const rows = await db.select({ id: browserAccounts.id, site: browserAccounts.site }).from(browserAccounts)
+    .where(like(browserAccounts.site, `%${domain}%`))
+    .all()
+  return rows.filter((row) => registrableDomain(row.site) === domain).map((row) => row.id)
+}
+
+/** The statements that make `accountId` the account the agent's browser holds at `version`, in place of those it shares cookies with (`sharing`). */
+function holdStatements(agentSlug: string, accountId: string, sharing: string[], version: number | SQL<number>) {
+  const hold = db.update(agentBrowserAccounts)
+    .set({ appliedSessionVersion: version })
+    .where(and(eq(agentBrowserAccounts.agentSlug, agentSlug), eq(agentBrowserAccounts.accountId, accountId)))
+  if (sharing.length === 0) return [hold] as const
   return [
-    db.update(agentBrowserAccounts)
-      .set({ appliedSessionVersion: version })
-      .where(and(eq(agentBrowserAccounts.agentSlug, agentSlug), eq(agentBrowserAccounts.accountId, accountId))),
+    hold,
     db.update(agentBrowserAccounts)
       .set({ appliedSessionVersion: null })
       .where(and(
         eq(agentBrowserAccounts.agentSlug, agentSlug),
         ne(agentBrowserAccounts.accountId, accountId),
-        inArray(agentBrowserAccounts.accountId, sameSite),
+        inArray(agentBrowserAccounts.accountId, sharing),
       )),
   ] as const
 }
@@ -61,11 +85,12 @@ export async function saveAccountSession(input: {
   const sealed = sealJson(bundle, { purpose: 'account-session', id, site: account.site }, sessionBundleSchema)
   const now = new Date()
   const committed = sql<number>`(select ${browserAccountSessions.version} from ${browserAccountSessions} where ${browserAccountSessions.id} = ${id})`
+  const sharing = await accountsSharingCookies(account.site)
   await batch([
     db.insert(browserAccountSessions)
       .values({ id, accountId: account.id, browserType, bundle: sealed, version: nextVersion(), capturedAt: now, createdAt: now, updatedAt: now })
       .onConflictDoUpdate({ target: browserAccountSessions.id, set: { bundle: sealed, version: nextVersion(), capturedAt: now, updatedAt: now } }),
-    ...holdStatements(agentSlug, account.id, account.site, committed),
+    ...holdStatements(agentSlug, account.id, sharing, committed),
   ])
 }
 
@@ -75,11 +100,19 @@ export interface SavedSession {
   bundle: SessionBundle
 }
 
-/** The account's saved session for this browser type; null when it has none, or its seal does not open here. */
-export async function readAccountSession(account: { id: string; site: string }, browserType: BrowserType): Promise<SavedSession | null> {
+/**
+ * The account's saved session for this browser type; null when it has none,
+ * it is the capture `unlessVersion` names (opened only when it is not), or
+ * its seal does not open here.
+ */
+export async function readAccountSession(
+  account: { id: string; site: string },
+  browserType: BrowserType,
+  options: { unlessVersion?: number | null } = {},
+): Promise<SavedSession | null> {
   const id = sessionRowId(account.id, browserType)
   const row = await db.select().from(browserAccountSessions).where(eq(browserAccountSessions.id, id)).get()
-  if (!row) return null
+  if (!row || row.version === options.unlessVersion) return null
   try {
     const bundle = openJson(row.bundle, { purpose: 'account-session', id, site: account.site }, sessionBundleSchema)
     return { version: row.version, capturedAt: row.capturedAt, bundle }
@@ -100,19 +133,10 @@ export async function heldSessionVersion(agentSlug: string, accountId: string): 
   return row?.version ?? null
 }
 
-/** The account on `site` whose session the agent's browser holds, and which capture: at most one. */
-export async function heldAccountOnSite(agentSlug: string, site: string): Promise<{ accountId: string; version: number } | null> {
-  const row = await db.select({ accountId: agentBrowserAccounts.accountId, version: agentBrowserAccounts.appliedSessionVersion })
-    .from(agentBrowserAccounts)
-    .innerJoin(browserAccounts, eq(browserAccounts.id, agentBrowserAccounts.accountId))
-    .where(and(eq(agentBrowserAccounts.agentSlug, agentSlug), eq(browserAccounts.site, site), isNotNull(agentBrowserAccounts.appliedSessionVersion)))
-    .get()
-  return row?.version != null ? { accountId: row.accountId, version: row.version } : null
-}
-
-/** The account's session at `version` was restored into the agent's browser: in place of any other account's on the site. */
+/** The account's session at `version` was restored into the agent's browser: in place of any other account's on the site, or one sharing its cookies. */
 export async function markSessionHeld(input: { agentSlug: string; account: { id: string; site: string }; version: number }): Promise<void> {
-  await batch([...holdStatements(input.agentSlug, input.account.id, input.account.site, input.version)])
+  const sharing = await accountsSharingCookies(input.account.site)
+  await batch([...holdStatements(input.agentSlug, input.account.id, sharing, input.version)])
 }
 
 /** The saved sessions of these accounts, for the owner's list: which browser types, and when. Never a bundle. */
@@ -135,14 +159,15 @@ export async function listAccountSessions(accountIds: string[]): Promise<Array<{
  * False when the account is not the owner's.
  */
 export async function forgetAccountSessions(owner: VaultOwner, accountId: string): Promise<boolean> {
-  const owned = await db.select({ id: browserAccounts.id }).from(browserAccounts)
+  const owned = () => db.select({ id: browserAccounts.id }).from(browserAccounts)
     .where(and(eq(browserAccounts.id, accountId), owner === null ? undefined : eq(browserAccounts.userId, owner)))
-    .get()
-  if (!owned) return false
+  // Read only to answer: the writes below hold the condition themselves.
+  if (!(await owned().get())) return false
   await batch([
-    db.delete(browserAccountSessions).where(eq(browserAccountSessions.accountId, accountId)),
-    // No browser holds a capture that is gone: and its version may be the next one given out.
-    db.update(agentBrowserAccounts).set({ appliedSessionVersion: null }).where(eq(agentBrowserAccounts.accountId, accountId)),
+    db.delete(browserAccountSessions).where(and(eq(browserAccountSessions.accountId, accountId), inArray(browserAccountSessions.accountId, owned()))),
+    // No browser holds a capture that is gone.
+    db.update(agentBrowserAccounts).set({ appliedSessionVersion: null })
+      .where(and(eq(agentBrowserAccounts.accountId, accountId), inArray(agentBrowserAccounts.accountId, owned()))),
   ])
   return true
 }

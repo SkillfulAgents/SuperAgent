@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { candidateOrigins, cookieFromSitePort, cookieInScope, hashCookies, originInScope, toSessionCookie } from './browser-session'
+import { candidateOrigins, cookieFromSitePort, cookieInScope, hashSession, originInScope, toSessionCookie } from './browser-session'
 
 const cdpCookie = (overrides: Record<string, unknown> = {}) => ({
   name: 'sid', value: 'v', domain: 'acme.okta.com', path: '/', expires: 2_000_000_000,
@@ -12,6 +12,8 @@ describe('the scope of a saved session', () => {
     expect(cookieInScope('.ACME.okta.com', 'acme.okta.com')).toBe(true)
     expect(cookieInScope('login.acme.okta.com', 'acme.okta.com')).toBe(true)
     expect(cookieInScope('.okta.com', 'acme.okta.com')).toBe(true)
+    // The parent host's own cookie (no leading dot) is never sent to the site.
+    expect(cookieInScope('okta.com', 'acme.okta.com')).toBe(false)
     expect(cookieInScope('beta.okta.com', 'acme.okta.com')).toBe(false)
     expect(cookieInScope('notacme.okta.com', 'acme.okta.com')).toBe(false)
     expect(cookieInScope('acme.okta.com.evil.com', 'acme.okta.com')).toBe(false)
@@ -35,6 +37,9 @@ describe('the scope of a saved session', () => {
     expect(originInScope('https://beta.okta.com', 'acme.okta.com')).toBe(false)
     expect(originInScope('http://172.17.0.1:8101', '172.17.0.1:8101')).toBe(true)
     expect(originInScope('http://172.17.0.1:8102', '172.17.0.1:8101')).toBe(false)
+    expect(originInScope('http://app.intranet.test:8080', 'intranet.test:8080')).toBe(true)
+    expect(originInScope('http://app.intranet.test:9090', 'intranet.test:8080')).toBe(false)
+    expect(originInScope('https://app.example.com:8443', 'example.com')).toBe(false)
     expect(originInScope('chrome://settings', 'settings')).toBe(false)
   })
 
@@ -44,6 +49,11 @@ describe('the scope of a saved session', () => {
       [{ domain: '.example.com' }, { domain: 'app.example.com' }, { domain: '.other.com' }],
       ['https://www.example.com/feed?x=1', 'https://accounts.example.com/sso', 'https://other.com/', 'chrome://newtab/'],
     )).toEqual(['https://accounts.example.com', 'https://app.example.com', 'https://example.com', 'https://www.example.com'])
+  })
+
+  it('looks for a subdomain\'s storage on the sign-in\'s scheme and port', () => {
+    expect(candidateOrigins({ site: 'intranet.test:8080', origin: 'http://intranet.test:8080' }, [{ domain: 'app.intranet.test' }], []))
+      .toEqual(['http://app.intranet.test:8080', 'http://intranet.test:8080'])
   })
 })
 
@@ -62,14 +72,25 @@ describe('toSessionCookie', () => {
   })
 })
 
-describe('hashCookies', () => {
-  const base = [toSessionCookie(cdpCookie())!, toSessionCookie(cdpCookie({ name: 'device', value: 'd' }))!]
+describe('hashSession', () => {
+  const cookies = [toSessionCookie(cdpCookie())!, toSessionCookie(cdpCookie({ name: 'device', value: 'd' }))!]
+  const origins = [
+    { origin: 'https://acme.okta.com', localStorage: [['a', '1'], ['b', '2']] as Array<[string, string]>, indexedDB: [] },
+    { origin: 'https://app.acme.okta.com', localStorage: [['token', 't']] as Array<[string, string]>, indexedDB: [] },
+  ]
 
-  it('changes with a value, not with order or an expiry pushed out', () => {
-    const hash = hashCookies(base)
-    expect(hashCookies([...base].reverse())).toBe(hash)
-    expect(hashCookies(base.map((cookie) => ({ ...cookie, expires: 2_100_000_000 })))).toBe(hash)
-    expect(hashCookies([{ ...base[0], value: 'rotated' }, base[1]])).not.toBe(hash)
-    expect(hashCookies([base[0]])).not.toBe(hash)
+  it('changes with a cookie value, not with order or an expiry pushed out', () => {
+    const hash = hashSession({ cookies, origins })
+    expect(hashSession({ cookies: [...cookies].reverse(), origins: [...origins].reverse() })).toBe(hash)
+    expect(hashSession({ cookies: cookies.map((cookie) => ({ ...cookie, expires: 2_100_000_000 })), origins })).toBe(hash)
+    expect(hashSession({ cookies: [{ ...cookies[0], value: 'rotated' }, cookies[1]], origins })).not.toBe(hash)
+    expect(hashSession({ cookies: [cookies[0]], origins })).not.toBe(hash)
+  })
+
+  it('changes with what the site stored, not with the order it was read in', () => {
+    const hash = hashSession({ cookies, origins })
+    expect(hashSession({ cookies, origins: [{ ...origins[0], localStorage: [['b', '2'], ['a', '1']] }, origins[1]] })).toBe(hash)
+    expect(hashSession({ cookies, origins: [origins[0], { ...origins[1], localStorage: [['token', 'signed-in']] }] })).not.toBe(hash)
+    expect(hashSession({ cookies, origins: [origins[0]] })).not.toBe(hash)
   })
 })

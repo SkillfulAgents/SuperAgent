@@ -114,7 +114,7 @@ export const sessionBundleSchema = z.object({
     localStorage: z.array(z.tuple([z.string(), z.string()])).max(10_000),
     indexedDB: z.array(indexedDbSchema).max(100),
   }).strict()).max(50),
-  /** Values and databases left out for their size. */
+  /** Values and databases left out for their size, or that could not be read. */
   leftOut: z.number().int().min(0).optional(),
 }).strict()
 export type SessionBundle = z.infer<typeof sessionBundleSchema>

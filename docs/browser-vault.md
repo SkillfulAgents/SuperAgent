@@ -11,7 +11,8 @@ another agent's browser, so a sign-in the user completed once (a code, a
 phone prompt) does not need them again.
 
 Code: `src/shared/lib/browser-vault/` (host), `agent-container/src/login-*.ts`,
-`agent-container/src/browser-session*.ts`, `agent-container/src/session-routes.ts`
+`agent-container/src/browser-session*.ts`, `agent-container/src/session-routes.ts`,
+`agent-container/src/browser-gate.ts`
 and `agent-container/src/tools/request-login.ts` (container),
 `src/shared/lib/tools/request-login/` (the card), Settings → Logins
 (`src/renderer/components/settings/logins-tab.tsx`).
@@ -68,7 +69,7 @@ sign-in the vault can do never notifies anyone:
    container's fill endpoint, and the page is submitted. What the account
    lacks (a code, a new field) opens the card for just that
    (`mode: 'complete'`, `covered` = the fields the vault fills). On a
-   sign-in's first step, the account's saved session goes in first when the
+   sign-in's first page, the account's saved session goes in first when the
    agent's browser has not had it, and nothing is filled (see Saved
    sessions).
 3. `ask_user: true` (or a `reason`), or an account the agent may not use: the
@@ -177,78 +178,152 @@ Only a one-time code is not kept: the user is asked again.
 Every browser type keeps a profile per agent (the container's in its
 workspace, Chrome's in the data dir, Browserbase's and the platform's in a
 persistent context), so an agent stays signed in by itself. A saved session
-carries a sign-in to the account's other agents, and lets one agent switch
-a site between its accounts.
+carries a sign-in to the account's other agents.
 
 **What a session is.** An account's cookies, localStorage and IndexedDB on
-its site, as the browser sends them there: cookies set for the site's host,
-its subdomains, or a parent domain (Google's session is on `.google.com`, its
-sign-in on accounts.google.com), and the storage of its host's and
-subdomains' origins. Never a sibling host: `acme.okta.com` and
-`beta.okta.com` are separate accounts. sessionStorage belongs to a tab and is
-not saved. An account that signs in through another (`via`) saves its own
-site's session; the provider's account saves its own. One per account and
-browser type (`browser_account_sessions`, sealed like the secrets, bound to
-the row): it restores only into the type it came from (Chrome on a Mac
-signs nothing in on container Chromium, and Chrome on Windows binds Google
-sessions to the device). Caches stay out (a localStorage value over 64 KB, a
-database over 2,000 records or 512 KB, a bundle past 1 MB).
+its site, as the browser sends them there: cookies set for the site's host or
+its subdomains, a parent domain's Domain cookies (Google's session is on
+`.google.com`, its sign-in on accounts.google.com; a parent host's own
+cookies never reach the site and stay out), and the storage of its host's and
+subdomains' origins (a subdomain's on the site's scheme and port). Never a
+sibling host: `acme.okta.com` and `beta.okta.com` are separate accounts.
+sessionStorage belongs to a tab and is not saved. An account that signs in
+through another (`via`) saves its own site's session; the provider's account
+saves its own. One per account and browser type (`browser_account_sessions`,
+sealed like the secrets, bound to the row): it restores only into the type it
+came from (Chrome on a Mac signs nothing in on container Chromium, and Chrome
+on Windows binds Google sessions to the device). Caches stay out (a
+localStorage value over 64 KB, a database over 2,000 records or 512 KB, read
+no further than that, a bundle past 1 MB), and so does a database that cannot
+be read: one that does not open within 3 s (a deletion or upgrade the site
+holds up), an unreadable value (a blob whose file is gone), a value nested
+too deep to come back. A capture never creates a database: one the site
+deleted meanwhile is gone, not saved empty.
 
-**Capture.** After each sign-in step the vault or the user's form put into a
-page, and after a provider was named for a `via` account, the host saves the
-site's session and watches it for three minutes (`watchSignIn`): every 15 s
-it compares the site's cookies (a fingerprint, the container's `unlessCookieHash`)
-and saves again when they changed, at most five times. That catches what
-completes a sign-in without another call: a phone prompt approved, a
-provider's redirect landing back, the page moving on by itself. A hand-over
-(`request_browser_input`) completed by the account's owner within 30 minutes
-of the session's last step watches again: a passkey, a prompt that outlasted
-the wait. Each capture is saved to the account of the step that started the
-watch and nowhere else; a newer step on the site replaces the watch, and a
-browser closed or taken by another session ends it. The capture reads on a
-hidden tab of its own, beside the agent's work, hidden from every tab list.
+**Capture.** Before each sign-in step the vault or the user's form puts into
+a page, and before a provider is named for a `via` account, the host reads
+the site's state (`sessionBaseline`: a fingerprint of its cookies and
+storage, the container's `peek`). After the step it watches the site for
+three minutes (`watchSignIn`): it looks 2 s after the step and every 15 s
+after that, and the container sends the site back only when the fingerprint
+differs from the last one saved (`unlessHash`). A change is saved to the
+step's account at once when the site held still before it (a sign-in
+landing, a push approved) or holds still after it; while it changes on look
+after look (a cookie rewritten on every page), at most once a minute; and
+once more when the watch ends. So the state a step started from is never
+saved as its account's, and what
+completes a sign-in without another call is: a phone prompt approved, a
+provider's redirect landing back, a token the app stores (Supabase and
+Firebase keep the session in storage alone). A step is watched only from a
+sign-in's first page (a username field, provider buttons), or as a later step
+of the one the session began on the site with the same username: elsewhere
+(a password asked again, "Confirm access") the browser may be signed in as
+another account.
 
-**Restore.** Inside request_login, when the agent names an account on a
-sign-in's first step (no step went in on the site in this session, none
-held, not a code): the agent is signed out there, so no session that works is
-replaced. The account's session goes in unless the agent's browser
-already held that capture: `version` is one sequence across all saved
-sessions, so a grant's `applied_session_version` names the capture its
-agent's browser got (restored there, or captured from there; one account
-per site at a time). The container parks the agent's tab on a blank page of
-its origin, so the sign-in page unloads (and writes what it writes on the way
-out) before anything changes; empties the site (every cookie and origin in
-scope, cookies last); writes the session; and sends the tab back to its URL.
-The agent is told the session was restored and the page loaded again
-(`type: 'session'`), and calls again if the page still asks to sign in: the
-same capture never goes in twice, so that call fills the values, and the
-watch saves the new sign-in over the old session. A restore that fails after
-it changed something empties the site, as a sign-out, rather than leave two
-accounts' state mixed; one that failed before fills in the same call. The
-same call with no fields switches a signed-in site to another account. A
-restore counts as a use in the audit log (`session: true`), never as a
-password fill.
+Anything that may change who is signed in ends a watch, and nothing more of
+that sign-in is saved: any sign-in step or restore in the agent's browser, on
+any site and in any of its sessions (sites share a parent domain's cookies,
+and a sign-in lands on another site), but the provider step of a sign-in
+through it (`via`); a password manager's login; someone other than the
+account's owner done with a hand-over or a sign-in card, or declining it;
+the browser closing, opening again (`generation` in `/browser/status`),
+passing to another session, or the session switching to another kind of
+browser. While a hand-over or a sign-in card waits on the user, a watch does
+not look: what happens in the browser then is theirs. A hand-over
+(`request_browser_input`), or signing in on the page in place of the card,
+that the owner finishes on the sign-in's site within 30 minutes of its step
+looks at the site again at once and saves what changed since: a passkey, a
+prompt that outlasted the wait. What a restore puts in is not watched: sites
+rewrite a cookie on every page (load balancers, analytics, re-encrypted
+framework sessions), and a session saved again for each would go round
+between the agents that share it. A capture or a restore lets go of the
+other accounts' marks (below) on every site of the registrable domain.
 
-**Sync on open.** When the agent opens a page (`browser_open`), the container
-asks the host (`POST /api/browser/session-sync`, behind the agent's proxy
-token) before it reads the page for the agent. If the browser holds one of
-the agent's accounts on the site it landed on (its grant has a mark) and the
-vault has a later capture of that same account for this browser type
-(another agent signed in since; versions only grow), that capture goes in as
-above, so the agent finds the site as the newest sign-in left it. Only that
-site, and only the account the browser holds there: which of several
-accounts to use stays the agent's call. The cost: a later capture is not
-always a better one (a sign-in that never finished, a session the site had
-already ended), so it can replace a session that still worked; the agent
-then signs in again, and that sign-in is saved. Every container gets
-`HOST_APP_URL` for this, not only one with a host browser.
+The capture reads on a hidden tab of its own, beside the agent's work.
+agent-browser makes a tab it discovers the active one by itself, with no
+command, and falls back to the last tab once that one closes, so a session
+operation pins the daemon to the agent's tab while it runs (its `pinTab`,
+set and cleared around the operation), and runs alone in the browser
+(`browser-gate.ts`): it waits for the agent-browser commands under way (the
+agent's, the container's own tab queries), and one that starts after it
+asked waits for it.
 
-**Limits.** Concurrent use of one session by two browsers can sign both out
-on a site that rotates its refresh token with reuse detection; the next call
-then fills the values. A session is refreshed by the next sign-in, not while
-an agent works. Revoking a grant, deleting an account or forgetting its
-sessions does not sign agents' browsers out: they keep what they hold until
-the site ends it.
+**Restore.** Inside request_login, when an account is chosen on the first
+page of a sign-in: the agent names it, or the user picks it in the card as it
+is (a saved account, or one that signs in through a provider, with nothing
+typed over it). A pick is how an agent that does not have the account yet
+gets its session: the pick grants the account once the restore moved the
+page, so one that moved nothing grants nothing, and the values fill as
+before. The conditions: the page asks who is signing in (a username field)
+or offers signing in with another account (provider buttons); nothing is held
+for the step; it is not a code; the session's last step on the site was not
+this account's (its next step is); and the page is not plain HTTP when the
+account was saved on HTTPS. A password asked again on a signed-in page
+(GitHub's "Confirm access") is not a first page, and a call that maps no
+field restores nothing: to use another account on a site where it is signed
+in, the agent signs out there first, and the site's own sign-out clears what
+the vault cannot see (an API host's cookies, other tabs). The account's
+session goes in unless the agent's browser already held that capture:
+`version` is one sequence across all saved sessions (never one a browser is
+still marked with), so a grant's `applied_session_version` names the capture
+its agent's browser got (restored there, or captured from there; one account
+per site at a time).
+
+The container parks every tab on the site on a blank page of its own origin,
+the agent's last, so no page of the site runs while its state is replaced
+(a sign-in page writes its state on the way out, an app writes back the
+token it holds in memory). A tab that cannot be parked and is still open (a
+dialog holds its page) would write its account back once it runs again, so
+the restore then fails before anything changed, and the values fill. It
+empties the site (every cookie and origin in
+scope: localStorage, IndexedDB, caches, service workers, the origin private
+file system); writes the session, cookies last; and sends each tab back to
+its URL, with its history reset so no stub (nor the page it left, in the
+back cache) stays behind. The agent's tab then settles before the agent is
+told where it is (`SETTLE_TIMING`): a page the session signs in may move on
+by itself seconds after it loads (Google's sign-in page checks the session
+in its scripts and goes on to Gmail, 2 to 5 s after its load, after a quiet
+second and a half), and an agent told at the load saw the sign-in page and
+signed in again. So the page gets 5 s to move on, and more while anything
+moves (a navigation, a request in flight but a long poll) until 1.5 s pass
+with nothing; once it has gone on, a second with no further navigation is
+enough, however long the new page takes to load; never more than 8 s after
+the load. The agent is told the session was restored and the
+page loaded again (`type: 'session'`), and calls again if the page still asks
+to sign in: the same capture never goes in twice, so that call fills the
+values, and the watch saves the new sign-in over the old session. A restore
+that fails after it changed something empties the site rather than leave two
+accounts' state mixed; one that fails before only moved the page, and the
+agent is told the site was left as it was; one that fails before it moved
+anything fills in the same call. A restore counts as a use in the audit log
+(`session: true`), never as a password fill.
+
+**Limits.** A session spans more than the site's scope when its auth is
+held elsewhere: an API host's own cookie on a sibling (`api.example.com`)
+or another site (an identity provider's tenant) is neither saved nor
+cleared, so the app signs in only where it keeps its tokens in its own
+storage, and the next call fills the values otherwise. Likewise a sign-in
+page on a sibling of the app (`login.example.com` for `app.example.com`)
+saves the sign-in host's state, not the app's. The container logs what a
+watched sign-in changed outside the account's site (`[Session] Outside …`:
+the cookie domains of the site the agent's tab is on, with counts, and one
+count for every other domain, never a name or a value), so a sign-in that
+lands on another site (WSJ on wsj.com after Dow Jones' sign-in page) shows
+what its saved session leaves out. A site on the bare
+domain takes in its subdomains' sites (an account on amazon.com saves the AWS
+console's cookies too), and a parent domain's Domain cookies can hold every
+account signed in at once (Google, Slack's `d`): sign the others out before
+signing in with an account whose session other agents get. The storage of
+a subdomain no tab, history entry or cookie names is not emptied by a
+restore (Chrome lists no origins that hold storage). A sign-out within the
+three minutes of a watch is saved as the account's session; the next
+sign-in replaces it. Concurrent use of one session by two browsers can sign
+both out on a site that rotates its refresh token with reuse detection; the
+next call then fills the values. A session is refreshed by the next sign-in,
+not while an agent works. A restore empties what a capture left out for its
+size (a large cache), which the site fetches again. Revoking a grant,
+deleting an account or forgetting its sessions does not sign agents'
+browsers out: they keep what they hold until the site ends it.
 
 ## Settings → Logins
 

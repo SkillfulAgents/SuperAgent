@@ -7,8 +7,8 @@ import { z } from 'zod'
  * travels between the host and this container's session endpoints.
  */
 
-/** The account's site: its sign-in host without a leading www, port included. */
-export const sessionSiteSchema = z.string().min(1).max(260).regex(/^[a-z0-9.-]+(:\d{1,5})?$/)
+/** The account's site: its sign-in host without a leading www, port included, as a URL's host is written (web_1:8000, [::1]:3000). */
+export const sessionSiteSchema = z.string().min(1).max(260).regex(/^(?:[a-z0-9._-]+|\[[0-9a-f:.]+\])(:\d{1,5})?$/)
 
 export const sessionOriginSchema = z.string().max(300).refine((value) => {
   try {
@@ -65,7 +65,7 @@ export const sessionBundleSchema = z.object({
   capturedAt: z.string().max(40),
   cookies: z.array(sessionCookieSchema).max(3000),
   origins: z.array(originStorageSchema).max(50),
-  /** Values and databases left out for their size (caches), so the bundle may not hold all of the site's state. */
+  /** Values and databases left out for their size (caches), or that could not be read, so the bundle may not hold all of the site's state. */
   leftOut: z.number().int().min(0).optional(),
 }).strict()
 export type SessionBundle = z.infer<typeof sessionBundleSchema>

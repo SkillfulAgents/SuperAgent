@@ -35,6 +35,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
         get: async () => null,
         enrich: async () => false,
         complete: async () => {},
+        snapshot: async () => [],
       },
       container: {
         fetch: async (url: string, init?: RequestInit) => {
@@ -61,7 +62,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
           if (url.startsWith('/inputs/')) return new Response('{}', { status: 200 })
           if (url === '/browser/status' && container.browser) return new Response(JSON.stringify(container.browser), { status: 200 })
           if (url === '/browser/session/restore') return new Response(JSON.stringify(container.restore.body), { status: container.restore.status })
-          if (url === '/browser/session/capture') return new Response(JSON.stringify({ unchanged: true, cookieHash: 'h' }), { status: 200 })
+          if (url === '/browser/session/capture') return new Response(JSON.stringify({ hash: 'h' }), { status: 200 })
           return new Response('{}', { status: 404 })
         },
       },
@@ -542,6 +543,7 @@ describe('decideLoginRequest', () => {
 
 describe('decideLoginRequest with saved sessions', () => {
   const restoreCalls = () => container.calls.filter((call) => call.path === '/browser/session/restore')
+  const peeks = () => container.calls.filter((call) => call.path === '/browser/session/capture' && (call.body as { peek?: boolean }).peek)
   const sessionBundle = (who: string) => ({
     version: 1 as const,
     site: 'github.com',
@@ -558,7 +560,7 @@ describe('decideLoginRequest with saved sessions', () => {
 
   beforeEach(() => {
     container.browser = { active: true, sessionId: 's-1', location: 'container' }
-    container.restore = { status: 200, body: { restored: true, skippedRecords: 0, cookieHash: 'h', observation: { digest: { url: 'https://github.com/', navigated: true } } } }
+    container.restore = { status: 200, body: { restored: true, skippedRecords: 0, observation: { digest: { url: 'https://github.com/', navigated: true } } } }
   })
 
   it('restores a named account\'s saved session in place of filling it, once', async () => {
@@ -590,16 +592,36 @@ describe('decideLoginRequest with saved sessions', () => {
     expect(fills()[0].body).toMatchObject({ values: ['octocat', 'hunter2'] })
   })
 
-  it('switches the site to another account with no field mapped', async () => {
+  it('restores only on the first page of a sign-in: never over a page that maps no field, nor a password asked again', async () => {
     const account = await grantedAccount('octocat', { password: 'hunter2' })
     await savedSession(account)
+    // A signed-in page: to switch accounts the agent signs out first.
     container.context = { ...GITHUB, fields: [] }
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(answers()[0].value).toMatchObject({ type: 'accounts', named: true })
+    // A password asked again on a page that is signed in ("Confirm access"): it fills.
+    container.calls = []
+    container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()[0].body).toMatchObject({ values: ['hunter2'] })
+    expect(restoreCalls()).toEqual([])
+    // A page offering only to sign in with another account is a first page (in a session where no step of octocat's went in yet).
+    container.calls = []
+    container.browser = { active: true, sessionId: 's-2', location: 'container' }
+    container.context = { ...GITHUB, fields: [], providers: ['google'] }
+    expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
     expect(restoreCalls()).toHaveLength(1)
-    expect(answers()[0].value).toMatchObject({ type: 'session', restored: true })
   })
 
-  it('restores nothing once a sign-in is under way, for a code, without a username, or in another browser type', async () => {
+  it('restores nothing saved on an encrypted page into a plain-HTTP one', async () => {
+    const account = await grantedAccount('octocat', { password: 'hunter2' })
+    await savedSession(account)
+    container.context = { ...GITHUB, origin: 'http://github.com', topOrigin: 'http://github.com', url: 'http://github.com/login' }
+    await decide({ username: 'octocat' })
+    expect(restoreCalls()).toEqual([])
+  })
+
+  it('restores nothing once this account\'s sign-in is under way, for a code, without a username, or in another browser type', async () => {
     const account = await grantedAccount('octocat', { password: 'hunter2' })
     await savedSession(account, 'chrome')
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
@@ -617,22 +639,64 @@ describe('decideLoginRequest with saved sessions', () => {
     expect(restoreCalls()).toEqual([])
   })
 
+  it('restores another account on its first page after a sign-in with a different one', async () => {
+    await grantedAccount('alice', { password: 'alice-pw' })
+    const bob = await grantedAccount('bob', { password: 'bob-pw' })
+    await savedSession(bob)
+    expect(await decide({ username: 'alice' })).toEqual({ action: 'settled' })
+    expect(fills()).toHaveLength(1)
+    // Signed out of alice, on the sign-in page again.
+    container.calls = []
+    expect(await decide({ username: 'bob' })).toEqual({ action: 'settled' })
+    expect(restoreCalls()).toHaveLength(1)
+    expect(answers()[0].value).toMatchObject({ type: 'session', username: 'bob', restored: true })
+  })
+
+  it('reads the site before filling a step, for the watch after it to compare with', async () => {
+    await grantedAccount('octocat', { password: 'hunter2' })
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    const paths = container.calls.map((call) => call.path)
+    const peek = paths.findIndex((path, index) => path === '/browser/session/capture' && (container.calls[index].body as { peek?: boolean }).peek)
+    expect(peek).toBeGreaterThanOrEqual(0)
+    expect(peek).toBeLessThan(paths.indexOf('/browser/login/fill'))
+  })
+
+  it('watches nothing a step leaves on a page that is not a sign-in\'s first, after another account\'s step there', async () => {
+    await grantedAccount('octocat', { password: 'hunter2' })
+    // "Confirm access": the password asked again, the browser signed in as whoever went before.
+    container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+    rememberSignInIdentity('agent-a', 's-1', 'github.com', 'someone-else')
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toHaveLength(1)
+    expect(peeks()).toEqual([])
+  })
+
+  it('watches a later step of the sign-in the session began with the same account', async () => {
+    await grantedAccount('octocat', { password: 'hunter2' })
+    container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+    rememberSignInIdentity('agent-a', 's-1', 'github.com', 'octocat')
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    const paths = container.calls.map((call) => call.path)
+    expect(peeks()).toHaveLength(1)
+    expect(paths.indexOf('/browser/session/capture')).toBeLessThan(paths.indexOf('/browser/login/fill'))
+  })
+
   it('fills in the same call when the restore failed before it changed anything', async () => {
     const account = await grantedAccount('octocat', { password: 'hunter2' })
     await savedSession(account)
-    container.restore = { status: 500, body: { error: 'The saved session could not be restored: no browser page is open', touched: false, cleared: false } }
+    container.restore = { status: 500, body: { error: 'The saved session could not be restored: no browser page is open', touched: false, changed: false, cleared: false } }
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     expect(fills()[0].body).toMatchObject({ values: ['octocat', 'hunter2'] })
     expect(await heldSessionVersion('agent-a', account.id)).toBeNull()
   })
 
-  it('says a restore that changed the page and failed signed the browser out of the site', async () => {
+  it('says what a restore that moved the page and failed left on the site', async () => {
     const account = await grantedAccount('octocat', { password: 'hunter2' })
     const version = await savedSession(account)
-    container.restore = { status: 500, body: { error: 'The saved session could not be restored: injected', touched: true, cleared: true } }
+    container.restore = { status: 500, body: { error: 'The saved session could not be restored: injected', touched: true, changed: true, cleared: true } }
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     expect(fills()).toEqual([])
-    expect(answers()[0].value).toEqual({ type: 'session', site: 'github.com', username: 'octocat', restored: false, cleared: true })
+    expect(answers()[0].value).toEqual({ type: 'session', site: 'github.com', username: 'octocat', restored: false, changed: true, cleared: true })
     // Tried: the next call fills.
     expect(await heldSessionVersion('agent-a', account.id)).toBe(version)
   })

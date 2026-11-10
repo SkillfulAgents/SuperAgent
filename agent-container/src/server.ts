@@ -58,8 +58,8 @@ import { closePreparedLogins } from './login-requests';
 import type { LoginFillReport } from './login-schema';
 import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
 import { registerSessionRoutes } from './session-routes';
-import { syncSavedSession } from './session-sync';
 import { isSessionStubTarget } from './browser-session';
+import { browserCommand } from './browser-gate';
 import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -872,9 +872,14 @@ function cleanupAgentBrowserDaemon(): void {
   try { fs.unlinkSync(path.join(profile, 'SingletonLock')); } catch { /* ignore */ }
 }
 
-// Execute an agent-browser CLI command and return the result.
+// Execute an agent-browser CLI command and return the result: never while a
+// saved-session operation runs (browser-gate.ts).
+function execBrowser(...args: Parameters<typeof runBrowserCommand>): ReturnType<typeof runBrowserCommand> {
+  return browserCommand(() => runBrowserCommand(...args));
+}
+
 // Uses execFile (no shell) to prevent command injection.
-async function execBrowser(
+async function runBrowserCommand(
   args: string[],
   cdpUrl?: string,
   opts: { timeoutMs?: number; outputCap?: number } = {},
@@ -1385,9 +1390,11 @@ function broadcastBrowserEvent(active: boolean, targetSessionId: string | null =
 
 // validateBrowserSession is imported from ./browser-state
 
-// GET /browser/status - Check if browser is running
+// GET /browser/status - Check if browser is running. `generation` names this
+// opening of it: a saved-session watch on the host tells a browser closed and
+// opened again between two of its looks.
 app.get('/browser/status', (c) => {
-  return c.json(_getBrowserState());
+  return c.json({ ..._getBrowserState(), generation: browserOpenGeneration });
 });
 
 
@@ -1534,10 +1541,6 @@ app.post('/browser/open', async (c) => {
     resetUrlTracking();
     // A new document: no tree from before it can be diffed against.
     resetTreeBaseline();
-    // Another agent's later sign-in with the account this browser holds on the
-    // site it landed on (a saved session): in place before the agent sees it.
-    const landedUrl = (await tabManager.queryTabs().catch(() => [])).find(tab => tab.active)?.url || body.url;
-    await syncSavedSession(body.sessionId, landedUrl);
     // Read the landing page once: it seeds the URL baseline so the FIRST
     // post-action digest can distinguish "navigated" from "unchanged", and it
     // tells the tool where the browser actually ended up — final URL, title,
@@ -3448,6 +3451,7 @@ registerSessionRoutes(app, {
   // A remote browser answers slower; a database read is one call.
   connectBrowser: async () => CdpConnection.openBrowser(await browserWsUrl(), { callTimeoutMs: 20_000 }),
   activeTabId: async () => (await findActivePageTarget())?.id ?? null,
+  keepActiveTab: (work) => tabManager.keepActiveTab(work),
   observeUrl: async () => {
     const digest = await observeUrlDigest();
     return digest ? { ...digest } : null;

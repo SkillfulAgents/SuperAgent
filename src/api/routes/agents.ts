@@ -98,13 +98,16 @@ import {
   accountView,
   answerLoginRequest,
   fillLoginInContainer,
+  isFirstSignInPage,
   noteUsername,
   fieldsWentIn,
   partsFrom,
   readLoginContext,
+  restoresHere,
   settleHeldParts,
   usableHeld,
   valuesFor,
+  watchesStep,
 } from '@shared/lib/browser-vault/login-host'
 import {
   forgetHeldLogin,
@@ -115,7 +118,7 @@ import {
   rememberSignInIdentity,
 } from '@shared/lib/browser-vault/held-values'
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
-import { watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
+import { beginSignInStep, restoreSavedSession, sessionBaseline, watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
 import { partKeyOf } from '@shared/lib/browser-vault/vault-schemas'
 import {
@@ -3982,6 +3985,9 @@ agents.post(
       url,
     )
     const credential = retrieved.credential
+    // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
+    const filledSite = siteOfOrigin(retrieved.expectedOrigin)
+    if (filledSite) beginSignInStep(agentSlug, { site: filledSite, username: credential.username || null, accountId: null })
 
     const actor = agentRegistry.get(agentSlug)
     const fillResponse = await actor.container.fetch('/browser/fill-credential', {
@@ -4223,6 +4229,32 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     if (body.save && !identity) return c.json({ error: 'Enter the username of this account to save it' }, 400)
     if (body.save && identity && identity.length > MAX_USERNAME) return c.json({ error: 'That username is too long to save' }, 400)
     const held = usableHeld(heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
+    // A saved account picked as it is, on a sign-in that has not begun for it:
+    // its saved session signs the agent in, as when the agent names it. With
+    // none for this browser, or one the browser already held, the values fill.
+    if (account && !body.values.some(Boolean) && !heldValues.some(Boolean) && restoresHere({ agentSlug, sessionId, account, context, held })) {
+      if (grantsAccount) {
+        const refused = await sharedAgentRefusal(c, agentSlug, body.sharedAgentAcknowledged)
+        if (refused) return refused
+      }
+      const claim = await actor.inputs.claim(body.toolUseId)
+      if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+      claimed = { id: body.toolUseId, token: claim.token }
+      const picked = account
+      const restored = await restoreSavedSession({
+        agentSlug,
+        sessionId,
+        account: picked,
+        picked: { userId: viewer, ...(grantsAccount ? { grant: () => grantToAgent(viewer, agentSlug, picked.id) } : {}) },
+      })
+      if (restored) {
+        if (!(await answerLoginRequest(agentSlug, body.toolUseId, restored))) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+        await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+        claimed = null
+        trackServerEvent('login_request_session', { restored: restored.restored, from: 'form' })
+        return c.json({ success: true, session: { restored: restored.restored, username: picked.username } })
+      }
+    }
     const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
     const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
     const values = body.values.map((value, index) => value || fallback[index])
@@ -4246,15 +4278,23 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       if (refused) return refused
     }
 
-    const claim = await actor.inputs.claim(body.toolUseId)
-    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
-    claimed = { id: body.toolUseId, token: claim.token }
+    // Already held when a saved session was tried first.
+    if (!claimed) {
+      const claim = await actor.inputs.claim(body.toolUseId)
+      if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+      claimed = { id: body.toolUseId, token: claim.token }
+    }
 
     const heldParts = partsFrom(context.held, heldValues)
     const heldLabels = context.held.filter((field, index) => heldValues[index] && heldParts[partKeyOf(field) ?? '']).map((field) => field.label)
     const saving = Boolean(body.save && identity)
 
     const shown = noteUsername(identity)
+    // The site as it is before the step, for the watch after it: only when the
+    // step can be an account's, from where it signs that account in.
+    const watched = (account !== null || saving) && watchesStep({ agentSlug, sessionId, site, context, username: identity })
+    beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
+    const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: { site, origin: account?.origin ?? context.origin } }) : null
     const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, {
       ...(shown ? { username: shown } : {}),
       site,
@@ -4346,9 +4386,13 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const usedAccount = savedAccount ?? account
     if (usedAccount && wentIn.some(Boolean)) {
       await recordAccountUse({ agentSlug, accountId: usedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
-      // Its session, as the sign-in leaves it: saved to that account, and only
-      // when it is the one that signed in (the user may have typed another).
-      if (!identity || usernameKey(identity) === usernameKey(usedAccount.username)) watchSignIn({ agentSlug, sessionId, account: usedAccount })
+    }
+    // Its session, as the sign-in leaves it: saved to that account, and only
+    // when it is the one that signed in. The user may have typed another, or
+    // an account not saved: then nothing the site holds next is saved, to
+    // this account or one before it (beginSignInStep, above).
+    if (wentIn.some(Boolean) && usedAccount && (!identity || usernameKey(identity) === usernameKey(usedAccount.username))) {
+      watchSignIn({ agentSlug, sessionId, account: usedAccount, baseline })
     }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
@@ -4435,6 +4479,22 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     if (await grantAccount({ accountId: account.id, agentSlug, grantedBy: viewer })) {
       await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: 'assigned', details: { agentSlug } })
     }
+    // A saved account, on a sign-in that has not begun for it: its saved
+    // session signs the agent in, and the provider is not needed.
+    const held = usableHeld(heldLoginFor(agentSlug, sessionId, site, account.username), context.origin)
+    if (existing && restoresHere({ agentSlug, sessionId, account, context, held })) {
+      const restored = await restoreSavedSession({ agentSlug, sessionId, account, picked: { userId: viewer } })
+      if (restored) {
+        if (!(await answerLoginRequest(agentSlug, body.toolUseId, restored))) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+        await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+        claimed = null
+        trackServerEvent('login_request_session', { restored: restored.restored, from: 'via' })
+        return c.json({ success: true, session: { restored: restored.restored, username: account.username } })
+      }
+    }
+    // The site before the agent goes to the provider, from a sign-in's first page only (session-host).
+    beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
+    const baseline = isFirstSignInPage(context) ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
     const answered = await answerLoginRequest(agentSlug, body.toolUseId, {
       type: 'via',
       site,
@@ -4446,7 +4506,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
     claimed = null
     // The site's own session, once the provider sends the agent back signed in.
-    watchSignIn({ agentSlug, sessionId, account })
+    watchSignIn({ agentSlug, sessionId, account, baseline })
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
@@ -4494,12 +4554,15 @@ agents.post(
       return c.json({ error: 'The saved login is for a different site than the sign-in form' }, 409)
     }
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
+    // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
+    const filledSite = siteOfOrigin(context.origin)
+    if (filledSite) beginSignInStep(agentSlug, { site: filledSite, username: credential.username || null, accountId: null })
     const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values)
     // The browser closed while the user was away: the login they picked is
     // held a while (not saved: it lives in their password manager), and the
     // agent's next try signs in with it without asking again.
     if (!filled.ok && filled.browserClosed) {
-      const site = siteOfOrigin(context.origin)
+      const site = filledSite
       const username = credential.username || null
       const holds = site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0
       if (holds) holdLoginValues(agentSlug, sessionId, site, { username, values: { password: credential.password }, origin: context.origin, save: null })
@@ -4568,6 +4631,9 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
     claimed = null
     const site = located.success ? siteOfOrigin(located.data.origin) : null
     if (site) forgetHeldLogin(agentSlug, sessionId, site)
+    // The user had the browser while the card was open (session-host): signed
+    // in by hand, it is as a hand-over done there; declined, done nowhere.
+    watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: body.action === 'manual' ? site : null })
     if (body.action === 'decline') {
       // As with a browser hand-off: stop the turn so the user can talk to the agent.
       await actor.messages.stop(sessionId, { scope: 'turn' })
@@ -4630,6 +4696,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
       const sessionId = c.req.param('sessionId')
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
+      watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: null })
 
       // Stop the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
@@ -4662,8 +4729,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     }
 
     await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
-    // A step the user did by hand may have finished a sign-in (a passkey, a phone prompt).
-    watchAfterHandOver({ agentSlug, sessionId: c.req.param('sessionId'), viewer: getViewerUserId(c) })
+    // A step the user did by hand may have finished a sign-in (a passkey, a phone prompt): on the page it was asked on.
+    const handedOver = claim.request.kind === 'browser_input' ? claim.request.payload.browserContext?.url : undefined
+    watchAfterHandOver({ agentSlug, sessionId: c.req.param('sessionId'), viewer: getViewerUserId(c), site: handedOver ? siteOfOrigin(handedOver) : null })
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)

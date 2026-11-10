@@ -275,12 +275,13 @@ describe('formatLoginResolution for a saved session', () => {
     ].join('\n'))
   })
 
-  it('says a session that could not be restored signed the browser out of the site, or may have left part of it', () => {
-    const cleared = session(false, { cleared: true })
+  it('says what a restore that failed did to the site\'s state: nothing, emptied it, or maybe part of it', () => {
+    const cleared = session(false, { changed: true, cleared: true })
     expect(cleared.isError).toBe(true)
-    expect(cleared.content[0].text).toContain('could not be restored, so the browser was signed out of github.com and the page loaded again.')
+    expect(cleared.content[0].text).toContain('could not be restored. The browser\'s cookies and storage on github.com were emptied, and the page loaded again.')
     expect(cleared.content[0].text).toContain('To sign in, call request_login again with username "octocat"')
-    expect(session(false, { cleared: false }).content[0].text).toContain('and the browser may hold part of it on github.com.')
+    expect(session(false, { changed: true, cleared: false }).content[0].text).toContain('Part of the browser\'s cookies and storage on github.com may have been replaced')
+    expect(session(false, { changed: false, cleared: false }).content[0].text).toContain('cookies and storage on github.com were left as they were')
   })
 })
 

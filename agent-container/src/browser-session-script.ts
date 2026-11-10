@@ -14,14 +14,30 @@ const ON_STUB = (origin: string) => `
   }
 `
 
-/** A database bigger than this is a cache (messages, documents), not a sign-in: left out. */
+/** A database bigger than this is a cache (messages, documents), not a sign-in: left out, its reading stopped once it passes this. */
 export const MAX_INDEXEDDB_DATABASE_CHARS = 512_000
 /** Counted before anything is read, so a big cache is never read at all. */
 export const MAX_INDEXEDDB_RECORDS = 2_000
+/**
+ * A database not opened and read in this long is left out: one the site is
+ * deleting or upgrading waits on the site's own open connections, maybe for good.
+ */
+export const MAX_INDEXEDDB_DATABASE_MS = 3_000
+/** All of an origin's databases, well inside the call's own limit (20 s): the rest are left out. */
+const MAX_INDEXEDDB_MS = 10_000
+/**
+ * A value nested deeper than this is left out with its database: encoded, it
+ * nests up to three levels for each of its own (a Map's entries), and the
+ * call's result carries about 290 in all (measured).
+ */
+export const MAX_INDEXEDDB_VALUE_DEPTH = 64
 /** A blob or file bigger than this is content, not a sign-in. */
 const MAX_BLOB_BYTES = 256_000
 /** A localStorage value bigger than this is a cache too: a token is a few KB. */
 export const MAX_LOCAL_STORAGE_VALUE_CHARS = 64_000
+/** As many as a saved session holds of an origin (browser-session-schema.ts): the rest are left out. */
+const MAX_LOCAL_STORAGE_ENTRIES = 10_000
+const MAX_DATABASES = 100
 
 const CODEC = `
   const toBase64 = (bytes) => {
@@ -36,44 +52,78 @@ const CODEC = `
   });
 `
 
-/** Reads the origin's localStorage and IndexedDB: `{ localStorage, indexedDB, oversized, unsupported }`. */
+/**
+ * Reads the origin's localStorage and IndexedDB: `{ localStorage, indexedDB,
+ * leftOut, unsupported }`. What is left out (`leftOut`): a cache, and a
+ * database that does not open or read in time, cannot be read, or holds a
+ * value nested too deep to come back.
+ */
 export const READ_ORIGIN_STORAGE_FUNCTION = `async function(expectedOrigin) {
   ${ON_STUB('expectedOrigin')}
   ${CODEC}
   const unsupported = new Set();
-  // ancestors: the objects on the path to this value. IndexedDB takes cycles, which do not serialize.
-  const encode = async (value, ancestors = new Set()) => {
+  // Thrown once a database's values pass the size of a cache: the rest of it is not read.
+  const TOO_BIG = new Error('too big');
+  // Thrown for a value nested deeper than the call's result carries.
+  const TOO_DEEP = new Error('too deep');
+  const within = (promise, ms) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timed out')), ms);
+    promise.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+  });
+  // Encodes a value for JSON, record by record inside a cursor, so it cannot
+  // wait: a blob's bytes are read after the store, into the object left for
+  // them in \`blobs\`. \`budget.chars\` counts what was encoded. ancestors: the
+  // objects on the path to this value (IndexedDB takes cycles, which do not
+  // serialize).
+  const encode = (value, budget, blobs, ancestors = new Set()) => {
+    const spend = (chars) => {
+      budget.chars += chars;
+      if (budget.chars > ${MAX_INDEXEDDB_DATABASE_CHARS}) throw TOO_BIG;
+    };
     if (value === undefined) return { $t: 'undefined' };
     if (typeof value === 'bigint') return { $t: 'bigint', v: String(value) };
     if (typeof value === 'number' && !Number.isFinite(value)) return { $t: 'number', v: String(value) };
+    if (typeof value === 'string') spend(value.length);
     if (value === null || typeof value !== 'object') return value;
     if (ancestors.has(value)) {
       unsupported.add('cycle');
       return { $t: 'unsupported', type: 'cycle' };
     }
+    if (ancestors.size >= ${MAX_INDEXEDDB_VALUE_DEPTH}) throw TOO_DEEP;
     const inner = new Set(ancestors).add(value);
-    const child = (v) => encode(v, inner);
+    const child = (v) => encode(v, budget, blobs, inner);
     if (value instanceof Date) return { $t: 'date', v: value.getTime() };
-    if (value instanceof ArrayBuffer) return { $t: 'arraybuffer', v: toBase64(new Uint8Array(value)) };
+    if (value instanceof ArrayBuffer) {
+      spend(Math.ceil(value.byteLength / 3) * 4);
+      return { $t: 'arraybuffer', v: toBase64(new Uint8Array(value)) };
+    }
     if (ArrayBuffer.isView(value)) {
+      spend(Math.ceil(value.byteLength / 3) * 4);
       return { $t: 'view', ctor: value.constructor.name, v: toBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
     }
     if (value instanceof Blob && value.size > ${MAX_BLOB_BYTES}) {
       unsupported.add('large-blob');
       return { $t: 'unsupported', type: 'large-blob' };
     }
-    if (value instanceof File) {
-      return { $t: 'file', name: value.name, type: value.type, lastModified: value.lastModified, v: toBase64(new Uint8Array(await value.arrayBuffer())) };
+    if (value instanceof Blob) {
+      spend(Math.ceil(value.size / 3) * 4);
+      const encoded = value instanceof File
+        ? { $t: 'file', name: value.name, type: value.type, lastModified: value.lastModified, v: '' }
+        : { $t: 'blob', type: value.type, v: '' };
+      blobs.push([encoded, value]);
+      return encoded;
     }
-    if (value instanceof Blob) return { $t: 'blob', type: value.type, v: toBase64(new Uint8Array(await value.arrayBuffer())) };
-    if (value instanceof Map) return { $t: 'map', v: await Promise.all([...value].map(async ([k, v]) => [await child(k), await child(v)])) };
-    if (value instanceof Set) return { $t: 'set', v: await Promise.all([...value].map(child)) };
+    if (value instanceof Map) return { $t: 'map', v: [...value].map(([k, v]) => [child(k), child(v)]) };
+    if (value instanceof Set) return { $t: 'set', v: [...value].map(child) };
     if (value instanceof RegExp) return { $t: 'regexp', source: value.source, flags: value.flags };
-    if (Array.isArray(value)) return Promise.all(value.map(child));
+    if (Array.isArray(value)) return value.map(child);
     const proto = Object.getPrototypeOf(value);
     if (proto === Object.prototype || proto === null) {
       const out = {};
-      for (const [k, v] of Object.entries(value)) out[k] = await child(v);
+      for (const [k, v] of Object.entries(value)) {
+        spend(k.length);
+        out[k] = child(v);
+      }
       return Object.prototype.hasOwnProperty.call(out, '$t') ? { $t: 'object', v: out } : out;
     }
     // A non-extractable CryptoKey, say: it cannot leave this browser.
@@ -81,51 +131,110 @@ export const READ_ORIGIN_STORAGE_FUNCTION = `async function(expectedOrigin) {
     unsupported.add(type);
     return { $t: 'unsupported', type };
   };
+  // One store's records, read with a cursor: never more of it in memory than one record and what fits the budget.
+  const readStore = (db, name, budget, blobs) => new Promise((resolve, reject) => {
+    const tx = db.transaction(name, 'readonly');
+    const store = tx.objectStore(name);
+    const read = {
+      name,
+      keyPath: store.keyPath,
+      autoIncrement: store.autoIncrement,
+      indexes: [...store.indexNames].map((indexName) => {
+        const index = store.index(indexName);
+        return { name: indexName, keyPath: index.keyPath, unique: index.unique, multiEntry: index.multiEntry };
+      }),
+      records: [],
+    };
+    const cursor = store.openCursor();
+    cursor.onsuccess = () => {
+      const at = cursor.result;
+      if (!at) return;
+      try {
+        read.records.push({ key: encode(at.primaryKey, budget, blobs), value: encode(at.value, budget, blobs) });
+      } catch (error) {
+        reject(error);
+        tx.abort();
+        return;
+      }
+      at.continue();
+    };
+    cursor.onerror = () => reject(cursor.error);
+    tx.oncomplete = () => resolve(read);
+    tx.onabort = () => reject(tx.error || TOO_BIG);
+  });
+  // A database's stores, all of them or none: a blob's file can be gone, a value too big or too deep.
+  const readStores = async (db) => {
+    let records = 0;
+    for (const name of [...db.objectStoreNames]) records += await request(db.transaction(name, 'readonly').objectStore(name).count());
+    if (records > ${MAX_INDEXEDDB_RECORDS}) throw TOO_BIG;
+    const budget = { chars: 0 };
+    const blobs = [];
+    const stores = [];
+    for (const name of [...db.objectStoreNames]) stores.push(await readStore(db, name, budget, blobs));
+    for (const [encoded, blob] of blobs) encoded.v = toBase64(new Uint8Array(await blob.arrayBuffer()));
+    if (JSON.stringify(stores).length > ${MAX_INDEXEDDB_DATABASE_CHARS}) throw TOO_BIG;
+    return stores;
+  };
+  // A database as it is, read within \`ms\`; null when it is gone. Never one
+  // created: a database deleted since it was listed stays gone. One the site
+  // is deleting or upgrading opens only once the site closes its own
+  // connections, if ever: the connection is closed as soon as it comes.
+  const readDatabase = (name, ms) => new Promise((resolve, reject) => {
+    let db = null;
+    let gone = false;
+    let done = false;
+    const finish = (settle, value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (db) db.close();
+      settle(value);
+    };
+    const timer = setTimeout(() => finish(reject, new Error('timed out')), ms);
+    const opening = indexedDB.open(name);
+    opening.onupgradeneeded = () => {
+      gone = true;
+      opening.transaction.abort();
+    };
+    opening.onerror = () => (gone ? finish(resolve, null) : finish(reject, opening.error));
+    opening.onsuccess = () => {
+      db = opening.result;
+      if (done) db.close();
+      else readStores(db).then((stores) => finish(resolve, { version: db.version, stores }), (error) => finish(reject, error));
+    };
+  });
 
   const localEntries = [];
-  let oversized = 0;
+  let leftOut = 0;
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     const value = localStorage.getItem(key);
     if (key === null || value === null) continue;
-    if (value.length > ${MAX_LOCAL_STORAGE_VALUE_CHARS}) oversized++;
+    if (value.length > ${MAX_LOCAL_STORAGE_VALUE_CHARS} || localEntries.length >= ${MAX_LOCAL_STORAGE_ENTRIES}) leftOut++;
     else localEntries.push([key, value]);
   }
 
   const databases = [];
-  for (const info of await indexedDB.databases()) {
+  const until = Date.now() + ${MAX_INDEXEDDB_MS};
+  const listed = await within(indexedDB.databases(), ${MAX_INDEXEDDB_DATABASE_MS}).catch(() => null);
+  if (!listed) leftOut++;
+  for (const info of listed ?? []) {
     if (!info.name) continue;
-    const db = await request(indexedDB.open(info.name));
+    const ms = Math.min(${MAX_INDEXEDDB_DATABASE_MS}, until - Date.now());
+    if (databases.length >= ${MAX_DATABASES} || ms <= 0) {
+      leftOut++;
+      continue;
+    }
     try {
-      let records = 0;
-      for (const name of [...db.objectStoreNames]) records += await request(db.transaction(name, 'readonly').objectStore(name).count());
-      if (records > ${MAX_INDEXEDDB_RECORDS}) {
-        oversized++;
-        continue;
-      }
-      const stores = [];
-      for (const name of [...db.objectStoreNames]) {
-        const store = db.transaction(name, 'readonly').objectStore(name);
-        const [keys, values] = await Promise.all([request(store.getAllKeys()), request(store.getAll())]);
-        stores.push({
-          name,
-          keyPath: store.keyPath,
-          autoIncrement: store.autoIncrement,
-          indexes: [...store.indexNames].map((indexName) => {
-            const index = store.index(indexName);
-            return { name: indexName, keyPath: index.keyPath, unique: index.unique, multiEntry: index.multiEntry };
-          }),
-          records: await Promise.all(values.map(async (value, i) => ({ key: await encode(keys[i]), value: await encode(value) }))),
-        });
-      }
-      if (JSON.stringify(stores).length > ${MAX_INDEXEDDB_DATABASE_CHARS}) oversized++;
-      else databases.push({ name: info.name, version: db.version, stores });
-    } finally {
-      db.close();
+      const read = await readDatabase(info.name, ms);
+      if (read) databases.push({ name: info.name, version: read.version, stores: read.stores });
+    } catch {
+      // The rest is still read.
+      leftOut++;
     }
   }
 
-  return { localStorage: localEntries, indexedDB: databases, oversized, unsupported: [...unsupported] };
+  return { localStorage: localEntries, indexedDB: databases, leftOut, unsupported: [...unsupported] };
 }`
 
 /**

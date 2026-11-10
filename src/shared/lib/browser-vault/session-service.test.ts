@@ -15,7 +15,6 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 const { saveAccount, grantAccount } = await import('./vault-service')
 const {
   forgetAccountSessions,
-  heldAccountOnSite,
   heldSessionVersion,
   listAccountSessions,
   markSessionHeld,
@@ -117,16 +116,27 @@ describe('saved sessions', () => {
     expect(await heldSessionVersion('agent-a', alice.id)).toBeNull()
   })
 
-  it('name the one account on a site whose session an agent\'s browser holds', async () => {
+  it('let go of the marks on every site sharing cookies with the one restored, and no other', async () => {
+    const acme = await account('alice', 'acme.slack.com')
+    const github = await account('alice', 'github.com')
+    const beta = await account('bob', 'beta.slack.com')
+    await saveAccountSession({ agentSlug: 'agent-a', account: acme, browserType: 'container', bundle: bundle('alice', 'acme.slack.com') })
+    await saveAccountSession({ agentSlug: 'agent-a', account: github, browserType: 'container', bundle: bundle('alice') })
+
+    // Bob's restore on beta.slack.com rewrote the .slack.com cookies acme.slack.com's session holds.
+    await saveAccountSession({ agentSlug: 'agent-b', account: beta, browserType: 'container', bundle: bundle('bob', 'beta.slack.com') })
+    await markSessionHeld({ agentSlug: 'agent-a', account: beta, version: 3 })
+    expect(await heldSessionVersion('agent-a', acme.id)).toBeNull()
+    expect(await heldSessionVersion('agent-a', github.id)).toBe(2)
+    expect(await heldSessionVersion('agent-a', beta.id)).toBe(3)
+  })
+
+  it('read a saved session only when it is not the capture the browser already holds', async () => {
     const alice = await account('alice')
-    const bob = await account('bob')
-    expect(await heldAccountOnSite('agent-a', 'github.com')).toBeNull()
-    await saveAccountSession({ agentSlug: 'agent-a', account: alice, browserType: 'container', bundle: bundle('alice') })
-    expect(await heldAccountOnSite('agent-a', 'github.com')).toEqual({ accountId: alice.id, version: 1 })
-    await saveAccountSession({ agentSlug: 'agent-a', account: bob, browserType: 'container', bundle: bundle('bob') })
-    expect(await heldAccountOnSite('agent-a', 'github.com')).toEqual({ accountId: bob.id, version: 2 })
-    expect(await heldAccountOnSite('agent-b', 'github.com')).toBeNull()
-    expect(await heldAccountOnSite('agent-a', 'gitlab.com')).toBeNull()
+    await saveAccountSession({ agentSlug: 'agent-b', account: alice, browserType: 'container', bundle: bundle('alice') })
+    expect(await readAccountSession(alice, 'container', { unlessVersion: 1 })).toBeNull()
+    expect((await readAccountSession(alice, 'container', { unlessVersion: null }))?.bundle).toEqual(bundle('alice'))
+    expect((await readAccountSession(alice, 'container', { unlessVersion: 7 }))?.version).toBe(1)
   })
 
   it('does not open a session copied into another account\'s row', async () => {
@@ -152,16 +162,18 @@ describe('saved sessions', () => {
     expect(await listAccountSessions([alice.id])).toEqual([])
   })
 
-  it('forget what each browser held, so a later capture with the same number restores', async () => {
+  it('forget what each browser held, and never number a later capture as one a browser is still marked with', async () => {
     const alice = await account('alice')
     await saveAccountSession({ agentSlug: 'agent-a', account: alice, browserType: 'container', bundle: bundle('alice') })
     expect(await heldSessionVersion('agent-a', alice.id)).toBe(1)
     await forgetAccountSessions(null, alice.id)
     expect(await heldSessionVersion('agent-a', alice.id)).toBeNull()
-    // The sequence starts over with nothing left: agent A's browser does not hold this one.
+
+    // A restore that was under way as the sessions were forgotten marks what it put in afterwards.
+    await markSessionHeld({ agentSlug: 'agent-a', account: alice, version: 1 })
     await saveAccountSession({ agentSlug: 'agent-b', account: alice, browserType: 'container', bundle: bundle('alice-again') })
-    expect((await readAccountSession(alice, 'container'))?.version).toBe(1)
-    expect(await heldSessionVersion('agent-a', alice.id)).toBeNull()
+    // A new number: agent A's browser does not hold this capture, and is given it.
+    expect((await readAccountSession(alice, 'container', { unlessVersion: await heldSessionVersion('agent-a', alice.id) }))?.version).toBe(2)
   })
 
   it('go with the account', async () => {

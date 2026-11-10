@@ -1,4 +1,4 @@
-import { createHash } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import type { CdpConnection } from './login-cdp'
 import {
   CLEAR_SESSION_STORAGE_FUNCTION,
@@ -15,21 +15,22 @@ import { sessionBundleSchema, type OriginStorage, type SessionBundle, type Sessi
  * between; nothing here logs or returns a value except to the host.
  *
  * The scope is the account's site as the browser sends its state there: the
- * cookies set for its host, its subdomains, or a parent domain (Google's
- * session lives on .google.com, its sign-in on accounts.google.com), and the
- * localStorage and IndexedDB of its host's and subdomains' origins. Never a
- * sibling host: tenants of one domain (acme.okta.com, beta.okta.com) are
- * separate accounts. sessionStorage belongs to a tab, so it is not saved; a
- * restore empties it in the site's open tabs.
+ * cookies set for its host or its subdomains, the Domain cookies of a parent
+ * domain (Google's session lives on .google.com, its sign-in on
+ * accounts.google.com), and the localStorage and IndexedDB of its host's and
+ * subdomains' origins. Never a sibling host: tenants of one domain
+ * (acme.okta.com, beta.okta.com) are separate accounts. sessionStorage
+ * belongs to a tab, so it is not saved; a restore empties it in the site's
+ * open tabs.
  *
  * Storage needs a document of its origin, so it is read and written on a
  * blank stub document served for that origin by request interception: the
  * site is never contacted, its service worker is bypassed, and none of its
  * scripts run there. A capture reads on a hidden tab of its own, beside the
- * agent's work; a restore parks the agent's own tab on the stub first, so the
- * sign-in page unloads before its state is replaced and cannot write its
- * signed-out state back over the restored one, then sends the tab back to
- * where it was.
+ * agent's work. A restore first parks every tab on the site on a stub of its
+ * own origin, so none of the site's pages runs while its state is replaced
+ * (a page on its way out, or one left running, would write its account's
+ * state back), then sends each tab back to where it was.
  *
  * A restore replaces the site's state as a whole: every cookie and origin in
  * scope is emptied before the saved ones are written, so nothing of an
@@ -44,15 +45,21 @@ export interface SessionScope {
 
 const STUB_HTML_BASE64 = Buffer.from('<!doctype html><title></title>').toString('base64')
 const LOAD_TIMEOUT_MS = 15_000
-const WORLD_NAME = 'superagent-session'
-/** What a restore empties on each origin in scope before writing. */
-const CLEARED_STORAGE = 'local_storage,indexeddb,cache_storage,service_workers'
+/** A request in flight longer than this (a long poll) does not keep a tab from settling. */
+const LONG_REQUEST_MS = 3_000
+const SETTLE_POLL_MS = 100
+/** What a restore empties on each origin in scope before writing (file_systems: the origin private file system). */
+const CLEARED_STORAGE = 'local_storage,indexeddb,cache_storage,service_workers,file_systems'
 /** The largest bundle kept, as JSON: past it, databases are left out, biggest first. */
 export const MAX_BUNDLE_CHARS = 1_000_000
+/** As many as a bundle holds (browser-session-schema.ts); past them, the rest is left out. */
+const MAX_COOKIES = 3_000
+const MAX_ORIGINS = 50
 
 export class SessionTooLargeError extends Error {}
 
 const hostnameOf = (site: string) => site.replace(/:\d+$/, '')
+const portOf = (site: string) => /:(\d+)$/.exec(site)?.[1] ?? ''
 
 function originOf(url: string): string | null {
   try {
@@ -63,11 +70,27 @@ function originOf(url: string): string | null {
   }
 }
 
-/** Whether a cookie with this domain is in the site's scope: set for its host, a subdomain, or a parent domain. */
+/** A page's site as an account's is named: its host without a leading "www.", port kept. */
+function siteOfUrl(url: string | undefined): string | null {
+  if (!url) return null
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.host.replace(/^www\./, '') : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a cookie with this domain is in the site's scope: set for its host
+ * or a subdomain, or a parent domain's Domain cookie (".example.com"), which
+ * the browser sends to the host too. A parent host's own cookies (no leading
+ * dot) never reach the site, so they are not its.
+ */
 export function cookieInScope(domain: string, site: string): boolean {
   const host = hostnameOf(site)
   const cookieHost = domain.replace(/^\./, '').toLowerCase()
-  return cookieHost === host || cookieHost.endsWith(`.${host}`) || host.endsWith(`.${cookieHost}`)
+  return cookieHost === host || cookieHost.endsWith(`.${host}`) || (domain.startsWith('.') && host.endsWith(`.${cookieHost}`))
 }
 
 /**
@@ -78,17 +101,17 @@ export function cookieInScope(domain: string, site: string): boolean {
  * CDP, by a test tool) records its scheme's default: neither rules one out.
  */
 export function cookieFromSitePort(sourcePort: number | undefined, site: string): boolean {
-  const port = /:(\d+)$/.exec(site)?.[1]
+  const port = portOf(site)
   if (!port || sourcePort === undefined || sourcePort < 0 || sourcePort === 80 || sourcePort === 443) return true
   return sourcePort === Number(port)
 }
 
-/** Whether an origin's storage is in the site's scope: its host's or a subdomain's. */
+/** Whether an origin's storage is in the site's scope: its host's, or a subdomain's on the site's port. */
 export function originInScope(origin: string, site: string): boolean {
   try {
     const url = new URL(origin)
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
-    return url.host === site || url.hostname.endsWith(`.${hostnameOf(site)}`)
+    return url.host === site || (url.hostname.endsWith(`.${hostnameOf(site)}`) && url.port === portOf(site))
   } catch {
     return false
   }
@@ -97,15 +120,18 @@ export function originInScope(origin: string, site: string): boolean {
 /**
  * The origins in scope whose storage to read or empty. Chrome lists no
  * origins that hold storage, so these are the ones the browser shows: the
- * sign-in's own, the subdomains its cookies are set for, and those of the
- * open tabs and their history (an app.* the sign-in redirected to).
+ * sign-in's own, the subdomains its cookies are set for (on the sign-in's
+ * scheme and port), and those of the open tabs and their history (an app.*
+ * the sign-in redirected to).
  */
 export function candidateOrigins(scope: SessionScope, cookies: ReadonlyArray<{ domain: string }>, urls: readonly string[]): string[] {
   const origins = new Set<string>([scope.origin])
   const host = hostnameOf(scope.site)
+  const scheme = scope.origin.startsWith('http://') ? 'http' : 'https'
+  const port = portOf(scope.site)
   for (const cookie of cookies) {
     const cookieHost = cookie.domain.replace(/^\./, '').toLowerCase()
-    if (cookieHost.endsWith(`.${host}`)) origins.add(`https://${cookieHost}`)
+    if (cookieHost.endsWith(`.${host}`)) origins.add(`${scheme}://${cookieHost}${port ? `:${port}` : ''}`)
   }
   for (const url of urls) {
     const origin = originOf(url)
@@ -158,20 +184,54 @@ export function toSessionCookie(cookie: CdpCookie): SessionCookie | null {
 }
 
 /**
- * A fingerprint of the cookies in scope, values included and expiries not:
- * a sign-in that completes (a push approved, a provider's redirect landing)
- * changes it; a sliding expiry being pushed out does not.
+ * A fingerprint of a session, values included and cookie expiries not: a
+ * sign-in that completes (a push approved, a provider's redirect landing, a
+ * token stored by the app) changes it; a sliding expiry being pushed out does
+ * not.
  */
-export function hashCookies(cookies: readonly SessionCookie[]): string {
-  const keys = cookies
+export function hashSession(session: Pick<SessionBundle, 'cookies' | 'origins'>): string {
+  const cookies = session.cookies
     .map((cookie) => JSON.stringify([cookie.domain, cookie.path, cookie.name, cookie.partitionKey?.topLevelSite ?? null, cookie.value]))
     .sort()
-  return createHash('sha256').update(keys.join('\n')).digest('base64url')
+  const origins = session.origins
+    .map((stored) => JSON.stringify([
+      stored.origin,
+      [...stored.localStorage].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      [...stored.indexedDB].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+    ]))
+    .sort()
+  return createHash('sha256').update([...cookies, '', ...origins].join('\n')).digest('base64url')
 }
 
-/** An already-expired copy: setting it deletes the cookie. */
+/**
+ * A cookie outside the site's scope, as the outside-the-scope log compares
+ * them (session-outside.ts): which cookie it is, where, and a fingerprint of
+ * its value that tells only whether it changed. Never saved or sent.
+ */
+export interface OutsideCookie {
+  /** Domain, path, name and partition. */
+  key: string
+  domain: string
+  sourcePort?: number
+  valueHash: string
+}
+
+/** Fingerprints are compared only within one run of the container. */
+const OUTSIDE_SALT = randomBytes(16)
+
+function outsideCookie(cookie: CdpCookie): OutsideCookie {
+  const partition = (cookie.partitionKey as { topLevelSite?: unknown } | undefined)?.topLevelSite
+  return {
+    key: JSON.stringify([cookie.domain, cookie.path, cookie.name, typeof partition === 'string' ? partition : null]),
+    domain: cookie.domain,
+    ...(cookie.sourcePort !== undefined ? { sourcePort: cookie.sourcePort } : {}),
+    valueHash: createHash('sha256').update(OUTSIDE_SALT).update(cookie.value).digest('base64url').slice(0, 16),
+  }
+}
+
+/** An already-expired copy: setting it deletes the cookie. The value stays: a nameless cookie with no value is no cookie at all. */
 function expired(cookie: SessionCookie): SessionCookie {
-  return { ...cookie, value: '', expires: 1 }
+  return { ...cookie, expires: 1 }
 }
 
 // ── The browser ────────────────────────────────────────────────────────────
@@ -197,25 +257,35 @@ async function listPages(cdp: CdpConnection): Promise<PageInfo[]> {
 }
 
 /**
- * The browser context the agent's tabs are in, when it is not the default
- * one (remote providers keep pages in their own): cookies and new tabs must
- * go there.
+ * The browser context of the agent's tab (`tabId`, else the first page),
+ * when it is not the default one (remote providers keep pages in their own):
+ * cookies and new tabs must go there.
  */
-async function agentContext(cdp: CdpConnection, pages: readonly PageInfo[]): Promise<Record<string, string>> {
-  const contextId = pages[0]?.browserContextId
+async function agentContext(cdp: CdpConnection, pages: readonly PageInfo[], tabId?: string | null): Promise<Record<string, string>> {
+  const contextId = (pages.find((page) => page.targetId === tabId) ?? pages[0])?.browserContextId
   if (!contextId) return {}
   const { browserContextIds } = await cdp.send<{ browserContextIds: string[] }>('Target.getBrowserContexts')
     .catch((): { browserContextIds: string[] } => ({ browserContextIds: [] }))
   return browserContextIds.includes(contextId) ? { browserContextId: contextId } : {}
 }
 
-async function readCookies(cdp: CdpConnection, context: Record<string, string>, site: string): Promise<SessionCookie[]> {
+async function browserCookies(cdp: CdpConnection, context: Record<string, string>): Promise<CdpCookie[]> {
   const { cookies } = await cdp.send<{ cookies: CdpCookie[] }>('Storage.getCookies', context)
+  return cookies
+}
+
+const isSiteCookie = (cookie: CdpCookie, site: string) => cookieInScope(cookie.domain, site) && cookieFromSitePort(cookie.sourcePort, site)
+
+function siteCookies(cookies: readonly CdpCookie[], site: string): SessionCookie[] {
   return cookies.flatMap((cookie) => {
-    if (!cookieInScope(cookie.domain, site) || !cookieFromSitePort(cookie.sourcePort, site)) return []
+    if (!isSiteCookie(cookie, site)) return []
     const converted = toSessionCookie(cookie)
     return converted ? [converted] : []
   })
+}
+
+async function readCookies(cdp: CdpConnection, context: Record<string, string>, site: string): Promise<SessionCookie[]> {
+  return siteCookies(await browserCookies(cdp, context), site)
 }
 
 async function attach(cdp: CdpConnection, targetId: string): Promise<string> {
@@ -228,8 +298,8 @@ async function detach(cdp: CdpConnection, sessionId: string): Promise<void> {
 }
 
 /** Call a page function with arguments passed by value; a failure names no value (our scripts never put one in an error). */
-async function callInPage<T>(cdp: CdpConnection, sessionId: string, functionDeclaration: string, args: unknown[] = [], contextId?: number): Promise<T> {
-  const global = await cdp.send<{ result?: { objectId?: string } }>('Runtime.evaluate', { expression: 'globalThis', ...(contextId ? { contextId } : {}) }, sessionId)
+async function callInPage<T>(cdp: CdpConnection, sessionId: string, functionDeclaration: string, args: unknown[] = []): Promise<T> {
+  const global = await cdp.send<{ result?: { objectId?: string } }>('Runtime.evaluate', { expression: 'globalThis' }, sessionId)
   const objectId = global.result?.objectId
   if (!objectId) throw new Error('the page could not be reached')
   const response = await cdp.send<{ result?: { value?: T }; exceptionDetails?: { exception?: { description?: string } } }>('Runtime.callFunctionOn', {
@@ -347,42 +417,25 @@ async function visitedUrls(cdp: CdpConnection, pages: readonly PageInfo[]): Prom
   return urls
 }
 
-/**
- * Empty sessionStorage in the open tabs on the site's origins, each from an
- * isolated world (the page's own scripts cannot stand in for the API) and
- * only while the tab is still on the origin it was listed with.
- */
-async function clearSessionStorage(cdp: CdpConnection, pages: readonly PageInfo[], site: string): Promise<void> {
-  for (const page of pages) {
-    const origin = originOf(page.url)
-    if (!origin || !originInScope(origin, site)) continue
-    const sessionId = await attach(cdp, page.targetId)
-    try {
-      const { frameTree } = await cdp.send<{ frameTree: { frame: { id: string } } }>('Page.getFrameTree', {}, sessionId)
-      const world = await cdp.send<{ executionContextId: number }>(
-        'Page.createIsolatedWorld',
-        { frameId: frameTree.frame.id, worldName: WORLD_NAME, grantUniveralAccess: false },
-        sessionId,
-      )
-      await callInPage(cdp, sessionId, CLEAR_SESSION_STORAGE_FUNCTION, [origin], world.executionContextId)
-    } finally {
-      await detach(cdp, sessionId)
-    }
-  }
-}
-
 // ── Capture ────────────────────────────────────────────────────────────────
 
 interface ReadOrigin {
   localStorage: Array<[string, string]>
   indexedDB: OriginStorage['indexedDB']
-  oversized: number
+  leftOut: number
   unsupported: string[]
 }
 
-export type CaptureResult =
-  | { unchanged: true; cookieHash: string }
-  | { unchanged: false; cookieHash: string; bundle: SessionBundle; unsupported: string[] }
+/** A read of the site's session: its fingerprint, and the session itself unless only the fingerprint was asked for or it had not changed. */
+export interface CaptureResult {
+  hash: string
+  bundle?: SessionBundle
+  unsupported: string[]
+  /** Every cookie outside the site's scope, fingerprinted, for the outside-the-scope log. */
+  outside: OutsideCookie[]
+  /** The site of the agent's tab, when it shows a web page. */
+  tabSite: string | null
+}
 
 /** Leave databases out, biggest first, until the bundle fits; past that it is not kept at all. */
 function fitBundle(bundle: SessionBundle): SessionBundle {
@@ -406,43 +459,51 @@ function fitBundle(bundle: SessionBundle): SessionBundle {
 }
 
 /**
- * Read the site's session out of the browser. With `unlessCookieHash`, a
- * browser whose cookies in scope still have that fingerprint is not read any
- * further: nothing about the sign-in changed since that capture.
+ * Read the site's session out of the browser: its cookies, and the storage
+ * of its origins on a hidden tab. `peek` asks only for the fingerprint (the
+ * state before a sign-in step, for later reads to be compared with); with
+ * `unlessHash`, a session with that fingerprint comes back without its
+ * contents: nothing about it changed since. `tabId` is the agent's tab.
  */
-export async function captureSession(cdp: CdpConnection, scope: SessionScope, options: { unlessCookieHash?: string } = {}): Promise<CaptureResult> {
+export async function captureSession(
+  cdp: CdpConnection,
+  scope: SessionScope,
+  options: { unlessHash?: string; peek?: boolean; tabId?: string | null } = {},
+): Promise<CaptureResult> {
   const pages = await listPages(cdp)
   if (pages.length === 0) throw new Error('no browser page is open')
-  const context = await agentContext(cdp, pages)
-  const cookies = await readCookies(cdp, context, scope.site)
-  const cookieHash = hashCookies(cookies)
-  if (options.unlessCookieHash === cookieHash) return { unchanged: true, cookieHash }
-
+  const context = await agentContext(cdp, pages, options.tabId)
+  const everyCookie = await browserCookies(cdp, context)
+  const cookies = siteCookies(everyCookie, scope.site)
+  const outside = everyCookie.filter((cookie) => !isSiteCookie(cookie, scope.site)).map(outsideCookie)
+  const tabSite = siteOfUrl(pages.find((page) => page.targetId === options.tabId)?.url)
+  let leftOut = Math.max(0, cookies.length - MAX_COOKIES)
   const candidates = candidateOrigins(scope, cookies, await visitedUrls(cdp, pages))
   const unsupported = new Set<string>()
-  let leftOut = 0
   const origins = await withStubTab(cdp, context, async (tab) => {
     const read: OriginStorage[] = []
     for (const origin of candidates) {
       await tab.open(origin)
       const stored = await tab.call<ReadOrigin>(READ_ORIGIN_STORAGE_FUNCTION, [origin])
-      leftOut += stored.oversized
+      leftOut += stored.leftOut
       for (const type of stored.unsupported) unsupported.add(type)
-      if (stored.localStorage.length > 0 || stored.indexedDB.length > 0) {
-        read.push({ origin, localStorage: stored.localStorage, indexedDB: stored.indexedDB })
-      }
+      if (stored.localStorage.length === 0 && stored.indexedDB.length === 0) continue
+      if (read.length < MAX_ORIGINS) read.push({ origin, localStorage: stored.localStorage, indexedDB: stored.indexedDB })
+      else leftOut++
     }
     return read
   })
-  const bundle = fitBundle({
+  const bundle = sessionBundleSchema.parse(fitBundle({
     version: 1,
     site: scope.site,
     capturedAt: new Date().toISOString(),
-    cookies,
+    cookies: cookies.slice(0, MAX_COOKIES),
     origins,
     ...(leftOut > 0 ? { leftOut } : {}),
-  })
-  return { unchanged: false, cookieHash, bundle: sessionBundleSchema.parse(bundle), unsupported: [...unsupported] }
+  }))
+  const hash = hashSession(bundle)
+  if (options.peek || options.unlessHash === hash) return { hash, unsupported: [...unsupported], outside, tabSite }
+  return { hash, bundle, unsupported: [...unsupported], outside, tabSite }
 }
 
 // ── Restore ────────────────────────────────────────────────────────────────
@@ -450,106 +511,255 @@ export async function captureSession(cdp: CdpConnection, scope: SessionScope, op
 export interface RestoreOutcome {
   /** Saved records whose values could not be written back (a key that cannot leave its browser). */
   skippedRecords: number
-  /** The fingerprint of the site's cookies as restored (hashCookies): a later capture saves only a change. */
-  cookieHash: string
+  /** How the agent's tab settled after its reload; null when it was not reloaded, or its page did not load. */
+  settled: TabSettled | null
+}
+
+export interface TabSettled {
+  /** How long after the reload's load the tab was seen settled. */
+  waitedMs: number
+  /** The host the tab went on to by itself after the load; null when it stayed on its page. */
+  movedTo: string | null
+}
+
+/** How the agent's tab settles after a restore's reload (followTab), from its load. */
+export interface SettleTiming {
+  /** The sign-in page is given this long to move on by itself, */
+  minMs: number
+  /** and then settles once nothing moved for this long; */
+  quietMs: number
+  /** once it moved on, once no navigation started for this long; */
+  movedQuietMs: number
+  /** and never later than this. */
+  maxMs: number
 }
 
 /**
- * A restore that failed. `touched`: the browser changed (the agent's tab
- * left its page, or the site's state was partly replaced), so the page the
- * agent mapped is gone; then `cleared` says whether the site was emptied
- * after, as a sign-out, rather than left with two accounts' state mixed.
+ * Measured on Google (Browserbase): the sign-in page went on to Gmail 1.8 s
+ * after its load, after 1.5 s with no request; 3 to 5 s in another run.
+ */
+export const SETTLE_TIMING: SettleTiming = { minMs: 5_000, quietMs: 1_500, movedQuietMs: 1_000, maxMs: 8_000 }
+
+/**
+ * A restore that failed. `touched`: the agent's tab left its page (it was
+ * parked), so the page the agent mapped is gone; `changed`: some of the
+ * site's state was replaced; then `cleared` says whether the site was
+ * emptied after, rather than left with two accounts' state mixed.
  */
 export class SessionRestoreError extends Error {
-  constructor(message: string, readonly touched: boolean, readonly cleared: boolean) {
+  constructor(message: string, readonly touched: boolean, readonly changed: boolean, readonly cleared: boolean) {
     super(message)
   }
 }
 
+/** A tab parked on a stub while the site's state is replaced, and where it goes back to. */
 interface ParkedTab {
-  targetId: string
   sessionId: string
-  /** Its origin before it was parked, if it showed an http(s) page. */
-  origin: string | null
+  url: string
   stubs: StubTab
-  pages: readonly PageInfo[]
-  context: Record<string, string>
+  /** It left its page: it goes back once the state is in place. */
+  moved: boolean
+  /** The agent's tab: it settles after going back, and `settled` says how. */
+  settles: boolean
+  settled: TabSettled | null
+}
+
+/** Park a tab: on the stub of its own origin when it shows a page, with its sessionStorage there emptied when that origin is the site's. */
+async function park(cdp: CdpConnection, page: PageInfo, site: string, parked: ParkedTab[], settles = false): Promise<ParkedTab> {
+  const sessionId = await attach(cdp, page.targetId)
+  let stubs: StubTab
+  try {
+    stubs = await interceptStubs(cdp, sessionId)
+  } catch (error) {
+    await detach(cdp, sessionId)
+    throw error
+  }
+  const tab: ParkedTab = { sessionId, url: page.url, stubs, moved: false, settles, settled: null }
+  parked.push(tab)
+  const origin = originOf(page.url)
+  if (origin) {
+    tab.moved = true
+    await stubs.open(origin)
+    // The tab's own sessionStorage on the site, with what the page wrote on its way out.
+    if (originInScope(origin, site)) await stubs.call(CLEAR_SESSION_STORAGE_FUNCTION, [origin])
+  }
+  return tab
+}
+
+/** A URL's host, or its scheme when it has none (about:blank). */
+function hostOf(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return parsed.host || parsed.protocol
+  } catch {
+    return 'an unreadable URL'
+  }
+}
+
+/**
+ * Follow a tab's main frame and requests, from before its reload. `settled`,
+ * called once the reload has loaded, waits for the tab to settle and says
+ * what it did meanwhile: a page the restored state signs in may move on by
+ * itself after its load (Google's sign-in page checks the session in its
+ * scripts and goes on to Gmail seconds later; told where the tab was at the
+ * load, the agent saw the sign-in page and signed in again). Before it moves,
+ * settled is `minMs` past the load with nothing moving for `quietMs` (no
+ * navigation, no request in flight but a long poll); once it moved, no
+ * navigation started for `movedQuietMs`, however long the new page takes to
+ * load (Gmail's own requests keep on); at the latest `maxMs` past the load.
+ */
+async function followTab(cdp: CdpConnection, sessionId: string, timing: SettleTiming): Promise<{ settled(): Promise<TabSettled>; stop(): void }> {
+  const { frameTree } = await cdp.send<{ frameTree: { frame: { id: string } } }>('Page.getFrameTree', {}, sessionId)
+  const mainFrame = frameTree.frame.id
+  /** Requests in flight: id → when issued. */
+  const inFlight = new Map<string, number>()
+  let loading = false
+  let busyAt = Date.now()
+  let navigatedAt = Date.now()
+  let loadedAt: number | null = null
+  let movedTo: string | null = null
+  const stop = cdp.onEvent(({ method, params, sessionId: from }) => {
+    if (from !== sessionId) return
+    if (method === 'Network.requestWillBeSent') {
+      if (!inFlight.has(params.requestId)) inFlight.set(params.requestId, Date.now())
+      // The tab's own navigation, and each of its redirects.
+      if (params.type === 'Document' && params.frameId === mainFrame) navigatedAt = Date.now()
+    } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+      inFlight.delete(params.requestId)
+    } else if (method === 'Page.frameStartedLoading' && params.frameId === mainFrame) {
+      loading = true
+    } else if (method === 'Page.frameNavigated' && params.frame?.id === mainFrame) {
+      if (loadedAt !== null) movedTo = hostOf(params.frame.url)
+      navigatedAt = Date.now()
+    } else if (method === 'Page.frameStoppedLoading' && params.frameId === mainFrame) {
+      loading = false
+    } else {
+      return
+    }
+    busyAt = Date.now()
+  })
+  return {
+    stop,
+    async settled() {
+      const loaded = Date.now()
+      loadedAt = loaded
+      busyAt = loaded
+      for (;;) {
+        const now = Date.now()
+        if (loading || [...inFlight.values()].some((issuedAt) => now - issuedAt < LONG_REQUEST_MS)) busyAt = now
+        const done = movedTo !== null
+          ? now - navigatedAt >= timing.movedQuietMs
+          : now - loaded >= timing.minMs && now - busyAt >= timing.quietMs
+        if (done || now - loaded >= timing.maxMs) return { waitedMs: now - loaded, movedTo }
+        await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS))
+      }
+    },
+  }
+}
+
+/**
+ * Send a parked tab back to its page, loaded afresh, with no stub left in its
+ * history (nor the page it left, held in the back cache). The agent's tab
+ * then settles (followTab) before the agent is told where it is.
+ */
+async function unpark(cdp: CdpConnection, tab: ParkedTab, timing: SettleTiming): Promise<void> {
+  await tab.stubs.release()
+  if (tab.moved && !tab.url.startsWith('chrome-error:')) {
+    const followed = tab.settles ? await followTab(cdp, tab.sessionId, timing).catch(() => null) : null
+    try {
+      const loaded = loadFired(cdp, tab.sessionId)
+      loaded.catch(() => {})
+      const navigation = await cdp.send<{ errorText?: string }>('Page.navigate', { url: tab.url }, tab.sessionId).catch(() => null)
+      // A page that fails or takes long to load is the agent's to see.
+      if (navigation && !navigation.errorText && await loaded.then(() => true, () => false) && followed) tab.settled = await followed.settled()
+    } finally {
+      followed?.stop()
+    }
+    await cdp.send('Page.resetNavigationHistory', {}, tab.sessionId).catch(() => {})
+  }
+  await detach(cdp, tab.sessionId)
 }
 
 /**
  * Make the site's state in the browser the bundle's. `tabId` is the agent's
- * tab: parked on the stub of its own origin while the state is replaced (see
- * the module comment), then sent back to its URL, whatever happened. A
- * failure once something changed empties the site before the tab goes back.
+ * tab: the state is written through it. It and every other tab on the site
+ * are parked while the state is replaced (see the module comment), then sent
+ * back, whatever happened, the agent's tab settling (`settle`) before this
+ * returns. The other tabs go first: one that cannot be parked and is still
+ * open (a dialog holds its page) would write its account's state back once
+ * it runs again, so nothing is replaced, and the agent's page is left as it
+ * is. A failure once something changed empties the site before they go back.
  */
-export async function restoreSession(cdp: CdpConnection, scope: SessionScope, bundle: SessionBundle, tabId: string): Promise<RestoreOutcome> {
-  let touched = false
-  let sessionId: string | null = null
-  let returnTo: string | null = null
-  let stubs: StubTab | null = null
+export async function restoreSession(
+  cdp: CdpConnection,
+  scope: SessionScope,
+  bundle: SessionBundle,
+  tabId: string,
+  settle: SettleTiming = SETTLE_TIMING,
+): Promise<RestoreOutcome> {
+  const parked: ParkedTab[] = []
+  let changed = false
+  let skippedRecords = 0
   try {
     const pages = await listPages(cdp)
-    const tab = pages.find((page) => page.targetId === tabId)
-    if (!tab) throw new Error('the agent\'s tab is gone')
-    const context = await agentContext(cdp, pages)
-    sessionId = await attach(cdp, tabId)
-    stubs = await interceptStubs(cdp, sessionId)
-    const parked: ParkedTab = { targetId: tabId, sessionId, origin: originOf(tab.url), stubs, pages, context }
-    touched = true
-    returnTo = parked.origin ? tab.url : null
+    const agentPage = pages.find((page) => page.targetId === tabId)
+    if (!agentPage) throw new Error('the agent\'s tab is gone')
+    const context = await agentContext(cdp, pages, tabId)
+    for (const page of pages) {
+      const origin = originOf(page.url)
+      if (page.targetId === tabId || !origin || !originInScope(origin, scope.site)) continue
+      await park(cdp, page, scope.site, parked).catch(async () => {
+        // Closed meanwhile, it runs nothing of the site's either.
+        if ((await listPages(cdp)).some((open) => open.targetId === page.targetId)) throw new Error('another tab on the site is not responding')
+      })
+    }
+    const agentTab = await park(cdp, agentPage, scope.site, parked, true)
+    const replace = (from: SessionBundle | null) => replaceSiteState(cdp, scope, from, { tab: agentTab, pages, context }, () => { changed = true })
     try {
-      return await replaceSiteState(cdp, scope, bundle, parked)
+      ({ skippedRecords } = await replace(bundle))
     } catch (error) {
-      const cleared = await replaceSiteState(cdp, scope, null, parked).then(() => true, () => false)
-      throw new SessionRestoreError(error instanceof Error ? error.message : 'unknown error', true, cleared)
+      const cleared = changed && await replace(null).then(() => true, () => false)
+      throw new SessionRestoreError(error instanceof Error ? error.message : 'unknown error', true, changed, cleared)
     }
   } catch (error) {
     if (error instanceof SessionRestoreError) throw error
-    throw new SessionRestoreError(error instanceof Error ? error.message : 'unknown error', touched, false)
+    throw new SessionRestoreError(error instanceof Error ? error.message : 'unknown error', parked.some((tab) => tab.settles && tab.moved), changed, false)
   } finally {
-    await stubs?.release()
-    if (sessionId && returnTo) await navigateBack(cdp, sessionId, returnTo)
-    if (sessionId) await detach(cdp, sessionId)
+    for (const tab of parked) await unpark(cdp, tab, settle).catch(() => {})
   }
+  return { skippedRecords, settled: parked.find((tab) => tab.settles)?.settled ?? null }
 }
 
-/** Send the parked tab back to its page; one that fails or takes long to load is the agent's to see. */
-async function navigateBack(cdp: CdpConnection, sessionId: string, url: string): Promise<void> {
-  const loaded = loadFired(cdp, sessionId)
-  loaded.catch(() => {})
-  const navigation = await cdp.send<{ errorText?: string }>('Page.navigate', { url }, sessionId).catch(() => null)
-  if (navigation && !navigation.errorText) await loaded.catch(() => {})
-}
-
-/** The site's state made the bundle's, or emptied (null), with the agent's tab parked on a stub. */
-async function replaceSiteState(cdp: CdpConnection, scope: SessionScope, bundle: SessionBundle | null, tab: ParkedTab): Promise<RestoreOutcome> {
-  const { sessionId, stubs, context } = tab
+/** The site's state made the bundle's, or emptied (null), with its tabs parked. `onChange` runs before the first change. */
+async function replaceSiteState(
+  cdp: CdpConnection,
+  scope: SessionScope,
+  bundle: SessionBundle | null,
+  browser: { tab: ParkedTab; pages: readonly PageInfo[]; context: Record<string, string> },
+  onChange: () => void,
+): Promise<{ skippedRecords: number }> {
+  const { tab, pages, context } = browser
   // Only what is the site's goes in, whatever the bundle holds.
   const cookies = bundle?.cookies.filter((cookie) => cookieInScope(cookie.domain, scope.site) && cookieFromSitePort(cookie.sourcePort, scope.site)) ?? []
   const stores = bundle?.origins.filter((origin) => originInScope(origin.origin, scope.site)) ?? []
-  if (tab.origin) {
-    await stubs.open(tab.origin)
-    // The tab's own sessionStorage on the site, with what the page wrote on its way out.
-    if (originInScope(tab.origin, scope.site)) await stubs.call(CLEAR_SESSION_STORAGE_FUNCTION, [tab.origin])
-  }
   const existing = await readCookies(cdp, context, scope.site)
   const origins = new Set([
-    ...candidateOrigins(scope, existing, await visitedUrls(cdp, tab.pages)),
+    ...candidateOrigins(scope, existing, await visitedUrls(cdp, pages)),
     ...stores.map((stored) => stored.origin),
   ])
+  onChange()
   if (existing.length > 0) await cdp.send('Storage.setCookies', { cookies: existing.map(expired), ...context })
   for (const origin of origins) {
-    await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: CLEARED_STORAGE }, sessionId)
+    await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: CLEARED_STORAGE }, tab.sessionId)
   }
   let skippedRecords = 0
   for (const stored of stores) {
-    await stubs.open(stored.origin)
-    const written = await stubs.call<{ skippedRecords: number }>(WRITE_ORIGIN_STORAGE_FUNCTION, [stored])
+    tab.moved = true
+    await tab.stubs.open(stored.origin)
+    const written = await tab.stubs.call<{ skippedRecords: number }>(WRITE_ORIGIN_STORAGE_FUNCTION, [stored])
     skippedRecords += written.skippedRecords
   }
   // Last: the site's server sees the restored account only once its storage is in place.
   if (cookies.length > 0) await cdp.send('Storage.setCookies', { cookies, ...context })
-  await clearSessionStorage(cdp, tab.pages.filter((page) => page.targetId !== tab.targetId), scope.site)
-  // As the browser took them: one already expired is not set at all.
-  return { skippedRecords, cookieHash: hashCookies(await readCookies(cdp, context, scope.site)) }
+  return { skippedRecords }
 }

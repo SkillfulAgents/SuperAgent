@@ -177,6 +177,8 @@ export const loginSessionReportSchema = z.object({
   site: z.string(),
   username: z.string(),
   restored: z.boolean(),
+  /** A restore that failed: whether the site's state in the browser was changed, and then emptied after. */
+  changed: z.boolean().optional(),
   cleared: z.boolean().optional(),
   /** The digest of the page after it loaded again. */
   observation: z.record(z.string(), z.unknown()).optional(),
