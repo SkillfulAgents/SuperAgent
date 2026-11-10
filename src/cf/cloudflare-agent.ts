@@ -74,12 +74,10 @@ export async function serveWorkspaceRequest(request: Request, env: Env, objectId
     const object = await env.WORKSPACES.get(workspaceBlobKey(objectId, hash))
     return object ? new Response(object.body) : new Response(null, { status: 404 })
   }
-  const agent = () => env.AGENT.get(env.AGENT.idFromString(objectId))
   if (hash && request.method === 'PUT') {
     const length = Number(request.headers.get('x-content-length'))
     if (!request.body || !Number.isInteger(length)) return new Response('x-content-length required', { status: 400 })
-    // Recorded before the bytes land, so the object can drop them if no file ends up using them.
-    await agent().markBlobPending(hash)
+    // No call to the agent's object: it marked the hash pending when it asked for these bytes.
     try {
       // R2 keeps the bytes only if they hash to `hash`: the file can change between the
       // container's scan and this upload. A refused upload leaves any stored copy as it was.
@@ -90,7 +88,7 @@ export async function serveWorkspaceRequest(request: Request, env: Env, objectId
       return new Response('the file changed since it was scanned', { status: 409 })
     }
   }
-  return agent().workspaceRequest(request)
+  return env.AGENT.get(env.AGENT.idFromString(objectId)).workspaceRequest(request)
 }
 
 /** The container's calls to the host (proxy, host tools, bootstrap): the API, in the Worker. */
@@ -215,28 +213,25 @@ export class AgentDurableObject extends DurableObject<Env> {
   }
 
   /** Records bytes the Worker is about to store for this agent (serveWorkspaceRequest). */
-  markBlobPending(hash: string): void {
-    this.ctx.storage.sql.exec('INSERT OR IGNORE INTO workspace_pending (hash) VALUES (?)', hash)
-  }
-
   /** The container's saves of what changed; its file bytes go to R2 in the Worker. */
   async workspaceRequest(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url)
     if (pathname === '/changes' && request.method === 'POST') {
-      const { entries, removed } = (await request.json()) as { entries: WorkspaceFile[]; removed: string[] }
-      return this.saveChanges(entries, removed)
+      const { entries, removed, uploaded = [] } = (await request.json()) as { entries: WorkspaceFile[]; removed: string[]; uploaded?: string[] }
+      return this.saveChanges(entries, removed, uploaded)
     }
     return new Response(null, { status: 404 })
   }
 
   /**
    * Files the running container changed or removed, saved seconds after the change, so a crash loses
-   * only those seconds. Answers 409 with the hashes R2 lacks: the container uploads them and sends again.
+   * only those seconds. Answers 409 with the hashes it needs: the container uploads them and sends
+   * again, naming the ones it uploaded.
    */
-  private saveChanges(entries: WorkspaceFile[], removed: string[]): Promise<Response> {
+  private saveChanges(entries: WorkspaceFile[], removed: string[], uploaded: string[]): Promise<Response> {
     return this.withStore(async () => {
       if (!(await this.agentUp())) return new Response('the agent is not running', { status: 409 })
-      const missing = await this.missingBlobs(entries)
+      const missing = this.missingBlobs(entries, uploaded)
       if (missing.length > 0) return Response.json({ missing }, { status: 409 })
       // Bytes are dropped after both: a rename removes a path and adds one with the same bytes.
       const released = removed.flatMap((rel) => this.removeSaved(rel))
@@ -345,13 +340,22 @@ export class AgentDurableObject extends DurableObject<Env> {
     return hashes
   }
 
-  // Hashes of these files whose bytes R2 does not have.
-  private async missingBlobs(files: WorkspaceFile[]): Promise<string[]> {
+  /**
+   * Hashes of these files whose bytes this object cannot vouch for: no saved file uses them, and the
+   * container has not uploaded them since this object asked. They are marked pending before the
+   * container uploads them, so bytes no file ends up using are dropped (settlePending). An upload
+   * counts only while its hash is still pending: a save may have dropped the bytes meanwhile.
+   * Checked here, not in R2: one R2 request per new file made a save of many files take tens of seconds.
+   */
+  private missingBlobs(files: WorkspaceFile[], uploaded: string[]): string[] {
     const sql = this.ctx.storage.sql
+    const sent = new Set(uploaded)
+    const used = (hash: string) => sql.exec('SELECT 1 FROM workspace_file WHERE hash = ? LIMIT 1', hash).toArray().length > 0
+    const pending = (hash: string) => sql.exec('SELECT 1 FROM workspace_pending WHERE hash = ?', hash).toArray().length > 0
     const hashes = [...new Set(files.filter((file) => (file.kind ?? 'file') === 'file').map((file) => file.hash))]
-    const unknown = hashes.filter((hash) => sql.exec('SELECT 1 FROM workspace_file WHERE hash = ? LIMIT 1', hash).toArray().length === 0)
-    const stored = await Promise.all(unknown.map((hash) => this.env.WORKSPACES.head(this.blobKey(hash))))
-    return unknown.filter((_, i) => !stored[i])
+    const missing = hashes.filter((hash) => !used(hash) && !(sent.has(hash) && pending(hash)))
+    for (const hash of missing) sql.exec('INSERT OR IGNORE INTO workspace_pending (hash) VALUES (?)', hash)
+    return missing
   }
 
   /** Deletes the agent's saved workspace, its files in R2 and its file list, after the agent is deleted. */
@@ -478,9 +482,12 @@ export class AgentDurableObject extends DurableObject<Env> {
       const missing = [...kept].filter((hash) => !stored.has(hash))
       let uploaded: UploadResult = { changed: [], skipped: [], removed: [] }
       if (missing.length > 0) {
+        for (const hash of missing) sql.exec('INSERT OR IGNORE INTO workspace_pending (hash) VALUES (?)', hash)
         const upload = await this.containerFetch(new Request('http://container/upload', { method: 'POST', body: JSON.stringify({ hashes: missing }) }), SNAPSHOT_PORT)
         if (!upload.ok) throw new Error(`upload returned ${upload.status}: ${await upload.text()}`)
         uploaded = (await upload.json()) as UploadResult
+        // Files that changed during the upload went up under new hashes.
+        for (const file of uploaded.changed) if (file.hash) sql.exec('INSERT OR IGNORE INTO workspace_pending (hash) VALUES (?)', file.hash)
         files = this.applyUpload(files, uploaded)
       }
       const version = this.workspaceVersion() + 1

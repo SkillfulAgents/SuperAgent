@@ -31,7 +31,7 @@ function bucket(hashOf: (bytes: string) => string) {
 }
 
 function env(r2: ReturnType<typeof bucket>) {
-  const agent = { markBlobPending: vi.fn(async () => {}), workspaceRequest: vi.fn(async () => new Response(null, { status: 202 })) }
+  const agent = { workspaceRequest: vi.fn(async () => new Response(null, { status: 202 })) }
   const value = {
     WORKSPACES: r2,
     AGENT: { idFromString: (id: string) => id, get: () => agent },
@@ -55,10 +55,9 @@ describe('serveWorkspaceRequest', () => {
 
     expect(await response.text()).toBe('# Lead research')
     expect(agent.workspaceRequest).not.toHaveBeenCalled()
-    expect(agent.markBlobPending).not.toHaveBeenCalled()
   })
 
-  it('stores uploaded bytes in R2 after the object has recorded them as pending', async () => {
+  it("stores uploaded bytes in R2 without a call to the agent's object", async () => {
     const r2 = bucket(() => HASH)
     const { value, agent } = env(r2)
 
@@ -66,9 +65,8 @@ describe('serveWorkspaceRequest', () => {
 
     expect(response.status).toBe(204)
     expect(r2.objects.get(workspaceBlobKey(OBJECT, HASH))).toBe('Find the decision maker.')
-    expect(agent.markBlobPending).toHaveBeenCalledWith(HASH)
-    expect(agent.markBlobPending.mock.invocationCallOrder[0]).toBeLessThan(r2.put.mock.invocationCallOrder[0])
     expect(r2.put.mock.calls[0][2]).toEqual({ sha256: HASH })
+    expect(agent.workspaceRequest).not.toHaveBeenCalled()
   })
 
   it('refuses bytes that no longer match their hash and keeps the stored copy', async () => {
@@ -161,9 +159,18 @@ function runningAgent(running = true) {
     agentUp: async () => running,
   })
   const saved = () => ctx.storage.sql.exec('SELECT path, hash, kind FROM workspace_file ORDER BY path').toArray()
-  const send = (entries: unknown[], removed: string[] = []) =>
-    object.workspaceRequest(new Request('http://workspace.internal/changes', { method: 'POST', body: JSON.stringify({ entries, removed }) }))
-  return { object, r2, saved, send }
+  const pending = () => ctx.storage.sql.exec('SELECT hash FROM workspace_pending ORDER BY hash').toArray().map((row) => (row as { hash: string }).hash)
+  const send = (entries: unknown[], removed: string[] = [], uploaded: string[] = []) =>
+    object.workspaceRequest(new Request('http://workspace.internal/changes', { method: 'POST', body: JSON.stringify({ entries, removed, uploaded }) }))
+  /** What the container does: send, upload what the object asks for, send again naming the uploads. */
+  const save = async (entries: Array<{ hash: string }>, removed: string[] = []) => {
+    const first = await send(entries, removed)
+    if (first.status !== 409) return first
+    const { missing } = (await first.json()) as { missing: string[] }
+    for (const hash of missing) r2.set(workspaceBlobKey(OBJECT, hash), `bytes of ${hash.slice(0, 4)}`)
+    return send(entries, removed, missing)
+  }
+  return { object, ctx, r2, saved, pending, send, save }
 }
 
 const file = (path: string, hash: string) => ({ path, hash, size: 4, mode: 0o644, mtimeMs: 1, kind: 'file' })
@@ -171,7 +178,7 @@ const H1 = '1'.repeat(64)
 const H2 = '2'.repeat(64)
 
 describe("AgentDurableObject saving the container's changes", () => {
-  it('asks for the bytes R2 lacks before it saves anything', async () => {
+  it('asks for the bytes of a new file before it saves anything, and marks them pending', async () => {
     const agent = runningAgent()
 
     const response = await agent.send([file('notes/leads.md', H1)])
@@ -179,15 +186,43 @@ describe("AgentDurableObject saving the container's changes", () => {
     expect(response.status).toBe(409)
     expect(await response.json()).toEqual({ missing: [H1] })
     expect(agent.saved()).toEqual([])
+    expect(agent.pending()).toEqual([H1])
+  })
+
+  it('saves the file once the container names the bytes it uploaded', async () => {
+    const agent = runningAgent()
+
+    expect((await agent.save([file('notes/leads.md', H1)])).status).toBe(204)
+
+    expect(agent.saved()).toEqual([{ path: 'notes/leads.md', hash: H1, kind: 'file' }])
+  })
+
+  it('does not take an upload it did not ask for', async () => {
+    const agent = runningAgent()
+
+    const response = await agent.send([file('notes/leads.md', H1)], [], [H1])
+
+    expect(response.status).toBe(409)
+    expect(agent.saved()).toEqual([])
+  })
+
+  it('asks again when the bytes it asked for were dropped before the container named its upload', async () => {
+    const agent = runningAgent()
+    await agent.send([file('notes/leads.md', H1)])
+    // A full save settles pending bytes no file uses, between the ask and the upload.
+    agent.ctx.storage.sql.exec('DELETE FROM workspace_pending')
+
+    const response = await agent.send([file('notes/leads.md', H1)], [], [H1])
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ missing: [H1] })
   })
 
   it('saves a changed file and drops the bytes of its earlier version', async () => {
     const agent = runningAgent()
-    agent.r2.set(workspaceBlobKey(OBJECT, H1), 'v1')
-    expect((await agent.send([file('notes/leads.md', H1)])).status).toBe(204)
+    expect((await agent.save([file('notes/leads.md', H1)])).status).toBe(204)
 
-    agent.r2.set(workspaceBlobKey(OBJECT, H2), 'v2')
-    expect((await agent.send([file('notes/leads.md', H2)])).status).toBe(204)
+    expect((await agent.save([file('notes/leads.md', H2)])).status).toBe(204)
 
     expect(agent.saved()).toEqual([{ path: 'notes/leads.md', hash: H2, kind: 'file' }])
     expect(agent.r2.has(workspaceBlobKey(OBJECT, H1))).toBe(false)
@@ -195,9 +230,7 @@ describe("AgentDurableObject saving the container's changes", () => {
 
   it('removes a folder with everything under it', async () => {
     const agent = runningAgent()
-    agent.r2.set(workspaceBlobKey(OBJECT, H1), 'a')
-    agent.r2.set(workspaceBlobKey(OBJECT, H2), 'b')
-    await agent.send([file('drafts/a.md', H1), file('drafts/old/b.md', H2), file('drafts-2026.md', H1)])
+    await agent.save([file('drafts/a.md', H1), file('drafts/old/b.md', H2), file('drafts-2026.md', H1)])
 
     expect((await agent.send([], ['drafts'])).status).toBe(204)
 
@@ -207,8 +240,7 @@ describe("AgentDurableObject saving the container's changes", () => {
 
   it('keeps the bytes of a renamed file, which the removed path and the new one share', async () => {
     const agent = runningAgent()
-    agent.r2.set(workspaceBlobKey(OBJECT, H1), 'v1')
-    await agent.send([file('notes/leads.md.tmp', H1)])
+    await agent.save([file('notes/leads.md.tmp', H1)])
 
     expect((await agent.send([file('notes/leads.md', H1)], ['notes/leads.md.tmp'])).status).toBe(204)
 
