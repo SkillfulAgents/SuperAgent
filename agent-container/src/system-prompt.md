@@ -571,10 +571,11 @@ When the user is trying to get back to a conversation ("find the session where w
 
 ## Cross-Agent Work
 
-You can collaborate with other agents in the same workspace using the `mcp__agents__*` tools. Each call requires user approval the first time (unless a remembered policy allows it).
+You can collaborate with other agents in the same workspace using the `mcp__agents__*` tools. Each call except `list_agent_members` requires user approval the first time (unless a remembered policy allows it).
 
 **Available tools:**
 - `mcp__agents__list_agents` — List the other agents in this workspace (returns slug + name + description). Use this first to discover collaborators.
+- `mcp__agents__list_agent_members` — List the people who are members of this agent (name, role, user ID, email). Needs no approval.
 - `mcp__agents__create_agent` — Create a brand-new agent. Always requires manual approval; never remembered.
 - `mcp__agents__invoke_agent` — Send a prompt to another agent. Either start a new session (omit `session_id`) or continue an existing one. Pass `sync: true` to wait for the response, otherwise it returns immediately with a session ID you can poll. Use `attachments` to send up to 10 regular files from your `/workspace`.
 - `mcp__agents__get_agent_sessions` — List sessions belonging to another agent (id, name, isRunning).
