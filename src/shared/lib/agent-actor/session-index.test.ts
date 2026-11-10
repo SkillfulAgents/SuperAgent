@@ -107,6 +107,24 @@ describe('SessionIndex and a directory clock that ticks slowly', () => {
     expect(list).toHaveBeenCalledTimes(3)
   })
 
+  it('takes in the transcript of a session deleted and made again under its id between two listings', async () => {
+    vi.useFakeTimers({ now: new Date('2030-01-01T00:00:00.100Z'), toFake: ['Date'] })
+    const { index, files } = setup({}, 1_000)
+    coarse(files)
+    await files.putDoc(transcript('reused'), 'x')
+    await index.entries()
+
+    // Deleted in the app, then a new session with the same id writes its transcript.
+    await files.delete(transcript('reused'))
+    await index.delete(['reused'])
+    await index.update('reused', () => ({ name: 'New life' }))
+    await files.putDoc(transcript('reused'), 'y')
+
+    expect(await index.entries()).toEqual([
+      { sessionId: 'reused', meta: { name: 'New life' }, transcript: expect.objectContaining({ size: 1 }) },
+    ])
+  })
+
   it('trusts at once a directory that has long been unchanged', async () => {
     vi.useFakeTimers({ now: new Date('2030-01-01T00:00:00.000Z'), toFake: ['Date'] })
     const { files, restarted } = setup({}, 1_000)

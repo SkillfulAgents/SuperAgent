@@ -122,8 +122,12 @@ interface Reconciled {
    * tick as the listing would go unseen, so every read lists again.
    */
   settled: boolean
-  /** The transcripts the directory held, so a listing that finds the same ones stops there. */
-  present: ReadonlySet<string>
+  /**
+   * The transcripts the directory held, so a listing that finds the same
+   * ones stops there. Forgotten when an entry is deleted: the transcript of
+   * a session deleted and made again under its id is one to take in.
+   */
+  present?: ReadonlySet<string>
 }
 
 export class SessionIndex {
@@ -181,6 +185,7 @@ export class SessionIndex {
       this.provisional.delete(sessionId)
       this.awaitingTranscript.delete(sessionId)
     }
+    if (this.reconciled) this.reconciled.present = undefined
     return this.deps.storage.delete(sessionIds)
   }
 
