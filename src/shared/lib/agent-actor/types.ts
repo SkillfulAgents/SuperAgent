@@ -51,6 +51,7 @@ import type {
   SessionMetadataMap,
 } from '@shared/lib/types/agent'
 import type { MediaRef } from '@shared/lib/services/session-media'
+import type { ResolvedDeliveredAgentFile, TranscriptView } from '@shared/lib/services/x-agent-transcript-view'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { ConfigDoc, ConfigDocId } from './config-schema'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
@@ -557,6 +558,10 @@ export interface MessageOps {
 
   /** `getSessionMessagesWithCompact` */
   withCompact(sessionId: string): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]>
+  /** `readTranscriptView`: the transcript other agents read, and its delivered files, in one streaming pass. */
+  transcriptView(sessionId: string, opts: { fullTranscript?: boolean; limit?: number }): Promise<TranscriptView>
+  /** `findDeliveredFile`: one delivered file of the transcript, found in one streaming pass. */
+  findDeliveredFile(sessionId: string, deliveryId: string): Promise<ResolvedDeliveredAgentFile | undefined>
   /** `getSessionMessagesPage` */
   page(
     sessionId: string,

@@ -19,6 +19,7 @@ import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { background } from '@shared/lib/background'
 import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
+import { findDeliveredFile, readTranscriptView } from '@shared/lib/services/x-agent-transcript-view'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
@@ -371,6 +372,10 @@ function createMessageOps(
     },
 
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
+    transcriptView: (sessionId, opts) =>
+      readTranscriptView(deps.sessionService.streamSessionMessagesWithCompact(store, sessionId), opts),
+    findDeliveredFile: (sessionId, deliveryId) =>
+      findDeliveredFile(deps.sessionService.streamSessionMessagesWithCompact(store, sessionId), deliveryId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
     delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(store, sessionId, opts),
     findLastEntry: (sessionId, query, options) =>

@@ -57,12 +57,7 @@ import {
   xAgentAttachmentsSchema,
   xAgentDownloadFileBodySchema,
 } from '@shared/lib/services/x-agent-attachment-schema'
-import {
-  collectDeliveredFiles,
-  compactMessage,
-  findDeliveredFile,
-  pageTranscript,
-} from './x-agent-transcript-view'
+import { compactMessage } from '@shared/lib/services/x-agent-transcript-view'
 import { awaitReview } from '@shared/lib/proxy/review-request'
 import { withUserReason } from '@shared/lib/proxy/user-reason'
 
@@ -631,9 +626,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       ? 'running'
       : 'idle'
 
-  const entries = await actor.messages.withCompact(sessionId)
-  const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
-  const deliveredFiles = collectDeliveredFiles(entries)
+  const { messages, total, deliveredFiles } = await actor.messages.transcriptView(sessionId, { fullTranscript, limit })
 
   return c.json({ status, messages, total, deliveredFiles })
 })
@@ -663,8 +656,7 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  const entries = await actor.messages.withCompact(sessionId)
-  const delivery = findDeliveredFile(entries, deliveryId)
+  const delivery = await actor.messages.findDeliveredFile(sessionId, deliveryId)
   if (!delivery) return c.json({ error: 'Delivered file not found' }, 404)
   const policy = await checkAgentPolicy(
     callerSlug,

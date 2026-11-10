@@ -1023,20 +1023,39 @@ function isMessageOrSystemDisplayEntry(
 }
 
 /**
+ * The messages of a session including compact boundary markers, one at a
+ * time, so a caller holds only what it keeps. A missing transcript has none.
+ */
+export async function* streamSessionMessagesWithCompact(
+  store: SessionStore,
+  sessionId: string
+): AsyncGenerator<JsonlMessageEntry | JsonlSystemEntry> {
+  const jsonlPath = transcriptPath(store, sessionId)
+
+  if (!(await transcriptExists(store, jsonlPath))) {
+    return
+  }
+
+  try {
+    for await (const raw of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
+      const entry = normalizeQueuedCommandEntry(raw)
+      if (isMessageOrSystemDisplayEntry(entry)) yield entry
+    }
+  } catch (error) {
+    if (!isAbsentFile(error)) throw error
+  }
+}
+
+/**
  * Get all messages from a session including compact boundary markers
  */
 export async function getSessionMessagesWithCompact(
   store: SessionStore,
   sessionId: string
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
-  const jsonlPath = transcriptPath(store, sessionId)
-
-  if (!(await transcriptExists(store, jsonlPath))) {
-    return []
-  }
-
-  const entries = await readJsonl<JsonlEntry>(store.files, jsonlPath)
-  return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  for await (const entry of streamSessionMessagesWithCompact(store, sessionId)) entries.push(entry)
+  return entries
 }
 
 export interface SessionMessagesPage {
@@ -1972,10 +1991,10 @@ async function readSessionEntriesFromTail(
  * lines), so the newest matching entry within a complete-line tail window is
  * exactly the entry a full parse would select. A window with no match is only
  * trusted when it covered the whole file; otherwise the window escalates.
- * Unanchored reads finally fall back to the existing streaming full parse so
- * they remain exact. Anchored reads deliberately stop at the tail budget:
- * materializing an arbitrarily large captured prefix would defeat the bounded
- * reader, and their caller supports omitting request context.
+ * Unanchored reads finally stream the whole file, holding only the newest
+ * match, so they remain exact. Anchored reads deliberately stop at the tail
+ * budget: materializing an arbitrarily large captured prefix would defeat the
+ * bounded reader, and their caller supports omitting request context.
  *
  * `endOffset` constrains the search to a byte position captured from this same
  * transcript. It is the ordering primitive for completion-notification context:
@@ -2012,13 +2031,13 @@ export async function findLastSessionEntry(
     return null
   }
 
-  // Unanchored callers keep exact pre-existing behavior via the line-streaming
-  // whole-file parser (never one readFile-sized string).
-  const entries = await getSessionMessagesWithCompact(store, sessionId)
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (predicate(entries[i])) return entries[i]
+  // Unanchored callers stay exact: the whole file, one entry at a time,
+  // holding only the newest match.
+  let newest: JsonlMessageEntry | JsonlSystemEntry | null = null
+  for await (const entry of streamSessionMessagesWithCompact(store, sessionId)) {
+    if (predicate(entry)) newest = entry
   }
-  return null
+  return newest
 }
 
 /**
