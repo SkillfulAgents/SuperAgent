@@ -271,6 +271,38 @@ describe('agent query lifecycle with the production client', () => {
     expect(state.apiFetch).toHaveBeenCalledTimes(2)
   })
 
+  it('defers a hidden tab invalidation until the tab is visible, and refetches only the invalidated query', async () => {
+    let visibility: DocumentVisibilityState = 'visible'
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
+    const setVisibility = (next: DocumentVisibilityState) => act(() => {
+      visibility = next
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    const paths = () => state.apiFetch.mock.calls.map(([path]) => path)
+    try {
+      state.apiFetch.mockImplementation(async (path: string) =>
+        json(path === '/api/agents' ? [{ slug: 'agent-one' }] : { slug: 'agent-one' }))
+      renderHook(() => ({ list: useAgents({ poll: false }), detail: useAgent('agent-one') }), { wrapper: Wrapper })
+      await tick(10)
+      expect(paths()).toEqual(['/api/agents', '/api/agents/agent-one'])
+
+      setVisibility('hidden')
+      act(() => { void client.invalidateQueries({ queryKey: ['agents', 'agent-one'] }) })
+      await tick(10)
+      expect(paths()).toHaveLength(2)
+
+      setVisibility('visible')
+      await tick(10)
+      expect(paths().slice(2)).toEqual(['/api/agents/agent-one'])
+
+      act(() => { void client.invalidateQueries({ queryKey: ['agents'] }) })
+      await tick(10)
+      expect(paths()).toHaveLength(5)
+    } finally {
+      Reflect.deleteProperty(document, 'visibilityState')
+    }
+  })
+
   it('shares polling across consumers, preserves narrow selections, and stops after unmount', async () => {
     let version = 0
     state.apiFetch.mockImplementation(async () => json([{ slug: 'same-agent', status: `status-${++version}` }]))
