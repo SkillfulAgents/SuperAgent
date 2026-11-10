@@ -127,10 +127,10 @@ async function entriesAt(rel) {
   return [{ path: rel, hash, size: stat.size, mode: stat.mode & 0o777, mtimeMs: Math.round(stat.mtimeMs), kind: 'file' }]
 }
 
-const sendChanges = (entries, removed) =>
-  fetch(`${STORE}/changes`, { method: 'POST', body: JSON.stringify({ entries, removed }) })
+const sendChanges = (entries, removed, uploaded = []) =>
+  fetch(`${STORE}/changes`, { method: 'POST', body: JSON.stringify({ entries, removed, uploaded }) })
 
-// Saves one batch of changed paths. Bytes go up only for hashes the store says it lacks.
+// Saves one batch of changed paths. Bytes go up only for hashes the store asks for, which it is then told were uploaded.
 async function saveBatch(paths, again) {
   let entries = []
   const removed = []
@@ -146,16 +146,19 @@ async function saveBatch(paths, again) {
   if (response.status === 409 && response.headers.get('content-type')?.includes('json')) {
     const { missing } = await response.json()
     const changed = new Set()
+    const uploaded = []
+    const pathsByHash = Map.groupBy(entries, (entry) => entry.hash)
     await inPool(missing, async (hash) => {
-      for (const entry of entries.filter((e) => e.hash === hash)) {
+      for (const entry of pathsByHash.get(hash) ?? []) {
         const outcome = await put(entry.path, hash).catch((error) => (error.code === 'ENOENT' ? 'changed' : Promise.reject(error)))
         if (outcome === 'changed') changed.add(entry.path)
+        else return uploaded.push(hash)
       }
     })
     // A file that changed while it was uploaded is saved with the next batch.
     for (const rel of changed) again(rel)
     entries = entries.filter((entry) => !changed.has(entry.path))
-    response = await sendChanges(entries, removed)
+    response = await sendChanges(entries, removed, uploaded)
   }
   if (!response.ok) throw new Error(`saving changes: ${response.status} ${await response.text().catch(() => '')}`)
 }
