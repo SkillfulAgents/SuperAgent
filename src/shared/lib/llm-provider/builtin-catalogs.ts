@@ -813,7 +813,6 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Google flagship, served via Platform',
     family: 'gemini-argon',
     isLatest: true,
-    isDefault: true,
     icon: 'gemini',
     supportedEfforts: STANDARD_EFFORTS,
     supportsWebSearch: false,
