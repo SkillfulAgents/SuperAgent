@@ -21,8 +21,9 @@ import { setActorTransport, setSessionStore } from '@shared/lib/agent-actor/regi
 import { createConfigOps } from '@shared/lib/agent-actor/config-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
-// eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- a deployment's session store needs its own summary cache, as local-session-store.ts makes
-import { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
+import { SessionIndex } from '@shared/lib/agent-actor/session-index'
+import { createDbSessionIndexStorage } from '@shared/lib/agent-actor/db-session-index-storage'
+import { ingestSessionMetadataFile } from '@shared/lib/services/session-metadata-file'
 // eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the agent's object schedules its idle check from the same timeout the alarm reads
 import { autoSleepTimeoutMsFrom } from '@shared/lib/container/container-runtime'
 import { IDLE_ALARM_RETRY_MS } from '@shared/lib/container/idle-alarm'
@@ -199,15 +200,26 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
     const streamed = init?.body instanceof ReadableStream
     return withAgentObject(env.AGENT, slug, env.VERSION?.timestamp, (agent) => agent.fetch(new Request(`http://container${path}`, { ...init, headers, ...(streamed ? { duplex: 'half' } : {}) } as RequestInit)))
   }, agentSleepingStore(env, slug))
-  return {
+  const key = `cloudflare:${slug}`
+  const store: SessionStore = {
     slug,
     files,
     config: createConfigOps(files),
     transcriptsDir: CLI_TRANSCRIPTS_DIR,
-    key: `cloudflare:${slug}`,
-    summaryCache: new SessionSummaryCache(),
+    key,
+    // As local-session-store.ts: a workspace's `session-metadata.json` is taken in before the index is first used.
+    index: new SessionIndex({
+      files,
+      transcriptsDir: CLI_TRANSCRIPTS_DIR,
+      key: () => key,
+      storage: createDbSessionIndexStorage(slug),
+      beforeFirstUse: () => ingestSessionMetadataFile(store).catch((error: unknown) => {
+        console.warn(`Could not take in the session metadata file of agent ${slug}:`, error)
+      }),
+    }),
     onActivity: hooks.onActivity,
   }
+  return store
 }
 
 /** The saved workspace: from the agent's own object directly, from anywhere else through its stub. */
