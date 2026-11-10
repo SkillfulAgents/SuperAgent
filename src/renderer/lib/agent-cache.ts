@@ -141,6 +141,28 @@ function isAgentSessionListKey(queryKey: readonly unknown[], aliases: Set<string
     && aliases.has(queryKey[1])
 }
 
+/** One cached session list of an agent, and whether it holds a given session. */
+export interface SessionListMembership {
+  queryKey: QueryKey
+  /** The agent's full list, not a slice of it. */
+  full: boolean
+  holds: boolean
+}
+
+/**
+ * Every cached session list of one agent (all route keys and slices), and
+ * whether each holds this session. A status event can patch a row in place;
+ * only a refetch can add one.
+ */
+export function sessionListMembership(queryClient: QueryClient, agentSlug: string, sessionId: string): SessionListMembership[] {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  return queryClient
+    .getQueriesData<unknown>({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+    .flatMap(([queryKey, data]) => Array.isArray(data)
+      ? [{ queryKey, full: queryKey.length === 2, holds: data.some((entry) => (entry as ApiSession | null)?.id === sessionId) }]
+      : [])
+}
+
 /**
  * Patch one session's entry in every cached projection: each list under
  * ['sessions', <alias>] (the full list, the notable slice, automation slices)

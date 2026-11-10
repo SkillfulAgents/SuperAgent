@@ -978,6 +978,83 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       queries.unmount()
     })
 
+    it('updates the cache for status flips of a listed session, fetching only what it cannot patch', async () => {
+      const server = {
+        agents: [{ slug: 'agent-a', displaySlug: 'agent-a', status: 'running' }],
+        sessions: [{ id: 's1', agentSlug: 'agent-a', name: 'Weekly report', isActive: false, isAwaitingInput: false }],
+        notable: [] as unknown[],
+      }
+      const queries = mountQueries(
+        [['agents'], ['agents', 'agent-a'], ['sessions', 'agent-a'], ['sessions', 'agent-a', 'notable', 5]],
+        (key) => key[0] === 'agents' ? (key.length === 1 ? server.agents : server.agents[0]) : key[2] === 'notable' ? server.notable : server.sessions,
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      queries.reset()
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      const es = getLatestEventSource()
+      // The server moves first, as it does before it publishes the event.
+      const emit = async (type: string, session: object, agent: object) => act(async () => {
+        server.sessions = [{ ...server.sessions[0], ...session }]
+        server.notable = server.sessions
+        server.agents = [{ ...server.agents[0], ...agent }]
+        simulateSSEMessage(es, { type, agentSlug: 'agent-a', sessionId: 's1' })
+        await vi.advanceTimersByTimeAsync(500)
+      })
+
+      // It starts: its rows and the agent flip in place. Only the slice of
+      // live sessions, which does not hold it yet, is read again.
+      await emit('session_active', { isActive: true }, { hasActiveSessions: true })
+      expect(queryClient.getQueryData<{ isActive?: boolean }[]>(['sessions', 'agent-a'])?.[0].isActive).toBe(true)
+      expect(queryClient.getQueryData<{ hasActiveSessions?: boolean }[]>(['agents'])?.[0].hasActiveSessions).toBe(true)
+      expect(queries.count(['sessions', 'agent-a'])).toBe(0)
+      expect(queries.count(['sessions', 'agent-a', 'notable', 5])).toBe(1)
+      expect(queries.count(['agents'])).toBe(0)
+      expect(queries.count(['agents', 'agent-a'])).toBe(0)
+
+      // It asks for input: every list holds it, so nothing is read.
+      await emit('session_awaiting_input', { isAwaitingInput: true }, { hasSessionsAwaitingInput: true })
+      expect(queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }>(['agents', 'agent-a'])?.hasSessionsAwaitingInput).toBe(true)
+      expect(queries.count(['sessions', 'agent-a'])).toBe(0)
+      expect(queries.count(['sessions', 'agent-a', 'notable', 5])).toBe(1)
+      expect(queries.count(['agents'])).toBe(0)
+      expect(queries.count(['agents', 'agent-a'])).toBe(0)
+
+      // The input arrives: a clear rereads the live slice, which may drop
+      // it, and confirms the agent, whose rollup counts sessions no list shows.
+      await emit('session_input_provided', { isAwaitingInput: false }, { hasSessionsAwaitingInput: false })
+      expect(queries.count(['sessions', 'agent-a'])).toBe(0)
+      expect(queries.count(['sessions', 'agent-a', 'notable', 5])).toBe(2)
+      expect(queries.count(['agents'])).toBe(1)
+      expect(queries.count(['agents', 'agent-a'])).toBe(1)
+      queries.unmount()
+    })
+
+    it('reads a new session from the server', async () => {
+      const queries = mountQueries(
+        [['agents'], ['agents', 'agent-a'], ['sessions', 'agent-a']],
+        (key) => key[0] === 'agents' ? (key.length === 1 ? [{ slug: 'agent-a', displaySlug: 'agent-a' }] : { slug: 'agent-a', displaySlug: 'agent-a' }) : [],
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      queries.reset()
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      await act(async () => {
+        simulateSSEMessage(getLatestEventSource(), { type: 'session_active', agentSlug: 'agent-a', sessionId: 's2' })
+        await vi.advanceTimersByTimeAsync(500)
+      })
+      expect(queries.count(['sessions', 'agent-a'])).toBe(1)
+      expect(queries.count(['agents'])).toBe(1)
+      expect(queries.count(['agents', 'agent-a'])).toBe(1)
+      queries.unmount()
+    })
+
     it('confirms todos and automation lists once per burst', () => {
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
       render(

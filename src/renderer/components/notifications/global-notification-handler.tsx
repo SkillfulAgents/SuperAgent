@@ -37,6 +37,7 @@ import {
   invalidateAgentWidgets,
   markDashboardScreenshotReady,
   patchAgentWidget,
+  sessionListMembership,
   updateAgentRuntimeCache,
   type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
@@ -496,16 +497,31 @@ export function GlobalNotificationHandler() {
             if (statusPatch && eventAgentSlug && eventSessionId) {
               applySessionActivityStatus(queryClient, eventAgentSlug, eventSessionId, statusPatch)
             }
+            // A status flip of a session this tab already lists: the echo above
+            // is the whole update for its rows. A raise also proves the agent's
+            // rollup; a clear does not, since hidden automated sessions and
+            // agent-level reviews count toward it unseen.
+            const raise = data.type === 'session_active' || data.type === 'session_awaiting_input'
+            const lists = (raise || data.type === 'session_input_provided') && eventAgentSlug && eventSessionId
+              ? sessionListMembership(queryClient, eventAgentSlug, eventSessionId)
+              : []
+            const listed = lists.some((list) => list.full && list.holds)
             const sessionsKey = eventAgentSlug ? ['sessions', eventAgentSlug] : ['sessions']
-            // A finished turn's completion notification follows and refreshes
-            // the same list; in one batch the two fetch it once.
-            if (data.type === 'session_idle') {
+            if (listed) {
+              // Only the server can add the session to a list that lacks it,
+              // or take it out of a slice of live sessions after a clear.
+              for (const list of lists) {
+                if (!list.holds || (!raise && !list.full)) queryClient.invalidateQueries({ queryKey: list.queryKey, exact: true })
+              }
+            } else if (data.type === 'session_idle') {
+              // A finished turn's completion notification follows and refreshes
+              // the same list; in one batch the two fetch it once.
               confirmations.invalidate(sessionsKey)
             } else {
               queryClient.invalidateQueries({ queryKey: sessionsKey })
             }
             // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.).
-            confirmAgentSummaries(eventAgentSlug)
+            if (!(listed && raise)) confirmAgentSummaries(eventAgentSlug)
             // Todo board columns are live session state.
             confirmations.invalidate(TODOS_QUERY_KEY)
             // Artifacts can only change while the agent works: read that
