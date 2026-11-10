@@ -164,6 +164,18 @@ export function sessionListMembership(queryClient: QueryClient, agentSlug: strin
 }
 
 /**
+ * Invalidate the agent's session lists that can hold a hidden automated
+ * session. The full list and the notable slice (`useNotableSessions`) come
+ * from the sessions route, which leaves those sessions out.
+ */
+export function invalidateAutomationSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({
+    predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) && query.queryKey.length > 2 && query.queryKey[2] !== 'notable',
+  })
+}
+
+/**
  * Patch one session's entry in every cached projection: each list under
  * ['sessions', <alias>] (the full list, the notable slice, automation slices)
  * plus the ['session', id, <alias>] detail entries. One traversal shared by

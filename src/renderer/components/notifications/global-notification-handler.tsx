@@ -35,6 +35,7 @@ import {
   applySessionActivityStatus,
   invalidateAgentArtifacts,
   invalidateAgentWidgets,
+  invalidateAutomationSessionLists,
   markDashboardScreenshotReady,
   patchAgentWidget,
   sessionListMembership,
@@ -520,6 +521,10 @@ export function GlobalNotificationHandler() {
                 if (!list.holds || (!raise && !list.full)) queryClient.invalidateQueries({ queryKey: list.queryKey, exact: true })
                 else refetchIfInFlight(list.queryKey)
               }
+            } else if (data.hidden === true && eventAgentSlug) {
+              // A hidden automated session (cron, webhook, chat): only the
+              // slices that hold automations can change.
+              invalidateAutomationSessionLists(queryClient, eventAgentSlug)
             } else if (data.type === 'session_idle') {
               // A finished turn's completion notification follows and refreshes
               // the same list; in one batch the two fetch it once.

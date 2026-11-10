@@ -1094,6 +1094,36 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       queries.unmount()
     })
 
+    it('leaves the full list and the notable slice alone for a hidden automated session', async () => {
+      const agent = { slug: 'agent-a', displaySlug: 'agent-a' }
+      const queries = mountQueries(
+        [['agents'], ['agents', 'agent-a'], ['sessions', 'agent-a'], ['sessions', 'agent-a', 'notable', 5], ['sessions', 'agent-a', 'completed-one-time']],
+        (key) => key[0] === 'agents' ? (key.length === 1 ? [agent] : agent) : [],
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      queries.reset()
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      const es = getLatestEventSource()
+      await act(async () => {
+        simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-a', sessionId: 'cron-run-1', hidden: true })
+        await vi.advanceTimersByTimeAsync(100)
+        simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 'cron-run-1', hidden: true })
+        await vi.advanceTimersByTimeAsync(500)
+      })
+
+      expect(queries.count(['sessions', 'agent-a'])).toBe(0)
+      expect(queries.count(['sessions', 'agent-a', 'notable', 5])).toBe(0)
+      expect(queries.count(['sessions', 'agent-a', 'completed-one-time'])).toBe(2)
+      // Its agent still confirms: the rollup counts sessions no list shows.
+      expect(queries.count(['agents'])).toBe(1)
+      expect(queries.count(['agents', 'agent-a'])).toBe(1)
+      queries.unmount()
+    })
+
     it('confirms todos and automation lists once per burst', () => {
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
       render(
