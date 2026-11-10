@@ -169,8 +169,8 @@ function VersionBehindDot({
   )
 }
 
-// 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
-// agents-list group; pull out as a constant so the call site stays readable.
+// 4px-wide thin scrollbar with a muted-foreground/20 thumb, for the sidebar's
+// scrolling content; a constant so the call site stays readable.
 const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
@@ -1823,7 +1823,13 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="gap-0 overflow-visible">
+        {/* Everything between the title bar and the footer scrolls as one:
+            the nav rows travel with the agent list rather than pinning above
+            it, so a short window gives the list the full height. */}
+        <SidebarContent
+          className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
+          data-testid="agent-list-scroll"
+        >
           <SidebarGroup className="shrink-0 p-0">
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
@@ -1916,10 +1922,7 @@ export function AppSidebar() {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup
-            className={cn('group/agents-group flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}
-            data-testid="agent-list-scroll"
-          >
+          <SidebarGroup className="group/agents-group shrink-0 p-0">
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (
