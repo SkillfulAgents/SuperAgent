@@ -42,23 +42,36 @@ describe('watchTree', () => {
   const stops: Array<() => void> = []
   afterEach(() => stops.splice(0).forEach((stop) => stop()))
 
-  // Resolves once a change under `rel` is reported after this call.
-  function watching(dir: string) {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+
+  /**
+   * Starts a watch and returns `changed(rel, write)`: whether a change under `rel` is reported after
+   * `write`. macOS starts reporting a moment after a folder's watch begins, so a watch counts as
+   * started once a probe write in `ready` is reported.
+   */
+  async function watching(dir: string, ready = '') {
     const reported: string[] = []
     stops.push(watchTree(dir, new Set(['.bun-cache']), (rel: string) => reported.push(rel)))
-    return async (rel: string, write: () => Promise<void>) => {
+    const under = (rel: string, from: number) => reported.slice(from).some((p) => p === rel || p.startsWith(`${rel}/`))
+    const changed = async (rel: string, write: () => Promise<unknown>) => {
       const before = reported.length
       await write()
-      for (let i = 0; i < 100 && !reported.slice(before).some((p) => p === rel || p.startsWith(`${rel}/`)); i++) {
-        await new Promise((resolve) => setTimeout(resolve, 20))
-      }
-      return reported.slice(before).some((p) => p === rel || p.startsWith(`${rel}/`))
+      for (let i = 0; i < 100 && !under(rel, before); i++) await settle()
+      return under(rel, before)
     }
+    await live(changed, dir, ready)
+    return changed
+  }
+
+  async function live(changed: (rel: string, write: () => Promise<unknown>) => Promise<boolean>, dir: string, folder: string) {
+    const probe = folder ? `${folder}/.probe` : '.probe'
+    for (let i = 0; i < 10; i++) if (await changed(probe, () => writeFile(join(dir, probe), String(i)))) return
+    throw new Error(`the watch of ${folder || 'the workspace'} never started`)
   }
 
   it('reports every safe write of a file, not only the first ones', async () => {
     const dir = await workspace()
-    const changed = watching(dir)
+    const changed = await watching(dir, 'reports')
 
     for (let i = 0; i < 5; i++) {
       const reported = await changed('reports/sessions.json', async () => {
@@ -71,15 +84,16 @@ describe('watchTree', () => {
 
   it('watches a folder made after it started', async () => {
     const dir = await workspace()
-    const changed = watching(dir)
-    await changed('notes', () => mkdir(join(dir, 'notes')))
+    const changed = await watching(dir)
+    expect(await changed('notes', () => mkdir(join(dir, 'notes')))).toBe(true)
+    await live(changed, dir, 'notes')
 
     expect(await changed('notes/leads.md', () => writeFile(join(dir, 'notes', 'leads.md'), '# Leads'))).toBe(true)
   })
 
   it('leaves out the excluded top-level folders', async () => {
     const dir = await workspace()
-    const changed = watching(dir)
+    const changed = await watching(dir)
 
     expect(await changed('.bun-cache', () => writeFile(join(dir, '.bun-cache', 'module.js'), 'export const a = 1'))).toBe(false)
   })
