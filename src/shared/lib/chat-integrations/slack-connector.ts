@@ -36,6 +36,7 @@ import {
   type ToolOutcome,
 } from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
+import { SLACK_AGENT_INSTRUCTIONS } from './definitions'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { isSlackBlocksRejection, isUnrecoverableSlackError } from './slack-error'
@@ -162,6 +163,8 @@ export function fitSlackTables(markdown: string): string {
 
 // ── Session system prompt ───────────────────────────────────────────────
 
+const SLACK_PROVIDER_RULES = `- ${SLACK_AGENT_INSTRUCTIONS}`
+
 /**
  * Session-level context for Slack conversations, built per session so it names
  * the concrete destination (DM vs channel vs thread). Without this the agent
@@ -180,11 +183,12 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
       : kind === 'channel' || kind === 'group'
         ? `a channel (id ${baseChannelId})`
         : 'a Slack conversation'
-  return buildSessionContextPrompt({
+  const shared = buildSessionContextPrompt({
     surface: 'chat',
     where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId})`,
     multiParty: isMultiPartyChatType(kind),
   })
+  return `${shared}\n${SLACK_PROVIDER_RULES}`
 }
 
 // ── Chat id classification ──────────────────────────────────────────────

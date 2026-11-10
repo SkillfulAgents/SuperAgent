@@ -238,6 +238,12 @@ describe('buildSlackSystemPrompt', () => {
     }
   })
 
+  it('tells the agent to mention people with their Slack user id', async () => {
+    const prompt = buildSlackSystemPrompt({ chatId: 'C0BBB222|1784571878.344849', userName: 'Iddo Gino' })
+    expect(prompt).toContain('list_chat_users')
+    expect(prompt).toContain('<@user_id>')
+  })
+
   it('includes conversational framing (concise replies and normal capabilities)', async () => {
     const prompt = buildSlackSystemPrompt({ chatId: 'D0AAA111', userName: 'Iddo Gino' })
     expect(prompt).toContain('Keep responses concise and conversational')
