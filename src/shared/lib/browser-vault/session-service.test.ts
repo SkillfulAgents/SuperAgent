@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agentBrowserAccounts, agents, browserAccountSessions } from '@shared/lib/db/schema'
-import { resetVaultKeyCache } from './vault-crypto'
+import { installTestKeyManager, uninstallKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
 import type { SessionBundle } from './vault-schemas'
 
 let testDb: AppDatabase
@@ -25,15 +25,15 @@ const {
 let handle: TestDatabase
 let dataDir: string
 
-beforeAll(() => {
+beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-service-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
-  resetVaultKeyCache()
+  await installTestKeyManager()
 })
 
 afterAll(() => {
   vi.unstubAllEnvs()
-  resetVaultKeyCache()
+  uninstallKeyManager()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 

@@ -1,5 +1,15 @@
-import { test, expect, type BrowserContext } from '@playwright/test'
+import { test, expect, type BrowserContext, type Locator } from '@playwright/test'
 import { PNG } from 'pngjs'
+
+async function expectRosterHittable(roster: Locator) {
+  await expect.poll(() => roster.evaluate(element => {
+    const bounds = element.getBoundingClientRect()
+    return [0.25, 0.75].every(fraction => element.contains(document.elementFromPoint(
+      bounds.x + bounds.width * fraction,
+      bounds.y + bounds.height / 2,
+    )))
+  })).toBe(true)
+}
 
 test('members share one live roster while invitation and revocation follow permissions', async ({ browser, page, baseURL }) => {
   test.setTimeout(90_000)
@@ -22,24 +32,24 @@ test('members share one live roster while invitation and revocation follow permi
     const agent = await created.json()
     const endpoint = `/api/agents/${agent.slug}`
     await page.goto(`/agents/${agent.slug}`)
-    const ownerStack = page.getByTestId('agent-member-stack')
+    // Agent Home's member stack: the sidebar row's, a size up, with the same roster on hover or click.
+    const ownerStack = page.getByTestId(`agent-members-${agent.slug}`)
     await expect(page.getByTestId('agent-share-button')).toHaveText('Share', { timeout: 15_000 })
     await expect(ownerStack).toHaveCount(0)
     await expect(page.getByTestId(`sidebar-members-${agent.slug}`)).toHaveCount(0)
 
-    // The stretched name link must not cover the status slot; for a member who
-    // can start sessions, the new-session pen sits on top of the status icon.
+    // The stretched name link must not cover the trailing slot; for a member
+    // who can start sessions, the new-session pen is what a pointer hits there.
     const agentLink = page.getByTestId(`agent-item-${agent.slug}`)
     const agentRow = page.locator('[data-sidebar="menu-button"]').filter({ has: agentLink })
-    const status = agentRow.getByTestId('agent-status')
     const newSession = agentRow.getByTestId(`agent-new-session-${agent.slug}`)
+    await agentLink.hover()
     await newSession.hover()
-    const bounds = (await status.boundingBox())!
+    const bounds = (await newSession.boundingBox())!
     expect(await newSession.evaluate((pen, point) => pen.contains(document.elementFromPoint(point.x, point.y)), {
       x: bounds.x + bounds.width / 2,
       y: bounds.y + bounds.height / 2,
     })).toBe(true)
-    await expect(status).toHaveAttribute('title', 'sleeping')
 
     // Private agents retain Share; the same pane stays open when the first invite makes it shared.
     await page.getByTestId('agent-share-button').click()
@@ -51,14 +61,14 @@ test('members share one live roster while invitation and revocation follow permi
     await sharing.getByRole('combobox').first().click()
     await page.getByRole('option', { name: 'Viewer Can view sessions only' }).click()
     await sharing.getByRole('button', { name: 'Invite', exact: true }).click()
-    await expect(ownerStack.getByTestId(`agent-member-${users[1].id}`)).toBeVisible()
+    await expect(ownerStack.locator('[role="img"]')).toHaveCount(2)
     await expect(sharing).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(sharing).not.toBeVisible()
 
     const viewer = await users[1].context.newPage()
     await viewer.goto(`/agents/${agent.slug}`)
-    await expect(viewer.getByTestId('agent-member-stack')).toBeVisible()
+    await expect(viewer.getByTestId(`agent-members-${agent.slug}`)).toBeVisible()
     await expect(viewer.getByTestId('agent-share-button')).toHaveCount(0)
     await expect(viewer.getByTestId('view-only-banner')).toBeVisible()
     expect((await viewer.request.get(`${endpoint}/access`)).status()).toBe(403)
@@ -66,6 +76,7 @@ test('members share one live roster while invitation and revocation follow permi
     expect((await users[7].context.request.get(`${endpoint}/members`)).status()).toBe(403)
 
     await viewer.getByTestId(`sidebar-members-${agent.slug}`).click()
+    await expectRosterHittable(viewer.getByTestId(`sidebar-members-${agent.slug}`))
     await expect(viewer.getByTestId(`sidebar-members-invite-${agent.slug}`)).toHaveCount(0)
     await viewer.keyboard.press('Escape')
 
@@ -73,7 +84,12 @@ test('members share one live roster while invitation and revocation follow permi
     await page.goto('/')
     const sidebarStack = page.getByTestId(`sidebar-members-${agent.slug}`)
     const sidebarRoster = page.getByTestId(`sidebar-members-list-${agent.slug}`)
+    // The hidden new-session control must not cover the resting faces, and
+    // the options button must leave the whole roster reachable on hover.
+    await page.mouse.move(500, 100)
+    await expectRosterHittable(sidebarStack)
     await sidebarStack.click()
+    await expectRosterHittable(sidebarStack)
     await page.getByTestId(`sidebar-members-invite-${agent.slug}`).click()
     await expect(sharing.getByTestId('invite-search-input')).toBeFocused()
     await sharing.getByTestId('invite-search-input').fill(users[2].email)
@@ -91,11 +107,11 @@ test('members share one live roster while invitation and revocation follow permi
     for (const member of users.slice(3, 7)) {
       expect((await page.request.post(`${endpoint}/access`, { data: { userId: member.id, role: 'user' } })).ok()).toBeTruthy()
     }
-    await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveText('+2')
-    await expect(viewer.getByTestId('agent-members-overflow')).toHaveText('+2')
-    await viewer.getByTestId('agent-members-overflow').click()
-    await expect(viewer.getByTestId('agent-members-list').getByRole('listitem')).toHaveCount(7)
-    await expect(viewer.getByTestId('agent-members-list')).toContainText(users[6].email)
+    await expect(page.getByTestId(`agent-members-count-${agent.slug}`)).toHaveText('7')
+    await expect(viewer.getByTestId(`agent-members-count-${agent.slug}`)).toHaveText('7')
+    await viewer.getByTestId(`agent-members-${agent.slug}`).click()
+    await expect(viewer.getByTestId(`agent-members-list-${agent.slug}`).getByRole('listitem')).toHaveCount(7)
+    await expect(viewer.getByTestId(`agent-members-list-${agent.slug}`)).toContainText(users[6].email)
     await viewer.keyboard.press('Escape')
 
     const image = new PNG({ width: 32, height: 32 })
@@ -104,16 +120,17 @@ test('members share one live roster while invitation and revocation follow permi
     expect((await viewer.request.post('/api/auth/update-user', { headers: { Origin: baseURL! }, data: { name: 'Victoria Viewer' } })).ok()).toBeTruthy()
     // Other members see the updated photo and name on their next reload.
     await page.reload()
-    const viewerFace = ownerStack.getByTestId(`agent-member-${users[1].id}`)
+    const viewerFace = ownerStack.locator('[role="img"][aria-label="Victoria Viewer"]')
     await expect(viewerFace.locator('img')).toHaveAttribute('src', /\/api\/profile\/images\//)
-    await expect(viewerFace).toHaveAttribute('aria-label', /Victoria Viewer/)
-    await ownerStack.getByTestId(`agent-member-${users[0].id}`).hover()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[0].email })).toBeVisible()
-    await viewerFace.hover()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[1].email })).toBeVisible()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[0].email })).toHaveCount(0)
-    await viewerFace.focus()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[1].email })).toBeVisible()
+    // Hovering the stack, or focusing it, opens the roster with names and emails.
+    const ownerRoster = page.getByTestId(`agent-members-list-${agent.slug}`)
+    await ownerStack.hover()
+    await expect(ownerRoster).toContainText(users[0].email)
+    await expect(ownerRoster).toContainText('Victoria Viewer')
+    await page.mouse.move(0, 0)
+    await expect(ownerRoster).toHaveCount(0)
+    await ownerStack.focus()
+    await expect(ownerRoster).toContainText(users[1].email)
     await page.keyboard.press('Escape')
 
     expect((await page.request.patch(`${endpoint}/access/${users[1].id}`, { data: { role: 'owner' } })).ok()).toBeTruthy()
@@ -122,26 +139,44 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(viewer.getByTestId('agent-share-button')).toHaveCount(0)
     await expect(viewer.getByTestId('view-only-banner')).toHaveCount(0)
 
-    // A touch viewport can inspect names, respects reduced motion, and keeps + reachable.
+    // A touch viewport can inspect names and keeps Share reachable.
     const touch = await browser.newContext({ baseURL, storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' })
     contexts.push(touch)
     const mobile = await touch.newPage()
     await mobile.goto(`/agents/${agent.slug}`)
-    const mobileFace = mobile.getByTestId(`agent-member-${users[1].id}`)
-    await mobileFace.tap()
-    await expect(mobile.getByRole('tooltip')).toContainText(users[1].email)
-    expect(await mobileFace.getByTestId('member-avatar-visual').evaluate((element) => getComputedStyle(element).transitionProperty)).toBe('none')
+    await mobile.getByTestId(`agent-members-${agent.slug}`).tap()
+    await expect(mobile.getByTestId(`agent-members-list-${agent.slug}`)).toContainText(users[1].email)
     const inviteBounds = await mobile.getByTestId('agent-share-button').boundingBox()
     expect(inviteBounds!.x).toBeGreaterThanOrEqual(0)
     expect(inviteBounds!.x + inviteBounds!.width).toBeLessThanOrEqual(390)
+    await mobile.keyboard.press('Escape')
+    const menuBounds = (await mobile.getByTestId('agent-settings-button').boundingBox())!
+    expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(390)
+    const composerBounds = (await mobile.getByTestId('home-message-input').boundingBox())!
+    expect(composerBounds.x + composerBounds.width).toBeLessThanOrEqual(390)
+    // Narrow, the settings follow the page's content in its one column.
+    const sections = mobile.getByTestId('home-sections-panel')
+    await sections.scrollIntoViewIfNeeded()
+    await expect(sections).toBeVisible()
+    const sectionsBounds = (await sections.boundingBox())!
+    expect(sectionsBounds.x + sectionsBounds.width).toBeLessThanOrEqual(390)
+
+    // A finger can open the sidebar roster without hitting the hidden pen.
+    await mobile.keyboard.press('Escape')
+    await mobile.getByRole('button', { name: 'Toggle Sidebar' }).tap()
+    const mobileRoster = mobile.getByTestId(`sidebar-members-${agent.slug}`)
+    await expectRosterHittable(mobileRoster)
+    await mobileRoster.tap()
+    await expect(mobile.getByTestId(`sidebar-members-list-${agent.slug}`).getByRole('listitem')).toHaveCount(7)
+    await expect(mobile).toHaveURL(new RegExp(`/agents/[^/]*${agent.slug}$`))
 
     expect((await page.request.delete(`${endpoint}/access/${users[1].id}`)).ok()).toBeTruthy()
     await expect(viewer).toHaveURL(`${baseURL}/`)
-    await expect(viewer.getByTestId('agent-member-stack')).toHaveCount(0)
+    await expect(viewer.getByTestId(`agent-members-${agent.slug}`)).toHaveCount(0)
     expect((await viewer.request.get(`${endpoint}/members`)).status()).toBe(403)
-    await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveText('+1')
+    await expect(page.getByTestId(`agent-members-count-${agent.slug}`)).toHaveText('6')
     expect((await users[2].context.request.post(`${endpoint}/leave`)).ok()).toBeTruthy()
-    await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveCount(0)
+    await expect(page.getByTestId(`agent-members-count-${agent.slug}`)).toHaveCount(0)
 
     // Other specs may have created the deployment's first user. Check the
     // actual deployment role instead of treating the agent owner as an admin.
@@ -152,8 +187,8 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(agentLink).toHaveCount(0)
     if (isDeploymentAdmin) {
       await expect(page).toHaveURL(new RegExp(`/agents/[^/]*${agent.slug}$`))
-      await expect(ownerStack.getByTestId(`agent-member-${users[0].id}`)).toHaveCount(0)
-      await expect(ownerStack.getByTestId(`agent-member-${users[3].id}`)).toBeVisible()
+      await expect(ownerStack.locator(`[role="img"][aria-label="${users[0].name}"]`)).toHaveCount(0)
+      await expect(ownerStack.locator(`[role="img"][aria-label="${users[3].name}"]`)).toBeVisible()
     } else {
       await expect(page).toHaveURL(`${baseURL}/`)
       await expect(ownerStack).toHaveCount(0)

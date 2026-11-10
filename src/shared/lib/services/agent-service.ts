@@ -26,6 +26,8 @@ import {
 import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { workspaceAgentDescriptionSchema, workspaceAgentNameSchema } from './agent-identity-schema'
+import { getSettings } from '@shared/lib/config/settings'
+import type { TeamBrainStored } from '@shared/lib/config/team-brain-schema'
 import {
   CONFIG_DOCS,
   agentCatalog,
@@ -40,6 +42,11 @@ import {
 // Internal to API Type Conversion
 // ============================================================================
 
+/** The Team Brain record as the agent flag reads it: ready, or a set-up whose agent the lists leave out. */
+async function teamBrainOf(): Promise<TeamBrainStored | null> {
+  return (await getSettings()).teamBrain ?? null
+}
+
 /**
  * Convert a catalog record to API format. Instructions are only carried by
  * the single-agent responses; the list never reads a workspace.
@@ -47,11 +54,12 @@ import {
 function toApiAgent(
   record: AgentRecord,
   container: Pick<AgentLiveSummary['container'], 'status' | 'port' | 'healthWarnings' | 'stale'>,
+  teamBrain: TeamBrainStored | null,
   instructions?: string,
 ): ApiAgent {
   const { status, port, healthWarnings, stale } = container
   return {
-    ...newAgentResponse(record, instructions),
+    ...newAgentResponse(record, teamBrain, instructions),
     status,
     containerPort: port,
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
@@ -60,11 +68,14 @@ function toApiAgent(
 }
 
 /** The API shape of an agent that was just created: stopped, and with no health to report yet. */
-function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent {
+function newAgentResponse(record: AgentRecord, teamBrain: TeamBrainStored | null, instructions?: string): ApiAgent {
   return {
     slug: record.slug,
     displaySlug: displaySlug(record.name, record.slug),
     name: record.name,
+    ...(teamBrain?.agentSlug === record.slug
+      ? 'status' in teamBrain ? { teamBrainSettingUp: true as const } : { teamBrain: { volumeId: teamBrain.volumeId } }
+      : {}),
     avatar: record.avatar,
     description: record.description,
     ...(instructions === undefined ? {} : { instructions }),
@@ -188,22 +199,24 @@ export async function getAgent(slug: string): Promise<AgentConfig | null> {
 
 /**
  * Get a single agent with container status (returns API format)
- * Uses cached container status to avoid spawning docker processes.
+ * Uses cached container status to avoid spawning docker processes. A caller
+ * that read the agent already (a route's ResolveAgent) passes its record, so
+ * the row is not read again.
  */
 export async function getAgentWithStatus(
-  slug: string,
+  agent: string | AgentRecord,
   options: { includeSummary?: boolean } = {},
 ): Promise<ApiAgent | null> {
-  const agent = await getAgent(slug)
-  if (!agent) {
+  const record = typeof agent === 'string' ? await agentCatalog.get(agent) : agent
+  if (!record) {
     return null
   }
+  const document = await readInstructionsDocument(record.slug)
 
-  const actor = agentRegistry.get(slug)
+  const actor = agentRegistry.get(record.slug)
   // The cached container status: no docker process is spawned.
   const live = await actor.live()
-  const record = (await agentCatalog.get(slug))!
-  const base = toApiAgent(record, live.container, agent.instructions)
+  const base = toApiAgent(record, live.container, await teamBrainOf(), document?.body ?? '')
 
   // Routes that either discard the body (/start) or immediately run the richer
   // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
@@ -236,7 +249,8 @@ export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): 
   const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
 
   // The cached container statuses: no docker process is spawned.
-  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container)))
+  const teamBrain = await teamBrainOf()
+  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container, teamBrain)))
 }
 
 // ============================================================================
@@ -251,7 +265,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const name = String(rawName)
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
   const record = await writeNewAgent({ name, description: description || undefined }, body)
-  return newAgentResponse(record, body)
+  return newAgentResponse(record, await teamBrainOf(), body)
 }
 
 /**
@@ -317,7 +331,7 @@ export async function updateAgent(
     // The runtime's own status, with the cached health beside it.
     const actor = agentRegistry.get(slug)
     const [info, live] = await Promise.all([actor.container.info(), actor.live()])
-    return toApiAgent(updated, { ...live.container, status: info.status, port: info.port }, body)
+    return toApiAgent(updated, { ...live.container, status: info.status, port: info.port }, await teamBrainOf(), body)
   })
 }
 
@@ -468,7 +482,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
   const name = String(rawName)
   // A basic AGENTS.md (may be overwritten by template)
   const record = await writeNewAgent({ name }, DEFAULT_AGENT_INSTRUCTIONS)
-  return newAgentResponse(record)
+  return newAgentResponse(record, await teamBrainOf())
 }
 
 /**

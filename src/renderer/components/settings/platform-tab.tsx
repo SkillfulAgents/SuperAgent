@@ -12,6 +12,7 @@ import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { LoginButton } from '@renderer/components/connections/login-button'
 import { ProfileSection } from './profile-section'
 import { StaleAgentsNotice } from './stale-agents-notice'
+import { AccountDeletionSection } from './account-deletion-section'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
@@ -19,6 +20,7 @@ import { pendingPlanChangeText, usePlatformPlanUpgrade } from '@renderer/hooks/u
 import { isPlatformOrgAdmin } from '@renderer/components/provider-error/platform-paywall-cta'
 import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
 import { isElectron } from '@renderer/lib/env'
+import { signsInWithAuthSession } from '@renderer/lib/capabilities'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { cn } from '@shared/lib/utils'
 import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '@shared/lib/services/platform-billing-copy'
@@ -50,7 +52,7 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
   )
 }
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 function seatPercentRemaining(seat: NonNullable<ParsedPlatformBillingInfo['seat']>): number {
@@ -105,13 +107,13 @@ function PlatformBillingCard({
 }: {
   platformBaseUrl?: string | null
   orgId?: string | null
-  /** The member's org role; only owners and admins can change the plan. Unknown = offer it. */
+  /** The member's org role; the platform's billing tab is owner/admin only. Unknown = offer it. */
   role?: string | null
 }) {
   const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
   const billing = data?.billing
   const openPlanUpgrade = usePlatformPlanUpgrade()
-  const canChangePlan = role == null || isPlatformOrgAdmin(role)
+  const canManageBilling = role == null || isPlatformOrgAdmin(role)
 
   async function handleManageBilling() {
     if (!platformBaseUrl || !orgId) return
@@ -146,14 +148,18 @@ function PlatformBillingCard({
             name="Subscription"
             subtitle="No billing set up for this organization"
             right={
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleManageBilling()}
-                disabled={!platformBaseUrl || !orgId}
-              >
-                Set up
-              </Button>
+              canManageBilling ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleManageBilling()}
+                  disabled={!platformBaseUrl || !orgId}
+                >
+                  Set up
+                </Button>
+              ) : (
+                <span className={VALUE_CLASS} data-testid="billing-ask-admin">Ask a workspace owner or admin</span>
+              )
             }
           />
         ) : billing ? (
@@ -165,7 +171,7 @@ function PlatformBillingCard({
                 right={
                   <>
                     <span className={VALUE_CLASS} data-testid="billing-plan-name">{planLabel(billing, billing.plan)}</span>
-                    {canChangePlan && (
+                    {canManageBilling && (
                       <Button size="sm" variant="outline" onClick={() => openPlanUpgrade()} data-testid="billing-change-plan">
                         Change plan
                       </Button>
@@ -200,21 +206,23 @@ function PlatformBillingCard({
               }
               right={<span className={VALUE_CLASS}>{formatCents(billing.orgPool.poolBalanceCents)}</span>}
             />
-            <SettingRow
-              name="Manage billing on the web"
-              right={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="group gap-0"
-                  onClick={() => void handleManageBilling()}
-                  disabled={!platformBaseUrl || !orgId}
-                >
-                  Manage
-                  <HoverArrow />
-                </Button>
-              }
-            />
+            {canManageBilling && (
+              <SettingRow
+                name="Manage billing on the web"
+                right={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="group gap-0"
+                    onClick={() => void handleManageBilling()}
+                    disabled={!platformBaseUrl || !orgId}
+                  >
+                    Manage
+                    <HoverArrow />
+                  </Button>
+                }
+              />
+            )}
           </>
         ) : (
           <div className="py-6 px-4 text-xs text-muted-foreground">Billing information is unavailable.</div>
@@ -460,6 +468,11 @@ function AccessKeyInput({ onClose }: { onClose: () => void }) {
   )
 }
 
+/** What the sign-in button says while the login is up: a sheet on this window, or the browser. */
+function signInPendingLabel(): string {
+  return signsInWithAuthSession() ? 'Signing in…' : 'Opening browser…'
+}
+
 interface NotConnectedEmptyStateProps {
   readOnly: boolean
   isLaunching: boolean
@@ -472,7 +485,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, o
   const [showKeyInput, setShowKeyInput] = useState(false)
 
   return (
-    <div className="rounded-xl border border-dashed bg-background px-6 py-10">
+    <div className="rounded-card border border-dashed bg-background px-6 py-10">
       <div className="flex flex-col items-center text-center gap-3">
         <div className="rounded-full bg-muted p-3">
           <BadgeX className="h-5 w-5 text-muted-foreground" />
@@ -489,7 +502,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, o
                   onClick={onConnect}
                   className="group"
                   label={<span className="inline-flex items-center">Connect Account<HoverArrow /></span>}
-                  pendingLabel="Opening browser…"
+                  pendingLabel={signInPendingLabel()}
                   pending={isLaunching}
                   canCancel={canCancel}
                   onCancel={onCancel}
@@ -545,7 +558,7 @@ function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconn
             disabled={readOnly}
             className="group"
             label={<span className="inline-flex items-center">{connectLabel}<HoverArrow /></span>}
-            pendingLabel="Opening browser…"
+            pendingLabel={signInPendingLabel()}
             pending={isLaunching}
             canCancel={canCancel}
             onCancel={onCancel}
@@ -715,6 +728,13 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
             onCancel={cancelConnect}
           />
         </div>
+      )}
+
+      {isConnected && data?.userId && (
+        // Not part of the account's working state: never let it take down the tab.
+        <ErrorBoundary compact>
+          <AccountDeletionSection userId={data.userId} email={data.email ?? null} />
+        </ErrorBoundary>
       )}
 
       {readOnly && (

@@ -4,6 +4,7 @@ export type SessionActivityFields = {
   id: string
   createdAt: Date | string
   lastActivityAt?: Date | string | null
+  isAwaitingInput?: boolean
 }
 
 function dateTimestamp(value: Date | string | null | undefined): number {
@@ -27,8 +28,13 @@ function sessionActivityTimestamp(session: SessionActivityFields): number {
 export function sortSessionsByActivity<T extends SessionActivityFields>(
   sessions: readonly T[],
   order: SessionSortOrder = 'newest',
+  options: { awaitingFirst?: boolean } = {},
 ): T[] {
   return [...sessions].sort((a, b) => {
+    if (options.awaitingFirst) {
+      const awaiting = Number(!!b.isAwaitingInput) - Number(!!a.isAwaitingInput)
+      if (awaiting !== 0) return awaiting
+    }
     const aTimestamp = sessionActivityTimestamp(a)
     const bTimestamp = sessionActivityTimestamp(b)
     if (aTimestamp < bTimestamp) return order === 'newest' ? 1 : -1

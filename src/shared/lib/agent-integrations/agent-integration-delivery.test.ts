@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
@@ -9,9 +10,11 @@ import { MockChatAgentIntegration } from '../chat-integrations/mock-connector'
 import { TaskManagerAgentIntegration } from '../task-manager-integrations/task-manager-agent-integration'
 import type { TaskEvent } from '../task-manager-integrations/types'
 import type { AgentIntegrationRecord } from './types'
-import { getAgentIntegration } from '../services/agent-integration-service'
+import { getAgentIntegration, updateAgentIntegration } from '../services/agent-integration-service'
+import { backgroundSettled } from '../background'
 import { getAgentIntegrationSession, archiveAgentIntegrationSession } from '../services/agent-integration-session-service'
 import { requireIntegrationReconnect } from './lifecycle'
+import { appState } from '../app-state'
 import { deliveryStore } from './delivery-store'
 import { DeliveryError } from '../agent-actor/delivery-errors'
 import { IntegrationRelays, relayAcceptResult } from './relay-transport'
@@ -43,7 +46,7 @@ vi.mock('../agent-actor', async () => {
   }) } }
 })
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }) }))
+vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test' }), effectiveModelsFrom: () => ({ agentModel: 'test' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
 vi.mock('../notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
@@ -95,6 +98,7 @@ async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 's
   adapter = provider === 'linear' ? new Tasks((await getAgentIntegration('integration'))!) : Object.assign(new Chat(), { provider })
   const registry = new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter, create: async () => adapter }])
   manager = new AgentIntegrationManager(registry)
+  registerTasks(manager)
   await manager.start()
 }
 async function startRelay(relay: FakeWebhookRelay) {
@@ -108,9 +112,14 @@ async function startRelay(relay: FakeWebhookRelay) {
     new AgentIntegrationRegistry([{ definition: { ...adapter.definition, transports: ['direct', 'relay'] }, policy: adapter, create: async () => adapter }]),
     id => relays.hostFor(id),
   )
+  registerTasks(manager)
   await manager.start()
 }
 async function rows() { return database.select().from(integrationDeliveries).all() }
+// The manager loads session-defaults (and the connection-runtime graph behind it)
+// on its first session start: load it here, so the waits below time the delivery,
+// not a first module load (~300 ms with coverage, enough to time them out on a busy CI).
+beforeAll(async () => { await import('../services/session-defaults') })
 beforeEach(async () => {
   handle = await createTestDatabase(); database = handle.db; vi.clearAllMocks()
   runtime.create.mockImplementation(async (options: CreateSessionOptions) => {
@@ -218,6 +227,56 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.send.mock.calls[0][0]).toBe('session-1')
     if (adapter instanceof Chat) expect(adapter.acknowledgeInput).toHaveBeenCalledTimes(2)
   })
+  /** Holds every hint back, as a slow backend would; `deliver` sends them. */
+  function holdHints() {
+    const state = appState()
+    const publish = state.publish.bind(state)
+    const held: Array<() => Promise<void>> = []
+    vi.spyOn(state, 'publish').mockImplementation(async (channel, event) => { held.push(() => publish(channel, event)) })
+    return { deliver: async () => { await Promise.all(held.map(send => send())); await backgroundSettled() } }
+  }
+  it.each(['a later millisecond', 'the same millisecond'] as const)('keeps credentials a config edit put in place in %s when the loss hint arrives after it reconnected', async when => {
+    await start('telegram')
+    expect(manager.isIntegrationConnected('integration')).toBe(true)
+    const hints = holdHints()
+    if (when === 'the same millisecond') vi.useFakeTimers({ toFake: ['Date'], now: Date.now() })
+    try {
+      expect(await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: { revoked: true }, message: 'Reconnect' })).toBe(true)
+      const revoked = (await getAgentIntegration('integration'))!
+      if (when === 'a later millisecond') await new Promise(resolve => setTimeout(resolve, 2))
+      // PATCH with replacement credentials: saved with the row still `disconnected`, then remove + add.
+      expect(await updateAgentIntegration('integration', { config: { botToken: '123:replacement' } })).toBe(true)
+      const replaced = (await getAgentIntegration('integration'))!
+      expect(replaced.updatedAt.getTime() === revoked.updatedAt.getTime()).toBe(when === 'the same millisecond')
+      await manager.removeIntegration('integration')
+      await manager.addIntegration('integration')
+      expect(manager.isIntegrationConnected('integration')).toBe(true)
+      expect(replaced.status).toBe('disconnected')
+      await hints.deliver()
+      expect(manager.isIntegrationConnected('integration')).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
+  it('stops a connect that read the row before the loss, even after an unrelated write moved the row on', async () => {
+    await start('telegram')
+    manager.stop()
+    // A fresh owner whose startup connect is parked while it makes the connector.
+    let release!: () => void, reached!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const parked = new Promise<void>(resolve => { reached = resolve })
+    manager = new AgentIntegrationManager(new AgentIntegrationRegistry([{ definition: adapter.definition, policy: adapter,
+      create: async () => { reached(); await gate; return adapter } }]))
+    registerTasks(manager)
+    const starting = manager.start()
+    await parked
+    const hints = holdHints()
+    expect(await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: { revoked: true }, message: 'Reconnect' })).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 2))
+    expect(await updateAgentIntegration('integration', { name: 'Renamed' })).toBe(true)
+    await hints.deliver()
+    release(); await starting
+    expect(manager.getActiveIntegrationIds()).toEqual([])
+    expect(adapter.isConnected()).toBe(false)
+  })
   it('recovers locally accepted input after a manager restart', async () => {
     await start(); await adapter.disconnect()
     await adapter.input('saved') // manager persists before a live transport is available
@@ -227,7 +286,7 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.create).toHaveBeenCalledOnce()
     expect(runtime.send).not.toHaveBeenCalled()
   })
-  it.each(['pause', 'authorization', 'reset', 'cancel'] as const)('%s during preparation prevents spending and does not resume the old input', async action => {
+  it.each(['pause', 'authorization', 'authorization without its hint', 'reset', 'cancel'] as const)('%s during preparation prevents spending and does not resume the old input', async action => {
     await start()
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
@@ -235,7 +294,9 @@ describe('shared manager durability with real integration storage', () => {
     await adapter.input()
     await vi.waitFor(() => expect(prepare).toHaveBeenCalled())
     if (action === 'pause') await manager.pauseIntegration('integration')
-    if (action === 'authorization') await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: {}, message: 'Reconnect' })
+    // The owner never hears of it: the write alone must stop the input.
+    if (action === 'authorization without its hint') vi.spyOn(appState(), 'publish').mockResolvedValue(undefined)
+    if (action.startsWith('authorization')) await requireIntegrationReconnect({ integrationId: 'integration', expectedConfig: '{}', config: {}, message: 'Reconnect' })
     if (action === 'reset') {
       // Clearing by mapping ID also covers sessions not currently observed by a connector.
       await database.insert((await import('../db/schema')).chatIntegrationSessions).values({ id: 'mapping', integrationId: 'integration', externalChatId: 'conversation', sessionId: 'old', createdAt: new Date(), updatedAt: new Date() }).run()

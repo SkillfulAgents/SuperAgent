@@ -93,10 +93,11 @@ export const appSettingsPatchSchema = z.object({
     (value) => value === '' || isValidAccelerator(value),
     {
       message:
-        'globalDispatchShortcut must be an accelerator like "CommandOrControl+Shift+Space" (or "" to disable)',
+        'globalDispatchShortcut must be an accelerator like "Control+Shift+Space" (or "" to disable)',
     },
   ),
   maxBrowserTabs: z.number(),
+  containerBrowserHighDpi: z.boolean(),
   faviconDataUrl: faviconDataUrlPatchSchema,
   browserbaseAdvancedStealth: z.boolean(),
   browserbaseStealthOs: z.enum(['linux', 'windows', 'mac', 'mobile', 'tablet']),

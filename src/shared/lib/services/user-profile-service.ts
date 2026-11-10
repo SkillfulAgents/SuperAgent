@@ -5,7 +5,7 @@ import { getUserImage, type UserImageFields } from '@shared/lib/user-profile-sch
 
 const profileFields = {
   id: user.id, name: user.name, email: user.email,
-  image: user.image, avatarOverride: user.avatarOverride,
+  image: user.image, avatarOverride: user.avatarOverride, status: user.status,
 }
 
 type ProfileRow = Pick<typeof user.$inferSelect, keyof typeof profileFields>
@@ -16,8 +16,9 @@ export function toUserSender(profile: UserSenderSource) {
   return { id: profile.id, name: profile.name, image: getUserImage(profile) }
 }
 
+/** `invited`: someone shared with or mentioned before joining (team directories); only present when true. */
 function toUserProfile(profile: ProfileRow) {
-  return { ...toUserSender(profile), email: profile.email }
+  return { ...toUserSender(profile), email: profile.email, ...(profile.status === 'invited' ? { invited: true as const } : {}) }
 }
 
 /** Internal read API: callers authorize IDs through their agent/session first. */

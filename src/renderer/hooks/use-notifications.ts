@@ -1,6 +1,12 @@
+import { readNotifications } from '@renderer/lib/notification-read-cache'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiNotification } from '@shared/lib/types/api'
+import {
+  notificationCountsSchema,
+  type NotificationCounts,
+  type NotificationTypeName,
+} from '@shared/lib/notifications/notification-filters'
 
 // Re-export for convenience
 export type { ApiNotification }
@@ -11,31 +17,39 @@ export interface PaginatedNotifications {
 }
 
 /**
- * Fetch a page of notifications (server-side pagination).
+ * Fetch a page of notifications (server-side pagination). `types` narrows the
+ * page to those notification types; `enabled: false` skips the fetch (a tab
+ * that shows no agent notifications).
  */
-export function useNotifications(limit: number, offset: number = 0) {
+export function useNotifications(
+  limit: number,
+  offset: number = 0,
+  options: { types?: readonly NotificationTypeName[]; enabled?: boolean } = {},
+) {
+  const types = options.types?.join(',')
   return useQuery<PaginatedNotifications>({
-    queryKey: ['notifications', limit, offset],
+    queryKey: ['notifications', limit, offset, types ?? 'all'],
     queryFn: async () => {
-      const res = await apiFetch(`/api/notifications?limit=${limit}&offset=${offset}`)
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+      if (types) params.set('types', types)
+      const res = await apiFetch(`/api/notifications?${params}`)
       if (!res.ok) throw new Error('Failed to fetch notifications')
       return res.json()
     },
+    enabled: options.enabled ?? true,
     refetchInterval: 30000,
   })
 }
 
-/**
- * Fetch unread notification count (for badge)
- */
+/** Badge counts and per-type totals share one query for every notification surface. */
 export function useUnreadNotificationCount() {
   // `mentions`: the unread ones that tag you, drawn as an @ (auth mode).
-  return useQuery<{ count: number; mentions?: number }>({
+  return useQuery<NotificationCounts>({
     queryKey: ['notifications', 'unread-count'],
     queryFn: async () => {
       const res = await apiFetch('/api/notifications/unread-count')
       if (!res.ok) throw new Error('Failed to fetch unread count')
-      return res.json()
+      return notificationCountsSchema.parse(await res.json())
     },
     refetchInterval: 10000, // Poll more frequently for badge
   })
@@ -46,65 +60,29 @@ export function useUnreadNotificationCount() {
  */
 export function useMarkNotificationRead() {
   const queryClient = useQueryClient()
-
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (notificationId: string) => {
-      const res = await apiFetch(`/api/notifications/${notificationId}/read`, {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to mark notification as read')
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
-    },
+    mutationFn: (id: string) => readNotifications(queryClient, { kind: 'notification', id }),
   })
 }
 
 /**
- * Mark all notifications as read
+ * Mark all notifications read without a follow-up list request. Pass `types`
+ * to read only a filtered tab's notifications.
  */
 export function useMarkAllNotificationsRead() {
   const queryClient = useQueryClient()
-
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async () => {
-      const res = await apiFetch('/api/notifications/read-all', {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to mark all notifications as read')
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
-    },
+    mutationFn: (types?: readonly NotificationTypeName[]) => readNotifications(queryClient, types ? { kind: 'all', types } : { kind: 'all' }),
   })
 }
 
-/**
- * Mark all notifications for a session as read
- */
+/** Mark a session's notifications read; personal unread reminders are separate. */
 export function useMarkSessionNotificationsRead() {
   const queryClient = useQueryClient()
-
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (sessionId: string) => {
-      const res = await apiFetch(`/api/notifications/read-by-session/${sessionId}`, {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to mark session notifications as read')
-      return res.json()
-    },
-    onSuccess: (_, sessionId) => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
-      // Also invalidate sessions so the sidebar's unread dot disappears
-      queryClient.invalidateQueries({ queryKey: ['sessions'] })
-      // The tab title reads the session detail, which has a separate cache key.
-      // Refresh it too so a read notification stays cleared when the tab hides.
-      queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
-    },
+    mutationFn: (sessionId: string) => readNotifications(queryClient, { kind: 'session', sessionId }),
   })
 }

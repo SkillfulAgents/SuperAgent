@@ -45,14 +45,14 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
   const hasDiscoverable = discoverableSkills.length > 0
 
   return (
-    <HomeCollapsible title="Skills" className={className}>
+    <HomeCollapsible id="skills" title="Skills" count={skillsData ? skills.length : undefined} className={className}>
       {skills.length === 0 ? (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No skills yet</p>
           <p className="text-xs mt-1">Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works.</p>
         </div>
       ) : (
-        <div className="mt-2 divide-y divide-border/50" data-testid="installed-skills-list">
+        <div className="mt-2" data-testid="installed-skills-list">
           {skills.map((skill) => (
             <SkillRow key={skill.path} skill={skill} agentSlug={agentSlug} onRunSkill={onRunSkill} />
           ))}
@@ -114,7 +114,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
 
   return (
     <>
-      <div role="button" tabIndex={0} data-testid="installed-skill-row" data-skill-path={skill.path} className="group relative py-3 px-4 hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => setFilesOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilesOpen(true) } }}>
+      <div role="button" tabIndex={0} data-testid="installed-skill-row" data-skill-path={skill.path} className="group relative py-3 px-4 cursor-pointer" onClick={() => setFilesOpen(true)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setFilesOpen(true) } }}>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium truncate">{skill.name ?? skill.path}</span>
           <StatusBadge status={skill.status} />
@@ -150,14 +150,14 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
             </PopoverTrigger>
             <PopoverContent align="end" className="w-36 p-1" onClick={(e) => e.stopPropagation()}>
               <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                 onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setFilesOpen(true) }}
               >
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
               </button>
               <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                 disabled={exportSkill.isPending}
                 onClick={(e) => {
                   e.stopPropagation()
@@ -177,7 +177,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               </button>
               {skill.status.type === 'local' && skill.status.publishable !== false && publishMode !== 'none' && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setPublishOpen(true) }}
                 >
                   <CloudUpload className="h-3.5 w-3.5" />
@@ -186,7 +186,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               )}
               {skill.status.type === 'update_available' && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   disabled={updateSkill.isPending}
                   onClick={(e) => { e.stopPropagation(); setActionsOpen(false); updateSkill.mutate({ agentSlug, skillDir: skill.path }) }}
                 >
@@ -200,7 +200,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               )}
               {skill.status.type === 'locally_modified' && publishMode !== 'none' && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setReviewOpen(true) }}
                 >
                   <ReviewIcon className="h-3.5 w-3.5" />
@@ -208,7 +208,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
                 </button>
               )}
               <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setDeleteOpen(true) }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -308,7 +308,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
           <form onSubmit={handleImport}>
             <div className="py-4 space-y-4">
               <div
-                className={`border border-dashed rounded-lg p-6 text-center transition-colors bg-muted/50 ${
+                className={`border border-dashed rounded-card p-6 text-center transition-colors bg-muted/50 ${
                   importSkill.isPending ? 'opacity-50 pointer-events-none' : 'cursor-pointer'
                 }`}
                 role="button"

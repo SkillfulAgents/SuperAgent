@@ -65,7 +65,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
@@ -258,6 +258,8 @@ export interface AgentCatalog {
   update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
   /** The agent slug for a display slug or a slug, or null when there is no such agent. */
   resolve(input: string): Promise<AgentSlug | null>
+  /** The agent for a display slug or a slug, or null when there is no such agent. */
+  resolveRecord(input: string): Promise<AgentRecord | null>
   /** Remove an agent and everything it owns. The caller stops its container first. */
   remove(slug: AgentSlug): Promise<void>
 }
@@ -345,13 +347,13 @@ export interface SessionOps {
   isRegistered(sessionId: string): Promise<boolean>
   /** `registerSession` */
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
-  /** `updateSessionName` */
+  /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
-  /** `deleteSession` — the files are the authority. */
+  /** Stop the writer, delete its files, then forget its resume record. Unknown runtime state keeps the files. */
   delete(sessionId: string): Promise<boolean>
   /**
-   * `deleteSessionsBatch` over the sessions not running now: one that is
-   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   * Delete each idle session after its writer has stopped, holding its delivery queue through file removal.
+   * Active sessions and sessions whose release cannot be confirmed are kept. Returns the ids deleted.
    */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
@@ -673,6 +675,12 @@ export interface StartSessionRequest {
   notAfter?: number
   /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */
   attachTimeoutMs?: number
+  /**
+   * The user started it with computer use on: the session may list and use
+   * any app without asking. Granted before the stream attaches, so the first
+   * turn's calls already find it.
+   */
+  grantComputerUse?: boolean
 }
 
 export interface StopSessionOptions {
@@ -685,7 +693,10 @@ export interface StopSessionOptions {
    * instead: nothing would be left to stop it with.
    */
   escalateUntracked?: boolean
-  /** Deny the agent's pending API reviews too: the user stopped the agent. */
+  /**
+   * The user stopped the session: deny the API reviews it shows (its own and
+   * the agent-wide ones) and dismiss the calls parked on its own re-auth cards.
+   */
   denyReviews?: boolean
   /**
    * Mark the session stopped only once the container confirms the interrupt:
@@ -768,7 +779,7 @@ export interface ReviewOps {
   /** One review waiting on the user, or null when this agent holds none by that id. */
   get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
-  submit(id: string, decision: 'allow' | 'deny'): Promise<boolean>
+  submit(id: string, decision: 'allow' | 'deny', reason?: string): Promise<boolean>
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */
@@ -781,7 +792,7 @@ export interface ReviewOps {
    * (its request was aborted), or to resume or settle it after a `recheck`.
    * `awaitReview` (proxy/review-request) is the host's way to wait for one.
    */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
+  request(details: ReviewRequest, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     request: {
@@ -790,6 +801,8 @@ export interface ReviewOps {
       operation: 'list' | 'read' | 'invoke' | 'create'
       preview?: string
       fileTransfer?: XAgentFileTransfer
+      /** The session the call came from, when the request named one. */
+      callerSessionId?: string
     },
     options: { id: string },
   ): Promise<ReviewOutcome>
@@ -799,13 +812,16 @@ export interface ReviewOps {
   resume(id: string): Promise<ReviewOutcome>
   /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
   settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
+  /** `AgentReviews.takeDenyReason`: what the person typed with a deny, once. */
+  takeDenyReason(id: string): Promise<string | undefined>
 }
 
 /** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
   /**
    * The user let go of the app the agent had grabbed: forget the grab, revoke
-   * the agent's grant for that app and tell the session's viewers, in one turn.
+   * the agent's grant for that app and the session's any-app grant, and tell
+   * the session's viewers, in one turn.
    */
   releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */

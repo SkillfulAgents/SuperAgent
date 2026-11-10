@@ -39,6 +39,19 @@ vi.mock('@shared/lib/config/settings', () => ({
   getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'review' }),
   getModelCatalogSettings: () => ({}),
 }))
+// A failed turn's error presentation reads the active provider: a test can
+// hold that read to land things in between.
+const presentation = vi.hoisted(() => ({ hold: null as Promise<void> | null }))
+vi.mock('@shared/lib/llm-provider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/llm-provider')>()
+  return {
+    ...actual,
+    getActiveLlmProvider: async () => {
+      if (presentation.hold) await presentation.hold
+      return actual.getActiveLlmProvider()
+    },
+  }
+})
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { SessionNotification } from '../host-port'
@@ -148,7 +161,7 @@ describe('turn analytics', () => {
   const responses = () => live.host.sent('analytics').filter(e => e.event.startsWith('agent_response_'))
 
   it('records which credential served a completed turn', () => {
-    sessions().recordRuntime(SESSION_ID, { provider: 'claude-subscription', modelContextWindows: {} })
+    sessions().recordRuntime(SESSION_ID, { provider: 'claude-subscription' })
     sessions().markActive(SESSION_ID)
     emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
     expect(responses()).toEqual([{
@@ -158,7 +171,7 @@ describe('turn analytics', () => {
   })
 
   it('records a failed Platform turn with its terminal reason, and nothing for a stop', () => {
-    sessions().recordRuntime(SESSION_ID, { provider: 'platform', modelContextWindows: {} })
+    sessions().recordRuntime(SESSION_ID, { provider: 'platform' })
     sessions().markActive(SESSION_ID)
     emit({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', result: 'Payment required' })
     sessions().markActive(SESSION_ID)
@@ -1145,7 +1158,7 @@ describe('activity', () => {
 // ============================================================================
 
 describe('API error code tracking', () => {
-  it('captures error code from assistant message and includes it in session_error', () => {
+  it('captures error code from assistant message and includes it in session_error', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1168,13 +1181,15 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBe('authentication_failed')
     expect(errorEvents[0].error).toBe('Invalid API key')
   })
 
-  it('classifies a success-subtype result with is_error as an error turn (modern shape)', () => {
+  it('classifies a success-subtype result with is_error as an error turn (modern shape)', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1193,6 +1208,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].error).toBe('The selected model does not exist.')
@@ -1202,7 +1219,7 @@ describe('API error code tracking', () => {
     expect(sessions().isActive(SESSION_ID)).toBe(false)
   })
 
-  it('broadcasts session_error with null apiErrorCode when no assistant error preceded', () => {
+  it('broadcasts session_error with null apiErrorCode when no assistant error preceded', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1217,12 +1234,104 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBeNull()
   })
 
-  it('clears lastApiErrorCode on new user message', () => {
+  it('frames arriving while the error is presented still follow its session_error, in order', async () => {
+    sessions().markActive(SESSION_ID)
+    sseEvents.length = 0
+
+    mockClient.emit({
+      type: 'result',
+      subtype: 'error',
+      error: 'boom',
+      is_error: true,
+      duration_ms: 0,
+      num_turns: 0,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    })
+    // The next turn's output lands before the presentation read has resolved.
+    mockClient.emit({ type: 'stream_event', event: { type: 'message_start' } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'one' } } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'two' } } })
+    expect(sseEvents.filter(e => e.type === 'stream_delta')).toHaveLength(0)
+
+    await flushNotifications()
+    const types = sseEvents.map(e => e.type)
+    const errorAt = types.indexOf('session_error')
+    expect(errorAt).toBeGreaterThanOrEqual(0)
+    const deltas = sseEvents.flatMap((e, i) => (e.type === 'stream_delta' ? [i] : []))
+    expect(deltas).toHaveLength(2)
+    expect(deltas.every(i => i > errorAt)).toBe(true)
+  })
+
+  describe('while the error is presented', () => {
+    let release!: () => void
+    beforeEach(() => {
+      presentation.hold = new Promise<void>((resolve) => { release = resolve })
+    })
+    afterEach(() => {
+      release()
+      presentation.hold = null
+    })
+    const failTurn = (fields: Record<string, unknown> = {}) => mockClient.emit({
+      type: 'result', subtype: 'error', error: 'boom', is_error: true, duration_ms: 0, num_turns: 0, usage: {}, ...fields,
+    })
+    const streamText = (client: StreamClient, text: string) => {
+      client.emit({ type: 'stream_event', event: { type: 'message_start' } })
+      client.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+    }
+
+    it('keeps the error ahead of the frames a reattached stream delivers', async () => {
+      sessions().markActive(SESSION_ID)
+      sseEvents.length = 0
+      failTurn()
+
+      // The socket dropped and the session was attached again.
+      const next = createStreamClient()
+      await sessions().subscribe(SESSION_ID, next, SESSION_ID)
+      streamText(next, 'after')
+      release()
+      await flushNotifications()
+
+      const types = sseEvents.map((e) => e.type)
+      const errorAt = types.indexOf('session_error')
+      expect(errorAt).toBeGreaterThanOrEqual(0)
+      expect(types.lastIndexOf('stream_delta')).toBeGreaterThan(errorAt)
+      expect(types.indexOf('stream_delta')).toBeGreaterThan(errorAt)
+    })
+
+    it('does not end, in any client, the newer turn a message started on a new attachment', async () => {
+      sessions().markActive(SESSION_ID)
+      failTurn()
+
+      const next = createStreamClient()
+      await sessions().subscribe(SESSION_ID, next, SESSION_ID)
+      sessions().markActive(SESSION_ID)
+      sseEvents.length = 0
+      const globalStart = live.host.sends.length
+      streamText(next, 'the new turn')
+      release()
+      await flushNotifications()
+
+      expect(sseEvents.map((e) => e.type)).not.toContain('session_error')
+      const global = live.host.sends.slice(globalStart).filter(([name]) => name === 'global').map(([, event]) => event as { type: string })
+      expect(global.map((e) => e.type)).not.toContain('session_error')
+      expect(sessions().isActive(SESSION_ID)).toBe(true)
+    })
+
+    it('stops the container for a fatal error with the frame, not after the read', () => {
+      sessions().markActive(SESSION_ID)
+      failTurn({ fatal: true })
+      expect(live.runtime.stopAfterFatalError).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('clears lastApiErrorCode on new user message', async () => {
     sessions().markActive(SESSION_ID)
 
     // First turn: assistant with error
@@ -1242,6 +1351,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    await flushNotifications()
+
     // New user message clears the error code
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
@@ -1257,6 +1368,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBeNull()
@@ -1330,7 +1443,7 @@ describe('API error code tracking', () => {
   })
 
   it('records which provider produced an API error message', () => {
-    sessions().recordRuntime(SESSION_ID, { provider: 'platform', modelContextWindows: {} })
+    sessions().recordRuntime(SESSION_ID, { provider: 'platform' })
     sessions().markActive(SESSION_ID)
 
     mockClient.emit({

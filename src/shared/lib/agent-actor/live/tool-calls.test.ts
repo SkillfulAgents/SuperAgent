@@ -6,6 +6,7 @@ import type { HostRunActor } from '../host-runs'
 import { createRecordingHostPort, type HostCallAnswers } from '../testing/recording-host-port'
 import type { SessionEvent } from './session-channel'
 import { ToolCalls, type Capability, type ToolCallContext, type ToolUse } from './tool-calls'
+import { MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 
 const mocks = vi.hoisted(() => ({
   capabilities: { subagents: 'allow', workflows: 'review' } as { subagents: string; workflows: string },
@@ -32,6 +33,23 @@ function onPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true })
 }
 
+/** Be the Mac App Store build's main process, the way Electron marks it. */
+function inAppSandbox(): void {
+  onPlatform('darwin')
+  Object.defineProperty(process, 'type', { value: 'browser', configurable: true, writable: true })
+  Object.defineProperty(process, 'mas', { value: true, configurable: true, writable: true })
+}
+const ORIGINAL_PROCESS_MARKS = {
+  type: Object.getOwnPropertyDescriptor(process, 'type'),
+  mas: Object.getOwnPropertyDescriptor(process, 'mas'),
+}
+function restoreProcessMarks(): void {
+  for (const [key, descriptor] of Object.entries(ORIGINAL_PROCESS_MARKS)) {
+    if (descriptor) Object.defineProperty(process, key, descriptor)
+    else delete (process as unknown as Record<string, unknown>)[key]
+  }
+}
+
 type Route = (path: string, init?: RequestInit) => Response | Promise<Response>
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
@@ -47,7 +65,7 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
   const granted = new Set<string>()
   let grabbedApp: string | undefined
   const computerUse = {
-    check: (level: string, appName?: string) =>
+    check: async (level: string, appName?: string) =>
       granted.has(level) || granted.has(`${level}:${appName}`) ? 'granted' : 'prompt_needed',
     grabbed: () => grabbedApp,
   } as unknown as AgentComputerUse
@@ -99,8 +117,11 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
       launches.push([toolUseId, input])
     },
   }
+  const calls = new ToolCalls(ctx)
   return {
-    calls: new ToolCalls(ctx),
+    calls,
+    /** The ToolCalls of the attachment that replaces this one. */
+    reattach: () => new ToolCalls(ctx, calls),
     requests,
     host,
     runs,
@@ -144,6 +165,7 @@ beforeEach(() => {
 
 afterEach(() => {
   onPlatform(ORIGINAL_PLATFORM)
+  restoreProcessMarks()
   vi.unstubAllEnvs()
   vi.restoreAllMocks()
 })
@@ -487,24 +509,62 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([])
     })
 
-    it('runs host tools from the main stream only', async () => {
-      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'ok' } } })
+    it('runs a subagent\'s host tool from whichever delivery comes first, once', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Scheduled' } } })
 
+      // Its stream and its complete message both carry the call; either can be the only one.
       h.calls.subagentStreamedToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
-      h.calls.subagentMessageToolUse(use('t_sched2', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_list', 'mcp__user-input__list_triggers', {}), 'toolu_parent')
       await settle()
 
-      expect(h.host.calls).toEqual([])
+      expect(h.host.calls.map(([, request]) => request)).toEqual([
+        expect.objectContaining({ toolUseId: 't_sched', toolName: 'schedule_task' }),
+        expect.objectContaining({ toolUseId: 't_list', toolName: 'list_triggers' }),
+      ])
+      expect(h.answered).toEqual([
+        { toolUseId: 't_sched', how: 'resolve', value: 'Scheduled' },
+        { toolUseId: 't_list', how: 'resolve', value: 'Scheduled' },
+      ])
+    })
+
+    it('runs a host tool once when its second delivery lands on the next attachment', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Scheduled' } } })
+
+      h.calls.subagentStreamedToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.reattach().subagentMessageToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      await settle()
+
+      expect(h.host.calls).toHaveLength(1)
+      expect(h.answered).toEqual([{ toolUseId: 't_sched', how: 'resolve', value: 'Scheduled' }])
+    })
+
+    it('fails a subagent\'s schedule_resume without running it: a wake resumes the main conversation', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Wake scheduled' } } })
+
+      h.calls.subagentStreamedToolUse(use('t_wake', 'mcp__user-input__schedule_resume', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_wake', 'mcp__user-input__schedule_resume', {}), 'toolu_parent')
+      h.calls.mainToolUse(use('t_main_wake', 'mcp__user-input__schedule_resume', {}))
+      await settle()
+
+      expect(h.host.calls.map(([, request]) => request)).toEqual([
+        expect.objectContaining({ toolUseId: 't_main_wake', toolName: 'schedule_resume' }),
+      ])
+      expect(h.answered).toEqual([
+        { toolUseId: 't_wake', how: 'reject', value: MAIN_THREAD_ONLY_TOOL_MESSAGE },
+        { toolUseId: 't_main_wake', how: 'resolve', value: 'Wake scheduled' },
+      ])
     })
   })
 
   describe('host scripts', () => {
     const script = { script: 'echo hi', scriptType: 'shell', explanation: 'Say hi' }
 
-    it('parks a script on an approval card without a grant', () => {
+    it('parks a script on an approval card without a grant', async () => {
       const h = harness()
 
       h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', script))
+      await settle()
 
       expect(h.open('t_script')).toMatchObject({
         kind: 'script_run',
@@ -515,11 +575,12 @@ describe('ToolCalls', () => {
       expect(mocks.runAutoApproved).not.toHaveBeenCalled()
     })
 
-    it('runs a script at once under a use_host_shell grant, registered but not waited on', () => {
+    it('runs a script at once under a use_host_shell grant, registered but not waited on', async () => {
       const h = harness()
       h.grant('use_host_shell')
 
       h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', script))
+      await settle()
 
       expect(h.open('t_script')).toMatchObject({ kind: 'script_run', autoApproved: true })
       expect(h.awaitingSyncs()).toBe(0)
@@ -529,7 +590,7 @@ describe('ToolCalls', () => {
         toolUseId: 't_script',
         script: 'echo hi',
         scriptType: 'shell',
-      })
+      }, { stillWanted: expect.any(Function) })
     })
 
     it('rejects a script type this platform cannot run', () => {
@@ -559,6 +620,20 @@ describe('ToolCalls', () => {
       }])
     })
 
+    it('rejects every script in the Mac App Store edition, whose sandbox confines them', () => {
+      inAppSandbox()
+      const h = harness()
+
+      h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', { ...script, scriptType: 'applescript' }))
+
+      expect(h.answered).toEqual([{
+        toolUseId: 't_script',
+        how: 'reject',
+        value: 'Host scripts are not available in the Mac App Store edition, whose sandbox confines what the app runs.',
+      }])
+      expect(h.open('t_script')).toBeNull()
+    })
+
     it('ignores a script request missing its script or type, or not JSON', () => {
       const h = harness()
 
@@ -570,10 +645,11 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([])
     })
 
-    it('parks a subagent\'s script under the subagent that asked', () => {
+    it('parks a subagent\'s script under the subagent that asked', async () => {
       const h = harness()
 
       h.calls.subagentStreamedToolUse(use('t_script', 'mcp__user-input__request_script_run', script), 'toolu_parent')
+      await settle()
 
       expect(h.open('t_script')).toMatchObject({ kind: 'script_run', parentToolUseId: 'toolu_parent' })
     })
@@ -612,7 +688,7 @@ describe('ToolCalls', () => {
         params: { app: 'Safari', ref: '@e1' },
         permissionLevel: 'use_application',
         appName: 'Safari',
-      })
+      }, { stillWanted: expect.any(Function) })
     })
 
     it('targets the grabbed app when the command names none', async () => {
@@ -645,7 +721,7 @@ describe('ToolCalls', () => {
         method: 'apps',
         params: {},
         permissionLevel: 'list_apps_windows',
-      }))
+      }), { stillWanted: expect.any(Function) })
     })
 
     it('asks the machine which app owns a window before judging a grab by ref', async () => {
@@ -684,7 +760,22 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([{
         toolUseId: 't_cu',
         how: 'reject',
-        value: 'Computer use is not supported on this platform (linux). macOS and Windows are supported.',
+        value: 'Computer use is not available on this machine (linux). It needs macOS or Windows, and is not in the Mac App Store edition.',
+      }])
+      expect(h.open('t_cu')).toBeNull()
+    })
+
+    it('rejects a command in the Mac App Store edition, on macOS', async () => {
+      inAppSandbox()
+      const h = harness()
+
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', {}))
+      await settle()
+
+      expect(h.answered).toEqual([{
+        toolUseId: 't_cu',
+        how: 'reject',
+        value: 'Computer use is not available on this machine (darwin). It needs macOS or Windows, and is not in the Mac App Store edition.',
       }])
       expect(h.open('t_cu')).toBeNull()
     })

@@ -5,6 +5,7 @@ import path from 'path'
 import type { NsisUpdater } from 'electron-updater'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { isBackgroundWorkInitialized, PassTask, serviceHost, taskManager, type Service } from '@shared/lib/background-work'
 import { verifyUpdateSignature } from './update-signature'
 import { removeInstalledUpdateDownload } from './update-download-cache'
 
@@ -19,8 +20,6 @@ let currentStatus: UpdateStatus = { state: 'idle' }
 let mainWindowRef: BrowserWindow | null = null
 let updaterReady = false
 let suppressErrors = false
-let scheduledCheckTimer: NodeJS.Timeout | null = null
-let initialCheckTimer: NodeJS.Timeout | null = null
 
 // Coalesces concurrent calls to runUpdateCheck so the dual-channel prerelease
 // path can't have its `autoUpdater.channel` mutations interleave.
@@ -295,31 +294,48 @@ async function runUpdateCheckBody() {
   }
 }
 
-function scheduleAutomaticUpdateChecks() {
-  if (scheduledCheckTimer) return
+async function automaticUpdateCheck() {
+  // Re-read setting each tick so toggling it takes effect on the next interval.
+  const autoCheck = (await getUserSettings('local')).autoCheckUpdates
+  if (autoCheck === false) return
+  await runUpdateCheck({ silent: true })
+}
 
-  const tick = async () => {
-    // Re-read setting each tick so toggling it takes effect on the next interval.
-    const autoCheck = (await getUserSettings('local')).autoCheckUpdates
-    if (autoCheck === false) return
-    await runUpdateCheck({ silent: true })
+const automaticUpdateCheckTask = new PassTask('auto-updater.check', automaticUpdateCheck)
+const INITIAL_CHECK_JOB = 'auto-updater.initial-check'
+const RECURRING_CHECK_JOB = 'auto-updater.recurring-check'
+
+class AutomaticUpdateChecks implements Service {
+  readonly id = 'auto-updater'
+  readonly tasks = [automaticUpdateCheckTask]
+
+  async start(): Promise<void> {
+    // The recurring check is suspended during macOS sleep; on resume we may have
+    // skipped multiple ticks. Run an immediate check to catch up. The check is
+    // async but electron's typings accept `() => void`; the assignment is sound
+    // because it swallows its own errors via runUpdateCheck's catch.
+    powerMonitor.on('resume', automaticUpdateCheck)
+
+    await taskManager().at(Date.now() + INITIAL_CHECK_DELAY_MS, INITIAL_CHECK_JOB, automaticUpdateCheckTask.spec)
+    await taskManager().ensureEvery(RECURRING_CHECK_JOB, automaticUpdateCheckTask.spec, { intervalMs: RECURRING_CHECK_INTERVAL_MS })
   }
 
-  initialCheckTimer = setTimeout(tick, INITIAL_CHECK_DELAY_MS)
-  scheduledCheckTimer = setInterval(tick, RECURRING_CHECK_INTERVAL_MS)
+  stop(): void {
+    powerMonitor.off('resume', automaticUpdateCheck)
+  }
+}
 
-  // setInterval is suspended during macOS sleep; on resume we may have skipped
-  // multiple ticks. Run an immediate check to catch up. `tick` is async but
-  // electron's typings accept `() => void`; the assignment is sound because
-  // tick swallows its own errors via runUpdateCheck's catch.
-  powerMonitor.on('resume', tick)
+/** Electron's own service: its entry point registers this, and no other entry point runs it. */
+export const automaticUpdateChecks = new AutomaticUpdateChecks()
 
-  app.on('before-quit', () => {
-    if (initialCheckTimer) clearTimeout(initialCheckTimer)
-    if (scheduledCheckTimer) clearInterval(scheduledCheckTimer)
-    initialCheckTimer = null
-    scheduledCheckTimer = null
-  })
+/**
+ * Starts the checks once the updater is ready and the service is registered, so it
+ * is called after each: a second launch can open the window, and with it get the
+ * updater ready, while the app is still on its way to registering the service.
+ */
+export function startAutomaticUpdateChecks() {
+  if (!updaterReady || !isBackgroundWorkInitialized() || !serviceHost().isRegistered(automaticUpdateChecks.id)) return
+  void serviceHost().startService(automaticUpdateChecks.id)
 }
 
 /**
@@ -476,7 +492,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     }
 
     updaterReady = true
-    scheduleAutomaticUpdateChecks()
+    startAutomaticUpdateChecks()
   } catch (err) {
     captureException(err, {
       tags: { component: 'auto-updater', operation: 'init' },

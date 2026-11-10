@@ -70,6 +70,16 @@ describe('describeWorkspaceFile', () => {
     })
   })
 
+  it('addresses a drive file by its mount path, apart from any workspace folder named mounts', () => {
+    expect(describeWorkspaceFile('/mounts/Team Brain/a b.md', 'acme')).toMatchObject({
+      apiPath: '/api/agents/acme/mount-files/Team%20Brain/a%20b.md',
+      inlineUrl: 'http://api.test/api/agents/acme/mount-files/Team%20Brain/a%20b.md?inline=true',
+    })
+    expect(describeWorkspaceFile('/workspace/mounts/a.md', 'acme').apiPath).toBe('/api/agents/acme/files/mounts/a.md')
+    expect(describeWorkspaceFile('/mounts/A/../B/x.md', 'acme').apiPath).toBe('/api/agents/acme/mount-files/%2Fmounts%2FA%2F..%2FB%2Fx.md')
+    expect(describeWorkspaceFile('/mounts/..', 'acme').apiPath).toBe('/api/agents/acme/mount-files/%2Fmounts%2F..')
+  })
+
   it('keeps the path it was handed as the identity, encoding only the URLs', () => {
     const file = describeWorkspaceFile('/workspace/Q3 & Q4/résumé.md', 'my agent')
     expect(file.path).toBe('/workspace/Q3 & Q4/résumé.md')

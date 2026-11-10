@@ -10,8 +10,6 @@ const mocks = vi.hoisted(() => ({
   findLastSessionEntry: vi.fn(async () => null),
   getConfiguredLlmClient: vi.fn(() => ({ messages: {} })),
   createSummarizerText: vi.fn(),
-  resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
-  getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
   getAgentRecord: vi.fn(async () => ({ name: 'Demo Agent' })),
   getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
@@ -28,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
 }))
 
+const notifyInvitedUser = vi.hoisted(() => vi.fn(async () => 'not-invited'))
+vi.mock('@shared/lib/team-directory/invited-users', () => ({ notifyInvitedUser }))
 vi.mock('@shared/lib/services/notification-service', () => ({
   createNotification: mocks.createNotification,
   deleteMessageNotifications: mocks.deleteMessageNotifications,
@@ -37,15 +37,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: mocks.getSessionMetadata,
   findLastSessionEntry: mocks.findLastSessionEntry,
 }))
+// The client and the summarizer model come from one helper setup.
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  getConfiguredLlmClient: mocks.getConfiguredLlmClient,
+  getConfiguredLlmClientAndModel: async () => ({ client: mocks.getConfiguredLlmClient(), model: 'resolved-summarizer' }),
   createSummarizerText: mocks.createSummarizerText,
-}))
-vi.mock('@shared/lib/llm-provider', () => ({
-  resolveActiveProviderModel: mocks.resolveActiveProviderModel,
-}))
-vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: mocks.getEffectiveModels,
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentRecord: mocks.getAgentRecord,
@@ -592,6 +587,22 @@ describe('triggerSessionMention', () => {
     const [{ body }] = mockCreateNotification.mock.calls[0] as unknown as [{ body: string }]
     expect(body).toHaveLength(280)
     expect(body.endsWith('…')).toBe(true)
+  })
+
+  it('tells someone not on Gamut yet through their team directory, with the whole message', async () => {
+    const { backgroundSettled } = await import('@shared/lib/background')
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'invited-dana',
+      senderName: 'Ada Admin',
+      text: '@Dana can you take this one?',
+    })
+    await backgroundSettled()
+    expect(notifyInvitedUser).toHaveBeenCalledWith('invited-dana', expect.objectContaining({
+      kind: 'mentioned', byName: 'Ada Admin', text: '@Dana can you take this one?',
+    }))
   })
 })
 

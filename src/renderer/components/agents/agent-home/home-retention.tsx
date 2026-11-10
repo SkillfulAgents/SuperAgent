@@ -1,8 +1,9 @@
-import { Check, ChevronDown, RotateCcw } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { cn } from '@shared/lib/utils/cn'
+import { useHomeCardLook } from './home-collapsible'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import {
@@ -112,6 +113,7 @@ function RetentionRow({
   disabled,
   onChange,
 }: RetentionRowProps) {
+  const look = useHomeCardLook()
   const isOverride = value !== undefined
   // The trigger is narrow, so it shows the compact form ("30d", "1y"); the
   // popover options keep their full labels.
@@ -119,21 +121,24 @@ function RetentionRow({
 
   return (
     <div className="flex items-center justify-between gap-2 py-2 px-4" data-testid={`${testId}-card`}>
-      <span className="text-sm font-medium text-muted-foreground">{label}</span>
+      <span className={look.label}>{label}</span>
       <Popover>
         <PopoverTrigger asChild>
           <Button
             type="button"
-            variant="outline"
+            variant={look.grouped ? 'ghost' : 'outline'}
             size="sm"
             disabled={disabled}
-            // Fixed width so the two rows' triggers line up whatever they read.
-            className="h-[34px] w-20 justify-between gap-1.5 px-2 text-xs font-medium"
+            // The side panel's row style: a value lighter than its label and a soft right chevron, like the section rows, with no frame or
+            // hover fill. Right-aligned, so the values line up at their chevrons whatever they read.
+            className={look.grouped
+              ? '-mr-1 h-8 gap-1 px-1 text-[12px]/5 font-normal text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground/70'
+              : 'h-[34px] w-20 justify-between gap-1.5 px-2 text-xs font-medium'}
             aria-label={`${label}: ${triggerLabel}. Click to change.`}
             data-testid={`${testId}-trigger`}
           >
             <span className="truncate">{triggerLabel}</span>
-            <ChevronDown className="h-3.5 w-3.5" />
+            {look.grouped ? <ChevronRight className="h-4 w-4 text-muted-foreground/50" /> : <ChevronDown className="h-3.5 w-3.5" />}
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -154,7 +159,7 @@ function RetentionRow({
                   onClick={() => onChange(option.value)}
                   data-testid={`${testId}-option-${option.value}`}
                   className={cn(
-                    'flex items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground',
+                    'flex items-center justify-between gap-2 rounded-item px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground',
                     isSelected ? 'text-foreground' : 'text-muted-foreground'
                   )}
                 >
@@ -171,7 +176,7 @@ function RetentionRow({
             disabled={!isOverride}
             onClick={() => onChange(null)}
             data-testid={`${testId}-app-default`}
-            className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
+            className="flex min-w-0 items-center gap-1.5 rounded-item px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
           >
             <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">Reset to Global Default ({appDefaultLabel})</span>

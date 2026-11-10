@@ -53,6 +53,14 @@ describe('provider dropdown with usage', () => {
     await userEvent.click(screen.getByRole('combobox'))
     expect(screen.getAllByRole('option').map(o => o.getAttribute('aria-label'))).toEqual(['Platform', 'Codex', 'Grok'])
   })
+  it('flags a connection whose sign-in expired in the trigger and the list', async () => {
+    const expired = [connections[0], connectionInfoSchema.parse({ ...connections[1], reconnectRequired: true })]
+    render(<ProviderSelect connections={expired} value="Grok" onChange={vi.fn()} />)
+    expect(screen.getByRole('combobox')).toContainElement(screen.getByRole('img', { name: 'Sign-in expired' }))
+    await userEvent.click(screen.getByRole('combobox'))
+    expect(screen.getByRole('option', { name: 'Grok Sign-in expired' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Codex' })).toBeInTheDocument()
+  })
   it('preserves the single-connection picker with no extra dropdown', () => {
     const { container } = render(<ProviderSelect connections={connections.slice(0, 1)} value="Codex" onChange={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()

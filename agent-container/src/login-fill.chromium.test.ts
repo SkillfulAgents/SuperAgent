@@ -455,6 +455,8 @@ describe.skipIf(!CHROMIUM)('request_login in real Chromium', { timeout: 30_000 }
   it('sees the page move on to another document by itself', async () => {
     const activity = await fillCodeAndWatch('/navigates.html', () => page.locator('#c'), 1_000)
     expect(activity).toEqual({ kind: 'navigation', url: site('127.0.0.1', '/login.html?next=1') })
+    // The watch sees the move when it is requested; let it land, or the next test's goto is interrupted by it.
+    await page.waitForURL(site('127.0.0.1', '/login.html?next=1'))
   })
 
   it('sees nothing when the page waits for a click, so the submit goes ahead', async () => {

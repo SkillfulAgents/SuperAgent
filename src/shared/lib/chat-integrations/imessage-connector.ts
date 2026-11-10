@@ -144,7 +144,7 @@ export class IMessageConnector extends ChatAgentIntegration {
     if (!agent) return
     const name = integration.name?.trim() || agent.name
     const card = buildAgentContactCard({ slug: integration.agentSlug, name, description: agent.description,
-      appUrl: resolveAgentWebUrl(displaySlug(agent.name, integration.agentSlug)) })
+      appUrl: await resolveAgentWebUrl(displaySlug(agent.name, integration.agentSlug)) })
     await this.sendFile('', card, `${sanitizeUploadFilename(name)}.vcf`, "Save me as a contact so I'm not just a number. Text me anytime.")
   }
 

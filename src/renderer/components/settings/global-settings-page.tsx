@@ -1,10 +1,10 @@
 import { Suspense, type ReactNode } from 'react'
-import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen, KeyRound } from 'lucide-react'
+import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { canUseHostFeatures } from '@renderer/lib/capabilities'
+import { offersComputerUseSettings } from '@renderer/lib/capabilities'
 
 // Each settings pane is a separate on-demand boundary. The navigation shell is
 // immediately usable, while only the active pane (and its dependency graph) is
@@ -25,6 +25,7 @@ const NewIntegrationButton = lazyRouteComponent(
 )
 const LlmTab = lazyRouteComponent(() => import('./llm-tab'), 'LlmTab')
 const UsersTab = lazyRouteComponent(() => import('./users-tab'), 'UsersTab')
+const TeamDirectoryTab = lazyRouteComponent(() => import('./team-directory-tab'), 'TeamDirectoryTab')
 const AuthTab = lazyRouteComponent(() => import('./auth-tab'), 'AuthTab')
 const AdminTab = lazyRouteComponent(() => import('./admin-tab'), 'AdminTab')
 const VoiceTab = lazyRouteComponent(() => import('./voice-tab'), 'VoiceTab')
@@ -45,7 +46,7 @@ function deferredTab(content: ReactNode): ReactNode {
       fallback={(
         <div className="space-y-3 py-2" role="status" aria-label="Loading settings section">
           <div className="h-5 w-40 animate-pulse rounded bg-muted" />
-          <div className="h-20 w-full animate-pulse rounded bg-muted/70" />
+          <div className="h-20 w-full animate-pulse rounded-card bg-muted/70" />
         </div>
       )}
     >
@@ -88,12 +89,15 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
   // General always leads and Admin always trails; the mode-gated items sit
   // between those two anchors in every mode.
   const appSections: SettingsPageSection[] = [
-    { id: 'general', label: 'General', icon: <Bolt className="h-4 w-4" />, render: () => deferredTab(<GeneralTab onOpenWizard={onOpenWizard} />) },
-    { id: 'notifications', label: 'Notifications', icon: <Bell className="h-4 w-4" />, render: () => deferredTab(<NotificationsTab />) },
-    { id: 'platform', label: 'Account', icon: <BadgeCheck className="h-4 w-4" />, render: () => deferredTab(<PlatformTab readOnly={isAuthMode} />) },
+    { id: 'general', label: 'General', icon: <AnimatedNavIcon name="general" className="h-4 w-4" />, render: () => deferredTab(<GeneralTab onOpenWizard={onOpenWizard} />) },
+    { id: 'notifications', label: 'Notifications', icon: <AnimatedNavIcon name="bell" className="h-4 w-4" />, render: () => deferredTab(<NotificationsTab />) },
+    { id: 'platform', label: 'Account', icon: <AnimatedNavIcon name="account" className="h-4 w-4" />, render: () => deferredTab(<PlatformTab readOnly={isAuthMode} />) },
     // Everyone: each switch is the viewer's own.
-    { id: 'experiments', label: 'Experiments', icon: <FlaskConical className="h-4 w-4" />, render: () => deferredTab(<ExperimentsTab />) },
-    ...(isAuthMode && showAdminSettings ? [{ id: 'analytics', label: 'Analytics', icon: <Activity className="h-4 w-4" />, render: () => deferredTab(<AnalyticsTab />) }] : []),
+    { id: 'experiments', label: 'Experiments', icon: <AnimatedNavIcon name="experiments" className="h-4 w-4" />, render: () => deferredTab(<ExperimentsTab />) },
+    ...(isAuthMode && showAdminSettings ? [{ id: 'analytics', label: 'Analytics', icon: <AnimatedNavIcon name="analytics" className="h-4 w-4" />, render: () => deferredTab(<AnalyticsTab />) }] : []),
+    // Its people are offered when sharing and mentioning (auth mode), and it can
+    // create agents' own apps (every mode).
+    ...(showAdminSettings ? [{ id: 'team-directory', label: 'Team Directory', icon: <AnimatedNavIcon name="directory" className="h-4 w-4" />, render: () => deferredTab(<TeamDirectoryTab />) }] : []),
     ...(showAuthAdmin
       ? [
           // Keep local role/ban/remove — Platform Team cannot write Better Auth columns.
@@ -101,7 +105,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           {
             id: 'users',
             label: 'Users',
-            icon: <Users className="h-4 w-4" />,
+            icon: <AnimatedNavIcon name="users" className="h-4 w-4" />,
             render: () => deferredTab(
               <UsersTab
                 platformControlled={hideLocalAuthSections}
@@ -112,65 +116,66 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           {
             id: 'auth',
             label: 'Auth',
-            icon: <Shield className="h-4 w-4" />,
+            icon: <AnimatedNavIcon name="shield" className="h-4 w-4" />,
             render: () => deferredTab(<AuthTab hideLocalAuthSections={hideLocalAuthSections} />),
           },
         ]
       : []),
-    ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => deferredTab(<AdminTab />) }] : []),
+    ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <AnimatedNavIcon name="shield" className="h-4 w-4" />, render: () => deferredTab(<AdminTab />) }] : []),
   ]
 
   // What agents can do or reach — toggled and curated as needs change.
   const capabilitySections: SettingsPageSection[] = [
     // Pairing mints a session credential against THIS deployment's auth, so
     // the tab only exists in auth mode — a local install has no session to pair.
-    ...(isAuthMode ? [{ id: 'mobile', label: 'Mobile', icon: <Smartphone className="h-4 w-4" />, render: () => deferredTab(<MobileTab />) }] : []),
+    ...(isAuthMode ? [{ id: 'mobile', label: 'Mobile', icon: <AnimatedNavIcon name="mobile" className="h-4 w-4" />, render: () => deferredTab(<MobileTab />) }] : []),
     {
       id: 'connections',
       label: 'Connections',
-      icon: <Blocks className="h-4 w-4" />,
+      icon: <AnimatedNavIcon name="connections" className="h-4 w-4" />,
       render: () => deferredTab(<ConnectionsTab />),
       headerActions: <Suspense fallback={null}><NewIntegrationButton /></Suspense>,
     },
-    { id: 'volumes', label: 'Drives', icon: <FolderOpen className="h-4 w-4" />, render: () => deferredTab(<VolumesTab />) },
+    { id: 'volumes', label: 'Drives', icon: <AnimatedNavIcon name="folder" className="h-4 w-4" />, render: () => deferredTab(<VolumesTab />) },
     // Everyone: each user's vault is their own.
-    { id: 'logins', label: 'Logins', icon: <KeyRound className="h-4 w-4" />, render: () => deferredTab(<LoginsTab />) },
+    { id: 'logins', label: 'Logins', icon: <AnimatedNavIcon name="key" className="h-4 w-4" />, render: () => deferredTab(<LoginsTab />) },
     ...(showAdminSettings
       ? [
-          { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },
-          { id: 'web', label: 'Web Search', icon: <Search className="h-4 w-4" />, render: () => deferredTab(<WebTab />) },
-          { id: 'browser', label: 'Browser Use', icon: <MousePointer2 className="h-4 w-4" />, render: () => deferredTab(<BrowserTab />) },
+          { id: 'skillsets', label: 'Skillsets', icon: <AnimatedNavIcon name="layers" className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },
+          { id: 'web', label: 'Web Search', icon: <AnimatedNavIcon name="search" className="h-4 w-4" />, render: () => deferredTab(<WebTab />) },
+          { id: 'browser', label: 'Browser Use', icon: <AnimatedNavIcon name="pointer" className="h-4 w-4" />, render: () => deferredTab(<BrowserTab />) },
           // Computer Use drives the machine the agent runs on, and its whole
           // UI — permission grants, the recovery link into System Settings — is
           // written for that machine being yours. `isElectron()` stays true in
           // cloud mode while execution moves to the deployment, so the tab would
-          // describe your laptop and govern someone else's.
-          ...(canUseHostFeatures() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
-          { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => deferredTab(<CapabilitiesTab />) },
+          // describe your laptop and govern someone else's. A sandboxed build
+          // has no computer use to govern.
+          ...(offersComputerUseSettings() ? [{ id: 'computer-use', label: 'Computer Use', icon: <AnimatedNavIcon name="mouse" className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
+          { id: 'capabilities', label: 'Subagents', icon: <AnimatedNavIcon name="workflow" className="h-4 w-4" />, render: () => deferredTab(<CapabilitiesTab />) },
         ]
       : []),
     // Everyone: what every agent is told is visible to all; the editor is
     // read-only for non-admins.
-    { id: 'global-guidance', label: 'Global Guidance', icon: <ScrollText className="h-4 w-4" />, render: () => deferredTab(<GlobalInstructionsTab />) },
+    { id: 'global-guidance', label: 'Global Guidance', icon: <AnimatedNavIcon name="guidance" className="h-4 w-4" />, render: () => deferredTab(<GlobalInstructionsTab />) },
     // Everyone: the tab carries each person's own read-aloud voice; the
     // provider and key sections inside it are admin-gated.
-    { id: 'llm', label: 'Model Providers', icon: <Sparkle className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },
-    { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => deferredTab(<VoiceTab />) },
+    { id: 'llm', label: 'Model Providers', icon: <AnimatedNavIcon name="sparkle" className="h-4 w-4" />, render: () => deferredTab(<LlmTab />) },
+    { id: 'voice', label: 'Voice', icon: <AnimatedNavIcon name="mic" className="h-4 w-4" />, render: () => deferredTab(<VoiceTab />) },
   ]
 
   // The plumbing agents run on — providers and runtime, mostly set-once.
   const infrastructureSections: SettingsPageSection[] = showAdminSettings
     ? [
 
-        { id: 'account-provider', label: 'Account Provider', icon: <Route className="h-4 w-4" />, render: () => deferredTab(<AccountProviderTab />) },
-        { id: 'runtime', label: 'Container Runtime', icon: <Cuboid className="h-4 w-4" />, render: () => deferredTab(<RuntimeTab />) },
+        { id: 'account-provider', label: 'Account Provider', icon: <AnimatedNavIcon name="route" className="h-4 w-4" />, render: () => deferredTab(<AccountProviderTab />) },
+        { id: 'runtime', label: 'Container Runtime', icon: <AnimatedNavIcon name="runtime" className="h-4 w-4" />, render: () => deferredTab(<RuntimeTab />) },
       ]
     : []
 
   // Read-only observability — places you check, not configure.
   const activitySections: SettingsPageSection[] = [
-    { id: 'usage', label: 'Usage', icon: <BarChart3 className="h-4 w-4" />, render: () => deferredTab(<UsageTab />) },
-    ...(showAdminSettings ? [{ id: 'audit-log', label: 'Audit Log', icon: <Logs className="h-4 w-4" />, render: () => deferredTab(<AuditLogTab />) }] : []),
+    { id: 'usage', label: 'Usage', icon: <AnimatedNavIcon name="usage" className="h-4 w-4" />, render: () => deferredTab(<UsageTab />) },
+    ...(showAdminSettings ? [{ id: 'audit-log', label: 'Audit Log', icon: <AnimatedNavIcon name="logs" className="h-4 w-4" />, render: () => deferredTab(<AuditLogTab />) }] : []),
   ]
 
   // Empty groups (e.g. Infrastructure for non-admin auth users) would render

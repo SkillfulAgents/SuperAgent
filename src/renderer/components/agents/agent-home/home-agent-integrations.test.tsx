@@ -7,6 +7,15 @@ import { HomeAgentIntegrations } from './home-agent-integrations'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ChatIntegration, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
+// These tests cover the section's content; the collapsed-by-default row itself
+// is covered in home-collapsible.test.tsx, so here it always renders open.
+vi.mock('./home-collapsible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./home-collapsible')>()),
+  HomeCollapsible: ({ title, children }: { title: string; children: import('react').ReactNode }) => (
+    <div><span>{title}</span>{children}</div>
+  ),
+}))
+
 // The list route enriches each row with the live transport state.
 type ListItem = ChatIntegration & { connected: boolean }
 
@@ -62,6 +71,7 @@ const INTEGRATION: ListItem = {
   createdByUserId: null,
   createdAt: NOW,
   updatedAt: NOW,
+  version: 0,
   connected: true,
 }
 

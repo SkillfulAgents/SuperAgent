@@ -6,7 +6,7 @@ import { Loader2 } from "lucide-react"
 import { cn } from "@shared/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-control text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
@@ -23,9 +23,9 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-9 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        xs: "h-7 rounded-md px-2.5 text-xs",
-        lg: "h-10 rounded-md px-8",
+        sm: "h-8 px-3 text-xs",
+        xs: "h-7 px-2.5 text-xs",
+        lg: "h-10 px-8",
         icon: "h-9 w-9",
       },
     },
@@ -57,6 +57,8 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
+        // Its variant, for a surface to restyle its buttons by kind (Agent Home's glass: globals.css).
+        data-variant={variant ?? 'default'}
         {...props}
         disabled={loading || props.disabled}
       >

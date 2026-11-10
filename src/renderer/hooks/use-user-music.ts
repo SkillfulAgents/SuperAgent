@@ -1,6 +1,8 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { userMusic, type UserMusicState } from '@renderer/lib/voice/shared/speech/user-music'
 import { getPlatform, isElectron } from '@renderer/lib/env'
+import { clientFacts } from '@renderer/lib/facts'
+import { runsInAppSandbox } from '@shared/lib/facts/capabilities'
 import { resolveUserMusic } from '@shared/lib/voice/tts-preferences'
 import { useUserSettings } from './use-user-settings'
 
@@ -9,10 +11,11 @@ import { useUserSettings } from './use-user-settings'
  * player. That player runs on the computer the window runs on and is heard
  * there, whichever Superagent the window drives, so this is a question about
  * the window itself (`isElectron()`), not about the agents' machine
- * (`canUseHostFeatures()`). Windows has no backend yet.
+ * (`canUseHostFeatures()`). Windows has no backend yet, and the App Sandbox
+ * may not reach another app's player.
  */
 export function userMusicSupported(): boolean {
-  return isElectron() && getPlatform() !== 'win32'
+  return isElectron() && getPlatform() !== 'win32' && !runsInAppSandbox(clientFacts())
 }
 
 /** The person's own preference, as voice mode applies it. */

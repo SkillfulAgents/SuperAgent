@@ -313,7 +313,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                     data-testid={`x-agent-permissions-popover-${slug}`}
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <span className="whitespace-nowrap text-xs font-medium">Read sessions</span>
+                      <span className="whitespace-nowrap text-xs font-medium">Read sessions and files</span>
                       <PolicyDecisionDropdown
                         value={getDecision('read', slug)}
                         onChange={handleChange('read', slug)}
@@ -321,7 +321,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                       />
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="whitespace-nowrap text-xs font-medium">Send messages</span>
+                      <span className="whitespace-nowrap text-xs font-medium">Send messages and files</span>
                       <PolicyDecisionDropdown
                         value={getDecision('invoke', slug)}
                         onChange={handleChange('invoke', slug)}
@@ -373,7 +373,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       {isAuthMode && !rolesReady ? (
         <p className="text-sm text-muted-foreground">Checking permissions...</p>
       ) : !canManage ? (
-        <div className="rounded-xl border bg-background px-6 py-10 text-center" data-testid="x-agent-permissions-no-permission">
+        <div className="rounded-card border bg-background px-6 py-10 text-center" data-testid="x-agent-permissions-no-permission">
           <p className="text-sm font-medium">Owner access required</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
             Only agent owners can view and manage agent-to-agent connections.
@@ -386,7 +386,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       ) : (
         <div className="space-y-6">
           {error && (
-            <div className="flex items-center gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
+            <div className="flex items-center gap-2 rounded-item bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
               <AlertCircle className="h-3.5 w-3.5 shrink-0" />
               {error}
             </div>
@@ -395,7 +395,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
           {/* Global toggles (apply to every agent in the workspace) */}
           <div className="space-y-2">
             <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
-            <div className="rounded-md border p-3">
+            <div className="rounded-card border p-3">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
                   Allow this agent to see a list of all other agents
@@ -407,10 +407,10 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 />
               </div>
             </div>
-            <div className="rounded-md border p-3" data-testid="x-agent-policy-global-read">
+            <div className="rounded-card border p-3" data-testid="x-agent-policy-global-read">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to read sessions of all other agents
+                  Allow this agent to read sessions and files of all other agents
                 </span>
                 <PolicyDecisionDropdown
                   value={globalRead}
@@ -419,10 +419,10 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 />
               </div>
             </div>
-            <div className="rounded-md border p-3" data-testid="x-agent-policy-global-invoke">
+            <div className="rounded-card border p-3" data-testid="x-agent-policy-global-invoke">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to send messages to all other agents
+                  Allow this agent to send messages and files to all other agents
                 </span>
                 <PolicyDecisionDropdown
                   value={globalInvoke}
@@ -479,7 +479,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 {connectedAgents.length > 0 ? (
                   <IntegrationList>{connectedAgents.map(renderAgentRow)}</IntegrationList>
                 ) : (
-                  <div className="rounded-xl border border-dashed bg-background px-4 py-6 text-center">
+                  <div className="rounded-card border border-dashed bg-background px-4 py-6 text-center">
                     <p className="text-xs text-muted-foreground">
                       {filter
                         ? 'No connected agents match the filter.'

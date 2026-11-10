@@ -5,7 +5,11 @@
 # Stage layout: `base` holds the agent's tool environment (apt packages,
 # runtimes, browser) and is shared by `builder` (dev deps + tsc, discarded)
 # and `runtime` (prod deps + dist, published).
-FROM ubuntu:22.04 AS base
+#
+# Pinned by digest: when Docker Hub moves the tag, every layer's cache key
+# changes, so the image rebuilds from scratch and every user re-pulls all of
+# it. Dependabot (.github/dependabot.yml) proposes the new digest as a PR.
+FROM ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11 AS base
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -146,7 +150,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 # The npm package ships the CLI for every platform (~100MB); its postinstall
 # links agent-browser straight to this machine's binary, so the others are
 # dead weight. Pruned only when the link is that direct one.
-RUN npm install -g agent-browser@0.39.1 && \
+RUN npm install -g agent-browser@0.41.2 && \
     keep="$(readlink -f "$(command -v agent-browser)")" && \
     case "$keep" in \
       */agent-browser-linux-*) \
@@ -311,6 +315,13 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-current
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
+# Where a download the page starts (a clicked attachment link, a blob the page
+# saves) lands. The headless shell drops such downloads unless told where to
+# save them — it does not read the download dir server.ts writes into the
+# profile's Preferences. agent-browser applies this path only to a Chrome it
+# launches; a host or Browserbase browser (--cdp) gets its own dir from
+# server.ts (setDownloadBehaviorViaCDP).
+ENV AGENT_BROWSER_DOWNLOAD_PATH=/workspace/downloads
 # agent-browser 0.33.1+ shuts its daemon (and Chrome) down after an hour
 # without a command. The browser's lifecycle is ours (browser_open/close, the
 # session lock, the live view), so never time out.
@@ -320,17 +331,23 @@ ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=0
 # included. Off until the harness supports it (SUP-1265 §9); execBrowser also
 # strips any announcement that gets through.
 ENV AGENT_BROWSER_NO_WEBMCP=1
+# agent-browser 0.41.2+ checks the browser's version against Chrome's release
+# feed: a Browser.getVersion call after every command, plus a fetch of
+# chromereleases.googleblog.com on the first one. A browser behind stable gets
+# a warning ("run `agent-browser install`") on stderr, which reaches the agent
+# whenever that command fails. The Chromium here is pinned with the image
+# (Playwright, above) and a host or Browserbase browser is not ours to update.
+ENV AGENT_BROWSER_NO_VERSION_CHECK=1
 ENV DISABLE_AUTOUPDATER=1
 # Keep bun's package cache on the persistent workspace mount. The default
 # ($HOME/.bun/install/cache) lives in the container's writable layer, which is
 # discarded on every restart (each start is `rm -f` + a fresh `run`), so any
 # dashboard dependency install after a wake re-downloaded every package.
 ENV BUN_INSTALL_CACHE_DIR=/workspace/.bun-cache
-# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes it at
-# `docker run` only for providers whose endpoint expands deferred tools; for
-# the rest it must stay unset so the CLI applies its own guard (it disables
-# tool search for base URLs that aren't first-party Anthropic hosts). An image
-# default would make "unset" impossible to express.
+# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes 'true' or
+# 'false' for every session, depending on whether the provider's endpoint
+# expands deferred tools (BaseLlmProvider.toolSearchEnv); unset would read as
+# on behind any custom base URL (CLI 2.1.304+).
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

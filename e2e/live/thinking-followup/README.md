@@ -5,7 +5,8 @@ persisted transcript, and Chromium UI. No mock runtime or intercepted responses.
 This makes billable LLM calls (a warm-up, a diagnostic, and a status follow-up).
 
 Prerequisites: Docker, installed workspace dependencies and Playwright Chromium,
-and a source install with an Anthropic key in `settings.json`. Pass its directory
+and a source install with an Anthropic key in its settings (its database, or
+`settings.json` for an install that has not imported it yet). Pass its directory
 explicitly with the required `--source=/path/to/install` argument.
 Only the key is copied into a private temporary directory, with a fresh database.
 The source install is read-only. The probe removes its own container and temporary

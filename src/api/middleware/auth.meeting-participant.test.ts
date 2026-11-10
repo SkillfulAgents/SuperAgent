@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 // A meeting bot's page carries the participant cookie instead of a session.
 // These tests pin what that credential may and may not reach.
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => true }))
-const mockGetSession = vi.fn(async () => null)
+const mockGetSession = vi.fn(async () => ({ response: null, headers: new Headers() }))
 vi.mock('@shared/lib/auth/index', () => ({ getAuth: () => ({ api: { getSession: mockGetSession } }) }))
 const participant = vi.hoisted(() => ({ value: null as null | { meetingId: string; agentSlug: string; sessionId: string; userId: string }, cookie: '' }))
 vi.mock('@shared/lib/meeting-integrations/participant-credential', async (importOriginal) => ({
@@ -20,7 +20,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
 }))
 vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
-vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({ agentCatalog: { resolve: async (slug: string) => slug === 'missing' ? null : slug } }))
+vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({ agentCatalog: { resolveRecord: async (slug: string) => slug === 'missing' ? null : { slug } } }))
 
 import { Authenticated, AgentAdmin, AgentRead, AgentUser, EntityAgentRole, IsAdmin, OwnsAccount, ResolveAgent, getAuthorizedAgentRole, getMeetingParticipant } from './auth'
 
@@ -43,6 +43,7 @@ function app() {
   api.patch('/api/agents/:id/sessions/:sessionId', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
   api.post('/api/voice/live/agents/:id/session', ResolveAgent(), AgentUser(), c => c.json(me(c)))
   api.get('/api/voice/configured', c => c.json(me(c)))
+  api.post('/api/voice/agents/:id/sessions/:sessionId/transcripts', ResolveAgent(), AgentUser(), c => c.json({ ok: true }))
   // Routes under the same prefixes that grant by account rather than agent role.
   api.get('/api/agents/:id/sessions/:sessionId/browser-credentials', ResolveAgent(), IsAdmin(), c => c.json({ ok: true }))
   api.get('/api/agents/:id/sessions/:sessionId/tasks/:taskId', ResolveAgent(), TaskRole('viewer'), c => c.json({ ok: true }))
@@ -65,6 +66,12 @@ const cookie = { headers: { cookie: 'gamut_meeting_participant=m1.tok' } }
 describe('meeting participant credential through the auth middlewares', () => {
   beforeEach(() => { vi.clearAllMocks(); attributed.length = 0; participant.value = scope; participant.cookie = '' })
 
+  it('confines shared voice transcript access to the meeting agent and session', async () => {
+    expect((await app().request('/api/voice/agents/research/sessions/s1/transcripts', { ...cookie, method: 'POST' })).status).toBe(200)
+    expect((await app().request('/api/voice/agents/research/sessions/s2/transcripts', { ...cookie, method: 'POST' })).status).toBe(403)
+    expect((await app().request('/api/voice/agents/another/sessions/s1/transcripts', { ...cookie, method: 'POST' })).status).toBe(403)
+  })
+
   it('stands in for the meeting owner on the voice routes the page needs, with the owner attributed', async () => {
     const res = await app().request('/api/voice/configured', cookie)
     expect(res.status).toBe(200)
@@ -74,7 +81,7 @@ describe('meeting participant credential through the auth middlewares', () => {
     expect((await app().request('/api/voice/live/agents/research/session', { method: 'POST' })).status).toBe(200)
   })
   it('is only consulted after the session check fails', async () => {
-    mockGetSession.mockResolvedValueOnce({ user: { id: 'bob' }, session: {} } as never)
+    mockGetSession.mockResolvedValueOnce({ response: { user: { id: 'bob' }, session: {} }, headers: new Headers() } as never)
     const res = await app().request('/api/me')
     expect(await res.json()).toEqual({ user: 'bob' })
     expect(participant.cookie).toBe('')

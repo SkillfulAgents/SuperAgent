@@ -13,13 +13,14 @@ import { getAgentIntegration } from '../services/agent-integration-service'
 import { agentRegistry } from '../agent-actor'
 import { sanitizeUploadFilename } from '../utils/path-safety'
 import { appendAttachedFiles } from '../utils/attached-files'
+import { heicUploadAsJpeg } from '@/api/routes/heic-jpeg'
 import { parseEmailIntegrationConfig, emailMessageSchema, emailSendSchema, type EmailMessage, type EmailSend } from './config-schema'
 import { EmailPolicyError, emailSessionAllowed, agentUserEmails, emailAddress, inboundAllowed, recipientAllowed, wasContacted } from './policy'
 
 /** Provider-independent thread routing, admission, input framing and final-only delivery. */
 export abstract class EmailAgentIntegration extends AgentIntegration {
   constructor(protected readonly record: AgentIntegrationRecord) { super() }
-  protected abstract isAvailable(): boolean
+  protected abstract isAvailable(): Promise<boolean>
   protected abstract getMessage(id: string): Promise<EmailMessage>
   protected abstract getThread(id: string): Promise<EmailMessage[]>
   protected abstract submit(input: EmailSend): Promise<EmailMessage>
@@ -33,7 +34,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   private async directory() {
     const [workspace, history] = await Promise.all([workspaceEmailContacts(), this.recentHistory()])
     const current = await getAgentIntegration(this.record.id)
-    if (!current || current.status !== 'active' || !this.isAvailable()) throw new EmailPolicyError('Email integration is not active')
+    if (!current || current.status !== 'active' || !(await this.isAvailable())) throw new EmailPolicyError('Email integration is not active')
     const config = parseEmailIntegrationConfig(current.config)
     const members = await agentUserEmails(current.agentSlug)
     return emailDirectory(config, members, workspace, history)
@@ -45,7 +46,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   }
   sessionPolicy = emailSessionPolicy
   async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
-    if (!this.isAvailable()) return false
+    if (!(await this.isAvailable())) return false
     let admission = this.admissions.get(context.externalId)
     if (!admission || (context.replyTarget?.messageId && context.replyTarget.messageId !== admission.message.id)) {
       const history = await this.getThread(context.externalId)
@@ -60,7 +61,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   }
   async authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean> {
     const current = await getAgentIntegration(context.integration.id)
-    if (!current || current.status !== 'active' || !this.isAvailable()) return false
+    if (!current || current.status !== 'active' || !(await this.isAvailable())) return false
     const message = emailMessageSchema.parse(event.payload)
     const config = parseEmailIntegrationConfig(current.config)
     const contacted = wasContacted(message, await this.getThread(message.threadId))
@@ -94,8 +95,9 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     for (const file of message.attachments) {
       if (file.size > 5 * 1024 * 1024) throw new Error('Email attachment exceeds limit')
       const bytes = await this.downloadAttachment(file.id)
-      const path = `uploads/email-${message.id}-${file.id}-${sanitizeUploadFilename(file.filename)}`
-      await context.actor.files.putDoc(path, bytes)
+      const jpeg = await heicUploadAsJpeg(file.filename, bytes)
+      const path = `uploads/email-${message.id}-${file.id}-${sanitizeUploadFilename(jpeg?.name ?? file.filename)}`
+      await context.actor.files.putDoc(path, jpeg?.data ?? bytes)
       paths.push(`/workspace/${path}`)
     }
     const text = message.text ?? message.html?.replace(/<[^>]*>/g, ' ') ?? ''
@@ -114,7 +116,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   /** A send's To and Cc as the gateway would resolve them, after the current access policy. */
   private async addressed(request: EmailSend): Promise<{ to: string[]; cc: string[]; members: Set<string> }> {
     const current = await getAgentIntegration(this.record.id)
-    if (!current || current.status !== 'active' || !this.isAvailable()) throw new EmailPolicyError('Email integration is not active')
+    if (!current || current.status !== 'active' || !(await this.isAvailable())) throw new EmailPolicyError('Email integration is not active')
     const config = parseEmailIntegrationConfig(current.config)
     const members = await agentUserEmails(current.agentSlug)
     let to = request.to ?? []
@@ -152,7 +154,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
       if (output.request.autoApproved) return
       const parentId = await this.replyParent(context)
       if (!parentId) return
-      const link = resolveAppLinkContext(context.integration.agentSlug)
+      const link = await resolveAppLinkContext(context.integration.agentSlug)
       // The desktop's own scheme is no use in a mail client, which strips or cannot open it.
       const appUrl = link.isDesktop ? null : withSessionUrl(link, context.sessionId)?.url ?? null
       const { text, html } = renderRequestEmail(output.request, appUrl)

@@ -4,6 +4,8 @@ import path from 'path'
 import net from 'net'
 import os from 'os'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { drivesUserChrome } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import {
   ChromeProfileAccessError,
   listChromeProfiles,
@@ -234,7 +236,11 @@ export class ChromeProvider implements HostBrowserProvider {
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
-  detect(): HostBrowserProviderStatus {
+  async detect(): Promise<HostBrowserProviderStatus> {
+    // Unavailable rather than absent, so Settings says why.
+    if (!drivesUserChrome(getServerFacts())) {
+      return { id: this.id, name: this.name, available: false, reason: 'Not available in the Mac App Store edition' }
+    }
     const candidate = BROWSER_CANDIDATES[process.platform]
     if (!candidate) {
       return { id: this.id, name: this.name, available: false, reason: 'Unsupported platform' }
@@ -270,7 +276,7 @@ export class ChromeProvider implements HostBrowserProvider {
       await this.stop(instanceId)
     }
 
-    const status = this.detect()
+    const status = await this.detect()
     if (!status.available) {
       const err = new Error(`No supported browser detected: ${status.reason || 'unknown reason'}`)
       captureException(err, {

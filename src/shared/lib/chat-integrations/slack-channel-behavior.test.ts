@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, reactionsForChat, type SlackMessageRoutingParams } from './slack-connector'
+import { describe, it, expect, vi } from 'vitest'
+import { routeSlackMessage, resolveSlackChannel, fitSlackTables, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, slackAnswerFromAction, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -503,27 +503,236 @@ describe('touchAndCapMap', () => {
   })
 })
 
-// ── reactionsForChat (thinking-reaction sweep on clear) ──────────────────
-// The working indicator is a :thinking_face: reaction keyed on the user's last
-// message ts. If a second message lands mid-turn the ts changes and a second
-// reaction is added; clearing must sweep EVERY reaction for the chat, not just
-// the latest ts, or the first one is orphaned until disconnect.
+// ── Status line ──────────────────────────────────────────────────────────
 
-describe('reactionsForChat', () => {
-  it('returns all tracked reactions for the chat, extracting the ts', () => {
-    const set = new Set(['C123:1000.1', 'C123:1000.2', 'C999:1000.3'])
-    expect(reactionsForChat(set, 'C123')).toEqual([
-      { key: 'C123:1000.1', ts: '1000.1' },
-      { key: 'C123:1000.2', ts: '1000.2' },
+describe('statusNeedsSend', () => {
+  const shown = { anchor: '100.1', label: 'is working…', sentAt: 0, shown: true }
+  it.each([
+    ['nothing recorded', undefined, 'is working…', 0, true],
+    ['label changed', shown, 'is thinking…', 1, true],
+    ['refresh due', shown, 'is working…', SLACK_STATUS_REFRESH_MS, true],
+    ['just under the refresh', shown, 'is working…', SLACK_STATUS_REFRESH_MS - 1, false],
+  ])('%s', (_name, status, label, now, expected) => {
+    expect(statusNeedsSend(status, label, now)).toBe(expected)
+  })
+})
+
+describe('SlackConnector status line', () => {
+  function makeConnector() {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const setStatus = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = {
+      client: {
+        assistant: { threads: { setStatus } },
+        chat: { postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '200.1' }) },
+      },
+    }
+    ;(connector as any).lastUserMessageTs.set('D1', '100.1')
+    return { connector, setStatus }
+  }
+
+  it('a clear issued while a set is in flight leaves no line', async () => {
+    const { connector, setStatus } = makeConnector()
+    let finishSet!: () => void
+    setStatus.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSet = resolve }))
+
+    const start = connector.startWorking('D1', 'thinking')
+    const stop = connector.stopWorking('D1')
+    await vi.waitFor(() => expect(finishSet).toBeDefined())
+    finishSet()
+    await Promise.all([start, stop])
+
+    expect(setStatus.mock.calls.map(([args]) => args.status)).toEqual(['is thinking…', ''])
+    expect(setStatus).toHaveBeenLastCalledWith({ channel_id: 'D1', thread_ts: '100.1', status: '' })
+  })
+
+  it('re-sends the line after a post, and still clears it at the end', async () => {
+    const { connector, setStatus } = makeConnector()
+    await connector.startWorking('D1', 'working')
+    await connector.sendMessage('D1', { text: 'tool pill' })
+    await vi.waitFor(() => expect((connector as any).statusWrites.size).toBe(0))
+    await connector.startWorking('D1', 'working')
+    await connector.sendMessage('D1', { text: 'another pill' })
+    await connector.stopWorking('D1')
+
+    expect(setStatus.mock.calls.map(([args]) => args.status)).toEqual(['is working…', 'is working…', ''])
+  })
+
+  it('does not pile up starts behind a failing write', async () => {
+    const { connector, setStatus } = makeConnector()
+    let failSet!: (err: Error) => void
+    setStatus.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failSet = reject }))
+
+    const first = connector.startWorking('D1', 'working')
+    const second = connector.startWorking('D1', 'working')
+    const stop = connector.stopWorking('D1')
+    await vi.waitFor(() => expect(failSet).toBeDefined())
+    failSet(new Error('timeout'))
+    await Promise.all([first, second, stop])
+
+    expect(setStatus).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── Standard markdown text ───────────────────────────────────────────────
+
+describe('fitSlackTables', () => {
+  it('keeps a table Slack draws whole as written', () => {
+    const table = '| A | B |\n|---|---|\n| 1 | 2 |'
+    expect(fitSlackTables(`Intro\n\n${table}\n\nEnd`)).toBe(`Intro\n\n${table}\n\nEnd`)
+  })
+
+  it('turns a table Slack would cut monospace, every row and cell kept', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => `${i} | x`)
+    const out = fitSlackTables(['| A | B |', '|---|---|', '| y | z | extra |', ...rows].join('\n'))
+    expect(out).toMatch(/^```\nA +B\n/)
+    expect(out).toContain('extra')
+    expect(out).toContain('99 ')
+    expect(out.slice(3, -3)).not.toContain('|')
+  })
+})
+
+describe('SlackConnector text', () => {
+  const rejected = Object.assign(new Error('An API error occurred: invalid_blocks'), {
+    code: 'slack_webapi_platform_error', data: { ok: false, error: 'invalid_blocks' },
+  })
+
+  function makeConnector() {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '200.1' })
+    const update = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = { client: { chat: { postMessage, update }, assistant: { threads: { setStatus: vi.fn() } } } }
+    return { connector, postMessage, update }
+  }
+
+  it('posts an answer up to 12,000 chars as one markdown block, its table for Slack to draw and its cells in the text', async () => {
+    const { connector, postMessage } = makeConnector()
+    const answer = '## Result\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n' + 'x'.repeat(5000)
+    await connector.sendMessage('D1', { text: answer })
+
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const body = postMessage.mock.calls[0][0]
+    expect(body.blocks).toEqual([{ type: 'markdown', text: answer }])
+    expect(body.text).toContain('*Result*')
+    expect(body.text).toContain('```\nA  B')
+  })
+
+  it('caps the notification text at 12,000 chars when monospace padding grows it', async () => {
+    const { connector, postMessage } = makeConnector()
+    const rows = Array.from({ length: 98 }, (_, i) => `| ${i} | x |`).join('\n')
+    await connector.sendMessage('D1', { text: `| A | B |\n|---|---|\n| 0 | ${'y'.repeat(400)} |\n${rows}` })
+
+    expect(postMessage.mock.calls[0][0].text.length).toBeLessThanOrEqual(12000)
+  })
+
+  it('posts as converted text when Slack refuses the markdown blocks', async () => {
+    const { connector, postMessage } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    await connector.sendMessage('D1', { text: '## Title\n\n**bold**' })
+
+    expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ text: '*Title*\n\n*bold*', mrkdwn: true }))
+  })
+
+  it('a streamed draft Slack refuses stays within one message once its tables are padded', async () => {
+    const { connector, postMessage } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    const rows = Array.from({ length: 60 }, (_, i) => `| ${i} | x |`).join('\n')
+    await connector.sendStreamingUpdate('D1', `| A | B |\n|---|---|\n| 0 | ${'y'.repeat(1000)} |\n${rows}`)
+
+    expect(postMessage.mock.calls[1][0].text.length).toBeLessThanOrEqual(3000)
+  })
+
+  it('a first streamed post Slack refuses becomes one converted message that stays converted', async () => {
+    const { connector, postMessage, update } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    const long = '## Start\n\n' + 'a'.repeat(2000) + '\n\n' + 'b'.repeat(2000)
+    const ts = await connector.sendStreamingUpdate('D1', long)
+    await connector.sendStreamingUpdate('D1', long + ' more', ts)
+
+    expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(postMessage.mock.calls[1][0].text).toMatch(/full response will appear when done\)$/)
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update.mock.calls[0][0]).toEqual(expect.objectContaining({ ts, text: expect.stringContaining('*Start*') }))
+  })
+
+  it('a final edit Slack refuses finishes as converted text, overflow included', async () => {
+    const { connector, postMessage, update } = makeConnector()
+    update.mockRejectedValueOnce(rejected)
+    await connector.finalizeStreamingMessage('D1', '200.1', '## Done\n\n' + 'a'.repeat(2500) + '\n\n' + 'b'.repeat(2500))
+
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ ts: '200.1', text: expect.stringContaining('*Done*') }))
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls[0][0]).toEqual(expect.objectContaining({ text: 'b'.repeat(2500), mrkdwn: true }))
+    expect(postMessage.mock.calls[0][0].blocks).toBeUndefined()
+  })
+
+  it('also sends a thread reply to the channel, on the converted fallback too', async () => {
+    const { connector, postMessage } = makeConnector()
+    await connector.sendMessage('C1|100.1', { text: 'Takeaway', alsoSendToChannel: true })
+    postMessage.mockRejectedValueOnce(rejected)
+    await connector.sendMessage('C1|100.1', { text: '## Takeaway', alsoSendToChannel: true })
+    await connector.sendMessage('C1|100.1', { text: 'Thread only' })
+
+    expect(postMessage.mock.calls.map(([args]) => [args.thread_ts, args.reply_broadcast])).toEqual([
+      ['100.1', true], ['100.1', true], ['100.1', true], ['100.1', undefined],
     ])
   })
 
-  it('does not match a chat whose id is a prefix of another (colon-delimited)', () => {
-    const set = new Set(['C12:1000.1', 'C123:1000.2'])
-    expect(reactionsForChat(set, 'C12').map((r) => r.ts)).toEqual(['1000.1'])
+  it('a table followed by prose keeps the closing fence on its own line', async () => {
+    const { connector, postMessage } = makeConnector()
+    await connector.sendMessage('D1', { text: '| A | B |\n|---|---|\n| 1 | 2 |\nNext paragraph' })
+
+    expect(postMessage.mock.calls[0][0].text).toMatch(/```\nNext paragraph$/)
   })
 
-  it('returns empty when nothing is tracked for the chat', () => {
-    expect(reactionsForChat(new Set(['C999:1000.1']), 'C123')).toEqual([])
+  it('a streamed message Slack refuses finishes as converted text', async () => {
+    const { connector, update } = makeConnector()
+    update.mockRejectedValueOnce(rejected)
+    await connector.sendStreamingUpdate('D1', '## Many headings', '200.1')
+    await connector.sendStreamingUpdate('D1', '## Many headings, more', '200.1')
+    await connector.finalizeStreamingMessage('D1', '200.1', '## Many headings, done')
+
+    expect(update.mock.calls.map(([args]) => args.blocks ? 'markdown' : args.text)).toEqual([
+      'markdown', '*Many headings*', '*Many headings, more*', '*Many headings, done*',
+    ])
+  })
+})
+
+describe('SlackConnector question cards', () => {
+  async function posted(event: Parameters<SlackConnector['sendUserRequestCard']>[1]) {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '200.1' })
+    ;(connector as any).app = { client: { chat: { postMessage } } }
+    await connector.sendUserRequestCard('D1', event)
+    return postMessage.mock.calls[0][0].blocks as any[]
+  }
+  const controls = async (event: Parameters<typeof posted>[0]) =>
+    (await posted(event)).flatMap((b) => b.type === 'actions' ? b.elements.map((e: any) => e.type) : [b.type])
+  const options = [{ label: 'A' }, { label: 'B' }]
+
+  it('gives a single-select card option buttons and an Other field', async () => {
+    expect(await controls({ type: 'question_request', toolUseId: 'q1', questions: [{ question: 'One?', options }] }))
+      .toEqual(['section', 'button', 'button', 'input'])
+  })
+
+  it('gives a multi-select card checkboxes, an Other field and Submit', async () => {
+    expect(await controls({ type: 'question_request', toolUseId: 'q1', questions: [{ question: 'Some?', options, multiSelect: true }] }))
+      .toEqual(['section', 'checkboxes', 'input', 'button'])
+  })
+
+  it('answers through the controls it rendered', async () => {
+    const single = await posted({ type: 'question_request', toolUseId: 'q1', questions: [{ question: 'One?', options }] })
+    const other = single.find((b) => b.type === 'input').element
+    expect(slackAnswerFromAction({ action_id: other.action_id, value: 'typed' }, single)).toMatchObject({ t: 'q1', q: 'One?', a: 'typed' })
+
+    const multi = await posted({ type: 'question_request', toolUseId: 'q2', questions: [{ question: 'Some?', options, multiSelect: true }] })
+    const [pick, submit] = multi.filter((b) => b.type === 'actions').map((b) => b.elements[0])
+    const state = { p: { [pick.action_id]: { type: 'checkboxes', selected_options: ['A', 'B'].map((value) => ({ text: { type: 'plain_text' as const, text: value }, value })) } } }
+    expect(slackAnswerFromAction(submit, multi, state)).toMatchObject({ t: 'q2', q: 'Some?', a: 'A, B' })
+  })
+
+  it('keeps an approval card to Allow and Deny, with no field to type a decision in', async () => {
+    expect(await controls({ type: 'question_request', toolUseId: 'review:r1:agent', questions: [{ question: 'Allow?', options }] }))
+      .toEqual(['section', 'button', 'button'])
   })
 })

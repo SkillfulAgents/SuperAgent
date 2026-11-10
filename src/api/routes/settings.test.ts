@@ -1,7 +1,10 @@
 import * as llmProviders from '@shared/lib/llm-provider'
 import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
-vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(async () => []) }))
-vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
+import { listConnectionsWithSelection } from '@shared/lib/llm-provider/connections'
+vi.mock('@shared/lib/llm-provider/connections', () => ({
+  listConnectionsWithSelection: vi.fn(async () => ({ connections: [], defaultSelection: null, summarizerSelection: null })),
+}))
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => undefined) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -11,8 +14,8 @@ import { Hono } from 'hono'
 
 const mockGetSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
+const interleavedWrites: Array<(settings: Record<string, unknown>) => void> = []
 const mockMutateSettings = vi.fn()
-const mockClearSettingsCache = vi.fn()
 const mockGetAnthropicApiKeyStatus = vi.fn()
 const mockGetComposioApiKeyStatus = vi.fn()
 const mockGetComposioUserId = vi.fn()
@@ -51,17 +54,42 @@ const mockIsAdminMiddleware = vi.hoisted(() =>
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
-  // The PUT route now reads currentSettings via the fail-closed strict loader
-  // map it to the same seeded settings the tests already provide.
   loadSettingsStrict: (...args: unknown[]) => mockGetSettings(...args),
-  updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
+  // The compare-and-set write: the update runs against the seeded settings,
+  // and what it writes is recorded as the one argument of mockUpdateSettings
+  // (which is not called when the update writes nothing).
+  // A queued `interleavedWrites` entry is another writer committing between an
+  // attempt's read and its write: that attempt loses, and the update runs again
+  // on what the other writer left.
+  updateSettings: async (update: (draft: unknown, before: unknown) => void | false) => {
+    for (;;) {
+      const before = structuredClone(mockGetSettings())
+      const draft = structuredClone(before)
+      if (update(draft, before) === false) return { before, after: before, written: false }
+      const other = interleavedWrites.shift()
+      if (other) {
+        const current = structuredClone(mockGetSettings())
+        other(current)
+        mockGetSettings.mockReturnValue(current)
+        continue
+      }
+      mockUpdateSettings(draft)
+      return { before, after: draft, written: true }
+    }
+  },
   mutateSettings: (...args: unknown[]) => mockMutateSettings(...args),
-  clearSettingsCache: (...args: unknown[]) => mockClearSettingsCache(...args),
   getAnthropicApiKeyStatus: (...args: unknown[]) => mockGetAnthropicApiKeyStatus(...args),
   getComposioApiKeyStatus: (...args: unknown[]) => mockGetComposioApiKeyStatus(...args),
   getComposioUserId: (...args: unknown[]) => mockGetComposioUserId(...args),
   getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
+  // The response is built from the settings the request read.
+  composioApiKeyStatusFrom: (...args: unknown[]) => mockGetComposioApiKeyStatus(...args),
+  composioUserIdFrom: (...args: unknown[]) => mockGetComposioUserId(...args),
+  effectiveModelsFrom: (...args: unknown[]) => mockGetEffectiveModels(...args),
+  browserbaseApiKeyStatusFrom: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
+  nangoApiKeyStatusFrom: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
+  accountProviderUserIdFrom: (...args: unknown[]) => mockGetAccountProviderUserId(...args),
   getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
   getGlobalInstructions: () => mockGetSettings().globalInstructions ?? '',
@@ -134,6 +162,7 @@ const mockVoiceValidateKey = vi.fn()
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
     getApiKeyStatus: () => mockVoiceGetApiKeyStatus(id),
+    apiKeyStatusFrom: () => mockVoiceGetApiKeyStatus(id),
     validateKey: (...args: unknown[]) => mockVoiceValidateKey(id, ...args),
   }),
 }))
@@ -273,7 +302,10 @@ function defaultSettings() {
 }
 
 function setupDefaults() {
+  interleavedWrites.length = 0
   mockGetSettings.mockReturnValue(defaultSettings())
+  // A write is what the next read returns.
+  mockUpdateSettings.mockImplementation((next: unknown) => { mockGetSettings.mockReturnValue(next) })
   mockMutateSettings.mockImplementation((mutator: (s: ReturnType<typeof defaultSettings>) => void) => {
     const s = mockGetSettings()
     mutator(s)
@@ -1065,14 +1097,14 @@ describe('settings route', () => {
       })
     })
 
-    it('resets the global agent model to Grok when switching to Platform', async () => {
+    it('resets the global agent model to Sonnet when switching to Platform', async () => {
       const res = await putSettings({ llmProvider: 'platform' })
 
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.models).toEqual({
         summarizerModel: 'haiku',
-        agentModel: 'grok',
+        agentModel: 'sonnet',
         browserModel: 'haiku',
         dashboardBuilderModel: 'opus',
       })
@@ -2359,5 +2391,58 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       expect(mockGetSettings().container.containerRunner).toBe('podman')
     })
+  })
+})
+
+// SUP-1507: each request reads the settings once and builds its answer from that read.
+describe('settings reads per request', () => {
+  let app: ReturnType<typeof createApp>
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupDefaults()
+    app = createApp()
+  })
+
+  function putSettings(body: Record<string, unknown>) {
+    return app.request('http://localhost/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('answers GET / from one settings read', async () => {
+    const res = await app.request('http://localhost/api/settings')
+    expect(res.status).toBe(200)
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    // The Platform key status comes from that read's stored connection.
+    expect((await res.json()).apiKeyStatus.platform).toEqual({ isConfigured: true, source: 'settings' })
+  })
+
+  it('answers the model picker from one settings read, which the connection listing reuses', async () => {
+    vi.mocked(listConnectionsWithSelection).mockResolvedValueOnce({
+      connections: [], defaultSelection: { llmProviderId: 'legacy-anthropic', model: 'opus' }, summarizerSelection: null,
+    })
+    const res = await app.request('http://localhost/api/settings/models')
+    expect(res.status).toBe(200)
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    expect(listConnectionsWithSelection).toHaveBeenCalledWith(expect.anything(), mockGetSettings.mock.results[0]?.value)
+    const body = await res.json()
+    expect(body.defaultSelection).toEqual({ llmProviderId: 'legacy-anthropic', model: 'opus' })
+    expect(body.models.agentModel).toBe('opus')
+  })
+
+  it('answers a PUT that syncs providers with the settings the sync left, without reading them again', async () => {
+    // A field only the sync's settings carry shows which settings the answer came from.
+    const synced = { ...defaultSettings(), llmProvider: 'openrouter', customEnvVars: { FROM_SYNC: 'yes' } }
+    vi.mocked(syncProviderSettings).mockResolvedValueOnce(synced as never)
+    const res = await putSettings({ llmProvider: 'openrouter' })
+    expect(res.status).toBe(200)
+    expect(syncProviderSettings).toHaveBeenCalledOnce()
+    // One read: the compare-and-set write's own.
+    expect(mockGetSettings).toHaveBeenCalledTimes(1)
+    const body = await res.json()
+    expect(body.llmProvider).toBe('openrouter')
+    expect(body.customEnvVars).toEqual({ FROM_SYNC: 'yes' })
   })
 })

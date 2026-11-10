@@ -2,11 +2,12 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { appState } from '@shared/lib/app-state'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, auditLog, user } from '@shared/lib/db/schema'
 import type { LoginContext } from '@shared/lib/tools/request-login/login-request'
-import { resetVaultKeyCache } from './vault-crypto'
+import { installTestKeyManager, uninstallKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
 import { loginFillAccountSchema } from '../../../../agent-container/src/login-schema'
 
 let testDb: AppDatabase
@@ -25,6 +26,8 @@ const container = vi.hoisted(() => ({
   browser: null as { active: boolean; sessionId: string | null; location: 'host' | 'container' | null } | null,
   /** How /browser/session/restore answers. */
   restore: { status: 200, body: {} as Record<string, unknown> },
+  /** The fill is sent and no answer comes back. */
+  fillThrows: false,
   calls: [] as Array<{ path: string; body?: unknown }>,
 }))
 
@@ -49,6 +52,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
             return new Response(JSON.stringify(container.context), { status: 200 })
           }
           if (url === '/browser/login/fill') {
+            if (container.fillThrows) throw new Error('fetch failed')
             if (container.fillStatus !== 200) {
               return new Response(JSON.stringify({ error: 'This sign-in request is no longer open', ...(container.fillReason ? { reason: container.fillReason } : {}) }), { status: container.fillStatus })
             }
@@ -72,7 +76,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
 
 const { decideLoginRequest } = await import('./login-host')
 const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, listAccountAgentSlugs } = await import('./vault-service')
-const { holdLoginValues, heldLoginFor, resetHeldLogins, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
+const { heldLoginKey, holdLoginValues, heldLoginFor, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
 const { heldSessionVersion, readAccountSession, saveAccountSession } = await import('./session-service')
 const { resetSessionWatches } = await import('./session-host')
 
@@ -92,16 +96,16 @@ const GITHUB: LoginContext = {
 let handle: TestDatabase
 let dataDir: string
 
-beforeAll(() => {
+beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'login-host-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
   vi.stubEnv('BETTER_AUTH_SECRET', '')
-  resetVaultKeyCache()
+  await installTestKeyManager()
 })
 
 afterAll(() => {
   vi.unstubAllEnvs()
-  resetVaultKeyCache()
+  uninstallKeyManager()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
@@ -116,8 +120,8 @@ beforeEach(async () => {
   container.fillOutcomes = null
   container.browser = null
   container.restore = { status: 200, body: {} }
+  container.fillThrows = false
   container.calls = []
-  resetHeldLogins()
 })
 
 afterEach(async () => {
@@ -180,7 +184,7 @@ describe('decideLoginRequest', () => {
     }])
     expect((await getOwnedAccount(null, account.id))?.lastUsedAt).toBeInstanceOf(Date)
     expect(await testDb.select({ action: auditLog.action }).from(auditLog).all()).toEqual([{ action: 'used' }])
-    expect(recentSignInIdentity('agent-a', 's-1', 'github.com')).toBe('Octocat')
+    expect(await recentSignInIdentity('agent-a', 's-1', 'github.com')).toBe('Octocat')
   })
 
   it('asks for just what a named account lacks', async () => {
@@ -222,7 +226,7 @@ describe('decideLoginRequest', () => {
 
   it('fills what the user entered for this step earlier, then saves it to the account', async () => {
     const account = await grantedAccount('octocat')
-    holdLoginValues('agent-a', 's-1', 'github.com', {
+    await holdLoginValues('agent-a', 's-1', 'github.com', {
       username: 'octocat',
       values: { password: 'held-pw' },
       origin: 'https://github.com',
@@ -234,7 +238,7 @@ describe('decideLoginRequest', () => {
     expect(await decide({})).toEqual({ action: 'settled' })
     expect(fills()[0].body).toMatchObject({ values: ['held-pw'], account: { username: 'octocat', source: 'user', held: [] } })
     expect(await readAccountValues(account.id)).toEqual({ password: 'held-pw' })
-    expect(heldLoginFor('agent-a', 's-1', 'github.com')).toBeNull()
+    expect(await heldLoginFor('agent-a', 's-1', 'github.com')).toBeNull()
     expect(await listAccountAgentSlugs(account.id)).toEqual(['agent-a'])
     // Now saved, the vault fills it by itself.
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
@@ -244,7 +248,7 @@ describe('decideLoginRequest', () => {
   it('saves a held value only into an account that is still there and still granted', async () => {
     const { account } = await saveAccount({ owner: null, site: 'github.com', origin: 'https://github.com', username: 'octocat' })
     // Granted when the user saved it with the email, revoked in Settings since.
-    holdLoginValues('agent-a', 's-1', 'github.com', {
+    await holdLoginValues('agent-a', 's-1', 'github.com', {
       username: 'octocat',
       values: { password: 'held-pw' },
       origin: 'https://github.com',
@@ -269,7 +273,7 @@ describe('decideLoginRequest', () => {
     // Alice's was granted last, so it comes first among the agent's accounts.
     await new Promise((resolve) => setTimeout(resolve, 5))
     await grantAccount({ accountId: alices.id, agentSlug: 'agent-a', grantedBy: 'alice' })
-    holdLoginValues('agent-a', 's-1', 'github.com', {
+    await holdLoginValues('agent-a', 's-1', 'github.com', {
       username: 'team@acme.com',
       values: { password: 'b-pw' },
       origin: 'https://github.com',
@@ -283,7 +287,7 @@ describe('decideLoginRequest', () => {
   })
 
   it('does not fill a held value typed on an encrypted page into a plain-HTTP one', async () => {
-    holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password: 'typed-on-https' }, origin: 'https://github.com', save: null })
+    await holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password: 'typed-on-https' }, origin: 'https://github.com', save: null })
     container.context = { ...GITHUB, origin: 'http://github.com', topOrigin: 'http://github.com', url: 'http://github.com/login', fields: [field('password', 'Password', 'password')] }
     expect(await decide({})).toEqual({ action: 'ask', vault: { mode: 'new' }, login: container.context })
     expect(fills()).toEqual([])
@@ -299,7 +303,7 @@ describe('decideLoginRequest', () => {
   it('sends every fill an account note the container accepts', async () => {
     await grantedAccount('octocat', { password: 'pw' })
     await decide({ username: 'octocat' })
-    holdLoginValues('agent-a', 's-1', 'github.com', { username: null, values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
+    await holdLoginValues('agent-a', 's-1', 'github.com', { username: null, values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
     container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
     await decide({})
     expect(fills()).toHaveLength(2)
@@ -308,12 +312,12 @@ describe('decideLoginRequest', () => {
 
   it('does not use a held step for another account', async () => {
     await grantedAccount('hubot', { password: 'hubot-pw' })
-    holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
+    await holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
     container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
 
     expect(await decide({ username: 'hubot' })).toEqual({ action: 'settled' })
     expect(fills()[0].body).toMatchObject({ values: ['hubot-pw'], account: { username: 'hubot', source: 'vault' } })
-    expect(heldLoginFor('agent-a', 's-1', 'github.com')).not.toBeNull()
+    expect(await heldLoginFor('agent-a', 's-1', 'github.com')).not.toBeNull()
   })
 
   it('names the provider account to sign in with on a page without fields', async () => {
@@ -365,14 +369,14 @@ describe('decideLoginRequest', () => {
   })
 
   it('keeps what was held when the browser closed before it went in', async () => {
-    holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
+    await holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
     container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
     container.fillStatus = 409
     container.fillReason = 'browser_closed'
     expect(await decide({})).toEqual({ action: 'settled' })
     expect(answers()[0].value).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'held', username: 'octocat' } })
     expect(JSON.stringify(answers())).not.toContain('held-pw')
-    expect(heldLoginFor('agent-a', 's-1', 'github.com')?.values).toEqual({ password: 'held-pw' })
+    expect((await heldLoginFor('agent-a', 's-1', 'github.com'))?.values).toEqual({ password: 'held-pw' })
   })
 
   it('leaves the request to the user when the page refuses the saved account\'s fill', async () => {
@@ -384,7 +388,7 @@ describe('decideLoginRequest', () => {
 
   it('counts only what the browser wrote: a field it could not write keeps its held value, and spends no attempt', async () => {
     const account = await grantedAccount('octocat', { password: 'saved-pw' })
-    holdLoginValues('agent-a', 's-1', 'github.com', {
+    await holdLoginValues('agent-a', 's-1', 'github.com', {
       username: 'octocat',
       values: { password: 'held-pw' },
       origin: 'https://github.com',
@@ -394,7 +398,7 @@ describe('decideLoginRequest', () => {
     // A stale ref: the container answers, but the field took nothing.
     container.fillOutcomes = ['failed']
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
-    expect(heldLoginFor('agent-a', 's-1', 'github.com', 'octocat')?.values).toEqual({ password: 'held-pw' })
+    expect((await heldLoginFor('agent-a', 's-1', 'github.com', 'octocat'))?.values).toEqual({ password: 'held-pw' })
     expect(await readAccountValues(account.id)).toEqual({ password: 'saved-pw' })
     expect((await getOwnedAccount(null, account.id))?.lastUsedAt).toBeNull()
 
@@ -407,7 +411,7 @@ describe('decideLoginRequest', () => {
 
   it('counts a write sent without an answer as tried: the page may hold the password', async () => {
     const account = await grantedAccount('octocat')
-    holdLoginValues('agent-a', 's-1', 'github.com', {
+    await holdLoginValues('agent-a', 's-1', 'github.com', {
       username: 'octocat',
       values: { password: 'held-pw' },
       origin: 'https://github.com',
@@ -417,7 +421,7 @@ describe('decideLoginRequest', () => {
     container.fillOutcomes = ['unconfirmed']
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     // Went in as far as anyone knows: used, and saved to the account.
-    expect(heldLoginFor('agent-a', 's-1', 'github.com', 'octocat')).toBeNull()
+    expect(await heldLoginFor('agent-a', 's-1', 'github.com', 'octocat')).toBeNull()
     expect(await readAccountValues(account.id)).toEqual({ password: 'held-pw' })
   })
 
@@ -631,7 +635,7 @@ describe('decideLoginRequest with saved sessions', () => {
     container.calls = []
     expect(await decide({ fields: [] })).toEqual({ action: 'settled' })
     expect(answers()[0].value).toMatchObject({ type: 'accounts' })
-    rememberSignInIdentity('agent-a', 's-1', 'github.com', 'octocat')
+    await rememberSignInIdentity('agent-a', 's-1', 'github.com', 'octocat')
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     container.browser = { active: true, sessionId: 's-2', location: 'container' }
     container.context = { ...GITHUB, fields: [field('otp', 'Code')] }
@@ -665,7 +669,7 @@ describe('decideLoginRequest with saved sessions', () => {
     await grantedAccount('octocat', { password: 'hunter2' })
     // "Confirm access": the password asked again, the browser signed in as whoever went before.
     container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
-    rememberSignInIdentity('agent-a', 's-1', 'github.com', 'someone-else')
+    await rememberSignInIdentity('agent-a', 's-1', 'github.com', 'someone-else')
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     expect(fills()).toHaveLength(1)
     expect(peeks()).toEqual([])
@@ -674,7 +678,7 @@ describe('decideLoginRequest with saved sessions', () => {
   it('watches a later step of the sign-in the session began with the same account', async () => {
     await grantedAccount('octocat', { password: 'hunter2' })
     container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
-    rememberSignInIdentity('agent-a', 's-1', 'github.com', 'octocat')
+    await rememberSignInIdentity('agent-a', 's-1', 'github.com', 'octocat')
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     const paths = container.calls.map((call) => call.path)
     expect(peeks()).toHaveLength(1)
@@ -708,5 +712,88 @@ describe('decideLoginRequest with saved sessions', () => {
     await savedSession(account)
     expect(await decide({ username: 'me@gmail.com' })).toEqual({ action: 'settled' })
     expect(answers()[0].value).toMatchObject({ type: 'session', restored: true })
+  })
+})
+
+describe('decideLoginRequest with held values', () => {
+  const PASSWORD_STEP = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+  const holdPassword = (password = 'held-pw', save: { owner: null; origin: string } | null = null) =>
+    holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password }, origin: 'https://github.com', save })
+  const call = (toolUseId: string) =>
+    decideLoginRequest({ agentSlug: 'agent-a', sessionId: 's-1', toolUseId, input: JSON.stringify({ message: 'Sign in.' }) })
+  const sentValues = () => fills().map((fill) => (fill.body as { values: string[] }).values)
+
+  it('fills a held value into one page only when two calls race for it', async () => {
+    await holdPassword()
+    container.context = PASSWORD_STEP
+    const decisions = await Promise.all([call('t-1'), call('t-2')])
+    expect(sentValues()).toEqual([['held-pw']])
+    // The other call decides again without it: nothing held, no account, so the user is asked.
+    expect(decisions).toEqual(expect.arrayContaining([{ action: 'settled' }, { action: 'ask', vault: { mode: 'new' }, login: PASSWORD_STEP }]))
+    expect(await heldLoginFor('agent-a', 's-1', 'github.com')).toBeNull()
+  })
+
+  it('keeps a held value the page refused for the next try', async () => {
+    await holdPassword()
+    container.context = PASSWORD_STEP
+    container.fillStatus = 409
+    expect(await call('t-1')).toMatchObject({ action: 'ask', vault: { mode: 'complete', username: 'octocat', covered: [0] } })
+    expect((await heldLoginFor('agent-a', 's-1', 'github.com'))?.values).toEqual({ password: 'held-pw' })
+    container.fillStatus = 200
+    expect(await call('t-2')).toEqual({ action: 'settled' })
+    expect(sentValues()).toEqual([['held-pw'], ['held-pw']])
+  })
+
+  it('counts a held value sent without any answer as used: it is not filled again', async () => {
+    await holdPassword()
+    container.context = PASSWORD_STEP
+    container.fillThrows = true
+    await expect(call('t-1')).rejects.toThrow('fetch failed')
+    expect(await heldLoginFor('agent-a', 's-1', 'github.com')).toBeNull()
+    container.fillThrows = false
+    expect(await call('t-2')).toEqual({ action: 'ask', vault: { mode: 'new' }, login: PASSWORD_STEP })
+    expect(fills()).toHaveLength(1)
+  })
+
+  it('puts a held value nowhere but the fill: not in logs, events, results or what the agent is told', async () => {
+    const secret = 'held-pw-3f9a1c'
+    const account = await grantedAccount('octocat')
+    const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => {}))
+    const published = vi.spyOn(appState(), 'publish')
+    try {
+      const decisions = []
+      container.context = PASSWORD_STEP
+      // Filled and saved; refused; the browser closed; no answer at all.
+      await holdPassword(secret, { owner: null, origin: 'https://github.com' })
+      decisions.push(await call('t-1'))
+      await holdPassword(secret)
+      container.fillStatus = 409
+      decisions.push(await call('t-2'))
+      container.fillReason = 'browser_closed'
+      decisions.push(await call('t-3'))
+      container.fillStatus = 200
+      container.fillReason = null
+      container.fillThrows = true
+      await expect(call('t-4')).rejects.toThrow()
+
+      expect(await readAccountValues(account.id)).toEqual({ password: secret })
+      expect(sentValues()).toEqual([[secret], [secret], [secret], [secret]])
+      // Everything else the container was sent: the notes on each fill, and the agent's answers.
+      const elsewhere = container.calls.map((sent) => (sent.path === '/browser/login/fill' ? { ...(sent.body as object), values: null } : sent))
+      for (const seen of [
+        elsewhere,
+        decisions,
+        logged.map((spy) => spy.mock.calls),
+        published.mock.calls,
+        await testDb.select().from(auditLog).all(),
+        heldLoginKey('agent-a', 's-1', 'github.com').path,
+      ]) {
+        expect(JSON.stringify(seen)).not.toContain(secret)
+      }
+      expect(published).not.toHaveBeenCalled()
+    } finally {
+      for (const spy of logged) spy.mockRestore()
+      published.mockRestore()
+    }
   })
 })

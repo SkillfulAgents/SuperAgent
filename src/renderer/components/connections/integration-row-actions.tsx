@@ -432,7 +432,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
                   {mcpTools.map((tool) => (
                     <span
                       key={tool.name}
-                      className="rounded-md border bg-muted/50 px-2 py-1 text-[11px] text-foreground"
+                      className="rounded-item border bg-muted/50 px-2 py-1 text-[11px] text-foreground"
                     >
                       {tool.name}
                     </span>

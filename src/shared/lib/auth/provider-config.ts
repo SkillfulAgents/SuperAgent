@@ -1,10 +1,11 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
+import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
+import { notePlatformRole } from './platform-role'
 import { z } from 'zod'
-import { getAppBaseUrl } from './config'
 
 // Shape of each entry in the AUTH_PROVIDERS_JSON env bundle. Provider
-// secrets belong in deployment env, not user-writable settings.json — so
+// secrets belong in deployment env, not admin-writable settings — so
 // this lives next to the resolver instead of in shared settings types.
 export type AuthProviderType = 'oidc'
 
@@ -58,8 +59,6 @@ export interface GenericOAuthProviderConfig {
   mapProfileToUser?: (profile: Record<string, unknown>) => Record<string, never>
 }
 
-const PLATFORM_ORG_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/org_id'
-
 abstract class AuthProviderDefinition {
   constructor(protected readonly config: AuthProviderSettings) {}
 
@@ -85,7 +84,7 @@ abstract class AuthProviderDefinition {
   }
 
   protected abstract getReadiness(): PublicAuthProviderReadiness
-  abstract toGenericOAuthConfig(): GenericOAuthProviderConfig | null
+  abstract toGenericOAuthConfig(appBaseUrl: string): GenericOAuthProviderConfig | null
 }
 
 class OidcAuthProviderDefinition extends AuthProviderDefinition {
@@ -105,7 +104,7 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
     }
   }
 
-  toGenericOAuthConfig(): GenericOAuthProviderConfig | null {
+  toGenericOAuthConfig(appBaseUrl: string): GenericOAuthProviderConfig | null {
     const issuer = this.config.issuer?.trim() || undefined
     const discoveryUrl = this.config.discoveryUrl?.trim()
       || (issuer ? `${issuer.replace(/\/+$/, '')}/.well-known/openid-configuration` : undefined)
@@ -118,7 +117,7 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
       // This callback is already registered by the deployment controller and
       // self-hosted IdPs. The route adapter dispatches it to Better Auth 1.7's
       // core callback without changing the redirect URI sent to the provider.
-      redirectURI: `${getAppBaseUrl().replace(/\/+$/, '')}/api/auth/oauth2/callback/${encodeURIComponent(this.config.id)}`,
+      redirectURI: `${appBaseUrl.replace(/\/+$/, '')}/api/auth/oauth2/callback/${encodeURIComponent(this.config.id)}`,
       clientId,
       clientSecret: this.config.clientSecret?.trim() || undefined,
       scopes: this.config.scopes,
@@ -146,11 +145,13 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
         // before Better Auth creates the user/account/session.
         const deploymentOrg = decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '')
         if (deploymentOrg) {
-          const tokenOrg = profile[PLATFORM_ORG_ID_CLAIM]
+          const tokenOrg = profile[PLATFORM_CLAIMS.orgId]
           if (typeof tokenOrg !== 'string' || tokenOrg !== deploymentOrg) {
             throw new Error('Account belongs to a different organization')
           }
         }
+        // Held for the user create hook, should this sign-in create the user.
+        if (this.config.id === 'platform') notePlatformRole(profile[PLATFORM_CLAIMS.role])
         // Never override id: account.accountId must stay the OIDC sub.
         return {}
       },
@@ -218,9 +219,10 @@ function getEnabledProviderDefinitions(
     .map(createProviderDefinition)
 }
 
-export function getGenericOAuthProviderConfigs(): GenericOAuthProviderConfig[] {
+/** The enabled OIDC providers' Better Auth configs; their callbacks live under `appBaseUrl`. */
+export function getGenericOAuthProviderConfigs(appBaseUrl: string): GenericOAuthProviderConfig[] {
   return getEnabledProviderDefinitions()
-    .map((definition) => definition.toGenericOAuthConfig())
+    .map((definition) => definition.toGenericOAuthConfig(appBaseUrl))
     .filter((config): config is GenericOAuthProviderConfig => config !== null)
 }
 

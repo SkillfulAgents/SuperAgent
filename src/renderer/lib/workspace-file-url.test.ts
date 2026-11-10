@@ -39,6 +39,15 @@ describe('workspace file URLs', () => {
         'http://api.test/api/agents/a/files/report.md?inline=true&v=3',
       )
     })
+
+    it('carries a string token, such as a delivery id, and omits an empty one', () => {
+      expect(getAgentFileUrl('a', '/workspace/chart.png', { inline: true, version: 'toolu_01' })).toBe(
+        'http://api.test/api/agents/a/files/chart.png?inline=true&v=toolu_01',
+      )
+      expect(getAgentFileUrl('a', '/workspace/chart.png', { version: '' })).toBe(
+        'http://api.test/api/agents/a/files/chart.png',
+      )
+    })
   })
 
   describe('isSafeWorkspaceFilePath', () => {

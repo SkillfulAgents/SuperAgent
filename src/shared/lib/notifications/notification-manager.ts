@@ -453,6 +453,19 @@ class NotificationManager {
       body,
       recipient: { userId: params.recipientUserId, messageUuid: params.messageUuid },
     })
+    // Someone not on Gamut yet finds this waiting when they join; tell them
+    // now through their team directory too.
+    background(this.tellInvitedAboutMention(params), { name: 'notification-manager.tell-invited-about-mention' })
+  }
+
+  private async tellInvitedAboutMention(params: { agentSlug: string; recipientUserId: string; senderName: string; text: string }): Promise<void> {
+    const { notifyInvitedUser } = await import('@shared/lib/team-directory/invited-users')
+    await notifyInvitedUser(params.recipientUserId, {
+      kind: 'mentioned',
+      agentName: await this.getAgentDisplayName(params.agentSlug),
+      byName: params.senderName,
+      text: params.text,
+    })
   }
 
   /**

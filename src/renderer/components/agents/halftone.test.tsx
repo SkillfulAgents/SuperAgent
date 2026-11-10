@@ -247,6 +247,7 @@ describe('Halftone animation lifecycle', () => {
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => height)
     const setTransform = vi.fn()
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      ...createCanvasContext(),
       setTransform,
     } as unknown as CanvasRenderingContext2D)
     const requestAnimationFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
@@ -288,6 +289,7 @@ describe('Halftone animation lifecycle', () => {
     )
     const setTransform = vi.fn()
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      ...createCanvasContext(),
       setTransform,
     } as unknown as CanvasRenderingContext2D)
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
@@ -309,6 +311,106 @@ describe('Halftone animation lifecycle', () => {
     expect(setTransform).toHaveBeenCalledTimes(2)
     expect(setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0)
   })
+
+  it('repaints resizes before the next animation frame without speeding up the animation', () => {
+    let resizeCallback: ResizeObserverCallback | undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+    vi.stubGlobal('IntersectionObserver', undefined)
+
+    let width = 240
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(120)
+    const ctx = createCanvasContext()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx)
+    const callbacks: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callbacks.push(callback)
+      return callbacks.length
+    })
+    const draw = vi.spyOn(HalftoneFrameRenderer.prototype, 'draw')
+
+    renderWithProviders(<Halftone motif="flow_3d" />)
+    act(() => callbacks.shift()?.(100))
+    act(() => callbacks.shift()?.(130))
+    expect(draw).toHaveBeenCalledTimes(2)
+
+    // Continuous resize events must leave a painted bitmap even between RAFs.
+    for (width of [260, 280]) {
+      const previousDraws = draw.mock.calls.length
+      act(() => resizeCallback?.([], {} as ResizeObserver))
+      expect(draw).toHaveBeenCalledTimes(previousDraws + 1)
+      expect(ctx.clearRect).toHaveBeenLastCalledWith(0, 0, width, 120)
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
+      expect(draw.mock.lastCall?.[6]).toBe(0)
+      expect(callbacks).toHaveLength(1)
+    }
+
+    // Resizing must not reset the 30fps clock and advance on an early RAF.
+    act(() => callbacks.shift()?.(146))
+    expect(draw).toHaveBeenCalledTimes(4)
+    act(() => callbacks.shift()?.(160))
+    expect(draw).toHaveBeenCalledTimes(5)
+    expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
+    act(() => callbacks.shift()?.(190))
+    expect(draw.mock.lastCall?.[1]).toBeCloseTo(4.2)
+  })
+
+  it.each([[280, 120], [240, 160]])(
+    'skips the obsolete RAF draw before a resize to %i × %i without changing its phase',
+    (nextWidth, nextHeight) => {
+      let resizeCallback: ResizeObserverCallback | undefined
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      })
+      vi.stubGlobal('IntersectionObserver', undefined)
+      let width = 240, height = 120
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width)
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => height)
+      const ctx = createCanvasContext()
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx)
+      const callbacks: FrameRequestCallback[] = []
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        callbacks.push(callback)
+        return callbacks.length
+      })
+      const draw = vi.spyOn(HalftoneFrameRenderer.prototype, 'draw')
+
+      renderWithProviders(<Halftone motif="flow_3d" />)
+      act(() => callbacks.shift()?.(100))
+      expect(draw).toHaveBeenCalledTimes(1)
+
+      // Browser layout precedes RAF; ResizeObserver is delivered afterwards.
+      width = nextWidth
+      height = nextHeight
+      act(() => callbacks.shift()?.(130))
+      expect(draw).toHaveBeenCalledTimes(1)
+      act(() => resizeCallback?.([], {} as ResizeObserver))
+      expect(draw).toHaveBeenCalledTimes(2)
+      expect(ctx.clearRect).toHaveBeenLastCalledWith(0, 0, width, height)
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
+      expect(draw.mock.lastCall?.[6]).toBe(0)
+
+      act(() => callbacks.shift()?.(146))
+      expect(draw).toHaveBeenCalledTimes(2)
+      act(() => callbacks.shift()?.(160))
+      expect(draw).toHaveBeenCalledTimes(3)
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
+      act(() => callbacks.shift()?.(190))
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(4.2)
+    }
+  )
 
   it('renders a static frame for reduced motion without pointer tracking', () => {
     vi.spyOn(window, 'matchMedia').mockReturnValue({

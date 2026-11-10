@@ -16,6 +16,7 @@ import { accountReauthRequestDef } from './account-reauth/definition'
 import { mcpReauthRequestDef } from './mcp-reauth/definition'
 import type { ToolDefinition } from './types'
 import { bashDef } from './bash/definition'
+import { monitorDef } from './monitor/definition'
 import { readDef } from './read/definition'
 import { writeDef } from './write/definition'
 import { globDef } from './glob/definition'
@@ -54,6 +55,8 @@ import {
   browserDownloadDef,
   browserEvalDef,
   browserRunDef,
+  browserUploadDef,
+  browserGetStateDef,
 } from './browser-tools/definition'
 import {
   createDashboardDef,
@@ -87,6 +90,7 @@ const definitions: Record<string, ToolDefinition> = {
 
   // Shell/command tools
   Bash: bashDef,
+  Monitor: monitorDef,
 
   // File operations
   Read: readDef,
@@ -141,6 +145,8 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_download': browserDownloadDef,
   'mcp__browser__browser_eval': browserEvalDef,
   'mcp__browser__browser_run': browserRunDef,
+  'mcp__browser__browser_upload': browserUploadDef,
+  'mcp__browser__browser_get_state': browserGetStateDef,
 
   // MCP tools - dashboards
   'mcp__dashboards__create_dashboard': createDashboardDef,

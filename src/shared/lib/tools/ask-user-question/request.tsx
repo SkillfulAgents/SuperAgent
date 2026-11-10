@@ -268,7 +268,7 @@ export function QuestionRequestItem({
                 <label
                   key={optionIndex}
                   className={cn(
-                    'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
+                    'flex items-center gap-2 p-2 rounded-item border cursor-pointer transition-colors',
                     isSelected
                       ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
                       : 'bg-white dark:bg-blue-500/10 hover:bg-blue-50 dark:hover:bg-blue-900/50'
@@ -296,7 +296,7 @@ export function QuestionRequestItem({
 
             <label
               className={cn(
-                'flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors',
+                'flex items-center gap-2 p-2 rounded-item border cursor-pointer transition-colors',
                 otherSelected[currentQuestionIndex]
                   ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-600'
                   : 'bg-white dark:bg-blue-500/10 hover:bg-blue-50 dark:hover:bg-blue-900/50'

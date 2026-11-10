@@ -5,10 +5,10 @@ import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
 import { SecretRequestItem } from '@shared/lib/tools/request-secret/request'
 import { StopSessionButton } from './stop-session-button'
-import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE, VOICE_MODE_ENTERED_MARKER } from '@shared/lib/voice/voice-mode-messages'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
@@ -33,9 +33,15 @@ vi.mock('@renderer/context/analytics-context', async importOriginal => ({
 }))
 
 // Mock hooks
+const mockVoiceNotice = vi.fn()
 const mockSendMessage = {
-  mutateAsync: vi.fn().mockResolvedValue({ success: true, uuid: 'server-uuid-1', queued: false }),
-  mutate: vi.fn(),
+  mutateAsync: vi.fn().mockImplementation(async data => {
+    if (data.shouldQuery === false) mockVoiceNotice(data, {})
+    return { success: true, uuid: 'server-uuid-1', queued: false }
+  }),
+  mutate: vi.fn().mockImplementation((data, options) => {
+    if (data.shouldQuery === false) mockVoiceNotice(data, options)
+  }),
   isPending: false,
 }
 const mockUploadFile = { mutateAsync: vi.fn().mockResolvedValue({ path: '/tmp/file' }) }
@@ -81,10 +87,16 @@ vi.mock('@renderer/hooks/use-voice-input', async (importOriginal) => {
     },
   }
 })
-const mockVoice = { phase: 'listening' as 'listening' | 'thinking' | 'speaking', working: false }
+const mockVoice = { phase: 'listening' as 'listening' | 'thinking' | 'speaking', working: false, transcriptPath: undefined as string | undefined }
 const mockUseVoiceMode = vi.fn()
 vi.mock('@renderer/hooks/use-voice-mode', () => ({
-  useVoiceMode: (args: unknown) => mockUseVoiceMode(args) ?? ({
+  useVoiceMode: (args: { active: boolean; sessionId: string | null; onStarted?: (path?: string) => Promise<void> }) => {
+    const started = useRef(false)
+    useEffect(() => {
+      if (!args.active) { started.current = false; return }
+      if (!started.current) { started.current = true; void args.onStarted?.(mockVoice.transcriptPath) }
+    }, [args])
+    return mockUseVoiceMode(args) ?? ({
     phase: mockVoice.phase,
     working: mockVoice.working,
     hold: { allowed: mockVoice.phase !== 'listening', delayMs: 700 },
@@ -94,7 +106,8 @@ vi.mock('@renderer/hooks/use-voice-mode', () => ({
     clearError: vi.fn(),
     pressMic: vi.fn(),
     getAnalyser: () => null,
-  }),
+  })
+  },
 }))
 const mockUseHoldSound = vi.fn()
 vi.mock('@renderer/hooks/use-hold-sound', () => ({
@@ -291,10 +304,10 @@ describe('MessageInput', () => {
       const { unmount } = renderWithProviders(<AdoptVoiceSession />)
       await userEvent.click(screen.getByTestId('voice-mode-button'))
       await waitFor(() => expect(screen.getByTestId('voice-mode-composer')).toBeVisible())
-      expect(mockSendMessage.mutate).not.toHaveBeenCalled()
+      expect(mockVoiceNotice).not.toHaveBeenCalled()
       expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
       unmount()
-      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledWith(
+      await waitFor(() => expect(mockVoiceNotice).toHaveBeenCalledWith(
         expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything(),
       ))
     })
@@ -306,7 +319,7 @@ describe('MessageInput', () => {
       await userEvent.click(screen.getByTestId('voice-mode-button'))
       await waitFor(() => expect(onSessionCreated).toHaveBeenCalledWith('new-123', VOICE_MODE_ENTERED_MESSAGE, 'initial-uuid', { voiceMode: true }))
       expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ inputMode: 'voice' }))
-      expect(mockSendMessage.mutate).not.toHaveBeenCalled()
+      expect(mockVoiceNotice).not.toHaveBeenCalled()
     })
   })
 
@@ -386,10 +399,27 @@ describe('MessageInput', () => {
         expect(setMicMuted).toHaveBeenCalledTimes(1)
 
         await userEvent.click(screen.getByTestId('voice-mode-exit'))
-        await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+        await waitFor(() => expect(mockVoiceNotice).toHaveBeenCalledTimes(2))
       } finally {
         mockUseVoiceMode.mockReset()
       }
+    })
+
+    it('includes a separate conversation’s path in the entry notice and uses the ordinary notice otherwise', async () => {
+      mockCanUseVoiceMode = true
+      mockVoice.transcriptPath = '/workspace/sessions/s-1/transcript-0.md'
+      try {
+        renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+        await userEvent.click(screen.getByTestId('voice-mode-button'))
+        expect(mockVoiceNotice).toHaveBeenCalledWith(expect.objectContaining({
+          content: expect.stringContaining('/workspace/sessions/s-1/transcript-0.md'), shouldQuery: false,
+        }), expect.anything())
+        const notice = mockVoiceNotice.mock.calls[0][0].content
+        expect(notice.startsWith(VOICE_MODE_ENTERED_MARKER)).toBe(true)
+        expect(notice).not.toContain('read aloud by text-to-speech')
+        await userEvent.click(screen.getByTestId('voice-mode-exit'))
+        await waitFor(() => expect(mockVoiceNotice).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()))
+      } finally { mockVoice.transcriptPath = undefined }
     })
 
     it('pauses behind a request card rather than ending, and resumes after it', async () => {
@@ -397,7 +427,7 @@ describe('MessageInput', () => {
       const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       await userEvent.click(screen.getByTestId('voice-mode-button'))
       expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }))
-      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+      expect(mockVoiceNotice).toHaveBeenCalledTimes(1)
 
       // The agent asks for something: the column hides the composer behind the card.
       const inputRequests = [{ id: 'question:1', message: 'Choose a database in the question card.' }]
@@ -406,15 +436,15 @@ describe('MessageInput', () => {
       expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
       // No "exited" notice: the person did not leave.
-      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+      expect(mockVoiceNotice).toHaveBeenCalledTimes(1)
 
       rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: false }))
-      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+      expect(mockVoiceNotice).toHaveBeenCalledTimes(1)
 
       // Leave properly, so the deferred exit notice lands here and not in the next test.
       await userEvent.click(screen.getByTestId('voice-mode-exit'))
-      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(mockVoiceNotice).toHaveBeenCalledTimes(2))
     })
 
     it('exits voice mode when the secret request X stops the session', async () => {
@@ -434,7 +464,7 @@ describe('MessageInput', () => {
       expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }))
       expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
       expect(screen.queryByTestId('voice-mode-composer')).not.toBeInTheDocument()
-      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledWith(
+      await waitFor(() => expect(mockVoiceNotice).toHaveBeenCalledWith(
         expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE, shouldQuery: false }), expect.anything(),
       ))
 
@@ -456,7 +486,7 @@ describe('MessageInput', () => {
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
 
       await userEvent.click(screen.getByTestId('voice-mode-exit'))
-      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(mockVoiceNotice).toHaveBeenCalledTimes(2))
     })
 
     it('cannot be entered while a dictation is still recording', () => {
@@ -475,7 +505,7 @@ describe('MessageInput', () => {
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
 
       await userEvent.click(screen.getByTestId('voice-mode-button'))
-      expect(mockSendMessage.mutate).toHaveBeenCalledWith({
+      expect(mockVoiceNotice).toHaveBeenCalledWith({
         sessionId: 's-1',
         agentSlug: 'agent-1',
         content: VOICE_MODE_ENTERED_MESSAGE,
@@ -487,14 +517,14 @@ describe('MessageInput', () => {
       await userEvent.click(screen.getByTestId('voice-mode-exit'))
       expect(screen.getByTestId('message-input')).toBeInTheDocument()
       await waitFor(() =>
-        expect(mockSendMessage.mutate).toHaveBeenLastCalledWith({
+        expect(mockVoiceNotice).toHaveBeenLastCalledWith({
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: VOICE_MODE_EXITED_MESSAGE,
           shouldQuery: false,
         }, expect.anything()),
       )
-      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2)
+      expect(mockVoiceNotice).toHaveBeenCalledTimes(2)
     })
 
     it('shows the reading speed and hold sound under the mic, written to the person\'s settings', async () => {
@@ -597,7 +627,7 @@ describe('MessageInput', () => {
       await userEvent.click(screen.getByTestId('voice-mode-button'))
       unmount()
       await waitFor(() =>
-        expect(mockSendMessage.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()),
+        expect(mockVoiceNotice).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()),
       )
     })
   })
@@ -1748,13 +1778,15 @@ describe('MessageInput', () => {
     it('sends a message that opens on a teammate without a turn, even while the agent works', async () => {
       mockStreamState.isActive = true
       const user = userEvent.setup()
+      const onNotifiesOnlyChange = vi.fn()
       renderWithProviders(
         <>
           <DraftSeeder sessionId="s-1" value={`${mike} look at this`} />
-          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" onNotifiesOnlyChange={onNotifiesOnlyChange} />
         </>
       )
-      expect(await screen.findByTestId('mention-notify-only-hint')).toHaveTextContent("Only notifies Mike Smith. The agent won't reply.")
+      // The column under the box says who it only notifies.
+      await waitFor(() => expect(onNotifiesOnlyChange).toHaveBeenLastCalledWith('Mike Smith'))
 
       await user.click(screen.getByTestId('send-button'))
 
@@ -1767,14 +1799,15 @@ describe('MessageInput', () => {
 
     it('runs the agent for a mention mid-message', async () => {
       const user = userEvent.setup()
+      const onNotifiesOnlyChange = vi.fn()
       renderWithProviders(
         <>
           <DraftSeeder sessionId="s-1" value={`ping ${mike} when done`} />
-          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" onNotifiesOnlyChange={onNotifiesOnlyChange} />
         </>
       )
       await waitFor(() => expect(screen.getByTestId('user-mention')).toBeInTheDocument())
-      expect(screen.queryByTestId('mention-notify-only-hint')).toBeNull()
+      expect(onNotifiesOnlyChange).not.toHaveBeenCalledWith(expect.any(String))
 
       await user.click(screen.getByTestId('send-button'))
 

@@ -1,4 +1,3 @@
-import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
@@ -10,7 +9,7 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
  * Bearer <token>. The route resolves the caller's agent slug from that token and
  * applies xAgentPolicies + ACLs accordingly.
  */
-import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -36,13 +35,14 @@ import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-
 import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { ContainerSession } from '@shared/lib/container/types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
+import { getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { captureException } from '@shared/lib/error-reporting'
 import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import {
@@ -64,6 +64,7 @@ import {
   pageTranscript,
 } from './x-agent-transcript-view'
 import { awaitReview } from '@shared/lib/proxy/review-request'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -222,22 +223,27 @@ async function checkAgentPolicy(
   targetName: string,
   preview?: string,
   fileTransfer?: XAgentFileTransfer,
+  callerSessionId?: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
+    if (decision === 'allow') return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
 
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    const userDecision = await awaitReview(reviews, (raise) => reviews.requestXAgent(
-      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
+    const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
-    if (userDecision === 'deny') {
-      return { allowed: false, reason: 'Denied by user' }
+    if (review.decision === 'deny') {
+      return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
+    }
+    // A Block set while the card was open beats the approval.
+    if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
+      return { allowed: false, reason: 'Blocked by policy' }
     }
     return { allowed: true }
   } catch (error) {
@@ -298,25 +304,21 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
   })
 
   // In auth mode, copy ACL from caller's owners so the new agent inherits them
-  if (isAuthMode()) {
-    const owners = await getOwnersOfAgent(callerSlug)
-    const now = new Date()
-    for (const userId of owners) {
-      await db.insert(agentAcl).values({
-        id: randomUUID(),
-        userId,
-        agentSlug: agent.slug,
-        role: 'owner',
-        createdAt: now,
-      })
-    }
+  const owners = isAuthMode() ? await getOwnersOfAgent(callerSlug) : []
+  const now = new Date()
+  for (const userId of owners) {
+    await db.insert(agentAcl).values({
+      id: randomUUID(),
+      userId,
+      agentSlug: agent.slug,
+      role: 'owner',
+      createdAt: now,
+    })
   }
 
-  // Announce only after ACL inheritance so live stream filters admit owners.
-  globalFeed.publish({
-    type: 'agent_created',
-    agentSlug: agent.slug,
-  })
+  // Announce only after ACL inheritance, to each inherited owner, so their
+  // live streams load their agents again and follow the new one.
+  announceAgentCreated(agent.slug, owners)
 
   return c.json({ slug: agent.displaySlug, name: agent.name })
 })
@@ -784,6 +786,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     target.name,
     prompt.slice(0, 200),
     attachments.length ? { kind: 'send', paths: attachments } : undefined,
+    // Shows the review in the calling session, so a chat can answer it.
+    _callerSessionId,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
@@ -953,11 +957,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
       }
       const availableEnvVars = await getSecretEnvVars(targetSlug)
-      const agentLimits = getEffectiveAgentLimits()
-      const customEnvVars = getCustomEnvVars()
-      const targetPrefs = await readAgentPreferences(targetSlug)
-      const models = getEffectiveModels()
-      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
+      // One read of the settings for this invocation's session start.
+      const { agentLimits, customEnvVars, maxBrowserTabs, models, resolve } = await resolveSessionDefaults(await getSettings(), targetSlug)
+      const resolved = await resolve({})
       const callerName = await getAgentDisplayNameBestEffort(callerSlug)
       const initialMessageUuid = isAuthMode() && attributedUserId
         ? randomUUID()
@@ -1006,8 +1008,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           maxThinkingTokens: agentLimits.maxThinkingTokens,
           maxTurns: agentLimits.maxTurns,
           maxBudgetUsd: agentLimits.maxBudgetUsd,
-          customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-          maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+          customEnvVars,
+          maxBrowserTabs,
           metadata: { isAutomated: true },
         },
           name: `Invoked by ${callerName}`,

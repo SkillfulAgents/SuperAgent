@@ -396,9 +396,9 @@ describe('AgentHeader breadcrumbs', () => {
     expect(screen.getByTestId('dashboard-breadcrumb')).toHaveTextContent('Nutrition Dashboard')
     expect(screen.getByTestId('dashboard-header-actions')).toBeInTheDocument()
 
+    // One separator between the dashboard's actions and the status chip; the chip holds the power button itself.
     const separators = container.querySelectorAll('[data-orientation="vertical"]')
-    expect(separators).toHaveLength(2)
-    expect(separators[0].className).toBe(separators[1].className)
+    expect(separators).toHaveLength(1)
     expect(separators[0]).not.toHaveClass('ml-2')
   })
 

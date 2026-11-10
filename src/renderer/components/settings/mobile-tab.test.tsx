@@ -111,4 +111,13 @@ describe('MobileTab in a cloud workspace', () => {
     // Devices paired elsewhere are still listed and revocable from here.
     expect(await screen.findByTestId('mobile-devices-empty')).toBeTruthy()
   })
+
+  it('links to the iOS app on the App Store', () => {
+    renderWithProviders(<MobileTab />)
+
+    fireEvent.click(screen.getByTestId('mobile-app-store-link'))
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      'https://apps.apple.com/app/id6801340586',
+    )
+  })
 })

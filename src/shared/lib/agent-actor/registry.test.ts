@@ -21,7 +21,10 @@ import { createRecordingHostPort } from './testing/recording-host-port'
 // they are the actor's own and are what the tests below exercise.
 vi.mock('@shared/lib/container/container-host', () => ({ containerHost: { attachAgentWorkspaces: () => {}, attachAgentSessions: () => {} } }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({}), mutateSettings: vi.fn() }))
-vi.mock('@shared/lib/services/session-service', () => ({}))
+vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(async () => null),
+  readAgentSlashCommands: vi.fn(async () => []),
+}))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(),
   appendAssistantEntry: vi.fn(),
@@ -92,11 +95,13 @@ function fakeDeps() {
     fetch: vi.fn(async (_path: string, _init?: RequestInit) => new Response(null, { status: 200 })),
     getHostAuthHeaders: vi.fn().mockReturnValue({ 'x-host': '1' }),
     getWebSocketBaseUrl: vi.fn().mockReturnValue('ws://127.0.0.1:4321'),
+    releaseSession: vi.fn(async (_sessionId: string) => true),
+    deleteSession: vi.fn(async (_sessionId: string) => true),
   }
   // One fake runtime per slug, created the way the real host creates them: on first use.
   const fakeRuntime = (slug: string) => ({
     slug,
-    getClient: vi.fn().mockReturnValue(client),
+    getClient: vi.fn().mockResolvedValue(client),
     ensureRunning: vi.fn().mockResolvedValue(client),
     getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
     keepAlive: vi.fn(),
@@ -165,6 +170,7 @@ function fakeDeps() {
     containerHost,
     runtimes,
     client,
+    host,
     reviewManager,
     inputManager,
     transitions,
@@ -623,7 +629,7 @@ describe('createAgentRegistry', () => {
       expect(freshLive.pendingReviews).toEqual([])
       expect(await fresh.inputs.recentResolution('q1')).toBeUndefined()
       expect(fresh.state.computerUse.grabbed()).toBeUndefined()
-      expect(fresh.state.computerUse.activeGrants()).toEqual([])
+      expect(await fresh.state.computerUse.activeGrants()).toEqual([])
       expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
       expect(fresh.state.mcpReauth.openEntryIds()).toEqual([])
       expect(getSessionSummaryCacheSlot(fresh.store).revision).toBe(0)
@@ -683,12 +689,12 @@ describe('createAgentRegistry', () => {
 
       actor.state.sessions.markActive('s1')
       await actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's1' }, blocking: true, payload: { q: 1 } } as never)
-      await actor.sessions.recordRuntime('s1', { provider: 'anthropic', modelContextWindows: { m: 1 } })
+      await actor.sessions.recordRuntime('s1', { provider: 'anthropic' })
 
       expect(await actor.sessions.live('s1')).toMatchObject({
         isActive: true,
         openRequests: [expect.objectContaining({ id: 'q1', payload: { q: 1 } })],
-        runtime: { provider: 'anthropic', modelContextWindows: { m: 1 } },
+        runtime: { provider: 'anthropic' },
       })
       // Another agent's session of the same id is not this one.
       expect((await registry.get('b').sessions.live('s1')).runtime).toBeNull()
@@ -804,11 +810,13 @@ describe('createAgentRegistry', () => {
       expect((registry.get('b') as LocalAgentActor).state.accountReauth.openEntryIds()).toHaveLength(1)
     })
 
-    it('deleting sessions lets go of their streams first; a batch keeps a session running now', async () => {
+    it('deleting sessions lets go of the container and the stream before the files; a batch keeps a session running now', async () => {
       const sessionService = fake.deps.sessionService as unknown as Record<string, unknown>
       const order: string[] = []
       sessionService.deleteSession = vi.fn(async () => { order.push('delete'); return true })
       sessionService.deleteSessionsBatch = vi.fn(async (_store: unknown, ids: string[]) => { order.push(`delete-batch ${ids.join(',')}`); return ids })
+      fake.client.releaseSession.mockImplementation(async (sessionId) => { order.push(`release ${sessionId}`); return true })
+      fake.client.deleteSession.mockImplementation(async (sessionId) => { order.push(`forget ${sessionId}`); return true })
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       vi.spyOn(actor.state.sessions, 'unsubscribe').mockImplementation((sessionId) => { order.push(`unsubscribe ${sessionId}`) })
       // Went active after the caller listed it as idle.
@@ -817,7 +825,44 @@ describe('createAgentRegistry', () => {
       await actor.sessions.delete('s1')
       expect(await actor.sessions.deleteMany(['s2', 's3', 's4'])).toEqual(['s2', 's3'])
 
-      expect(order).toEqual(['unsubscribe s1', 'delete', 'unsubscribe s2', 'unsubscribe s3', 'delete-batch s2,s3'])
+      expect(order).toEqual([
+        'unsubscribe s1', 'release s1', 'delete', 'forget s1',
+        'unsubscribe s2', 'release s2', 'delete-batch s2', 'forget s2',
+        'unsubscribe s3', 'release s3', 'delete-batch s3', 'forget s3',
+      ])
+    })
+
+    it('deleting a session mid-turn tells its viewers and the feed the turn ended, then ends their wires', async () => {
+      const sessionService = fake.deps.sessionService as unknown as Record<string, unknown>
+      sessionService.deleteSession = vi.fn(async () => true)
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      actor.state.sessions.markActive('s1')
+      const wire = (await actor.messages.follow('s1', {})).getReader()
+      fake.host.sends.length = 0
+
+      await actor.sessions.delete('s1')
+
+      expect(fake.client.releaseSession).toHaveBeenCalledExactlyOnceWith('s1')
+      const frames: Array<Record<string, unknown>> = []
+      for (let next = await wire.read(); !next.done; next = await wire.read()) frames.push(JSON.parse(next.value.data))
+      expect(frames.map((frame) => frame.type)).toEqual(['connected', 'session_idle'])
+      expect(frames[1]).toMatchObject({ isActive: false, outcome: 'cancelled' })
+      expect(fake.host.sent('global')).toContainEqual(expect.objectContaining({ type: 'session_idle', sessionId: 's1' }))
+      expect(actor.state.sessions.isActive('s1')).toBe(false)
+    })
+
+    it('a delete the container refused says nothing: the session stays', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      actor.state.sessions.markActive('s1')
+      const wire = (await actor.messages.follow('s1', {})).getReader()
+      await wire.read()
+      fake.host.sends.length = 0
+      fake.client.releaseSession.mockRejectedValueOnce(new Error('unreachable'))
+
+      await expect(actor.sessions.delete('s1')).rejects.toThrow('Container did not drop')
+
+      expect(fake.host.sent('global')).toEqual([])
+      await wire.cancel()
     })
   })
 })

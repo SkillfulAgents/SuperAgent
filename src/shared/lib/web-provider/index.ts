@@ -1,12 +1,14 @@
-export { BaseWebProvider } from './base-web-provider'
+export { BaseWebProvider, type WebProviderSettings } from './base-web-provider'
 export { ExaWebProvider } from './exa-web-provider'
 export { PlatformWebProvider } from './platform-web-provider'
 export { WEB_PROVIDER_IDS } from './types'
 export {
+  activeWebProviderFrom,
   findWebProvider,
   getActiveWebProvider,
   getWebProvider,
   resolveEffectiveWebVendor,
+  resolveEffectiveWebVendorFrom,
 } from './web-provider-factory'
 export type {
   WebFetchOptions,

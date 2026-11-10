@@ -107,13 +107,10 @@ function wipeAuthTables(): void {
 }
 
 async function writeAuthSettings(auth: Record<string, unknown>): Promise<void> {
-  const settingsPath = path.join(tmpDir, 'settings.json')
-  const current = fs.existsSync(settingsPath)
-    ? JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    : {}
-  fs.writeFileSync(settingsPath, JSON.stringify({ ...current, auth }))
-  const { clearSettingsCache } = await import('@shared/lib/config/settings')
-  clearSettingsCache()
+  const { mutateSettings } = await import('@shared/lib/config/settings')
+  await mutateSettings((settings) => {
+    settings.auth = auth
+  })
 }
 
 beforeAll(async () => {
@@ -136,11 +133,13 @@ beforeAll(async () => {
   const { _setOidcJwksResolverForTest } = await import('./oidc-jwt')
   _setOidcJwksResolverForTest(createLocalJWKSet({ keys: [jwk] }) as never)
 
-  const { getAppBaseUrl } = await import('./config')
-  audience = getAppBaseUrl()
-
+  // Settings live in the app database, so it opens before anything reads them.
   dbModule = await import('@shared/lib/db')
   await dbModule.openDatabase()
+
+  const { getAppBaseUrl } = await import('./config')
+  audience = await getAppBaseUrl()
+
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(tmpDir, 'superagent.db'))
 
@@ -452,13 +451,12 @@ describe('replay prevention', () => {
 })
 
 describe('provisioning and identity mapping', () => {
-  it('promotes the first exchanged user to admin', async () => {
+  it('provisions the first exchanged user with their verified email', async () => {
     const res = await exchangeRequest(await signGrant())
     expect(res.status).toBe(200)
     const user = sqlite
-      .prepare(`SELECT role, email, email_verified FROM user`)
-      .get() as { role: string; email: string; email_verified: number }
-    expect(user.role).toBe('admin')
+      .prepare(`SELECT email, email_verified FROM user`)
+      .get() as { email: string; email_verified: number }
     expect(user.email).toBe('member@example.com')
     expect(user.email_verified).toBe(1)
   })
@@ -481,7 +479,7 @@ describe('provisioning and identity mapping', () => {
 
   it('links the platform identity to an existing user with the same email', async () => {
     const { getAuth } = await import('./index')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: {
         email: 'member@example.com',
         password: 'CorrectHorseBattery1!',
@@ -503,7 +501,7 @@ describe('provisioning and identity mapping', () => {
     expect((await exchangeRequest(await signGrant())).status).toBe(200)
     const original = sqlite.prepare('SELECT user_id FROM account WHERE provider_id = ?').get('platform') as { user_id: string }
     const { getAuth } = await import('./index')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { email: 'other@example.com', password: 'AnotherPassword123!', name: 'Other User' },
     })
     const response = await exchangeRequest(await signGrant({ payload: { email: 'other@example.com' } }))
@@ -547,6 +545,7 @@ describe('provisioning and identity mapping', () => {
       .get() as { n: number }
     expect(mappings.n).toBe(1)
     expect(countRows('session')).toBe(2)
+    expect(sqlite.prepare('SELECT role FROM user').get()).toEqual({ role: 'user' })
   })
 
   it('persists both subject mappings when concurrent first exchanges share a verified email', async () => {
@@ -559,6 +558,136 @@ describe('provisioning and identity mapping', () => {
     expect(sqlite.prepare('SELECT account_id FROM account ORDER BY account_id').all())
       .toEqual([{ account_id: 'sub_first' }, { account_id: 'sub_second' }])
     expect(countRows('session')).toBe(2)
+  })
+})
+
+describe('platform role on join', () => {
+  beforeEach(() => captureExceptionMock.mockClear())
+
+  function roleOf(email = 'member@example.com'): string | undefined {
+    return (sqlite.prepare('SELECT role FROM user WHERE email = ?').get(email) as { role: string } | undefined)?.role
+  }
+  async function exchange(payload: Record<string, unknown>) {
+    const res = await exchangeRequest(await signGrant({ payload }))
+    expect(res.status).toBe(200)
+  }
+  async function seedOtherMember() {
+    await exchange({ sub: 'sub_earlier', email: 'earlier@example.com', role: 'owner' })
+  }
+
+  it.each([
+    ['owner', 'admin'],
+    ['admin', 'admin'],
+    ['member', 'user'],
+  ])('gives the first member to exchange, a Platform %s, the %s role', async (platformRole, role) => {
+    await exchange({ role: platformRole })
+    expect(roleOf()).toBe(role)
+  })
+
+  it.each([
+    ['owner', 'admin'],
+    ['member', 'user'],
+  ])('gives a Platform %s who joins later the %s role', async (platformRole, role) => {
+    await seedOtherMember()
+    await exchange({ role: platformRole })
+    expect(roleOf()).toBe(role)
+  })
+
+  it.each([
+    ['a promotion', 'member', 'admin'],
+    ['a demotion', 'owner', 'user'],
+  ])('keeps %s made in Gamut on later exchanges', async (_label, platformRole, localRole) => {
+    await seedOtherMember()
+    await exchange({ role: platformRole })
+    sqlite.prepare('UPDATE user SET role = ? WHERE email = ?').run(localRole, 'member@example.com')
+    await exchange({ role: platformRole })
+    expect(roleOf()).toBe(localRole)
+  })
+
+  it('keeps the role of an existing password user who links Platform', async () => {
+    await seedOtherMember()
+    const { getAuth } = await import('./index')
+    await (await getAuth()).api.signUpEmail({
+      body: { email: 'member@example.com', password: 'CorrectHorseBattery1!', name: 'Local Member' },
+    })
+    await exchange({ role: 'owner' })
+    expect(sqlite.prepare(`SELECT count(*) AS n FROM account WHERE provider_id = 'platform'`).get()).toEqual({ n: 2 })
+    expect(roleOf()).toBe('user')
+  })
+
+  it('keeps the role of an existing user with no account who links Platform', async () => {
+    const now = Date.now()
+    sqlite.prepare(`INSERT INTO user (id, name, email, email_verified, role, created_at, updated_at) VALUES (?, ?, ?, 1, 'admin', ?, ?)`)
+      .run('user-without-account', 'Member One', 'member@example.com', now, now)
+    await exchange({ role: 'member' })
+    expect(sqlite.prepare('SELECT user_id FROM account').all()).toEqual([{ user_id: 'user-without-account' }])
+    expect(roleOf()).toBe('admin')
+    expect(captureExceptionMock).not.toHaveBeenCalled()
+  })
+
+  it('gives the joining member their role when a concurrent exchange links a second membership', async () => {
+    const [a, b] = await Promise.all([
+      exchangeRequest(await signGrant({ payload: { sub: 'sub_first', role: 'owner' } })),
+      exchangeRequest(await signGrant({ payload: { sub: 'sub_second', role: 'owner' } })),
+    ])
+    expect([a.status, b.status]).toEqual([200, 200])
+    expect(countRows('account')).toBe(2)
+    expect(roleOf()).toBe('admin')
+  })
+
+  it('gives the joining owner their role when a concurrent sign-in links their account first', async () => {
+    // Stands in for a second first sign-in by the same member that finds the
+    // user this exchange just inserted and links its platform account before
+    // this exchange's own account insert, which then fails.
+    sqlite.prepare(`CREATE TRIGGER link_concurrently AFTER INSERT ON user BEGIN
+      INSERT INTO account (id, account_id, provider_id, user_id, updated_at)
+      VALUES ('concurrent-link', 'sub_member_1', 'platform', NEW.id, 0);
+    END`).run()
+    try {
+      await exchange({ role: 'owner' })
+    } finally {
+      sqlite.prepare('DROP TRIGGER link_concurrently').run()
+    }
+    expect(countRows('account')).toBe(1)
+    expect(roleOf()).toBe('admin')
+    await exchange({ role: 'owner' })
+    expect(roleOf()).toBe('admin')
+  })
+
+  it('keeps the role of a re-invited member whose new membership links to their user', async () => {
+    await seedOtherMember()
+    await exchange({ role: 'member' })
+    sqlite.prepare('UPDATE user SET role = ? WHERE email = ?').run('admin', 'member@example.com')
+    await exchange({ sub: 'sub_member_reinvited', role: 'member' })
+    expect(sqlite.prepare(`SELECT count(*) AS n FROM account WHERE provider_id = 'platform'`).get()).toEqual({ n: 3 })
+    expect(roleOf()).toBe('admin')
+  })
+
+  it.each([
+    ['a missing', undefined],
+    ['an unrecognized', 'superuser'],
+  ])('reports %s role and falls back to the first-user bootstrap', async (_label, role) => {
+    await exchange({ role })
+    expect(roleOf()).toBe('admin')
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Unrecognized platform role' }),
+      expect.objectContaining({ tags: { area: 'auth', op: 'platform-role' } }),
+    )
+  })
+
+  it('gives a later member with no role the default role', async () => {
+    await seedOtherMember()
+    await exchange({ role: undefined })
+    expect(roleOf()).toBe('user')
+  })
+
+  it('does not report a missing role when the exchange only links an existing user', async () => {
+    const { getAuth } = await import('./index')
+    await (await getAuth()).api.signUpEmail({
+      body: { email: 'member@example.com', password: 'CorrectHorseBattery1!', name: 'Local Member' },
+    })
+    await exchange({ role: undefined })
+    expect(captureExceptionMock).not.toHaveBeenCalled()
   })
 })
 
@@ -582,7 +711,7 @@ describe('approval and ban enforcement', () => {
     expect(second.banned).toBe(0)
 
     const { getAuthSettings } = await import('./auth-settings')
-    expect(getAuthSettings().signupMode).toBe('closed')
+    expect((await getAuthSettings()).signupMode).toBe('closed')
   })
 
   // No PLATFORM_TOKEN → exchange fails closed at the org pin (covered above).
@@ -599,14 +728,14 @@ describe('approval and ban enforcement', () => {
       const { getAuth, resetAuth } = await import('./index')
       resetAuth()
 
-      await getAuth().api.signUpEmail({
+      await (await getAuth()).api.signUpEmail({
         body: {
           email: 'admin@example.com',
           password: 'CorrectHorseBattery1!',
           name: 'Admin',
         },
       })
-      await getAuth().api.signUpEmail({
+      await (await getAuth()).api.signUpEmail({
         body: {
           email: 'pending@example.com',
           password: 'CorrectHorseBattery1!',
@@ -621,7 +750,7 @@ describe('approval and ban enforcement', () => {
       expect(pending.ban_reason).toBe('Pending admin approval')
 
       await expect(
-        getAuth().api.signInEmail({
+        (await getAuth()).api.signInEmail({
           body: { email: 'pending@example.com', password: 'CorrectHorseBattery1!' },
         }),
       ).rejects.toThrow()
@@ -713,7 +842,7 @@ describe('profile image propagation', () => {
 
   it('sets the photo when linking an existing local user', async () => {
     const { getAuth } = await import('./index')
-    const local = await getAuth().api.signUpEmail({ body: { name: 'Local User', email: 'member@example.com', password: 'TestPassword123!' } })
+    const local = await (await getAuth()).api.signUpEmail({ body: { name: 'Local User', email: 'member@example.com', password: 'TestPassword123!' } })
     expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/linked.png' } }))).status).toBe(200)
     expect(sqlite.prepare('SELECT id, image FROM user').get()).toEqual({ id: local.user.id, image: 'https://example.com/linked.png' })
   })

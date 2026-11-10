@@ -4,7 +4,8 @@ import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outc
 export type VoiceModePhase = 'listening' | 'thinking' | 'speaking'
 export type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
 
-export type VoiceAgentCommand = { type: 'submit'; text: string } | { type: 'cancel' }
+/** `queue`: the words join a running turn instead of interrupting it; ignored when the agent is idle. */
+export type VoiceAgentCommand = { type: 'submit'; text: string; queue?: boolean } | { type: 'cancel' }
 export type VoiceCommandResult = { accepted: true } | { accepted: false; error?: string }
 
 /** Snapshot of the existing agent stream; protocol heuristics are confined to the coordinator. */
@@ -51,6 +52,13 @@ export interface VoiceConversationEvents {
   onCommand(command: VoiceAgentCommand): Promise<VoiceCommandResult>
   onSnapshot(snapshot: VoiceConversationSnapshot): void
   onError(message: string | null): void
+  /**
+   * Each piece of the conversation's speech as the engine transcribes it, in
+   * order: what it heard ('user') and what it said aloud ('assistant'), but
+   * nothing it says while its voice is muted. Engines that keep no running
+   * transcript never call it. Adapters declaring a separate transcript must emit it.
+   */
+  onSpeech?(piece: VoiceTranscriptEntry): void
 }
 export interface VoiceConversationContext {
   agentSlug: string
@@ -76,7 +84,12 @@ export interface VoiceTurnPolicy {
 
 /** No agent API calls or stream subscriptions belong in implementations. */
 export interface VoiceConversationAdapter {
-  readonly capabilities: { speechSpeed: boolean; spokenTranscript: boolean }
+  readonly capabilities: {
+    speechSpeed: boolean
+    spokenTranscript: boolean
+    /** Whether speech has its own conversation history, including exchanges never sent to the agent. */
+    transcript: 'agent-session' | 'separate'
+  }
   /** Omitted: the coordinator's strict defaults apply. */
   readonly turnPolicy?: Partial<VoiceTurnPolicy>
   readonly analyser: AnalyserNode | null

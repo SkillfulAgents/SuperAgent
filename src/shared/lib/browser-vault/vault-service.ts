@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { agentBrowserAccounts, agents, auditLog, browserAccounts, type BrowserAccount } from '@shared/lib/db/schema'
+import { KeyUnavailableError } from '@shared/lib/keys/key-manager'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { providerOf } from './providers'
 import { registrableDomain, usernameKey } from './site'
@@ -99,13 +100,38 @@ async function selectAccounts(where: SQL | undefined, order: 'site' | 'recent' =
 }
 
 /**
- * The sealed parts of an account; empty when it holds none, null when the
- * seal does not open (sealed under another auth secret, or damaged).
+ * The vault's key cannot be had here (a locked keychain, a key missing on this
+ * machine): nothing is filled or saved. A VaultConflictError, so every caller
+ * that tells the user why a save did not happen tells them this, with what to
+ * do; the KeyManager's message for logs stays in the log.
  */
-function openAccountSecrets(row: Pick<BrowserAccount, 'id' | 'site' | 'secrets'>): AccountSecrets | null {
-  if (!row.secrets) return { values: {} }
+export class VaultUnavailableError extends VaultConflictError {}
+
+/** Seal or open under the vault's key, a key that cannot be had here becoming VaultUnavailableError. */
+async function withVaultKey<T>(run: () => Promise<T>): Promise<T> {
   try {
-    return openJson(row.secrets, { purpose: 'account-secrets', id: row.id, site: row.site }, accountSecretsSchema)
+    return await run()
+  } catch (error) {
+    if (!(error instanceof KeyUnavailableError)) throw error
+    console.error(`[browser-vault] The vault key is unavailable (${error.reason}): ${error.message}`)
+    throw new VaultUnavailableError(error.userMessage)
+  }
+}
+
+function sealSecrets(secrets: AccountSecrets, row: { id: string; site: string }): Promise<string> {
+  return withVaultKey(() => sealJson(secrets, { purpose: 'account-secrets', id: row.id, site: row.site }, accountSecretsSchema))
+}
+
+/**
+ * The sealed parts of an account; empty when it holds none, null when the
+ * seal does not open (sealed under another key, or damaged). Rejects with
+ * VaultUnavailableError when the vault's key cannot be had at all.
+ */
+async function openAccountSecrets(row: Pick<BrowserAccount, 'id' | 'site' | 'secrets'>): Promise<AccountSecrets | null> {
+  const secrets = row.secrets
+  if (!secrets) return { values: {} }
+  try {
+    return await withVaultKey(() => openJson(secrets, { purpose: 'account-secrets', id: row.id, site: row.site }, accountSecretsSchema))
   } catch (error) {
     if (!(error instanceof VaultSealError)) throw error
     console.error(`[browser-vault] The saved parts of account ${row.id} could not be read: ${error.message}`)
@@ -113,9 +139,18 @@ function openAccountSecrets(row: Pick<BrowserAccount, 'id' | 'site' | 'secrets'>
   }
 }
 
-/** The sealed parts of an account, for filling: one whose seal does not open fills nothing, so the user is asked. */
-export function readAccountSecrets(row: Pick<BrowserAccount, 'id' | 'site' | 'secrets'>): AccountSecrets {
-  return openAccountSecrets(row) ?? { values: {} }
+/**
+ * The sealed parts of an account, for filling: one whose seal does not open,
+ * or a vault whose key cannot be had here, fills nothing, so the user is asked
+ * (and told why when they save).
+ */
+export async function readAccountSecrets(row: Pick<BrowserAccount, 'id' | 'site' | 'secrets'>): Promise<AccountSecrets> {
+  try {
+    return (await openAccountSecrets(row)) ?? { values: {} }
+  } catch (error) {
+    if (error instanceof VaultUnavailableError) return { values: {} }
+    throw error
+  }
 }
 
 async function accountRow(id: string): Promise<BrowserAccount | null> {
@@ -125,7 +160,7 @@ async function accountRow(id: string): Promise<BrowserAccount | null> {
 /** An account's saved values by part key: what the host fills into a page. */
 export async function readAccountValues(accountId: string): Promise<Record<string, string>> {
   const row = await accountRow(accountId)
-  return row ? readAccountSecrets(row).values : {}
+  return row ? (await readAccountSecrets(row)).values : {}
 }
 
 // ── Agent side: what an agent may use ──────────────────────────────────────
@@ -393,12 +428,14 @@ export async function saveAccount(input: SaveAccountInput): Promise<{ account: V
       // Even the email step alone (no value yet): the password lands in the same account.
       const stub = input.viaAccountId ? null : await providerStub(input.owner, key, input.site)
       if (stub) {
+        // Sealed before the write: the compare-and-set on `revision` still guards it.
+        const stubSecrets = changedValues ? await sealSecrets({ values }, { id: stub.id, site: input.site }) : null
         const claimed = await db.update(browserAccounts).set({
           site: input.site,
           origin: input.origin,
-          ...(changedValues
+          ...(stubSecrets
             ? {
-                secrets: sealJson({ values }, { purpose: 'account-secrets', id: stub.id, site: input.site }, accountSecretsSchema),
+                secrets: stubSecrets,
                 parts: partsColumn(Object.keys(values).sort()),
               }
             : {}),
@@ -409,6 +446,7 @@ export async function saveAccount(input: SaveAccountInput): Promise<{ account: V
         continue
       }
       const id = crypto.randomUUID()
+      const newSecrets = changedValues ? await sealSecrets({ values }, { id, site: input.site }) : null
       const inserted = await db.insert(browserAccounts).values({
         id,
         userId: input.owner,
@@ -417,7 +455,7 @@ export async function saveAccount(input: SaveAccountInput): Promise<{ account: V
         usernameKey: key,
         origin: input.origin,
         viaAccountId: input.viaAccountId ?? null,
-        secrets: changedValues ? sealJson({ values }, { purpose: 'account-secrets', id, site: input.site }, accountSecretsSchema) : null,
+        secrets: newSecrets,
         parts: partsColumn(Object.keys(values).sort()),
         createdAt: now,
         updatedAt: now,
@@ -428,13 +466,14 @@ export async function saveAccount(input: SaveAccountInput): Promise<{ account: V
 
     let sealed: { secrets: string; parts: string } | null = null
     if (changedValues) {
-      // A seal that does not open (another auth secret) is replaced only by
-      // values for every part it lists: the rest would be lost for good.
-      const secrets = openAccountSecrets(existing) ?? (partsOf(existing).every((part) => part in values) ? { values: {} } : null)
+      // A seal that does not open (another key) is replaced only by values
+      // for every part it lists: the rest would be lost for good. A vault
+      // whose key cannot be had here saves nothing (VaultUnavailableError).
+      const secrets = (await openAccountSecrets(existing)) ?? (partsOf(existing).every((part) => part in values) ? { values: {} } : null)
       if (!secrets) throw new VaultConflictError('This saved account cannot be unlocked here, so it was not changed. Delete it in Settings → Logins and save it again.')
       const merged = { ...secrets.values, ...values }
       sealed = {
-        secrets: sealJson({ ...secrets, values: merged }, { purpose: 'account-secrets', id: existing.id, site: existing.site }, accountSecretsSchema),
+        secrets: await sealSecrets({ ...secrets, values: merged }, existing),
         parts: partsColumn(Object.keys(merged).sort()),
       }
     }
@@ -473,15 +512,15 @@ export async function switchAccountToVia(input: { owner: VaultOwner; accountId: 
     const parts = partsOf(existing)
     let sealed: { secrets: string | null; parts: string } | null = null
     if (parts.includes('password')) {
-      // The other parts are kept: a seal that does not open loses them unless there are none.
-      const secrets = openAccountSecrets(existing) ?? (parts.every((part) => part === 'password') ? { values: {} } : null)
+      // The other parts are kept: a seal that does not open loses them unless
+      // there are none. With only the password, nothing needs opening.
+      const onlyPassword = parts.every((part) => part === 'password')
+      const secrets = onlyPassword ? { values: {} } : await openAccountSecrets(existing)
       if (!secrets) throw new VaultConflictError('This saved account cannot be unlocked here, so it was not changed. Delete it in Settings → Logins and save it again.')
       const kept = Object.fromEntries(Object.entries(secrets.values).filter(([part]) => part !== 'password'))
       const keptParts = Object.keys(kept).sort()
       sealed = {
-        secrets: keptParts.length
-          ? sealJson({ ...secrets, values: kept }, { purpose: 'account-secrets', id: existing.id, site: existing.site }, accountSecretsSchema)
-          : null,
+        secrets: keptParts.length ? await sealSecrets({ ...secrets, values: kept }, existing) : null,
         parts: partsColumn(keptParts),
       }
     }

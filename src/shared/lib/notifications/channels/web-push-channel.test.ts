@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
       notifyWhenUnfocused: false,
     },
   })),
-  getAccessibleAgentSlugs: vi.fn(async (_userId: string): Promise<string[]> => []),
+  getPushableAgentSlugs: vi.fn(async (_userId: string): Promise<string[]> => []),
 }))
 
 vi.mock('web-push', () => ({
@@ -36,7 +36,7 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
 }))
 vi.mock('@shared/lib/services/notification-service', () => ({
-  getAccessibleAgentSlugs: mocks.getAccessibleAgentSlugs,
+  getPushableAgentSlugs: mocks.getPushableAgentSlugs,
 }))
 
 import { WebPushChannel } from './web-push-channel'
@@ -90,7 +90,7 @@ beforeEach(() => {
       notifyWhenUnfocused: false,
     },
   })
-  mocks.getAccessibleAgentSlugs.mockResolvedValue([])
+  mocks.getPushableAgentSlugs.mockResolvedValue([])
 })
 
 describe('type allowlist', () => {
@@ -197,7 +197,7 @@ describe('owner settings gate', () => {
     expect(mocks.getUserSettings).toHaveBeenCalledWith('local')
 
     mocks.isAuthMode.mockReturnValue(true)
-    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
     mocks.listPushSubscriptions.mockReturnValue([makeSubscription({ userId: 'user-a' })])
     await channel.deliver(makeEvent())
     expect(mocks.getUserSettings).toHaveBeenCalledWith('user-a')
@@ -224,7 +224,7 @@ describe('auth-mode agent access gate', () => {
       makeSubscription({ id: 'sub-a', userId: 'user-a' }),
       makeSubscription({ id: 'sub-b', endpoint: 'https://push/b', userId: 'user-b' }),
     ])
-    mocks.getAccessibleAgentSlugs.mockImplementation(async (userId: string) =>
+    mocks.getPushableAgentSlugs.mockImplementation(async (userId: string) =>
       userId === 'user-a' ? ['agent-x'] : ['agent-other']
     )
 
@@ -248,7 +248,7 @@ describe('auth-mode agent access gate', () => {
       makeSubscription({ id: 'sub-a', userId: 'user-a' }),
       makeSubscription({ id: 'sub-b', endpoint: 'https://push/b', userId: 'user-b' }),
     ])
-    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
 
     await channel.deliver(makeEvent({ type: 'session_mention', recipientUserId: 'user-b' }))
 

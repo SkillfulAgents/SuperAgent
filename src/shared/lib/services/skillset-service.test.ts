@@ -92,6 +92,7 @@ vi.mock('@shared/lib/config/settings', () => ({
     apiKeys: mockGetApiKey() ? { anthropicApiKey: mockGetApiKey() } : {},
   })),
   getEffectiveModels: mockGetModels,
+  effectiveModelsFrom: () => mockGetModels(),
   getModelCatalogSettings: () => ({}),
 }))
 
@@ -152,6 +153,7 @@ import {
   getInstalledSkillMetadata,
   getSkillsetRepoDir,
   ensureSkillsetCached,
+  getSkillsetIndex,
   isCacheReady,
   isGitAvailable,
   deleteSkill,
@@ -160,6 +162,7 @@ import {
   importSkillFromZip,
 } from './skillset-service'
 import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
+import { getSettings } from '@shared/lib/config/settings'
 
 // ============================================================================
 // Test Suite
@@ -522,6 +525,20 @@ describe('skillset-service', () => {
       })
     })
 
+    it('screens every installed skill\'s metadata with one settings read', async () => {
+      const readsFor = async (agentSlug: string, skills: number) => {
+        for (let i = 0; i < skills; i++) {
+          await createSkillDir(agentSlug, `skill-${i}`, SKILL_MD_PLAIN, buildMetadata({ skillName: `Skill ${i}` }))
+        }
+        vi.mocked(getSettings).mockClear()
+        expect(await getAgentSkillsWithStatus(agentSlug, [])).toHaveLength(skills)
+        return vi.mocked(getSettings).mock.calls.length
+      }
+
+      expect(await readsFor('one-skill-agent', 1)).toBe(1)
+      expect(await readsFor('many-skills-agent', 6)).toBe(1)
+    })
+
     it('returns results sorted alphabetically by name', async () => {
       await createSkillDir('test-agent', 'zebra-skill', SKILL_MD_PLAIN)
       await createSkillDir('test-agent', 'alpha-skill', SKILL_MD_PLAIN)
@@ -697,7 +714,7 @@ Instructions here`
 
       // Mock platform env + batched queue endpoint reporting merged.
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 
@@ -751,7 +768,7 @@ Instructions here`
       await createSkillsetCache('platform--repo', index, { [meta.skillPath]: '# Test Skill\nOriginal' })
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue(proxyBase)
 
@@ -1063,6 +1080,60 @@ Instructions here`
     })
   })
 
+  describe('packed skillset cache recovery', () => {
+    const ref = {
+      skillsetId: 'public-recovery-test',
+      skillsetUrl: 'https://github.com/TestOrg/skills',
+      provider: 'public' as const,
+    }
+
+    afterEach(() => vi.unstubAllGlobals())
+
+    async function serveArchive(files: Record<string, string>) {
+      const archive = await createZipBuffer(Object.fromEntries(
+        Object.entries(files).map(([name, contents]) => [`repo-head/${name}`, contents]),
+      ))
+      const fetch = vi.fn().mockResolvedValue(new Response(new Uint8Array(archive)))
+      vi.stubGlobal('fetch', fetch)
+      return fetch
+    }
+
+    it('rejects a refreshed archive without an index instead of restoring old files', async () => {
+      await serveArchive({
+        'index.json': JSON.stringify(buildIndex()),
+        'skills/old/SKILL.md': '# Old skill',
+      })
+      const repoDir = await ensureSkillsetCached(ref)
+      await serveArchive({ 'skills/new/SKILL.md': '# New skill' })
+
+      await expect(refreshSkillset(ref)).rejects.toThrow('index.json not found')
+
+      expect(fs.existsSync(path.join(repoDir, 'index.json'))).toBe(false)
+      expect(fs.existsSync(path.join(repoDir, 'skills/old/SKILL.md'))).toBe(false)
+      expect(await fs.promises.readFile(path.join(repoDir, 'skills/new/SKILL.md'), 'utf8')).toBe('# New skill')
+      await expect(getSkillsetIndex(ref)).resolves.toBeNull()
+    })
+
+    it('downloads again after a corrupt packed copy and stores the replacement', async () => {
+      await serveArchive({ 'index.json': JSON.stringify(buildIndex()) })
+      const repoDir = await ensureSkillsetCached(ref)
+      await fs.promises.rm(repoDir, { recursive: true })
+      // An interrupted overwrite leaves the previous version marker beside a truncated pack.
+      await fs.promises.writeFile(path.join(testDir, 'skillset-cache-packs', ref.skillsetId), '{')
+      const replacement = buildIndex({ version: '2.0.0' })
+      const download = await serveArchive({ 'index.json': JSON.stringify(replacement) })
+
+      await expect(ensureSkillsetCached(ref)).resolves.toBe(repoDir)
+      await expect(getSkillsetIndex(ref)).resolves.toEqual(replacement)
+      expect(download).toHaveBeenCalledTimes(1)
+
+      await fs.promises.rm(repoDir, { recursive: true })
+      await expect(ensureSkillsetCached(ref)).resolves.toBe(repoDir)
+      await expect(getSkillsetIndex(ref)).resolves.toEqual(replacement)
+      expect(download).toHaveBeenCalledTimes(1)
+    })
+  })
+
   // ============================================================================
   // Cache Corruption Recovery (nuke-and-reclone)
   // ============================================================================
@@ -1272,7 +1343,7 @@ Instructions here`
       await createSkillsetCache('platform--repo', index)
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
 
@@ -1298,7 +1369,7 @@ Instructions here`
       await createSkillsetCache('platform--repo', buildIndex())
 
       const platformAuthMod = await import('@shared/lib/services/platform-auth-service')
-      vi.mocked(platformAuthMod.getPlatformAccessToken).mockReturnValue('plat_test_xx')
+      vi.mocked(platformAuthMod.getPlatformAccessToken).mockResolvedValue('plat_test_xx')
       const proxyMod = await import('@shared/lib/platform-auth/config')
       vi.mocked(proxyMod.getPlatformProxyBaseUrl).mockReturnValue('https://platform.example')
 

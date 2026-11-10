@@ -254,7 +254,7 @@ export function SessionContextMenu({
         <ContextMenuTrigger asChild>
           {children}
         </ContextMenuTrigger>
-        <ContextMenuContent className="w-56 rounded-xl p-2" data-testid="session-context-menu">
+        <ContextMenuContent className="w-56 rounded-popover p-2" data-testid="session-context-menu">
           {isOwner && (
             <ContextMenuItem
               data-testid="rename-session-item"
@@ -278,7 +278,7 @@ export function SessionContextMenu({
                 <Split className="h-4 w-4 mr-2" />
                 Fork Session
               </ContextMenuSubTrigger>
-              <ContextMenuSubContent className="rounded-xl p-2" data-testid="fork-session-menu">
+              <ContextMenuSubContent className="rounded-popover p-2" data-testid="fork-session-menu">
                 {/* Also on the rows: the source can go active while the submenu is open. */}
                 <ContextMenuItem data-testid="fork-session-item" disabled={forkDisabled} onSelect={fork.onSelect}>
                   <MenuActionIcon icon={Split} status={fork.status} />
@@ -326,7 +326,7 @@ export function SessionContextMenu({
             </>
           )}
           <div
-            className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-md bg-muted px-2 py-1.5 text-xs"
+            className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-item bg-muted px-2 py-1.5 text-xs"
             data-testid="session-usage-totals"
           >
             {usage.status === 'loading' || usage.status === 'idle' ? (

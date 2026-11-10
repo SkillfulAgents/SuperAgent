@@ -46,7 +46,7 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
  *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
  *   - xAI grok: `service_tier` priority only (2x when granted) → normal/fast.
- *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 / 4.8 → normal/fast.
+ *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
  *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
  *     request param — the proxy swaps the outbound model id → normal/fast.
@@ -54,8 +54,12 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
 const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 
-// Anthropic fast mode covers Opus 5.5, 5 and 4.8 (4.7's was removed 2026-07-24).
-const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5'])
+// Anthropic fast mode covers Opus 5.5 and 5, and Fable 5.2 (not 5.1 or 5).
+// Opus 4.7's was removed 2026-07-24; Opus 4.8's is deprecated and is removed
+// 2026-11-30, after which a fast request errors instead of falling back, so the
+// picker stopped offering it early. Must match the Platform proxy's
+// FAST_MODE_MODELS (apps/proxy/src/gateway/speed-mapping.ts).
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-5', 'claude-opus-5-5', 'claude-fable-5-2'])
 
 /** Claude entries with the speed tiers the Platform proxy can request. */
 function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
@@ -99,7 +103,7 @@ export const CLAUDE_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[]
   },
 ]
 
-/** Platform-specific default-model shortlist. The provider default is Grok. */
+/** Platform-specific default-model shortlist. The provider default is Sonnet. */
 export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
   {
     model: 'opus',
@@ -107,6 +111,14 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     tag: 'Deep reasoning',
     description: 'Best for complex, multi-step tasks.',
     subdescription: 'A premium choice for the hardest agent work.',
+  },
+  {
+    model: 'sonnet',
+    label: 'Sonnet',
+    resolveLabelFromCatalog: true,
+    tag: 'Recommended',
+    description: 'Fast, capable, and efficient for everyday agent work.',
+    subdescription: 'The default model for Gamut Platform.',
   },
   {
     model: 'gpt-sol',
@@ -120,9 +132,9 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     model: 'grok',
     label: 'Grok',
     resolveLabelFromCatalog: true,
-    tag: 'Recommended',
-    description: 'Fast, capable, and efficient for everyday agent work.',
-    subdescription: 'The default model for Gamut Platform.',
+    tag: 'xAI flagship',
+    description: 'Fast and capable for everyday agent work.',
+    subdescription: 'An efficient alternative to Sonnet.',
   },
 ]
 
@@ -233,10 +245,21 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     id: 'claude-fable-5-1',
     label: 'Fable 5.1',
     family: 'fable',
-    isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-fable-5-1'),
+  },
+  {
+    // Fable 5.2 (2026-11-09): the CLI's bare `fable` alias resolves here from
+    // 2.1.321, at $8/$40 per Mtok against Fable 5.1's $10/$50. Same surface as
+    // 5.1 (thinking always on, effort is the only depth control).
+    id: 'claude-fable-5-2',
+    label: 'Fable 5.2',
+    family: 'fable',
+    isLatest: true,
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-fable-5-2'),
   },
 ]
 

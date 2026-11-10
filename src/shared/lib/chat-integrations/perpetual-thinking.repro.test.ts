@@ -26,6 +26,7 @@ import {
   startIndicatorTick,
   stopIndicatorTick,
   INDICATOR_TICK_MS,
+  STREAM_FIRST_POST_CHARS,
   type ManagedConnector,
 } from './chat-delivery'
 import { TelegramConnector } from './telegram-connector'
@@ -428,7 +429,7 @@ describe('session_idle finalizes the streamed reply', () => {
   it('commits the accumulated text on idle', async () => {
     const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-i')
-    await processSSEEvent(managed, { type: 'stream_delta', text: 'Answer.' })
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'Answer.'.padEnd(STREAM_FIRST_POST_CHARS, '.') })
     await processSSEEvent(managed, { type: 'session_idle' })
     expect(connector.finalizedMessages.some((m) => /Answer\./.test(m.finalText))).toBe(true)
   })

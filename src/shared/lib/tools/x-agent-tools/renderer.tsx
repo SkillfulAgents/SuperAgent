@@ -76,7 +76,7 @@ function CreateAgentExpandedView({ input, result, isError }: ToolRendererProps) 
       {instructions && (
         <div>
           <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">Instructions</div>
-          <pre className="whitespace-pre-wrap rounded bg-background p-2 text-xs">{instructions}</pre>
+          <pre className="whitespace-pre-wrap rounded-item bg-background p-2 text-xs">{instructions}</pre>
         </div>
       )}
       {createdSlug && (
@@ -135,7 +135,7 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
       {prompt && (
         <div>
           <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">Prompt</div>
-          <div className="bg-background rounded p-2 text-xs whitespace-pre-wrap">
+          <div className="bg-background rounded-item p-2 text-xs whitespace-pre-wrap">
             {prompt}
           </div>
         </div>
@@ -145,7 +145,7 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
           <div className="mb-1 text-xs font-medium tracking-wider text-muted-foreground">
             Attachments ({attachments.length})
           </div>
-          <ul className="space-y-1 rounded bg-background p-2 text-xs">
+          <ul className="space-y-1 rounded-item bg-background p-2 text-xs">
             {attachments.map((path, index) => (
               <li key={`${path}-${index}`}>
                 <code className="break-all">{path}</code>

@@ -283,6 +283,18 @@ describe('MainStream', () => {
       expect(events.at(-1)).toEqual({ type: 'thinking_delta', thinkingId: 'msg_1:2', text: 'still thinking' })
     })
 
+    it('reads thinking from a delta whose block start was missed, and ends that block at its stop', () => {
+      const { stream, events } = recordingStream()
+      stream.event(messageStart('msg_1'))
+
+      stream.event(thinkingDelta('still thinking', 2))
+      expect(stream.isThinking).toBe(true)
+
+      stream.event(blockStop(2))
+      expect(stream.isThinking).toBe(false)
+      expect(events.at(-1)).toEqual({ type: 'thinking_stop', thinkingId: 'msg_1:2' })
+    })
+
     it('has no id for a block whose message start was missed', () => {
       const { stream, events } = recordingStream()
 
@@ -318,79 +330,6 @@ describe('MainStream', () => {
         { type: 'thinking_stop', thinkingId: 'msg_1:0' },
         { type: 'thinking_stop', thinkingId: 'msg_1:2' },
       ])
-    })
-  })
-
-  describe('usage', () => {
-    it('reports one call\'s usage as the context size, defaulting missing counts to zero', () => {
-      const { stream, events } = recordingStream()
-
-      stream.reportUsage({ input_tokens: 100, cache_read_input_tokens: 900 })
-
-      const expected = {
-        inputTokens: 100,
-        outputTokens: 0,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 900,
-        contextWindow: 200_000,
-      }
-      expect(stream.lastUsage).toEqual(expected)
-      expect(events).toEqual([{ type: 'context_usage', ...expected }])
-    })
-
-    it('takes the final usage from message_delta', () => {
-      const { stream, events } = recordingStream()
-
-      stream.event({ type: 'message_delta', usage: { input_tokens: 10, output_tokens: 5 } })
-
-      expect(stream.lastUsage).toMatchObject({ inputTokens: 10, outputTokens: 5 })
-      expect(events.map((e) => e.type)).toEqual(['context_usage'])
-    })
-
-    it('ignores a message_delta whose usage carries no token counts', () => {
-      const { stream, events } = recordingStream()
-
-      stream.event({ type: 'message_delta', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 50 } })
-      stream.event({ type: 'message_delta' })
-
-      expect(stream.lastUsage).toBeNull()
-      expect(events).toEqual([])
-    })
-
-    it('settles the latest call\'s usage against the window the result names, and returns it', () => {
-      const { stream, events } = recordingStream()
-      stream.reportUsage({ input_tokens: 100, output_tokens: 20 })
-      events.length = 0
-
-      const settled = stream.settleUsage(1_000_000)
-
-      const expected = {
-        inputTokens: 100,
-        outputTokens: 20,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0,
-        contextWindow: 1_000_000,
-      }
-      expect(settled).toEqual(expected)
-      expect(events).toEqual([{ type: 'context_usage', ...expected }])
-    })
-
-    it('keeps the window it has when the result names none', () => {
-      const { stream } = recordingStream()
-      stream.contextWindow = 500_000
-      stream.reportUsage({ input_tokens: 1 })
-
-      expect(stream.settleUsage(undefined)?.contextWindow).toBe(500_000)
-    })
-
-    it('returns nothing to settle before any usage, but remembers the window for the next report', () => {
-      const { stream, events } = recordingStream()
-
-      expect(stream.settleUsage(1_000_000)).toBeNull()
-      expect(events).toEqual([])
-
-      stream.reportUsage({ input_tokens: 1 })
-      expect(stream.lastUsage?.contextWindow).toBe(1_000_000)
     })
   })
 

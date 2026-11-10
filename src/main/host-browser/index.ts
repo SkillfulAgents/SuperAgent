@@ -22,8 +22,8 @@ const providerMap: Record<string, HostBrowserProvider> = {
  * Get the active host browser provider based on settings.
  * Returns null when in "Container (built-in)" mode (no host browser provider selected).
  */
-export function getActiveProvider(): HostBrowserProvider | null {
-  const settings = getSettings()
+export async function getActiveProvider(): Promise<HostBrowserProvider | null> {
+  const settings = await getSettings()
   const providerId = settings.app?.hostBrowserProvider
   if (!providerId) return null
   return providerMap[providerId] ?? null
@@ -33,8 +33,8 @@ export function getActiveProvider(): HostBrowserProvider | null {
  * Detect availability of all host browser providers.
  * Used by the settings API to populate the provider dropdown.
  */
-export function detectAllProviders(): HostBrowserProviderStatus[] {
-  return [chromeProvider.detect(), browserbaseProvider.detect(), platformBrowserProvider.detect()]
+export async function detectAllProviders(): Promise<HostBrowserProviderStatus[]> {
+  return Promise.all([chromeProvider.detect(), browserbaseProvider.detect(), platformBrowserProvider.detect()])
 }
 
 /**

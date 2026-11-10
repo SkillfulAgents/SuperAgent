@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
@@ -16,8 +16,12 @@ import { useNavigate } from '@tanstack/react-router'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { sortSessionsByActivity, type SessionSortOrder } from '@shared/lib/session-ordering'
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
+import { UserAvatarStack } from '@renderer/components/ui/user-avatar-stack'
+import { cn } from '@shared/lib/utils/cn'
+import type { ApiSession } from '@shared/lib/types/api'
+import type { UserSummary } from '@shared/lib/user-profile-schema'
 
-interface SessionItem {
+export interface SessionItem {
   id: string
   name: string
   createdAt: string
@@ -27,6 +31,24 @@ interface SessionItem {
   hasUnreadNotifications?: boolean
   hasUnreadMention?: boolean
   pendingWakeAt?: string
+  /** The people who wrote in it, in the order they first did (auth mode). */
+  participants?: UserSummary[]
+}
+
+/** A session from the API as a row. Its dates arrive as JSON strings, though typed as `Date`. */
+export function toSessionItem(s: ApiSession): SessionItem {
+  return {
+    id: s.id,
+    name: s.name,
+    createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
+    lastActivityAt: typeof s.lastActivityAt === 'string'
+      ? s.lastActivityAt
+      : new Date(s.lastActivityAt).toISOString(),
+    isActive: s.isActive,
+    isAwaitingInput: s.isAwaitingInput,
+    hasUnreadNotifications: s.hasUnreadNotifications,
+    participants: s.participants,
+  }
 }
 
 interface RelatedSessionsProps {
@@ -42,13 +64,20 @@ interface RelatedSessionsProps {
   dateAsTitle?: boolean
   formatSubtext?: (date: string) => string
   pageSize?: number
+  /** Cap the ordered results before pagination (for a recent-sessions preview). */
+  limit?: number
+  awaitingFirst?: boolean
+  /** Shown right under the last row, above the page controls. */
+  afterRows?: ReactNode
+  /** Draw each row's participants, as the sidebar draws a shared agent's members. */
+  showParticipants?: boolean
 }
 
 export type SortOrder = SessionSortOrder
 
 const DEFAULT_PAGE_SIZE = 10
 
-export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp, dateAsTitle = false, formatSubtext, pageSize = DEFAULT_PAGE_SIZE }: RelatedSessionsProps) {
+export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp, dateAsTitle = false, formatSubtext, pageSize = DEFAULT_PAGE_SIZE, limit, awaitingFirst = false, afterRows, showParticipants = false }: RelatedSessionsProps) {
   const [page, setPage] = useState(0)
   const [sortOrderInternal, setSortOrder] = useState<SortOrder>('newest')
   const sortOrder = sortOrderProp ?? sortOrderInternal
@@ -59,17 +88,19 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
     return sessions.filter((s) => s.name.toLowerCase().includes(q))
   }, [sessions, searchQuery])
 
-  const sorted = useMemo(() => sortSessionsByActivity(filtered, sortOrder), [filtered, sortOrder])
-
-  // Reset page when search query changes
-  const prevQuery = useRef(searchQuery)
-  if (prevQuery.current !== searchQuery) {
-    prevQuery.current = searchQuery
-    if (page !== 0) setPage(0)
-  }
-
+  const sorted = useMemo(
+    () => sortSessionsByActivity(filtered, sortOrder, { awaitingFirst }).slice(0, limit),
+    [filtered, sortOrder, awaitingFirst, limit],
+  )
   const totalPages = Math.ceil(sorted.length / pageSize)
-  const paginated = sorted.slice(page * pageSize, (page + 1) * pageSize)
+  // A changed view starts on its first page; deleting/settling rows can also remove the current page.
+  const previous = useRef({ searchQuery, sortOrder, pageSize, limit, awaitingFirst })
+  const viewChanged = previous.current.searchQuery !== searchQuery || previous.current.sortOrder !== sortOrder
+    || previous.current.pageSize !== pageSize || previous.current.limit !== limit || previous.current.awaitingFirst !== awaitingFirst
+  previous.current = { searchQuery, sortOrder, pageSize, limit, awaitingFirst }
+  const currentPage = viewChanged ? 0 : Math.min(page, Math.max(0, totalPages - 1))
+  if (page !== currentPage) setPage(currentPage)
+  const paginated = sorted.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
 
   if (sessions.length === 0) return null
 
@@ -80,7 +111,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
           <h3 className="text-sm font-medium text-muted-foreground">
             {title ?? 'Related Sessions'}
           </h3>
-          <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as SortOrder); setPage(0) }}>
+          <Select value={sortOrder} onValueChange={(v) => setSortOrder(v as SortOrder)}>
             <SelectTrigger className="h-7 w-[130px]">
               <SelectValue />
             </SelectTrigger>
@@ -102,13 +133,15 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
             searchQuery={searchQuery}
             dateAsTitle={dateAsTitle}
             formatSubtext={formatSubtext}
+            showParticipants={showParticipants}
           />
         ))}
       </div>
+      {afterRows}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-3">
           <span className="text-xs text-muted-foreground">
-            Page {page + 1} of {totalPages}
+            Page {currentPage + 1} of {totalPages}
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -116,7 +149,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
               size="icon"
               className="h-7 w-7"
               onClick={() => setPage((p) => p - 1)}
-              disabled={page === 0}
+              disabled={currentPage === 0}
               aria-label="Previous page"
             >
               <ChevronLeft className="h-3.5 w-3.5" />
@@ -126,7 +159,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
               size="icon"
               className="h-7 w-7"
               onClick={() => setPage((p) => p + 1)}
-              disabled={page >= totalPages - 1}
+              disabled={currentPage >= totalPages - 1}
               aria-label="Next page"
             >
               <ChevronRight className="h-3.5 w-3.5" />
@@ -138,7 +171,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
   )
 }
 
-function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, searchQuery, dateAsTitle = false, formatSubtext }: { session: SessionItem; showIcon: boolean; formatDate: (date: string) => string; agentSlug?: string; searchQuery?: string; dateAsTitle?: boolean; formatSubtext?: (date: string) => string }) {
+function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, searchQuery, dateAsTitle = false, formatSubtext, showParticipants = false }: { session: SessionItem; showIcon: boolean; formatDate: (date: string) => string; agentSlug?: string; searchQuery?: string; dateAsTitle?: boolean; formatSubtext?: (date: string) => string; showParticipants?: boolean }) {
   const { selectedAgentSlug } = useRouteLocation()
   const navigate = useNavigate()
   const agentSlug = agentSlugProp ?? selectedAgentSlug
@@ -200,6 +233,9 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
           </div>
         )}
       </div>
+      {showParticipants && !!session.participants?.length && (
+        <ParticipantFaces participants={session.participants} hasMenu={!!agentSlug} sessionId={session.id} />
+      )}
       {agentSlug && (
         <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity">
           {/* Three-dot = the same session menu a right-click on this row (or
@@ -250,5 +286,30 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
     >
       {row}
     </SessionContextMenu>
+  )
+}
+
+function participantName(person: UserSummary): string {
+  return person.name || person.email || 'Someone'
+}
+
+function ParticipantFaces({ participants, hasMenu, sessionId }: { participants: UserSummary[]; hasMenu: boolean; sessionId: string }) {
+  const names = participants.map(participantName).join(', ')
+  return (
+    // Laid out beside the options button's spot, so the name truncates before
+    // it either way; at rest the faces slide into that spot, flush right, and
+    // they make room again whenever the button shows (hover, keyboard focus,
+    // or always on touch). Like the sidebar's member faces.
+    <span
+      className={cn(
+        'shrink-0',
+        hasMenu && 'mr-7 translate-x-7 transition-transform duration-200 ease-out group-hover:translate-x-0 group-has-[:focus-visible]:translate-x-0 touch:translate-x-0 motion-reduce:transition-none',
+      )}
+      title={names}
+      data-testid={`session-participants-${sessionId}`}
+    >
+      <UserAvatarStack users={participants} />
+      <span className="sr-only">, with {names}</span>
+    </span>
   )
 }

@@ -1,11 +1,16 @@
 import { ProviderUsage } from './provider-usage'
 import { ProviderLogo } from './provider-logo'
 import { SubscriptionSignIn } from './subscription-sign-in'
+import { OllamaSetupPanel } from './ollama-setup-panel'
+import { OllamaModelsDialog } from './model-catalog/ollama-models-dialog'
+import { useServerStatus, type ModelServerTarget } from '@renderer/hooks/use-model-server'
+import { mergeInstalledModels } from '@shared/lib/llm-provider/ollama-catalog'
+import { normalizeOllamaBaseUrl } from '@shared/lib/llm-provider/ollama-schema'
 import { CopyableValue, SetupPanel, SetupSteps } from './setup-steps'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import { withGlobalModelPricing } from '@shared/lib/llm-provider/global-pricing'
 import type { GlobalModelPricing } from '@shared/lib/llm-provider/global-pricing-schema'
-import { useCallback, useId, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -26,6 +31,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useModelSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLlmConnections, useConnectionMutation } from '@renderer/hooks/use-llm-connections'
 import { ProviderModelPickerPopover, SettingsModelSelect } from './settings-model-select'
+import { ReconnectRequiredIcon } from './provider-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
 import type { CatalogOverrideEntry } from '@shared/lib/llm-provider/model-catalog-schema'
@@ -42,7 +48,7 @@ const SIGN_IN_PROVIDER: Record<OAuthProvider, SubscriptionSignInProvider> = {
   'grok-subscription': 'grok', 'codex-subscription': 'codex', 'kimi-subscription': 'kimi', 'minimax-subscription': 'minimax',
 }
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 // Shared by connection rows and the Add connection row so the list keeps one row height.
 const CONNECTION_ROW = 'min-h-[3.75rem] py-3 px-4 flex items-center'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
@@ -57,6 +63,7 @@ const providers = {
   'minimax-subscription': 'MiniMax Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
+  ollama: 'Ollama',
   generic: 'Generic',
 }
 // Example names for the connection-name placeholder.
@@ -69,6 +76,7 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'minimax-subscription': 'Personal MiniMax',
   openrouter: 'Shared OpenRouter',
   bedrock: 'Bedrock us-east-1',
+  ollama: 'Local Ollama',
   generic: 'Local vLLM server',
 }
 // Shown on the provider cards that open the Add connection flow.
@@ -81,6 +89,7 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'minimax-subscription': 'Sign in with your MiniMax account to use your Token Plan.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
+  ollama: 'Run open models on your own hardware, with no API key.',
   generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',
 }
 export function LlmConnectionsTab() {
@@ -91,6 +100,7 @@ export function LlmConnectionsTab() {
   const mutation = useConnectionMutation()
   // 'pick' shows the provider cards; picking one opens the editor for a new connection with that provider.
   const [editing, setEditing] = useState<ConnectionInfo | 'pick' | { provider: LlmProviderId } | null>(null)
+  const [reconnecting, setReconnecting] = useState<ConnectionInfo | null>(null)
   const defaultRequiresSummarizer = data?.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false
   const summarizerSelection = data?.summarizerSelection ?? (defaultRequiresSummarizer ? null : data?.defaultSelection)
   const changeDefault = (purpose: string, selection: ModelSelection | null) =>
@@ -113,15 +123,28 @@ export function LlmConnectionsTab() {
           {data?.connections.map((connection) => (
             <div key={connection.id} className={cn(CONNECTION_ROW, 'gap-3')}>
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium truncate">{connection.name}</div>
+                <div className="flex items-center gap-1.5 text-xs font-medium">
+                  <span className="truncate">{connection.name}</span>
+                  {connection.reconnectRequired && <ReconnectRequiredIcon />}
+                </div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">
                   {connection.userId ? (connection.ownerName ?? 'Personal') : 'Global'}
                   {connection.accountLabel ? ` · ${connection.accountLabel}` : ''}
                   {connection.managed ? ' · Managed by your Platform login' : ''}
                   {!connection.isConfigured ? ' · Not configured' : ''}
+                  {connection.reconnectRequired && (
+                    <span className="text-destructive">
+                      {' · '}Sign-in expired{connection.canManage ? '' : '. Ask an admin to reconnect.'}
+                    </span>
+                  )}
                 </div>
-                <ProviderUsage connection={connection} />
+                {!connection.reconnectRequired && <ProviderUsage connection={connection} />}
               </div>
+              {connection.reconnectRequired && connection.canManage && isOAuthProvider(connection.provider) && (
+                <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => setReconnecting(connection)}>
+                  Reconnect
+                </Button>
+              )}
               <ConnectionRowMenu
                 connection={connection}
                 deleting={mutation.isPending}
@@ -162,6 +185,11 @@ export function LlmConnectionsTab() {
                 onClose={() => setEditing(null)}
               />
             )}
+          </DialogContent>
+        </Dialog>
+        <Dialog open={reconnecting !== null} onOpenChange={(open) => { if (!open) setReconnecting(null) }}>
+          <DialogContent className="gap-6 p-10 sm:max-w-lg" aria-describedby={undefined}>
+            {reconnecting && <ReconnectConnection key={reconnecting.id} connection={reconnecting} onClose={() => setReconnecting(null)} />}
           </DialogContent>
         </Dialog>
       </div>
@@ -235,6 +263,56 @@ export function LlmConnectionsTab() {
     </div>
   )
 }
+// Signs in again on the same connection, so defaults and agents that reference it keep working.
+function ReconnectConnection({ connection, onClose }: { connection: ConnectionInfo; onClose: () => void }) {
+  const { mutate, isPending } = useConnectionMutation()
+  const provider = connection.provider as OAuthProvider
+  // The sign-in poller restarts whenever its callback changes, so it reads the latest props through a ref.
+  const latest = useRef({ connection, onClose })
+  latest.current = { connection, onClose }
+  const connected = useCallback((oauthLoginId: string) => {
+    const { connection, onClose } = latest.current
+    mutate(
+      {
+        path: `/${connection.id}`,
+        method: 'PUT',
+        body: {
+          name: connection.name,
+          provider: connection.provider,
+          userId: connection.userId,
+          oauthLoginId,
+          config: { apiKeys: {} },
+          browserModel: connection.browserModel,
+          dashboardModel: connection.dashboardModel,
+        },
+      },
+      {
+        onSuccess: () => { toast.success(`Reconnected ${connection.name}`); onClose() },
+        onError: (e) => toast.error(e.message),
+      }
+    )
+  }, [mutate])
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Reconnect {connection.name}</DialogTitle>
+      </DialogHeader>
+      <p className="text-sm text-muted-foreground">
+        Sign in again to get a new token. This connection, its models and every default that uses it stay as they are.
+      </p>
+      <SubscriptionSignIn
+        provider={SIGN_IN_PROVIDER[provider]}
+        connectionId={connection.id}
+        userId={connection.userId}
+        accountLabel={connection.accountLabel}
+        expired
+        region={connection.region}
+        onConnected={connected}
+      />
+      {isPending && <p role="status" className="text-sm text-muted-foreground">Saving…</p>}
+    </>
+  )
+}
 function ConnectionRowMenu({
   connection,
   deleting,
@@ -270,7 +348,7 @@ function ConnectionRowMenu({
               setOpen(false)
               onEdit()
             }}
-            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left"
+            className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted text-left"
           >
             <Pencil className="h-4 w-4" />
             Edit
@@ -283,7 +361,7 @@ function ConnectionRowMenu({
             setOpen(false)
             onDelete()
           }}
-          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left text-destructive disabled:pointer-events-none disabled:opacity-50"
+          className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted text-left text-destructive disabled:pointer-events-none disabled:opacity-50"
         >
           <Trash2 className="h-4 w-4" />
           Delete
@@ -339,10 +417,10 @@ function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void 
             key={id}
             type="button"
             onClick={() => onPick(id)}
-            className="flex items-start gap-4 rounded-xl border p-5 text-left transition-colors hover:border-muted-foreground/50 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex items-start gap-4 rounded-card border p-5 text-left transition-colors hover:border-muted-foreground/50 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {/* The AWS logo's wordmark is near-black, so its tile stays light in dark mode. */}
-            <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-background', id === 'bedrock' && 'dark:bg-white')}>
+            <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-control border bg-background', id === 'bedrock' && 'dark:bg-white')}>
               <ProviderLogo provider={id} />
             </span>
             <span className="min-w-0">
@@ -352,6 +430,36 @@ function ProviderPicker({ onPick }: { onPick: (provider: LlmProviderId) => void 
           </button>
         ))}
       </div>
+    </>
+  )
+}
+// Rendered only for Ollama, so another provider's editor never polls for it.
+function OllamaConnectionSection({ connectionId, owner, baseUrl, onBaseUrlChange, modelsOpen, onModelsOpenChange, canDownload, onOverrides }: {
+  connectionId?: string
+  owner: string | null
+  baseUrl: string
+  onBaseUrlChange: (baseUrl: string) => void
+  modelsOpen: boolean
+  onModelsOpenChange: (open: boolean) => void
+  canDownload: boolean
+  onOverrides: (update: (current: CatalogOverrideEntry[]) => CatalogOverrideEntry[]) => void
+}) {
+  const target = useMemo<ModelServerTarget>(
+    () => ({ id: connectionId, connection: { provider: 'ollama', userId: owner, config: { apiKeys: { ollamaBaseUrl: baseUrl } } } }),
+    [connectionId, owner, baseUrl],
+  )
+  const status = useServerStatus(target)
+  const installed = status.data?.state === 'running' ? status.data.models : undefined
+  // Show what is installed while editing, so the default-model pickers can offer it
+  // before a save. Add-only: the server drops what was uninstalled, and knows which
+  // models a default still holds onto.
+  useEffect(() => {
+    if (installed) onOverrides(current => mergeInstalledModels(current, installed, { remove: false }))
+  }, [installed, onOverrides])
+  return (
+    <>
+      <OllamaSetupPanel target={target} baseUrl={baseUrl} onBaseUrlChange={onBaseUrlChange} onManageModels={() => onModelsOpenChange(true)} canDownload={canDownload} />
+      <OllamaModelsDialog open={modelsOpen} onOpenChange={onModelsOpenChange} target={target} canDownload={canDownload} />
     </>
   )
 }
@@ -424,6 +532,10 @@ export function ConnectionEditor({
   }
   const [region, setRegion] = useState(existing?.region ?? 'us-east-1')
   const [overrides, setOverrides] = useState<CatalogOverrideEntry[]>(existing?.modelOverrides ?? [])
+  const isOllama = provider === 'ollama'
+  // Only Ollama's address: another provider's saved URL need not pass Ollama's rules.
+  const [ollamaUrl, setOllamaUrl] = useState(() => normalizeOllamaBaseUrl(isOllama ? existing?.baseUrl : undefined))
+  const [ollamaModelsOpen, setOllamaModelsOpen] = useState(false)
   const catalog = withGlobalModelPricing(mergeCatalog(catalogFor(provider), overrides), modelPricing)
   const [browserModel, setBrowserModel] = useState(existing?.browserModel ?? '')
   const [dashboardModel, setDashboardModel] = useState(existing?.dashboardModel ?? '')
@@ -441,6 +553,7 @@ export function ConnectionEditor({
       if (provider === 'bedrock') apiKeys.bedrockApiKey = apiKey
     }
     if (provider === 'generic' && (!existing || baseUrl !== (existing.baseUrl ?? ''))) apiKeys.genericBaseUrl = baseUrl
+    if (isOllama && (!existing || ollamaUrl !== existing.baseUrl)) apiKeys.ollamaBaseUrl = ollamaUrl
     if (provider === 'bedrock') {
       if (!existing || region !== (existing.region ?? 'us-east-1')) apiKeys.bedrockRegion = region
       if (accessKey && secretKey && !apiKey) apiKeys.bedrockApiKey = ''
@@ -516,7 +629,19 @@ export function ConnectionEditor({
           </Select>
         </FieldRow>
       )}
-      {provider !== 'platform' && !isOAuthProvider(provider) && (
+      {isOllama && (
+        <OllamaConnectionSection
+          connectionId={existing?.id}
+          owner={owner}
+          baseUrl={ollamaUrl}
+          onBaseUrlChange={setOllamaUrl}
+          modelsOpen={ollamaModelsOpen}
+          onModelsOpenChange={setOllamaModelsOpen}
+          canDownload={admin}
+          onOverrides={setOverrides}
+        />
+      )}
+      {provider !== 'platform' && !isOAuthProvider(provider) && !isOllama && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiKey`}>{provider === 'claude-subscription' ? 'Subscription token' : 'API key'}</label>
           <div className="flex gap-2">
@@ -545,7 +670,7 @@ export function ConnectionEditor({
         </div>
       )}
       {provider === 'claude-subscription' && <ClaudeSetupTokenSteps />}
-      {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} region={existing?.region} onConnected={connected} onSetupEvent={onSetupEvent} />}
+      {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} expired={!!existing?.reconnectRequired && !oauthLoginId} region={existing?.region} onConnected={connected} onSetupEvent={onSetupEvent} />}
       {provider === 'generic' && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiFormat`}>API format</label>
@@ -619,7 +744,7 @@ export function ConnectionEditor({
       )}
       <div className="grid gap-2 text-sm">
         Model Defaults
-        <div className="overflow-hidden rounded-lg border divide-y divide-border/50" data-testid="connection-default-models">
+        <div className="overflow-hidden rounded-card border divide-y divide-border/50" data-testid="connection-default-models">
           {([
             { label: 'Browser model', description: 'Runs web browsing for agents.', model: browserModel, onPick: setBrowserModel },
             // Stored as the dashboard model; users know dashboards as agentic apps.
@@ -649,7 +774,7 @@ export function ConnectionEditor({
           Advanced Settings
           <ChevronDown className="h-4 w-4 shrink-0 opacity-70 transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
         </CollapsibleTrigger>
-        <CollapsibleContent className="overflow-hidden rounded-lg border divide-y divide-border/50">
+        <CollapsibleContent className="overflow-hidden rounded-card border divide-y divide-border/50">
           <div data-testid="connection-env-editor">
             <div className="flex flex-col px-4 py-3">
               <span className="flex items-center gap-2 text-xs font-medium">
@@ -662,7 +787,7 @@ export function ConnectionEditor({
             </div>
             <div className="space-y-3 px-4 pb-4">
               {envEntries.length > 0 && (
-                <div className="divide-y divide-border/50 rounded-md border">
+                <div className="divide-y divide-border/50 rounded-card border">
                   {envEntries.map(([key, value]) => (
                     <div key={key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 py-1.5 pl-3 pr-1.5" data-testid="connection-env-row">
                       <span className="truncate font-mono text-xs" title={key}>{key}</span>
@@ -702,6 +827,7 @@ export function ConnectionEditor({
               providerId={provider}
               llmProviderId={existing?.id}
               supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || isOAuthProvider(provider))}
+              managedModels={isOllama ? { description: 'Every model Ollama has downloaded is listed here. Uncheck any agents should not use.', sectionLabel: 'Downloaded', priceText: 'Runs locally', addLabel: admin ? 'Download models' : 'View models', onAdd: () => setOllamaModelsOpen(true) } : undefined}
               builtinCatalog={catalogFor(provider)}
               effectiveCatalog={catalog}
               modelCatalog={{ [provider]: { overrides } }}

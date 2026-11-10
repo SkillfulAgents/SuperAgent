@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
-import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 import { db } from '@shared/lib/db'
 import { mcpAuditLog } from '@shared/lib/db/schema'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
@@ -18,6 +18,11 @@ import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 // handshake. Treat it as protocol chatter: without this every remote MCP
 // server raised an "Allow POST request?" review card per session.
 const MCP_ERA_PROBE_METHOD = 'server/discover'
+
+// The agent session behind an MCP call, sent by the container so a card the
+// call raises (re-auth, review) shows in that session only. It places the card
+// and nothing else, and is never forwarded to the upstream server.
+const CALLER_SESSION_HEADER = 'x-superagent-session-id'
 
 class McpSessionInitializationError extends Error {
   constructor(
@@ -239,6 +244,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   const method = c.req.method
   const clientMcpSessionId = c.req.header('Mcp-Session-Id')
+  const callerSessionId = c.req.header(CALLER_SESSION_HEADER) || undefined
   // The proxy's own sessions with this MCP are the agent's.
   const actor = agentRegistry.get(agentSlug)
 
@@ -301,7 +307,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     }
     const failure = MCP_REAUTH_FAILURES[result.reason]
     const { statusCode, error } = failure
-    const message = withDismissalReason(failure.message, result.dismissReason)
+    const message = withUserReason(failure.message, result.dismissReason)
 
     await logMcpAuditEntry({
       agentSlug,
@@ -400,7 +406,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     mcpMethodInfo.startsWith('notifications/')
 
   const access = await mcp.authorizeInvocation({
-    method, requestPath: mcpMethodInfo, toolName, args: toolArgs, isProtocolMethod, signal: c.req.raw.signal,
+    method, requestPath: mcpMethodInfo, toolName, args: toolArgs, isProtocolMethod, signal: c.req.raw.signal, callerSessionId,
   })
   if (!access.ok) {
     const failures = {
@@ -408,7 +414,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         error: 'blocked_by_policy', message: 'This request was blocked by your MCP access policy.',
         tool: toolName, settingsHint: `You can change this on the agent's Connections page: open ${mcp.descriptor.name} and edit its Permissions.`,
       } },
-      denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: 'Request denied by user.', rules: access.rules ?? [] } },
+      denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: withUserReason('Request denied by user.', access.denyReason), rules: access.rules ?? [] } },
       review_timeout: { status: 408, policyDecision: 'review_timeout', body: { error: 'review_timeout', message: 'Request required user approval but timed out.', rules: access.rules ?? [] } },
       rules_unavailable: { status: 503, policyDecision: 'rules_unavailable', body: { error: 'rules_unavailable', message: 'Proxy rules could not be checked. Try again shortly.' } },
     } as const
@@ -425,7 +431,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // Wait only after policy enforcement so blocked calls remain immediate 403s
   // and cannot raise reconnect prompts.
   if (mcp.descriptor.status === 'auth_required') {
-    const reauthResult = await mcp.recoverAuthorization(c.req.raw.signal)
+    const reauthResult = await mcp.recoverAuthorization(c.req.raw.signal, callerSessionId)
     if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
   }
 
@@ -436,7 +442,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     if (authorization.ok) return authorization
     const protocolResponse = await authRequiredProtocolResponse()
     if (protocolResponse) return protocolResponse
-    const recovered = await mcp.recoverAuthorization(c.req.raw.signal)
+    const recovered = await mcp.recoverAuthorization(c.req.raw.signal, callerSessionId)
     if (!recovered.ok) return reauthFailureResponse(recovered)
     const refreshed = await mcp.authorization()
     return refreshed.ok ? refreshed : reauthFailureResponse({ ok: false, reason: 'inactive' })
@@ -455,6 +461,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     'content-length',
     'transfer-encoding',
     'accept-encoding',
+    CALLER_SESSION_HEADER,
   ])
 
   c.req.raw.headers.forEach((value, key) => {
@@ -535,7 +542,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       if (syntheticSession && clientMcpSessionId) await actor.mcpSessions.unbind(clientMcpSessionId, forwardedOn)
       const protocolResponse = await authRequiredProtocolResponse()
       if (protocolResponse) return protocolResponse
-      const reauthResult = await mcp.recoverAuthorization(c.req.raw.signal)
+      const reauthResult = await mcp.recoverAuthorization(c.req.raw.signal, callerSessionId)
       if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
       const refreshed = await mcp.authorization()
       if (!refreshed.ok) return reauthFailureResponse({ ok: false, reason: 'inactive' })

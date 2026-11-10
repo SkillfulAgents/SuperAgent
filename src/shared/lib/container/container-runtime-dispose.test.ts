@@ -96,7 +96,7 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => false,
+  isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
@@ -105,6 +105,7 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  remounted: async () => {},
 }))
 
 import { containerHost } from './container-host'
@@ -127,9 +128,9 @@ describe('ContainerRuntime after dropRuntime', () => {
     containerHost.dropRuntime('agent-x')
   })
 
-  it("a live runtime's client callback triggers recovery (control)", () => {
+  it("a live runtime's client callback triggers recovery (control)", async () => {
     const runtime = containerHost.runtime('agent-x')
-    runtime.getClient()
+    await runtime.getClient()
     const recover = vi.spyOn(runtime, 'handleUnexpectedDeath').mockImplementation(() => {})
 
     lastConfig!.onConnectionError!()
@@ -139,7 +140,7 @@ describe('ContainerRuntime after dropRuntime', () => {
 
   it("a dropped runtime ignores its old client's connection error and restart", async () => {
     const runtime = containerHost.runtime('agent-x')
-    runtime.getClient()
+    await runtime.getClient()
     const recover = vi.spyOn(runtime, 'handleUnexpectedDeath')
     const oldConfig = lastConfig!
 
@@ -153,14 +154,14 @@ describe('ContainerRuntime after dropRuntime', () => {
     expect(mockStop).not.toHaveBeenCalled()
   })
 
-  it('the host hands out a fresh runtime whose own callbacks still work', () => {
+  it('the host hands out a fresh runtime whose own callbacks still work', async () => {
     const dropped = containerHost.runtime('agent-x')
-    dropped.getClient()
+    await dropped.getClient()
     containerHost.dropRuntime('agent-x')
 
     const fresh = containerHost.runtime('agent-x')
     expect(fresh).not.toBe(dropped)
-    fresh.getClient()
+    await fresh.getClient()
     const recover = vi.spyOn(fresh, 'handleUnexpectedDeath').mockImplementation(() => {})
 
     lastConfig!.onConnectionError!()

@@ -29,15 +29,17 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = CODEX_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override async toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = CODEX_IMAGE_PROMPT
   override readonly supportsModelSearch = true
   // This integration exposes the subscription through the agent proxy, not a
   // host API client. Existing helper selection supplies a global API provider.
   override readonly supportsDirectApi = false
-  override getEffectiveApiKey() { return this.configuration?.oauth?.accessToken }
-  override getApiKeyStatus() {
-    return this.getEffectiveApiKey() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
+  // Credentials come only from the connection, never from global settings.
+  protected override async ambientSettings() { return undefined }
+  protected override effectiveApiKeyFrom() { return this.configuration?.oauth?.accessToken }
+  override apiKeyStatusFrom() {
+    return this.effectiveApiKeyFrom() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
   }
   private async credential(rejectedGeneration?: number) {
     if (!this.configuration?.resolveCredential) throw new Error('Reconnect Codex in Settings → Model Providers')
@@ -50,7 +52,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
       longContextPriceCliff: undefined, blurb: 'Uses your ChatGPT subscription', supportsWebSearch: true,
     }))
   }
-  createClient(): Anthropic {
+  async createClientFrom(): Promise<Anthropic> {
     throw new Error('Codex Subscription supports agent sessions only. Choose an API-capable global summarizer in Settings → Model Providers.')
   }
   async getContainerEnvVars() { return {} }
@@ -95,7 +97,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
       supportsWebSearch: true,
     }))
   }
-  protected override parseErrorResponseOverride(status: number | undefined, body: unknown, apiErrorCode?: string) {
+  protected override async parseErrorResponseOverride(status: number | undefined, body: unknown, apiErrorCode?: string) {
     const actual = status ?? inferErrorStatus(extractErrorMessage(body))
     if (actual === 401 || apiErrorCode === 'authentication_failed') return { severity: 'error' as const, icon: 'info' as const, message: '**Codex sign-in expired or invalid.** Reconnect in Settings → Model Providers.' }
     if (actual === 402 || actual === 403) return { severity: 'error' as const, icon: 'info' as const, message: '**Codex subscription access was denied.** Check the connected ChatGPT account’s Codex access.' }

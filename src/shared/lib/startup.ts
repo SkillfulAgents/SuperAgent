@@ -1,5 +1,4 @@
 import type { ServerType } from '@hono/node-server'
-import pLimit from 'p-limit'
 import { agentRegistry, containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { taskScheduler } from './scheduler/task-scheduler'
@@ -9,6 +8,10 @@ import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { background } from './background'
+import { serviceHost, stopBackgroundWork, taskManager, type Service } from './background-work'
+import { liveSessions } from './voice/live-sessions'
+import { OllamaCatalogService } from './llm-provider/ollama-service'
+import { TeamDirectoryProvisioningService } from './team-directory/service'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -28,47 +31,155 @@ import { getPlatformAccessToken } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
 import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
+import { setupMeetingFramesSocket } from '../../main/meeting-frames-socket'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
 import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
-import { initErrorReporting, setErrorReportingUser } from './error-reporting'
+import { attachErrorReportingIdentity, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
 import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
 import { configureUploadTimeouts } from './streaming-upload-timeout'
+import { startStaleUploadCleanup, stopStaleUploadCleanup } from './utils/chunked-upload'
 
-const STARTUP_IO_CONCURRENCY = 3
-const startupIoLimit = pLimit(STARTUP_IO_CONCURRENCY)
-let servicesShuttingDown = false
 let servicesInitPromise: Promise<void> | null = null
 let servicesInitError: string | null = null
 let stopWatchingWebhookRelay: (() => void) | null = null
+// The agents boot found, for the container host to initialize.
+let discoveredAgentSlugs: string[] = []
+
+/** Nothing to start: all it has is something to let go of at shutdown. */
+class ReleasedAtShutdown implements Service {
+  constructor(readonly id: string, readonly stop: () => void | Promise<void>) {}
+}
+
+/** Brings up the agents' containers once boot knows the agents, and keeps watch on them. */
+class ContainerHostService implements Service {
+  readonly id = 'container-host'
+  readonly phase = 'eager' as const
+  readonly critical = true
+  readonly tasks = containerHost.tasks
+
+  async start(): Promise<void> {
+    await containerHost.initializeAgents(discoveredAgentSlugs)
+    // Watched once the agents are known, so containers still running from
+    // before this launch get their baseline too; from then on it marks
+    // agents stale whenever the relay's availability moves.
+    stopWatchingWebhookRelay = containerHost.watchWebhookRelay(getWebhookRelay())
+    // Stop the host browser for an agent before its container is torn down,
+    // so the browser closes gracefully instead of getting a "socket hang up".
+    containerHost.onBeforeContainerStop = async (agentId) => {
+      const provider = await getActiveProvider()
+      if (provider?.isRunning(agentId)) {
+        await provider.stop(agentId)
+      }
+    }
+    containerHost.startStatusSync()
+    containerHost.startHealthMonitor()
+  }
+
+  stop(): void {
+    stopWatchingWebhookRelay?.()
+    stopWatchingWebhookRelay = null
+    containerHost.stopStatusSync()
+    containerHost.stopHealthMonitor()
+  }
+}
+
+/** Checks for the container image, and pulls it if it has to. */
+class ContainerImageService implements Service {
+  readonly id = 'container-image'
+  readonly phase = 'background' as const
+  readonly startupIo = true
+
+  start() {
+    return containerHost.ensureImageReady()
+  }
+}
 
 /**
- * Start post-bind I/O through one shared lane so image inspection, overdue
- * tasks, realtime handshakes, and chat connections do not all hit the host at
- * once. Callers remain non-blocking, matching the previous startup contract.
+ * The services every entry point runs, in registration order: `eager` ones start
+ * in this order, and `startupIo` ones take the startup slots in this order, and
+ * everything stops in the reverse of it. See docs/background-work.md.
  */
-function scheduleStartupIo(
-  start: () => Promise<unknown>,
-  stop?: () => void,
-): Promise<unknown> {
-  return startupIoLimit(async () => {
-    if (servicesShuttingDown) return
-    try {
-      return await start()
-    } finally {
-      // A start already in flight can outlive shutdown. Give it a second stop
-      // after settling so it cannot resurrect intervals or sockets.
-      if (servicesShuttingDown) stop?.()
-    }
-  })
+function backgroundServices(): Service[] {
+  return [
+    // Nothing to start, and released last, after everything that uses them.
+    new ReleasedAtShutdown('computer-use', () => shutdownAC()),
+    new ReleasedAtShutdown('active-runner', () => shutdownActiveRunner()),
+    // After the containers, whose runtimes the host still needed: every agent
+    // lets go of what it holds, its parked reviews and re-auth waits included.
+    new ReleasedAtShutdown('agent-registry', () => agentRegistry.evictAll()),
+    new ReleasedAtShutdown('containers', () => containerHost.stopAll()),
+
+    // The host's one connection to the platform webhook queue, shared by every
+    // feature that receives webhooks. Cheap to start: it claims nothing until a
+    // consumer registers, and follows platform connect/disconnect through the
+    // auth-changed notifier. Started before anything can start a container, so
+    // an agent's webhook tools see the relay's real availability. Stopped before
+    // the containers, so it claims nothing during their long stop.
+    getWebhookRelay(),
+    new ContainerHostService(),
+    new OllamaCatalogService(),
+    // Before the containers: browsers and brokers close against a live runtime.
+    new ReleasedAtShutdown('host-browser', async () => {
+      await credentialBroker.shutdown()
+      await stopAllProviders()
+    }),
+
+    // The startup slots go in this order, FIFO, and the last three below can be
+    // slow (image pull on fresh installs; reading every schedule, whose overdue
+    // ones then fire one at a time; the trigger manager's registration reads
+    // every subscribed trigger). The two user-facing connects are cheap
+    // handshakes: they go first, so chat messages and notifications cannot go
+    // dark behind minutes of catch-up work.
+
+    // OS notifications from Supabase Realtime INSERTs. The manager self-gates on
+    // auth mode and platform connectivity; connect/disconnect after launch is
+    // handled by the platform auth-changed notifier.
+    platformNotificationsManager,
+    agentIntegrationManager,
+    new ContainerImageService(),
+    taskScheduler,
+    // Register webhook triggers with the relay. Unconditional: the relay only
+    // claims while the platform is connected, and a connection made after
+    // launch re-syncs the registrations. A personal Composio key must not
+    // disable delivery either, since events are claimed with the platform token.
+    triggerManager,
+
+    // These only schedule their first pass, so they do not take a startup slot.
+    sessionAutoDeleteMonitor,
+    apiLogAutoDeleteMonitor,
+    // Syncs OAuth account status with remote providers.
+    accountSyncService,
+    // Renews team directories' app-creation credentials (Slack's 12-hour configuration token).
+    new TeamDirectoryProvisioningService(),
+    // Refreshes platform account + billing info when connected (no-op otherwise).
+    platformService,
+  ]
 }
 
 /** Non-null when background-service init failed and the server runs degraded. */
 export function getServicesInitError(): string | null {
   return servicesInitError
+}
+
+/**
+ * Registers the services every entry point runs, and their Tasks, on whatever the
+ * entry point installed, and starts nothing. An entry point calls this right after
+ * it installs background work and before it serves, since a request can schedule
+ * work as soon as the API is bound, then registers any of its own. The dev server
+ * repeats it for each request.
+ */
+export function registerBackgroundWork(): void {
+  const host = serviceHost()
+  for (const service of backgroundServices()) {
+    if (!host.isRegistered(service.id)) host.register(service)
+  }
+  // A task on its own: nothing about it starts or stops. A session can be
+  // created as soon as the API is bound.
+  taskManager().register(liveSessions.hangUpTask)
 }
 
 /** Idempotent; call only via afterBindInitialize (or tests). */
@@ -85,6 +196,9 @@ export type AfterBindInitOptions = {
 /** Mark bound → init services → emit boot_timing. Shared by web / Electron / Vite. */
 export async function afterBindInitialize(options: AfterBindInitOptions = {}): Promise<void> {
   markBoot('bound')
+  // Ahead of the services and outside their try: a failed auth gate or discovery
+  // leaves a server still taking uploads, whose abandoned bytes must still go.
+  startStaleUploadCleanup()
   try {
     await initializeServices()
   } catch (error) {
@@ -99,16 +213,15 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
 }
 
 async function initializeServicesInner() {
-  // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
-  // initErrorReporting is a no-op if already initialized, so this is safe.
-  // Skip in dev mode — dev errors are too noisy and pollute Sentry.
+  // The entry point started error reporting (main/index.ts, web/server.ts). Re-attaching the
+  // tenant identity is harmless, and gives it to a reporter started before the database opened.
   if (process.env.NODE_ENV === 'production') {
-    initErrorReporting({ environment: 'web' })
+    await attachErrorReportingIdentity()
   }
 
   // Set platform auth user identity on error reports (if logged in)
   try {
-    const settings = getSettings()
+    const settings = await getSettings()
     if (settings.platformAuth?.token) {
       setErrorReportingUser({
         id: settings.platformAuth.tokenPreview,
@@ -128,7 +241,7 @@ async function initializeServicesInner() {
   registerAllAccountProviders()
 
   try {
-    reconcileSkillsetConfigsForCurrentAuth()
+    await reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
@@ -151,7 +264,7 @@ async function initializeServicesInner() {
 
       // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
       try {
-        const platformToken = getPlatformAccessToken()
+        const platformToken = await getPlatformAccessToken()
         if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
           installPlatformFetchInterceptor()
         }
@@ -167,20 +280,8 @@ async function initializeServicesInner() {
   await ensureManagedPlatformConnection()
   markBoot('dbReady')
 
-  // The host's one connection to the platform webhook queue, shared by every
-  // feature that receives webhooks. Cheap to start: it claims nothing until a
-  // consumer registers, and follows platform connect/disconnect through the
-  // auth-changed notifier. Started before anything can start a container, so
-  // an agent's webhook tools see the relay's real availability. Watched once
-  // the agents are known, so containers still running from before this
-  // launch get their baseline too; from then on it marks agents stale
-  // whenever that availability moves.
-  const relay = getWebhookRelay()
-  relay.start()
-
-  const slugs = agents.map((a) => a.slug)
-  await containerHost.initializeAgents(slugs)
-  stopWatchingWebhookRelay = containerHost.watchWebhookRelay(relay)
+  discoveredAgentSlugs = agents.map((a) => a.slug)
+  await serviceHost().start('eager')
 
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
   // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the
@@ -189,87 +290,9 @@ async function initializeServicesInner() {
   // an orphan. Profiles claimed by a browser launch are skipped internally.
   startBrowserProfileCleanup(async () => (await listAgents()).map((a) => a.slug))
 
-  // Stop the host browser for an agent before its container is torn down,
-  // so the browser closes gracefully instead of getting a "socket hang up".
-  containerHost.onBeforeContainerStop = async (agentId) => {
-    const provider = getActiveProvider()
-    if (provider?.isRunning(agentId)) {
-      await provider.stop(agentId)
-    }
-  }
-
-  // Lane order is priority: the limiter grants slots FIFO, and the last three
-  // starts below are open-ended (image pull on fresh installs; the task
-  // scheduler's catch-up scan boots a container per overdue task; the trigger
-  // manager's registration reads every subscribed trigger). The two
-  // user-facing connects are cheap handshakes — schedule them first so chat
-  // messages and notifications cannot go dark behind minutes of catch-up work.
-
-  // Desktop-only platform-notifications subscription (OS notifications from
-  // Supabase Realtime INSERTs). The manager self-gates on auth mode and
-  // platform connectivity; connect/disconnect after launch is handled by the
-  // platform auth-changed notifier.
-  background(scheduleStartupIo(
-    () => platformNotificationsManager.start(),
-    () => platformNotificationsManager.stop(),
-  ).catch((error) => {
-    console.error('Failed to start platform notifications manager:', error)
-  }), { name: 'startup.start-platform-notifications' })
-
-  // Start agent integration manager
-  background(scheduleStartupIo(
-    () => agentIntegrationManager.start(),
-    () => agentIntegrationManager.stop(),
-  ).catch((error) => {
-    console.error('Failed to start agent integration manager:', error)
-    // TODO add exception capturing for all other services that start in this file
-    captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
-  }), { name: 'startup.start-integration-manager' })
-
-  // Check/pull container image (non-blocking, bounded with other startup I/O)
-  background(scheduleStartupIo(() => containerHost.ensureImageReady()).catch((error) => {
-    console.error('Failed to ensure image ready:', error)
-  }), { name: 'startup.ensure-image-ready' })
-
-  // Start container status sync and health monitor
-  containerHost.startStatusSync()
-  containerHost.startHealthMonitor()
-
-  // Start task scheduler
-  background(scheduleStartupIo(
-    () => taskScheduler.start(),
-    () => taskScheduler.stop(),
-  ).catch((error) => {
-    console.error('Failed to start task scheduler:', error)
-  }), { name: 'startup.start-task-scheduler' })
-
-  // Register webhook triggers with the relay. Unconditional: the relay only
-  // claims while the platform is connected, and a connection made after
-  // launch re-syncs the registrations. A personal Composio key must not
-  // disable delivery either, since events are claimed with the platform token.
-  background(scheduleStartupIo(
-    () => triggerManager.start(),
-    () => triggerManager.stop(),
-  ).catch((error) => {
-    console.error('Failed to start trigger manager:', error)
-  }), { name: 'startup.start-trigger-manager' })
-
-  // Start session auto-delete monitor (deferred — waits before first check)
-  background(sessionAutoDeleteMonitor.start().catch((error) => {
-    console.error('Failed to start session auto-delete monitor:', error)
-  }), { name: 'startup.start-session-auto-delete-monitor' })
-
-  background(apiLogAutoDeleteMonitor.start().catch((error) => {
-    console.error('Failed to start API log auto-delete monitor:', error)
-  }), { name: 'startup.start-api-log-auto-delete-monitor' })
-
-  // Start account sync service (deferred — syncs OAuth account status with remote providers)
-  background(accountSyncService.start().catch((error) => {
-    console.error('Failed to start account sync service:', error)
-  }), { name: 'startup.start-account-sync' })
-
-  // Refreshes platform account + billing info when connected (no-op otherwise).
-  platformService.start()
+  // Not waited for: post-bind I/O goes through the host's startup slots, off the
+  // path `initializeServices` resolves on.
+  background(serviceHost().start('background'), { name: 'startup.start-background-services' })
 }
 
 /** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
@@ -277,6 +300,7 @@ export function setupServerHandlers(server: ServerType): void {
   if ('requestTimeout' in server) configureUploadTimeouts(server)
   setupBrowserStreamProxy(server)
   setupArtifactStreamProxy(server)
+  setupMeetingFramesSocket(server)
   // Self-gated to Electron main outside auth mode; a no-op everywhere else.
   setupCloudStreamProxy(server)
 }
@@ -290,27 +314,7 @@ export function setupServerHandlers(server: ServerType): void {
  * - vite.config.ts: Vite dev server close
  */
 export async function shutdownServices() {
-  servicesShuttingDown = true
+  stopStaleUploadCleanup()
   stopBrowserProfileCleanup()
-  agentIntegrationManager.stop()
-  await credentialBroker.shutdown()
-  await stopAllProviders()
-  taskScheduler.stop()
-  triggerManager.stop()
-  stopWatchingWebhookRelay?.()
-  stopWatchingWebhookRelay = null
-  getWebhookRelay().stop()
-  platformNotificationsManager.stop()
-  sessionAutoDeleteMonitor.stop()
-  apiLogAutoDeleteMonitor.stop()
-  accountSyncService.stop()
-  platformService.stop()
-  containerHost.stopStatusSync()
-  containerHost.stopHealthMonitor()
-  await containerHost.stopAll()
-  // After the containers, whose runtimes the host still needed: every agent
-  // lets go of what it holds, its parked reviews and re-auth waits included.
-  await agentRegistry.evictAll()
-  await shutdownActiveRunner()
-  await shutdownAC()
+  await stopBackgroundWork()
 }

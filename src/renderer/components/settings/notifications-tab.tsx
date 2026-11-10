@@ -18,9 +18,13 @@ import {
 } from '@renderer/lib/push-notifications'
 import { isIos } from '@renderer/hooks/use-pwa-install'
 import { openExternalUrl } from '@renderer/lib/open-external'
+import { clientFacts } from '@renderer/lib/facts'
+import { macBundleId } from '@shared/lib/facts/bundle-id'
 
-const MACOS_NOTIFICATION_SETTINGS_URL =
-  'x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.superagent.app'
+/** This app's page in System Settings → Notifications, by the bundle id it runs under. */
+function macosNotificationSettingsUrl(): string {
+  return `x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=${macBundleId(clientFacts())}`
+}
 
 interface SettingRowProps {
   name: string
@@ -55,7 +59,7 @@ function SettingRow({ name, subtitle, right, htmlFor }: SettingRowProps) {
   )
 }
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 
 type DevicePushState = 'loading' | 'unsubscribed' | 'subscribed' | 'denied' | 'error'
 
@@ -210,7 +214,7 @@ export function NotificationsTab() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void openExternalUrl(MACOS_NOTIFICATION_SETTINGS_URL)}
+              onClick={() => void openExternalUrl(macosNotificationSettingsUrl())}
             >
               Open System Settings
             </Button>

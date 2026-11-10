@@ -1,8 +1,10 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { errors as joseErrors } from 'jose'
 import { eq, and, desc } from 'drizzle-orm'
 
-import { getSettings, mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings, updateSettings, type AppSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema, type ParsedPlatformAccountInfo } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
@@ -12,7 +14,7 @@ import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
-import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
+import { forgetRequestScopedAttribution, runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
 import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 import { isPrivateHost, tryParseUrl } from '@shared/lib/utils/url-safety'
 import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
@@ -137,12 +139,14 @@ function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T):
  * run is attributed (the fetch interceptor adds the acting member). Feeds the
  * plan policy cache like every account read. Throws on a platform failure.
  */
-export async function fetchActingPlatformAccount(): Promise<ParsedPlatformAccountInfo> {
-  const token = getPlatformAccessToken()
-  if (!token) throw new Error('Platform is not connected')
+export async function fetchActingPlatformAccount(token?: string | null): Promise<ParsedPlatformAccountInfo> {
+  // `token`: the connection the caller already read (so the account it gets
+  // is the one it keyed on); the current one when not given.
+  const bearer = token === undefined ? await getPlatformAccessToken() : token
+  if (!bearer) throw new Error('Platform is not connected')
   return rememberAccountPolicy(await fetchPlatformJson({
     path: '/v1/account',
-    token,
+    token: bearer,
     schema: PlatformAccountInfoSchema,
     area: 'platform-auth',
     reportErrors: false,
@@ -229,26 +233,42 @@ export function _resetEnvManagedPlatformStatusForTest(): void {
   enrichedAccountCache.clear()
 }
 
-function readRecord(): PlatformAuthRecord | null {
-  const raw = getSettings().platformAuth
+interface ReadOptions {
+  /**
+   * Report a corrupt record to Sentry (default true). Off inside a settings
+   * mutator, which may run more than once and must stay free of side effects.
+   */
+  report?: boolean
+}
+
+/** The settings-stored connection in `settings`, validated; null when absent or corrupt. */
+function recordFrom(settings: Pick<AppSettings, 'platformAuth'>, options: ReadOptions = {}): PlatformAuthRecord | null {
+  const raw = settings.platformAuth
   if (!raw) return null
-  // Validate at the boundary; a corrupt settings.json shouldn't crash callers
+  // Validate at the boundary; a corrupt stored record shouldn't crash callers
   // mid-request, but we do want to see it in Sentry.
   const parsed = PlatformAuthSettingsSchema.safeParse(raw)
   if (!parsed.success) {
-    captureException(parsed.error, { tags: { area: 'platform-auth', op: 'read' } })
+    if (options.report !== false) {
+      captureException(parsed.error, { tags: { area: 'platform-auth', op: 'read' } })
+    }
     return null
   }
   return parsed.data
 }
 
-function writeRecord(record: PlatformAuthRecord | null): void {
-  // Serialized fresh-read + atomic write so a background token refresh can't
-  // lose-update a concurrent settings change or clobber real settings from a
-  // defaulted cache.
-  mutateSettings((settings) => {
+async function readRecord(): Promise<PlatformAuthRecord | null> {
+  return recordFrom(await getSettings())
+}
+
+async function writeRecord(record: PlatformAuthRecord | null): Promise<void> {
+  // Compare-and-set write so a background token refresh can't lose-update a
+  // concurrent settings change.
+  await mutateSettings((settings) => {
     settings.platformAuth = record ?? undefined
   })
+  // A platform call later in this request acts under the new connection.
+  forgetRequestScopedAttribution()
 }
 
 /**
@@ -261,7 +281,7 @@ function writeRecord(record: PlatformAuthRecord | null): void {
 async function reconcileAfterAuthChange(): Promise<void> {
   try {
     const mod = await import('./skillset-reconcile')
-    mod.reconcileSkillsetConfigsForCurrentAuth()
+    await mod.reconcileSkillsetConfigsForCurrentAuth()
     await mod.reconcileInstalledForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { area: 'platform-auth', op: 'reconcile' } })
@@ -274,6 +294,7 @@ async function reconcileAfterAuthChange(): Promise<void> {
  * (platform-service → platform-auth-service → here).
  */
 function notifyPlatformServiceAuthChanged(connected: boolean): void {
+  globalFeed.publish({ type: 'platform_notifications_changed' })
   // The success log is the only positive signal this fire-and-forget path ran;
   // platform-auth-service.notify.test.ts asserts on it.
   background(import('./platform-service')
@@ -324,8 +345,6 @@ function getEnvManagedStatus(): PlatformAuthStatus | null {
   return buildEnvManagedStatus(envToken, null)
 }
 
-const PLATFORM_USER_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/user_id'
-
 /**
  * Extract the platform user_id from a stored OIDC ID token. Returns null if
  * the claim is absent (issuer not yet updated) or the token is malformed.
@@ -335,7 +354,7 @@ function extractUserIdFromIdToken(idToken: string): string | null {
     const payload = JSON.parse(
       Buffer.from(idToken.split('.')[1], 'base64url').toString(),
     )
-    const val = payload[PLATFORM_USER_ID_CLAIM]
+    const val = payload[PLATFORM_CLAIMS.userId]
     return typeof val === 'string' ? val : null
   } catch {
     return null
@@ -369,11 +388,23 @@ async function getPlatformOidcUserId(betterAuthUserId: string): Promise<string |
  * the platform user id only when the token itself did. For a Better Auth
  * user, {@link getPlatformAuthStatusForUser} fills it from their OIDC token.
  */
-export function getPlatformAuthStatus(): PlatformAuthStatus {
+export async function getPlatformAuthStatus(): Promise<PlatformAuthStatus> {
+  return platformAuthStatusFrom(await getSettings())
+}
+
+/**
+ * {@link getPlatformAuthStatus} from settings already read. Synchronous, so a
+ * settings mutator can check the connection it is about to write against
+ * (pass `report: false` there).
+ */
+export function platformAuthStatusFrom(
+  settings: Pick<AppSettings, 'platformAuth'>,
+  options: ReadOptions = {},
+): PlatformAuthStatus {
   const envManaged = getEnvManagedStatus()
   if (envManaged) return envManaged
 
-  const record = readRecord()
+  const record = recordFrom(settings, options)
   if (record) {
     return {
       connected: true,
@@ -450,7 +481,7 @@ const enrichedAccountCache = new Map<
 >()
 
 async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvAccount | null> {
-  const token = getPlatformAccessToken()
+  const token = await getPlatformAccessToken()
   if (!token) return null
   try {
     const account = rememberAccountPolicy(await runWithRequestUser(userId, () =>
@@ -483,7 +514,7 @@ export async function getPlatformAuthStatusForUser(userId: string): Promise<Plat
   if (envManaged && !envManaged.userId) {
     return { ...envManaged, userId: await getPlatformOidcUserId(userId) }
   }
-  return getPlatformAuthStatus()
+  return await getPlatformAuthStatus()
 }
 
 /**
@@ -492,7 +523,7 @@ export async function getPlatformAuthStatusForUser(userId: string): Promise<Plat
  * Opaque-key (settings) and disconnected statuses are returned as-is.
  */
 export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<PlatformAuthStatus> {
-  const base = userId ? await getPlatformAuthStatusForUser(userId) : getPlatformAuthStatus()
+  const base = userId ? await getPlatformAuthStatusForUser(userId) : await getPlatformAuthStatus()
   if (base.source !== 'env' || !base.connected || !userId) return base
 
   let entry = enrichedAccountCache.get(userId)
@@ -540,32 +571,40 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     }
   }
 
-  const existing = readRecord()
   const newOrgId = enriched.orgId?.trim() || null
   const newUserId = enriched.userId?.trim() || null
   const newMemberId = enriched.memberId?.trim() || null
-  const orgChanged = existing?.orgId !== newOrgId
-  // The acting principal changed if the global user or the per-org membership
-  // differs — even within the same org. A same-user metadata refresh (email,
-  // role) leaves both untouched.
-  const identityChanged =
-    existing?.userId !== newUserId || existing?.memberId !== newMemberId
-
   const now = new Date().toISOString()
-  const record: PlatformAuthRecord = PlatformAuthSettingsSchema.parse({
-    token: trimmedToken,
-    tokenPreview: buildTokenPreview(trimmedToken),
-    email: enriched.email?.trim() || null,
-    label: enriched.label?.trim() || null,
-    orgId: newOrgId,
-    orgName: enriched.orgName?.trim() || null,
-    role: enriched.role?.trim() || null,
-    userId: enriched.userId?.trim() || null,
-    memberId: enriched.memberId?.trim() || null,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
+  // The record replaced is the one this write's compare-and-set read, so the
+  // org/identity change below is judged against what was actually overwritten.
+  const { before } = await updateSettings((draft, current) => {
+    const previous = recordFrom(current, { report: false })
+    draft.platformAuth = PlatformAuthSettingsSchema.parse({
+      token: trimmedToken,
+      tokenPreview: buildTokenPreview(trimmedToken),
+      email: enriched.email?.trim() || null,
+      label: enriched.label?.trim() || null,
+      orgId: newOrgId,
+      orgName: enriched.orgName?.trim() || null,
+      role: enriched.role?.trim() || null,
+      userId: newUserId,
+      memberId: newMemberId,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    })
+    // The cloud-workspace deployment token is principal-scoped (a session for
+    // a specific user on the deployment). Drop it in this same write whenever
+    // the acting org OR the acting user/member changes, so a different
+    // principal never reuses it, and a token minted for the new principal
+    // after this write is never cleared by it. The next refresh re-mints.
+    if (previous?.orgId !== newOrgId || previous?.userId !== newUserId || previous?.memberId !== newMemberId) {
+      draft.cloudWorkspace = undefined
+    }
   })
-  writeRecord(record)
+  // A platform call later in this request acts under the new connection.
+  forgetRequestScopedAttribution()
+  const existing = recordFrom(before)
+  const orgChanged = existing?.orgId !== newOrgId
   const { ensureManagedPlatformConnection } = await import('@shared/lib/llm-provider/connection-settings')
   await ensureManagedPlatformConnection()
 
@@ -588,22 +627,28 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     await reconcileAfterAuthChange()
   }
 
-  if (orgChanged || identityChanged) {
-    // The cloud-workspace deployment token is principal-scoped (a session for a
-    // specific user on the deployment). Drop it whenever the acting org OR the
-    // acting user/member changes, so a different principal never reuses it; the
-    // next refresh re-mints for the new principal.
-    clearCloudWorkspaceRecord()
-  }
-
   notifyPlatformServiceAuthChanged(true)
-  return getPlatformAuthStatus()
+  return await getPlatformAuthStatus()
 }
 
-export function getPlatformAccessToken(_userId?: string): string | null {
+export async function getPlatformAccessToken(_userId?: string): Promise<string | null> {
   const envToken = process.env.PLATFORM_TOKEN?.trim()
   if (isAuthMode() && envToken) return envToken
-  return readRecord()?.token ?? null
+  return (await readRecord())?.token ?? null
+}
+
+/**
+ * {@link getPlatformAccessToken} from settings already read. Synchronous, so a
+ * settings mutator can check the connection it is about to write against
+ * (pass `report: false` there).
+ */
+export function platformAccessTokenFrom(
+  settings: Pick<AppSettings, 'platformAuth'>,
+  options: ReadOptions = {},
+): string | null {
+  const envToken = process.env.PLATFORM_TOKEN?.trim()
+  if (isAuthMode() && envToken) return envToken
+  return recordFrom(settings, options)?.token ?? null
 }
 
 /**
@@ -614,8 +659,16 @@ export function getPlatformAccessToken(_userId?: string): string | null {
  * platform-OAuth path). Opaque `plat_sa_` access keys are already member-scoped
  * server-side and do not use this.
  */
-export function getStoredPlatformMemberId(): string | null {
-  return readRecord()?.memberId ?? null
+export async function getStoredPlatformMemberId(): Promise<string | null> {
+  return storedPlatformMemberIdFrom(await getSettings())
+}
+
+/** {@link getStoredPlatformMemberId} from settings already read. */
+export function storedPlatformMemberIdFrom(
+  settings: Pick<AppSettings, 'platformAuth'>,
+  options: ReadOptions = {},
+): string | null {
+  return recordFrom(settings, options)?.memberId ?? null
 }
 
 /**
@@ -629,7 +682,7 @@ export function getStoredPlatformMemberId(): string | null {
  */
 export async function refreshStoredPlatformAccount(): Promise<boolean> {
   if (isAuthMode() && process.env.PLATFORM_TOKEN?.trim()) return false
-  const record = readRecord()
+  const record = await readRecord()
   if (!record) return false
 
   let account
@@ -665,16 +718,16 @@ export async function refreshStoredPlatformAccount(): Promise<boolean> {
 }
 
 async function clearPlatformAuth(): Promise<void> {
-  writeRecord(null)
+  await writeRecord(null)
   // The cloud-workspace deployment token is bound to the platform account;
   // clear it alongside the platform token on disconnect.
-  clearCloudWorkspaceRecord()
+  await clearCloudWorkspaceRecord()
   await reconcileAfterAuthChange()
   notifyPlatformServiceAuthChanged(false)
 }
 
 export async function revokePlatformTokenRemotely(): Promise<boolean> {
-  const token = readRecord()?.token
+  const token = (await readRecord())?.token
   if (!token) return false
 
   const proxyBase = getPlatformProxyBaseUrl()

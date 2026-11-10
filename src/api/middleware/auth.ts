@@ -10,6 +10,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 // The catalog leaf, not the actor package index: the index loads the
 // container layer, which every route test would then have to mock.
 import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
+import type { AgentRecord } from '@shared/lib/agent-actor/types'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -112,7 +113,10 @@ export function Authenticated(): MiddlewareHandler {
     }
 
     const auth = await getAuthLazy()
-    const session = await auth.api.getSession({ headers: c.req.raw.headers })
+    const { response: session, headers } = await auth.api.getSession({ headers: c.req.raw.headers, returnHeaders: true })
+    // A cache miss renews the browser's session-data cookie. Forward both
+    // renewals and expirations, preserving separate (possibly chunked) cookies.
+    for (const cookie of headers.getSetCookie()) c.header('Set-Cookie', cookie, { append: true })
     if (!session) {
       // A meeting bot's page has no account; its cookie stands for the person who
       // started the meeting, on the routes the page needs and nowhere else.
@@ -163,14 +167,31 @@ function isAdmin(user: { role?: string }): boolean {
  * Runs in BOTH auth and non-auth modes (the URL form is independent of auth)
  * and MUST run before any AgentRead/AgentUser/AgentAdmin check, since the ACL
  * tables are keyed on the canonical id. Subsumes the old agent-existence guard.
+ *
+ * The agent is read once per request: a route under `/:id/*` that also lists
+ * ResolveAgent() runs it twice, and the second run reuses the first.
  */
 export function ResolveAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    const id = await agentCatalog.resolve(c.req.param('id') ?? '')
-    if (!id) return c.json({ error: 'Agent not found' }, 404)
-    c.set('agentId' as never, id as never)
+    if (c.get('agentRecord' as never) === undefined) {
+      const agent = await agentCatalog.resolveRecord(c.req.param('id') ?? '')
+      if (!agent) return c.json({ error: 'Agent not found' }, 404)
+      c.set('agentId' as never, agent.slug as never)
+      c.set('agentRecord' as never, agent as never)
+    }
     return next()
   }
+}
+
+/**
+ * The agent {@link ResolveAgent} read when the request started, so a handler
+ * that only reads it does not read its row again. A handler that changes the
+ * agent reads it again after the change. Throws if ResolveAgent() did not run.
+ */
+export function getResolvedAgent(c: Context): AgentRecord {
+  const agent = c.get('agentRecord' as never) as AgentRecord | undefined
+  if (!agent) throw new Error('agentRecord not resolved — ResolveAgent() middleware missing?')
+  return agent
 }
 
 /**
@@ -199,6 +220,15 @@ export async function getReadableAgentIds(c: Context, agentIds: readonly string[
   const rows = await db.select({ agentSlug: agentAcl.agentSlug, role: agentAcl.role }).from(agentAcl)
     .where(and(eq(agentAcl.userId, user.id), inArray(agentAcl.agentSlug, [...agentIds]))).all()
   return new Set(rows.filter(row => hasMinRole(row.role, 'viewer')).map(row => row.agentSlug))
+}
+
+/** AgentUser's policy for an already-resolved ID. */
+export async function canUseAgent(c: Context, agentSlug: string): Promise<boolean> {
+  if (!isAuthMode()) return true
+  const user = getUser(c)
+  if (isAdmin(user)) return true
+  const role = await getUserAgentRole(user.id, agentSlug)
+  return !!role && hasMinRole(role, 'user')
 }
 
 /**

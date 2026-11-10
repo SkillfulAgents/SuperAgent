@@ -141,7 +141,7 @@ export function PaywallSubscriptionOptions({ session, onResumed, analytics }: {
   if (!eligible) return null
 
   return (
-    <div className="relative mt-3 rounded-xl border border-border/70 bg-background/90 px-4 py-4 backdrop-blur-md sm:px-6" data-testid="paywall-subscriptions">
+    <div className="relative mt-3 rounded-card border border-border/70 bg-background/90 px-4 py-4 backdrop-blur-md sm:px-6" data-testid="paywall-subscriptions">
       {activeConnections.length > 0 && (
         <SavedSubscriptionConnections options={activeConnections}
           session={session} analytics={analytics} onResumed={onResumed} />
@@ -263,7 +263,7 @@ function SavedSubscriptionConnections({ options, session, analytics, onResumed }
           const switching = pending?.connectionId === option.connection.id
           return (
             <div key={option.connection.id} data-testid="active-subscription-connection"
-              className="flex flex-wrap items-center gap-3 rounded-lg border border-border/70 px-3 py-3">
+              className="flex flex-wrap items-center gap-3 rounded-item border border-border/70 px-3 py-3">
               <div className="flex min-w-0 flex-1 items-center gap-2.5">
                 <ProviderLogo provider={option.subscription.provider} className="h-5 w-5" />
                 <div className="min-w-0">

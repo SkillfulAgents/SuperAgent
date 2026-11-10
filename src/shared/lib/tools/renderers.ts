@@ -1,6 +1,7 @@
 import type { ToolRenderer } from './renderer-types'
 import { getToolDefinition, getRegisteredDefinitionNames } from './registry'
 import { bashRenderer } from './bash/renderer'
+import { monitorRenderer } from './monitor/renderer'
 import { readRenderer } from './read/renderer'
 import { writeRenderer } from './write/renderer'
 import { globRenderer } from './glob/renderer'
@@ -39,6 +40,8 @@ import {
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
 } from './browser-tools/renderer'
 import {
   createDashboardRenderer,
@@ -75,6 +78,7 @@ export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, Colla
 const toolRenderers = new Map([
   taskRenderer,
   bashRenderer,
+  monitorRenderer,
   readRenderer,
   writeRenderer,
   globRenderer,
@@ -114,6 +118,8 @@ const toolRenderers = new Map([
   browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
+  browserUploadRenderer,
+  browserGetStateRenderer,
   createDashboardRenderer,
   startDashboardRenderer,
   listDashboardsRenderer,

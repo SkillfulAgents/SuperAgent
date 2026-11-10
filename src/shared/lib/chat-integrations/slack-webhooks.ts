@@ -64,6 +64,15 @@ export async function recordSlackWebhookStatus(
   return changesOf(result) > 0
 }
 
+/** Records the Slack app's id, as its bot token reported it. Host-owned: a settings patch can't set it. */
+export async function recordSlackAppId(integrationId: string, appId: string): Promise<void> {
+  const value = z.string().regex(/^A[A-Z0-9]+$/).parse(appId)
+  await db.update(chatIntegrations)
+    .set({ config: sql`json_set(${chatIntegrations.config}, '$.appId', ${value})` })
+    .where(and(eq(chatIntegrations.id, integrationId), eq(chatIntegrations.provider, 'slack')))
+    .run()
+}
+
 /** Only what the host reads before Bolt takes the body over. */
 const slackBodySchema = z.object({ type: z.string().min(1) }).loose()
 export type SlackRequestBody = z.infer<typeof slackBodySchema>

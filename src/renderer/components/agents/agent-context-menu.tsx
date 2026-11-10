@@ -67,7 +67,7 @@ interface AgentContextMenuProps {
   agent: ApiAgent
   children: React.ReactNode
   /**
-   * Where the surface has an inline-editable title (the agent home), Rename
+   * Where the surface has its own name editor (the agent home), Rename
    * hands off to it instead of opening the rename dialog.
    */
   onRename?: () => void
@@ -305,7 +305,7 @@ export function AgentContextMenu({
           data-testid="agent-context-menu"
           // Fixed width so the panel reads the same from every entry point; items
           // stay edge-aligned (text left, chevrons right) rather than inset.
-          className="w-52 rounded-xl p-2"
+          className="w-52 p-2"
           onCloseAutoFocus={(e) => {
             const action = pendingCloseActionRef.current
             if (!action) return
@@ -345,7 +345,7 @@ export function AgentContextMenu({
               <FolderInput className="h-4 w-4 mr-2" />
               Move to Section
             </ContextMenuSubTrigger>
-            <ContextMenuSubContent className="rounded-xl p-2" data-testid="move-agent-to-folder-menu">
+            <ContextMenuSubContent className="p-2" data-testid="move-agent-to-folder-menu">
               {destinations.map((folder) => (
                 <ContextMenuItem
                   key={folder.id}
@@ -419,7 +419,7 @@ export function AgentContextMenu({
         onOpenChange={setShowDeleteDialog}
       />
 
-      {/* Rename for surfaces without an inline title (sidebar, home cards). */}
+      {/* Rename for surfaces without their own name editor (sidebar, home cards). */}
       <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
         <DialogContent className="overflow-hidden" data-testid="rename-agent-dialog">
           <DialogHeader>

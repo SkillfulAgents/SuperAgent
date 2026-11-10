@@ -912,6 +912,12 @@ function getOrCreateEventSource(
           streamListeners.get(sessionId)?.forEach((l) => l())
         }
       }
+      else if (data.type === 'slash_commands_changed') {
+        if (Array.isArray(data.slashCommands)) {
+          sessionSlashCommands.set(sessionId, data.slashCommands)
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        }
+      }
       // Streaming events - update streaming state, preserve isActive
       else if (data.type === 'stream_start') {
         if (startedCommandsAwaitingTranscript.size > 0) {
@@ -1133,11 +1139,8 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             contextUsage: {
-              inputTokens: data.inputTokens ?? 0,
-              outputTokens: data.outputTokens ?? 0,
-              cacheCreationInputTokens: data.cacheCreationInputTokens ?? 0,
-              cacheReadInputTokens: data.cacheReadInputTokens ?? 0,
-              contextWindow: data.contextWindow ?? 200_000,
+              totalTokens: data.totalTokens ?? 0,
+              contextWindow: data.contextWindow ?? 0,
             },
           })
         }

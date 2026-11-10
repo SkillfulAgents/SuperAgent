@@ -10,8 +10,7 @@
  */
 import { background } from '@shared/lib/background'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import type { ContainerSession, SendMessageOptions, SendMessageResult } from '@shared/lib/container/types'
-import { getSettings } from '@shared/lib/config/settings'
+import type { ContainerClient, ContainerSession, SendMessageOptions, SendMessageResult } from '@shared/lib/container/types'
 import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-holds'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import { DeliveryError, StartError, type DeliveryErrorCode } from './delivery-errors'
@@ -45,12 +44,17 @@ export function createSessionDelivery(
   deps: Pick<LocalActorDeps, 'containerHost' | 'sessionService' | 'recordSessionActivity' | 'reviewManager' | 'host'>,
 ): SessionDelivery {
   const runtime = () => deps.containerHost.runtime(slug)
-  const client = () => runtime().getClient()
+  // The client running the container, or, while it is not running, the one
+  // for the runner configured now (getClient reads it then).
+  const client = async (): Promise<ContainerClient> => runtime().getClient()
 
   const attach: SessionDelivery['attach'] = async (sessionId, options = {}) => {
-    if (options.replayTerminal) return live.attachReplaying(sessionId, client(), options.metadata)
+    if (options.replayTerminal) return live.attachReplaying(sessionId, await client(), options.metadata)
     if (live.isSubscribed(sessionId)) return
-    await live.subscribe(sessionId, client(), sessionId, options.metadata)
+    const current = await client()
+    // Getting the client was an await: another attach may have subscribed meanwhile.
+    if (live.isSubscribed(sessionId)) return
+    await live.subscribe(sessionId, current, sessionId, options.metadata)
   }
 
   const echo = (sessionId: string, uuid: string | undefined, queued: boolean, message: UserMessageEcho | undefined) => {
@@ -73,8 +77,10 @@ export function createSessionDelivery(
     try {
       const updates: Partial<SessionMetadata> = { ...fields }
       // The container client resolves the pair, inherited fallback after a
-      // deletion included: a stale request pair must not overwrite it.
-      const effective = getSettings().llmDefault ? (sent.selection ?? metadata) : null
+      // deletion included: a stale request pair must not overwrite it. Whether
+      // an app default names the connection comes from the settings the send
+      // itself read, not from another read.
+      const effective = sent.llmDefault ? (sent.selection ?? metadata) : null
       if (!queued && effective?.model) {
         updates.model = effective.model
         updates.llmProviderId = effective.llmProviderId
@@ -190,8 +196,16 @@ export function createSessionDelivery(
     options: SendMessageOptions,
     mark: { rollback(): void } | null,
   ): Promise<SendMessageResult> => {
+    let current: ContainerClient
     try {
-      return await client().sendMessage(sessionId, content, uuid, options)
+      current = await client()
+    } catch (error) {
+      // Nothing was sent.
+      mark?.rollback()
+      throw notSent('unavailable', error)
+    }
+    try {
+      return await current.sendMessage(sessionId, content, uuid, options)
     } catch (error) {
       if (error instanceof MessageNotAcceptedError) {
         mark?.rollback()
@@ -208,7 +222,7 @@ export function createSessionDelivery(
   /** Whether the container runs the session's turn (one it does not know, it does not); undefined when it cannot say. */
   const runningInContainer = async (sessionId: string): Promise<boolean | undefined> => {
     try {
-      return (await client().getSession(sessionId))?.isRunning ?? false
+      return (await (await client()).getSession(sessionId))?.isRunning ?? false
     } catch {
       return undefined
     }
@@ -217,15 +231,16 @@ export function createSessionDelivery(
   const revoke = async (sessionId: string) => {
     live.unsubscribe(sessionId)
     try {
-      await client().deleteSession(sessionId)
+      await (await client()).deleteSession(sessionId)
     } catch (error) {
       console.error(`[SessionDelivery] Failed to revoke session ${sessionId}:`, error)
     }
   }
 
   const start: SessionDelivery['start'] = async (request) => {
-    const creating = client().createSession(request.create)
-    let created: ContainerSession | typeof LATE
+    // The client that created the session is the one its stream listens on.
+    const creating = client().then(async (creator) => ({ creator, session: await creator.createSession(request.create) }))
+    let created: { creator: ContainerClient; session: ContainerSession } | typeof LATE
     try {
       created = await beforeDeadline(creating, request.notAfter)
     } catch (error) {
@@ -235,14 +250,24 @@ export function createSessionDelivery(
       // Answered at the deadline, when the caller may already be gone: the
       // session is revoked the moment it lands, not left running for the
       // caller's retry to duplicate.
-      background(creating.then((late) => revoke(late.id), () => {}), { name: 'session-delivery.revoke-late-session' })
+      background(creating.then((late) => revoke(late.session.id), () => {}), { name: 'session-delivery.revoke-late-session' })
       throw new StartError('created-late', true, 'The session was not created before its deadline')
     }
-    const session = created
+    const { creator, session } = created
     const sessionId = session.id
+    // Before the stream listens: the turn's tool calls arrive through it.
+    if (request.grantComputerUse) live.grantComputerUse(sessionId)
 
     const commands = session.slashCommands?.length ? session.slashCommands : undefined
-    const metadata: Partial<SessionMetadata> = { ...request.metadata, ...(commands ? { slashCommands: commands } : {}) }
+    // The runtime the first turn runs with is session state: without it a
+    // later turn (or the composer) falls back to the default connection.
+    const { model, llmProviderId, effort, speed } = request.create
+    const metadata: Partial<SessionMetadata> = {
+      ...(model ? { model, llmProviderId } : {}),
+      ...(effort ? { effort } : {}),
+      ...(speed ? { speed } : {}),
+      ...request.metadata,
+    }
     // Create started the turn. Marked first, so a result replayed during the
     // attach lands on an active session instead of reading as settled.
     live.markActive(sessionId)
@@ -251,7 +276,7 @@ export function createSessionDelivery(
     // frames are. Its frames wait for the registration, so an automation that
     // settles at once finds its status to finalize.
     const registering = deps.sessionService.registerSession(store, sessionId, request.name, metadata)
-    const attaching = live.subscribe(sessionId, client(), sessionId, metadata, { holdFramesUntil: registering })
+    const attaching = live.subscribe(sessionId, creator, sessionId, metadata, { holdFramesUntil: registering })
     // A failed registration revokes the session before the attach is awaited.
     attaching.catch(() => {})
     try {
@@ -273,7 +298,14 @@ export function createSessionDelivery(
       }
       throw new StartError('attach-failed', true, errorMessage(error), { cause: error })
     }
-    if (commands) live.setSlashCommands(sessionId, commands)
+    if (commands) {
+      live.setSlashCommands(sessionId, commands)
+      try {
+        await deps.sessionService.storeAgentSlashCommands(store, commands)
+      } catch (error) {
+        console.error(`[SessionDelivery] Failed to store the slash commands of session ${sessionId}:`, error)
+      }
+    }
     return session
   }
 
@@ -288,7 +320,7 @@ export function createSessionDelivery(
     const escalated = options.scope === 'turn' && !!options.escalateUntracked && live.hasOnlyUntrackedBackgroundWork(sessionId)
     const scope = escalated ? 'all' : options.scope
     const finish = (result: StopSessionResult) => {
-      if (options.denyReviews) deps.reviewManager.denyAllForAgent(slug)
+      if (options.denyReviews) deps.reviewManager.denyAllForAgent(slug, sessionId)
       return result
     }
     if (runtime().getCachedInfo().status !== 'running') {
@@ -296,19 +328,33 @@ export function createSessionDelivery(
       live.markInterrupted(sessionId)
       return finish({ path: 'not-running', interrupted: false, processKept: false, escalated })
     }
+    const interruptFailed = (error: unknown) => {
+      console.error(`[SessionDelivery] Interrupt failed for session ${sessionId}:`, error)
+      if (!options.onlyIfConfirmed) live.markInterrupted(sessionId)
+      return finish({ path: 'interrupt-failed', interrupted: false, processKept: false, escalated })
+    }
+    // The client first, so nothing is awaited between the read below and the interrupt.
+    let current: ContainerClient
+    try {
+      current = await client()
+    } catch (error) {
+      return interruptFailed(error)
+    }
     // Read just before the interrupt: the session tells from it whether the
     // turn running afterwards is still the stopped one.
     const turnGenerationBefore = live.turnGeneration(sessionId)
+    // The stop owns the session's end until it is back (see `LiveSessions.stopping`).
+    const back = live.stopping(sessionId)
     try {
-      const { interrupted, processKept } = await client().interruptSession(sessionId, { scope })
+      const { interrupted, processKept } = await current.interruptSession(sessionId, { scope })
       // processKept is the container's word, not the scope asked for: a turn
       // stop that fell back to a restart killed the background tasks.
       if (interrupted || !options.onlyIfConfirmed) live.markInterrupted(sessionId, { processKept, turnGenerationBefore })
       return finish({ path: 'interrupted', interrupted, processKept, escalated })
     } catch (error) {
-      console.error(`[SessionDelivery] Interrupt failed for session ${sessionId}:`, error)
-      if (!options.onlyIfConfirmed) live.markInterrupted(sessionId)
-      return finish({ path: 'interrupt-failed', interrupted: false, processKept: false, escalated })
+      return interruptFailed(error)
+    } finally {
+      back()
     }
   }
 

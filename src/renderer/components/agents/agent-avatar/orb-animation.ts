@@ -7,6 +7,8 @@ import { DOTS_CYCLE, DOTS_GATHER, workingPosition } from './orb-working'
 
 const BLEND_MS = 450
 const FOLLOW_MS = 360
+/** Time constant the shown roll eases toward its target with. */
+const ROLL_MS = 120
 
 export interface OrbAnimationConfig {
   shape: OrbShape
@@ -23,7 +25,7 @@ interface Follow {
 }
 
 function stillFrame(state: OrbState, restingPhi: number): OrbFrame {
-  if (state === 'sleeping') return sleepingFrame(0)
+  if (state === 'sleeping') return sleepingFrame(0, restingPhi)
   if (state === 'done') return doneFrame(2)
   if (state === 'needs-input') return needsInputFrame(0)
   return restFrame(restingPhi)
@@ -41,6 +43,7 @@ export class OrbAnimation {
   private working: { elapsed: number; position: number; ending: boolean; phi: number } | null = null
   private follow: Follow | null = null
   private followEase: (t: number) => number
+  private roll = { target: 0, shown: 0 }
 
   constructor(config: OrbAnimationConfig, now: number) {
     this.config = config
@@ -103,6 +106,15 @@ export class OrbAnimation {
     this.follow = { from: shown, to: target, since: now }
   }
 
+  /** The face rolls round the rim (degrees, positive = clockwise) when it isn't working or asleep. */
+  get canRoll(): boolean {
+    return !this.working && this.state !== 'working' && this.state !== 'sleeping'
+  }
+
+  rollBy(degrees: number) {
+    if (this.canRoll) this.roll.target += degrees
+  }
+
   releasePointer(now: number) {
     if (!this.follow) return
     this.follow = null
@@ -134,7 +146,13 @@ export class OrbAnimation {
       if (this.working) frame = workingFrame(run.position, this.config.diameter, run.phi)
     }
     if (!frame) frame = this.frameFor((now - this.since) / 1000)
+    // A followed pointer is an absolute direction, so the roll steps aside while
+    // it leads; the follow starts from the rolled gaze and blends back into it.
     if (this.follow && this.canFollow) frame = { ...frame, ...this.followGaze(now) }
+    else if (this.canRoll) {
+      this.roll.shown += (this.roll.target - this.roll.shown) * (1 - Math.exp(-dt / ROLL_MS))
+      if (this.roll.shown) frame = { ...frame, phi: frame.phi + this.roll.shown }
+    }
     if (this.from) {
       const k = (now - this.blendSince) / BLEND_MS
       if (k < 1) frame = blendFrames(this.from, frame, easeInOut(k))
@@ -153,7 +171,7 @@ export class OrbAnimation {
     const { restingPhi } = this.config
     const phase = (((restingPhi % 360) + 360) % 360) / 360 * 5.3
     if (this.state === 'idle') return idleFrame(t + phase, restingPhi)
-    if (this.state === 'sleeping') return sleepingFrame(t + phase)
+    if (this.state === 'sleeping') return sleepingFrame(t + phase, restingPhi)
     if (this.state === 'done') return doneFrame(t)
     if (this.state === 'needs-input') return needsInputFrame(t)
     return restFrame(restingPhi)

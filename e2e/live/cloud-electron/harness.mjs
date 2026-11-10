@@ -14,12 +14,13 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import electronPath from 'electron'
 import { chromium } from '@playwright/test'
 import { STACK, CDP_PORT } from './stack.mjs'
+import { readInstallSettings } from '../lib/install-settings.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const MAIN_ENTRY = join(REPO_ROOT, 'dist/main/index.js')
@@ -44,7 +45,8 @@ export async function waitFor(label, check, { timeoutMs = 30_000, intervalMs = 2
 }
 
 /**
- * Write the app's `settings.json` before first boot.
+ * Write the app's `settings.json` before first boot. The first boot imports it
+ * into the database; a copy written after that is never read.
  *
  * Seeds the connected platform account the way a user who has linked their
  * account would have it, plus `app.setupCompleted` — otherwise the first render
@@ -83,11 +85,9 @@ export function seedDataDir(dataDir, overrides = {}) {
   return settings
 }
 
-/** Read `settings.json` back — the harness asserts on persisted preferences. */
+/** Read the persisted settings back from the database — the harness asserts on persisted preferences. */
 export function readSettings(dataDir) {
-  const file = join(dataDir, 'settings.json')
-  if (!existsSync(file)) return null
-  return JSON.parse(readFileSync(file, 'utf8'))
+  return readInstallSettings(dataDir)
 }
 
 export function resetDataDir(dataDir) {

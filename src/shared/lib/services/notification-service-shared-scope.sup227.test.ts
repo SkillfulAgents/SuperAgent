@@ -46,11 +46,11 @@ vi.mock('../db', () => ({
 import {
   createNotification,
   listNotifications,
-  getUnreadCount,
+  getNotificationCounts,
   markSessionNotificationsRead,
   markAllAsRead,
 } from './notification-service'
-import { notifications, agentAcl } from '../db/schema'
+import { notifications, agentAcl, user } from '../db/schema'
 
 const USER_A = 'user-a'
 const USER_B = 'user-b'
@@ -60,6 +60,7 @@ const SESSION_SHARED = 'session-shared'
 const SESSION_PRIVATE = 'session-private'
 
 async function seedAcl() {
+  await testDb.insert(user).values([USER_A, USER_B].map(id => ({ id, name: id, email: `${id}@example.com` })))
   await testDb.insert(agentAcl).values([
     { id: 'acl-a-shared', userId: USER_A, agentSlug: AGENT_SHARED, role: 'owner', createdAt: new Date() },
     { id: 'acl-b-shared', userId: USER_B, agentSlug: AGENT_SHARED, role: 'user', createdAt: new Date() },
@@ -151,8 +152,8 @@ describe('SUP-227: notifications are agent-scoped with shared read state', () =>
     })
 
     it('one member acknowledging clears the shared item for the other (the intended behavior)', async () => {
-      expect(await getUnreadCount(USER_A)).toBe(1)
-      expect(await getUnreadCount(USER_B)).toBe(1)
+      expect((await getNotificationCounts(USER_A)).count).toBe(1)
+      expect((await getNotificationCounts(USER_B)).count).toBe(1)
 
       // USER_B opens the session → marks the shared row read.
       const marked = await markSessionNotificationsRead(SESSION_SHARED, USER_B)
@@ -161,8 +162,8 @@ describe('SUP-227: notifications are agent-scoped with shared read state', () =>
       // The acknowledgment is shared: USER_A's unread count drops too. If this
       // ever reads 1 again, someone re-introduced per-user read state — see the
       // SUP-227 decision before "fixing" it.
-      expect(await getUnreadCount(USER_B)).toBe(0)
-      expect(await getUnreadCount(USER_A)).toBe(0)
+      expect((await getNotificationCounts(USER_B)).count).toBe(0)
+      expect((await getNotificationCounts(USER_A)).count).toBe(0)
     })
   })
 })

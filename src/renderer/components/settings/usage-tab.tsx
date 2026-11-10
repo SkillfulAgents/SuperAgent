@@ -350,13 +350,13 @@ export function UsageTab() {
               </Select>
             )}
 
-            <div className="flex h-8 items-center rounded-md border bg-muted/40 p-0.5" aria-label="Usage period">
+            <div className="flex h-8 items-center rounded-control border bg-muted/40 p-0.5" aria-label="Usage period">
               {DAY_OPTIONS.map((option) => (
                 <button
                   key={option}
                   type="button"
                   className={cn(
-                    'h-7 rounded px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'h-7 rounded-control px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     days === option && 'bg-background text-foreground shadow-sm',
                   )}
                   aria-pressed={days === option}
@@ -387,7 +387,7 @@ export function UsageTab() {
       {isLoading || (isFetching && !data) ? (
         <UsageSkeleton />
       ) : !hasUsage ? (
-        <div className="flex min-h-[360px] flex-col items-center justify-center rounded-xl border bg-card/50 px-6 text-center">
+        <div className="flex min-h-[360px] flex-col items-center justify-center rounded-card border bg-card/50 px-6 text-center">
           <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-muted">
             <Gauge className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
           </div>
@@ -398,7 +398,7 @@ export function UsageTab() {
         </div>
       ) : (
         <>
-          <section className="overflow-hidden rounded-xl border bg-card/70 shadow-sm" aria-labelledby="usage-overview-heading">
+          <section className="overflow-hidden rounded-card border bg-card/70 shadow-sm" aria-labelledby="usage-overview-heading">
             <div className="flex flex-col gap-5 border-b px-5 py-5 sm:px-6 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <p className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">Estimated spend</p>
@@ -437,7 +437,11 @@ export function UsageTab() {
 
             <div className="px-2 pb-3 pt-5 sm:px-5">
               <ChartContainer config={chartConfig} className="h-[235px] w-full aspect-auto">
-                <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 4, bottom: 0 }}>
+                <AreaChart
+                  data={chartData}
+                  margin={{ top: 8, right: 8, left: 4, bottom: 0 }}
+                  aria-label={`Daily ${metric === 'cost' ? 'estimated cost in USD' : 'token usage'} by ${segmentation === 'byModel' ? 'model' : 'agent'}`}
+                >
                   <defs>
                     {displayedChartSegments.map((segment, index) => (
                       <linearGradient key={segment.key} id={`usage-fill-${index}`} x1="0" y1="0" x2="0" y2="1">
@@ -529,7 +533,7 @@ export function UsageTab() {
             </div>
           </section>
 
-          <section className="overflow-hidden rounded-xl border bg-card/70" aria-labelledby="usage-breakdown-heading">
+          <section className="overflow-hidden rounded-card border bg-card/70" aria-labelledby="usage-breakdown-heading">
             <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
               <div>
                 <h3 id="usage-breakdown-heading" className="text-sm font-medium">Breakdown</h3>
@@ -537,7 +541,7 @@ export function UsageTab() {
                   Click a row or chart legend item to isolate it. Ranked by estimated cost.
                 </p>
               </div>
-              <div className="flex rounded-md bg-muted p-0.5">
+              <div className="flex rounded-item bg-muted p-0.5">
                 <BreakdownButton active={segmentation === 'byModel'} onClick={() => changeSegmentation('byModel')}>
                   Model
                 </BreakdownButton>
@@ -579,7 +583,7 @@ export function UsageTab() {
                     >
                       <div className="flex min-w-0 items-center gap-3">
                         <div
-                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-control"
                           style={{
                             color: color.light,
                             backgroundColor: `color-mix(in srgb, ${color.light} 12%, transparent)`,
@@ -641,13 +645,13 @@ export function UsageTab() {
 
 function MetricToggle({ metric, onChange }: { metric: Metric; onChange: (metric: Metric) => void }) {
   return (
-    <div className="flex h-8 items-center rounded-md bg-muted p-0.5" aria-label="Chart metric">
+    <div className="flex h-8 items-center rounded-control bg-muted p-0.5" aria-label="Chart metric">
       {(['cost', 'tokens'] as const).map((option) => (
         <button
           key={option}
           type="button"
           className={cn(
-            'h-7 rounded px-2.5 text-xs font-medium capitalize text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'h-7 rounded-control px-2.5 text-xs font-medium capitalize text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             metric === option && 'bg-background text-foreground shadow-sm',
           )}
           aria-pressed={metric === option}
@@ -681,7 +685,7 @@ function ChartSeriesLegend({
             key={segment.key}
             type="button"
             className={cn(
-              'flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'flex items-center gap-1.5 rounded-item px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               isActive && 'bg-muted text-foreground',
             )}
             aria-pressed={isActive}
@@ -749,7 +753,7 @@ function BreakdownButton({
     <button
       type="button"
       className={cn(
-        'h-7 rounded px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'h-7 rounded-control px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         active && 'bg-background text-foreground shadow-sm',
       )}
       aria-pressed={active}
@@ -788,13 +792,13 @@ function SummaryStat({
 
 function UsageSkeleton() {
   return (
-    <div className="overflow-hidden rounded-xl border bg-card/70" role="status" aria-label="Loading usage data">
+    <div className="overflow-hidden rounded-card border bg-card/70" role="status" aria-label="Loading usage data">
       <div className="flex items-start justify-between border-b p-6">
         <div className="space-y-3">
           <div className="h-3 w-24 animate-pulse rounded bg-muted" />
           <div className="h-9 w-40 animate-pulse rounded bg-muted" />
         </div>
-        <div className="h-8 w-52 animate-pulse rounded bg-muted" />
+        <div className="h-8 w-52 animate-pulse rounded-control bg-muted" />
       </div>
       <div className="h-[320px] animate-pulse bg-gradient-to-b from-muted/20 to-muted/60" />
       <div className="grid grid-cols-2 border-t xl:grid-cols-4">

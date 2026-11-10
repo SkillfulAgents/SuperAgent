@@ -19,8 +19,9 @@ const ARTBOARD = 240
  * costs no React render. Changes of state blend over 0.45s; leaving
  * "working" first plays the dots' gather and regrow. `followPointer` tracks
  * the cursor while idle or done — `true` anywhere, or a selector for an
- * ancestor region — and hands back to the state when it leaves. Reduced
- * motion holds a still frame per state.
+ * ancestor region — and hands back to the state when it leaves.
+ * `rollWithScroll` rolls the face round the rim as a nearby scroller moves.
+ * Reduced motion holds a still frame per state.
  */
 export function OrbAvatar({
   orb,
@@ -29,6 +30,9 @@ export function OrbAvatar({
   restingPhi,
   state = 'idle',
   followPointer = false,
+  rollWithScroll,
+  still = false,
+  showsFace = true,
   className,
 }: {
   orb: OrbAppearance
@@ -38,9 +42,15 @@ export function OrbAvatar({
   restingPhi: number
   state?: AvatarMotionState
   followPointer?: boolean | string
+  /** Roll the face round the rim as the nearest element matching this selector scrolls: clockwise down, counter-clockwise up. */
+  rollWithScroll?: string
+  /** Hold the state's still frame. */
+  still?: boolean
+  /** Off, only the body is drawn: the outer shape without its inner face. */
+  showsFace?: boolean
   className?: string
 }) {
-  const layers = useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer })
+  const layers = useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer, rollWithScroll, still })
   const scale = diameter / ARTBOARD
   const shaped = shape.name !== 'circle'
   const path = useMemo(() => `path('${shapePath(shape, diameter)}')`, [shape, diameter])
@@ -88,37 +98,39 @@ export function OrbAvatar({
             />
           </span>
         )}
-        <span
-          ref={layers.face}
-          data-orb-layer="face"
-          className="absolute inset-0"
-        >
-          <span ref={layers.lid} className="absolute inset-0 overflow-hidden" style={{ clipPath: path }}>
-            <span
-              ref={layers.gradient}
-              className="absolute"
-              style={{
-                left: '-25%',
-                top: '-25%',
-                width: '150%',
-                height: '150%',
-                background: `linear-gradient(135deg, ${orb.faceA} 25%, ${orb.faceB} 75%)`,
-              }}
-            />
-            {shaped && (
-              <span className="absolute inset-0" style={{ filter: `blur(${26 * scale}px)` }}>
-                <span
-                  ref={layers.highlight}
-                  className="absolute inset-0"
-                  style={{
-                    clipPath: path,
-                    background: orb.faceA,
-                  }}
-                />
-              </span>
-            )}
+        {showsFace && (
+          <span
+            ref={layers.face}
+            data-orb-layer="face"
+            className="absolute inset-0"
+          >
+            <span ref={layers.lid} className="absolute inset-0 overflow-hidden" style={{ clipPath: path }}>
+              <span
+                ref={layers.gradient}
+                className="absolute"
+                style={{
+                  left: '-25%',
+                  top: '-25%',
+                  width: '150%',
+                  height: '150%',
+                  background: `linear-gradient(135deg, ${orb.faceA} 25%, ${orb.faceB} 75%)`,
+                }}
+              />
+              {shaped && (
+                <span className="absolute inset-0" style={{ filter: `blur(${26 * scale}px)` }}>
+                  <span
+                    ref={layers.highlight}
+                    className="absolute inset-0"
+                    style={{
+                      clipPath: path,
+                      background: orb.faceA,
+                    }}
+                  />
+                </span>
+              )}
+            </span>
           </span>
-        </span>
+        )}
       </span>
       {[0, 1, 2].map(i => (
         <span

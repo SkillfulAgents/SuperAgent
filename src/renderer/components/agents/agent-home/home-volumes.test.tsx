@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true }[],
+  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true; sourceReadOnly?: boolean }[],
   definitions: [] as { id: string; name: string; hostPath: string; canManage?: boolean }[],
   canModifyMounts: true,
   operationError: null as string | null,
@@ -24,7 +24,8 @@ vi.mock('@renderer/hooks/use-mounts', () => ({ useVolumesManager: () => volumes 
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 const { navigate, save, toastError } = vi.hoisted(() => ({ navigate: vi.fn(), save: vi.fn(), toastError: vi.fn() }))
 vi.mock('sonner', () => ({ toast: { error: toastError } }))
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate, useRouterState: ({ select }: { select: (s: { location: { href: string } }) => unknown }) => select({ location: { href: here.current } }) }))
+const here = vi.hoisted(() => ({ current: '/agents/a1' }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({ useSaveVolumeDefinition: () => ({ mutateAsync: save }) }))
 
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
@@ -35,6 +36,14 @@ vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHos
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeVolumes } from './home-volumes'
+import { HomeCardLookContext } from './home-collapsible'
+
+// Keep Agent Home's Drives section open while exercising the real collapsible;
+// other surfaces still use their own context's default.
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { agentHomeSectionsOpen: { drives: true } } }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+}))
 
 /**
  * Local folder picking/revealing needs this computer. Saved volumes belong to
@@ -53,7 +62,7 @@ beforeEach(() => {
   volumes.operationError = null
   volumes.pendingRestart = false
   mockCanUseHostFeatures.mockReturnValue(true)
-  window.electronAPI = { platform: 'darwin', showInFolder: vi.fn(), openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
+  window.electronAPI = { platform: 'darwin', showInFolder: vi.fn(), openDirectory: vi.fn().mockResolvedValue({ path: '/new/folder' }) } as never
 })
 
 afterEach(() => {
@@ -87,6 +96,17 @@ describe('a volume with no local folder', () => {
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /copy path/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /remove from agent/i })).toBeInTheDocument()
+  })
+})
+
+describe('a source that refuses writes', () => {
+  it('shows Read only and offers no read-only toggle', async () => {
+    volumes.mounts = [{ id: 'g1', name: 'repo', volumeName: 'repo', type: 'github', hostPath: null, sourceReadOnly: true }]
+    render(<HomeVolumes agentSlug="a1" />)
+
+    expect(screen.getByText('Read only')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
+    expect(screen.queryByRole('switch', { name: /read only/i })).not.toBeInTheDocument()
   })
 })
 
@@ -124,6 +144,39 @@ describe('driving a cloud workspace', () => {
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByText('code'))
     expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'v1', source: 'home', from: '/agents/a1' } })
+  })
+
+  it('opens the drive settings back to the page it was opened from, with what that page carries in its URL', async () => {
+    volumes.definitions = [{ id: 'v1', name: 'code', hostPath: '/Users/joe/code' }]
+    here.current = '/agents/a1?tab=files'
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByText('code'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'v1', source: 'home', from: '/agents/a1?tab=files' } })
+    here.current = '/agents/a1'
+  })
+
+  it('leaves out the drive its page shows elsewhere', () => {
+    volumes.mounts = [MOUNT, { ...MOUNT, id: 'm2', volumeId: 'v2', name: 'brain', volumeName: 'brain' }]
+    render(<HomeVolumes agentSlug="a1" hiddenVolumeId="v2" />)
+    expect(screen.getByText('code')).toBeInTheDocument()
+    expect(screen.queryByText('brain')).toBeNull()
+    cleanup()
+    // The agent has a drive, so hiding it is not "no drives".
+    volumes.mounts = [MOUNT]
+    volumes.canAddMount = true
+    render(<HomeVolumes agentSlug="a1" hiddenVolumeId="v1" />)
+    expect(screen.queryByText('No drives yet')).toBeNull()
+  })
+
+  it('starts folded where the page\'s look says so', async () => {
+    render(
+      <HomeCardLookContext.Provider value={{ card: '', section: '', media: '', label: '', defaultOpen: false }}>
+        <HomeVolumes agentSlug="a1" />
+      </HomeCardLookContext.Provider>,
+    )
+    expect(screen.queryByText('code')).toBeNull()
+    await userEvent.click(screen.getByText('Drives'))
+    expect(screen.getByText('code')).toBeInTheDocument()
   })
 
   it('leaves the row inert when this viewer cannot open the drive\'s settings', async () => {

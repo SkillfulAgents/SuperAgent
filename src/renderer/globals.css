@@ -3,6 +3,23 @@
 @tailwind utilities;
 
 /*
+  Controls (Button, Input, SelectTrigger) round their corners in proportion to
+  their height: `rounded-control` is --control-h × --control-radius-ratio, and
+  every `h-*` utility also sets --control-h (tailwind.config.ts), so a call
+  site's `h-7` or `h-[34px]` override carries its radius along. Registered as a
+  non-inheriting <length> so a control never picks up an ancestor's height, and
+  a non-length (`h-auto`, `h-full`) falls back to the default control height.
+  initial-value must be in px: a font-relative unit (rem) makes the whole
+  registration invalid, and the variable silently inherits again (a tall
+  wrapper's height turns a textarea into a pill).
+*/
+@property --control-h {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 36px;
+}
+
+/*
   Slussen (Blaze Type, licensed) ships two weights. Each face claims a weight
   RANGE so every weight the app asks for lands on a real face: anything up to
   400 (font-light included) renders Regular, and 500 and up renders Medium —
@@ -47,6 +64,26 @@
     --ring: 0 0% 63.9%;
     --brand: 204 100% 50%;
     --radius: 0.5rem;
+    /*
+      The radius scale. One ratio sets how round the whole app is; Tailwind
+      exposes each step as rounded-control/-item/-popover/-card/-dialog
+      (tailwind.config.ts), and hand-written CSS reads the variables.
+      - control: proportional to the element's own height (--control-h, above).
+      - icon: small icon-only buttons sized by padding (~20-24px), which have
+        no h-* for control to read - a 1.5rem control.
+      - item: rows inside a menu/select/list - a 2rem control.
+      - popover: the floating surface around those rows, concentric with them
+        (row radius + the surface's p-1 inset).
+      - card / dialog: padded containers sit far enough from their content
+        that concentric radii stop mattering, so they take fixed steps.
+    */
+    --control-radius-ratio: 0.2;
+    --radius-icon: calc(1.5rem * var(--control-radius-ratio));
+    /* Snapped down to a whole pixel, so rows never land on a fraction (6px, and popover 10px, at 0.2). */
+    --radius-item: round(down, calc(2rem * var(--control-radius-ratio)), 1px);
+    --radius-popover: calc(var(--radius-item) + 0.25rem);
+    --radius-card: calc(3rem * var(--control-radius-ratio));
+    --radius-dialog: calc(3.75rem * var(--control-radius-ratio));
     --chart-1: 12 76% 61%;
     --chart-2: 173 58% 39%;
     --chart-3: 197 37% 24%;
@@ -296,7 +333,7 @@ html[data-keyboard-open] [data-composer-footer] {
 
 .markdown-composer-editor pre {
   overflow-x: auto;
-  border-radius: .5rem;
+  border-radius: var(--radius-item);
   background: hsl(var(--muted));
   padding: .5rem .65rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -332,7 +369,7 @@ html[data-keyboard-open] [data-composer-footer] {
   display: inline-block;
   max-height: 5rem;
   max-width: min(100%, 12rem);
-  border-radius: .35rem;
+  border-radius: var(--radius-item);
   vertical-align: middle;
 }
 
@@ -531,8 +568,8 @@ html[data-keyboard-open] [data-composer-footer] {
 
 /* Windows: pad right side of main content headers to avoid overlapping with the custom
    window controls (144px wide at right-2, so 152px total reserved). */
-.electron-vibrancy-win main > div > header,
-.electron-vibrancy-win main > header {
+.electron-vibrancy-win [data-inset-content] > div > header,
+.electron-vibrancy-win [data-inset-content] > header {
   padding-right: 152px;
 }
 
@@ -836,6 +873,102 @@ html[data-keyboard-open] [data-composer-footer] {
 ::highlight(file-comment) {
   background-color: hsl(var(--primary) / 0.12);
 }
+
+/* Dark mode has no drop shadows on the glass below: on a dark page they barely show and only muddy the edge, so a
+   faint light edge (border or inset hairline) shapes each surface instead. */
+/* Agent Home's white buttons as glass (the share and settings buttons, the composer's controls): a translucent fill
+   over a blur, a faint light edge so they still read on the composer's glass, and a soft shadow. Scoped to Agent Home
+   (agent-home.tsx), by the variant every outline button marks itself with, plus anything marked data-glass (the empty
+   state's "Other ways to get started" cards); a button in its active state (the mic while recording) keeps its own
+   look. */
+.home-glass-controls [data-variant="outline"]:not([data-active]),
+.home-glass-controls [data-glass] {
+  background-color: hsl(var(--background) / 0.45);
+  border: 1px solid hsl(0 0% 100% / 0.6);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
+  backdrop-filter: blur(12px) saturate(1.3);
+}
+.home-glass-controls [data-variant="outline"]:not([data-active]):hover,
+.home-glass-controls [data-glass]:hover,
+.home-glass-controls [data-glass]:focus-visible {
+  background-color: hsl(var(--background) / 0.75);
+}
+.dark .home-glass-controls [data-variant="outline"]:not([data-active]),
+.dark .home-glass-controls [data-glass] {
+  background-color: hsl(var(--background) / 0.3);
+  border-color: hsl(0 0% 100% / 0.08);
+  box-shadow: none;
+}
+.dark .home-glass-controls [data-variant="outline"]:not([data-active]):hover,
+.dark .home-glass-controls [data-glass]:hover,
+.dark .home-glass-controls [data-glass]:focus-visible {
+  background-color: hsl(var(--background) / 0.55);
+}
+
+/* A composer is its own surface, so its action row's outline buttons (attach, model, mic, voice mode, stop) sit plain
+   on it, filling only on hover, rather than as tiles on a tile (chat-composer-box.tsx). After Agent Home's glass, which
+   it overrides there. */
+[data-composer-actions] [data-variant="outline"]:not([data-active]),
+.dark [data-composer-actions] [data-variant="outline"]:not([data-active]) {
+  background-color: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+[data-composer-actions] [data-variant="outline"]:not([data-active]):not(:disabled):not([aria-disabled="true"]):hover {
+  background-color: hsl(var(--foreground) / 0.05);
+}
+.dark [data-composer-actions] [data-variant="outline"]:not([data-active]):not(:disabled):not([aria-disabled="true"]):hover {
+  background-color: hsl(0 0% 100% / 0.08);
+}
+/* Agent Home's title row (Share, the agent menu): solid buttons with a hairline border, so they read as buttons on the
+   near-white page rather than a faint pane of glass. */
+.home-glass-controls .home-title-row [data-variant="outline"]:not([data-active]) {
+  background-color: hsl(var(--background));
+  border-color: hsl(var(--border));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.home-glass-controls .home-title-row [data-variant="outline"]:not([data-active]):hover {
+  background-color: hsl(var(--muted));
+}
+.dark .home-glass-controls .home-title-row [data-variant="outline"]:not([data-active]) {
+  box-shadow: none;
+}
+
+/* The agent header's status chip and its power button (agent-header.tsx): the glass of Agent Home's buttons, so the
+   background behind the header tints it. The chip is the thinner pane, with a light top edge; the button inside is the
+   brighter one, lifted off it by a soft shadow. The blur only over a backdrop (content-shell.tsx): over the plain
+   header it shows nothing but still costs a filter pass every frame. */
+.status-chip {
+  background-color: hsl(var(--background) / 0.35);
+  border: 1px solid hsl(0 0% 100% / 0.55);
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.5), 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+[data-backdrop] .status-chip {
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+}
+.dark .status-chip {
+  background-color: hsl(var(--background) / 0.25);
+  border-color: hsl(0 0% 100% / 0.08);
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.06);
+}
+.status-chip-button {
+  background-color: hsl(var(--background) / 0.75);
+  border: 1px solid hsl(0 0% 100% / 0.8);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 2px 6px -2px rgba(15, 23, 42, 0.08);
+}
+.status-chip-button:hover:not(:disabled) { background-color: hsl(var(--background) / 0.95); }
+.dark .status-chip-button {
+  background-color: hsl(0 0% 100% / 0.1);
+  border-color: hsl(0 0% 100% / 0.12);
+  box-shadow: none;
+}
+.dark .status-chip-button:hover:not(:disabled) { background-color: hsl(0 0% 100% / 0.16); }
 
 /*
   Staggered slide-in for AgentHome sections when landing on a freshly
@@ -1293,4 +1426,225 @@ html[data-keyboard-open] [data-composer-footer] {
 @media (prefers-reduced-motion: reduce) {
   .composer-enter-contents > * { animation: none; }
   .voice-strip-enter { animation: none; }
+}
+
+/* Dashboard comment mode: a light-blue HUD over the dashboard frame. The grid
+   powers on (a quick flicker while it scales into place), a scan line sweeps
+   down once, brackets lock onto the corners, and the box rises in. Everything
+   but the box and the pin ignores the pointer; the overlay itself takes the
+   clicks that place the pin. */
+/* While a dashboard is captured for a comment, the app's floating layers that
+   can sit over it (tooltips, menus, toasts) hide, so the capture is the
+   dashboard alone. See captureDashboardFrame. */
+[data-capturing-dashboard] [data-radix-popper-content-wrapper],
+[data-capturing-dashboard] [data-sonner-toaster] {
+  visibility: hidden !important;
+}
+
+.dashboard-comment-overlay {
+  --hud: 14 165 233; /* sky-500 */
+  --hud-bright: 56 189 248; /* sky-400 */
+  background: radial-gradient(ellipse at center, rgb(var(--hud) / 0.01) 40%, rgb(var(--hud) / 0.06) 100%);
+  animation: hud-fade-in 200ms ease-out both;
+}
+.dark .dashboard-comment-overlay {
+  --hud: 56 189 248;
+  --hud-bright: 125 211 252; /* sky-300 */
+  background: radial-gradient(ellipse at center, rgb(var(--hud) / 0.015) 40%, rgb(var(--hud) / 0.07) 100%);
+}
+.dashboard-comment-overlay[data-state='closed'] {
+  animation: hud-fade-out 160ms ease-in both;
+  pointer-events: none;
+}
+
+.dashboard-comment-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgb(var(--hud) / 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--hud) / 0.22) 1px, transparent 1px),
+    linear-gradient(rgb(var(--hud) / 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--hud) / 0.08) 1px, transparent 1px);
+  background-size: 128px 128px, 128px 128px, 32px 32px, 32px 32px;
+  background-position: -1px -1px;
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--hud) / 0.5),
+    inset 0 0 18px rgb(var(--hud) / 0.2),
+    inset 0 0 70px rgb(var(--hud) / 0.08);
+  filter: drop-shadow(0 0 2px rgb(var(--hud-bright) / 0.35));
+  -webkit-mask-image: radial-gradient(ellipse 80% 80% at center, rgb(0 0 0 / 0.35), #000);
+  mask-image: radial-gradient(ellipse 80% 80% at center, rgb(0 0 0 / 0.35), #000);
+  animation: hud-grid-on 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Energy on the grid: light that shows only where the major lines are (the
+   mask). Short pulses flow along them, right and down, and now and then a
+   glimmer sweeps across. Both layers move by transform alone, so the
+   compositor runs them; the static mask keeps them on the lines. */
+.dashboard-comment-energy {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px);
+  mask-image: linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px);
+  -webkit-mask-size: 128px 128px;
+  mask-size: 128px 128px;
+  -webkit-mask-position: -1px -1px;
+  mask-position: -1px -1px;
+  animation: hud-fade-in 800ms ease-out 600ms both;
+}
+/* 135deg stripes, one every 424.26px along the gradient: 600px across, so a 600px slide loops seamlessly. */
+.dashboard-comment-flow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -600px;
+  right: 0;
+  opacity: 0.55;
+  background-image: repeating-linear-gradient(135deg,
+    transparent 0,
+    transparent 180px,
+    rgb(var(--hud-bright) / 0.9) 200px,
+    transparent 220px,
+    transparent 424.26px);
+  animation: hud-flow 10s linear infinite;
+}
+.dashboard-comment-glimmer {
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: 0;
+  width: 35%;
+  background: linear-gradient(90deg, transparent, rgb(var(--hud-bright) / 0.95) 50%, transparent);
+  transform: translateX(-200%) skewX(-24deg);
+  animation: hud-glimmer 5s cubic-bezier(0.4, 0, 0.6, 1) 0.8s infinite;
+}
+
+.dashboard-comment-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 110px;
+  pointer-events: none;
+  background: linear-gradient(to bottom,
+    transparent,
+    rgb(var(--hud) / 0.06) 60%,
+    rgb(var(--hud-bright) / 0.3) 96%,
+    rgb(var(--hud-bright) / 0.6) 99%,
+    transparent);
+  opacity: 0;
+  animation: hud-scan 1000ms cubic-bezier(0.45, 0, 0.25, 1) 120ms both;
+}
+
+.dashboard-comment-corner {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  border-color: rgb(var(--hud-bright) / 0.85);
+  filter: drop-shadow(0 0 3px rgb(var(--hud-bright) / 0.55));
+  animation: hud-corner-lock 380ms cubic-bezier(0.2, 0.8, 0.2, 1) 160ms both;
+}
+
+/* The pin: a reticle. Unplaced it breathes, dashed, waiting to be dragged. */
+.dashboard-comment-reticle {
+  position: relative;
+  display: block;
+  width: 30px;
+  height: 30px;
+  border-radius: 9999px;
+  border: 2px solid rgb(var(--hud-bright));
+  background: rgb(var(--hud) / 0.16);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.5), 0 0 14px 2px rgb(var(--hud-bright) / 0.75), inset 0 0 8px rgb(var(--hud-bright) / 0.6);
+  animation: hud-pin-drop 360ms cubic-bezier(0.2, 0.8, 0.2, 1.2) 220ms both;
+}
+.dashboard-comment-reticle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 9999px;
+  background: rgb(var(--hud-bright));
+  box-shadow: 0 0 6px 1px rgb(var(--hud-bright));
+}
+.dashboard-comment-reticle::after {
+  content: '';
+  position: absolute;
+  inset: -9px;
+  background:
+    linear-gradient(rgb(var(--hud-bright)), rgb(var(--hud-bright))) center top / 2px 7px no-repeat,
+    linear-gradient(rgb(var(--hud-bright)), rgb(var(--hud-bright))) center bottom / 2px 7px no-repeat,
+    linear-gradient(rgb(var(--hud-bright)), rgb(var(--hud-bright))) left center / 7px 2px no-repeat,
+    linear-gradient(rgb(var(--hud-bright)), rgb(var(--hud-bright))) right center / 7px 2px no-repeat;
+}
+.dashboard-comment-reticle[data-placed='false'] {
+  border-style: dashed;
+  animation: hud-pin-drop 360ms cubic-bezier(0.2, 0.8, 0.2, 1.2) 220ms both, hud-breathe 1.8s ease-in-out 600ms infinite;
+}
+
+.dashboard-comment-box {
+  animation: hud-box-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) 240ms both;
+}
+.comment-glow-box {
+  box-shadow:
+    0 0 0 1px rgb(56 189 248 / 0.35),
+    0 0 22px rgb(56 189 248 / 0.35),
+    0 12px 32px rgb(0 0 0 / 0.22);
+}
+
+@keyframes hud-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes hud-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes hud-grid-on {
+  0% { opacity: 0; transform: scale(1.02); }
+  25% { opacity: 0.7; }
+  35% { opacity: 0.4; }
+  55% { opacity: 1; }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes hud-flow {
+  from { transform: translateX(0); }
+  to { transform: translateX(600px); }
+}
+/* A slow crossing (4.25s), then a short rest off screen: a pass every 5s. */
+@keyframes hud-glimmer {
+  0% { transform: translateX(-200%) skewX(-24deg); }
+  85%, 100% { transform: translateX(380%) skewX(-24deg); }
+}
+@keyframes hud-scan {
+  0% { opacity: 0; transform: translateY(-110px); }
+  10% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(var(--hud-scan-to, 100vh)); }
+}
+@keyframes hud-corner-lock {
+  from { opacity: 0; transform: scale(1.8); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes hud-pin-drop {
+  from { opacity: 0; transform: scale(2.2); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes hud-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.5), 0 0 10px 1px rgb(var(--hud-bright) / 0.5), inset 0 0 6px rgb(var(--hud-bright) / 0.4); }
+  50% { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.5), 0 0 22px 5px rgb(var(--hud-bright) / 0.9), inset 0 0 10px rgb(var(--hud-bright) / 0.8); }
+}
+@keyframes hud-box-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-comment-grid,
+  .dashboard-comment-corner,
+  .dashboard-comment-reticle,
+  .dashboard-comment-reticle[data-placed='false'],
+  .dashboard-comment-box { animation: hud-fade-in 1ms both; }
+  .dashboard-comment-scan,
+  .dashboard-comment-energy { display: none; }
 }

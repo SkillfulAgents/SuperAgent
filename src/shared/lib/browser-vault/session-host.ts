@@ -38,7 +38,7 @@ import { recordAccountUse, type VaultAccount } from './vault-service'
  * What a restore puts in is not watched: a session saved again for every
  * cookie a site rewrites on each page would go round between agents.
  *
- * Watches live in this process's memory, like held values.
+ * Watches live in this process's memory: a timer per sign-in.
  */
 
 const browserStatusSchema = z.object({
@@ -60,7 +60,7 @@ async function browserOf(agentSlug: string, sessionId: string): Promise<SessionB
   if (!response.ok) return null
   const status = browserStatusSchema.safeParse(await response.json().catch(() => null))
   if (!status.success || !status.data.active || status.data.sessionId !== sessionId) return null
-  const type = status.data.location === 'container' ? 'container' : status.data.location === 'host' ? getSettings().app?.hostBrowserProvider ?? null : null
+  const type = status.data.location === 'container' ? 'container' : status.data.location === 'host' ? (await getSettings()).app?.hostBrowserProvider ?? null : null
   return type ? { type, generation: status.data.generation ?? null } : null
 }
 
@@ -134,7 +134,7 @@ export async function restoreSavedSession(input: {
     const result = { type: 'session' as const, site: account.site, username: account.username }
     if (restored?.success) {
       // The session's last step on the site: this account's (restoresHere, and whether a step after it is watched).
-      rememberSignInIdentity(agentSlug, sessionId, account.site, account.username)
+      await rememberSignInIdentity(agentSlug, sessionId, account.site, account.username)
       await picked?.grant?.()
       await markSessionHeld({ agentSlug, account, version: saved.version })
       await recordAccountUse({

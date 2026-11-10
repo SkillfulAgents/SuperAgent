@@ -9,11 +9,12 @@ import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import { cn } from '@shared/lib/utils'
 import type { useVoiceInput } from '@renderer/hooks/use-voice-input'
 
-type VoiceInputSize = 'default' | 'sm' | 'xs'
+type VoiceInputSize = 'default' | 'sm' | 'compact' | 'xs'
 
 const SIZE_CONFIG = {
   default: { button: 'h-[34px] w-[34px]', pill: 'h-[34px] w-[102px]', waveform: { width: 56, height: 18 } },
   sm: { button: 'h-8 w-8', pill: 'h-8 w-[92px]', waveform: { width: 48, height: 16 } },
+  compact: { button: 'h-7 w-7', pill: 'h-7 w-[88px]', waveform: { width: 44, height: 14 } },
   xs: { button: 'h-6 w-6', pill: 'h-6 w-[84px]', waveform: { width: 40, height: 12 } },
 } as const
 
@@ -26,7 +27,14 @@ interface VoiceInputButtonProps {
   disabled?: boolean
   /** Button sizing variant. */
   size?: VoiceInputSize
+  /** On a Liquid Glass surface (the quick-dispatch launcher): capsule shape, translucent idle fill. */
+  glass?: boolean
 }
+
+// Idle mic on glass: a translucent fill with a lit top edge in place of the
+// outline button's opaque tile. Overrides the outline variant's bg/border/shadow.
+const GLASS_IDLE =
+  'border-transparent bg-white/40 shadow-[inset_0_0.5px_0_0_rgb(255_255_255/0.8),0_0.5px_1.5px_rgb(0_0_0/0.12)] hover:bg-white/60 dark:bg-white/10 dark:shadow-[inset_0_0.5px_0_0_rgb(255_255_255/0.25)] dark:hover:bg-white/[0.16]'
 
 /**
  * Voice input mic button that transforms into a recording pill with live waveform.
@@ -34,7 +42,7 @@ interface VoiceInputButtonProps {
  *
  * Returns null if voice input is not supported by the browser.
  */
-export function VoiceInputButton({ voiceInput, message, disabled, size = 'default' }: VoiceInputButtonProps) {
+export function VoiceInputButton({ voiceInput, message, disabled, size = 'default', glass = false }: VoiceInputButtonProps) {
   const { openSettings } = useDialogs()
   const { isAuthMode, isAdmin } = useUser()
   const hasVoiceConfigured = useIsVoiceConfigured()
@@ -76,7 +84,7 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
                 type="button"
                 size="icon"
                 variant="ghost"
-                className={config.button}
+                className={cn(config.button, glass && 'rounded-full')}
                 disabled
               >
                 <MicOff className="h-4 w-4" />
@@ -97,12 +105,18 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
       onClick={handleToggle}
       disabled={disabled && !active}
       data-testid="voice-input-button"
+      // An outline button like the shared Button's, so surfaces that restyle those (Agent Home's glass) include it,
+      // except while recording, when it is the tinted pill.
+      data-variant="outline"
+      data-active={active || undefined}
       className={cn(
         buttonVariants({ variant: 'outline', size: 'icon' }),
         'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',
         active
-          ? `${config.pill} gap-2 justify-between rounded-md border-primary/30 bg-primary/10 px-2 text-foreground hover:bg-primary/15 dark:border-primary/40 dark:bg-primary/15 dark:hover:bg-primary/20`
-          : `gap-0 rounded-md ${config.button}`
+          ? `${config.pill} gap-2 justify-between border-primary/30 bg-primary/10 px-2 text-foreground hover:bg-primary/15 dark:border-primary/40 dark:bg-primary/15 dark:hover:bg-primary/20`
+          : `gap-0 ${config.button}`,
+        glass && 'rounded-full',
+        glass && !active && GLASS_IDLE,
       )}
       aria-label={active ? 'Stop recording' : !hasVoiceConfigured ? 'Set up voice input' : 'Voice input'}
       title={

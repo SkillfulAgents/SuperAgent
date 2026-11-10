@@ -238,6 +238,12 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
                 search: { newchat: externalChatId },
               })
             }
+            onOpenSession={(sessionId) =>
+              void navigate({
+                to: '/agents/$slug/sessions/$sessionId',
+                params: { slug: agentSlug, sessionId },
+              })
+            }
             agentSlug={agentSlug}
             providerName={providerName}
             canManageAccess={canManageAccess}

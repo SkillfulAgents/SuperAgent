@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { isSafeInternalPath } from '@renderer/lib/safe-internal-path'
 import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 import { SUPPORTED_PROVIDERS } from '@shared/lib/account-providers/service-catalog'
+import { notificationFilterSchema } from '@shared/lib/notifications/notification-filters'
 
 /**
  * Zod schemas for the router's URL boundary (search params + the settings tab
@@ -76,6 +77,13 @@ export const homeSearchSchema = z.object({
   template_slug: z.string().regex(TEMPLATE_SLUG_RE).optional().catch(undefined),
 })
 
+// Notifications page type filter. URL-driven so a filtered view can be linked
+// and survives back/forward; absent = all. Per-field .catch: a stale or typo'd
+// value falls back to all instead of breaking the page.
+export const notificationsSearchSchema = z.object({
+  filter: notificationFilterSchema.optional().catch(undefined),
+})
+
 const arrivalParams = Object.fromEntries(
   SUPPORTED_PROVIDERS.flatMap((p) => (p.arrivalParam ? [[p.arrivalParam, z.string().optional().catch(undefined)]] : [])),
 )
@@ -133,6 +141,7 @@ export const SETTINGS_TABS = [
   'audit-log',
   'admin',
   'users',
+  'team-directory',
   'auth',
 ] as const
 

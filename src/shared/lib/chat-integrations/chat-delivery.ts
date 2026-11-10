@@ -1,4 +1,4 @@
-import type { ChatAgentIntegration, IncomingMessage } from './chat-agent-integration'
+import type { ChatAgentIntegration, IncomingMessage, ToolOutcome } from './chat-agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
@@ -8,6 +8,7 @@ import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 import { background } from '@shared/lib/background'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -21,7 +22,7 @@ export interface ManagedConnector {
     lastUpdateTime: number
   }
   currentToolInput: string
-  pendingToolMessages: Array<{ messageId: string; text: string }>
+  pendingToolMessages: Array<{ toolId: string; messageId: string; text: string }>
   // Pull-model indicator state. `indicatorShown` makes the clear idempotent so
   // idle ticks make zero connector calls; `indicatorTickTimer` is the per-session
   // sampling tick, alive for the SSE subscription (started on subscribe, cleared
@@ -55,11 +56,11 @@ export interface ManagedConnector {
 async function finalizeTurn(managed: ManagedConnector): Promise<void> {
   try {
     await finalizeStreaming(managed)
-    await resolvePendingToolMessages(managed)
   } catch (err) {
     console.error('[ChatAgentIntegration] Failed to finalize turn:', err)
     reportError(err, 'finalize-turn', { integrationId: managed.integration.id, chatId: managed.chatId })
   }
+  await resolvePendingToolMessages(managed)
 }
 
 /**
@@ -99,7 +100,8 @@ export const BUSY_ACTIVITIES: ReadonlySet<SessionActivity> = new Set([
  * EVERY call, because on Telegram that re-render is the keep-alive. Non-busy tears
  * it down idempotently. Driven by the per-session tick (the only paint) and the
  * cold-subscribe snapshot. The connector owns how each activity renders (Telegram
- * labels a draft, Slack reacts); the app draws its own indicator and is untouched.
+ * labels a draft, Slack sets its status line); the app draws its own indicator
+ * and is untouched.
  */
 export function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
   if (BUSY_ACTIVITIES.has(activity)) {
@@ -122,6 +124,11 @@ export function clearIndicator(managed: ManagedConnector): void {
   managed.indicatorShown = false
   background(managed.connector.stopWorking(managed.chatId).catch(() => {}), { name: 'chat-delivery.stop-working' })
 }
+
+/** A streamed reply is edited at most once per this interval. */
+export const STREAM_UPDATE_MS = 1000
+/** Chats notify with a message's first post only, so it waits until it reads as text. */
+export const STREAM_FIRST_POST_CHARS = 80
 
 /** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
 export const INDICATOR_TICK_MS = 1000
@@ -271,7 +278,8 @@ export async function processSSEEvent(
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()
-      if (now - managed.streamingState.lastUpdateTime >= 1000) {
+      const { currentMessageId, accumulatedText, lastUpdateTime } = managed.streamingState
+      if (now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)) {
         try {
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
@@ -291,7 +299,6 @@ export async function processSSEEvent(
     case 'stream_start': {
       try {
         await finalizeStreaming(managed)
-        await resolvePendingToolMessages(managed)
       } catch (err) {
         console.error('[ChatAgentIntegration] Failed to finalize on stream_start:', err)
       }
@@ -311,6 +318,7 @@ export async function processSSEEvent(
     }
 
     case 'tool_use_ready': {
+      const toolId = data.toolId as string
       const toolName = data.toolName as string
 
       // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
@@ -334,13 +342,21 @@ export async function processSSEEvent(
           ? `🔧 *${displayName}* — \`${summary}\` ⏳`
           : `🔧 *${displayName}* ⏳`
         try {
-          const messageId = await managed.connector.sendMessage(managed.chatId, { text })
-          managed.pendingToolMessages.push({ messageId, text })
+          const messageId = await managed.connector.showToolStart(managed.chatId, { toolUseId: toolId, toolName: displayName, summary }, text)
+          managed.pendingToolMessages.push({ toolId, messageId, text })
         } catch (err) {
           console.error('[ChatAgentIntegration] Failed to send tool call message:', err)
         }
       }
       managed.currentToolInput = ''
+      break
+    }
+
+    case 'tool_result': {
+      const index = managed.pendingToolMessages.findIndex(pending => pending.toolId === data.toolUseId)
+      if (index === -1) break
+      const [pending] = managed.pendingToolMessages.splice(index, 1)
+      await updateToolMessage(managed, pending, data.isError ? 'error' : 'success')
       break
     }
 
@@ -371,8 +387,8 @@ export async function processSSEEvent(
       const request = (data as { request?: PendingUserInputRequest }).request
       if (!request) break
       const card = requestCardFromRegistry(request)
-      // null = chat stays quiet: a review (agent-scoped, rendered off the
-      // global channel) or an auto-approved ask nobody has to decide.
+      // null = chat stays quiet: a review (its Allow/Deny card is sent by the
+      // connector's `deliver`) or an auto-approved ask nobody has to decide.
       if (!card) break
 
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
@@ -405,6 +421,12 @@ export async function processSSEEvent(
       break
     }
 
+    case 'session_waiting_background': {
+      // The turn ended with background work still open. The tick owns the indicator.
+      await finalizeTurn(managed)
+      break
+    }
+
     case 'session_error': {
       // An errored turn emits session_error (NOT session_idle), and the host
       // suppresses the later authoritative idle. Settle the indicator instantly so
@@ -428,16 +450,21 @@ export async function processSSEEvent(
   }
 }
 
-export async function resolvePendingToolMessages(managed: ManagedConnector): Promise<void> {
-  for (const pending of managed.pendingToolMessages) {
-    const doneText = pending.text.replace('⏳', '✅')
-    try {
-      await managed.connector.sendStreamingUpdate(managed.chatId, doneText, pending.messageId)
-    } catch {
-      // Non-critical
-    }
+const TOOL_OUTCOME_GLYPH = { success: '✅', error: '❌', cancelled: '⛔' } as const
+
+async function updateToolMessage(managed: ManagedConnector, pending: ManagedConnector['pendingToolMessages'][number], outcome: ToolOutcome): Promise<void> {
+  try {
+    await managed.connector.showToolOutcome(managed.chatId, pending.toolId, outcome, pending.text.replace(/⏳$/, TOOL_OUTCOME_GLYPH[outcome]), pending.messageId)
+  } catch {
+    // Non-critical
   }
+}
+
+/** Turn end: a tool whose result never arrived is shown as stopped. */
+export async function resolvePendingToolMessages(managed: ManagedConnector): Promise<void> {
+  const pending = managed.pendingToolMessages
   managed.pendingToolMessages = []
+  for (const message of pending) await updateToolMessage(managed, message, 'cancelled')
 }
 
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
@@ -454,6 +481,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     accumulatedText: '',
     lastUpdateTime: 0,
   }
+  if (finalText.trim() === NO_REPLY_TOKEN) return
 
   try {
     if (messageId) {

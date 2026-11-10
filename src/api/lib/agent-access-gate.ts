@@ -17,6 +17,8 @@ import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
  * An event that names no agent is delivered to everyone, as before.
  */
 export interface AgentAccessGate {
+  /** Settles once the first load has (it never rejects): a failed one has gone to `onLoadError`. */
+  readonly ready: Promise<void>
   /** Offer one feed event: delivered now, held for a load in flight, or dropped. */
   push(event: GlobalFeedEvent): void
   /** The user's access may have changed: load it again before judging more events. */
@@ -92,11 +94,13 @@ export function createAgentAccessGate(options: {
   }
 
   // The first load starts with the gate: an event pushed before it lands waits for it.
-  background(load(), { name: 'agent-access-gate.load-accessible-agents' })
+  const ready = load()
+  background(ready, { name: 'agent-access-gate.load-accessible-agents' })
   const recheck = setInterval(refresh, options.recheckEveryMs ?? ACCESS_RECHECK_MS)
   recheck.unref?.()
 
   return {
+    ready,
     push(event) {
       if (disposed) return
       // The new agent's owners were granted access before this was

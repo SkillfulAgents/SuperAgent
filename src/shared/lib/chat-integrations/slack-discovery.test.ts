@@ -11,6 +11,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SlackConnector, classifySlackChatId } from './slack-connector'
 import { TelegramConnector } from './telegram-connector'
 import { IMessageConnector } from './imessage-connector'
+import { AgentIntegrationRegistry, THREADS_PER_CHANNEL } from '../agent-integrations/registry'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
+import { chatProviders } from './providers'
 
 // ── Chat id classification ─────────────────────────────────────────────
 
@@ -21,9 +24,11 @@ describe('classifySlackChatId', () => {
     expect(classifySlackChatId('G0CCC333')).toBe('group')
   })
 
-  it('classifies composite thread ids as threads regardless of prefix', () => {
+  it('classifies composite channel thread ids as threads', () => {
     expect(classifySlackChatId('C0BBB222|1784571878.344849')).toBe('thread')
     expect(classifySlackChatId('G0CCC333|1784571878.344849')).toBe('thread')
+    expect(classifySlackChatId('C0BBB222|')).toBe('channel')
+    expect(classifySlackChatId('D0AAA111|1784571878.344849')).toBe('dm')
   })
 
   it('returns undefined for unrecognized shapes', () => {
@@ -168,5 +173,54 @@ describe('SlackConnector directory discovery', () => {
     await expect(cold.listChatUsers()).rejects.toThrow('Slack app not connected')
     await expect(cold.listChatChannels()).rejects.toThrow('Slack app not connected')
     await expect(cold.resolveDirectChat('U001')).rejects.toThrow('Slack app not connected')
+  })
+})
+
+describe('Slack threads fold into their channel', () => {
+  const registry = new AgentIntegrationRegistry(chatProviders)
+  const now = Date.now()
+  const slack = (): AgentIntegrationRecord => ({
+    id: 'int-1', agentSlug: 'a', provider: 'slack', name: null, status: 'active', config: '{}',
+    errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null, createdAt: new Date(now), version: 0, updatedAt: new Date(now),
+  })
+  const at = (externalChatId: string, displayName: string | null, hoursAgo = 0) => {
+    const time = new Date(now - hoursAgo * 60 * 60 * 1000)
+    return { externalChatId, displayName, updatedAt: time, createdAt: time }
+  }
+
+  it('lists a channel\'s threads under it, newest first, any age', async () => {
+    const sessions = [at('C0DEALS|2.0', '#deals — b', 3), at('C0DEALS|1.0', '#deals — old', 300), at('C0DEALS|3.0', '#deals — c', 1)]
+    const [deals] = await registry.conversations(slack(), sessions, { threads: true })
+    expect(deals.threads!.map(t => t.externalId)).toEqual(['C0DEALS|3.0', 'C0DEALS|2.0', 'C0DEALS|1.0'])
+    expect(deals.threads![0].type).toBe('thread')
+    // Not asked for threads: the channel alone.
+    expect((await registry.conversations(slack(), sessions))[0].threads).toBeUndefined()
+  })
+
+  it('keeps at most the newest THREADS_PER_CHANNEL threads of a busy channel', async () => {
+    const sessions = Array.from({ length: THREADS_PER_CHANNEL + 3 }, (_, i) => at(`C0DEALS|${i}.0`, null, i * 0.01))
+    const [deals] = await registry.conversations(slack(), sessions, { threads: true })
+    expect(deals.threads).toHaveLength(THREADS_PER_CHANNEL)
+    expect(deals.threads![0].externalId).toBe('C0DEALS|0.0')
+  })
+
+  it('folds only a well-formed thread id', () => {
+    expect(SlackConnector.parentChatId('C0DEALS|1000.001')).toBe('C0DEALS')
+    for (const id of ['C0DEALS', 'D0ALICE', '|1000.001', '', '|']) expect(SlackConnector.parentChatId(id)).toBeUndefined()
+  })
+
+  it('lists each channel once, whatever threads it has, and leaves DMs alone', async () => {
+    const conversations = await registry.conversations(slack(), [
+      at('C0DEALS|1000.001', '#deals — Nov 2, 3:04 PM'),
+      at('C0DEALS|1000.002', '#deals — Nov 2, 3:09 PM'),
+      at('C0OPS|1000.003', '#ops — Nov 2, 4:00 PM'),
+      at('C0OPS', '#ops'),
+      at('D0ALICE', 'Alice'),
+    ])
+    expect(conversations).toEqual([
+      { externalId: 'C0DEALS', displayName: '#deals', type: classifySlackChatId('C0DEALS') },
+      { externalId: 'C0OPS', displayName: '#ops', type: classifySlackChatId('C0OPS') },
+      { externalId: 'D0ALICE', displayName: 'Alice', type: classifySlackChatId('D0ALICE') },
+    ])
   })
 })

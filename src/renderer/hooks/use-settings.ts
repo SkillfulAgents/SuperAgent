@@ -136,6 +136,7 @@ export type UpdateSettingsParams = SettingsPatch
 export interface UpdateSettingsError {
   error: string
   runningAgents?: string[]
+  status: number
 }
 
 export function useUpdateSettings() {
@@ -150,7 +151,7 @@ export function useUpdateSettings() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error: UpdateSettingsError = { ...(await res.json()), status: res.status }
         throw error
       }
 

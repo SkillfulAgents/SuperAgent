@@ -1,23 +1,8 @@
 import { test, expect } from '@playwright/test'
-import fs from 'fs'
-import path from 'path'
 import { AppPage } from '../pages/app.page'
 import { WizardPage } from '../pages/wizard.page'
 
 test.describe.configure({ mode: 'serial' })
-
-const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
-
-function readSettingsJson(settingsJsonPath: string) {
-  try {
-    return JSON.parse(fs.readFileSync(settingsJsonPath, 'utf-8')) as {
-      app?: { hostBrowserProvider?: string }
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Failed to read ${settingsJsonPath}: ${message}`)
-  }
-}
 
 /**
  * Manual wizard steps (0-indexed):
@@ -342,15 +327,11 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickSkip()  // Agent -> finish
     await wizardPage.expectNotVisible()
 
-    // Assert via API that hostBrowserProvider was persisted as 'chrome'
+    // Assert via API that hostBrowserProvider was persisted as 'chrome'. The
+    // server keeps no settings in memory: GET reads what the database holds.
     const postRes = await request.get('/api/settings')
     const postSettings = await postRes.json()
     expect(postSettings.app?.hostBrowserProvider).toBe('chrome')
-
-    // Also validate on-disk settings.json to rule out an API-only illusion
-    const settingsJsonPath = path.join(e2eDataDir, 'settings.json')
-    const onDisk = readSettingsJson(settingsJsonPath)
-    expect(onDisk.app?.hostBrowserProvider).toBe('chrome')
   })
 
   test('re-run wizard button opens wizard from settings', async ({ request }) => {

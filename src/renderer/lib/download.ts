@@ -6,11 +6,15 @@
  * place; `fallbackFilename` covers responses without the header.
  */
 export async function downloadBlob(res: Response, fallbackFilename: string): Promise<void> {
-  const blob = await res.blob()
+  saveBlob(await res.blob(), filenameFromContentDisposition(res.headers.get('content-disposition')) ?? fallbackFilename)
+}
+
+/** Trigger a browser file download of a blob made in the page. */
+export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = filenameFromContentDisposition(res.headers.get('content-disposition')) ?? fallbackFilename
+  a.download = filename
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)

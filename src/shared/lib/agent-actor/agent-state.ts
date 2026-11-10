@@ -84,20 +84,27 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
         clearPending: async (sessionId, id, outcome = 'answered') => sessions?.clearComputerUseRequest(sessionId, id, outcome),
       },
     },
-    container: { fetch: (path, init) => hooks.sessions.runtime.client().fetch(path, init) },
+    container: { fetch: async (path, init) => (await hooks.sessions.runtime.client()).fetch(path, init) },
     messages: { broadcastEvent: async (sessionId, event) => sessions?.emit(sessionId, event as SessionEvent) },
   }
   sessions = new LiveSessions({ slug, requests: inputRequests, computerUse, runs: hostRuns, ...hooks.sessions })
   // A review or re-auth wait opening or closing changes whether the agent's sessions wait.
   const live = sessions
   const syncAwaiting = () => live.syncAwaiting()
+  // A proxied call's session is a claim from the agent's own container, used
+  // only to place the card: scoped to that session while the host holds its
+  // state, even after its turn ended (a background script it started can still
+  // call). Otherwise (no claim, or a session this agent does not hold) the card
+  // is agent-wide.
+  const cardSession = (callerSessionId: string | undefined) =>
+    callerSessionId && live.has(callerSessionId) ? callerSessionId : undefined
   return {
     store: hooks.sessions.store,
     sessions: live,
     inputRequests,
-    reviews: new AgentReviews(slug, inputRequests, syncAwaiting),
-    accountReauth: createAccountReauthWaits(slug, inputRequests, syncAwaiting),
-    mcpReauth: createMcpReauthWaits(slug, inputRequests, syncAwaiting),
+    reviews: new AgentReviews(slug, inputRequests, syncAwaiting, cardSession),
+    accountReauth: createAccountReauthWaits(slug, inputRequests, syncAwaiting, cardSession),
+    mcpReauth: createMcpReauthWaits(slug, inputRequests, syncAwaiting, cardSession),
     computerUse,
     hostRuns,
     locks: new AgentLocks(),
@@ -106,6 +113,25 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
     volumeUploads: new VolumeUploadGuard(),
     deferredNaming: new Set(),
   }
+}
+
+/**
+ * The session is gone: settle the calls parked on its own review and re-auth
+ * cards before its live state drops those cards with it.
+ */
+export function releaseSessionState(state: AgentState, sessionId: string): void {
+  state.reviews.dropSession(sessionId)
+  state.accountReauth.dropSession(sessionId)
+  state.mcpReauth.dropSession(sessionId)
+}
+
+/**
+ * The user stopped the session: dismiss the calls parked on its own re-auth
+ * cards, as the stop denies its reviews.
+ */
+export function settleStoppedSession(state: AgentState, sessionId: string): void {
+  state.accountReauth.dropSession(sessionId, 'The session was stopped.')
+  state.mcpReauth.dropSession(sessionId, 'The session was stopped.')
 }
 
 /**

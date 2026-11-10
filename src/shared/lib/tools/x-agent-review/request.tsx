@@ -1,13 +1,13 @@
-import { requiresOneTimeXAgentReview, xAgentReviewAttachments, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { xAgentAllowState, xAgentReviewAttachments, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import { apiFetch } from '@renderer/lib/api'
+import { useUser } from '@renderer/context/user-context'
 import { useState, useEffect, useRef } from 'react'
-import { ShieldCheck, ShieldX, ChevronDown, MessageSquare, Paperclip } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { cn } from '@shared/lib/utils/cn'
+import { ShieldCheck, ShieldX, MessageSquare, Paperclip } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
+import { ApprovalActions, type ExpandedGrant } from '../requests/approval-actions'
+import { DeclineButton } from '../requests/decline-button'
 
 interface XAgentReviewRequestItemProps {
   reviewId: string
@@ -48,27 +48,30 @@ export function XAgentReviewRequestItem({
 }: XAgentReviewRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
-  const [allowMenuOpen, setAllowMenuOpen] = useState(false)
+  const [blocked, setBlocked] = useState(false)
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const endBlockedRef = useRef<(() => void) | null>(null)
   const isMountedRef = useRef(true)
   const navigate = useNavigate()
+  const { isAuthMode, rolesReady, canUseAgent } = useUser()
 
   useEffect(() => {
     isMountedRef.current = true
     return () => {
       isMountedRef.current = false
       if (completeTimerRef.current) clearTimeout(completeTimerRef.current)
+      endBlockedRef.current?.()
     }
   }, [])
 
-  const targetIsActionable = xAgent.operation === 'invoke' || xAgent.operation === 'read'
+  const targetIsActionable = xAgentReviewNamesTarget(xAgent)
   const isCreate = xAgent.operation === 'create'
   const isFileDownload = xAgent.fileTransfer?.kind === 'download'
   const attachments = xAgentReviewAttachments(xAgent)
-  // File paths are reviewed per invocation so a pre-existing message grant can
-  // never silently expand into file disclosure.
   const hasAttachments = attachments.length > 0
-  const canRemember = !requiresOneTimeXAgentReview(xAgent)
+  const { canAllow, lacking } = xAgentAllowState({
+    isAuthMode, rolesReady, usesCaller: canUseAgent(agentSlug), usesTarget: canUseAgent(xAgent.targetAgentSlug), review: xAgent,
+  })
 
   // Apply a terminal status + schedule onComplete, but only if the component is
   // still mounted. Avoids React's "setState on unmounted component" warning when
@@ -79,18 +82,18 @@ export function XAgentReviewRequestItem({
     completeTimerRef.current = setTimeout(() => onComplete(), delayMs)
   }
 
-  const handleDecision = async (decision: 'allow' | 'deny') => {
+  const postDecision = (decision: 'allow' | 'deny', reason?: string) =>
+    apiFetch(`/api/agents/${agentSlug}/proxy-review/${reviewId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, reason }),
+    })
+
+  const handleDecision = async (decision: 'allow' | 'deny', reason?: string) => {
     setStatus('submitting')
     setError(null)
     try {
-      const response = await apiFetch(
-        `/api/agents/${agentSlug}/proxy-review/${reviewId}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ decision }),
-        },
-      )
+      const response = await postDecision(decision, reason)
       if (!response.ok && response.status !== 404) {
         const data = await response.json()
         throw new Error(data.error || 'Failed to submit decision')
@@ -142,6 +145,25 @@ export function XAgentReviewRequestItem({
       )
       if (!response.ok && response.status !== 404) {
         const data = await response.json()
+        // An Owner blocked this link while the card was open: say so here, then end the request
+        // with Allow Once, which the Block refuses. Leaving the card before then ends it too.
+        if (data.blocked) {
+          if (!isMountedRef.current) {
+            void postDecision('allow')
+            return
+          }
+          endBlockedRef.current = () => {
+            endBlockedRef.current = null
+            void postDecision('allow')
+          }
+          setBlocked(true)
+          setStatus('denied')
+          completeTimerRef.current = setTimeout(() => {
+            endBlockedRef.current?.()
+            onComplete()
+          }, 2000)
+          return
+        }
         throw new Error(data.error || 'Failed to save policy')
       }
       finishWith('allowed', response.ok ? 1500 : 1000)
@@ -151,6 +173,20 @@ export function XAgentReviewRequestItem({
       setStatus('pending')
     }
   }
+
+  const targetChip = (
+    <span className="inline-flex items-center rounded-item bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span>
+  )
+  const expanded: ExpandedGrant | undefined =
+    xAgent.operation === 'list' ? { label: 'Always Allow', hint: 'This agent can see your other agents and their descriptions without asking', onSelect: () => handleAlways('list') }
+    : xAgent.operation === 'read' ? { label: 'Always Allow', options: [
+      { label: <>Always allow reading {targetChip}</>, hint: `This agent can read ${xAgent.targetAgentName}'s sessions and delivered files without asking`, onSelect: () => handleAlways('read', 'this'), testId: 'xagent-review-always-read' },
+      { label: <>Always allow reading <span className="font-medium">all agents</span></>, hint: "This agent can read every agent's sessions and delivered files without asking", onSelect: () => handleAlways('read', 'all'), testId: 'xagent-review-always-read-all' },
+    ] } : xAgent.operation === 'invoke' ? { label: 'Always Allow', options: [
+      { label: <>Always allow messaging {targetChip}</>, hint: `This agent can message ${xAgent.targetAgentName}, with attachments, without asking. Reading ${xAgent.targetAgentName}'s sessions still asks.`, onSelect: () => handleAlways('invoke', 'this'), testId: 'xagent-review-always-invoke' },
+      { label: <>Always allow messaging <span className="font-medium">all agents</span></>, hint: 'This agent can message every agent, with attachments, without asking', onSelect: () => handleAlways('invoke', 'all'), testId: 'xagent-review-always-invoke-all' },
+      { label: <>Allow this message and always allow reading {targetChip}</>, hint: `Sends this message now. This agent can read ${xAgent.targetAgentName}'s sessions and delivered files without asking. Future messages still ask.`, onSelect: () => handleAlways('read', 'this'), testId: 'xagent-review-always-read-only' },
+    ] } : undefined
 
   const isCompleted = status === 'allowed' || status === 'denied'
   const targetButton = targetIsActionable ? (
@@ -183,7 +219,7 @@ export function XAgentReviewRequestItem({
             )}
           </>
         ),
-        statusLabel: status === 'allowed' ? 'Allowed' : 'Denied',
+        statusLabel: status === 'allowed' ? 'Allowed' : blocked ? 'Blocked by policy' : 'Denied',
         isSuccess: status === 'allowed',
       }
     : null
@@ -210,7 +246,7 @@ export function XAgentReviewRequestItem({
   const invokeDetails = xAgent.operation === 'invoke' ? (
     <>
       {xAgent.preview && (
-        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+        <div className="mt-3 rounded-card border border-border bg-background px-3 py-2">
           <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <MessageSquare className="h-3 w-3" />
             <span>Message preview</span>
@@ -219,7 +255,7 @@ export function XAgentReviewRequestItem({
         </div>
       )}
       {!!attachments?.length && (
-        <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
+        <div className="mt-3 rounded-card border border-border bg-background px-3 py-2">
           <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <Paperclip className="h-3 w-3" />
             <span>{attachments.length} {attachments.length === 1 ? 'file' : 'files'} to share</span>
@@ -240,7 +276,7 @@ export function XAgentReviewRequestItem({
     </>
   ) : null
   const downloadDetails = xAgent.fileTransfer?.kind === 'download' ? (
-    <div className="mt-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground/85">
+    <div className="mt-3 rounded-item border border-border bg-background px-3 py-2 text-xs text-foreground/85">
       {xAgent.fileTransfer.filename}
     </div>
   ) : null
@@ -249,6 +285,7 @@ export function XAgentReviewRequestItem({
   return (
     <RequestItemShell
       title={titleNode}
+      subtitle={lacking.length > 0 ? `You need User access to ${lacking.join(' and ')} to allow this.` : undefined}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -264,151 +301,26 @@ export function XAgentReviewRequestItem({
 
       {downloadDetails}
 
-      {/* Action buttons */}
       <RequestItemActions>
-        <Button
-          data-testid="xagent-review-deny-btn"
-          onClick={() => handleDecision('deny')}
-          disabled={status === 'submitting'}
-          size="xs"
-          variant="outline"
-          className="border-border text-foreground hover:bg-muted"
-        >
-          Deny
-        </Button>
-
-        <div className="flex items-stretch">
-          <Button
-            data-testid="xagent-review-allow-once-btn"
-            onClick={() => handleDecision('allow')}
+        {canAllow ? (
+          <ApprovalActions
+            testIdPrefix="xagent-review"
             disabled={status === 'submitting'}
-            size="xs"
-            className={cn(
-              canRemember ? 'rounded-r-none border-r border-r-orange-700' : '',
-              'bg-orange-600 text-white hover:bg-orange-700',
-            )}
-          >
-            Allow{canRemember ? ' Once' : ''}
-          </Button>
-          {canRemember && (
-            <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  disabled={status === 'submitting'}
-                  size="xs"
-                  className="rounded-l-none bg-orange-600 px-1.5 text-white hover:bg-orange-700"
-                  data-testid="xagent-review-allow-menu"
-                >
-                  <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', allowMenuOpen && 'rotate-180')} />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-auto min-w-[260px] p-1">
-                <div className="flex flex-col items-stretch">
-                  {xAgent.operation === 'list' && (
-                    <Button
-                      data-testid="xagent-review-always-list"
-                      onClick={() => { setAllowMenuOpen(false); handleAlways('list') }}
-                      disabled={status === 'submitting'}
-                      variant="ghost"
-                      size="xs"
-                      className="h-auto justify-start py-2 text-foreground hover:bg-muted"
-                    >
-                      <span className="flex flex-col items-start text-left">
-                        <span>Always allow listing agents</span>
-                        <span className="text-xs font-normal text-muted-foreground/80">
-                          Skip this prompt for future <code className="font-mono">list_agents</code> calls
-                        </span>
-                      </span>
-                    </Button>
-                  )}
-                  {xAgent.operation === 'read' && (
-                    <>
-                      <Button
-                        data-testid="xagent-review-always-read"
-                        onClick={() => { setAllowMenuOpen(false); handleAlways('read', 'this') }}
-                        disabled={status === 'submitting'}
-                        variant="ghost"
-                        size="xs"
-                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
-                      >
-                        <span className="flex flex-col items-start text-left">
-                          <span>Always allow reading <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
-                          <span className="text-xs font-normal text-muted-foreground/80">
-                            Lets this agent read sessions and transcripts. File downloads require one-time approval.
-                          </span>
-                        </span>
-                      </Button>
-                      <Button
-                        data-testid="xagent-review-always-read-all"
-                        onClick={() => { setAllowMenuOpen(false); handleAlways('read', 'all') }}
-                        disabled={status === 'submitting'}
-                        variant="ghost"
-                        size="xs"
-                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
-                      >
-                        <span className="flex flex-col items-start text-left">
-                          <span>Always allow reading <span className="font-medium">all agents</span></span>
-                          <span className="text-xs font-normal text-muted-foreground/80">
-                            Skip read prompts for every agent in this workspace
-                          </span>
-                        </span>
-                      </Button>
-                    </>
-                  )}
-                  {xAgent.operation === 'invoke' && (
-                    <>
-                      <Button
-                        data-testid="xagent-review-always-invoke"
-                        onClick={() => { setAllowMenuOpen(false); handleAlways('invoke', 'this') }}
-                        disabled={status === 'submitting'}
-                        variant="ghost"
-                        size="xs"
-                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
-                      >
-                        <span className="flex flex-col items-start text-left">
-                          <span>Always allow messaging <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span></span>
-                          <span className="text-xs font-normal text-muted-foreground/80">
-                            Send-only — sync responses are returned, but browsing history still prompts
-                          </span>
-                        </span>
-                      </Button>
-                      <Button
-                        data-testid="xagent-review-always-invoke-all"
-                        onClick={() => { setAllowMenuOpen(false); handleAlways('invoke', 'all') }}
-                        disabled={status === 'submitting'}
-                        variant="ghost"
-                        size="xs"
-                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
-                      >
-                        <span className="flex flex-col items-start text-left">
-                          <span>Always allow messaging <span className="font-medium">all agents</span></span>
-                          <span className="text-xs font-normal text-muted-foreground/80">
-                            Skip send prompts for every agent in this workspace
-                          </span>
-                        </span>
-                      </Button>
-                      <Button
-                        data-testid="xagent-review-always-read-only"
-                        onClick={() => { setAllowMenuOpen(false); handleAlways('read', 'this') }}
-                        disabled={status === 'submitting'}
-                        variant="ghost"
-                        size="xs"
-                        className="h-auto justify-start py-2 text-foreground hover:bg-muted"
-                      >
-                        <span className="flex flex-col items-start text-left">
-                          <span>Always allow reading <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">{xAgent.targetAgentName}</span> (this time only)</span>
-                          <span className="text-xs font-normal text-muted-foreground/80">
-                            View-only access to history; future <code className="font-mono">invoke</code> calls still prompt
-                          </span>
-                        </span>
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </PopoverContent>
-            </Popover>
-          )}
-        </div>
+            onDeny={(reason) => handleDecision('deny', reason)}
+            onAllow={() => handleDecision('allow')}
+            allowLabel={expanded ? 'Allow Once' : 'Allow'}
+            expanded={expanded}
+          />
+        ) : (
+          <DeclineButton
+            onDecline={(reason) => handleDecision('deny', reason)}
+            disabled={status === 'submitting'}
+            label="Deny"
+            showIcon={false}
+            className="border-border text-foreground hover:bg-muted"
+            data-testid="xagent-review-deny-btn"
+          />
+        )}
       </RequestItemActions>
     </RequestItemShell>
   )

@@ -6,6 +6,7 @@ import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { mockSpeech } from '../helpers/speech'
 import { strToU8, zipSync } from 'fflate'
+import { openHomeAdvancedSettings } from '../helpers/agent-home'
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
 
@@ -127,6 +128,7 @@ test.describe('File Preview', () => {
 
     // The Agent Directory uses the same built-in folder browser on web and
     // Electron; it no longer delegates to an OS-level directory action.
+    await openHomeAdvancedSettings(page)
     await page.getByTestId('home-agent-directory-open-browser').click()
     await expect(page.locator(
       '[data-testid="folder-entry"][data-entry-path="/workspace/reports"]',
@@ -373,7 +375,7 @@ test.describe('File Preview', () => {
     await page.setViewportSize({ width: 1100, height: 800 })
     await page.evaluate(() => localStorage.setItem('tray_drawer_width', '400'))
     // Voice configured, so the row carries the voice-mode button as it does for users who set it up.
-    // Without it the left group is ~40px wider and the label stage would pass a cutoff that
+    // Without it the left group is wider and the label stage would pass a cutoff that
     // collapses the picker for those users.
     await page.route('**/api/voice/configured', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, supportsTts: true }) }),
@@ -390,16 +392,27 @@ test.describe('File Preview', () => {
     await getDeliveredFileRow(page, 'report.md').first().click()
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
 
+    const picker = page.getByTestId('composer-options-trigger')
+    const controls = [
+      page.getByRole('button', { name: 'Add files' }),
+      picker,
+      page.getByTestId('voice-input-button'),
+      page.getByTestId('voice-mode-button'),
+      page.getByTestId('send-button'),
+    ]
     const toolbar = async () => {
-      const [attachBox, pickerBox, sendBox] = await Promise.all([
-        page.getByRole('button', { name: 'Add files' }).boundingBox(),
-        page.getByTestId('composer-options-trigger').boundingBox(),
-        page.getByTestId('send-button').boundingBox(),
-      ])
+      const boxes = await Promise.all(controls.map(control => control.boundingBox()))
+      const chat = await page.getByTestId('session-thread-main').boundingBox()
+      if (!chat || boxes.some(box => !box)) return null
+      const [attachBox, pickerBox, , , sendBox] = boxes
       return {
-        pickerWidth: pickerBox?.width,
-        labelShown: (pickerBox?.width ?? 0) > 34,
-        sendBelowAttach: !!attachBox && !!sendBox && sendBox.y >= attachBox.y + attachBox.height,
+        labelShown: pickerBox!.width > 34,
+        sendBelowAttach: sendBox!.y >= attachBox!.y + attachBox!.height,
+        insideChat: boxes.every(box => box!.x >= chat.x && box!.x + box!.width <= chat.x + chat.width),
+        controlsApart: boxes.every((box, i) => boxes.slice(i + 1).every(other =>
+          box!.x + box!.width <= other!.x || other!.x + other!.width <= box!.x
+          || box!.y + box!.height <= other!.y || other!.y + other!.height <= box!.y,
+        )),
       }
     }
     const drawerWidth = async () => (await page.getByTestId('tray-drawer').boundingBox())?.width
@@ -407,16 +420,26 @@ test.describe('File Preview', () => {
     // The chat is narrower than the window, but the row still leaves the picker room for its label.
     await expect(page.getByTestId('voice-mode-button')).toBeVisible()
     await expect.poll(drawerWidth).toBe(400)
-    await expect.poll(toolbar).toMatchObject({ labelShown: true, sendBelowAttach: false })
+    await expect.poll(toolbar).toMatchObject({ labelShown: true, sendBelowAttach: false, insideChat: true, controlsApart: true })
+    // Trial clicks prove all five controls are reachable without sending a message or
+    // starting voice. The model picker also remains keyboard accessible.
+    await sessionPage.getMessageInput().fill('Toolbar access check')
+    for (const control of controls) await control.click({ trial: true })
+    await picker.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
 
-    // Squeezed further, the drawer slides over the chat at 240px. The right-hand buttons wrap
-    // to their own line, leaving the picker enough room to keep its label.
+    // Squeezed further, the drawer slides over the chat at 240px. The compact controls fit
+    // on one line and the model picker becomes an icon; no button may overlap or escape the chat.
     await page.evaluate(() => localStorage.setItem('tray_drawer_width', '620'))
     await appPage.reload()
     await getDeliveredFileRow(page, 'report.md').first().click()
     await expect.poll(drawerWidth).toBe(620)
     await expect.poll(async () => (await page.getByTestId('session-thread-main').boundingBox())?.width).toBe(240)
-    await expect.poll(toolbar).toMatchObject({ labelShown: true, sendBelowAttach: true })
+    await expect.poll(toolbar).toMatchObject({ labelShown: false, sendBelowAttach: false, insideChat: true, controlsApart: true })
+    // Even without a visible label, assistive technology can still identify the model.
+    await expect(picker).toHaveAccessibleName(/Model and effort: .+\. Click to change\./)
   })
 
   test('renders a video and pins a timestamped comment via the Add Comment button', async ({ page }) => {
@@ -637,7 +660,7 @@ test.describe('File Preview', () => {
         const response = await route.fetch()
         const session = await response.json()
         session.lastActivityAt = new Date(Date.now() - 7 * 3600_000).toISOString()
-        session.lastUsage = { inputTokens: 150_000, outputTokens: 1_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200_000 }
+        session.lastUsage = { totalTokens: 150_000, contextWindow: 200_000 }
         session.pendingWakeAt = new Date(Date.now() + 3 * 3600_000).toISOString()
         session.pendingWakeTaskId = 'task-wake'
         // A long note, so the banner's two-line limit is what holds when it resumes in view.

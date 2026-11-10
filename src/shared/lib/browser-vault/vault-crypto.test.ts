@@ -1,102 +1,114 @@
 import crypto from 'crypto'
-import fs from 'fs'
-import os from 'os'
-import path from 'path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { openJson, resetVaultKeyCache, sealJson, VaultSealError } from './vault-crypto'
+import { KeyUnavailableError } from '@shared/lib/keys/key-manager'
+import { installTestKeyManager, uninstallKeyManager, type MemoryKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
+import { openJson, opensUnder, sealJson, VaultSealError } from './vault-crypto'
 import { accountSecretsSchema, partKeyOf, sessionBundleSchema, type SessionBundle } from './vault-schemas'
 
-let dataDir: string
+let keys: MemoryKeyManager
 
-beforeEach(() => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-crypto-'))
-  vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
-  vi.stubEnv('BETTER_AUTH_SECRET', '')
-  resetVaultKeyCache()
+beforeEach(async () => {
+  keys = await installTestKeyManager()
 })
 
 afterEach(() => {
-  vi.unstubAllEnvs()
-  resetVaultKeyCache()
-  fs.rmSync(dataDir, { recursive: true, force: true })
+  uninstallKeyManager()
 })
 
 const binding = { purpose: 'account-secrets' as const, id: 'acc-1', site: 'github.com' }
 
+/** A value sealed the way the vault always has (v1, before KeyManager), under a raw key. */
+function legacySeal(plaintext: string, key: Buffer): string {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: 16 })
+  cipher.setAAD(Buffer.from(`${binding.purpose}\0${binding.id}\0${binding.site}`, 'utf-8'))
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()])
+  return ['v1', iv.toString('base64'), cipher.getAuthTag().toString('base64'), ciphertext.toString('base64')].join(':')
+}
+
 describe('vault sealing', () => {
-  it('opens what it sealed, and nothing of it shows in the sealed text', () => {
-    const sealed = sealJson({ values: { password: 'hunter2' } }, binding, accountSecretsSchema)
+  it('opens what it sealed, and nothing of it shows in the sealed text', async () => {
+    const sealed = await sealJson({ values: { password: 'hunter2' } }, binding, accountSecretsSchema)
     expect(sealed).toMatch(/^v1:[^:]+:[^:]+:[^:]+$/)
     expect(sealed).not.toContain('hunter2')
-    expect(openJson(sealed, binding, accountSecretsSchema)).toEqual({ values: { password: 'hunter2' } })
+    await expect(openJson(sealed, binding, accountSecretsSchema)).resolves.toEqual({ values: { password: 'hunter2' } })
   })
 
-  it('keeps its own key in the data directory, owner-only, apart from the auth secret', () => {
-    const sealed = sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
-    expect(fs.readdirSync(dataDir)).toEqual(['.vault-key'])
-    if (process.platform !== 'win32') expect(fs.statSync(path.join(dataDir, '.vault-key')).mode & 0o777).toBe(0o600)
-    // A restart, with an auth secret set (or rotated) meanwhile: the vault still opens.
-    resetVaultKeyCache()
-    vi.stubEnv('BETTER_AUTH_SECRET', 'another-deployment-secret-of-32-chars!')
-    expect(openJson(sealed, binding, accountSecretsSchema).values.password).toBe('a')
-
-    // Another key does not.
-    fs.writeFileSync(path.join(dataDir, '.vault-key'), crypto.randomBytes(32).toString('base64'))
-    resetVaultKeyCache()
-    expect(() => openJson(sealed, binding, accountSecretsSchema)).toThrow(VaultSealError)
+  it('opens a value sealed before KeyManager under the same key', async () => {
+    const key = crypto.randomBytes(32)
+    keys.replaceKey('browser-vault', key)
+    const sealed = legacySeal(JSON.stringify({ values: { password: 'old' } }), key)
+    await expect(openJson(sealed, binding, accountSecretsSchema)).resolves.toEqual({ values: { password: 'old' } })
   })
 
-  it('uses a key file another process made first, and never writes over one that holds no key', () => {
-    const key = `${crypto.randomBytes(32).toString('base64')}\n`
-    fs.writeFileSync(path.join(dataDir, '.vault-key'), key)
-    const sealed = sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
-    expect(fs.readFileSync(path.join(dataDir, '.vault-key'), 'utf-8')).toBe(key)
-    expect(openJson(sealed, binding, accountSecretsSchema).values.password).toBe('a')
-
-    fs.writeFileSync(path.join(dataDir, '.vault-key'), 'not a key')
-    resetVaultKeyCache()
-    expect(() => sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)).toThrow(VaultSealError)
-    expect(fs.readFileSync(path.join(dataDir, '.vault-key'), 'utf-8')).toBe('not a key')
+  it('does not open under another key, and says the value did not open', async () => {
+    const sealed = await sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
+    keys.replaceKey('browser-vault')
+    await expect(openJson(sealed, binding, accountSecretsSchema)).rejects.toThrow(VaultSealError)
   })
 
-  it('does not open a value sealed for another row, site or purpose', () => {
-    const sealed = sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
+  it('tells a key that cannot be had apart from a value that does not open', async () => {
+    const sealed = await sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
+    keys.makeUnavailable(new KeyUnavailableError('browser-vault', 'secure-storage-unavailable', 'locked'))
+    await expect(openJson(sealed, binding, accountSecretsSchema)).rejects.toBeInstanceOf(KeyUnavailableError)
+    await expect(sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)).rejects.toBeInstanceOf(KeyUnavailableError)
+  })
+
+  it('says so when no KeyManager is installed, rather than picking a key itself', async () => {
+    uninstallKeyManager()
+    await expect(sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)).rejects.toMatchObject({
+      name: 'KeyUnavailableError',
+      reason: 'not-installed',
+    })
+  })
+
+  it('checks a candidate key on a sealed value without opening it for anyone', async () => {
+    const sealed = await sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
+    const current = await keys.key('browser-vault')
+    expect(opensUnder(sealed, binding, current)).toBe(true)
+    expect(opensUnder(sealed, binding, crypto.createSecretKey(crypto.randomBytes(32)))).toBe(false)
+    expect(opensUnder(sealed, { ...binding, id: 'acc-2' }, current)).toBe(false)
+    expect(opensUnder('garbage', binding, current)).toBe(false)
+  })
+
+  it('does not open a value sealed for another row, site or purpose', async () => {
+    const sealed = await sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
     for (const other of [
       { ...binding, id: 'acc-2' },
       { ...binding, site: 'evil.com' },
       { ...binding, purpose: 'account-session' as const },
     ]) {
-      expect(() => openJson(sealed, other, accountSecretsSchema)).toThrow(VaultSealError)
+      await expect(openJson(sealed, other, accountSecretsSchema)).rejects.toThrow(VaultSealError)
     }
   })
 
-  it('refuses a tampered value or another format, saying nothing of the content', () => {
-    const sealed = sealJson({ values: { password: 'hunter2' } }, binding, accountSecretsSchema)
+  it('refuses a tampered value or another format, saying nothing of the content', async () => {
+    const sealed = await sealJson({ values: { password: 'hunter2' } }, binding, accountSecretsSchema)
     const [format, iv, tag, ciphertext] = sealed.split(':')
     const flipped = Buffer.from(ciphertext, 'base64')
     flipped[0] ^= 1
-    expect(() => openJson([format, iv, tag, flipped.toString('base64')].join(':'), binding, accountSecretsSchema)).toThrow(VaultSealError)
-    expect(() => openJson(`v2:${iv}:${tag}:${ciphertext}`, binding, accountSecretsSchema)).toThrow('Unsupported sealed value')
+    await expect(openJson([format, iv, tag, flipped.toString('base64')].join(':'), binding, accountSecretsSchema)).rejects.toThrow(VaultSealError)
+    await expect(openJson(`v2:${iv}:${tag}:${ciphertext}`, binding, accountSecretsSchema)).rejects.toThrow('Unsupported sealed value')
   })
 
-  it('refuses a value of the wrong shape, sealing or opening, without quoting it', () => {
-    const messageOf = (run: () => unknown) => {
+  it('refuses a value of the wrong shape, sealing or opening, without quoting it', async () => {
+    const messageOf = async (run: () => Promise<unknown>) => {
       try {
-        run()
+        await run()
       } catch (error) {
         return (error as Error).message
       }
       return ''
     }
     const wrong = { values: { password: 'hunter2' }, extra: 'x' }
-    expect(messageOf(() => sealJson(wrong as never, binding, accountSecretsSchema))).toBe('The value to seal has an unexpected shape')
-    const sealed = sealJson<unknown>(wrong, binding, z.unknown())
-    expect(messageOf(() => openJson(sealed, binding, accountSecretsSchema))).toBe('The sealed value has an unexpected shape')
-    expect(() => openJson(sealJson<unknown>('x', binding, z.unknown()), binding, z.object({}))).toThrow(VaultSealError)
+    expect(await messageOf(() => sealJson(wrong as never, binding, accountSecretsSchema))).toBe('The value to seal has an unexpected shape')
+    const sealed = await sealJson<unknown>(wrong, binding, z.unknown())
+    expect(await messageOf(() => openJson(sealed, binding, accountSecretsSchema))).toBe('The sealed value has an unexpected shape')
+    await expect(openJson(await sealJson<unknown>('x', binding, z.unknown()), binding, z.object({}))).rejects.toThrow(VaultSealError)
   })
 
-  it('seals a saved session like the secrets', () => {
+  it('seals a saved session (part 3) like the secrets', async () => {
     const bundle = {
       version: 1 as const,
       site: 'github.com',
@@ -105,7 +117,8 @@ describe('vault sealing', () => {
       origins: [{ origin: 'https://github.com', localStorage: [['k', 'v']] as Array<[string, string]>, indexedDB: [] }],
     }
     const sessionBinding = { purpose: 'account-session' as const, id: 'session-1', site: 'github.com' }
-    expect(openJson(sealJson<SessionBundle>(bundle, sessionBinding, sessionBundleSchema), sessionBinding, sessionBundleSchema)).toEqual(bundle)
+    const sealed = await sealJson<SessionBundle>(bundle, sessionBinding, sessionBundleSchema)
+    await expect(openJson(sealed, sessionBinding, sessionBundleSchema)).resolves.toEqual(bundle)
   })
 })
 

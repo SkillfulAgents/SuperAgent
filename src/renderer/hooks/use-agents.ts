@@ -1,5 +1,7 @@
+import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { isRetryableRequestError } from '@renderer/lib/http-error'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -7,6 +9,8 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
+import { useInstallingTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
+import { agentQuery } from './query-options'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -109,15 +113,23 @@ export function useAgents<TData = ApiAgent[]>(options?: {
   })
 }
 
+/** The agents the sidebar and Home list: all but the Team Brain agent, reached only through its own sidebar item, and a set-up's. */
+export function useListedAgents() {
+  const installing = useInstallingTeamBrainSlug()
+  const withoutTeamBrain = useCallback(
+    (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && !agent.teamBrainSettingUp && agent.slug !== installing),
+    [installing],
+  )
+  return useAgents({ select: withoutTeamBrain })
+}
+
 export function useAgent(slug: string | null) {
-  return useQuery<ApiAgent>({
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${slug}`)
-      if (!res.ok) throw new Error('Failed to fetch agent')
-      return res.json()
-    },
-    queryKey: ['agents', slug],
+  return useQuery({
+    ...agentQuery(slug ?? ''),
     enabled: !!slug,
+    // A loader may join this request. Retry transport, timeout, rate-limit and
+    // server errors, but finish definitive client errors (including 401) now.
+    retry: (failureCount, error) => isRetryableRequestError(error) && failureCount < 3,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
     refetchInterval: 60000,
   })
@@ -179,10 +191,14 @@ export function useDeleteAgent() {
       // entry without a blocking refetch. Defense-in-depth: the server already
       // 404s the agent, so this only removes a brief stale name/description flash.
       queryClient.removeQueries({ queryKey: ['agents', slug] })
-      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      invalidateNotificationCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
+      // Deleting the Team Brain agent takes its drive off every other agent and off global.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { openHomeSection } from '../helpers/agent-home'
 
 const API = ''
 
@@ -94,6 +95,7 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
     await agentPage.createAgent(agentName)
 
     // Navigate to the agent's connections page
+    await openHomeSection(page, 'Connections')
     await page.locator('[data-testid="home-connections-open-page"]').click()
     await expect(page.locator('[data-testid="connections-add-button"]')).toBeVisible()
 

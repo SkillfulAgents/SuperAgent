@@ -55,6 +55,10 @@ const RESUME_RETRY_DELAY_MS = 400
 // handshake completes (a live stream is idle by design).
 const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
 const ECS_METADATA_TIMEOUT_MS = 2_000
+// start() re-checks a RUNNING VM's /health before adopting it; a second try
+// keeps one slow reply from replacing a busy but live VM.
+const ADOPT_HEALTH_ATTEMPTS = 2
+const ADOPT_HEALTH_RETRY_DELAY_MS = 1_000
 // Quiet session streams through MicroVM ingress die at ~60s without traffic.
 export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
 
@@ -254,13 +258,22 @@ function ingressRateLimitDelayMs(attempt: number): number {
   return exp / 2 + Math.random() * (exp / 2)
 }
 
+// /health gets its own ingress connection. AWS caps each connection at 100
+// concurrent streams, so stalled media downloads on the shared connection can
+// queue a liveness probe until it times out and a live VM gets replaced.
+type H2Lane = 'requests' | 'health'
+
+function laneFor(path: string): H2Lane {
+  return path.split('?')[0] === '/health' ? 'health' : 'requests'
+}
+
 export class LocalAuthForwardProxy {
   private server: http.Server | null = null
   private port: number | null = null
   private tokenCache: { token: MicrovmAuthToken; expiresAt: number } | null = null
   private refreshing: Promise<MicrovmAuthToken> | null = null
-  private h2: http2.ClientHttp2Session | null = null
-  private h2connecting: Promise<http2.ClientHttp2Session> | null = null
+  private readonly h2: Record<H2Lane, http2.ClientHttp2Session | null> = { requests: null, health: null }
+  private readonly h2connecting: Record<H2Lane, Promise<http2.ClientHttp2Session> | null> = { requests: null, health: null }
 
   constructor(private readonly options: ProxyOptions) {}
 
@@ -284,9 +297,11 @@ export class LocalAuthForwardProxy {
     this.server = null
     this.port = null
     this.tokenCache = null
-    this.h2?.close()
-    this.h2 = null
-    this.h2connecting = null
+    for (const lane of ['requests', 'health'] as const) {
+      this.h2[lane]?.close()
+      this.h2[lane] = null
+      this.h2connecting[lane] = null
+    }
   }
 
   // Single-flight token refresh so a burst of requests can't trigger a token storm.
@@ -329,16 +344,19 @@ export class LocalAuthForwardProxy {
 
   // One HTTP/2 session = one AWS ingress connection. Agent is plaintext HTTP/1.1
   // inside the VM — do not send x-aws-proxy-force-h2; AWS translates streams.
-  private async ensureHttp2(): Promise<http2.ClientHttp2Session> {
-    if (this.h2 && !this.h2.closed && !this.h2.destroyed) return this.h2
-    if (this.h2connecting) return this.h2connecting
-    this.h2connecting = this.connectHttp2().finally(() => {
-      this.h2connecting = null
+  private async ensureHttp2(lane: H2Lane): Promise<http2.ClientHttp2Session> {
+    const current = this.h2[lane]
+    if (current && !current.closed && !current.destroyed) return current
+    const pending = this.h2connecting[lane]
+    if (pending) return pending
+    const connecting = this.connectHttp2(lane).finally(() => {
+      this.h2connecting[lane] = null
     })
-    return this.h2connecting
+    this.h2connecting[lane] = connecting
+    return connecting
   }
 
-  private connectHttp2(): Promise<http2.ClientHttp2Session> {
+  private connectHttp2(lane: H2Lane): Promise<http2.ClientHttp2Session> {
     return new Promise((resolve, reject) => {
       let settled = false
       const finishOk = (session: http2.ClientHttp2Session) => {
@@ -373,10 +391,10 @@ export class LocalAuthForwardProxy {
           finishErr(new Error('microvm http2 connect aborted: proxy stopped'))
           return
         }
-        this.h2 = session
-        session.once('close', () => { if (this.h2 === session) this.h2 = null })
+        this.h2[lane] = session
+        session.once('close', () => { if (this.h2[lane] === session) this.h2[lane] = null })
         session.on('error', (error) => {
-          if (this.h2 === session) this.h2 = null
+          if (this.h2[lane] === session) this.h2[lane] = null
           captureException(error, { tags: { area: 'container', op: 'microvm.proxy.http2.session' }, extra: { endpoint: this.options.endpoint } })
         })
         finishOk(session)
@@ -425,7 +443,7 @@ export class LocalAuthForwardProxy {
   }
 
   private async forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
-    const session = await this.ensureHttp2()
+    const session = await this.ensureHttp2(laneFor(path))
     return this.forwardOnceH2(session, method, path, headers, body)
   }
 
@@ -884,8 +902,8 @@ function isExecutableLaunchFailureError(error: unknown): boolean {
   return (error as { containerErrorClass?: unknown }).containerErrorClass === 'executable_launch_failed'
 }
 
-function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
-  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
+async function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): Promise<UnexpectedDeathPlan> {
+  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(await getSettings())) {
     return { action: 'settle' }
   }
   return plan
@@ -899,6 +917,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly supportsCustomAgentImage = false
 
   private replaceInFlight: Promise<void> | null = null
+  private lastMicrovmId: string | null = null
 
   constructor(config: ContainerConfig) {
     super(config)
@@ -932,7 +951,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     try {
       const mvm = await getMicrovm(config.region, installed.microvmId)
-      return honorMicrovmAutoResume(
+      // Awaited inside the try: a failed settings read falls back to the probe below, which never recovers.
+      return await honorMicrovmAutoResume(
         planFromClassification(
           classifyMicrovmDeath({
             state: mvm.state,
@@ -989,8 +1009,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     // PENDING-as-alive is for waitForHealthy. start() must not adopt a stuck
     // PENDING generation — replace it so the next Run can self-heal.
     if (info.status === 'running' && local?.lastObservedState !== 'PENDING') {
-      this.rememberRunningPort(info.port)
-      return info
+      // A frozen guest still reports RUNNING to the control plane; only /health
+      // tells it apart. Adopting it would make every restart reuse the dead VM.
+      if (await this.answersHealth(info.port)) {
+        this.rememberRunningPort(info.port)
+        return info
+      }
+      console.warn(
+        `[LambdaMicroVmRuntimeClient] MicroVM ${local?.microvmId} is RUNNING but fails /health, replacing it agent=${this.config.agentId}`,
+      )
     }
     if (agentStates.has(this.config.agentId)) {
       await this.teardown()
@@ -999,7 +1026,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName)
+    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName, options?.settings)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
@@ -1072,6 +1099,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
 
     return { status: 'running', port: proxyPort }
+  }
+
+  private async answersHealth(port: number | null): Promise<boolean> {
+    if (port === null) return false
+    for (let attempt = 0; attempt < ADOPT_HEALTH_ATTEMPTS; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, ADOPT_HEALTH_RETRY_DELAY_MS))
+      if (await this.isHealthy(port)) return true
+    }
+    return false
   }
 
   // On connect-refused against a dead generation (lifetime-cap / stop race),
@@ -1170,6 +1206,21 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         extra: { microvmId: observedId },
       })
       return { status: 'running', port: state.proxyPort }
+    }
+  }
+
+  async isDefinitelyStopped(): Promise<boolean> {
+    // A missing local record after a host restart is not proof of VM death.
+    // Keep the last id when routing state is discarded so a terminating VM
+    // can still be checked after it actually exits.
+    const currentId = () => agentStates.get(this.config.agentId)?.microvmId ?? this.lastMicrovmId
+    const id = currentId()
+    if (!id) return false
+    try {
+      const mvm = await getMicrovm(getMicrovmRuntimeConfig().region, id)
+      return currentId() === id && mvm.state === 'TERMINATED'
+    } catch (error) {
+      return currentId() === id && isNotFound(error)
     }
   }
 
@@ -1358,6 +1409,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   private cleanupLocal(): void {
     const state = agentStates.get(this.config.agentId)
+    if (state) this.lastMicrovmId = state.microvmId
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
     clearBootstrapEnv(this.config.agentId)

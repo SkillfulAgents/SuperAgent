@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { IsAgent } from '../middleware/auth'
-import { getActiveWebProvider } from '@shared/lib/web-provider'
+import { activeWebProviderFrom } from '@shared/lib/web-provider'
 import { applyAllowedSites } from '@shared/lib/web-provider/allowed-sites'
 import { WebSearchRequestSchema } from '@shared/lib/web-provider/web-search-request-schema'
 import { getSettings } from '@shared/lib/config/settings'
@@ -31,15 +31,16 @@ webSearch.post('/search', async (c) => {
     return c.json({ error: 'Invalid request', detail: parsed.error.issues }, 400)
   }
 
-  const provider = getActiveWebProvider()
+  // One read for the request: the vendor, its credential and the site policy.
+  const settings = await getSettings()
+  const provider = activeWebProviderFrom(settings)
   if (!provider?.search) {
     return c.json({ error: 'No web search vendor configured' }, 400)
   }
 
   const { query, ...opts } = parsed.data
   try {
-    const result = await provider.search(query, opts)
-    const settings = getSettings()
+    const result = await provider.search(query, opts, settings)
     const { hits, removed } = applyAllowedSites(result.hits, {
       allowedSites: settings.webAllowedSites,
       blockedSites: settings.webBlockedSites,

@@ -714,7 +714,7 @@ export function AgentGraph() {
         <Panel position="top-right" className="flex items-center gap-2">
           <label
             htmlFor="graph-details-switch"
-            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs shadow-sm"
+            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-control border bg-background px-2.5 text-xs shadow-sm"
           >
             Details
             <Switch
@@ -732,7 +732,7 @@ export function AgentGraph() {
         </Panel>
         {graph.topologyFailed && (
           <Panel position="top-left">
-            <div className="rounded-md border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
+            <div className="rounded-item border bg-card px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm">
               Couldn&apos;t load connections — showing agents only
             </div>
           </Panel>

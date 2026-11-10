@@ -82,7 +82,7 @@ export async function saveAccountSession(input: {
 }): Promise<void> {
   const { agentSlug, account, browserType, bundle } = input
   const id = sessionRowId(account.id, browserType)
-  const sealed = sealJson(bundle, { purpose: 'account-session', id, site: account.site }, sessionBundleSchema)
+  const sealed = await sealJson(bundle, { purpose: 'account-session', id, site: account.site }, sessionBundleSchema)
   const now = new Date()
   const committed = sql<number>`(select ${browserAccountSessions.version} from ${browserAccountSessions} where ${browserAccountSessions.id} = ${id})`
   const sharing = await accountsSharingCookies(account.site)
@@ -114,7 +114,7 @@ export async function readAccountSession(
   const row = await db.select().from(browserAccountSessions).where(eq(browserAccountSessions.id, id)).get()
   if (!row || row.version === options.unlessVersion) return null
   try {
-    const bundle = openJson(row.bundle, { purpose: 'account-session', id, site: account.site }, sessionBundleSchema)
+    const bundle = await openJson(row.bundle, { purpose: 'account-session', id, site: account.site }, sessionBundleSchema)
     return { version: row.version, capturedAt: row.capturedAt, bundle }
   } catch (error) {
     if (!(error instanceof VaultSealError)) throw error

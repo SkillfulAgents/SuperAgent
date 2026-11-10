@@ -228,4 +228,55 @@ describe('AuthPage', () => {
     expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
     expect(screen.queryByTestId('signup-submit')).not.toBeInTheDocument()
   })
+
+  it.each([
+    ['offers sign-up to the first user while signups are closed', true, true],
+    ['offers no sign-up when the server keeps it closed even without users (platform-controlled)', false, false],
+    ['falls back to the user count when the server predates the flag', undefined, true],
+  ])('%s', async (_label, firstUserSignupOpen, offered) => {
+    apiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        signupMode: 'closed',
+        allowLocalAuth: true,
+        allowSocialAuth: false,
+        providers: [],
+        passwordMinLength: 8,
+        passwordRequireComplexity: false,
+        requireAdminApproval: false,
+        hasUsers: false,
+        ...(firstUserSignupOpen === undefined ? {} : { firstUserSignupOpen }),
+      }),
+    })
+
+    render(<AuthPage />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('signin-submit')).toBeInTheDocument()
+    })
+    if (offered) expect(screen.getByTestId('auth-tab-signup')).toBeInTheDocument()
+    else expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['invitation_only', true],
+    ['closed', false],
+  ])('opens sign-up with the email from a team-directory invitation link (%s)', async (signupMode, offered) => {
+    window.history.replaceState(null, '', '/?join=dana%40acme.test')
+    apiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        signupMode, allowLocalAuth: true, allowSocialAuth: false, providers: [],
+        passwordMinLength: 8, passwordRequireComplexity: false, requireAdminApproval: false, hasUsers: true,
+      }),
+    })
+    try {
+      render(<AuthPage />)
+      await waitFor(() => expect(screen.getByTestId(offered ? 'signup-submit' : 'signin-submit')).toBeInTheDocument())
+      if (offered) expect(screen.getByLabelText('Email')).toHaveValue('dana@acme.test')
+      else expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
+    } finally {
+      window.history.replaceState(null, '', '/')
+    }
+  })
 })

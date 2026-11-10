@@ -11,7 +11,7 @@ import {
 import { toast } from 'sonner'
 
 // Shared with the General tab's other sections so this box looks native there.
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 /**

@@ -4,6 +4,7 @@ import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extens
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
+import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -137,6 +138,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Open URL in system default browser
   openExternal: (url: string): Promise<void> => {
     return ipcRenderer.invoke('open-external', url)
+  },
+
+  // The Gamut sign-in in a sheet on the app's window (ASWebAuthenticationSession).
+  // Resolves when the sheet closes; 'browser' means there was no sheet to show
+  // and the URL went to the default browser instead.
+  startPlatformSignIn: (url: string): Promise<'completed' | 'cancelled' | 'failed' | 'browser'> => {
+    return ipcRenderer.invoke('platform-sign-in-start', url)
+  },
+  cancelPlatformSignIn: (): Promise<void> => {
+    return ipcRenderer.invoke('platform-sign-in-cancel')
   },
 
   openApplePasswordsExtension: (): Promise<void> => {
@@ -319,6 +330,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-dashboard-window', { agentSlug, dashboardSlug, dashboardName })
   },
 
+  // A PNG of a region of this window, in CSS pixels (a dashboard comment's screenshot)
+  captureRegion: (rect: { x: number; y: number; width: number; height: number }): Promise<Uint8Array | null> => {
+    return ipcRenderer.invoke('capture-region', rect)
+  },
+
   // Show the native emoji picker
   showEmojiPanel: (): Promise<void> => {
     return ipcRenderer.invoke('show-emoji-panel')
@@ -334,9 +350,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return webUtils.getPathForFile(file)
   },
 
-  // Open a native directory picker dialog
-  openDirectory: (): Promise<string | null> => {
-    return ipcRenderer.invoke('open-directory')
+  // Open a native directory picker dialog. In the Mac App Store build the pick
+  // also carries the security-scoped bookmark that reopens it after a relaunch.
+  // `startIn` opens the dialog in that folder.
+  openDirectory: (startIn?: string): Promise<{ path: string; bookmark?: string } | null> => {
+    return ipcRenderer.invoke('open-directory', startIn)
   },
 
   // Reveal a path in the OS file manager (Finder / Explorer / Files)
@@ -463,6 +481,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('quick-dispatch:attach-pending', handler)
     }
   },
+  // Computer-use toggle: screenshot the screen under the launcher (and play the
+  // shutter that carries it into the composer).
+  quickDispatchCaptureScreen: (): Promise<QuickDispatchCaptureResult> => ipcRenderer.invoke('quick-dispatch:capture-screen'),
+  // The pointer is on the toggle: get the shutter ready so the click answers at once.
+  quickDispatchCapturePrepare: () => {
+    ipcRenderer.send('quick-dispatch:capture-prepare')
+  },
+  // Where the screenshot's chip rendered, in the launcher's viewport (null: nowhere).
+  quickDispatchCaptureTarget: (rect: CaptureRect | null) => {
+    ipcRenderer.send('quick-dispatch:capture-target', rect)
+  },
+  // Main → launcher: the shutter landed (or ended) — show the chip it covered.
+  onQuickDispatchCaptureLanded: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:capture-landed', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:capture-landed', handler)
+    }
+  },
   // Main → launcher: the panel was hidden — reset transient state (attachments).
   onQuickDispatchReset: (callback: () => void): (() => void) => {
     const handler = () => callback()
@@ -530,6 +567,8 @@ declare global {
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
+      startPlatformSignIn?: (url: string) => Promise<'completed' | 'cancelled' | 'failed' | 'browser'>
+      cancelPlatformSignIn?: () => Promise<void>
       openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
       onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
@@ -572,10 +611,11 @@ declare global {
       setNativeTheme: (theme: string) => Promise<void>
       popupAppMenu: (x: number, y: number) => Promise<void>
       openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
+      captureRegion: (rect: { x: number; y: number; width: number; height: number }) => Promise<Uint8Array | null>
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
-      openDirectory: () => Promise<string | null>
+      openDirectory: (startIn?: string) => Promise<{ path: string; bookmark?: string } | null>
       showInFolder: (hostPath: string) => Promise<string | null>
       revealInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
@@ -602,6 +642,10 @@ declare global {
       onQuickDispatchToggleDictation: (callback: () => void) => () => void
       quickDispatchDrainAttach: () => Promise<string[]>
       onQuickDispatchAttachPending: (callback: () => void) => () => void
+      quickDispatchCaptureScreen: () => Promise<QuickDispatchCaptureResult>
+      quickDispatchCapturePrepare: () => void
+      quickDispatchCaptureTarget: (rect: CaptureRect | null) => void
+      onQuickDispatchCaptureLanded: (callback: () => void) => () => void
       onQuickDispatchReset: (callback: () => void) => () => void
       setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
       importPackagesDrain: () => Promise<ClassifiedImportPackage[]>

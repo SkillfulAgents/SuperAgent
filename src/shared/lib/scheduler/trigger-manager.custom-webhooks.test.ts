@@ -37,6 +37,10 @@ vi.mock('@shared/lib/config/settings', () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+  }),
 }))
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
@@ -111,6 +115,9 @@ vi.mock('@shared/lib/db/schema', () => ({
 import { getWebhookRelay, type RelayEvent } from '@shared/lib/webhook-relay'
 import type { FakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 import { triggerManager } from './trigger-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(triggerManager))
 
 const relay = getWebhookRelay() as FakeWebhookRelay
 

@@ -6,7 +6,7 @@ import { Hono, type Context, type Next } from 'hono'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, auditLog, user } from '@shared/lib/db/schema'
-import { resetVaultKeyCache } from '@shared/lib/browser-vault/vault-crypto'
+import { installTestKeyManager, uninstallKeyManager } from '@shared/lib/keys/testing/memory-key-manager'
 
 let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
@@ -33,15 +33,15 @@ const app = new Hono()
   .route('/api/browser-accounts', browserAccounts)
   .route('/api/agents', agentBrowserAccountRoutes)
 
-beforeAll(() => {
+beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-accounts-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
-  resetVaultKeyCache()
+  await installTestKeyManager()
 })
 
 afterAll(() => {
   vi.unstubAllEnvs()
-  resetVaultKeyCache()
+  uninstallKeyManager()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })
 

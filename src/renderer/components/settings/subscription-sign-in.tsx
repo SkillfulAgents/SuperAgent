@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle2, ExternalLink, Loader2 } from 'lucide-react'
+import { CheckCircle2, ExternalLink, Loader2, TriangleAlert } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { apiFetch } from '@renderer/lib/api'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
@@ -18,11 +18,13 @@ export const SIGN_IN: Record<SubscriptionSignInProvider, { name: string; account
     regions: [{ value: 'global', label: 'Global (minimax.io)' }, { value: 'cn', label: 'China (minimaxi.com)' }] },
 }
 
-export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, accountLabel, region: savedRegion, onConnected, onSetupEvent }: {
+export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, accountLabel, expired, region: savedRegion, onConnected, onSetupEvent }: {
   provider?: SubscriptionSignInProvider
   connectionId?: string
   userId: string | null
   accountLabel?: string
+  /** The saved sign-in was rejected by the provider. */
+  expired?: boolean
   region?: string
   onConnected: (id: string, label: string) => void
   onSetupEvent?: ConnectionSetupObserver
@@ -98,7 +100,7 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
         <>
           <span>Open the {name} sign-in page and enter the code.</span>
           <a
-            className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent"
+            className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-item border bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent"
             href={login.url}
             target="_blank"
             rel="noreferrer"
@@ -120,11 +122,18 @@ export function SubscriptionSignIn({ provider = 'grok', connectionId, userId, ac
       ]} />
     ) : accountLabel ? (
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-2">
-          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-500" aria-hidden="true" />
-          <span className="truncate">Signed in as <span className="font-medium">{accountLabel}</span></span>
-        </span>
-        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void start()}>
+        {expired ? (
+          <span className="flex min-w-0 items-center gap-2 text-destructive">
+            <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="truncate">Sign-in expired for <span className="font-medium">{accountLabel}</span></span>
+          </span>
+        ) : (
+          <span className="flex min-w-0 items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-500" aria-hidden="true" />
+            <span className="truncate">Signed in as <span className="font-medium">{accountLabel}</span></span>
+          </span>
+        )}
+        <Button type="button" variant={expired ? 'default' : 'ghost'} size="sm" disabled={busy} onClick={() => void start()}>
           {busy ? 'Starting sign-in…' : `Reconnect ${name}`}
         </Button>
       </div>

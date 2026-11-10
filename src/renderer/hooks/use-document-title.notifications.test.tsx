@@ -94,7 +94,12 @@ describe('session notification tab title', () => {
     queryClient.setQueryData(['sessions', 'agent-one'], [serverSession])
     queryClient.setQueryData(['session', 'session-1', 'agent-one'], serverSession)
 
-    mocks.apiJson.mockImplementation(async () => ({ ...serverSession }))
+    mocks.apiJson.mockImplementation(async (url: string) => {
+      if (url === '/api/agents/agent-one/sessions/session-1') return { ...serverSession }
+      // Legacy read responses refetch the shared loader/component agent query.
+      if (url === '/api/agents/agent-one') return { ...agent }
+      throw new Error(`Unexpected JSON request: ${url}`)
+    })
     mocks.apiFetch.mockImplementation(async (url: string, options?: RequestInit) => {
       if (url === '/api/notifications/read-by-session/session-1' && options?.method === 'POST') {
         serverSession = { ...serverSession, hasUnreadNotifications: false }

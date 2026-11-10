@@ -1,4 +1,6 @@
 import { useId, useState } from 'react'
+import { TriangleAlert } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { Separator } from '@renderer/components/ui/separator'
 import type { ConnectionInfo } from '@shared/lib/llm-provider/connection-schema'
@@ -73,6 +75,15 @@ function ConnectionName({ connection, label, className }: { connection: Connecti
     <span className={`flex min-w-0 items-center gap-1.5 font-medium ${className ?? ''}`}>
       <ProviderLogo provider={connection.provider} className="h-3.5 w-3.5" monochrome />
       <span className="truncate">{label}</span>
+      {connection.reconnectRequired && <>{' '}<ReconnectRequiredIcon /></>}
+    </span>
+  )
+}
+
+export function ReconnectRequiredIcon({ className }: { className?: string }) {
+  return (
+    <span role="img" aria-label="Sign-in expired" title="Sign-in expired. Reconnect in Settings → Model Providers." className={cn('inline-flex shrink-0 text-destructive', className)}>
+      <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
     </span>
   )
 }

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -26,7 +26,6 @@ import {
   Plus,
   Loader2,
   RefreshCw,
-  ChevronDown,
 } from 'lucide-react'
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
@@ -42,21 +41,24 @@ import type { MountSummaryWithHealth, VolumeDefinitionSummary } from '@shared/li
 
 interface HomeVolumesProps {
   agentSlug: string
+  /** A drive the page shows elsewhere, left out of the list. */
+  hiddenVolumeId?: string
   className?: string
 }
 
-export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
+export function HomeVolumes({ agentSlug, hiddenVolumeId, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
   const [showNewVolume, setShowNewVolume] = useState(false)
+  const mounts = hiddenVolumeId ? volumes.mounts.filter((mount) => mount.volumeId !== hiddenVolumeId) : volumes.mounts
 
   // Saved sources can be attached from a browser or cloud workspace, too.
-  if (!volumes.canAddMount && volumes.mounts.length === 0 && !volumes.operationError) return null
+  if (!volumes.canAddMount && mounts.length === 0 && !volumes.operationError) return null
 
   return (
-    <HomeCollapsible title="Drives" className={className}>
-      {volumes.mounts.length > 0 ? (
-        <div className="mt-2 divide-y divide-border/50">
-          {volumes.mounts.map((mount) => (
+    <HomeCollapsible id="drives" title="Drives" count={volumes.isLoading ? undefined : mounts.length} className={className}>
+      {mounts.length > 0 ? (
+        <div className="mt-2">
+          {mounts.map((mount) => (
             <VolumeRow
               key={mount.id}
               mount={mount}
@@ -70,7 +72,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
             />
           ))}
         </div>
-      ) : (
+      ) : volumes.mounts.length === 0 && (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No drives yet</p>
           <p className="text-xs mt-1">Add a saved drive{volumes.canCreateMount ? ' or create a new one' : ''} to give this agent read/write access.</p>
@@ -80,7 +82,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
       <div className="mt-3 px-4">
         {volumes.operationError && <p role="alert" className="mb-2 text-xs text-destructive">{volumes.operationError}</p>}
         {volumes.pendingRestart ? (
-          <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
+          <div className="flex flex-col gap-1 rounded-card bg-orange-50 dark:bg-orange-950/30 p-2.5">
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-600 dark:text-orange-400 flex-1">
                 Restart your agent to apply recent changes.
@@ -105,7 +107,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" disabled={volumes.isAddingMount || volumes.isLoading} data-testid="add-mount-menu">
                     {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />}
-                    Add Drive <ChevronDown />
+                    Add Drive
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-72">
@@ -171,6 +173,8 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   const titleRef = useRef<InlineEditableTitleHandle>(null)
   useLayoutEffect(() => { if (isRenaming) titleRef.current?.startEditing() }, [isRenaming])
   const navigate = useNavigate()
+  // Back from the drive's page returns to this page, whatever it carries in its URL.
+  const here = useRouterState({ select: (s) => s.location.href })
   const save = useSaveVolumeDefinition()
   const fileManagerLabel = getFileManagerLabel()
   // `hostPath` is a path on whichever machine runs the agent. Opening it in the
@@ -191,7 +195,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
 
   const canOpen = definition !== undefined && !isRenaming
   const openSettings = () => {
-    void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: `/agents/${encodeURIComponent(agentSlug)}` } })
+    void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: here } })
   }
 
   const handleDelete = () => {
@@ -203,7 +207,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
     <>
       <div
         {...(canOpen ? { ...openableProps(openSettings), 'aria-label': `Open ${mount.volumeName} drive settings` } : {})}
-        className={`group relative py-3 px-4 transition-colors ${canOpen ? 'hover:bg-muted/50 cursor-pointer' : ''}`}
+        className={`group relative py-3 px-4 ${canOpen ? 'cursor-pointer' : ''}`}
       >
         <div className="flex items-center gap-2">
           <VolumeIcon type={mount.type} className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -226,8 +230,8 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             />
           ) : <>
             <span className="text-xs font-medium truncate">{mount.volumeName}</span>
-            <VolumeStatusBadge health={mount.health} />
-            {mount.readOnly && (
+            <VolumeStatusBadge health={mount.health} attention={mount.attention} />
+            {(mount.readOnly || mount.sourceReadOnly) && (
               <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
                 <Lock className="h-2.5 w-2.5" />
                 Read only
@@ -258,7 +262,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             <PopoverContent align="end" className="w-44 p-1" onClick={(e) => e.stopPropagation()}>
               {canOpenInFileManager && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => {
                     e.stopPropagation()
                     handleOpenInFinder()
@@ -271,7 +275,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
               )}
               {hostPath && (
                 <button
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => {
                     e.stopPropagation()
                     handleCopyPath()
@@ -295,7 +299,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                   Rename
                 </button>
               )}
-              {canRemove && (
+              {canRemove && !mount.sourceReadOnly && (
                 <button
                   role="switch"
                   aria-checked={mount.readOnly}
@@ -313,7 +317,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                 </button>
               )}
               {canRemove && <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
                 onClick={(e) => {
                   e.stopPropagation()
                   setShowDeleteDialog(true)

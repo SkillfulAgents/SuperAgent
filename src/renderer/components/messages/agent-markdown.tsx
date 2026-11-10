@@ -4,6 +4,7 @@ import type { Components } from 'react-markdown'
 import type { Element, ElementContent } from 'hast'
 import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components/ui/markdown'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { MENTION_TAG, mentionOf } from '@renderer/lib/rehype-mentions'
 import { CodeCopyButton } from './code-copy-button'
@@ -18,7 +19,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
   const getText = useCallback(() => extractText(children), [children])
   return (
     <pre className={cn(
-      'relative group rounded-md p-3 text-sm leading-relaxed border code-scrollbar',
+      'relative group rounded-card p-3 text-sm leading-relaxed border code-scrollbar',
       'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
     )}>
       <CodeCopyButton getText={getText} />
@@ -112,7 +113,16 @@ const STREAMING_COMPONENTS: Components = {
       alt={alt ?? ''}
       loading="lazy"
       decoding="async"
-      className="h-auto max-w-full rounded-md"
+      className="h-auto max-w-full rounded-card"
+    />
+  ),
+  // remark-gfm's only input is a checklist box, in its item (tight list) or the item's first
+  // paragraph (loose list). It takes the marker's place in the gutter. Read-only, full contrast.
+  input: ({ checked }) => (
+    <Checkbox
+      checked={!!checked}
+      disabled
+      className="float-start -ms-6 mt-[calc(0.5lh-0.5rem)] disabled:cursor-default disabled:opacity-100 [li:has(>&)]:list-none [li:has(>p>&)]:list-none"
     />
   ),
 }

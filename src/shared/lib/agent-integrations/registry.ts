@@ -40,9 +40,22 @@ export interface IntegrationProvider {
   mcp?(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null>
   cleanup?(record: AgentIntegrationRecord): Promise<void>
   describeTarget?(externalId: string): Promise<{ type?: string }>
+  /** The conversation a session's target belongs to, with its name: itself, or the channel a thread is in. */
+  conversationOf?(externalId: string, displayName: string | null): Promise<{ externalId: string; displayName: string | null }>
   /** Safe identity the agent may quote. Credentials stay out. */
   agentDiscovery?(record: AgentIntegrationRecord): { address?: string }
 }
+
+/** A conversation the agent can post to; a channel lists its threads when asked for them. */
+export interface IntegrationConversation {
+  externalId: string
+  displayName: string | null
+  type?: string
+  threads?: Array<{ externalId: string; displayName: string | null; type?: string }>
+}
+
+/** Threads listed under a channel: past this, only the newest stay. */
+export const THREADS_PER_CHANNEL = 20
 
 /** The composition root is the only application module that enumerates families. */
 export class AgentIntegrationRegistry {
@@ -113,6 +126,27 @@ export class AgentIntegrationRegistry {
 
   async describeTarget(provider: string, externalId: string): Promise<{ type?: string }> {
     return this.providers.get(provider)?.describeTarget?.(externalId) ?? {}
+  }
+
+  /**
+   * The conversations behind these sessions, once each: a thread folds into the channel it is in.
+   * With `threads`, a channel also lists its threads, newest first, at most THREADS_PER_CHANNEL.
+   */
+  async conversations(record: AgentIntegrationRecord, sessions: ReadonlyArray<{ externalChatId: string; displayName: string | null; updatedAt: Date; createdAt: Date }>, options: { threads?: boolean } = {}): Promise<IntegrationConversation[]> {
+    const byId = new Map<string, IntegrationConversation & { threads: NonNullable<IntegrationConversation['threads']> }>()
+    for (const session of [...sessions].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())) {
+      const { externalId, displayName } = await this.providers.get(record.provider)?.conversationOf?.(session.externalChatId, session.displayName)
+        ?? { externalId: session.externalChatId, displayName: session.displayName }
+      const isThread = externalId !== session.externalChatId
+      const known = byId.get(externalId) ?? { externalId, displayName: null, threads: [], ...await this.describeTarget(record.provider, externalId) }
+      // The channel's own session names it best; a thread's name stands in until one exists.
+      known.displayName = (isThread ? null : displayName) ?? known.displayName ?? displayName
+      if (options.threads && isThread && known.threads.length < THREADS_PER_CHANNEL) {
+        known.threads.push({ externalId: session.externalChatId, displayName: session.displayName, ...await this.describeTarget(record.provider, session.externalChatId) })
+      }
+      byId.set(externalId, known)
+    }
+    return [...byId.values()].map(({ threads, ...conversation }) => (threads.length ? { ...conversation, threads } : conversation))
   }
 
   agentDiscovery(record: AgentIntegrationRecord): { address?: string } {

@@ -44,6 +44,12 @@ vi.mock('@renderer/hooks/use-messages', () => ({
   useStopBackgroundTask: () => mockStopBackgroundTask,
 }))
 
+// No avatar by default: the header falls back to the thought orb
+let mockAgent: { slug: string; name: string; avatar: { color: string; shape: string } | null } | undefined
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgent: () => ({ data: mockAgent }),
+}))
+
 // Mock useElapsedTimer
 vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
   useElapsedTimer: (startTime: unknown) => (startTime ? '10s' : null),
@@ -96,6 +102,7 @@ describe('AgentActivityIndicator', () => {
     mockMessages.length = 0
     mockPendingUserRequests = []
     platformAuth.connected = false
+    mockAgent = undefined
   })
 
   it('returns null when not active and no error', () => {
@@ -103,6 +110,21 @@ describe('AgentActivityIndicator', () => {
       <AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />
     )
     expect(container.innerHTML).toBe('')
+  })
+
+  it('still hides between turns when the agent has an avatar', () => {
+    mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('shows the avatar, not the thought orb, while the agent works', () => {
+    mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.querySelector('[data-avatar-shape="circle"]')).toBeInTheDocument()
+    expect(container.querySelector('canvas')).not.toBeInTheDocument()
   })
 
   it('shows LLM provider error alert when apiErrorCode indicates a provider error', () => {
@@ -187,7 +209,7 @@ describe('AgentActivityIndicator', () => {
 
     const indicator = screen.getByTestId('activity-indicator')
     expect(indicator).toHaveClass(
-      'rounded-t-2xl',
+      'rounded-t-dialog',
       'border-b-0',
       'border-border/70',
       'bg-background/85',
@@ -296,7 +318,7 @@ describe('AgentActivityIndicator', () => {
 
     const indicator = screen.getByTestId('activity-indicator')
     expect(indicator).toHaveClass(
-      'rounded-2xl',
+      'rounded-dialog',
       'pb-3',
       'border-border/70',
       'bg-background/85',
@@ -778,6 +800,37 @@ describe('AgentActivityIndicator', () => {
     expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
   })
 
+  it('names a Monitor watch after its description and counts it as a monitor', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    // The runtime lists a command monitor as a shell task.
+    mockStreamState.backgroundTasks = [
+      { taskId: 'b8ezoj4kh', startedAt: Date.now() - 4000, taskType: 'local_bash', description: 'probe ticks' },
+    ]
+    mockMessages.push({
+      id: 'msg-monitor',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-monitor',
+        name: 'Monitor',
+        input: { description: 'Errors in deploy.log', command: 'tail -f deploy.log | grep --line-buffered ERROR', timeout_ms: 1800000 },
+        result: 'Monitor started (task b8ezoj4kh, expires in 30m unless the source ends first).',
+        backgroundTaskId: 'b8ezoj4kh',
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const row = screen.getByTestId('background-task-row')
+    expect(row).toHaveTextContent('Monitor Errors in deploy.log')
+    expect(screen.getByTestId('stop-task-button')).toHaveAttribute('aria-label', 'Stop Monitor: Errors in deploy.log')
+
+    act(() => { screen.getByRole('button', { name: 'Collapse activity details' }).click() })
+    // Its own count, not one of the background processes.
+    expect(screen.getByTestId('activity-summary-ticker')).toHaveTextContent(/^1 monitor$/)
+  })
+
   it('labels a background workflow as a workflow', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
@@ -1023,6 +1076,44 @@ describe('AgentActivityIndicator', () => {
 
     clientWidth.mockRestore()
     scrollWidth.mockRestore()
+  })
+
+  it("shows a planned task's description on hover, and no tooltip for a task without one", async () => {
+    const user = userEvent.setup()
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-create-1',
+          name: 'TaskCreate',
+          input: { subject: 'Draft the plan', description: 'as sent' },
+          result: 'Task #1 created successfully: Draft the plan',
+          taskDescription: 'Outline each section.\nKeep it short.',
+        },
+        {
+          id: 'tc-create-2',
+          name: 'TaskCreate',
+          input: { subject: 'Ship it' },
+          result: 'Task #2 created successfully: Ship it',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    const [described, plain] = screen.getAllByTestId('activity-plan-task')
+    await user.hover(plain)
+    expect(screen.queryByTestId('activity-plan-task-description')).not.toBeInTheDocument()
+
+    await user.unhover(plain)
+    await user.hover(described)
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip).toHaveTextContent('Outline each section. Keep it short.')
   })
 
   describe('subagent status', () => {

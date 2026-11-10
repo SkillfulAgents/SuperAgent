@@ -7,7 +7,10 @@ import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
+import { AgentAvatar, type AvatarMotionState } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import type { ApiAgent } from '@shared/lib/types/api'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
 /**
@@ -35,6 +38,8 @@ export interface ActivityBackgroundTask {
   isWorkflow?: boolean
   /** A background subagent; folded into its named subagent row when one is shown. */
   isSubagent?: boolean
+  /** A Monitor watch; its detail is the watch's description, not a command. */
+  isMonitor?: boolean
   /** What kind of work ("Background command"); the generic noun when absent. */
   title?: string
   /** The command or description, when known. */
@@ -53,6 +58,8 @@ export interface ActivityComputerUse {
 export interface ActivityCardProps {
   statusText: string
   orbState: ActivityOrbState
+  /** Whose turn this is: its avatar replaces the thought orb when it has one. */
+  agent?: Pick<ApiAgent, 'slug' | 'avatar'> | null
   /** Preformatted elapsed time; omitted before the turn has a start anchor. */
   elapsed?: string | null
   /** Parked on a blocking request: the card detaches from the composer. */
@@ -70,9 +77,18 @@ export interface ActivityCardProps {
   onStopTask?: (taskId: string) => Promise<void>
 }
 
+/** The avatar rolls round its rim as the transcript scrolls. */
+const TRANSCRIPT_SCROLLER = '[data-transcript-scroller]'
+
+/** The avatar has fewer states than the orb: anything but waiting on the user is work. */
+function avatarMotionState(orbState: ActivityOrbState): AvatarMotionState {
+  return orbState === 'waiting' ? 'needs-input' : 'working'
+}
+
 export function ActivityCard({
   statusText,
   orbState,
+  agent,
   elapsed,
   isAwaitingInput = false,
   detached = false,
@@ -96,7 +112,8 @@ export function ActivityCard({
   )
   const backgroundAgentCount = visibleBackgroundTasks.filter((task) => task.isSubagent).length
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
-  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount - backgroundAgentCount
+  const monitorCount = visibleBackgroundTasks.filter((task) => task.isMonitor).length
+  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount - backgroundAgentCount - monitorCount
   const activeSubagentCount = subagents.filter((item) => item.status === 'running').length + backgroundAgentCount
   const pendingTaskCount = todos?.filter((todo) => todo.status !== 'completed').length ?? 0
   // The tree is live work only — things running right now, hanging off the orb.
@@ -112,6 +129,7 @@ export function ActivityCard({
     // track that the agent still has hold of one of their apps.
     computerUse ? `computer use: ${computerUse.app}` : '',
     formatActivityCount(backgroundProcessCount, 'background process', 'background processes'),
+    formatActivityCount(monitorCount, 'monitor', 'monitors'),
     formatActivityCount(backgroundWorkflowCount, 'background workflow', 'background workflows'),
     formatActivityCount(activeSubagentCount, 'subagent', 'subagents'),
     formatActivityCount(pendingTaskCount, 'pending task', 'pending tasks'),
@@ -136,22 +154,32 @@ export function ActivityCard({
         className={cn(
           'relative max-h-[30vh] overflow-y-auto border border-border/70 bg-background/85 px-3 pt-3 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]',
           isAwaitingInput || detached
-            ? 'rounded-2xl pb-3'
-            : 'rounded-t-2xl border-b-0 pb-8',
+            ? 'rounded-dialog pb-3'
+            : 'rounded-t-dialog border-b-0 pb-8',
         )}
         data-testid="activity-indicator"
       >
-        {/* Header with the thought orb — its animation is the status cue. The
-            disclosure button is the row's last child rather than positioned over
-            it: items-center then centers it against the orb, and the gap keeps it
+        {/* Header with the agent's avatar (the thought orb when it has none) —
+            its animation is the status cue. The disclosure button is the row's
+            last child rather than positioned over it: items-center then
+            centers it against the avatar, and the gap keeps it
             off the summary, instead of a hand-tuned inset and a matching pr-* on
             the row that have to agree with the button's own size to stay right. */}
         <div
           className="flex min-w-0 items-center gap-2"
           data-testid="activity-indicator-header"
         >
-          <ActivityOrb state={orbState} size={24} />
-          <span className="min-w-0 truncate text-sm font-medium">{statusText}</span>
+          {agent?.avatar
+            ? (
+              <AgentAvatar
+                agent={agent}
+                state={avatarMotionState(orbState)}
+                size={24}
+                rollWithScroll={TRANSCRIPT_SCROLLER}
+              />
+            )
+            : <ActivityOrb state={orbState} size={24} />}
+          <span className="min-w-0 truncate text-sm font-medium text-muted-foreground">{statusText}</span>
           {elapsed && (
             <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{elapsed}</span>
           )}
@@ -164,7 +192,7 @@ export function ActivityCard({
               onClick={() => setIsCollapsed((collapsed) => !collapsed)}
               // ml-auto for the rows with nothing between the status and here —
               // the ticker's flex-1 already pushes it right whenever it is shown.
-              className="-mr-1 ml-auto shrink-0 cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="-mr-1 ml-auto shrink-0 cursor-pointer rounded-icon p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-expanded={!isCollapsed}
               aria-label={isCollapsed ? 'Expand activity details' : 'Collapse activity details'}
             >
@@ -498,7 +526,7 @@ function ComputerUseRow({ computerUse, tracerRow }: {
           onClick={computerUse.onRevoke}
           disabled={computerUse.revoking}
           className={cn(
-            'shrink-0 cursor-pointer rounded p-0.5 transition-colors',
+            'shrink-0 cursor-pointer rounded-icon p-0.5 transition-colors',
             computerUse.revokeError
               ? 'text-destructive hover:bg-destructive/10'
               : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -541,7 +569,7 @@ function BackgroundTaskRow({ task, tracerRow, onStop }: {
         <span className="min-w-0 flex-1 truncate" title={fullText}>
           <span className="text-muted-foreground">{title}</span>
           {task.detail && (
-            <span className="font-mono text-muted-foreground/80">{' '}{task.detail}</span>
+            <span className={cn('text-muted-foreground/80', !task.isMonitor && 'font-mono')}>{' '}{task.detail}</span>
           )}
         </span>
         {elapsed && (
@@ -588,7 +616,7 @@ function StopTaskButton({ taskId, label, onStop }: {
         onClick={handleClick}
         disabled={stopping}
         className={cn(
-          'shrink-0 cursor-pointer rounded p-0.5 transition-colors',
+          'shrink-0 cursor-pointer rounded-icon p-0.5 transition-colors',
           failed
             ? 'text-destructive hover:bg-destructive/10'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -703,46 +731,76 @@ function TodoPlan({
           </button>
         )}
       </div>
-      <ul className="mt-1 space-y-1">
-        {visibleTodos.map((todo, index) => (
-          <li key={index}>
-            <div
-              className={cn(
-                'flex items-center gap-1.5',
-                // The task being worked on steps up in color only — weight too
-                // made it the loudest thing on the card, louder than the
-                // header it sits under. One step of contrast is enough to find
-                // it. (Pending used to sit at plain foreground, which made the
-                // row NOT being worked on the darkest thing in the list.)
-                todo.status === 'in_progress'
-                  ? 'text-foreground'
-                  : 'text-muted-foreground'
-              )}
-            >
-              <RowMark>
-                {todo.status === 'completed' ? (
-                  // No strikethrough — the ringed check plus the muted label is
-                  // enough, and it keeps the row readable. Uncolored on purpose:
-                  // it inherits the completed row's muted-foreground, so the
-                  // mark recedes with its label instead of being the loudest
-                  // thing in a finished row.
-                  <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
-                ) : todo.status === 'in_progress' ? (
-                  // The app's one spinner (Loader2 + animate-spin), at the same
-                  // 12px box as the pending circle and the completed check — a
-                  // task's mark must not resize as it moves through the list.
-                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden data-testid="todo-status-in-progress" />
-                ) : (
-                  // Same 12px box and stroke as the check, so a task's mark
-                  // doesn't change size when it completes.
-                  <Circle className="h-3 w-3" aria-hidden data-testid="todo-status-pending" />
-                )}
-              </RowMark>
-              <span className="truncate">{todo.content}</span>
-            </div>
-          </li>
-        ))}
-      </ul>
+      <TooltipProvider delayDuration={300}>
+        <ul className="mt-1 space-y-1">
+          {visibleTodos.map((todo, index) => (
+            <li key={index}>
+              <TodoDescriptionTooltip description={todo.description}>
+                <div
+                  data-testid="activity-plan-task"
+                  className={cn(
+                    'flex items-center gap-1.5',
+                    // The task being worked on steps up in color only — weight too
+                    // made it the loudest thing on the card, louder than the
+                    // header it sits under. One step of contrast is enough to find
+                    // it. (Pending used to sit at plain foreground, which made the
+                    // row NOT being worked on the darkest thing in the list.)
+                    todo.status === 'in_progress'
+                      ? 'text-foreground'
+                      : 'text-muted-foreground'
+                  )}
+                >
+                  <RowMark>
+                    {todo.status === 'completed' ? (
+                      // No strikethrough — the ringed check plus the muted label is
+                      // enough, and it keeps the row readable. Uncolored on purpose:
+                      // it inherits the completed row's muted-foreground, so the
+                      // mark recedes with its label instead of being the loudest
+                      // thing in a finished row.
+                      <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
+                    ) : todo.status === 'in_progress' ? (
+                      // The app's one spinner (Loader2 + animate-spin), at the same
+                      // 12px box as the pending circle and the completed check — a
+                      // task's mark must not resize as it moves through the list.
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden data-testid="todo-status-in-progress" />
+                    ) : (
+                      // Same 12px box and stroke as the check, so a task's mark
+                      // doesn't change size when it completes.
+                      <Circle className="h-3 w-3" aria-hidden data-testid="todo-status-pending" />
+                    )}
+                  </RowMark>
+                  <span className="truncate">{todo.content}</span>
+                </div>
+              </TodoDescriptionTooltip>
+            </li>
+          ))}
+        </ul>
+      </TooltipProvider>
     </div>
+  )
+}
+
+/**
+ * A task's description on hover, when the agent gave one (TaskCreate's
+ * `description`, as the CLI saved it). The row stays a plain row: the subject
+ * is what scans, the description is detail for whoever wants it. Rows without
+ * one get no tooltip at all rather than an empty or repeated one.
+ */
+function TodoDescriptionTooltip({ description, children }: { description?: string; children: ReactNode }) {
+  if (!description) return <>{children}</>
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        // Descriptions run from one line to a paragraph or more; pre-line keeps
+        // the agent's own line breaks, and the cap keeps a long one readable.
+        className="max-w-sm whitespace-pre-line break-words"
+        data-testid="activity-plan-task-description"
+      >
+        {description}
+      </TooltipContent>
+    </Tooltip>
   )
 }

@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RecallApiError, RecallClient } from './client'
 import type { RecallTransport } from './transport'
-import { RECALL_AUTOMATIC_LEAVE, RecallBotHost, recallBotStatus, recallRecordingLink } from './recall-meeting-integration'
+import { RECALL_AUTOMATIC_LEAVE, RecallBotHost, recallBotStatus, recallParticipantEvent, recallRecordingLink } from './recall-meeting-integration'
 import { MEETING_RECORDING_RETENTION_HOURS } from '../schemas'
+import { recallProvider } from './provider'
+
+// These tests exercise provider payloads, without an agent runtime or workspace.
+vi.mock('../../agent-actor', () => ({ agentCatalog: { get: vi.fn() }, agentRegistry: { get: vi.fn() } }))
 
 const bot = (...codes: Array<[string, string | null]>) => ({
   id: 'bot-1', recordings: [],
@@ -31,6 +35,11 @@ describe('recallRecordingLink', () => {
   })
   it('returns the mixed-media link while the recording is processed and retained', () => {
     expect(recallRecordingLink({ ...bot(), recordings: [recording()] }, now)).toEqual({ url: 'https://cdn.example/audio.mp4?sig=1', linkExpiresAt: now + 6 * 60 * 60 * 1000 })
+  })
+  it('links the MP3 of a call that streamed frames, and the MP4 of an older call', () => {
+    const mp3 = recording({ media_shortcuts: { audio_mixed: { data: { download_url: 'https://cdn.example/audio.mp3?sig=1' }, status: { code: 'done' } }, video_mixed: null } })
+    expect(recallRecordingLink({ ...bot(), recordings: [mp3] }, now)?.url).toBe('https://cdn.example/audio.mp3?sig=1')
+    expect(recallRecordingLink({ ...bot(), recordings: [recording()] }, now)?.url).toBe('https://cdn.example/audio.mp4?sig=1')
   })
   it('has nothing while processing, after retention, or with no media', () => {
     expect(recallRecordingLink({ ...bot(), recordings: [recording({ media_shortcuts: { video_mixed: { data: null, status: { code: 'processing' } } } })] }, now)).toBeNull()
@@ -77,16 +86,48 @@ describe('RecallBotHost', () => {
     expect((fetchImpl.mock.calls[0] as unknown[])[0]).toBe("https://us-west-2.recall.ai/api/v1/bot/")
     expect((fetchImpl.mock.calls[0] as unknown[])[1]).toMatchObject({ headers: { Authorization: 'Token key' } })
     const body = JSON.parse(((fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit).body as string)
-    expect(body.recording_config.realtime_endpoints).toEqual([{ type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update'] }])
+    expect(body.recording_config.realtime_endpoints).toEqual([{ type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update', 'participant_events.speech_on', 'participant_events.speech_off'] }])
+    // Recall's transcription is not used: the bot's own voice engine already transcribes the call.
+    expect(body.recording_config.transcript).toBeUndefined()
   })
-  it('reduces Recall participant webhooks to family events and ignores the rest', () => {
-    const host = new RecallBotHost(new RecallClient(transport(), unowned))
-    expect(host.parseEvent({ event: 'participant_events.join', data: { data: { participant: { id: 100, name: 'Iddo', is_host: true } } } }))
+  it('streams shared screens to the frames URL with no meeting video kept and the audio as an MP3', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ id: 'bot-9', status_changes: [] }), { status: 201 }))
+    const host = new RecallBotHost(new RecallClient(transport(), alice, fetchImpl as unknown as typeof fetch))
+    await host.createBot({
+      meetingUrl: 'https://meet.google.com/abc-defg-hij', platform: 'google_meet', botName: 'Ada', participantPageUrl: 'https://app.example/meeting/m1?token=t',
+      eventsUrl: 'https://app.example/api/meeting-participant/m1/events/?token=t', framesUrl: 'wss://app.example/api/meeting-participant/m1/frames/?token=t',
+    })
+    const body = JSON.parse(((fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit).body as string)
+    expect(body.recording_config).toMatchObject({
+      video_mixed_layout: 'gallery_view_v2', video_mixed_mp4: null, audio_mixed_mp3: {}, video_separate_png: {},
+      retention: { type: 'timed', hours: MEETING_RECORDING_RETENTION_HOURS },
+    })
+    expect(body.recording_config.realtime_endpoints).toEqual([
+      { type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update', 'participant_events.speech_on', 'participant_events.speech_off'] },
+      { type: 'websocket', url: 'wss://app.example/api/meeting-participant/m1/frames/?token=t', events: ['video_separate_png.data'] },
+    ])
+  })
+  it('keeps shared-screen frames and drops camera frames and other messages', async () => {
+    const frame = (type: string) => ({
+      event: 'video_separate_png.data',
+      data: { data: { buffer: Buffer.from('png bytes').toString('base64'), type, timestamp: { absolute: '2026-11-04T19:03:41.392Z', relative: 12.5 }, participant: { id: 100, name: 'Anna' } } },
+    })
+    const screen = await recallProvider.parseScreenFrame!(frame('screenshare'))
+    expect(Buffer.from(screen!.png).toString()).toBe('png bytes')
+    expect(screen!.at.toISOString()).toBe('2026-11-04T19:03:41.392Z')
+    expect(await recallProvider.parseScreenFrame!(frame('webcam'))).toBeNull()
+    expect(await recallProvider.parseScreenFrame!({ event: 'participant_events.screenshare_on', data: { data: {} } })).toBeNull()
+  })
+  it('reduces Recall participant webhooks to family events and ignores the rest', async () => {
+    expect(recallParticipantEvent({ event: 'participant_events.join', data: { data: { participant: { id: 100, name: 'Iddo', is_host: true } } } }))
       .toEqual({ kind: 'join', participant: { id: '100', name: 'Iddo', isHost: true } })
-    expect(host.parseEvent({ event: 'participant_events.speech_on', data: { data: { participant: { id: '7', name: null } } } }))
+    expect(recallParticipantEvent({ event: 'participant_events.speech_on', data: { data: { participant: { id: '7', name: null } } } }))
       .toEqual({ kind: 'speech_on', participant: { id: '7', name: 'Unknown participant', isHost: false } })
-    expect(host.parseEvent({ event: 'transcript.data', data: { data: {} } })).toBeNull()
-    expect(host.parseEvent('nonsense')).toBeNull()
+    expect(recallParticipantEvent({ event: 'transcript.data', data: { data: {} } })).toBeNull()
+    expect(recallParticipantEvent('nonsense')).toBeNull()
+    // The provider entry reads them the same way, with no host or connection.
+    expect(await recallProvider.parseBotEvent({ event: 'participant_events.leave', data: { data: { participant: { id: 100, name: 'Iddo' } } } }))
+      .toEqual({ kind: 'leave', participant: { id: '100', name: 'Iddo', isHost: false } })
   })
   it('turns proxy refusals into messages a person can act on', async () => {
     const fetchImpl = vi.fn(async () => new Response('billing hold', { status: 402 }))

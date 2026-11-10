@@ -12,6 +12,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2 } from 'lucide-react'
 import type { PublicAuthProviderConfig } from '@shared/lib/auth/provider-config'
+import { JOIN_LINK_PARAM } from '@shared/lib/team-directory/invite-schema'
 
 // --- Public auth config (fetched from server) ---
 
@@ -24,6 +25,8 @@ interface AuthConfig {
   passwordRequireComplexity: boolean
   requireAdminApproval: boolean
   hasUsers: boolean
+  /** Absent from servers that predate it; `!hasUsers` is their rule. */
+  firstUserSignupOpen?: boolean
 }
 
 const DEFAULT_AUTH_CONFIG: AuthConfig = {
@@ -35,6 +38,7 @@ const DEFAULT_AUTH_CONFIG: AuthConfig = {
   passwordRequireComplexity: false,
   requireAdminApproval: false,
   hasUsers: false,
+  firstUserSignupOpen: false,
 }
 
 function useAuthConfig() {
@@ -198,7 +202,7 @@ function SignInForm({ onSwitchToSignUp, showSignupLink }: { onSwitchToSignUp: ()
   )
 }
 
-function SignUpForm({ onSwitchToSignIn, config, onPendingApproval }: { onSwitchToSignIn: () => void; config: AuthConfig; onPendingApproval?: (pending?: boolean) => void }) {
+function SignUpForm({ onSwitchToSignIn, config, onPendingApproval, email }: { onSwitchToSignIn: () => void; config: AuthConfig; onPendingApproval?: (pending?: boolean) => void; email?: string }) {
   const [serverError, setServerError] = useState<string | null>(null)
   const [pendingApproval, setPendingApproval] = useState(false)
 
@@ -213,6 +217,7 @@ function SignUpForm({ onSwitchToSignIn, config, onPendingApproval }: { onSwitchT
     formState: { errors, isSubmitting },
   } = useForm<SignUpValues>({
     resolver: zodResolver(schema),
+    ...(email ? { defaultValues: { email } } : {}),
   })
 
   async function onSubmit(data: SignUpValues) {
@@ -369,14 +374,18 @@ function SignUpForm({ onSwitchToSignIn, config, onPendingApproval }: { onSwitchT
 
 export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?: boolean) => void } = {}) {
   const { config, isLoading, error } = useAuthConfig()
-  const [tab, setTab] = useState<string>('signin')
+  // Opened from the link in a team-directory invitation: signing up with that email claims the account waiting for them.
+  const [joinEmail] = useState(() => new URLSearchParams(window.location.search).get(JOIN_LINK_PARAM)?.trim() || null)
+  const [tab, setTab] = useState<string>(joinEmail ? 'signup' : 'signin')
   const [providerError, setProviderError] = useState<string | null>(null)
   const [providerLoadingId, setProviderLoadingId] = useState<string | null>(null)
   const hasProviders = config.providers.length > 0
   const showLocalAuth = config.allowLocalAuth
 
   // Signup is allowed in 'open' or 'domain_restricted' modes, OR for the very first user
-  const signupAllowed = !config.hasUsers || config.signupMode === 'open' || config.signupMode === 'domain_restricted'
+  // An invited person may sign up while the deployment is invitation-only: the server lets in their email alone.
+  const signupAllowed = (config.firstUserSignupOpen ?? !config.hasUsers) || config.signupMode === 'open' || config.signupMode === 'domain_restricted'
+    || (!!joinEmail && config.signupMode !== 'closed')
 
   async function handleProviderSignIn(providerId: string) {
     setProviderError(null)
@@ -463,7 +472,7 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
                 <SignInForm onSwitchToSignUp={() => setTab('signup')} showSignupLink={true} />
               </TabsContent>
               <TabsContent value="signup">
-                <SignUpForm onSwitchToSignIn={() => setTab('signin')} config={config} onPendingApproval={onPendingApproval} />
+                <SignUpForm onSwitchToSignIn={() => setTab('signin')} config={config} onPendingApproval={onPendingApproval} email={joinEmail ?? undefined} />
               </TabsContent>
             </Tabs>
           ) : showLocalAuth ? (

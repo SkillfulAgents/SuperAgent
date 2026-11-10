@@ -7,6 +7,7 @@
  */
 
 import { execFile } from 'child_process'
+import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
 import { promisify } from 'util'
 import crypto from 'crypto'
 import path from 'path'
@@ -14,9 +15,9 @@ import fs from 'fs'
 import yaml from 'js-yaml'
 import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
-import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   readFileOrNull,
   ensureDirectory,
@@ -44,7 +45,8 @@ import type {
 import { InstalledSkillMetadataSchema, parseSkillsetIndex } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { captureException } from '@shared/lib/error-reporting'
-import { pruneInstalledSkillIfInvalid } from './skillset-reconcile'
+import { pruneInstalledSkillIfInvalid, readSkillsetAuthScreen } from './skillset-reconcile'
+import type { SkillsetAuthContext } from '@shared/lib/skillset-provider/base-skillset-provider'
 
 const execFileAsync = promisify(execFile)
 
@@ -724,7 +726,10 @@ async function isGitRepo(dir: string): Promise<boolean> {
 
 export async function isCacheReady(dir: string, provider?: SkillProvider): Promise<boolean> {
   const p = getSkillsetProvider(provider)
-  return p.usesGitCache ? isGitRepo(dir) : p.isCacheReady(dir)
+  if (p.usesGitCache) return isGitRepo(dir)
+  if (await p.isCacheReady(dir)) return true
+  // A process that started with an empty data dir restores the stored copy (see skillset-cache-blob).
+  return (await restoreSkillsetCache(dir)) && p.isCacheReady(dir)
 }
 
 /**
@@ -767,7 +772,13 @@ async function getOriginalFromGitHistory(
 // Skillset Cache Management
 // ============================================================================
 
+/** Why a skillset that needs git can't be used in the Mac App Store edition. */
+export const HOST_GIT_UNAVAILABLE = 'This needs git, which the Mac App Store edition can’t run. Public GitHub skillsets work without it.'
+
 export async function isGitAvailable(): Promise<boolean> {
+  // Not even probed in the sandbox, where macOS's git stub would offer to
+  // install the developer tools.
+  if (!runsHostGit(getServerFacts())) return false
   try {
     await execFileAsync('git', ['--version'], { timeout: 5000 })
     return true
@@ -777,6 +788,9 @@ export async function isGitAvailable(): Promise<boolean> {
 }
 
 export async function ensureGitInstalled(): Promise<void> {
+  if (!runsHostGit(getServerFacts())) {
+    throw new Error(HOST_GIT_UNAVAILABLE)
+  }
   if (!(await isGitAvailable())) {
     throw new Error(
       'Git is not installed. Install it from https://git-scm.com/install/mac'
@@ -798,7 +812,9 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
 
   const populate = (async () => {
     if (await isCacheReady(repoDir, ref.provider)) return repoDir
-    return populateSkillsetCache(ref, hostingProvider, repoDir)
+    const populated = await populateSkillsetCache(ref, hostingProvider, repoDir)
+    await storeSkillsetCache(hostingProvider, populated)
+    return populated
   })()
   activeSkillsetPopulates.set(repoDir, populate)
   try {
@@ -808,6 +824,13 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
       activeSkillsetPopulates.delete(repoDir)
     }
   }
+}
+
+/** A git cache is cloned again rather than restored (see isCacheReady), so it is never stored. */
+async function storeSkillsetCache(hostingProvider: ReturnType<typeof getSkillsetProvider>, repoDir: string): Promise<void> {
+  if (hostingProvider.usesGitCache) return
+  // A failed save only costs a download in the next process that starts empty.
+  await saveSkillsetCache(repoDir).catch((error) => console.warn(`[skillsets] Could not store the cache of ${repoDir}:`, error))
 }
 
 async function populateSkillsetCache(
@@ -833,7 +856,7 @@ async function populateSkillsetCache(
 
   await ensureGitInstalled()
   const cloneUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-  const gitEnvironment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+  const gitEnvironment = await hostingProvider.getGitEnvironment(ref, GIT_ENV)
   await gitClone(cloneUrl, repoDir, gitEnvironment)
   return repoDir
 }
@@ -843,7 +866,8 @@ async function populateSkillsetCache(
  */
 export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
   const indexPath = path.join(repoDir, 'index.json')
-  const content = await readFileOrNull(indexPath)
+  let content = await readFileOrNull(indexPath)
+  if (!content && (await restoreSkillsetCache(repoDir))) content = await readFileOrNull(indexPath)
   if (!content) {
     throw new Error(`index.json not found in skillset repository at ${indexPath}`)
   }
@@ -895,7 +919,7 @@ export async function validateSkillsetUrl(
     await ensureGitInstalled()
     const hostingProvider = getSkillsetProvider(provider)
     const cloneUrl = await hostingProvider.resolveCloneUrl(url, ref)
-    const environment = hostingProvider.getGitEnvironment(ref, GIT_ENV)
+    const environment = await hostingProvider.getGitEnvironment(ref, GIT_ENV)
     try {
       await execFileAsync('git', ['ls-remote', '--exit-code', cloneUrl, 'HEAD'], {
         timeout: 30000,
@@ -959,7 +983,8 @@ export async function refreshSkillset(
   const inFlight = activeSkillsetRefreshes.get(repoDir)
   if (inFlight) return inFlight
 
-  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then((index) => {
+  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then(async (index) => {
+    await storeSkillsetCache(hostingProvider, repoDir)
     lastSkillsetRefreshAt.set(repoDir, Date.now())
     return index
   })
@@ -1007,7 +1032,7 @@ async function refreshSkillsetCache(
     // For platform, the URL embeds a short-lived token that needs refreshing.
     // For github, set-url is a cheap no-op when unchanged.
     const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-    const gitEnvironment = hostingProvider.getGitEnvironment(ref, getRepoGitEnv(repoDir))
+    const gitEnvironment = await hostingProvider.getGitEnvironment(ref, getRepoGitEnv(repoDir))
 
     let pullResult: GitPullResult
     try {
@@ -1071,6 +1096,7 @@ export async function getSkillsetIndex(
 export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
   const repoDir = getSkillsetRepoDirForRef(ref)
   lastSkillsetRefreshAt.delete(repoDir)
+  await deleteSkillsetCache(repoDir)
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
@@ -1186,11 +1212,14 @@ export async function updateSkillFromSkillset(
  * installed skill is no longer valid for the current auth (e.g. a platform
  * skill from a previous org), the directory is deleted and we return null.
  * That way stale installs get cleaned up on first read without needing a
- * startup sweep, and callers see the record as "not installed".
+ * startup sweep, and callers see the record as "not installed". A caller
+ * reading many records passes one `screen` ({@link readSkillsetAuthScreen})
+ * for all of them; a record it clears is kept without a settings read.
  */
 export async function getInstalledSkillMetadata(
   agentSlug: string,
   skillDirName: string,
+  screen?: SkillsetAuthContext,
 ): Promise<InstalledSkillMetadata | null> {
   const metadataPath = getSkillMetadataPath(skillDirName)
   const files = agentFiles(agentSlug)
@@ -1211,7 +1240,7 @@ export async function getInstalledSkillMetadata(
     return null
   }
 
-  const pruned = await pruneInstalledSkillIfInvalid(parsed.data, files, skillWorkspacePath(skillDirName))
+  const pruned = await pruneInstalledSkillIfInvalid(parsed.data, files, skillWorkspacePath(skillDirName), screen)
   if (pruned) return null
 
   return parsed.data as InstalledSkillMetadata
@@ -1252,6 +1281,8 @@ export async function getAgentSkillsWithStatus(
   }
 
   const entries = await files.list(skillsDir)
+  // One settings read screens every installed skill's metadata.
+  const screen = await readSkillsetAuthScreen()
 
   // First pass: collect metadata + pending queue IDs per provider. This lets
   // us ask each provider for *all* its queue statuses in one request.
@@ -1272,7 +1303,7 @@ export async function getAgentSkillsWithStatus(
     const skillMdContent = await readWorkspaceText(files, joinWorkspacePath(skillPath, 'SKILL.md'))
     if (!skillMdContent) continue
 
-    const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
+    const meta = await getInstalledSkillMetadata(agentSlug, entry.name, screen)
     prepared.push({ entryName: entry.name, skillPath, meta, skillMdContent })
 
     if (meta?.pendingQueueItemId) {
@@ -1412,10 +1443,12 @@ export async function refreshAgentSkills(
   type PendingCheck = { entryName: string; meta: InstalledSkillMetadata }
   const pendingByProvider = new Map<SkillProvider, PendingCheck[]>()
   const metaByEntry = new Map<string, InstalledSkillMetadata>()
+  // One settings read screens every installed skill's metadata.
+  const screen = await readSkillsetAuthScreen()
 
   for (const entry of entries) {
     if (entry.kind !== 'directory') continue
-    const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
+    const meta = await getInstalledSkillMetadata(agentSlug, entry.name, screen)
     if (!meta) continue
     metaByEntry.set(entry.name, meta)
     if (meta.pendingQueueItemId) {
@@ -1606,17 +1639,18 @@ async function generatePRSuggestions(
 
   if (originalContent === modifiedContent && packageDiff.changedFileCount === 0) return fallback
 
-  let client
+  let setup: Awaited<ReturnType<typeof getConfiguredLlmClientAndModel>>
   try {
-    client = await getConfiguredLlmClient()
+    // One settings read for the client and the model it runs.
+    setup = await getConfiguredLlmClientAndModel()
   } catch {
     console.warn('[PR suggestions] No LLM API key configured')
     return fallback
   }
 
-  try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+  const { client, model } = setup
 
+  try {
     const text = await createSummarizerText(client, {
       model,
       messages: [
@@ -1830,17 +1864,18 @@ async function generatePublishSuggestions(
     suggestedVersion: currentVersion,
   }
 
-  let client
+  let setup: Awaited<ReturnType<typeof getConfiguredLlmClientAndModel>>
   try {
-    client = await getConfiguredLlmClient()
+    // One settings read for the client and the model it runs.
+    setup = await getConfiguredLlmClientAndModel()
   } catch {
     console.warn('[Publish suggestions] No LLM API key configured')
     return fallback
   }
 
-  try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+  const { client, model } = setup
 
+  try {
     const text = await createSummarizerText(client, {
       model,
       messages: [

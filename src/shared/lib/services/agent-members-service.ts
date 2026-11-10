@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto'
 import { and, asc, count, eq, gt, inArray, isNull, ne, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { agentAcl, user } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { getTeamBrain } from '@shared/lib/config/settings'
 import { hasMinRole } from '@shared/lib/types/agent'
 import { agentMembersByAgentSchema, type AgentMember } from '@shared/lib/agent-members-schema'
 import { getUserSummaries } from './user-profile-service'
@@ -52,6 +54,8 @@ export async function countOtherMembers(agentSlug: string, userId: string | null
   const row = await db.select({ n: count() }).from(user).where(and(
     or(eq(user.role, 'admin'), inArray(user.id, members)),
     or(eq(user.banned, false), isNull(user.banned)),
+    // Someone invited who hasn't joined can't use it yet.
+    eq(user.status, 'active'),
     userId === null ? undefined : ne(user.id, userId),
   )).get()
   return row?.n ?? 0
@@ -97,6 +101,27 @@ export async function removeMember(agentSlug: string, userId: string): Promise<M
     .where(and(eq(agentAcl.userId, userId), eq(agentAcl.agentSlug, agentSlug), keepsAnOwner(agentSlug)))
     .run()
   return changesOf(result) > 0 ? 'done' : explainNoChange(agentSlug, userId)
+}
+
+/**
+ * Make users members of `agentSlug` with the `user` role, keeping any role a user already has there. With no `userIds`,
+ * every user in the workspace (not people invited who haven't joined: they get what everyone has when they claim).
+ */
+export async function addAgentUsers(agentSlug: string, userIds?: readonly string[]): Promise<void> {
+  if (!isAuthMode()) return
+  const ids = userIds ?? (await db.select({ id: user.id }).from(user).where(eq(user.status, 'active')).all()).map((row) => row.id)
+  if (ids.length === 0) return
+  const createdAt = new Date()
+  await db.insert(agentAcl)
+    .values(ids.map((userId) => ({ id: randomUUID(), userId, agentSlug, role: 'user' as const, createdAt })))
+    .onConflictDoNothing()
+  await notifyAgentMembersChanged(agentSlug)
+}
+
+/** Someone new to the workspace gets its Team Brain, as every member has it. */
+export async function addTeamBrainUser(userId: string): Promise<void> {
+  const teamBrain = await getTeamBrain()
+  if (teamBrain) await addAgentUsers(teamBrain.agentSlug, [userId])
 }
 
 export async function notifyAgentMembersChanged(agentSlug: string, removedUserId?: string): Promise<void> {

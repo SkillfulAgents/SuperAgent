@@ -21,6 +21,7 @@ import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { parseMountPath } from '@shared/lib/utils/workspace-path'
 import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-transport'
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
 import type { WireFrame } from '@shared/lib/agent-actor'
@@ -182,7 +183,8 @@ vi.mock('../credentials/credential-broker', () => ({
 }))
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
-const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+const SIGNED_IN_USER = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+let mockAuthUser: { id: string; name?: string; email?: string } = SIGNED_IN_USER
 // Device identity of the calling session; tests set .value to simulate a
 // paired mobile device (null = browser/desktop/web).
 const mockRequestDevice = { value: null as string | null }
@@ -211,6 +213,7 @@ vi.mock('../middleware/auth', () => ({
     return next()
   },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
+  getResolvedAgent: (c: any) => ({ slug: c.get('agentId') ?? c.req.param('id') }),
   getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
   getMeetingParticipant: () => mockMeetingParticipant.value,
 }))
@@ -226,7 +229,7 @@ const mockEnsureRunning = vi.fn()
 const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
-const mockClientDeleteSession = vi.fn()
+const mockClientDeleteSession = vi.fn(async (..._args: unknown[]) => true)
 const mockClientWarmSession = vi.fn()
 // The container's view of a session, which an uncertain send asks for. Unknown unless a test says.
 const mockClientGetSession = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
@@ -246,6 +249,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
       interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
       stopTask: (...args: unknown[]) => mockStopTask(...args),
       forkSession: (...args: unknown[]) => mockForkSession(...args),
+      releaseSession: async () => true,
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
       warmSession: (...args: unknown[]) => mockClientWarmSession(...args),
       getSession: (...args: unknown[]) => mockClientGetSession(...args),
@@ -445,6 +449,14 @@ vi.mock('@shared/lib/services/user-profile-service', async (importOriginal) => (
 }))
 import { getUserSummaries, userExists } from '@shared/lib/services/user-profile-service'
 
+// Team directories: a directory person shared with becomes an invited user.
+vi.mock('@shared/lib/team-directory/invited-users', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/team-directory/invited-users')>(),
+  inviteDirectoryPerson: vi.fn(),
+  notifyInvitedUser: vi.fn(async () => 'sent'),
+}))
+import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
+
 // Auth
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
 const mockInsertAuthor = vi.fn().mockResolvedValue(true)
@@ -537,6 +549,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   removeMount: vi.fn(async () => true),
   setMountReadOnly: vi.fn(async () => true),
   volumeSummary: () => ({ type: 'local', name: 'code' }),
+  resolveMountPath: vi.fn(async () => null),
 }))
 
 vi.mock('@shared/lib/services/usage-service', () => ({
@@ -602,6 +615,8 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingScheduledTasks: vi.fn(),
   listCancelledScheduledTasks: vi.fn(),
   listCompletedOneTimeTasks: vi.fn(),
+  createScheduledTask: vi.fn(),
+  updateScheduleExpression: vi.fn(),
   listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
   cancelPendingWakeForSession: vi.fn(() => Promise.resolve(false)),
@@ -649,6 +664,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
   getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
+  getUnreadNotificationPreviewsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
   deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
 }))
@@ -727,6 +743,10 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
       create: (...args: unknown[]) => mockLlmMessagesCreate(...args),
     },
   }),
+  getConfiguredLlmClientAndModel: async () => ({
+    client: { messages: { create: (...args: unknown[]) => mockLlmMessagesCreate(...args) } },
+    model: 'summarizer-model',
+  }),
   extractTextFromLlmResponse: (response: unknown) =>
     (response as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? null,
   createSummarizerText: async (_client: unknown, request: unknown) => {
@@ -749,14 +769,18 @@ const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
   skillsets: [],
   app: { configuredPasswordManagers: ['apple-passwords'] },
 })))
+const mockGetTeamBrain = vi.hoisted(() => vi.fn((): { agentSlug: string; volumeId: string } | null => null))
+vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAgent: vi.fn(async () => 'America/Los_Angeles') }))
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveAnthropicApiKey: () => 'test-key',
-  getEffectiveModels: () => mockGetEffectiveModels(),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => mockRuntimeSettings(),
-  mutateSettings: vi.fn(),
-  getModelCatalogSettings: () => ({}),
+  getTeamBrain: async () => mockGetTeamBrain(),
+  getEffectiveAnthropicApiKey: async () => 'test-key',
+  getEffectiveModels: async () => mockGetEffectiveModels(),
+  effectiveModelsFrom: () => mockGetEffectiveModels(),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => mockRuntimeSettings(),
+  mutateSettings: vi.fn(async () => mockRuntimeSettings()),
+  getModelCatalogSettings: async () => ({}),
   VALID_SCRIPT_TYPES: {
     darwin: ['applescript', 'shell'],
     linux: ['shell'],
@@ -819,6 +843,12 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
 }))
 
 const mockStoreUploadChunk = vi.fn()
+/** The coordinator's part once the last chunk is committed: hands `finish` the upload, here a file at `filePath`. */
+function assembleTo(filePath: string, size = 10, toFile = vi.fn(async () => filePath)) {
+  return async (_input: unknown, finish: (assembled: unknown) => Promise<unknown>) => (
+    { status: 'finished', result: await finish({ size, stream: () => new Blob(['final chunk']).stream(), toFile }) }
+  )
+}
 vi.mock('@shared/lib/utils/chunked-upload', () => {
   function formatUploadTooLargeMessage(size: number, maxBytes: number): string {
     return `File too large (${(size / 1024 / 1024).toFixed(1)}MB, max ${maxBytes / 1024 / 1024}MB)`
@@ -833,12 +863,19 @@ vi.mock('@shared/lib/utils/chunked-upload', () => {
       this.maxBytes = maxBytes
     }
   }
+  class UploadConflictError extends Error {}
+  class UploadOutcomeUnknownError extends Error {
+    constructor(cause: unknown) {
+      super('The upload may have taken effect, but its result is unknown. Check before sending it again.', { cause })
+    }
+  }
   return {
     MAX_UPLOAD_TOTAL_SIZE: 2 * 1024 * 1024 * 1024,
     formatUploadTooLargeMessage,
+    UploadConflictError,
+    UploadOutcomeUnknownError,
     UploadTooLargeError,
     storeUploadChunk: (...args: unknown[]) => mockStoreUploadChunk(...args),
-    cleanupStaleTempUploads: vi.fn(async () => undefined),
   }
 })
 
@@ -854,7 +891,7 @@ import { CredentialRefreshError } from '../../../agent-container/src/credential-
 import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 import { ProviderRefreshUnavailableError } from '@shared/lib/agent-runtime-errors/provider-refresh-unavailable/provider-refresh-unavailable-error'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
-import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
+import { UploadConflictError, UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
   exportAgentFull,
   exportAgentTemplate,
@@ -871,18 +908,20 @@ import {
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole, countOtherMembers, listAgentMembers } from '@shared/lib/services/agent-members-service'
 import { loginFillAccountSchema } from '../../../agent-container/src/login-schema'
-import { removeMount } from '@shared/lib/services/mount-service'
+import { attachMount, removeMount, resolveMountPath } from '@shared/lib/services/mount-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
+import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
+import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent, updateScheduleExpression } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
+import { mutateSettings } from '@shared/lib/config/settings'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { listUserSecrets, setSecret, updateSecret, deleteSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
@@ -1382,6 +1421,7 @@ describe('GET /:id/chat-integrations', () => {
       createdByUserId: 'owner-user',
       createdAt: new Date('2026-07-17T00:00:00Z'),
       updatedAt: new Date('2026-07-17T00:00:00Z'),
+      version: 0,
     }])
 
     const res = await getReq(createApp(), '/api/agents/test-agent/chat-integrations')
@@ -2297,20 +2337,20 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.status).toBe('chunk_received')
     expect(body.chunkIndex).toBe(0)
     expect(importAgentFromTemplate).not.toHaveBeenCalled()
-    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
-      '11111111-1111-1111-1111-111111111111',
-      0,
-      2,
-      expect.any(Buffer),
-      500 * 1024 * 1024,
-    )
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith({
+      ownerId: 'test-user-id',
+      uploadId: '11111111-1111-1111-1111-111111111111',
+      target: 'template-import',
+      chunkIndex: 0,
+      totalChunks: 2,
+      chunk: expect.any(Buffer),
+      maxTotalBytes: 500 * 1024 * 1024,
+    }, expect.any(Function))
   })
 
   it('assembles and processes on final chunk', async () => {
     const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsStat.mockResolvedValue({ size: 10 })
-    mockFsUnlink.mockResolvedValue(undefined)
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
 
     const form = buildChunkForm({
       chunk: 'data-part-1',
@@ -2331,14 +2371,11 @@ describe('POST /api/agents/import-template (chunked)', () => {
       undefined,
       'full',
     )
-    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
   })
 
   it('passes name override on final chunk', async () => {
     const assembledPath = '/mock/tmp/uploads/33333333-3333-3333-3333-333333333333.assembled'
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsStat.mockResolvedValue({ size: 7 })
-    mockFsUnlink.mockResolvedValue(undefined)
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
 
     const form = buildChunkForm({
       chunk: 'zipdata',
@@ -2427,39 +2464,11 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(body.error).toContain('No file or chunk provided')
   })
 
-  it('handles duplicate chunk index by overwriting and still assembles correctly', async () => {
-    const uploadId = '66666666-6666-6666-6666-666666666666'
-    mockStoreUploadChunk
-      .mockResolvedValueOnce({ status: 'received' })
-      .mockResolvedValueOnce({
-        status: 'assembled',
-        filePath: `/mock/tmp/uploads/${uploadId}.assembled`,
-      })
-    mockFsStat.mockResolvedValue({ size: 12 })
-    mockFsUnlink.mockResolvedValue(undefined)
-
-    const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
-    const res1 = await postFormData(app, '/api/agents/import-template', form1)
-    expect(res1.status).toBe(200)
-    expect((await res1.json()).status).toBe('chunk_received')
-
-    const form2 = buildChunkForm({ chunk: 'part1', uploadId, chunkIndex: 1, totalChunks: 2, mode: 'template' })
-    const res2 = await postFormData(app, '/api/agents/import-template', form2)
-    expect(res2.status).toBe(201)
-    expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      { filePath: `/mock/tmp/uploads/${uploadId}.assembled` },
-      undefined,
-      'template',
-    )
-  })
-
   it('rejects when assembled compressed size exceeds limit', async () => {
     const uploadId = '77777777-7777-7777-7777-777777777777'
     const assembledPath = `/mock/tmp/uploads/${uploadId}.assembled`
     const MAX = 500 * 1024 * 1024
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsStat.mockResolvedValue({ size: MAX + 1 })
-    mockFsUnlink.mockResolvedValue(undefined)
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath, MAX + 1))
 
     const form = buildChunkForm({
       chunk: 'data',
@@ -2472,7 +2481,40 @@ describe('POST /api/agents/import-template (chunked)', () => {
     expect(res.status).toBe(413)
     expect(importAgentFromTemplate).not.toHaveBeenCalled()
     expect(mockFsReadFile).not.toHaveBeenCalled()
-    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
+  })
+
+  it('returns 409 with what to do when the chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This chunk is out of order for this upload. Start a new upload to send the file again.'))
+
+    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 1, totalChunks: 2 })
+    const res = await postFormData(app, '/api/agents/import-template', form)
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('answers a failed import with its own message', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/tmp/uploads/x'))
+    vi.mocked(importAgentFromTemplate).mockRejectedValueOnce(new Error('not a template'))
+
+    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
+    const res = await postFormData(app, '/api/agents/import-template', form)
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toBe('not a template')
+  })
+
+  it('says the result is unknown when a step after the import fails', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/tmp/uploads/x'))
+    vi.mocked(hasOnboardingSkill).mockRejectedValueOnce(new Error('workspace went away'))
+
+    const form = buildChunkForm({ chunk: 'data', uploadId: '99999999-9999-9999-9999-999999999999', chunkIndex: 0, totalChunks: 1 })
+    const res = await postFormData(app, '/api/agents/import-template', form)
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toContain('its result is unknown. Check before sending it again')
+    expect(importAgentFromTemplate).toHaveBeenCalledOnce()
   })
 
   it('returns 413 when storeUploadChunk throws UploadTooLargeError', async () => {
@@ -2750,6 +2792,62 @@ describe('ACL — POST /:id/access (invite user)', () => {
 
     const res = await postJson(app, INVITE_URL, { userId: 'user-1', role })
     expect(res.status).toBe(201)
+  })
+
+  describe('a team-directory person', () => {
+    const directoryRef = { directoryId: 'dir-1', remoteId: 'U7' }
+    beforeEach(() => {
+      mockIsAuthMode.mockReturnValue(true)
+      vi.mocked(userExists).mockResolvedValue(true)
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['test-user-id', { id: 'test-user-id', name: 'Ada Admin', email: 'ada@acme.test', image: null }]]))
+      vi.mocked(inviteDirectoryPerson).mockResolvedValue({ userId: 'invited-dana', invited: true })
+    })
+    afterEach(() => mockIsAuthMode.mockReturnValue(false))
+
+    it('is given access as an invited user, who is told through their directory', async () => {
+      mockDbSelectFrom.mockReturnValueOnce({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })
+      mockDbInsertValues.mockResolvedValueOnce(undefined)
+
+      const res = await postJson(app, INVITE_URL, { directoryRef, role: 'user' })
+      expect(res.status).toBe(201)
+      expect(await res.json()).toEqual({ ok: true, userId: 'invited-dana' })
+      expect(inviteDirectoryPerson).toHaveBeenCalledWith(directoryRef, 'test-user-id')
+      expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({ userId: 'invited-dana', agentSlug: 'test-agent', role: 'user' }))
+      // In the background, after the answer.
+      await vi.waitFor(() => expect(notifyInvitedUser).toHaveBeenCalledWith('invited-dana', expect.objectContaining({ kind: 'shared', byName: 'Ada Admin' })))
+    })
+
+    it('is not told of a share a mention will tell them about', async () => {
+      mockDbSelectFrom.mockReturnValueOnce({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })
+      mockDbInsertValues.mockResolvedValueOnce(undefined)
+      expect((await postJson(app, INVITE_URL, { userId: 'invited-dana', role: 'user', notify: false })).status).toBe(201)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(notifyInvitedUser).not.toHaveBeenCalled()
+    })
+
+    it('passes on why someone cannot be invited', async () => {
+      vi.mocked(inviteDirectoryPerson).mockRejectedValueOnce(new DirectoryInviteError('That person is no longer in the directory.', 404))
+      const res = await postJson(app, INVITE_URL, { directoryRef, role: 'user' })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'That person is no longer in the directory.' })
+    })
+
+    it('needs auth mode, where there is someone to share with', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      expect((await postJson(app, INVITE_URL, { directoryRef, role: 'user' })).status).toBe(400)
+      expect(inviteDirectoryPerson).not.toHaveBeenCalled()
+    })
+
+    it('takes a user id or a directory person, not both', async () => {
+      expect((await postJson(app, INVITE_URL, { userId: 'user-1', directoryRef, role: 'user' })).status).toBe(400)
+    })
+
+    it('names the invited user for a mention chip', async () => {
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['invited-dana', { id: 'invited-dana', name: 'Dana', email: 'dana@acme.test', image: null, invited: true }]]))
+      const res = await postJson(app, `${INVITE_URL}/invitees`, { directoryRef })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ id: 'invited-dana', name: 'Dana', email: 'dana@acme.test', image: null, invited: true })
+    })
   })
 })
 
@@ -4318,6 +4416,23 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(body.success).toBe(true)
   })
 
+  it('saves a single HEIC upload as a JPEG and keeps a HEIC inside a folder upload', async () => {
+    const single = new FormData()
+    single.append('file', new File([TINY_HEIC], 'IMG_0001.HEIC'))
+    const singleRes = await postFormData(app, '/api/agents/test-agent/upload-file', single)
+    expect(singleRes.status).toBe(200)
+    expect((await singleRes.json()).path).toMatch(/\/workspace\/uploads\/IMG_0001-\d{13}\.jpg$/)
+    const saved = mockCreateWriteStream.mock.results.at(-1)!.value as InstanceType<typeof MemoryWriteStream>
+    expect([...Buffer.concat(saved.chunks).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff])
+
+    const folder = new FormData()
+    folder.append('file', new File([TINY_HEIC], 'IMG_0001.HEIC'))
+    folder.append('relativePath', 'photos/IMG_0001.HEIC')
+    const folderRes = await postFormData(app, '/api/agents/test-agent/upload-file', folder)
+    expect(folderRes.status).toBe(200)
+    expect((await folderRes.json()).path).toBe('/workspace/uploads/photos/IMG_0001.HEIC')
+  })
+
   it('sanitizes path traversal via relativePath (strips leading ..)', async () => {
     const formData = new FormData()
     formData.append('file', new File(['malicious'], 'passwd', { type: 'text/plain' }))
@@ -4369,14 +4484,10 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     }
   })
 
-  // The rename is the shortcut of a workspace on this machine; across a wire the
-  // file streams in (copy-into-workspace.test.ts).
-  it.skipIf(underActorTransport)('moves the assembled chunked upload from the host temp file into the workspace', async () => {
-    const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
-    mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockFsRename.mockResolvedValue(undefined)
+  it('streams the chunked upload into the workspace, without asking for a file', async () => {
+    const toFile = vi.fn(async () => '/mock/never')
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/never', 11, toFile))
     mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 11 })
-    mockFsUnlink.mockResolvedValue(undefined)
 
     const form = new FormData()
     form.append('chunk', new File(['final'], 'chunk.bin'))
@@ -4391,19 +4502,48 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(body.success).toBe(true)
     expect(body.filename).toBe('report.pdf')
     expect(body.size).toBe(11)
-    // The assembled temp file is renamed under the workspace's uploads/, not
-    // read and written again; the rename consumed it, so nothing is copied.
-    expect(mockFsRename).toHaveBeenCalledWith(assembledPath, expect.stringContaining('/mock/workspace/uploads/'))
-    expect(mockCreateReadStream).not.toHaveBeenCalled()
-    expect(mockCreateWriteStream).not.toHaveBeenCalled()
-    expect(mockFsCopyFile).not.toHaveBeenCalled()
-    expect(mockStoreUploadChunk).toHaveBeenCalledWith(
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-      0,
-      1,
-      expect.any(Buffer),
-      2 * 1024 * 1024 * 1024,
-    )
+    expect(body.path).toMatch(/^\/workspace\/uploads\/report/)
+    expect(vi.mocked(writeFileAtomicStream)).toHaveBeenCalledWith(expect.stringContaining('/mock/workspace/uploads/report'), expect.anything(), expect.anything())
+    expect(toFile).not.toHaveBeenCalled()
+    expect(mockFsRename).not.toHaveBeenCalled()
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith({
+      ownerId: 'test-user-id',
+      uploadId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      target: 'agent:test-agent',
+      chunkIndex: 0,
+      totalChunks: 1,
+      chunk: expect.any(Buffer),
+      maxTotalBytes: 2 * 1024 * 1024 * 1024,
+    }, expect.any(Function))
+  })
+
+  function chunkForm() {
+    const form = new FormData()
+    form.append('chunk', new File(['final'], 'chunk.bin'))
+    form.append('uploadId', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    form.append('chunkIndex', '0')
+    form.append('totalChunks', '1')
+    form.append('filename', 'report.pdf')
+    return form
+  }
+
+  it('returns 409 with what to do when the chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This upload has already ended. Start a new upload to send the file again.'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', chunkForm())
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+  })
+
+  it('answers a plain failure when the write into the workspace fails', async () => {
+    mockStoreUploadChunk.mockImplementation(assembleTo('/mock/never', 11))
+    vi.mocked(writeFileAtomicStream).mockRejectedValueOnce(new Error('disk full'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', chunkForm())
+
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toBe('Failed to upload file')
   })
 })
 
@@ -4593,6 +4733,22 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const shared = await (await postJson(app, URL, { content: 'hello' })).json()
     expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', '\\[Test User]: hello', shared.uuid, sent({}, { alertDeviceId: null }))
+  })
+
+  it('sends a meeting bot\'s request unattributed in a shared agent: its credential has no name, and the speaker is whoever in the room spoke', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
+    // What Authenticated() sets for the participant cookie: an id, no name.
+    mockAuthUser = { id: 'meeting-starter' }
+    mockMeetingParticipant.value = { meetingId: 'm-1', agentSlug: 'test-agent', sessionId: 'sess-1', userId: 'meeting-starter' }
+    try {
+      const res = await postJson(app, URL, { content: 'what is the launch status' })
+      expect(res.status).toBe(201)
+      expect(mockSendMessage).toHaveBeenLastCalledWith('sess-1', 'what is the launch status', (await res.json()).uuid, sent({}, { alertDeviceId: null }))
+    } finally {
+      mockAuthUser = SIGNED_IN_USER
+      mockMeetingParticipant.value = null
+    }
   })
 
   it('sends the message unattributed when the member count fails', async () => {
@@ -4830,7 +4986,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     it('reads the metadata once, hands that read to the client, and writes nothing when nothing changed', async () => {
       const stored = { ...bound, effort: 'low' as const, name: 'Kept' }
       vi.mocked(getSessionMetadata).mockResolvedValue(stored)
-      mockSendMessage.mockResolvedValue({ selection: bound })
+      mockSendMessage.mockResolvedValue({ selection: bound, llmDefault: true })
 
       const res = await postJson(app, URL, { content: 'again', effort: 'low' })
       expect(res.status).toBe(201)
@@ -4849,7 +5005,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       mockIsAuthMode.mockReturnValue(true)
       mockRequestDevice.value = 'phone-1'
       vi.mocked(getSessionMetadata).mockResolvedValue({ ...bound, alertDeviceId: null })
-      mockSendMessage.mockResolvedValue({ selection: bound })
+      mockSendMessage.mockResolvedValue({ selection: bound, llmDefault: true })
       try {
         const res = await postJson(app, URL, { content: 'from the phone' })
         expect(res.status).toBe(201)
@@ -4870,7 +5026,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     it('leaves nothing to write once the client stored a changed binding with the send’s fields', async () => {
       vi.mocked(getSessionMetadata).mockResolvedValue({ ...bound, effort: 'low' })
       const switched = { model: 'model-b', llmProviderId: 'conn-1' }
-      mockSendMessage.mockResolvedValue({ selection: switched, metadataWritten: true })
+      mockSendMessage.mockResolvedValue({ selection: switched, metadataWritten: true, llmDefault: true })
 
       const res = await postJson(app, URL, { content: 'switch', model: 'model-b', effort: 'high' })
       expect(res.status).toBe(201)
@@ -4890,7 +5046,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
         .mockResolvedValueOnce(first)
         .mockResolvedValueOnce(afterFirst)
       let releaseFirst!: () => void
-      mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({}) }))
+      mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = () => resolve({ llmDefault: true }) }))
 
       const firstSend = postJson(app, URL, { content: 'first', model: 'model-b' })
       await vi.waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1))
@@ -5020,6 +5176,35 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       const [recorded, unrecorded] = await res.json()
       expect(recorded.errorPresentation.message).toContain('claude setup-token')
       expect(unrecorded.errorPresentation.message).toContain('Codex sign-in expired')
+    } finally {
+      lookup.mockRestore()
+      current.mockRestore()
+    }
+  })
+
+  it('reads the settings once for a page of errors, however many it holds', async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const { getLlmProvider } = await import('@shared/lib/llm-provider')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(null)
+    // The platform's copy carries a billing link, from the platform connection in the settings.
+    const current = vi.spyOn(connections, 'resolveGlobalSelection').mockResolvedValue({
+      provider: getLlmProvider('platform'),
+    } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      const readsFor = async (count: number) => {
+        vi.mocked(getSessionMetadata).mockResolvedValueOnce({} as never)
+        mockTransformMessages.mockReturnValue(Array.from({ length: count }, (_, i) => (
+          { id: `error-${i}`, type: 'assistant', content: { text: 'Insufficient credits' }, apiError: 'billing_error', toolCalls: [] }
+        )))
+        mockRuntimeSettings.mockClear()
+        const res = await getReq(app, URL)
+        expect(res.status).toBe(200)
+        expect((await res.json()).every((item: { errorPresentation?: unknown }) => item.errorPresentation)).toBe(true)
+        return mockRuntimeSettings.mock.calls.length
+      }
+      const one = await readsFor(1)
+      expect(await readsFor(6)).toBe(one)
     } finally {
       lookup.mockRestore()
       current.mockRestore()
@@ -6377,6 +6562,19 @@ describe('decision routes settle their request immediately', () => {
     expect(sessionWatch.watchAfterHandOver).toHaveBeenLastCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', viewer: null, site: null })
   })
 
+  it('declines a question as the person skipping it, with their reason', async () => {
+    parkOpen('tool-dec-12', 'question')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
+      toolUseId: 'tool-dec-12',
+      decline: true,
+      declineReason: 'Not now',
+    })
+    expect(res.status).toBe(200)
+    const [path, init] = mockContainerFetch.mock.calls.at(-1)!
+    expect(path).toBe('/inputs/tool-dec-12/reject')
+    expect(JSON.parse(String(init?.body))).toEqual({ reason: 'Not now', unanswered: 'skipped' })
+  })
+
   it('answers 409 to a decision whose request another decision settled between its gate and its claim', async () => {
     parkOpen('tool-dec-11', 'browser_input')
     // The gate saw it open; the other decision lands before this one claims.
@@ -7446,6 +7644,59 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
   })
 })
 
+describe('POST /api/agents/:id/team-brain/upkeep', () => {
+  const URL = '/api/agents/test-agent/team-brain/upkeep'
+
+  const DEFAULT_SETTINGS = { container: {}, skillsets: [], app: { configuredPasswordManagers: ['apple-passwords'] } }
+  const teamBrainIs = (teamBrain: object) => mockRuntimeSettings.mockReturnValue({ ...DEFAULT_SETTINGS, teamBrain } as ReturnType<typeof mockRuntimeSettings>)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+    teamBrainIs({ agentSlug: 'test-agent', volumeId: 'vol-1' })
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
+    vi.mocked(createScheduledTask).mockResolvedValue('task-1')
+    vi.mocked(updateScheduleExpression).mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    mockRuntimeSettings.mockReturnValue(DEFAULT_SETTINGS)
+  })
+
+  it('schedules Brain upkeep once, only for the Team Brain agent', async () => {
+    const res = await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })
+    expect(res.status).toBe(201)
+    expect(vi.mocked(createScheduledTask)).toHaveBeenCalledWith(expect.objectContaining({
+      agentSlug: 'test-agent', scheduleType: 'cron', scheduleExpression: '0 0 * * 1', name: 'Brain upkeep', timezone: 'America/Los_Angeles',
+    }))
+
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep', scheduleExpression: '0 0 * * 1' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
+    expect(await (await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).json()).toEqual({ taskId: 'task-1' })
+    expect(vi.mocked(updateScheduleExpression)).not.toHaveBeenCalled()
+
+    teamBrainIs({ agentSlug: 'other-agent', volumeId: 'vol-1' })
+    expect((await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).status).toBe(400)
+    expect(vi.mocked(createScheduledTask)).toHaveBeenCalledTimes(1)
+  })
+
+  it('schedules it for a set-up still in progress, and moves it to a changed schedule when Start chat runs again', async () => {
+    teamBrainIs({ status: 'setting-up', setupId: 's1', agentSlug: 'test-agent', volumeId: 'vol-1', location: 'local', step: 'intake', schedule: 'hourly', everyAgent: true, agents: {} })
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep', scheduleExpression: '0 0 * * *' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
+    expect(await (await postJson(createApp(), URL, { scheduleExpression: '0 * * * *' })).json()).toEqual({ taskId: 'task-1' })
+    expect(vi.mocked(updateScheduleExpression)).toHaveBeenCalledWith('task-1', '0 * * * *')
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'scheduled_task_updated', taskId: 'task-1', agentSlug: 'test-agent' })
+    expect(vi.mocked(createScheduledTask)).not.toHaveBeenCalled()
+  })
+
+  it('refuses a missing or invalid schedule with a 400, scheduling nothing', async () => {
+    for (const body of [{}, { scheduleExpression: null }, { scheduleExpression: 7 }, { scheduleExpression: '  ' }, { scheduleExpression: 'every so often' }]) {
+      expect((await postJson(createApp(), URL, body)).status).toBe(400)
+    }
+    expect(vi.mocked(createScheduledTask)).not.toHaveBeenCalled()
+  })
+})
+
 describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
   const URL = '/api/agents/test-agent/scheduled-tasks/completed-sessions'
 
@@ -8273,6 +8524,52 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasUnreadMention).toBe(true)
   })
 
+  describe('notificationPreview', () => {
+    const previews = [
+      { id: 'notif-done', sessionId: 'sess-done', type: 'session_complete' as const, text: 'Filed the\n  weekly update.' },
+      { id: 'notif-waiting', sessionId: 'sess-waiting', type: 'session_waiting' as const, text: 'Which flight should I book?' },
+    ]
+
+    beforeEach(() => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      vi.mocked(getSessionSummary).mockResolvedValue({
+        sessionIds: ['sess-done', 'sess-waiting'],
+        sessionCount: 2,
+        lastActivityAt: new Date(),
+      })
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting'])]]))
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map([['agent-1', previews]]))
+    })
+
+    it('says what a question still waiting on the user asks, over newer unread', async () => {
+      mockLiveSessions.awaitingIds.mockReturnValueOnce(['sess-waiting'])
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].notificationPreview).toBe('Which flight should I book?')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-waiting', sessionId: 'sess-waiting' })
+    })
+
+    it('otherwise shows the newest unread on one line', async () => {
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].notificationPreview).toBe('Filed the weekly update.')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-done', sessionId: 'sess-done' })
+    })
+
+    it('is absent with nothing unread', async () => {
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0]).not.toHaveProperty('notificationPreview')
+      expect(body[0]).not.toHaveProperty('notificationPreviewSource')
+    })
+
+    it('exposes only personal unread reminders on visible, existing sessions', async () => {
+      vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting', 'deleted'])]]))
+      vi.mocked(readSessionMetadata).mockResolvedValue({ 'sess-waiting': { isScheduledExecution: true } })
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].markedUnreadSessionIds).toEqual(['sess-done'])
+    })
+  })
+
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
@@ -8480,7 +8777,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: '2026-01-01T12:00:00.000Z',
     })
-    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+    expect(getAgentWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), { includeSummary: false })
     expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
 
@@ -8671,6 +8968,12 @@ describe('POST /api/agents/:id/proxy-review/:reviewId (agent rule requests)', ()
     expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow' })).status).toBe(200)
     expect(vi.mocked(logAuditEvent).mock.calls.some(([event]) => event.object === 'proxy_rule')).toBe(false)
   })
+
+  it('passes the reason typed with a deny to the review', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1', agentSlug: 'my-agent', accountId: 'acct-1', toolkit: 'gmail', method: 'POST', targetPath: 'x', matchedScopes: [], scopeDescriptions: {} }])
+    expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'deny', reason: '  Use the shared folder  ' })).status).toBe(200)
+    expect(mockSubmitDecision).toHaveBeenCalledWith('my-agent', 'review-1', 'deny', 'Use the shared folder')
+  })
 })
 
 describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
@@ -8698,21 +9001,18 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     mockIsAuthMode.mockReturnValue(false)
   })
 
-  it.each([
-    { operation: 'invoke', fileTransfer: { kind: 'send', paths: ['/workspace/report.pdf'] } },
-    { operation: 'read', fileTransfer: { kind: 'download', filename: 'report.pdf' } },
-    { operation: 'invoke', attachments: ['/workspace/legacy.pdf'] },
-  ])('rejects persistent allow for a one-time file review: %j', async (details) => {
+  it('rejects persistent allow for a create review', async () => {
     mockGetPendingReviewsForAgent.mockReturnValueOnce([{
       id: 'review-1', agentSlug: 'my-agent', accountId: 'target', toolkit: 'agents',
-      method: details.operation, targetPath: `agents:${details.operation}:target`, matchedScopes: [`${details.operation}:target`],
-      xAgent: { targetAgentSlug: 'target', targetAgentName: 'Target', ...details },
+      method: 'create', targetPath: 'agents:create:target', matchedScopes: ['create:target'],
+      xAgent: { targetAgentSlug: 'target', targetAgentName: 'Target', operation: 'create' },
     }])
     const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
-      decision: 'allow', scope: `${details.operation}:target`, accountId: 'target', reviewType: 'xagent',
-      xAgent: { operation: details.operation, targetSlug: 'target' },
+      decision: 'allow', scope: 'create:target', accountId: 'target', reviewType: 'xagent',
+      xAgent: { operation: 'create', targetSlug: 'target' },
     })
     expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Creating an agent can only be allowed once' })
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
@@ -10018,6 +10318,14 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Greeting'))
   })
 
+  it('a session the caller names keeps that name and is not named again', async () => {
+    expect((await postJson(app, SESSIONS_URL, { message: 'Weekly report\n\nPull the Q3 numbers', name: 'Weekly report' })).status).toBe(201)
+    expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Weekly report', expect.anything())
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockLlmMessagesCreate).not.toHaveBeenCalled()
+    expect(updateSessionName).not.toHaveBeenCalled()
+  })
+
   it('a shared agent is told who opened the session', async () => {
     mockIsAuthMode.mockReturnValue(true)
     vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
@@ -10082,6 +10390,30 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     )
   })
 
+  it('starts a session from one read of the settings: limits, env, tabs, models and runtime alike', async () => {
+    storePreferences({ defaultModel: 'haiku', defaultEffort: 'high' })
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({
+      ...settings,
+      agentLimits: { maxTurns: 9 },
+      customEnvVars: { TEAM: 'blue' },
+      app: { ...settings.app, maxBrowserTabs: 4 },
+    } as never)
+    try {
+      mockRuntimeSettings.mockClear()
+      // A named session, so no background naming reads anything after the response.
+      const res = await postJson(app, SESSIONS_URL, { message: 'hello', name: 'Named' })
+      expect(res.status).toBe(201)
+      expect(mockRuntimeSettings).toHaveBeenCalledTimes(1)
+      expect(mockCreateSession.mock.calls[0][0]).toMatchObject({
+        maxTurns: 9, customEnvVars: { TEAM: 'blue' }, maxBrowserTabs: 4,
+        model: 'haiku', effort: 'high', prewarmDefaults: { model: 'haiku', effort: 'high' },
+      })
+    } finally {
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
+  })
+
   it('uses the global default model and effort when the agent has no preferences', async () => {
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
 
@@ -10098,6 +10430,50 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       'New Session',
       expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
     )
+  })
+
+  describe('started with computer use (the dispatch launcher’s toggle)', () => {
+    const platform = process.platform
+    const onPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value, configurable: true })
+    afterEach(() => onPlatform(platform))
+
+    it('preloads the computer-use tools and lets the session use any app', async () => {
+      onPlatform('darwin')
+      const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
+
+      expect((await postJson(app, SESSIONS_URL, { message: 'book this flight', computerUse: true })).status).toBe(201)
+      expect(mockCreateSession.mock.calls[0][0].preloadToolsets).toEqual(['computer-use'])
+      expect(start.mock.calls[0][0].grantComputerUse).toBe(true)
+    })
+
+    it('asks for neither on an ordinary session', async () => {
+      onPlatform('darwin')
+      const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
+
+      expect((await postJson(app, SESSIONS_URL, { message: 'hello', computerUse: 'yes' })).status).toBe(201)
+      expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('preloadToolsets')
+      expect(start.mock.calls[0][0]).not.toHaveProperty('grantComputerUse')
+    })
+
+    it('is refused where computer use cannot run', async () => {
+      onPlatform('linux')
+
+      const res = await postJson(app, SESSIONS_URL, { message: 'book this flight', computerUse: true })
+      expect(res.status).toBe(400)
+      expect(mockCreateSession).not.toHaveBeenCalled()
+    })
+
+    it('is named from what was written, not the note telling the agent', async () => {
+      onPlatform('darwin')
+      mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Flight Booking' }] })
+      const message = appendComputerUseNote('book this flight', 'Screenshot 2026-11-02 at 14.03.22.png')
+
+      expect((await postJson(app, SESSIONS_URL, { message, computerUse: true })).status).toBe(201)
+      await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Flight Booking'))
+      const prompt = String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)
+      expect(prompt).toContain('book this flight')
+      expect(prompt).not.toContain('[Computer use:')
+    })
   })
 })
 
@@ -10609,13 +10985,13 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     expect(registerSession).not.toHaveBeenCalled()
   })
 
-  it('registers the fork with the source runtime choices, slash commands and lineage, and answers the create projection', async () => {
+  it('registers the fork with the source runtime choices and lineage, and answers the create projection', async () => {
     const res = await fork()
     expect(res.status).toBe(201)
     expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'fork-1', 'Pricing (fork)', expect.objectContaining({
       model: 'claude-sonnet-5', effort: 'high', speed: 'fast', forkedFromSessionId: 'src-1',
-      slashCommands: [{ name: 'review', description: 'Review', argumentHint: '' }],
     }))
+    expect(vi.mocked(registerSession).mock.calls[0][3]).not.toHaveProperty('slashCommands')
     const body = await res.json()
     expect(body).toMatchObject({ id: 'fork-1', name: 'Pricing (fork)', isActive: false, model: 'claude-sonnet-5', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' })
     expect(body.initialMessageUuid).toBeUndefined()
@@ -10747,6 +11123,26 @@ describe('session existence guards read metadata, not the transcript', () => {
     })
   })
 
+  it('resolves the session display defaults from one read of the settings, and the next view reads again', async () => {
+    const runtime = await import('@shared/lib/llm-provider/connection-runtime')
+    const inherit = vi.spyOn(runtime, 'resolveConnectionRuntimeInherit').mockResolvedValue({ model: 'model-a', llmProviderId: 'conn-1' } as never)
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({ ...settings, llmDefault: { model: 'model-a', llmProviderId: 'conn-1' } } as never)
+    try {
+      mockRuntimeSettings.mockClear()
+      const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+      expect(res.status).toBe(200)
+      expect(mockRuntimeSettings).toHaveBeenCalledTimes(1)
+      expect(inherit).toHaveBeenCalledWith({}, expect.anything(), expect.anything(), expect.objectContaining({ llmDefault: expect.anything() }))
+
+      await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+      expect(mockRuntimeSettings).toHaveBeenCalledTimes(2)
+    } finally {
+      inherit.mockRestore()
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
+  })
+
   it('uses the registered listing name, not a transcript-derived title', async () => {
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-1': { forkedFromSessionId: 'src-1' },
@@ -10786,6 +11182,7 @@ describe('session existence guards read metadata, not the transcript', () => {
     expect(body).toMatchObject({ id: 'sess-1', name: 'Renamed' })
     expect(body).not.toHaveProperty('messageCount')
     expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', 'Renamed')
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'session_updated', sessionId: 'sess-1', agentSlug: 'test-agent' })
     // Was one read on each side of the rename.
     expect(getSession).toHaveBeenCalledTimes(1)
   })
@@ -10869,13 +11266,13 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
   })
 
   afterEach(async () => {
-    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    await computerUsePermissionManager.revokeAllForAgent('test-agent')
     userInputRequestManager.reset()
   })
 
   it('an approved once-grant is consumed by the run it authorized', async () => {
     expect(
-      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+      await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('prompt_needed')
 
     const res = await approveScript('tool-once-1', 'once')
@@ -10886,7 +11283,7 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
 
     // The next request_script_run must prompt again, not auto-execute.
     expect(
-      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+      await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('prompt_needed')
   })
 
@@ -10895,8 +11292,31 @@ describe('POST /:id/sessions/:sessionId/run-script — once-grants are single-us
 
     expect(res.status).toBe(200)
     expect(
-      computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
+      await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell'),
     ).toBe('granted')
+  })
+
+  it('"Allow always" runs no script when a Stop lands while the grant is being saved', async () => {
+    // The always-grant is a settings write; the Stop ends the turn meanwhile
+    // and cancels its parked requests.
+    vi.mocked(mutateSettings).mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      userInputRequestManager.clearSessionStreamRequests('test-agent', 'sess-1', 'cancelled')
+      // The partial settings the mocked module serves everywhere.
+      return mockRuntimeSettings() as never
+    })
+    parkScriptRun('tool-always-stopped')
+
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/run-script', {
+      toolUseId: 'tool-always-stopped',
+      script: 'echo ok',
+      scriptType: 'shell',
+      grantType: 'always',
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockExec).not.toHaveBeenCalled()
+    expect(mutateSettings).toHaveBeenCalled()
   })
 })
 
@@ -10921,7 +11341,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
-    computerUsePermissionManager.revokeAllForAgent('test-agent')
+    await computerUsePermissionManager.revokeAllForAgent('test-agent')
     userInputRequestManager.reset()
   })
 
@@ -10963,7 +11383,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
       body: JSON.stringify({ value: 'Calculator, Finder' }),
     }))
     expect(mockLiveSessions.clearComputerUseRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'cu-ok', 'answered')
-    expect(computerUsePermissionManager.checkPermission('test-agent', 'list_apps_windows')).toBe('granted')
+    expect(await computerUsePermissionManager.checkPermission('test-agent', 'list_apps_windows')).toBe('granted')
   })
 
   it('computer-use: answers 428 with the permissions, runs nothing and leaves the request open', async () => {
@@ -11016,7 +11436,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
     park('sr-bad', 'script_run')
     const res = await postJson(app, SCRIPT_URL, { toolUseId: 'sr-bad', scriptType: 'shell', grantType: 'always' })
     expect(res.status).toBe(400)
-    expect(computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell')).toBe('prompt_needed')
+    expect(await computerUsePermissionManager.checkPermission('test-agent', 'use_host_shell')).toBe('prompt_needed')
   })
 })
 
@@ -11448,6 +11868,85 @@ describe('PUT /api/agents/:id/avatar', () => {
   })
 })
 
+describe('files in the agent\'s drives, by mount path', () => {
+  // A drive holding team/notes/a.md, answering as a drive does.
+  const file = { size: 5, stream: vi.fn(() => new Response('notes').body!), close: vi.fn(async () => {}) }
+  const drive = {
+    read: vi.fn(async () => file),
+    list: vi.fn(async () => [
+      { name: 'b.md', kind: 'file', size: 1, mtimeMs: 0 },
+      { name: 'sub', kind: 'directory', size: 0, mtimeMs: 0 },
+    ]),
+  }
+  beforeEach(() => {
+    file.stream.mockClear()
+    file.close.mockClear()
+    vi.mocked(resolveMountPath).mockImplementation(async (_slug, containerPath) => {
+      const parsed = parseMountPath(containerPath)
+      if (!parsed) throw new WorkspaceFileError('invalid-path')
+      return parsed.name === 'team' ? { ops: drive as never, path: parsed.path } : null
+    })
+  })
+
+  it('serves a drive file as the drive route does, so it never runs as the app', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/mount-files/team/notes/a.md?inline=true')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('notes')
+    expect(res.headers.get('content-security-policy')).toBe('sandbox allow-scripts')
+    expect(resolveMountPath).toHaveBeenCalledWith('test-agent', '/mounts/team/notes/a.md')
+    expect(drive.read).toHaveBeenCalledWith('notes/a.md')
+  })
+
+  it('answers HEAD with the size and no body, as the size request on a card asks', async () => {
+    const res = await headReq(createApp(), '/api/agents/test-agent/mount-files/team/notes/a.md')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-length')).toBe('5')
+    expect(await res.text()).toBe('')
+    expect(file.close).toHaveBeenCalled()
+    expect(file.stream).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a drive the agent does not have', '/other/a.md', undefined, 404],
+    ['an agent slug spelled with escapes', '/team/a.md', undefined, 400, '/api/agents/test%2Dagent/mount-files'],
+    ['a missing file in its drive', '/team/gone.md', new WorkspaceFileError('not-found'), 404],
+    ['a path that leaves the drive', '/team/a%5Cb.md', undefined, 400],
+    ['a malformed escape', '/team/a%E0.md', undefined, 400],
+    ['a drive with no file named', '/team', undefined, 400],
+    ['a drive that cannot be read', '/team/a.md', new Error('socket hang up'), 503],
+  ])('answers %s with its own status', async (_case, path, failure, status, route = '/api/agents/test-agent/mount-files') => {
+    if (failure) drive.read.mockRejectedValueOnce(failure)
+    expect((await getReq(createApp(), `${route}${path}`)).status).toBe(status)
+  })
+
+  it('tells a drive the agent does not have apart from a file missing from its drive', async () => {
+    drive.read.mockRejectedValueOnce(new WorkspaceFileError('not-found'))
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mount-files/other/a.md')).json()).toEqual({ error: 'Drive not found' })
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mount-files/team/gone.md')).json()).toEqual({ error: 'File not found' })
+  })
+
+  it.each([
+    ['a drive the agent does not have', '/mounts/other', 404],
+    ['a folder path that leaves the drive', '/mounts/team/../x', 400],
+  ])('answers a folder listing of %s with its own status', async (_case, root, status) => {
+    expect((await getReq(createApp(), `/api/agents/test-agent/folders?${new URLSearchParams({ root })}`)).status).toBe(status)
+  })
+
+  it('lists a drive folder for a viewer, its children at their mount paths, folders first', async () => {
+    mockAuthorizedAgentRole = 'viewer'
+    const res = await getReq(createApp(), `/api/agents/test-agent/folders?${new URLSearchParams({ root: '/mounts/team/notes' })}`)
+    expect(await res.json()).toEqual({
+      root: '/mounts/team/notes', path: '/mounts/team/notes', truncated: false,
+      entries: [
+        { name: 'sub', path: '/mounts/team/notes/sub', type: 'directory' },
+        { name: 'b.md', path: '/mounts/team/notes/b.md', type: 'file' },
+      ],
+    })
+    expect(drive.list).toHaveBeenCalledWith('notes')
+  })
+
+})
+
 describe('drive changes on a running agent', () => {
   const changes = [
     ['attach', (app: Hono, slug: string, restart?: boolean) => postJson(app, `/api/agents/${slug}/mounts`, { volumeId: 'v1', ...(restart ? { restart } : {}) })],
@@ -11474,6 +11973,11 @@ describe('drive changes on a running agent', () => {
     expect((await changes[0][1](createApp(), 'drives-restart', true)).ok).toBe(true)
     expect(mockRestartContainer).toHaveBeenCalledOnce()
     expect((await agentRegistry.get('drives-restart').live()).container.stale).toBe(false)
+  })
+
+  it('adds a drive read-only when asked', async () => {
+    expect((await postJson(createApp(), '/api/agents/drives-read-only/mounts', { volumeId: 'v1', readOnly: true })).ok).toBe(true)
+    expect(attachMount).toHaveBeenLastCalledWith('drives-read-only', 'v1', expect.anything(), { readOnly: true })
   })
 
   it('answers 404 to removing a drive the agent has no own copy of, and leaves it unmarked', async () => {
@@ -11789,9 +12293,90 @@ describe('sign-in request routes (request_login)', () => {
       )
       expect(containerCalls()).toEqual([{
         path: '/browser/login/fill',
-        body: { sessionId: 'sess-1', toolUseId: 'tool-login', expectedOrigin: 'https://github.com', values: ['saved-secret', 'octocat'] },
+        body: {
+          sessionId: 'sess-1', toolUseId: 'tool-login', expectedOrigin: 'https://github.com', values: ['saved-secret', 'octocat'],
+          account: { username: 'octocat', site: 'github.com', source: 'user', saved: false, held: [] },
+        },
       }])
       expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+      expect(vault.saveAccount).not.toHaveBeenCalled()
+    })
+
+    it('saves the whole login to the vault and grants it when the user chose "Save for later"', async () => {
+      // An email-first page: only the username is on this step, the password is saved for the next.
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: { ...CONTEXT, fields: [CONTEXT.fields[0]] } })
+      mockCredentialRetrieve.mockResolvedValueOnce({
+        credential: { username: 'octocat', password: 'saved-secret' },
+        expectedOrigin: 'https://github.com',
+      })
+      vault.saveAccount.mockResolvedValueOnce({ account: { id: 'acc-1', username: 'octocat', site: 'github.com' }, created: true })
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true, filled: 1, failed: 0, submitted: true, problems: [],
+      }), { status: 200 }))
+
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque', save: true })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toMatchObject({ saved: { username: 'octocat', site: 'github.com' } })
+      expect(JSON.stringify(body)).not.toContain('saved-secret')
+      expect(vault.saveAccount).toHaveBeenCalledWith({
+        owner: null, site: 'github.com', origin: 'https://github.com', username: 'octocat', values: { password: 'saved-secret' },
+      })
+      expect(vault.grantAccount).toHaveBeenCalledWith({ accountId: 'acc-1', agentSlug: 'test-agent', grantedBy: null })
+      expect(vault.recordAccountUse).toHaveBeenCalledWith({ agentSlug: 'test-agent', accountId: 'acc-1', sessionId: 'sess-1', userId: null, password: false, by: 'user' })
+      // The agent is told the login was saved, by account.
+      expect(containerCalls()[0].body.account).toEqual({ username: 'octocat', site: 'github.com', source: 'user', saved: true, held: [] })
+    })
+
+    it('fills the login and says so when saving it fails', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      mockCredentialRetrieve.mockResolvedValueOnce({
+        credential: { username: 'octocat', password: 'saved-secret' },
+        expectedOrigin: 'https://github.com',
+      })
+      vault.saveAccount.mockRejectedValueOnce(new Error('disk full'))
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true, filled: 2, failed: 0, submitted: true, problems: [],
+      }), { status: 200 }))
+
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque', save: true })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ filled: 2, saveError: 'The account could not be saved' })
+      expect(vault.grantAccount).not.toHaveBeenCalled()
+    })
+
+    it('saves the login for the agent\'s next try when the browser closed first and the user chose to save it', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      mockCredentialRetrieve.mockResolvedValueOnce({
+        credential: { username: 'octocat', password: 'saved-secret' },
+        expectedOrigin: 'https://github.com',
+      })
+      vault.saveAccount.mockResolvedValueOnce({ account: { id: 'acc-1', username: 'octocat', site: 'github.com' }, created: true })
+      mockContainerFetch
+        .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'The browser that showed this sign-in form was closed', reason: 'browser_closed' }), { status: 409 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      const { heldLoginFor } = await import('@shared/lib/browser-vault/held-values')
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque', save: true })
+      expect(await res.json()).toEqual({ success: true, browserClosed: true, kept: { how: 'saved', username: 'octocat' } })
+      const [, answer] = containerCalls()
+      expect(JSON.parse(answer.body.value)).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'saved', username: 'octocat' } })
+      expect(vault.grantAccount).toHaveBeenCalledWith({ accountId: 'acc-1', agentSlug: 'test-agent', grantedBy: null })
+      expect(await heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
+    })
+
+    it('saves to an agent other members use only once the user saw that', async () => {
+      mockIsAuthMode.mockReturnValue(true)
+      vi.mocked(countOtherMembers).mockResolvedValue(2)
+      try {
+        parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+        const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque', save: true })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toMatchObject({ reason: 'shared_agent' })
+        expect(mockCredentialRetrieve).not.toHaveBeenCalled()
+        expect(mockContainerFetch).not.toHaveBeenCalled()
+      } finally {
+        vi.mocked(countOtherMembers).mockResolvedValue(0)
+      }
     })
 
     it('holds the saved login for the agent\'s next try when the browser closed first, and tells the agent', async () => {
@@ -11803,20 +12388,17 @@ describe('sign-in request routes (request_login)', () => {
       mockContainerFetch
         .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'The browser that showed this sign-in form was closed', reason: 'browser_closed' }), { status: 409 }))
         .mockResolvedValueOnce(new Response('{}', { status: 200 }))
-      const { heldLoginFor, resetHeldLogins } = await import('@shared/lib/browser-vault/held-values')
-      try {
-        const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque' })
-        expect(await res.json()).toEqual({ success: true, browserClosed: true, kept: { how: 'held', username: 'octocat' } })
-        const [, answer] = containerCalls()
-        expect(answer.path).toBe('/inputs/tool-login/resolve')
-        expect(JSON.parse(answer.body.value)).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'held', username: 'octocat' } })
-        expect(JSON.stringify(answer)).not.toContain('saved-secret')
-        // Held, never saved: it lives in the password manager.
-        expect(heldLoginFor('test-agent', 'sess-1', 'github.com')).toEqual({ username: 'octocat', values: { password: 'saved-secret' }, origin: 'https://github.com', save: null })
-        expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
-      } finally {
-        resetHeldLogins()
-      }
+      const { heldLoginFor } = await import('@shared/lib/browser-vault/held-values')
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque' })
+      expect(await res.json()).toEqual({ success: true, browserClosed: true, kept: { how: 'held', username: 'octocat' } })
+      const [, answer] = containerCalls()
+      expect(answer.path).toBe('/inputs/tool-login/resolve')
+      expect(JSON.parse(answer.body.value)).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'held', username: 'octocat' } })
+      expect(JSON.stringify(answer)).not.toContain('saved-secret')
+      // Held, not saved: the user did not choose to.
+      expect(vault.saveAccount).not.toHaveBeenCalled()
+      expect(await heldLoginFor('test-agent', 'sess-1', 'github.com')).toEqual({ username: 'octocat', values: { password: 'saved-secret' }, ids: { password: expect.any(String) }, origin: 'https://github.com', save: null })
+      expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
     })
 
     it('refuses a saved login for another origin than the form', async () => {
@@ -11902,8 +12484,6 @@ describe('sign-in requests with the vault (request_login)', () => {
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
     userInputRequestManager.reset()
-    const { resetHeldLogins } = await import('@shared/lib/browser-vault/held-values')
-    resetHeldLogins()
   })
 
   afterEach(() => {
@@ -11938,13 +12518,14 @@ describe('sign-in requests with the vault (request_login)', () => {
       },
     }])
     const { heldLoginFor, recentSignInIdentity } = await import('@shared/lib/browser-vault/held-values')
-    expect(heldLoginFor('test-agent', 'sess-1', 'github.com', 'octocat')).toEqual({
+    expect(await heldLoginFor('test-agent', 'sess-1', 'github.com', 'octocat')).toEqual({
       username: 'octocat',
       values: { password: 'next-step-pw' },
+      ids: { password: expect.any(String) },
       origin: 'https://github.com',
       save: { owner: null, origin: 'https://github.com' },
     })
-    expect(recentSignInIdentity('test-agent', 'sess-1', 'github.com')).toBe('octocat')
+    expect(await recentSignInIdentity('test-agent', 'sess-1', 'github.com')).toBe('octocat')
   })
 
   it('fills what the user left empty from a saved account this agent may use, and records the use', async () => {
@@ -11971,27 +12552,21 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(sessionWatch.beginSignInStep.mock.invocationCallOrder[0]).toBeLessThan(mockContainerFetch.mock.invocationCallOrder[0])
   })
 
-  it('watches no session from a page that is not a sign-in\'s first, unless it goes on with the same account', async () => {
+  it.each([null, 'someone-else', 'octocat'])('watches no session from a page that is not a sign-in\'s first, unless it goes on with the same account (before: %s)', async (earlier) => {
     // "Confirm access": a password asked again, on a site the browser may be signed in to as someone else.
     const confirm = { ...CONTEXT, fields: [field('password', 'Password')], held: [] }
-    for (const earlier of [null, 'someone-else', 'octocat']) {
-      vi.clearAllMocks()
-      mockContainerFetch.mockReset()
-      const { rememberSignInIdentity, resetHeldLogins } = await import('@shared/lib/browser-vault/held-values')
-      resetHeldLogins()
-      if (earlier) rememberSignInIdentity('test-agent', 'sess-1', 'github.com', earlier)
-      parkLogin({ login: confirm })
-      vault.isAccountGranted.mockResolvedValueOnce(true)
-      vault.getAccount.mockResolvedValueOnce(account())
-      vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
-      mockContainerFetch.mockResolvedValueOnce(filled())
+    const { rememberSignInIdentity } = await import('@shared/lib/browser-vault/held-values')
+    if (earlier) await rememberSignInIdentity('test-agent', 'sess-1', 'github.com', earlier)
+    parkLogin({ login: confirm })
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.getAccount.mockResolvedValueOnce(account())
+    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    mockContainerFetch.mockResolvedValueOnce(filled())
 
-      const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
-      expect(res.status).toBe(200)
-      expect(sessionWatch.sessionBaseline).toHaveBeenCalledTimes(earlier === 'octocat' ? 1 : 0)
-      expect(sessionWatch.watchSignIn).toHaveBeenCalledWith(expect.objectContaining({ baseline: earlier === 'octocat' ? SIGN_IN_BASELINE : null }))
-      userInputRequestManager.reset()
-    }
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.sessionBaseline).toHaveBeenCalledTimes(earlier === 'octocat' ? 1 : 0)
+    expect(sessionWatch.watchSignIn).toHaveBeenCalledWith(expect.objectContaining({ baseline: earlier === 'octocat' ? SIGN_IN_BASELINE : null }))
   })
 
   it('grants the user\'s own saved account picked in the form', async () => {
@@ -12123,13 +12698,13 @@ describe('sign-in requests with the vault (request_login)', () => {
     const login = { ...CONTEXT, fields: [field('password', 'Password')], held: [] }
     parkLogin({ login, vault: { mode: 'ask', username: 'octocat' } })
     const { heldLoginFor, holdLoginValues } = await import('@shared/lib/browser-vault/held-values')
-    holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'older' }, origin: 'https://github.com', save: null })
+    await holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'older' }, origin: 'https://github.com', save: null })
     vault.saveAccount.mockResolvedValueOnce({ account: account(), created: false })
     mockContainerFetch.mockResolvedValueOnce(filled())
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['newer'], save: true })
     expect(res.status).toBe(200)
     expect(containerCalls()[0].body.values).toEqual(['newer'])
-    expect(heldLoginFor('test-agent', 'sess-1', 'github.com', 'octocat')).toBeNull()
+    expect(await heldLoginFor('test-agent', 'sess-1', 'github.com', 'octocat')).toBeNull()
     expect(vault.recordAccountUse).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'acc-1', password: true, by: 'user' }))
   })
 
@@ -12315,7 +12890,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(JSON.parse(containerCalls()[1].body.value)).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'held', username: 'octocat' } })
     expect(JSON.stringify(containerCalls()[1])).not.toContain('next-pw')
     const { heldLoginFor } = await import('@shared/lib/browser-vault/held-values')
-    expect(heldLoginFor('test-agent', 'sess-1', 'github.com')).toEqual({ username: 'octocat', values: { password: 'next-pw' }, origin: 'https://github.com', save: null })
+    expect(await heldLoginFor('test-agent', 'sess-1', 'github.com')).toEqual({ username: 'octocat', values: { password: 'next-pw' }, ids: { password: expect.any(String) }, origin: 'https://github.com', save: null })
   })
 
   it('holds what the user entered when saving it fails after the browser closed', async () => {
@@ -12329,7 +12904,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     errors.mockRestore()
     expect(await res.json()).toEqual({ success: true, browserClosed: true, kept: { how: 'held', username: 'octocat' } })
     const { heldLoginFor } = await import('@shared/lib/browser-vault/held-values')
-    expect(heldLoginFor('test-agent', 'sess-1', 'github.com')?.values).toEqual({ password: 'next-pw' })
+    expect((await heldLoginFor('test-agent', 'sess-1', 'github.com'))?.values).toEqual({ password: 'next-pw' })
   })
 
   it('grants a saved account the user picked after the browser closed, and names it to the agent', async () => {
@@ -12346,7 +12921,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(JSON.parse(containerCalls()[1].body.value)).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'picked', username: 'octocat' } })
     expect(JSON.stringify(containerCalls()[1])).not.toContain('saved-pw')
     const { heldLoginFor } = await import('@shared/lib/browser-vault/held-values')
-    expect(heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
+    expect(await heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
   })
 
   it('holds the next step\'s value only once its step went into the page', async () => {
@@ -12355,24 +12930,65 @@ describe('sign-in requests with the vault (request_login)', () => {
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat'], heldValues: ['next-pw'] })
     expect(res.status).toBe(409)
     const { heldLoginFor } = await import('@shared/lib/browser-vault/held-values')
-    expect(heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
+    expect(await heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
+  })
+
+  it('fills a held value the user left to it once, and shows it to no one', async () => {
+    const secret = 'held-pw-71c0de'
+    const login = { ...CONTEXT, fields: [field('password', 'Password')], held: [] }
+    parkLogin({ login, vault: { mode: 'complete', username: 'octocat', covered: [0] } })
+    const { heldLoginFor, holdLoginValues } = await import('@shared/lib/browser-vault/held-values')
+    await holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: secret }, origin: 'https://github.com', save: null })
+    mockContainerFetch.mockResolvedValueOnce(filled())
+    const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) => vi.spyOn(console, method))
+    try {
+      const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''] })
+      expect(res.status).toBe(200)
+      const [fill] = containerCalls()
+      expect(fill.body).toMatchObject({ values: [secret], account: { username: 'octocat', source: 'user' } })
+      expect(await heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
+      for (const seen of [await res.json(), fill.body.account, logged.map((spy) => spy.mock.calls), vi.mocked(globalFeed.publish).mock.calls]) {
+        expect(JSON.stringify(seen)).not.toContain(secret)
+      }
+    } finally {
+      for (const spy of logged) spy.mockRestore()
+    }
+  })
+
+  it('asks for a held value another fill took after this one read it', async () => {
+    const login = { ...CONTEXT, fields: [field('password', 'Password')], held: [] }
+    parkLogin({ login, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [0] } })
+    const heldValues = await import('@shared/lib/browser-vault/held-values')
+    await heldValues.holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.getAccount.mockResolvedValueOnce(account({ parts: [] }))
+    // While this request checks the form, another call's fill takes the held password.
+    vault.readAccountValues.mockImplementationOnce(async () => {
+      const held = await heldValues.heldLoginFor('test-agent', 'sess-1', 'github.com')
+      expect(await heldValues.claimHeldParts('test-agent', 'sess-1', 'github.com', held!, ['password'])).not.toBeNull()
+      return {}
+    })
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ reason: 'fields_needed', fields: [0] })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 
   it('forgets what was held for a later step when the user declines', async () => {
     parkLogin()
     const { holdLoginValues, heldLoginFor } = await import('@shared/lib/browser-vault/held-values')
-    holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'next-pw' }, origin: 'https://github.com', save: null })
+    await holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'next-pw' }, origin: 'https://github.com', save: null })
     mockContainerFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }))
     const res = await postJson(app, `${BASE}/complete-login`, { toolUseId: 'tool-login', action: 'decline' })
     expect(res.status).toBe(200)
-    expect(heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
+    expect(await heldLoginFor('test-agent', 'sess-1', 'github.com')).toBeNull()
   })
 
   it('does not fill a held value typed on an encrypted page into a plain-HTTP one', async () => {
     const http = { ...CONTEXT, origin: 'http://github.com', topOrigin: 'http://github.com', url: 'http://github.com/login', fields: [field('password', 'Password')], held: [] }
     parkLogin({ login: http })
     const { holdLoginValues } = await import('@shared/lib/browser-vault/held-values')
-    holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'typed-on-https' }, origin: 'https://github.com', save: null })
+    await holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'typed-on-https' }, origin: 'https://github.com', save: null })
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'http://github.com', values: [''] })
     expect(res.status).toBe(409)
     expect(await res.json()).toMatchObject({ reason: 'fields_needed', fields: [0] })

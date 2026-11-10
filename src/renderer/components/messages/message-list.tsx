@@ -20,16 +20,15 @@ import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
+import { MonitorEventItem } from './monitor-event-item'
 import { InformationalItem } from './informational-item'
-import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
 import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
-import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tools/deliver-file/definition'
-import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { collectTurnDeliveredFiles, type DeliveredFile } from './delivered-files'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
@@ -48,7 +47,7 @@ import {
   type ReactNode,
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
+import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational, ApiMonitorEvent } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
@@ -116,14 +115,6 @@ function TurnSummaryRow({
   )
 }
 
-interface DeliveredFile {
-  /** The deliver_file tool call's id: unique even when a turn delivers one path twice. */
-  id: string
-  filePath: string
-  description?: string
-  sizeBytes?: number
-}
-
 function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlug: string }) {
   // Pictures show as themselves, laid out exactly as a user's uploads are
   // (only on the agent's side of the thread); everything else keeps its row.
@@ -144,7 +135,7 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
       ))}
       {images.length > 0 && (
         <AttachedImages
-          images={images.map((file) => ({ ...file, key: file.id }))}
+          images={images.map((file) => ({ ...file, key: file.id, version: file.id }))}
           agentSlug={agentSlug}
           align="start"
           data-testid="delivered-images"
@@ -413,50 +404,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     ))
   }, [messages])
 
-  // Time flags are derived from all loaded history rather than the trailing DOM
-  // window, so scrolling/windowing cannot change which turns qualify. When an
-  // older page still exists, the first loaded user is not assumed to be the
-  // first user in the session.
-  const timeFlagState = useMemo(() => {
-    const messageIds = new Set<string>()
-    let hasSeenUser = hasOlder
-    let hasUserSinceLastAssistant = hasOlder
-    let lastAssistantAt: Date | null = null
-
-    for (const item of visibleMessages) {
-      if (item.type === 'assistant') {
-        const createdAt = new Date(item.createdAt)
-        lastAssistantAt = Number.isNaN(createdAt.getTime()) ? null : createdAt
-        hasUserSinceLastAssistant = false
-        continue
-      }
-
-      if (
-        item.type !== 'user' ||
-        item.queued ||
-        classifyUserMessage(item).kind === 'interrupt' ||
-        classifyUserMessage(item).kind === 'connection-replacement'
-      ) continue
-
-      const createdAt = new Date(item.createdAt)
-      if (
-        !hasSeenUser ||
-        (!hasUserSinceLastAssistant && isSessionTimeGap(createdAt, lastAssistantAt))
-      ) {
-        messageIds.add(item.id)
-      }
-      hasSeenUser = true
-      hasUserSinceLastAssistant = true
-    }
-
-    return {
-      messageIds,
-      hasSeenUser,
-      hasUserSinceLastAssistant,
-      lastAssistantAt,
-    }
-  }, [visibleMessages, hasOlder])
-
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
   // Track the boundary count baseline when not compacting, then detect increases.
@@ -632,44 +579,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [messages, streamingToolUses])
 
   // Collect delivered files for each completed turn.
-  const turnDeliveredFiles = useMemo(() => {
-    const filesMap = new Map<string, DeliveredFile[]>()
-    if (!messages) return filesMap
-
-    let turnFiles: DeliveredFile[] = []
-    let lastAssistantMessageId: string | null = null
-
-    for (const msg of messages) {
-      if (isTurnStartingUserMessage(msg)) {
-        if (lastAssistantMessageId && turnFiles.length > 0) {
-          filesMap.set(lastAssistantMessageId, turnFiles)
-        }
-        turnFiles = []
-        lastAssistantMessageId = null
-      } else if (msg.type === 'assistant') {
-        lastAssistantMessageId = msg.id
-        for (const tc of msg.toolCalls) {
-          if (tc.name === 'mcp__user-input__deliver_file' && !tc.isError) {
-            const { filePath, description } = deliverFileDef.parseInput(tc.input)
-            if (filePath) {
-              turnFiles.push({
-                id: tc.id,
-                filePath,
-                description,
-                sizeBytes: getDeliveredFileSize(parseToolResult(tc.result).text),
-              })
-            }
-          }
-        }
-      }
-    }
-
-    if ((!isActive || hasTurnStartingPendingMessage) && lastAssistantMessageId && turnFiles.length > 0) {
-      filesMap.set(lastAssistantMessageId, turnFiles)
-    }
-
-    return filesMap
-  }, [messages, isActive, hasTurnStartingPendingMessage])
+  const turnDeliveredFiles = useMemo(
+    () => collectTurnDeliveredFiles(messages ?? [], !isActive || hasTurnStartingPendingMessage),
+    [messages, isActive, hasTurnStartingPendingMessage]
+  )
 
   // If there's unpersisted streaming content, defer the last turn's elapsed time
   // to render after the streaming section (otherwise it appears above the streaming message).
@@ -926,39 +839,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     [peerUserMessages, messages, user?.id]
   )
 
-  // New-turn ghosts should receive the same flag immediately, before their
-  // persisted transcript entry arrives. Process them in their render order and
-  // show at most one flag before the next assistant response.
-  const optimisticTimeFlagIds = useMemo(() => {
-    const ids = new Set<string>()
-    let {
-      hasSeenUser,
-      hasUserSinceLastAssistant,
-      lastAssistantAt,
-    } = timeFlagState
-    const ghosts = [
-      ...visiblePeerMessages
-        .filter((peer) => !peer.queued)
-        .map((peer) => ({ id: peer.uuid, sentAt: peer.receivedAt })),
-      ...(pendingUserMessages ?? [])
-        .filter((pending) => !pending.queued)
-        .map((pending) => ({ id: pending.localId, sentAt: pending.sentAt })),
-    ]
-
-    for (const ghost of ghosts) {
-      const sentAt = new Date(ghost.sentAt)
-      if (
-        !hasSeenUser ||
-        (!hasUserSinceLastAssistant && isSessionTimeGap(sentAt, lastAssistantAt))
-      ) {
-        ids.add(ghost.id)
-      }
-      hasSeenUser = true
-      hasUserSinceLastAssistant = true
-    }
-
-    return ids
-  }, [timeFlagState, visiblePeerMessages, pendingUserMessages])
 
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
@@ -1113,6 +993,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         className="overflow-y-auto overscroll-contain h-full"
         style={{ overflowAnchor: 'none' }}
         ref={scrollRef}
+        data-transcript-scroller
         onScroll={handleScroll}
         onWheel={handleWheelGesture}
         onTouchStart={handleTouchStart}
@@ -1166,9 +1047,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isAssistantItem = item.type === 'assistant'
           const isAnswerMessage =
             !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
+          // A monitor's events are what woke the turn's later work: they fold
+          // away with it.
           const isFoldedWorkItem =
             (isAssistantItem && !isAnswerMessage) ||
-            item.type === 'compact_boundary'
+            item.type === 'compact_boundary' ||
+            item.type === 'monitor_event'
           const hideItem = collapsed && isFoldedWorkItem
           const isRevealedWorkItem = expanded && isFoldedWorkItem
 
@@ -1180,6 +1064,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               renderedItem = <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             } else if (item.type === 'informational') {
               renderedItem = <InformationalItem item={item as ApiInformational} />
+            } else if (item.type === 'monitor_event') {
+              renderedItem = <MonitorEventItem item={item as ApiMonitorEvent} />
             } else {
               const message = item as ApiMessage
               // Collapsed answer shapes are memoized with the turn grouping so
@@ -1251,9 +1137,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               {index === forkBoundaryAt && (
                 <ForkBoundaryItem sessionId={sessionId} agentSlug={agentSlug} />
               )}
-              {timeFlagState.messageIds.has(item.id) && (
-                <SessionTimeFlag date={new Date(item.createdAt)} />
-              )}
               {renderedItem}
             </Fragment>
           )
@@ -1274,17 +1157,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             turn's streaming output and running tools. */}
         {visiblePeerMessages.filter((p) => !p.queued).map((peer) => (
           <Fragment key={peer.uuid}>
-            {optimisticTimeFlagIds.has(peer.uuid) && (
-              <SessionTimeFlag date={new Date(peer.receivedAt)} />
-            )}
             {renderPeerGhost(peer)}
           </Fragment>
         ))}
         {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
           <Fragment key={pending.localId}>
-            {optimisticTimeFlagIds.has(pending.localId) && (
-              <SessionTimeFlag date={new Date(pending.sentAt)} />
-            )}
             <div data-turn-anchor-id={pending.localId}>
               {renderPendingGhost(pending)}
             </div>
@@ -1298,7 +1175,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         {typingUser && typingUser.id !== user?.id && visiblePeerMessages.length === 0 && (
           <div data-testid="typing-indicator" className="flex gap-3 flex-row-reverse">
             <UserAvatar user={typingUser} size={32} className="hidden md:inline-flex" />
-            <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground">
+            <div className="rounded-card px-4 py-2 bg-primary text-primary-foreground">
               <span className="animate-pulse tracking-widest">...</span>
             </div>
           </div>
@@ -1422,7 +1299,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-amber-100 dark:bg-amber-900/30">
               <WifiOff className="h-4 w-4 text-amber-600 dark:text-amber-400" />
             </div>
-            <div className="flex-1 rounded-lg px-4 py-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-200">
+            <div className="flex-1 rounded-card px-4 py-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-200">
               Internet connection lost.
               <br />
               <span className="text-xs text-amber-600 dark:text-amber-500">

@@ -13,7 +13,7 @@ import type { syncAgentConnectionEnvironment } from '@shared/lib/container/conne
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { HostPort } from './host-port'
 import { runComputerUse, runScript } from './host-runs'
-import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
+import type { SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { background } from '@shared/lib/background'
@@ -21,7 +21,7 @@ import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
+import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import { sessionEvents, sessionFrames } from './session-streams'
@@ -146,7 +146,7 @@ export class LocalAgentActor implements AgentActor {
     this.container = createContainerOps(slug, deps)
     const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)
     this.sessions = createSessionOps(slug, this.store, this.state, delivery, deps)
-    this.messages = createMessageOps(slug, this.store, this.state.sessions, delivery, deps)
+    this.messages = createMessageOps(slug, this.store, this.state, delivery, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
     this.locks = createLockOps(this.state)
@@ -198,21 +198,21 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
       await runtime().restartContainer()
       return 'restarted'
     },
-    info: () => client().getInfo(),
+    info: async () => (await client()).getInfo(),
     syncConnectionEnvironment: (kind, options) => deps.syncAgentConnectionEnvironment(slug, kind, runtime(), options),
-    fetch: (...args) => client().fetch(...args),
+    fetch: async (...args) => (await client()).fetch(...args),
     webSocketTarget: async (path, init) => {
       const info = runtime().getCachedInfo()
       if (info.status !== 'running' || !info.port) return null
-      const c = client()
+      const c = await client()
       return {
         url: `${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`,
         ...(init?.protocols !== undefined ? { protocols: init.protocols } : {}),
-        headers: { ...init?.headers, ...c.getHostAuthHeaders() },
+        headers: { ...init?.headers, ...(await c.getHostAuthHeaders()) },
       }
     },
-    hostBridgeIp: async () => client().getHostBridgeIp(),
-    probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),
+    hostBridgeIp: async () => (await client()).getHostBridgeIp(),
+    probeHostPort: async (host, port) => (await client()).probeHostPortFromRunner(host, port),
   }
 }
 
@@ -223,8 +223,36 @@ function createSessionOps(
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): SessionOps {
-  const client = () => deps.containerHost.runtime(slug).getClient()
+  const client = async () => deps.containerHost.runtime(slug).getClient()
   const live = state.sessions
+  // The container's CLI process rewrites the transcript on exit, so the container drops the session before the files go.
+  const release = async (sessionId: string) => {
+    // Settle the calls parked on the session's own cards before the stream drops them.
+    releaseSessionState(state, sessionId)
+    const running = live.isActive(sessionId)
+    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
+    live.unsubscribe(sessionId)
+    state.deferredNaming.delete(sessionId)
+    let cause: unknown
+    const dropped =
+      (await client().then((container) => container.releaseSession(sessionId)).catch((error: unknown) => {
+        cause = error
+        return false
+      })) || (await client().then((container) => container.isDefinitelyStopped()).catch(() => false))
+    if (!dropped) console.warn(`[sessions.delete] container kept ${sessionId}:`, cause)
+    // Its turn ended with its process: its viewers and the global feed hear so, as after a stop.
+    else if (running) live.markInterrupted(sessionId)
+    return dropped
+  }
+  const forget = async (sessionId: string) => {
+    live.endStreams(sessionId)
+    // The files are gone. A lost cleanup response must not turn a successful
+    // delete into a failure; the container refuses to resume a released
+    // record whose transcript is absent, including after a container restart.
+    await client().then((container) => container.deleteSession(sessionId)).catch((error: unknown) => {
+      console.warn(`[sessions.delete] could not forget ${sessionId}:`, error)
+    })
+  }
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
     listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(store, ...args),
@@ -235,21 +263,33 @@ function createSessionOps(
     isKnown: (sessionId) => deps.sessionService.sessionIsKnown(store, sessionId),
     isRegistered: (sessionId) => deps.sessionService.isSessionRegistered(store, sessionId),
     register: (...args) => deps.sessionService.registerSession(store, ...args),
-    rename: (sessionId, name) => deps.sessionService.updateSessionName(store, sessionId, name),
-    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
-    delete: (sessionId) => {
-      live.unsubscribe(sessionId)
-      state.deferredNaming.delete(sessionId)
-      return deps.sessionService.deleteSession(store, sessionId)
+    rename: async (sessionId, name) => {
+      await deps.sessionService.updateSessionName(store, sessionId, name)
+      live.emit(sessionId, { type: 'session_updated' })
+      deps.host.send('global', { type: 'session_updated', sessionId, agentSlug: slug })
     },
-    // Decided and let go of in one step, before the delete, as `delete` does.
+    delete: (sessionId) => live.inDeliveryTurn(sessionId, async () => {
+      if (!(await release(sessionId))) throw new Error(`Container did not drop session ${sessionId}`)
+      const deleted = await deps.sessionService.deleteSession(store, sessionId)
+      await forget(sessionId)
+      return deleted
+    }),
+    // Activity is checked right before each release, since the ones before it wait on the container.
     deleteMany: async (sessionIds) => {
-      const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
-      for (const sessionId of idle) {
-        live.unsubscribe(sessionId)
-        state.deferredNaming.delete(sessionId)
+      const deleted: string[] = []
+      for (const sessionId of sessionIds) {
+        // Keep the send queue held through the file delete. Releasing every
+        // process first would let a send resume an earlier session while a
+        // later container request is still pending.
+        await live.inDeliveryTurn(sessionId, async () => {
+          if (live.isActive(sessionId) || !(await release(sessionId))) return
+          const removed = await deps.sessionService.deleteSessionsBatch(store, [sessionId])
+          if (removed.length === 0) return
+          deleted.push(...removed)
+          await forget(sessionId)
+        })
       }
-      return deps.sessionService.deleteSessionsBatch(store, idle)
+      return deleted
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),
@@ -272,14 +312,14 @@ function createSessionOps(
     copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
     // Creating a session delivers its first message: a refusal reads as a delivery's does.
-    create: (options) =>
-      client().createSession(options).catch((error: unknown) => {
+    create: async (options) =>
+      (await client()).createSession(options).catch((error: unknown) => {
         throw error instanceof MessageNotAcceptedError ? notAcceptedError(error) : error
       }),
     start: (request) => delivery.start(request),
-    fork: (sessionId) => client().forkSession(sessionId),
-    deleteLive: (sessionId) => client().deleteSession(sessionId),
-    warm: (sessionId) => client().warmSession(sessionId),
+    fork: async (sessionId) => (await client()).forkSession(sessionId),
+    deleteLive: async (sessionId) => (await client()).deleteSession(sessionId),
+    warm: async (sessionId) => (await client()).warmSession(sessionId),
 
     live: async (sessionId) => ({
       activity: live.activity(sessionId),
@@ -295,7 +335,7 @@ function createSessionOps(
       deps.containerHost.runtime(slug).noteSessionActivity()
       live.markIdle(sessionId)
     },
-    stopTask: (sessionId, taskId) => client().stopTask(sessionId, taskId),
+    stopTask: async (sessionId, taskId) => (await client()).stopTask(sessionId, taskId),
     waitForIdle: (sessionId, opts) => live.waitForIdle(sessionId, opts),
     broadcastUpdate: async (sessionId) => live.emit(sessionId, { type: 'session_updated' }),
     reconcileTranscript: async (sessionId, toolCalls) => live.reconcileTranscript(sessionId, toolCalls),
@@ -314,16 +354,21 @@ function createSessionOps(
 function createMessageOps(
   slug: AgentSlug,
   store: SessionStore,
-  live: LiveSessions,
+  state: AgentState,
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): MessageOps {
-  const client = () => deps.containerHost.runtime(slug).getClient()
+  const client = async () => deps.containerHost.runtime(slug).getClient()
+  const live = state.sessions
   return {
     deliver: (request) => delivery.deliver(request),
     // A message held while the session recovers never reached the container.
-    cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
-    stop: (sessionId, options) => delivery.stop(sessionId, options),
+    cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || (await client()).cancelQueuedMessage(sessionId, uuid),
+    stop: async (sessionId, options) => {
+      const result = await delivery.stop(sessionId, options)
+      if (options.denyReviews && result.path !== 'skipped-idle') settleStoppedSession(state, sessionId)
+      return result
+    },
 
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
@@ -394,7 +439,7 @@ async function answerRequest(
     // Settled while the container started, the container has nothing parked:
     // answering now would buffer a result nothing ever collects.
     if (!requests.getOpenRequest(id)) return 'not-open'
-    const response = await runtime.getClient().fetch(`/inputs/${encodeURIComponent(id)}/resolve`, {
+    const response = await (await runtime.getClient()).fetch(`/inputs/${encodeURIComponent(id)}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
@@ -421,7 +466,7 @@ async function answerRequest(
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
-    submit: async (id, decision) => deps.reviewManager.submitDecision(slug, id, decision),
+    submit: async (id, decision, reason) => deps.reviewManager.submitDecision(slug, id, decision, reason),
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
@@ -432,6 +477,7 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
     withdraw: async (id) => deps.reviewManager.withdraw(slug, id),
     resume: (id) => deps.reviewManager.resume(slug, id),
     settle: (id, decision) => deps.reviewManager.settle(slug, id, decision),
+    takeDenyReason: (id) => deps.reviewManager.takeDenyReason(slug, id),
   }
 }
 
@@ -441,7 +487,10 @@ function createComputerUseOps(state: AgentState, deps: LocalActorDeps): Computer
     releaseGrab: async (sessionId) => {
       const appName = computerUse.grabbed()
       computerUse.clearGrabbed()
-      if (appName) computerUse.revoke('use_application', appName)
+      if (appName) await computerUse.revoke('use_application', appName)
+      // Taking the app back ends the session's any-app grant too: its next
+      // app asks again.
+      computerUse.revokeSession(sessionId)
       state.sessions.emit(sessionId, { type: 'computer_use_grab_changed', app: null })
       return { appName }
     },
@@ -466,7 +515,7 @@ function createSessionsRuntime(slug: AgentSlug, deps: LocalActorDeps): SessionsR
       console.log(`[LocalAgentActor] Stopping container for ${slug} after a fatal error`)
       background(
         runtime()
-          .stopContainer()
+          .stopContainer({ afterFatalError: true })
           .catch((err) => console.error(`[LocalAgentActor] Failed to stop container for ${slug}:`, err)),
         { name: 'local-agent-actor.stop-after-fatal-error' },
       )

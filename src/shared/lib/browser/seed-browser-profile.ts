@@ -9,6 +9,8 @@
  * which leads back to the container host.
  */
 import { getSettings } from '@shared/lib/config/settings'
+import { drivesUserChrome } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { copyHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import type { FileOps } from '@shared/lib/agent-actor/types'
 import { WorkspaceFileError, joinWorkspacePath, workspaceDirname } from '@shared/lib/agent-actor/workspace-path'
@@ -64,9 +66,9 @@ export function workspaceProfileDestination(files: FileOps, workspaceDir: string
  * start; any other failure is the caller's.
  */
 export async function seedBrowserProfileFromChrome(slug: string, files: FileOps): Promise<void> {
-  const settings = getSettings()
+  const settings = await getSettings()
   const chromeProfileId = settings.app?.chromeProfileId
-  if (!chromeProfileId || settings.app?.hostBrowserProvider) return
+  if (!chromeProfileId || settings.app?.hostBrowserProvider || !drivesUserChrome(getServerFacts())) return
   try {
     if (await copyChromeProfileData(chromeProfileId, workspaceProfileDestination(files, BROWSER_PROFILE_DIR))) {
       console.log(`[BrowserProfile] Synchronized Chrome profile "${chromeProfileId}" into the workspace of ${slug}`)
