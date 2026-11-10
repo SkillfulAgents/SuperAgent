@@ -220,6 +220,12 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    */
   async stopWorking(_chatId: string): Promise<void> {}
 
+  /** Mark an incoming message as received, before the agent starts. Default no-op. */
+  protected async addAcknowledgement(_chatId: string, _messageId: string): Promise<void> {}
+
+  /** Take the received mark off a message. Default no-op. */
+  protected async removeAcknowledgement(_chatId: string, _messageId: string): Promise<void> {}
+
   /**
    * Send a file to the chat. Returns the external message ID.
    * @param chatId Target chat/channel
@@ -272,6 +278,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   // Shared chat policy. The application consumes only the AgentIntegration hooks.
   private deliverySessions = new Map<string, ManagedConnector>()
+  private acknowledgements = new Map<string, string[]>()
   private inputBuilder = new ChatInputBuilder(async () => this.constructor as ChatConnectorClass)
 
   get definition(): AgentIntegrationDefinition {
@@ -361,6 +368,35 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     }
   }
 
+  async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {
+    if (this.resolveRoute(event).action !== 'run') return
+    const { chatId, externalMessageId: messageId } = incomingMessageSchema.parse(event.payload)
+    const marks = this.acknowledgements.get(chatId)
+    if (marks) marks.push(messageId)
+    else this.acknowledgements.set(chatId, [messageId])
+    await this.addAcknowledgement(chatId, messageId)
+    if (!this.acknowledgements.get(chatId)?.includes(messageId)) {
+      await this.removeAcknowledgement(chatId, messageId).catch(() => {})
+    }
+  }
+
+  acknowledgedMessages(chatId: string): string[] {
+    return [...(this.acknowledgements.get(chatId) ?? [])]
+  }
+
+  releaseAcknowledgements(chatId: string, messageIds = this.acknowledgedMessages(chatId)): void {
+    const remaining = (this.acknowledgements.get(chatId) ?? []).filter(id => !messageIds.includes(id))
+    if (remaining.length) this.acknowledgements.set(chatId, remaining)
+    else this.acknowledgements.delete(chatId)
+    for (const messageId of messageIds) {
+      background(this.removeAcknowledgement(chatId, messageId).catch(() => {}), { name: 'chat-integration.remove-acknowledgement' })
+    }
+  }
+
+  protected releaseAllAcknowledgements(): void {
+    for (const chatId of [...this.acknowledgements.keys()]) this.releaseAcknowledgements(chatId)
+  }
+
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext, input: PreparedIntegrationInput): Promise<boolean> {
     if (!context.sessionId) return false
     const message = incomingMessageSchema.parse(event.payload)
@@ -402,7 +438,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
         await processSSEEvent(this.deliveryState(context), { type: 'user_request_created', request: output.request }, chatSettings(context.integration).showToolCalls, context.sessionId)
       }
       const card = reviewCardFromRegistry(output.request)
-      if (card) await this.sendUserRequestCard(context.externalId, card, context.sessionId)
+      if (!card) return
+      const marks = this.acknowledgedMessages(context.externalId)
+      await this.sendUserRequestCard(context.externalId, card, context.sessionId)
+      this.releaseAcknowledgements(context.externalId, marks)
       return
     }
     const state = this.deliveryState(context)

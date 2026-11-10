@@ -574,6 +574,35 @@ describe('SlackConnector status line', () => {
   })
 })
 
+describe('SlackConnector received mark', () => {
+  it('marks each run on its channel, skips /clear, clears only the released chat, and clears the rest on disconnect', async () => {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const add = vi.fn().mockResolvedValue({ ok: true })
+    const remove = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = { client: { reactions: { add, remove } }, stop: vi.fn().mockResolvedValue(undefined) }
+    const acknowledge = (chatId: string, ts: string, text = 'hi') => connector.acknowledgeInput({
+      type: 'input', id: ts, externalId: chatId, timestamp: new Date(),
+      payload: { externalMessageId: ts, text, chatId, userId: 'U1', timestamp: new Date() },
+    })
+    const removed = () => remove.mock.calls.map(([args]) => args.timestamp).sort()
+    const thread = routeSlackMessage(makeParams({ ts: '2000.002', threadTs: '1000.001', config: { answerInThread: false } })).effectiveChatId
+
+    await acknowledge(thread, '2000.002')
+    await acknowledge(thread, '2000.003')
+    await acknowledge(thread, '2000.004', '/clear')
+    await acknowledge('D1', '3000.001')
+    connector.releaseAcknowledgements(thread)
+
+    expect(add).toHaveBeenCalledWith({ channel: 'C123', timestamp: '2000.002', name: 'eyes' })
+    expect(add.mock.calls.map(([args]) => args.timestamp)).toEqual(['2000.002', '2000.003', '3000.001'])
+    expect(remove).toHaveBeenCalledWith({ channel: 'C123', timestamp: '2000.002', name: 'eyes' })
+    expect(removed()).toEqual(['2000.002', '2000.003'])
+
+    await connector.disconnect()
+    await vi.waitFor(() => expect(removed()).toEqual(['2000.002', '2000.003', '3000.001']))
+  })
+})
+
 // ── Standard markdown text ───────────────────────────────────────────────
 
 describe('fitSlackTables', () => {

@@ -54,6 +54,7 @@ export interface ManagedConnector {
  * clearIndicator call before finalizing, so this only commits text. Idempotent.
  */
 async function finalizeTurn(managed: ManagedConnector): Promise<void> {
+  const marks = managed.connector.acknowledgedMessages(managed.chatId)
   try {
     await finalizeStreaming(managed)
   } catch (err) {
@@ -61,6 +62,7 @@ async function finalizeTurn(managed: ManagedConnector): Promise<void> {
     reportError(err, 'finalize-turn', { integrationId: managed.integration.id, chatId: managed.chatId })
   }
   await resolvePendingToolMessages(managed)
+  managed.connector.releaseAcknowledgements(managed.chatId, marks)
 }
 
 /**
@@ -396,8 +398,10 @@ export async function processSSEEvent(
       // so the tick would clear within a tick anyway — this just makes it instant). The
       // tick then sleeps after the lull and re-checks activity at fire time.
       clearIndicator(managed)
+      const marks = managed.connector.acknowledgedMessages(managed.chatId)
       try {
         await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
+        managed.connector.releaseAcknowledgements(managed.chatId, marks)
       } catch (err) {
         console.error(`[ChatAgentIntegration] Failed to send user request card (${request.kind}):`, err)
         reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType: card.type })
