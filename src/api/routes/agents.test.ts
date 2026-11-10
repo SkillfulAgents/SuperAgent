@@ -529,7 +529,7 @@ vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
-  getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
+  getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null, metadata: {} }),
   readSessionMetadata: vi.fn(() => Promise.resolve({})),
   }
 })
@@ -905,6 +905,17 @@ import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent, updateScheduleExpression } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
+
+/**
+ * The summary a test describes, with every session's metadata beside it as
+ * the real one has: whatever the test's `readSessionMetadata` answers.
+ */
+function mockSessionSummary(summary: { sessionIds: string[]; sessionCount: number; lastActivityAt: Date | null }): void {
+  vi.mocked(getSessionSummary).mockImplementation(async (store) => ({
+    ...summary,
+    metadata: (await readSessionMetadata(store)) ?? {},
+  }))
+}
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
@@ -7754,7 +7765,7 @@ describe('GET /api/agents (enriched summary)', () => {
     mockIsAuthMode.mockReturnValue(false)
     userInputRequestManager.reset()
     // Default: no sessions, attention, or artifacts.
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: [],
       sessionCount: 0,
       lastActivityAt: null,
@@ -8404,7 +8415,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns enriched agents with summary fields', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date('2026-01-01T12:00:00Z'),
@@ -8427,7 +8438,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects active sessions through the agent\'s live sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-active'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8443,7 +8454,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects sessions awaiting input', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-waiting'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8458,7 +8469,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('raises hasUnreadNotifications for an unread on a visible session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8475,7 +8486,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('raises hasUnreadMention when the unread one tags the viewer (auth mode)', async () => {
     mockIsAuthMode.mockReturnValue(true)
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8498,7 +8509,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
     beforeEach(() => {
       vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-      vi.mocked(getSessionSummary).mockResolvedValue({
+      mockSessionSummary({
         sessionIds: ['sess-done', 'sess-waiting'],
         sessionCount: 2,
         lastActivityAt: new Date(),
@@ -8538,7 +8549,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-chat', 'sess-cron', 'sess-x-agent'],
       sessionCount: 3,
       lastActivityAt: new Date(),
@@ -8560,7 +8571,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts unread on a promoted automated session — it is visible again', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-cron'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8578,7 +8589,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('raises hasUnreadNotifications for a session the user marked unread', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8599,7 +8610,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores a marked-unread flag on a hidden automated session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-cron'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8620,7 +8631,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects awaiting input from agent-level proxy reviews on active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-active'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8642,7 +8653,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('surfaces awaiting input from proxy reviews even without active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-idle'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8662,7 +8673,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('picks the latest lastActivityAt across sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-old', 'sess-new'],
       sessionCount: 2,
       lastActivityAt: new Date('2026-01-01T15:00:00Z'),
@@ -8729,7 +8740,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('loads a single agent without a redundant service summary pass', async () => {
     const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
     vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date('2026-01-01T12:00:00Z'),

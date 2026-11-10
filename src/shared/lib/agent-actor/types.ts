@@ -337,7 +337,7 @@ export interface SessionOps {
   /** `getSession` */
   get(sessionId: string, already?: { metadata: SessionMetadata | null }): Promise<SessionInfo | null>
   /** `getSessionSummary` */
-  summary(): Promise<{ sessionIds: string[]; sessionCount: number; lastActivityAt: Date | null }>
+  summary(): Promise<{ sessionIds: string[]; sessionCount: number; lastActivityAt: Date | null; metadata: SessionMetadataMap }>
   /** `sessionExists` */
   exists(sessionId: string): Promise<boolean>
   /** `sessionIsKnown` */

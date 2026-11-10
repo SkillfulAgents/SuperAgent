@@ -16,9 +16,8 @@ vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   sessions: {
     summary: async () => {
       if (failures.summary) throw new Error('Agent disappeared')
-      return { sessionIds: ['s1', 's2', 'manual', 'hidden'], sessionCount: 4, lastActivityAt: null }
+      return { sessionIds: ['s1', 's2', 'manual', 'hidden'], sessionCount: 4, lastActivityAt: null, metadata }
     },
-    readMetadata: async () => metadata,
   },
 }) } }))
 vi.mock('../auth/mode', () => ({ isAuthMode: () => true }))

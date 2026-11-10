@@ -816,7 +816,9 @@ async function enrichAgentsWithSummary(
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
       const actor = agentRegistry.get(agent.slug)
-      const sessionMetadataPromise = actor.sessions.readMetadata()
+      // One read of the agent's index answers both.
+      const sessionSummaryPromise = actor.sessions.summary()
+      const sessionMetadataPromise = sessionSummaryPromise.then((summary) => summary.metadata)
       const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
         ? getVisibleSessionExpansion(
             agent.slug,
@@ -830,7 +832,7 @@ async function enrichAgentsWithSummary(
       // outer p-limit).
       const [sessionSummary, { dashboards: artifacts, widgets }, sessionMetadata, visibleSessionExpansion] =
         await Promise.all([
-          actor.sessions.summary(),
+          sessionSummaryPromise,
           // Dashboards and widgets are two halves of the same artifacts, read
           // in one scan: listing them separately doubled the manifest reads.
           listArtifactsAndWidgets(agent.slug),

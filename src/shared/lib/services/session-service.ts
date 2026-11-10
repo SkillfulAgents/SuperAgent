@@ -462,15 +462,22 @@ async function transcriptExists(store: SessionStore, jsonlPath: string): Promise
  * transcript, their count, and the latest activity among them. Read from the
  * index, so it costs one stat of the transcripts directory while that is
  * unchanged (see `SessionIndex`).
+ *
+ * `metadata` is every session's, from the same read: a caller that lists
+ * many agents (the agents list, on every poll) needs both, and a second
+ * read of each agent's index for it doubles what the poll costs.
  */
 export async function getSessionSummary(store: SessionStore): Promise<{
   sessionIds: string[]
   sessionCount: number
   lastActivityAt: Date | null
+  metadata: SessionMetadataMap
 }> {
   const sessionIds: string[] = []
+  const metadata: SessionMetadataMap = {}
   let latestMs: number | null = null
-  for (const { sessionId, transcript } of await store.index.entries()) {
+  for (const { sessionId, meta, transcript } of await store.index.entries()) {
+    if (meta) metadata[sessionId] = meta
     if (!transcript) continue
     sessionIds.push(sessionId)
     if (latestMs === null || transcript.mtimeMs > latestMs) latestMs = transcript.mtimeMs
@@ -479,6 +486,7 @@ export async function getSessionSummary(store: SessionStore): Promise<{
     sessionIds,
     sessionCount: sessionIds.length,
     lastActivityAt: latestMs === null ? null : new Date(latestMs),
+    metadata,
   }
 }
 

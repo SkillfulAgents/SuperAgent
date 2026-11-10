@@ -122,6 +122,8 @@ interface Reconciled {
    * tick as the listing would go unseen, so every read lists again.
    */
   settled: boolean
+  /** The transcripts the directory held, so a listing that finds the same ones stops there. */
+  present: ReadonlySet<string>
 }
 
 export class SessionIndex {
@@ -332,9 +334,9 @@ export class SessionIndex {
         || startedAtMs - directoryMtimeMs > LONG_UNCHANGED_MS
         || startedAtMs - firstSeenAtMs >= (this.deps.directoryTickMs ?? DIRECTORY_TICK_MS)
       const lookAgainCalls = this.lookAgainCalls
-      const run = this.reconcileWithDirectory(directoryMtimeMs !== null)
-        .then(() => {
-          if (this.lookAgainCalls === lookAgainCalls) this.reconciled = { key, directoryMtimeMs, firstSeenAtMs, settled }
+      const run = this.reconcileWithDirectory(directoryMtimeMs !== null, last?.present)
+        .then((present) => {
+          if (this.lookAgainCalls === lookAgainCalls) this.reconciled = { key, directoryMtimeMs, firstSeenAtMs, settled, present }
         })
         .finally(() => {
           if (this.reconciling?.run === run) this.reconciling = undefined
@@ -344,19 +346,26 @@ export class SessionIndex {
     }
   }
 
-  private async reconcileWithDirectory(directoryExists: boolean): Promise<void> {
+  /**
+   * Take in the transcripts the index has not seen and drop the entries of
+   * those that are gone. Answers the transcripts the directory holds;
+   * `lastPresent` is what it held when it was last listed with this mtime.
+   */
+  private async reconcileWithDirectory(directoryExists: boolean, lastPresent?: ReadonlySet<string>): Promise<ReadonlySet<string>> {
     // No directory is no evidence. An agent that never ran has none, and so
     // does a workspace whose volume is not mounted: taking that for "every
     // transcript was deleted" would drop every session's name with it.
-    if (!directoryExists) return
+    if (!directoryExists) return new Set()
     const { files, storage } = this.deps
+    const present = new Set(await this.transcriptIds())
+    // Nothing to take in, and nothing it can say is gone (see canConfirmGone).
+    if (present.size === 0) return present
+    // The same transcripts as the listing before: nothing came or went.
+    if (lastPresent && lastPresent.size === present.size && [...present].every((sessionId) => lastPresent.has(sessionId))) return present
     const known = new Set<string>()
     for (const entry of await storage.list()) {
       if (entry.transcript) known.add(entry.sessionId)
     }
-    const present = new Set(await this.transcriptIds())
-    // Nothing to take in, and nothing it can say is gone (see canConfirmGone).
-    if (present.size === 0) return
     const limit = pLimit(10)
 
     // Every stat is waited for: what the others found is stored before one
@@ -390,6 +399,7 @@ export class SessionIndex {
       )),
     )
     await storage.delete(gone.filter((sessionId) => sessionId !== null))
+    return present
   }
 
   private transcriptPath(sessionId: string): string {
