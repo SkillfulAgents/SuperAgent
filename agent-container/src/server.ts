@@ -59,6 +59,8 @@ import { closePreparedLogins } from './login-requests';
 import type { LoginFillReport } from './login-schema';
 import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
 import { registerSessionRoutes } from './session-routes';
+import { registerPasskeyRoutes } from './passkey-routes';
+import { PasskeyKeeper } from './passkey-keeper';
 import { isSessionStubTarget } from './browser-session';
 import { browserCommand } from './browser-gate';
 import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
@@ -1149,6 +1151,7 @@ function resetPerBrowserState(): void {
   resetChallengedSites();
   closePreparedLogins();
   forgetInjectedSecrets();
+  void passkeyKeeper.disarm();
 }
 
 /**
@@ -3498,6 +3501,31 @@ async function browserWsUrl(): Promise<string> {
   if (!webSocketDebuggerUrl) throw new Error('the browser named no endpoint');
   return webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${endpoint.replace(/^https?:\/\//, '')}`);
 }
+
+// ── Passkeys ────────────────────────────────────────────────────────────────
+// The endpoints live in passkey-routes.ts: a virtual authenticator on the
+// agent's tab, over a browser-level connection of our own that stays open
+// while it holds passkeys.
+
+const passkeyKeeper = new PasskeyKeeper({
+  connectBrowser: async () => CdpConnection.openBrowser(await browserWsUrl(), { callTimeoutMs: 20_000 }),
+});
+
+registerPasskeyRoutes(app, {
+  hostAuthEnabled,
+  validateSession: validateBrowserSessionWithRecovery,
+  browserActive: () => browserState.active,
+  keeper: passkeyKeeper,
+  activeTab: async () => {
+    const target = await findActivePageTarget();
+    return target ? { id: target.id, url: target.url } : null;
+  },
+  click: async (ref) => {
+    const r = await withRefRestore(ref, () => execBrowser(['click', ref], browserState.cdpUrl || undefined));
+    notifyBrowserAction();
+    return r.exitCode === 0 ? null : redactInjectedSecrets(r.stdout.split('\n')[0] || 'the CLI reported an error').slice(0, 200);
+  },
+});
 
 // ── Saved sessions ──────────────────────────────────────────────────────────
 // The endpoints live in session-routes.ts; reading or replacing a site's

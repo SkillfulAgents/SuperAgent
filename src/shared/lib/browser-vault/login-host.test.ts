@@ -31,6 +31,8 @@ const container = vi.hoisted(() => ({
   calls: [] as Array<{ path: string; body?: unknown }>,
   /** Messages delivered into sessions: the owner's request for a sign-in method. */
   delivered: [] as Array<{ sessionId: string; content: string }>,
+  /** What the agent's tab holds (passkey-keeper). */
+  passkeyState: { armed: false, onActiveTab: false, mode: null as string | null, credentialIds: [] as string[] },
 }))
 
 vi.mock('@shared/lib/agent-actor', () => ({
@@ -72,6 +74,11 @@ vi.mock('@shared/lib/agent-actor', () => ({
             return new Response(JSON.stringify({ success: true, filled: body.values.filter(Boolean).length, failed: 0, submitted: true, problems: [] }), { status: 200 })
           }
           if (url.startsWith('/inputs/')) return new Response('{}', { status: 200 })
+          if (url === '/browser/passkey/state') return new Response(JSON.stringify(container.passkeyState), { status: 200 })
+          if (url === '/browser/passkey/arm') {
+            container.passkeyState = { armed: true, onActiveTab: true, mode: body.mode, credentialIds: body.credentials.map((held: { credentialId: string }) => held.credentialId) }
+            return new Response(JSON.stringify({ armed: true, origin: 'https://github.com' }), { status: 200 })
+          }
           if (url === '/browser/status' && container.browser) return new Response(JSON.stringify(container.browser), { status: 200 })
           if (url === '/browser/session/restore') return new Response(JSON.stringify(container.restore.body), { status: container.restore.status })
           if (url === '/browser/session/capture') return new Response(JSON.stringify({ hash: 'h' }), { status: 200 })
@@ -83,7 +90,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 
 const { decideLoginRequest } = await import('./login-host')
-const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, saveAuthenticator, setSignInMethodRequest, listAccountAgentSlugs } = await import('./vault-service')
+const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, saveAuthenticator, savePasskey, setSignInMethodRequest, listAccountAgentSlugs } = await import('./vault-service')
 const { totpCode } = await import('./totp')
 const { backgroundSettled } = await import('@shared/lib/background')
 const { heldLoginKey, holdLoginValues, heldLoginFor, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
@@ -133,6 +140,7 @@ beforeEach(async () => {
   container.fillThrows = false
   container.calls = []
   container.delivered = []
+  container.passkeyState = { armed: false, onActiveTab: false, mode: null, credentialIds: [] }
 })
 
 afterEach(async () => {
@@ -930,7 +938,7 @@ describe('decideLoginRequest with an authenticator app', () => {
     await setSignInMethodRequest(null, account.id, true, 'logins')
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     await backgroundSettled()
-    expect(container.delivered).toEqual([{ sessionId: 's-1', content: expect.stringMatching(/^From Settings → Logins: once you are signed in, also add an authenticator app to my account octocat on github\.com with add_sign_in_method/) }])
+    expect(container.delivered).toEqual([{ sessionId: 's-1', content: expect.stringMatching(/^From Settings → Logins: once you are signed in, also add a passkey to my account octocat on github\.com with add_sign_in_method/) }])
     // Nothing about it in what the tool returns: that reads as the tool's words, not the user's.
     expect(fills()[0].body).toMatchObject({ account: { username: 'octocat', source: 'vault', saved: false, held: [] } })
     expect(loginFillAccountSchema.safeParse((fills()[0].body as { account: unknown }).account).success).toBe(true)
@@ -943,5 +951,54 @@ describe('decideLoginRequest with an authenticator app', () => {
     expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
     await backgroundSettled()
     expect(container.delivered.map((message) => message.sessionId)).toEqual(['s-1', 's-2'])
+  })
+})
+
+describe('decideLoginRequest with a passkey', () => {
+  const PASSKEY = { credentialId: 'Y3JlZC0x', rpId: 'github.com', privateKey: 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg' + 'A'.repeat(120), userHandle: 'dXNlci0x', signCount: 1, userName: 'octocat' }
+
+  async function withPasskey() {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    await savePasskey({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-0', passkey: PASSKEY, name: 'Gamut', asked: { request: true } })
+    return account
+  }
+
+  it('holds the account\'s passkey on the agent\'s tab for the sign-in and tells the agent, filling nothing', async () => {
+    await withPasskey()
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toEqual([])
+    const armed = container.calls.find((call) => call.path === '/browser/passkey/arm')
+    expect(armed?.body).toEqual({ sessionId: 's-1', mode: 'present', credentials: [PASSKEY], ttlMs: 300_000 })
+    expect(answers()).toEqual([{ path: '/inputs/t-1/resolve', value: { type: 'passkey', site: 'github.com', username: 'octocat', name: 'Gamut' } }])
+    // The page had no passkey option: the next call fills, the passkey still held.
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()[0].body).toMatchObject({ values: ['octocat', 'pw'] })
+    expect(container.calls.filter((call) => call.path === '/browser/passkey/arm')).toHaveLength(1)
+  })
+
+  it('holds it on the tab the agent went on in (a window the site opened), and tells the agent again', async () => {
+    await withPasskey()
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    container.passkeyState.onActiveTab = false
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toEqual([])
+    expect(container.calls.filter((call) => call.path === '/browser/passkey/arm')).toHaveLength(2)
+    expect(answers().map((answer) => answer.value.type)).toEqual(['passkey', 'passkey'])
+  })
+
+  it('lists the passkey with the account, and never hands its key to anyone but the container', async () => {
+    await withPasskey()
+    expect(await decide({})).toEqual({ action: 'settled' })
+    expect(answers()[0].value.accounts).toEqual([expect.objectContaining({ username: 'octocat', passkeys: 1 })])
+    const elsewhere = container.calls.filter((call) => call.path !== '/browser/passkey/arm')
+    expect(JSON.stringify([elsewhere, await testDb.select().from(auditLog).all()])).not.toContain(PASSKEY.privateKey)
+  })
+
+  it('offers no passkey made for another site', async () => {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    await savePasskey({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-0', passkey: { ...PASSKEY, rpId: 'gitlab.com' }, asked: { request: true } })
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(container.calls.some((call) => call.path === '/browser/passkey/arm')).toBe(false)
+    expect(fills()).toHaveLength(1)
   })
 })

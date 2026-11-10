@@ -2,10 +2,11 @@ import { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { HostToolRequest, HostToolResult } from '@shared/lib/agent-actor/host-port'
 import { isOwnOrigin } from '@shared/lib/auth/own-origin'
-import { fieldsWentIn, fillLoginInContainer, noteUsername } from './login-host'
+import { fieldsWentIn, fillLoginInContainer, hostnameOf, noteUsername } from './login-host'
 import { siteOfOrigin } from './site'
 import { freshTotpCode, parseTotpSetup } from './totp'
-import { findGrantedAccount, markSignInMethodUnavailable, saveAuthenticator, VaultConflictError } from './vault-service'
+import { passkeySchema } from './vault-schemas'
+import { findGrantedAccount, markSignInMethodUnavailable, passkeyWorksOn, saveAuthenticator, savePasskey, VaultConflictError, type VaultAccount } from './vault-service'
 
 /**
  * The host's side of add_sign_in_method: an agent adds a sign-in method to a
@@ -17,13 +18,21 @@ import { findGrantedAccount, markSignInMethodUnavailable, saveAuthenticator, Vau
  * filled, and saves the seed only once that code went into the page. The seed
  * and the code never reach the agent.
  *
+ * For a passkey, the container holds a recording authenticator on the agent's
+ * tab (passkey-keeper) and clicks the site's "Add a passkey"; the passkey the
+ * page creates (its private key with it) comes to the host, which seals it
+ * into the account. A site that first asks for the password gets it signed in
+ * with request_login meanwhile: the tab stays ready a while, and the agent's
+ * next call takes what the page created.
+ *
  * What the agent may add is in its prompt, not here: a method next to the
  * two-step verification the account already has, never one that turns it on
  * or replaces another. The host cannot tell from a page.
  */
 
 const inputSchema = z.object({
-  method: z.enum(['authenticator_app', 'none']),
+  method: z.enum(['passkey', 'authenticator_app', 'none']),
+  click: z.string().max(16).optional(),
   username: z.string().trim().min(1).max(320),
   code_field: z.string().max(16).optional(),
   submit: z.string().max(16).optional(),
@@ -36,6 +45,13 @@ const inputSchema = z.object({
 const preparedSchema = z.object({ origin: z.string() })
 const failureSchema = z.object({ error: z.string().optional(), problems: z.array(z.string()).optional() })
 const setupSchema = z.object({ key: z.string().min(1).max(2048) })
+const armedSchema = z.object({ armed: z.literal(true), clickError: z.string().optional() })
+const createdSchema = z.object({ credential: passkeySchema.nullable() })
+
+/** How long the agent's tab stays ready to create a passkey: the site may ask for its password, a code, a name first. */
+const RECORD_MS = 10 * 60 * 1000
+/** How long one call waits for the page to create it. */
+const CREATE_WAIT_MS = 45_000
 
 function refused(reason: string): HostToolResult {
   return { status: 'rejected', reason }
@@ -95,9 +111,10 @@ export async function addSignInMethod(request: HostToolRequest): Promise<HostToo
   if (!account) return refused(`no saved account "${input.username}" on ${site} that you may use: sign in with request_login first (the user saves the account there)`)
   const asked = account.signInMethods.requested ? { request: true as const } : input.user_request ? { words: input.user_request } : null
   if (!asked) {
-    return refused(`the user has not asked for a sign-in method on ${account.username}. Add one only when a request_login result says the user asked, or the user asked you (then pass their words in user_request)`)
+    return refused(`the user has not asked for a sign-in method on ${account.username}. Add one only when the user asked you (then pass their words in user_request)`)
   }
 
+  if (input.method === 'passkey') return addPasskey({ request, account, origin, site, name: input.name ?? null, click: input.click ?? null, asked, post })
   if (input.method === 'none') {
     await markSignInMethodUnavailable({ agentSlug, accountId: account.id, reason: input.reason ?? '' })
     return resolved({ type: 'unavailable_noted', site, username: account.username })
@@ -133,4 +150,51 @@ export async function addSignInMethod(request: HostToolRequest): Promise<HostToo
     return refused(`its code went into the page, but the app was not saved to the vault (${why}). If the page added it, remove it in the site's settings: nobody holds its codes`)
   }
   return resolved({ type: 'authenticator_added', site, username: account.username, issuer: setup.issuer, report })
+}
+
+/**
+ * A passkey for the account: the tab records what the page creates (clicking
+ * the site's button when the agent named one), and what it creates for this
+ * site is sealed into the account. Nothing yet: the tab stays ready, and the
+ * agent's next call takes it.
+ */
+async function addPasskey(input: {
+  request: HostToolRequest
+  account: VaultAccount
+  origin: string
+  site: string
+  name: string | null
+  click: string | null
+  asked: { request: true } | { words: string }
+  post: (path: string, body: Record<string, unknown>) => Promise<Response>
+}): Promise<HostToolResult> {
+  const { request, account, origin, site, post } = input
+  const { agentSlug, sessionId } = request
+  const arming = await post('/browser/passkey/arm', {
+    sessionId,
+    mode: 'record',
+    ttlMs: RECORD_MS,
+    // A second call goes on recording on the tab the first one armed.
+    keep: true,
+    ...(input.click ? { clickRef: input.click } : {}),
+  })
+  if (!arming.ok) return refused(await failureOf(arming, 'the browser could not get ready to create a passkey'))
+  const armed = armedSchema.safeParse(await arming.json().catch(() => null))
+  if (!armed.success) return refused('the browser returned an unreadable answer')
+  const clickError = armed.data.clickError
+  const taking = await post('/browser/passkey/created', { waitMs: clickError ? 0 : CREATE_WAIT_MS })
+  const created = createdSchema.safeParse(await taking.json().catch(() => null))
+  const passkey = taking.ok && created.success ? created.data.credential : null
+  if (!passkey) return resolved({ type: 'passkey_pending', site, username: account.username, ...(clickError ? { clickError } : {}) })
+  // Only one for this site goes to the account: the tab may have moved on to another.
+  if (!passkeyWorksOn(passkey.rpId, hostnameOf(origin))) {
+    return refused(`the page created a passkey for ${passkey.rpId}, not for ${site}, so it was not saved to ${account.username}`)
+  }
+  try {
+    await savePasskey({ agentSlug, accountId: account.id, sessionId, passkey, name: input.name, asked: input.asked })
+  } catch (error) {
+    const why = error instanceof VaultConflictError ? error.message : 'the vault could not save it'
+    return refused(`the page created a passkey, but it was not saved to the vault (${why}). Remove it in the site's settings: nobody holds it`)
+  }
+  return resolved({ type: 'passkey_added', site, username: account.username, rpId: passkey.rpId })
 }

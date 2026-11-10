@@ -24,7 +24,9 @@ import {
   listGrantedAccounts,
   markAccountRejected,
   markAuthenticatorRejected,
+  passkeyWorksOn,
   readAccountFill,
+  readAccountPasskeys,
   recentPasswordFills,
   recordAccountUse,
   saveAccount,
@@ -202,6 +204,7 @@ export function accountView(account: VaultAccount) {
     ...(account.rejectedAt ? { rejected: true } : {}),
     ...(authenticator ? { authenticator: authenticator.rejectedAt ? 'rejected' as const : 'ready' as const } : {}),
     ...(authenticator?.name ? { authenticatorName: authenticator.name } : {}),
+    ...(account.signInMethods.passkeys?.length ? { passkeys: account.signInMethods.passkeys.length } : {}),
   }
 }
 
@@ -443,6 +446,68 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
 /** How often a decision starts over after what was held for its step was taken under it. */
 const HELD_DECISION_ATTEMPTS = 3
 
+/** How long the agent's tab holds an account's passkey for a sign-in. */
+const PASSKEY_SIGN_IN_MS = 5 * 60 * 1000
+
+const passkeyStateSchema = z.object({ armed: z.boolean(), onActiveTab: z.boolean(), credentialIds: z.array(z.string()) })
+
+/** The page's hostname, or '' for an origin that does not parse. */
+export function hostnameOf(origin: string): string {
+  try {
+    return new URL(origin).hostname
+  } catch {
+    return ''
+  }
+}
+
+/** Whether the vault holds a passkey of the account that works on this page (plain record: no key read). */
+function hasPasskeyFor(account: Pick<VaultAccount, 'signInMethods'>, origin: string): boolean {
+  const hostname = hostnameOf(origin)
+  return Boolean(hostname) && (account.signInMethods.passkeys ?? []).some((held) => passkeyWorksOn(held.rpId, hostname))
+}
+
+/**
+ * Hold the account's passkeys for this page on the agent's tab, for the
+ * sign-in. Null when the tab holds them already (the sign-in goes on) or they
+ * could not be held (it goes on as it would without them). A tab the agent
+ * went on in (a window the site opened) gets them in turn. A sign-in step for
+ * the account: the session it leaves is watched as its (session-host).
+ */
+async function offerPasskey(input: {
+  agentSlug: string
+  sessionId: string
+  account: VaultAccount
+  context: LoginContext
+  site: string
+}): Promise<{ name: string | null } | null> {
+  const { agentSlug, sessionId, account, context, site } = input
+  const passkeys = await readAccountPasskeys(account.id, hostnameOf(context.origin))
+  if (passkeys.length === 0) return null
+  const container = agentRegistry.get(agentSlug).container
+  try {
+    const state = passkeyStateSchema.safeParse(await (await container.fetch('/browser/passkey/state')).json().catch(() => null))
+    if (state.success && state.data.armed && state.data.onActiveTab && passkeys.some((held) => state.data.credentialIds.includes(held.credentialId))) return null
+    const watched = await watchesStep({ agentSlug, sessionId, site, context, username: account.username })
+    beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
+    const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
+    const armed = await container.fetch('/browser/passkey/arm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, mode: 'present', credentials: passkeys, ttlMs: PASSKEY_SIGN_IN_MS }),
+    })
+    if (!armed.ok) return null
+    await rememberSignInIdentity(agentSlug, sessionId, site, account.username)
+    await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password: false, by: 'vault', passkey: true })
+    watchSignIn({ agentSlug, sessionId, account, baseline })
+    askForRequestedMethod(agentSlug, sessionId, account)
+  } catch (error) {
+    console.error('[login-request] Holding the passkey failed:', error instanceof Error ? error.message : error)
+    return null
+  }
+  const listed = account.signInMethods.passkeys?.find((held) => passkeys.some((key) => key.credentialId === held.credentialId))
+  return { name: listed?.name ?? null }
+}
+
 /** Whether the step asks for the code of an authenticator app (as the agent mapped it). */
 function asksAuthenticatorCode(context: Pick<LoginContext, 'fields'>): boolean {
   return context.fields.some((field) => fillKeyOf(field) === TOTP_FILL_KEY)
@@ -494,6 +559,20 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
     if (restored) {
       if (restored.restored) askForRequestedMethod(agentSlug, sessionId, account)
       if (await answerLoginRequest(agentSlug, toolUseId, restored)) return { action: 'settled' }
+      return ask({ mode: 'ask', username: account.username }, context)
+    }
+  }
+
+  // A passkey the vault holds for the account on this site: held on the
+  // agent's tab for the rest of the sign-in (passkey-keeper), and the agent
+  // is told to use the page's passkey option, with nothing filled. Its next
+  // call (a page with no passkey option, or one that asks who first) goes on
+  // as usual, the passkey still there for a prompt further on.
+  if (username && account && hasPasskeyFor(account, context.origin)) {
+    const offered = await offerPasskey({ agentSlug, sessionId, account, context, site })
+    if (offered) {
+      const passkey = { type: 'passkey', site, username: account.username, ...(offered.name ? { name: offered.name } : {}) }
+      if (await answerLoginRequest(agentSlug, toolUseId, passkey)) return { action: 'settled' }
       return ask({ mode: 'ask', username: account.username }, context)
     }
   }

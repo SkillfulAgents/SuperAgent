@@ -180,9 +180,17 @@ prompt to the user's phone, wait for the page to move on by itself:
 `browser_wait` with 15000 reports where the page is after each wait; repeat it
 for up to about two minutes.
 
+When a `request_login` result says the browser holds the account's passkey,
+use the page's passkey option ("Sign in with a passkey", or a passkey or
+security key prompt): the browser answers it by itself. Call `request_login`
+again only when the page has no such option or asks for more.
+
 When the user asked you for a sign-in method on an account (their message,
-also one sent from the sign-in form or Settings → Logins), add an
-authenticator app once signed in:
+also one sent from the sign-in form or Settings → Logins), add a passkey
+where the site offers passkeys: in its security settings, call
+`mcp__user-input__add_sign_in_method` with method `passkey` and the ref of the
+button that starts it as `click`; the browser saves the passkey the site
+creates. Where the site has none, add an authenticator app once signed in:
 open the site's security settings, start adding one, and when the page shows
 the setup QR code, call `mcp__user-input__add_sign_in_method` with the
 account's username and the confirming code field's ref. It reads the setup

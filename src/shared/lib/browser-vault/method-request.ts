@@ -17,10 +17,10 @@ import { markSignInMethodAsked, type VaultAccount } from './vault-service'
 /** The request in the owner's words, saying where they made it. */
 export function signInMethodMessage(account: Pick<VaultAccount, 'site' | 'username'>, from: 'card' | 'logins'): string {
   const where = from === 'card' ? 'From the sign-in form' : 'From Settings → Logins'
-  return `${where}: once you are signed in, also add an authenticator app to my account ${account.username} on ${account.site} `
-    + 'with add_sign_in_method, so you can sign in there later without me. Add it only next to the two-step verification '
-    + 'the account already has: never turn two-step verification on, and never replace or remove a method it has. If the site '
-    + 'offers nothing else, call add_sign_in_method with method "none" and say why.'
+  return `${where}: once you are signed in, also add a passkey to my account ${account.username} on ${account.site} `
+    + 'with add_sign_in_method, so you can sign in there later without me. Where the site has no passkeys, add an authenticator '
+    + 'app instead, only next to the two-step verification the account already has: never turn two-step verification on, and '
+    + 'never replace or remove a method it has. If the site offers neither, call add_sign_in_method with method "none" and say why.'
 }
 
 /** Ask the agent in this session for the sign-in method its owner requested, unless it was already asked here. */
