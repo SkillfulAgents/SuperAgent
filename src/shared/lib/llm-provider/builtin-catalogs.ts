@@ -784,6 +784,25 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {
+    // Same route and limits as gemini-4-argon below; measured 2026-11-10:
+    // efforts low/medium/high only (xhigh/max 400). Listed first so it is the
+    // Google tab default, as Google's strongest model.
+    id: 'gemini-4-carbon',
+    label: 'Gemini 4 Carbon',
+    blurb: 'Google strongest model, served via Platform',
+    family: 'gemini-carbon',
+    isLatest: true,
+    isDefault: true,
+    icon: 'gemini',
+    supportedEfforts: STANDARD_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
+    pricing: pricingFor('gemini-4-carbon'),
+    contextWindow: 1_048_576,
+  },
+  {
     // Bare id matches the platform proxy's gemini-* → gemini route (Gemini API
     // OpenAI-compatible chat). Measured against gemini-4-argon on 2026-10-14:
     // efforts are low/medium/high only (xhigh/max 400, so the proxy caps them);
