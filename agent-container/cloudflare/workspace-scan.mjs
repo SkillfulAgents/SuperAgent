@@ -71,3 +71,55 @@ export async function scan(root, excluded, previous) {
   }
   return { entries: out, scanned }
 }
+
+/**
+ * Calls `onChange` with the path of each file or folder that changes under `root`, top-level
+ * `excluded` folders left out. One watch per folder: Node's recursive watch on Linux stops
+ * reporting a file once a rename has replaced it twice, and a safe write (a temp file renamed over
+ * the file) replaces it every time. Returns a function that stops watching.
+ */
+export function watchTree(root, excluded, onChange) {
+  const watchers = new Map()
+  const unwatch = (rel) => {
+    for (const [key, watcher] of watchers) {
+      if (key === rel || key.startsWith(`${rel}/`)) {
+        watcher.close()
+        watchers.delete(key)
+      }
+    }
+  }
+  const watchFolder = (rel) => {
+    const abs = path.join(root, rel)
+    let watcher
+    try {
+      watcher = fs.watch(abs, (_event, name) => {
+        if (!name || (!rel && excluded.has(String(name)))) return
+        const child = rel ? `${rel}/${name}` : String(name)
+        onChange(child)
+        // A folder appears, goes or is replaced: its watches start over.
+        let isFolder = false
+        try {
+          isFolder = fs.lstatSync(path.join(root, child)).isDirectory()
+        } catch {}
+        if (isFolder || watchers.has(child)) {
+          unwatch(child)
+          if (isFolder) watchFolder(child)
+        }
+      })
+    } catch {
+      return // removed before it could be watched
+    }
+    watcher.on('error', () => unwatch(rel))
+    watchers.set(rel, watcher)
+    let entries = []
+    try {
+      entries = fs.readdirSync(abs, { withFileTypes: true })
+    } catch {}
+    for (const entry of entries) {
+      if (!entry.isDirectory() || (!rel && excluded.has(entry.name))) continue
+      watchFolder(rel ? `${rel}/${entry.name}` : entry.name)
+    }
+  }
+  watchFolder('')
+  return () => unwatch('')
+}
