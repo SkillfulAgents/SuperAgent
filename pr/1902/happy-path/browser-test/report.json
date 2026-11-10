@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: d took a screenshot — The agent's response clearly states: \"The page title is \"Example Domain\". I've closed the browser.\" The screenshot was successfully captured showing the complete chat interface with both the user's request and the agent's response containing the expected \"Example Domain\" text.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 94756,
+  "sessionId": "805a46d2-f20b-44c0-adff-169531bf80fa",
+  "cost": {
+    "inputTokens": 364,
+    "outputTokens": 9716,
+    "cacheCreationTokens": 61165,
+    "cacheReadTokens": 997527,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.225153
+  }
+}
