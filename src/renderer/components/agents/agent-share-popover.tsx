@@ -33,6 +33,7 @@ import {
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
+import { formatFileSize } from '@shared/lib/utils/format-file-size'
 import {
   useAgentTemplateStatus,
   useExportAgentTemplate,
@@ -198,6 +199,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   const [publishFlowOpen, setPublishFlowOpen] = useState(false)
   const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
   const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
+  const [fullExportBytes, setFullExportBytes] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const { data: agent } = useAgent(open ? agentSlug : null)
 
@@ -908,7 +910,14 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
 
     {/* Full-agent exports bundle env vars, API keys, and session data —
         keep an explicit confirmation in front of the download. */}
-    <AlertDialog open={confirmFullExportOpen} onOpenChange={setConfirmFullExportOpen}>
+    <AlertDialog
+      open={confirmFullExportOpen}
+      onOpenChange={(next) => {
+        // Stay open until the download lands so the user can see it running.
+        if (!next && exportFull.isPending) return
+        setConfirmFullExportOpen(next)
+      }}
+    >
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Export Full Agent</AlertDialogTitle>
@@ -918,14 +927,40 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
             this file with people you trust.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {exportFull.isPending && (
+          <div className="space-y-1.5" data-testid="full-export-progress">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-2/5 rounded-full bg-primary animate-progress-indeterminate motion-reduce:animate-none" />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {fullExportBytes > 0
+                ? `${formatFileSize(fullExportBytes)} downloaded`
+                : 'Preparing export…'}
+            </p>
+          </div>
+        )}
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={exportFull.isPending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             disabled={exportPending}
-            onClick={() => exportFull.mutate({ agentSlug, agentName })}
+            onClick={(event) => {
+              event.preventDefault()
+              setFullExportBytes(0)
+              exportFull.mutate(
+                { agentSlug, agentName, onProgress: setFullExportBytes },
+                { onSettled: () => setConfirmFullExportOpen(false) },
+              )
+            }}
             data-testid="confirm-full-export-button"
           >
-            Export
+            {exportFull.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Exporting…
+              </>
+            ) : (
+              'Export'
+            )}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

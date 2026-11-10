@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   members: [] as Array<Record<string, unknown>>,
   candidates: [] as Array<Record<string, unknown>>,
   posts: [] as Array<{ url: string; body: unknown }>,
+  fullExport: { mutate: vi.fn(), isPending: false },
 }))
 
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ user: { id: 'ada' }, isAuthMode: true }) }))
@@ -17,7 +18,7 @@ vi.mock('@renderer/hooks/use-agent-members', () => ({
 vi.mock('@renderer/hooks/use-agent-templates', () => ({
   useAgentTemplateStatus: () => ({ data: undefined, isPending: true, isError: false }),
   useExportAgentTemplate: () => ({ mutate: vi.fn(), isPending: false }),
-  useExportAgentFull: () => ({ mutate: vi.fn(), isPending: false }),
+  useExportAgentFull: () => state.fullExport,
   useHostExportStatus: () => ({ data: undefined }),
 }))
 vi.mock('@renderer/lib/api', () => ({
@@ -42,6 +43,7 @@ function renderPopover() {
 
 beforeEach(() => {
   state.posts = []
+  state.fullExport = { mutate: vi.fn(), isPending: false }
   state.members = [
     { id: 'ada', name: 'Ada Admin', email: 'ada@acme.test', image: null, role: 'owner' },
     { id: 'lee', name: 'Lee Park', email: 'lee@acme.test', image: null, role: 'user', invited: true },
@@ -81,5 +83,51 @@ describe('sharing an agent with people not on Gamut yet', () => {
       { url: '/api/agents/support/access', body: { directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, role: 'user' } },
       { url: '/api/agents/support/access', body: { userId: 'dan-id', role: 'user' } },
     ]))
+  })
+})
+
+describe('full agent export confirmation', () => {
+  async function openConfirm() {
+    const view = renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    await userEvent.click(screen.getByRole('tab', { name: 'Export' }))
+    await userEvent.click(screen.getByTestId('export-option-full'))
+    await userEvent.click(screen.getByTestId('export-submit-button'))
+    return view
+  }
+
+  it('keeps the dialog open after Export and closes it once the export settles', async () => {
+    await openConfirm()
+    await userEvent.click(screen.getByTestId('confirm-full-export-button'))
+
+    expect(screen.getByText('Export Full Agent')).toBeInTheDocument()
+    expect(state.fullExport.mutate).toHaveBeenCalledOnce()
+    const [vars, callbacks] = state.fullExport.mutate.mock.calls[0]
+    expect(vars).toMatchObject({ agentSlug: 'support', agentName: 'Support' })
+
+    act(() => callbacks.onSettled())
+    await waitFor(() => expect(screen.queryByText('Export Full Agent')).toBeNull())
+  })
+
+  it('shows progress and blocks dismissal while the export runs', async () => {
+    const view = await openConfirm()
+    await userEvent.click(screen.getByTestId('confirm-full-export-button'))
+    const { onProgress } = state.fullExport.mutate.mock.calls[0][0]
+
+    state.fullExport = { ...state.fullExport, isPending: true }
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentSharePopover agentSlug="support" agentName="Support" />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByTestId('full-export-progress')).toHaveTextContent('Preparing export…')
+    expect(screen.getByTestId('confirm-full-export-button')).toHaveTextContent('Exporting…')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+
+    act(() => onProgress(3 * 1024 * 1024))
+    expect(screen.getByTestId('full-export-progress')).toHaveTextContent('3.0 MB downloaded')
+
+    await userEvent.keyboard('{Escape}')
+    expect(screen.getByText('Export Full Agent')).toBeInTheDocument()
   })
 })

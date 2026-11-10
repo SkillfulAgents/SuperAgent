@@ -146,8 +146,12 @@ export function useExportAgentFull() {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
-  return useMutation<void, Error, { agentSlug: string; agentName: string }>({
-    mutationFn: async ({ agentSlug, agentName }) => {
+  return useMutation<
+    void,
+    Error,
+    { agentSlug: string; agentName: string; onProgress?: (bytesReceived: number) => void }
+  >({
+    mutationFn: async ({ agentSlug, agentName, onProgress }) => {
       track('agent_full_exported')
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/export-full`, {
         method: 'POST',
@@ -157,7 +161,7 @@ export function useExportAgentFull() {
         throw new Error(data.error || 'Failed to export agent')
       }
 
-      await downloadBlob(res, `${agentName || agentSlug}-full${AGENT_PACKAGE_EXTENSION}`)
+      await downloadBlob(res, `${agentName || agentSlug}-full${AGENT_PACKAGE_EXTENSION}`, onProgress)
     },
     onMutate: () => {
       markHostExportBusy(queryClient)
