@@ -2,7 +2,7 @@ import { notificationClientId } from '@renderer/lib/notification-read-cache'
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, cleanup, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, QueryObserver, type QueryKey } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -922,11 +922,64 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     const callsWith = (spy: { mock: { calls: unknown[][] } }, queryKey: unknown[]) =>
       spy.mock.calls.filter(([filters]) => JSON.stringify(filters) === JSON.stringify({ queryKey })).length
 
-    it('refreshes the event\'s own agent at once and confirms list-wide state once per burst', () => {
-      queryClient.setQueryData(['artifacts', 'agent-a'], [])
-      queryClient.setQueryData(['artifacts', 'agent-c'], [])
-      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    // Mounted queries whose fetches are counted, as the agent page and the sidebar mount them.
+    function mountQueries(keys: QueryKey[], data: (key: QueryKey) => unknown) {
+      const fetches = new Map<string, number>()
+      const unsubscribes = keys.map((queryKey) => new QueryObserver(queryClient, {
+        queryKey,
+        queryFn: async () => {
+          fetches.set(JSON.stringify(queryKey), (fetches.get(JSON.stringify(queryKey)) ?? 0) + 1)
+          return data(queryKey)
+        },
+        staleTime: Infinity,
+      }).subscribe(() => {}))
+      return {
+        count: (queryKey: QueryKey) => fetches.get(JSON.stringify(queryKey)) ?? 0,
+        reset: () => fetches.clear(),
+        unmount: () => unsubscribes.forEach((unsubscribe) => unsubscribe()),
+      }
+    }
 
+    it('fetches a turn\'s agent once per burst under every route key, and no other agent', async () => {
+      const agents = [{ slug: 'agent-a', displaySlug: 'agent-a-display' }, { slug: 'agent-b', displaySlug: 'agent-b' }]
+      const queries = mountQueries(
+        [['agents'], ['agents', 'agent-a'], ['agents', 'agent-a-display'], ['agents', 'agent-b'], ['sessions', 'agent-a'], ['artifacts', 'agent-a']],
+        (key) => key[0] !== 'agents' ? [] : key.length === 1 ? agents : agents.find((agent) => agent.slug === key[1] || agent.displaySlug === key[1]),
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      queries.reset()
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      const es = getLatestEventSource()
+      await act(async () => {
+        simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-a', sessionId: 's1' })
+        await vi.advanceTimersByTimeAsync(100)
+        simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+        await vi.advanceTimersByTimeAsync(100)
+        simulateSSEMessage(es, {
+          type: 'os_notification', notificationType: 'session_complete', notificationId: 'n1',
+          agentSlug: 'agent-a', sessionId: 's1', title: 'Agent A', body: 'Finished the report',
+        })
+        await vi.advanceTimersByTimeAsync(500)
+      })
+
+      expect(queries.count(['agents'])).toBe(1)
+      expect(queries.count(['agents', 'agent-a'])).toBe(1)
+      expect(queries.count(['agents', 'agent-a-display'])).toBe(1)
+      expect(queries.count(['agents', 'agent-b'])).toBe(0)
+      // At once on the start, so a new session shows up; the end and its
+      // completion notification share one fetch.
+      expect(queries.count(['sessions', 'agent-a'])).toBe(2)
+      // Read when the agent stops, not when it starts.
+      expect(queries.count(['artifacts', 'agent-a'])).toBe(1)
+      queries.unmount()
+    })
+
+    it('confirms todos and automation lists once per burst', () => {
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
       render(
         <QueryClientProvider client={queryClient}>
           <GlobalNotificationHandler />
@@ -937,20 +990,10 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-b', sessionId: 's2' })
       simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
 
-      // The event's own agent: its sessions, its detail, its artifacts.
-      expect(callsWith(invalidateSpy, ['sessions', 'agent-a'])).toBe(2)
-      expect(callsWith(invalidateSpy, ['agents', 'agent-a'])).toBe(2)
-      expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
-      expect(queryClient.getQueryState(['artifacts', 'agent-c'])?.isInvalidated).toBe(false)
-
-      // The full list, todos and automation lists only confirm the echo: they
-      // wait for the batch, then run once for the whole burst.
-      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
       expect(callsWith(invalidateSpy, ['todos'])).toBe(0)
       act(() => {
         vi.advanceTimersByTime(500)
       })
-      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
       expect(callsWith(invalidateSpy, ['todos'])).toBe(1)
       expect(callsWith(invalidateSpy, ['webhook-trigger-sessions'])).toBe(1)
       expect(callsWith(invalidateSpy, ['scheduled-task-sessions'])).toBe(1)
@@ -964,10 +1007,10 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         </QueryClientProvider>
       )
       simulateSSEMessage(getLatestEventSource(), { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
-      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(0)
 
       unmount()
-      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(1)
     })
   })
 

@@ -1,4 +1,4 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { QueryClient, QueryKey } from '@tanstack/react-query'
 import type { ApiAgent, ApiAgentWidget, ApiSession } from '@shared/lib/types/api'
 import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
@@ -69,6 +69,11 @@ function agentSlugAliases(queryClient: QueryClient, slug: string): Set<string> {
     addAliases(agent)
   }
   return aliases
+}
+
+/** The keys one agent's detail may be cached under: its canonical id and decorative route aliases. */
+export function agentDetailQueryKeys(queryClient: QueryClient, slug: string): QueryKey[] {
+  return [...agentSlugAliases(queryClient, slug)].map((alias) => ['agents', alias])
 }
 
 /** Invalidate artifact queries for one agent, including decorative route aliases. */
