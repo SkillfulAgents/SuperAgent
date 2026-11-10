@@ -47,6 +47,7 @@ import { createAppQueryClient } from './query-client'
 import { _resetApiTargetForTest } from './api-target'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { useAgent, useAgents } from '@renderer/hooks/use-agents'
+import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { TODOS_QUERY_KEY, useStartTodo, useStartingTodoIds, type StartableTodo } from '@renderer/hooks/use-todos'
 import { UserProvider, useUser } from '@renderer/context/user-context'
 import { useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -298,6 +299,27 @@ describe('agent query lifecycle with the production client', () => {
       act(() => { void client.invalidateQueries({ queryKey: ['agents'] }) })
       await tick(10)
       expect(paths()).toHaveLength(5)
+    } finally {
+      Reflect.deleteProperty(document, 'visibilityState')
+    }
+  })
+
+  it('keeps refetching a hidden tab query that opts in, such as the dock badge count', async () => {
+    let visibility: DocumentVisibilityState = 'visible'
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
+    const paths = () => state.apiFetch.mock.calls.map(([path]) => path)
+    try {
+      state.apiFetch.mockImplementation(async (path: string) =>
+        json(path === '/api/notifications/unread-count' ? { count: paths().length } : [{ slug: 'agent-one' }]))
+      const { result } = renderHook(() => ({ badge: useUnreadNotificationCount(), list: useAgents({ poll: false }) }), { wrapper: Wrapper })
+      await tick(10)
+      expect(paths()).toHaveLength(2)
+
+      act(() => { visibility = 'hidden'; document.dispatchEvent(new Event('visibilitychange')) })
+      act(() => { void client.invalidateQueries() })
+      await tick(10)
+      expect(paths().slice(2)).toEqual(['/api/notifications/unread-count'])
+      expect(result.current.badge.data?.count).toBe(3)
     } finally {
       Reflect.deleteProperty(document, 'visibilityState')
     }

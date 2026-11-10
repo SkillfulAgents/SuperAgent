@@ -19,6 +19,8 @@
  *     queries stale; they refetch when the tab is visible again. Every open tab
  *     follows the same live events, so without this each hidden tab refetched
  *     the sessions list, agent detail and artifacts on every session event.
+ *     A query whose data is used while hidden (the dock badge, a voice session
+ *     waiting on a request) sets `meta: { refetchWhenHidden: true }`.
  *
  * Queries are SILENT by default (they retry and usually render inline/empty
  * states); a query opts INTO a toast with `meta: { showErrorToast: true }`.
@@ -53,6 +55,8 @@ declare module '@tanstack/react-query' {
       showErrorToast?: boolean
       /** Override the global error toast text for this query. */
       errorMessage?: string
+      /** Refetch on invalidation even while the tab is hidden. */
+      refetchWhenHidden?: boolean
     }
   }
 }
@@ -93,7 +97,13 @@ class AppQueryClient extends QueryClient {
     options?: InvalidateOptions,
   ): Promise<void> {
     if (filters?.refetchType === undefined && isTabHidden()) {
-      return super.invalidateQueries({ ...filters, refetchType: 'none' }, options)
+      const marked = super.invalidateQueries({ ...filters, refetchType: 'none' }, options)
+      const live = this.refetchQueries({
+        ...filters,
+        type: 'active',
+        predicate: (query) => query.meta?.refetchWhenHidden === true && (filters?.predicate?.(query) ?? true),
+      }, options)
+      return Promise.all([marked, live]).then(() => undefined)
     }
     return super.invalidateQueries(filters, options)
   }

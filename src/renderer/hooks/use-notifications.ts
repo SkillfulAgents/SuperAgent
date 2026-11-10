@@ -52,6 +52,7 @@ export function useUnreadNotificationCount() {
       return notificationCountsSchema.parse(await res.json())
     },
     refetchInterval: 10000, // Poll more frequently for badge
+    meta: { refetchWhenHidden: true },
   })
 }
 
