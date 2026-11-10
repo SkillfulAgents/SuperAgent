@@ -2332,7 +2332,10 @@ describe('exportAgentFull', () => {
     fs.mkdirSync(workspaceDir, { recursive: true })
     fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
     fs.writeFileSync(path.join(workspaceDir, 'session-metadata.json'), '{"stale":{"name":"From an old file"}}')
-    await registerSession(createLocalSessionStore('full-agent'), 'current', 'From the index')
+    // Through the agent's actor, as every write is: its index is the only
+    // writer of its entries, and holds on to what it last read of them.
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    await agentRegistry.get('full-agent').sessions.register('current', 'From the index')
 
     const { metadata, entries } = await exportedSessionMetadata('full-agent')
 

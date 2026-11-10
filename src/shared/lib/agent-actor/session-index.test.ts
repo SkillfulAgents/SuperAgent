@@ -58,6 +58,82 @@ afterEach(async () => {
   expect(backgroundFailures.splice(0)).toEqual([])
 })
 
+describe('SessionIndex holding on to what it read', () => {
+  it('reads its entries from storage once for any number of reads, and again after each kind of write', async () => {
+    const { index, files, storage } = setup()
+    await index.update('s1', () => ({ name: 'One' }))
+    await files.putDoc(transcript('s1'), 'x')
+    await index.entries()
+    const list = vi.spyOn(storage, 'list')
+
+    await index.entries()
+    await index.metadata()
+    await index.entries()
+    expect(list).not.toHaveBeenCalled()
+
+    const writes: Array<[string, () => Promise<unknown> | void]> = [
+      ['update', () => index.update('s1', () => ({ name: 'Renamed' }))],
+      ['fill', () => index.fill([{ sessionId: 's2', meta: { name: 'Two' }, transcript: null }])],
+      ['activity', () => index.recordActivity('s1', 9_000_000_000_000)],
+      ['delete', () => index.delete(['s2'])],
+    ]
+    for (const [name, write] of writes) {
+      list.mockClear()
+      await write()
+      await index.entries()
+      await index.metadata()
+      expect(list, name).toHaveBeenCalledTimes(1)
+    }
+    expect(await index.metadata()).toEqual({ s1: { name: 'Renamed' } })
+    expect(await activityOf(index)).toEqual({ s1: 9_000_000_000_000 })
+  })
+
+  it('hands every reader the same entries, which none of them can change', async () => {
+    const { index, files } = setup()
+    await index.update('s1', () => ({ name: 'One' }))
+    await files.putDoc(transcript('s1'), 'x')
+
+    const [entry] = await index.entries()
+    expect(() => {
+      entry.meta!.name = 'Changed by a reader'
+    }).toThrow(TypeError)
+    expect(() => {
+      entry.transcript!.mtimeMs = 0
+    }).toThrow(TypeError)
+    expect((await index.metadata()).s1).toEqual({ name: 'One' })
+  })
+
+  it('does not hold on to a listing that failed', async () => {
+    const { index, storage } = setup()
+    await index.update('s1', () => ({ name: 'One' }))
+    vi.spyOn(storage, 'list').mockRejectedValueOnce(new Error('database is locked'))
+
+    await expect(index.metadata()).rejects.toThrow('database is locked')
+    expect(await index.metadata()).toEqual({ s1: { name: 'One' } })
+  })
+
+  it('does not hand out a listing that started before a write finished', async () => {
+    const { index, storage } = setup()
+    await index.update('s1', () => ({ name: 'Before' }))
+    // The write is under way when the listing reads the rows.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const update = storage.update.bind(storage)
+    vi.spyOn(storage, 'update').mockImplementationOnce(async (sessionId, mutate) => {
+      await held
+      return update(sessionId, mutate)
+    })
+
+    const writing = index.update('s1', () => ({ name: 'After' }))
+    const during = await index.metadata()
+    release()
+    await writing
+
+    expect(during).toEqual({ s1: { name: 'Before' } })
+    expect(await index.metadata()).toEqual({ s1: { name: 'After' } })
+  })
+})
+
 describe('SessionIndex and a directory clock that ticks slowly', () => {
   /** The files, stamping directories as a filesystem with a one-second clock does. */
   function coarse(files: InMemoryFileOps): void {

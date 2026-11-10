@@ -130,7 +130,57 @@ interface Reconciled {
   present?: ReadonlySet<string>
 }
 
+/**
+ * `storage`, holding on to what it last listed until it next writes.
+ *
+ * An index is the only writer of its agent's storage for as long as it
+ * lives (the agent's actor owns both), so nothing can change the entries
+ * behind its back, and listing them again would only read the same rows:
+ * for an agent with 20,000 sessions that is tens of milliseconds, on every
+ * poll of the agents list. What is listed is frozen: every reader is handed
+ * the same entries.
+ */
+function remembering(storage: SessionIndexStorage): SessionIndexStorage {
+  let listed: Promise<SessionIndexEntry[]> | undefined
+  // Forgotten before and after: a listing that starts while the write is
+  // under way may or may not see it.
+  const writing = async <T>(write: () => Promise<T>): Promise<T> => {
+    listed = undefined
+    try {
+      return await write()
+    } finally {
+      listed = undefined
+    }
+  }
+  return {
+    get: (sessionId) => storage.get(sessionId),
+    findByMeta: (field, value) => storage.findByMeta(field, value),
+    list: () => {
+      if (listed) return listed
+      const listing = storage.list().then((entries) => {
+        for (const entry of entries) {
+          if (entry.meta) Object.freeze(entry.meta)
+          if (entry.transcript) Object.freeze(entry.transcript)
+          Object.freeze(entry)
+        }
+        return Object.freeze(entries) as SessionIndexEntry[]
+      })
+      listed = listing
+      // A failed listing is not one to hand out again.
+      listing.catch(() => {
+        if (listed === listing) listed = undefined
+      })
+      return listing
+    },
+    update: (sessionId, mutate) => writing(() => storage.update(sessionId, mutate)),
+    fill: (entries) => (entries.length === 0 ? Promise.resolve() : writing(() => storage.fill(entries))),
+    touch: (activity) => (activity.size === 0 ? Promise.resolve([]) : writing(() => storage.touch(activity))),
+    delete: (sessionIds) => (sessionIds.length === 0 ? Promise.resolve() : writing(() => storage.delete(sessionIds))),
+  }
+}
+
 export class SessionIndex {
+  private readonly storage: SessionIndexStorage
   private reconciled: Reconciled | undefined
   private reconciling: { run: Promise<void>; startedAtMs: number } | undefined
   /** Counts {@link lookAgain}: a run it was called during does not get to say the directory was seen. */
@@ -148,14 +198,16 @@ export class SessionIndex {
   /** Activity of sends that may still be taken back: shown, never stored. */
   private readonly provisional = new Map<string, number>()
 
-  constructor(private readonly deps: SessionIndexDeps) {}
+  constructor(private readonly deps: SessionIndexDeps) {
+    this.storage = remembering(deps.storage)
+  }
 
   get(sessionId: string): Promise<SessionIndexEntry | null> {
-    return this.deps.storage.get(sessionId)
+    return this.storage.get(sessionId)
   }
 
   update(...args: Parameters<SessionIndexStorage['update']>): Promise<void> {
-    return this.deps.storage.update(...args)
+    return this.storage.update(...args)
   }
 
   /**
@@ -169,7 +221,7 @@ export class SessionIndex {
    */
   fill(entries: readonly SessionIndexEntry[]): Promise<void> {
     return this.inOrder(async () => {
-      const { storage } = this.deps
+      const { storage } = this
       const dated = new Set(entries.filter((entry) => entry.meta && entry.transcript).map((entry) => entry.sessionId))
       if (dated.size > 0) {
         const statOnly = (await storage.list()).filter((entry) => !entry.meta && dated.has(entry.sessionId))
@@ -186,20 +238,19 @@ export class SessionIndex {
       this.awaitingTranscript.delete(sessionId)
     }
     if (this.reconciled) this.reconciled.present = undefined
-    return this.deps.storage.delete(sessionIds)
+    return this.storage.delete(sessionIds)
   }
 
   /** What the app keeps about every session it knows of. No storage beyond the index is touched. */
   async metadata(): Promise<SessionMetadataMap> {
-    const entries = await this.deps.storage.list()
+    const entries = await this.storage.list()
     return Object.fromEntries(entries.flatMap(({ sessionId, meta }) => (meta ? [[sessionId, meta]] : [])))
   }
 
   /** Every entry, reconciled with the transcripts directory and carrying all recorded activity. */
   async entries(): Promise<SessionIndexEntry[]> {
-    await this.reconcile()
-    await this.flush()
-    return (await this.deps.storage.list()).map((entry) => this.withProvisional(entry))
+    await this.upToDate()
+    return (await this.storage.list()).map((entry) => this.withProvisional(entry))
   }
 
   /**
@@ -215,9 +266,8 @@ export class SessionIndex {
 
   /** {@link entries}, narrowed to the sessions whose metadata has `value` in `field`. */
   async entriesByMeta(field: SessionLookupField, value: string): Promise<SessionIndexEntry[]> {
-    await this.reconcile()
-    await this.flush()
-    return (await this.deps.storage.findByMeta(field, value)).map((entry) => this.withProvisional(entry))
+    await this.upToDate()
+    return (await this.storage.findByMeta(field, value)).map((entry) => this.withProvisional(entry))
   }
 
   /**
@@ -264,6 +314,18 @@ export class SessionIndex {
     }
   }
 
+  /**
+   * Everything recorded is stored and the directory is reconciled. Activity
+   * is stored first: activity for a transcript the index has not seen is
+   * what says to look at the directory again. And once more after, for the
+   * activity that was waiting for a transcript the directory just gave up.
+   */
+  private async upToDate(): Promise<void> {
+    await this.flush()
+    await this.reconcile()
+    await this.flush()
+  }
+
   /** Store the recorded activity. Concurrent callers share one run. */
   private flush(): Promise<void> {
     if (!this.flushing && this.pending.size === 0) return Promise.resolve()
@@ -279,7 +341,7 @@ export class SessionIndex {
       this.pending = new Map()
       try {
         await this.inOrder(async () => {
-          for (const sessionId of await this.deps.storage.touch(batch)) {
+          for (const sessionId of await this.storage.touch(batch)) {
             this.keep(this.awaitingTranscript, sessionId, batch.get(sessionId)!)
             // A write to a transcript the index has not seen: look for it.
             this.lookAgain()
@@ -361,7 +423,8 @@ export class SessionIndex {
     // does a workspace whose volume is not mounted: taking that for "every
     // transcript was deleted" would drop every session's name with it.
     if (!directoryExists) return new Set()
-    const { files, storage } = this.deps
+    const { files } = this.deps
+    const { storage } = this
     const present = new Set(await this.transcriptIds())
     // Nothing to take in, and nothing it can say is gone (see canConfirmGone).
     if (present.size === 0) return present

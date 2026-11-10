@@ -16,6 +16,8 @@ Where the entries are stored is the actor's choice, behind `SessionIndexStorage`
 
 So do not query `agent_sessions` from a route or a service, do not join against it, and do not point a foreign key at it. A view across agents (the agents list) asks each actor.
 
+An index is also the only *writer* of its agent's entries for as long as it lives, and it relies on that: it holds on to the entries it last listed (frozen, and handed to every reader as they are) until it next writes. Without that, every poll of the agents list reads and validates every row of every agent, which is tens of milliseconds for an agent with 20,000 sessions. So write through the agent's actor, never through a second store made for the occasion (`createLocalSessionStore(slug)` in a service or a test): the actor's index would not see the write.
+
 ## Two authorities
 
 - **What the app keeps about a session**: the index is the truth. A change is a read-modify-write of one entry (`index.update`), safe against concurrent writers by compare-and-set, so the mutator may run more than once and must be synchronous and free of side effects.
