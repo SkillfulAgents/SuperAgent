@@ -6,7 +6,7 @@ import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, type UrlDigest } from '../browser-digest'
 import { formatActionEffect, type ActionEffect, type EffectTreeDiff } from '../action-settle'
-import { LOGIN_FIELD_KINDS } from '../login-form-script'
+import { CODE_SOURCES, LOGIN_FIELD_KINDS } from '../login-form-script'
 import { withoutQuery } from '../login-fill'
 import { forgetPreparedLogin } from '../login-requests'
 import { keptSpans, redactToolResult } from '../injected-secrets'
@@ -33,7 +33,7 @@ Use this when the page asks for credentials: a username or email, a password, a 
 
 Sign-in through another account ("Continue with Google", GitHub, Microsoft): which account to use is the user's to say. On a page with such buttons, list them in providers on every call: the user's form offers exactly those. Before you click one, call request_login on the site (without fields when the page shows none). The result names the account the user signs in with ("signs in with the Google account x@gmail.com"), or the user picks it in the form. Then click the button yourself and pick exactly that account in the provider's account chooser, never another; if the provider asks to sign in, call request_login there with that username.
 
-When the sign-in asks to verify it's you, the way is the user's to choose whenever the page offers more than one: a list of ways (a code by text or email, a prompt on the phone, a passkey), or one way (a passkey or phone prompt) with "Try another way". Open that list and have the user pick one before you click it; never hand the browser over on such a page before they picked. A code then goes in with this tool; after a prompt to their phone, wait for the page to move on by itself (up to about two minutes).
+When the sign-in asks to verify it's you, the way is the user's to choose whenever the page offers more than one: a list of ways (a code by text or email, a prompt on the phone, a passkey), or one way (a passkey or phone prompt) with "Try another way". Open that list and have the user pick one before you click it; never hand the browser over on such a page before they picked. Except when the vault holds one of the ways: for an account whose authenticator app the vault holds (the results say so), choose the authenticator app yourself. A code then goes in with this tool: map its field with from set to where the page says it comes from. The vault fills an authenticator app's code (from: "authenticator_app") when it holds the app; any other code is the user's. After a prompt to their phone, wait for the page to move on by itself (up to about two minutes).
 
 Hand the browser over with request_browser_input instead for what only the user can do on the page: a CAPTCHA, a consent screen, a passkey or security key the user picked or the page's only way, or a phone prompt still pending after that wait.
 
@@ -45,6 +45,7 @@ const fieldSchema = z.object({
     'username: the account identifier (username, email or phone number). password: the account password (a password input only). otp: a one-time code; for a code split across one-character boxes, map the first box. text: another field the step asks for that is not secret, such as a company or workspace name.'
   ),
   label: z.string().describe('The field\'s label as the page shows it (e.g. "Email address")'),
+  from: z.enum(CODE_SOURCES).optional().describe('otp only: where the page says the code comes from. authenticator_app: an authenticator app ("the 6-digit code from your app"); the vault fills it when it holds the account\'s app. text_message, email: a code the site sent. other: anything else.'),
 })
 
 export function createRequestLoginTool(getSessionId: () => string | null) {
@@ -75,7 +76,7 @@ export function createRequestLoginTool(getSessionId: () => string | null) {
 
 interface RequestLoginArgs {
   message: string
-  fields?: Array<{ ref?: string; kind: (typeof LOGIN_FIELD_KINDS)[number]; label: string }>
+  fields?: Array<{ ref?: string; kind: (typeof LOGIN_FIELD_KINDS)[number]; label: string; from?: (typeof CODE_SOURCES)[number] }>
   submit?: string
   username?: string
   ask_user?: boolean
@@ -186,15 +187,31 @@ function describePageActivity(activity: NonNullable<LoginFillReport['pageActivit
 type Name = (username: string) => string
 const plain: Name = (username) => username
 
+/** What the vault holds besides the parts, as a note on an account. */
+function methodNotes(account: Pick<VaultAccountView, 'authenticator' | 'authenticatorName'>): string {
+  const named = account.authenticatorName ? ` (named "${account.authenticatorName}" on the site)` : ''
+  if (account.authenticator === 'ready') return `; the vault also holds its authenticator app${named}, so a code from the app needs no one (from: "authenticator_app")`
+  if (account.authenticator === 'rejected') return '; the site rejected a code from its authenticator app in the vault, as reported earlier: codes ask the user'
+  return ''
+}
+
 /** What a saved account holds, as the agent may know it: part names, never values. */
 function describeAccount(account: VaultAccountView, named: Name): string {
   const name = `${named(account.username)}${account.label ? ` ("${account.label}")` : ''}`
-  if (account.via) return `${name}: signs in with the ${account.via.name} account ${named(account.via.username)} (${account.via.site})`
+  if (account.via) return `${name}: signs in with the ${account.via.name} account ${named(account.via.username)} (${account.via.site})${methodNotes(account)}`
   const parts = account.parts.map((part) => (part === 'password' ? 'a password' : `"${part.replace(/^text:/, '')}"`))
-  if (parts.length === 0) return `${name}: no saved password or other value yet`
+  if (parts.length === 0) return `${name}: no saved password or other value yet${methodNotes(account)}`
   const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0]
   const rejected = account.rejected ? ' (the site rejected its saved password, as reported earlier: using it asks the user)' : ''
-  return `${name}: holds ${list}${rejected}`
+  return `${name}: holds ${list}${rejected}${methodNotes(account)}`
+}
+
+function formatAuthenticator(resolution: Extract<LoginResolution, { type: 'authenticator' }>, named: Name): string {
+  const account = named(resolution.username)
+  return [
+    `Nothing was filled: the vault holds the authenticator app of ${account} on ${resolution.site}, and this call did not say where the code comes from.`,
+    `If the page asks for the code from an authenticator app, call request_login again with username "${account}" and that field mapped with from: "authenticator_app": the vault fills the current code. For a code the site sent by text or email, map it with from: "text_message" or "email": the user enters it.`,
+  ].join('\n')
 }
 
 function formatAccounts(resolution: Extract<LoginResolution, { type: 'accounts' }>, named: Name): string {
@@ -276,6 +293,10 @@ function accountLines(account: LoginFillAccount | undefined, named: Name): strin
   if (!account) return []
   const lines: string[] = []
   if (account.source === 'user' && account.saved && account.username) lines.push(`The user saved this to their vault as account ${named(account.username)} on ${account.site}.`)
+  if (account.authenticator) {
+    const named = account.authenticator.name ? ` (named "${account.authenticator.name}" where the site lists apps)` : ''
+    lines.push(`The vault also holds the authenticator app of this account${named}: if the site asks how to verify, choose the authenticator app${named ? ' by that name' : ''}, and map its code field with from: "authenticator_app" (the vault fills it).`)
+  }
   if (account.held.length) {
     const labels = account.held.map((label) => `"${label}"`).join(', ')
     lines.push(account.username
@@ -297,6 +318,7 @@ export function formatLoginResolution(resolution: LoginResolution, named: Name =
   if (resolution.type === 'via') return { content: [{ type: 'text', text: formatVia(resolution, named) }] }
   if (resolution.type === 'browser_closed') return formatBrowserClosed(resolution, named)
   if (resolution.type === 'session') return formatSession(resolution, named)
+  if (resolution.type === 'authenticator') return { content: [{ type: 'text', text: formatAuthenticator(resolution, named) }] }
 
   const { origin, outcomes, lost, submitted, submitError, observation, changedSecrets, pageActivity, account } = resolution
   const filled = outcomes.filter((outcome) => outcome.status === 'filled' || outcome.status === 'changed')

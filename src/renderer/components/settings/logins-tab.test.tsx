@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   rename: vi.fn(),
   remove: vi.fn(),
   forgetSessions: vi.fn(),
+  requestMethod: vi.fn(),
+  removeApp: vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-browser-accounts', async (importOriginal) => ({
@@ -23,6 +25,8 @@ vi.mock('@renderer/hooks/use-browser-accounts', async (importOriginal) => ({
   useRenameBrowserAccount: () => ({ mutateAsync: state.rename, isPending: false }),
   useDeleteBrowserAccount: () => ({ mutateAsync: state.remove, isPending: false }),
   useForgetBrowserAccountSessions: () => ({ mutateAsync: state.forgetSessions, isPending: false }),
+  useRequestSignInMethod: () => ({ mutateAsync: state.requestMethod, isPending: false }),
+  useRemoveAuthenticator: () => ({ mutateAsync: state.removeApp, isPending: false }),
 }))
 const auth = vi.hoisted(() => ({ isAuthMode: false, usable: new Set<string>() }))
 vi.mock('@renderer/context/user-context', () => ({
@@ -54,6 +58,7 @@ function account(over: Partial<BrowserAccount> = {}): BrowserAccount {
     agentSlugs: ['a1'],
     agents: [{ slug: 'a1', name: 'Ada' }],
     sessions: [],
+    signInMethods: { authenticator: null, requestedAt: null, unavailable: null },
     ...over,
   }
 }
@@ -106,6 +111,38 @@ describe('Settings → Logins', () => {
     expect(screen.getByTestId('login-session')).toHaveTextContent('Chrome, saved 3h ago')
     await userEvent.click(screen.getByTestId('login-session-forget'))
     await waitFor(() => expect(state.forgetSessions).toHaveBeenCalledWith('acc-1'))
+  })
+
+  it('asks agents to add an authenticator app, and says when one found none to add', async () => {
+    state.selectedId = 'acc-1'
+    state.requestMethod.mockResolvedValue(undefined)
+    render(<LoginsTab />)
+    await userEvent.click(screen.getByTestId('login-authenticator-request'))
+    await waitFor(() => expect(state.requestMethod).toHaveBeenCalledWith({ accountId: 'acc-1', requested: true }))
+    cleanup()
+
+    state.accounts = [account({ signInMethods: { authenticator: null, requestedAt: null, unavailable: { at: new Date(Date.now() - 2 * 3_600_000).toISOString(), reason: 'Two-factor authentication is off.' } } })]
+    render(<LoginsTab />)
+    expect(screen.getByTestId('login-authenticator-unavailable')).toHaveTextContent('An agent found none it could add, 2h ago: Two-factor authentication is off.')
+    expect(screen.getByTestId('login-authenticator-request')).toHaveAttribute('data-state', 'unchecked')
+  })
+
+  it('shows the authenticator app an agent added, and removes it from the vault', async () => {
+    const addedAt = new Date(Date.now() - 3 * 86_400_000).toISOString()
+    state.accounts = [account({ signInMethods: { authenticator: { addedAt, issuer: 'GitHub', accountName: 'octocat', name: 'Gamut', rejectedAt: null }, requestedAt: null, unavailable: null } })]
+    state.selectedId = 'acc-1'
+    state.removeApp.mockResolvedValue(undefined)
+    render(<LoginsTab />)
+    expect(screen.getByTestId('login-authenticator-saved')).toHaveTextContent('Added by an agent 3d ago · named Gamut · GitHub')
+    expect(screen.queryByTestId('login-authenticator-request')).toBeNull()
+    await userEvent.click(screen.getByTestId('login-authenticator-remove'))
+    await waitFor(() => expect(state.removeApp).toHaveBeenCalledWith('acc-1'))
+  })
+
+  it('lists the authenticator app with what a login holds', () => {
+    state.accounts = [account({ signInMethods: { authenticator: { addedAt: new Date().toISOString(), issuer: null, accountName: null, name: null, rejectedAt: null }, requestedAt: null, unavailable: null } })]
+    render(<LoginsTab />)
+    expect(screen.getByTestId('login-row-acc-1')).toHaveTextContent('Password, workspace, authenticator app')
   })
 
   it('shows no session row for a login without one', () => {

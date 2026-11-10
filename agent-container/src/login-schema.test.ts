@@ -22,6 +22,14 @@ describe('login schemas', () => {
     expect(loginPrepareRequestSchema.safeParse({ ...base, fields: Array.from({ length: 7 }, (_, i) => ({ ref: `@e${i}`, kind: 'text', label: 'x' })) }).success).toBe(false)
   })
 
+  it('takes where a code comes from on a code field only', () => {
+    const base = { sessionId: 's', toolUseId: 't', submitRef: null }
+    expect(loginPrepareRequestSchema.parse({ ...base, fields: [{ ref: '@e1', kind: 'otp', label: 'Code', from: 'authenticator_app' }] }).fields[0])
+      .toEqual({ ref: '@e1', kind: 'otp', label: 'Code', from: 'authenticator_app' })
+    expect(loginPrepareRequestSchema.safeParse({ ...base, fields: [{ ref: '@e1', kind: 'password', label: 'Password', from: 'authenticator_app' }] }).success).toBe(false)
+    expect(loginPrepareRequestSchema.safeParse({ ...base, fields: [{ ref: '@e1', kind: 'otp', label: 'Code', from: 'carrier_pigeon' }] }).success).toBe(false)
+  })
+
   it('rejects unknown keys in a fill, so nothing else can ride along with the values', () => {
     const fill = { sessionId: 's', toolUseId: 't', expectedOrigin: 'https://a.com', values: ['x'] }
     expect(loginFillRequestSchema.safeParse(fill).success).toBe(true)

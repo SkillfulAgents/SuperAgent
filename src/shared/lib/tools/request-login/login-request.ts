@@ -6,11 +6,21 @@ export type LoginFieldKind = (typeof LOGIN_FIELD_KINDS)[number]
 
 export const MAX_LOGIN_FIELDS = 6
 
+/**
+ * Where the page says a one-time code comes from, as the agent maps it. Only
+ * an authenticator app's code is one the vault can make (when it holds the
+ * account's app); a code sent by text or email is the user's.
+ * Mirrors agent-container/src/login-form-script.ts.
+ */
+export const CODE_SOURCES = ['authenticator_app', 'text_message', 'email', 'other'] as const
+export type CodeSource = (typeof CODE_SOURCES)[number]
+
 /** A field as the agent mapped it: model input, so every part is optional. */
 export interface LoginFieldInput {
   ref?: string
   kind?: string
   label?: string
+  from?: string
 }
 
 /** A field as the request card shows it before the browser has located it. */
@@ -49,6 +59,8 @@ export const loginContextSchema = z.object({
   fields: z.array(z.object({
     kind: loginFieldKindSchema,
     label: z.string().max(120),
+    /** A code field: where the agent says the page has it come from. */
+    from: z.enum(CODE_SOURCES).optional(),
     inputType: z.string().max(32),
     inputMode: z.string().max(32),
     autocomplete: z.string().max(200),
@@ -81,6 +93,8 @@ export const loginFillResultSchema = z.object({
   saved: z.object({ username: z.string(), site: z.string() }).optional(),
   /** The values went in, but the account could not be saved. */
   saveError: z.string().optional(),
+  /** A fill the host answers itself (add_sign_in_method): the container's report, for the agent's result. */
+  report: z.record(z.string(), z.unknown()).optional(),
 })
 export type LoginFillResult = z.infer<typeof loginFillResultSchema>
 
@@ -108,6 +122,8 @@ export const fillLoginBodySchema = z.object({
   heldValues: z.array(loginValue).max(MAX_LOGIN_FIELDS).optional(),
   /** Save the account to the user's vault and grant it to this agent. */
   save: z.boolean().optional(),
+  /** With save: ask agents to add an authenticator app to the account (signInMethods.requested). */
+  addSignInMethod: z.boolean().optional(),
   /** Whose account it is, when the page has no username field. */
   username: z.string().trim().max(320).optional(),
   /** A saved account that fills the fields left empty (the user's own, or one this agent may use). */
@@ -188,6 +204,8 @@ export const fillLoginCredentialBodySchema = z.object({
   credentialId: z.string().min(1),
   /** Save the login to the user's vault and grant it to this agent ("Save for later"). */
   save: z.boolean().optional(),
+  /** With save: ask agents to add an authenticator app to the account. */
+  addSignInMethod: z.boolean().optional(),
   /** The user saw that other members of this agent can sign in with what it saves. */
   sharedAgentAcknowledged: z.boolean().optional(),
 }).strict()

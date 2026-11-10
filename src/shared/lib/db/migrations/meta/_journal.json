@@ -519,6 +519,13 @@
       "when": 1795053244107,
       "tag": "0073_message_agent_senders",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1795056099108,
+      "tag": "0074_browser_vault_sign_in_methods",
+      "breakpoints": true
     }
   ]
 }

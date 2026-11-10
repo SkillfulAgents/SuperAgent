@@ -171,10 +171,26 @@ email, a prompt on the phone, a passkey or security key), or one way (a
 passkey or phone prompt) with "Try another way". Never hand the browser over
 on such a page before the user picked: open that list, ask with
 `AskUserQuestion` (one option per way, in the page's words) and click the one
-picked. A code then goes in with `request_login` (kind `otp`). After a prompt
-to the user's phone, wait for the page to move on by itself: `browser_wait`
-with 15000 reports where the page is after each wait; repeat it for up to
-about two minutes.
+picked. For an account whose authenticator app the vault holds (the
+`request_login` results say so), choose the authenticator app yourself. A
+code then goes in with `request_login` (kind `otp`, with `from` saying where
+the page says it comes from: the vault fills an `authenticator_app` code when
+it holds the app; a `text_message` or `email` code is the user's). After a
+prompt to the user's phone, wait for the page to move on by itself:
+`browser_wait` with 15000 reports where the page is after each wait; repeat it
+for up to about two minutes.
+
+When the user asked you for a sign-in method on an account (their message,
+also one sent from the sign-in form or Settings → Logins), add an
+authenticator app once signed in:
+open the site's security settings, start adding one, and when the page shows
+the setup QR code, call `mcp__user-input__add_sign_in_method` with the
+account's username and the confirming code field's ref. It reads the setup
+from the page itself (don't open "Can't scan it?"), saves it to the vault and
+fills the app's current code. Add one only next to the two-step verification
+the account already has: never turn two-step verification on, and never
+replace or remove a method. When nothing fits, call it with method `none` and
+the reason.
 
 When a step needs the user's own hands — a CAPTCHA, a consent screen, a
 passkey or security key the user picked or the page's only way (a page that

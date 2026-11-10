@@ -8,6 +8,14 @@ export const LOGIN_FIELD_KINDS = ['username', 'password', 'otp', 'text'] as cons
 export type LoginFieldKind = (typeof LOGIN_FIELD_KINDS)[number]
 
 /**
+ * Where a one-time code comes from, as the page says and the agent maps it:
+ * the vault makes an authenticator app's code when it holds the account's
+ * app; a code sent by text or email is the user's.
+ */
+export const CODE_SOURCES = ['authenticator_app', 'text_message', 'email', 'other'] as const
+export type CodeSource = (typeof CODE_SOURCES)[number]
+
+/**
  * Kinds whose values are redacted from what the agent reads. Only the
  * account identifier stays visible (the agent needs to know who it signed in
  * as); `text` is redacted too, since its label is the agent's to choose.

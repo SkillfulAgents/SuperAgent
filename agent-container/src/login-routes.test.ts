@@ -17,7 +17,12 @@ vi.mock('./login-fill', () => ({
   lastFieldHasFocus: vi.fn(),
   PageWatch: { start: vi.fn() },
 }))
+vi.mock('./authenticator-setup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./authenticator-setup')>()),
+  readAuthenticatorSetup: vi.fn(),
+}))
 const fill = await import('./login-fill')
+const setup = await import('./authenticator-setup')
 const { clickSubmit, registerLoginRoutes } = await import('./login-routes')
 
 const cdp = { close: vi.fn() }
@@ -546,5 +551,61 @@ describe('clickSubmit', () => {
       activity: { kind: 'navigation', url: 'https://github.com/sessions/two-factor' },
     })
     expect(steps.clickInPage).not.toHaveBeenCalled()
+  })
+})
+
+describe('add_sign_in_method: the setup on the page, and a fill the host answers', () => {
+  const SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'
+  const CODE_FIELD = { ref: '@e4', kind: 'otp' as const, label: 'Code from the authenticator app', from: 'authenticator_app' as const, inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6 }
+
+  beforeEach(() => {
+    putPreparedLogin({ ...PREPARED, fields: [CODE_FIELD], submitRef: '@e5' })
+  })
+
+  it('gives the host the setup the page shows, and redacts its key from what the agent reads after', async () => {
+    park('tu-1', 'add_sign_in_method')
+    vi.mocked(setup.readAuthenticatorSetup).mockResolvedValue({ ok: true, key: `otpauth://totp/GitHub:octocat?secret=${SECRET}&issuer=GitHub`, source: 'qr' })
+    const res = await post('/browser/login/authenticator', { toolUseId: 'tu-1', qr: 'e9' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ key: `otpauth://totp/GitHub:octocat?secret=${SECRET}&issuer=GitHub`, source: 'qr' })
+    expect(setup.readAuthenticatorSetup).toHaveBeenCalledWith(fillDeps, { qrRef: '@e9' })
+    // However the page shows it: whole, in groups of four, in either case.
+    for (const shown of [SECRET, 'JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP', 'jbsw y3dp ehpk 3pxp jbsw y3dp ehpk 3pxp']) {
+      expect(redactInjectedSecrets(`key: ${shown}`)).toBe(`key: ${REDACTED}`)
+    }
+  })
+
+  it('reads no setup for a request_login call, or one no longer open', async () => {
+    park('tu-1', 'login')
+    expect((await post('/browser/login/authenticator', { toolUseId: 'tu-1' })).status).toBe(409)
+    expect((await post('/browser/login/authenticator', { toolUseId: 'tu-2' })).status).toBe(409)
+    expect(setup.readAuthenticatorSetup).not.toHaveBeenCalled()
+  })
+
+  it('says what it saw when the page shows no setup', async () => {
+    park('tu-1', 'add_sign_in_method')
+    vi.mocked(setup.readAuthenticatorSetup).mockResolvedValue({ ok: false, problem: 'no QR code or setup key for an authenticator app was found on the page: open the step that shows the QR code first' })
+    const res = await post('/browser/login/authenticator', { toolUseId: 'tu-1' })
+    expect(res.status).toBe(422)
+    expect(await res.json()).toEqual({ error: 'no QR code or setup key for an authenticator app was found on the page: open the step that shows the QR code first' })
+  })
+
+  it('fills the confirming code into an add_sign_in_method call and hands the report to the host, which answers the call', async () => {
+    park('tu-1', 'add_sign_in_method')
+    vi.mocked(fill.fillLogin).mockResolvedValue({
+      outcomes: [{ ref: '@e4', kind: 'otp', label: CODE_FIELD.label, status: 'filled' }],
+      written: [written(0, 'otp')],
+      pageValues: [],
+    })
+    vi.mocked(fill.heldStates).mockResolvedValue([{ index: 0, state: 'held' }])
+    deps.submit.mockResolvedValue({ ok: true, submitted: { via: 'click', ref: '@e5' }, observation: { settleMs: 300 } })
+    const res = await post('/browser/login/fill', fillBody({ values: ['123456'], answer: false }))
+    expect(res.status).toBe(200)
+    const body = await res.json() as { outcomes: string[]; report: LoginFillReport }
+    expect(body.outcomes).toEqual(['filled'])
+    expect(body.report).toMatchObject({ type: 'filled', origin: 'https://github.com', submitted: { via: 'click', ref: '@e5' } })
+    // The host answers it: the call is still parked.
+    expect(inputManager.hasPending('tu-1')).toBe(true)
+    expect(redactInjectedSecrets('code 123456')).toBe(`code ${REDACTED}`)
   })
 })

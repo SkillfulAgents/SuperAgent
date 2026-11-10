@@ -4,6 +4,7 @@ import { resetBrowserState, setBrowserState } from '../browser-state'
 import { forgetAllPreparedLogins } from '../login-requests'
 import { forgetInjectedSecrets, rememberInjectedSecret } from '../injected-secrets'
 import { createRequestLoginTool, formatLoginResolution } from './request-login'
+import { formatSignInMethodResolution } from './add-sign-in-method'
 import type { LoginFillReport } from '../login-schema'
 
 const args = {
@@ -474,5 +475,72 @@ describe('formatLoginResolution', () => {
     }).content[0].text
     expect(text).toContain('Pressed Enter in @e3.')
     expect(text).toContain('New tab opened — you are now on tab t2 (https://example.com/welcome)')
+  })
+})
+
+describe('the vault\'s authenticator apps', () => {
+  const FILLED: LoginFillReport = {
+    type: 'filled',
+    origin: 'https://github.com',
+    outcomes: [{ ref: '@e4', kind: 'otp', label: 'Code from the authenticator app', status: 'filled' }],
+    lost: [],
+    submitted: { via: 'click', ref: '@e5' },
+  }
+
+  it('lists the app an account holds, and one the site rejected', () => {
+    const text = formatLoginResolution({
+      type: 'accounts',
+      site: 'github.com',
+      accounts: [
+        { username: 'octocat', label: null, parts: ['password'], via: null, authenticator: 'ready', authenticatorName: 'Gamut' },
+        { username: 'hubot', label: null, parts: ['password'], via: null, authenticator: 'rejected' },
+      ],
+    }).content[0].text
+    expect(text).toContain('- octocat: holds a password; the vault also holds its authenticator app (named "Gamut" on the site), so a code from the app needs no one (from: "authenticator_app")')
+    expect(text).toContain('- hubot: holds a password; the site rejected a code from its authenticator app in the vault, as reported earlier: codes ask the user')
+  })
+
+  it('tells the agent after a fill which way to verify with', () => {
+    const text = formatLoginResolution({
+      ...FILLED,
+      outcomes: [{ ref: '@e3', kind: 'password', label: 'Password', status: 'filled' }],
+      account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [], authenticator: {} },
+    }).content[0].text
+    expect(text).toContain('The vault also holds the authenticator app of this account: if the site asks how to verify, choose the authenticator app, and map its code field with from: "authenticator_app" (the vault fills it).')
+    const named = formatLoginResolution({
+      ...FILLED,
+      outcomes: [{ ref: '@e3', kind: 'password', label: 'Password', status: 'filled' }],
+      account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [], authenticator: { name: 'Gamut' } },
+    }).content[0].text
+    expect(named).toContain('The vault also holds the authenticator app of this account (named "Gamut" where the site lists apps): if the site asks how to verify, choose the authenticator app by that name')
+  })
+
+  it('tells the agent where to say a code comes from when the vault holds the app', () => {
+    const { content, isError } = formatLoginResolution({ type: 'authenticator', site: 'github.com', username: 'octocat' })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toContain('Nothing was filled: the vault holds the authenticator app of octocat on github.com, and this call did not say where the code comes from.')
+    expect(content[0].text).toContain('call request_login again with username "octocat" and that field mapped with from: "authenticator_app"')
+  })
+
+  it('says what add_sign_in_method saved and what the page did, never the key or the code', () => {
+    // As the host has it filled: the account the code is from.
+    const report = { ...FILLED, account: { username: 'octocat', site: 'github.com', source: 'vault' as const, saved: false, held: [] } }
+    const added = formatSignInMethodResolution({ type: 'authenticator_added', site: 'github.com', username: 'octocat', issuer: 'GitHub', report })
+    expect(added.isError).toBeUndefined()
+    expect(added.content[0].text).toContain('Saved an authenticator app for octocat on github.com to the vault (set up as "GitHub"), and filled its current code to confirm it.')
+    expect(added.content[0].text).toContain('Filled 1 of 1 field on https://github.com from the saved account octocat: @e4 "Code from the authenticator app" (otp).')
+    expect(added.content[0].text).toContain('Clicked @e5.')
+
+    const notAdded = formatSignInMethodResolution({
+      type: 'authenticator_not_added',
+      site: 'github.com',
+      username: 'octocat',
+      report: { ...FILLED, outcomes: [{ ...FILLED.outcomes[0], status: 'failed', problem: 'the field was disabled' }], submitted: null },
+    })
+    expect(notAdded.isError).toBe(true)
+    expect(notAdded.content[0].text).toContain('Read the authenticator app\'s setup on github.com, but its code did not go into the page, so nothing was saved.')
+
+    expect(formatSignInMethodResolution({ type: 'unavailable_noted', site: 'github.com', username: 'octocat' }).content[0].text)
+      .toBe('Noted: no sign-in method can be added to octocat on github.com. The user sees why in Settings → Logins, and agents are no longer asked to add one.')
   })
 })

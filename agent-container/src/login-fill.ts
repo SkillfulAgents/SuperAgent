@@ -21,6 +21,7 @@ import {
   type FieldBox,
   type FillPageState,
   type FocusedElementDescription,
+  type CodeSource,
   type HeldState,
   type LoginFieldKind,
   type WriteFieldResult,
@@ -30,6 +31,8 @@ export interface LoginFieldRequest {
   ref: string
   kind: LoginFieldKind
   label: string
+  /** A code field: where the page has the code come from. */
+  from?: CodeSource
 }
 
 export interface PreparedLoginField extends LoginFieldRequest {

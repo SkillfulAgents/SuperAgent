@@ -109,6 +109,8 @@ export function useLoginVaultInfo(agentSlug: string, sessionId: string, toolUseI
 export interface LoginFillOptions {
   heldValues?: string[]
   save?: boolean
+  /** With save: ask agents to add an authenticator app to the account. */
+  addSignInMethod?: boolean
   username?: string
   accountId?: string
   sharedAgentAcknowledged?: boolean

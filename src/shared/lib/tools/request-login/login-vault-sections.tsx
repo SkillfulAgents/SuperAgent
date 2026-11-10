@@ -103,6 +103,8 @@ export function AccountChooser({
 export function SaveForLater({
   checked,
   onCheckedChange,
+  addMethod,
+  onAddMethodChange,
   site,
   username,
   askUsername,
@@ -113,6 +115,9 @@ export function SaveForLater({
 }: {
   checked: boolean
   onCheckedChange: (checked: boolean) => void
+  /** "Also add an authenticator app": the agent adds one to the saved account. */
+  addMethod: boolean
+  onAddMethodChange: (checked: boolean) => void
   site: string
   /** Whose account it is, when already known. */
   username: string | null
@@ -141,6 +146,24 @@ export function SaveForLater({
           </span>
         </span>
       </label>
+      {checked && (
+        <label className="flex items-start gap-2 pl-6 text-xs text-foreground">
+          <Checkbox
+            checked={addMethod}
+            onCheckedChange={(value) => onAddMethodChange(value === true)}
+            disabled={disabled}
+            className="mt-0.5"
+            data-testid="login-add-method"
+            aria-describedby="login-add-method-hint"
+          />
+          <span className="min-w-0">
+            <span className="block font-medium">Also add an authenticator app</span>
+            <span id="login-add-method-hint" className="block text-2xs text-muted-foreground">
+              Once signed in, the agent adds one next to the two-step verification this account already has, so later sign-ins need no code from you. The vault then holds both its password and its codes.
+            </span>
+          </span>
+        </label>
+      )}
       {checked && askUsername && (
         <Input
           value={usernameValue}

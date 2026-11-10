@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { LOGIN_FIELD_KINDS } from './login-form-script'
+import { CODE_SOURCES, LOGIN_FIELD_KINDS } from './login-form-script'
 
 /** `@e12` or `e12`, normalized to `@e12` (the CLI's form). */
 export const elementRefSchema = z
@@ -13,7 +13,9 @@ export const loginFieldRequestSchema = z.object({
   ref: elementRefSchema.optional(),
   kind: z.enum(LOGIN_FIELD_KINDS),
   label: z.string().trim().min(1).max(120),
-})
+  /** A code field: where the page has the code come from (an authenticator app's, the vault can make). */
+  from: z.enum(CODE_SOURCES).optional(),
+}).refine((field) => field.kind === 'otp' || field.from === undefined, { message: 'from is only for a code field (kind otp)', path: ['from'] })
 
 export const MAX_LOGIN_FIELDS = 6
 
@@ -52,6 +54,8 @@ export const loginFillAccountSchema = z.object({
   saved: z.boolean(),
   /** Labels of fields the user filled in for a later step: the host holds them. */
   held: z.array(z.string().max(120)).max(MAX_LOGIN_FIELDS),
+  /** The vault holds an authenticator app for the account (with the name it has on the site, when it asked): its codes need no one. */
+  authenticator: z.object({ name: z.string().max(64).optional() }).strict().optional(),
 }).strict()
 export type LoginFillAccount = z.infer<typeof loginFillAccountSchema>
 
@@ -62,6 +66,8 @@ export const loginFillRequestSchema = z.object({
   expectedOrigin: z.string().min(1).max(2048),
   values: z.array(z.string().max(4096)).min(1).max(MAX_LOGIN_FIELDS),
   account: loginFillAccountSchema.optional(),
+  /** false: the host answers the parked call itself (add_sign_in_method), so the report comes back to it. */
+  answer: z.literal(false).optional(),
 }).strict()
 
 const fieldOutcomeSchema = z.object({
@@ -126,6 +132,10 @@ const vaultAccountViewSchema = z.object({
   via: z.object({ site: z.string(), username: z.string(), name: z.string() }).nullable(),
   /** The site turned its saved password down since the user last entered it: using it asks the user. */
   rejected: z.boolean().optional(),
+  /** The vault holds an authenticator app for it ('rejected': the site turned a code from it down since). */
+  authenticator: z.enum(['ready', 'rejected']).optional(),
+  /** The name the vault's app has on the site, when the site asked for one. */
+  authenticatorName: z.string().optional(),
 })
 export type VaultAccountView = z.infer<typeof vaultAccountViewSchema>
 
@@ -184,6 +194,17 @@ export const loginSessionReportSchema = z.object({
   observation: z.record(z.string(), z.unknown()).optional(),
 })
 
+/**
+ * The step asks for a code without saying where from, for an account whose
+ * authenticator app the vault holds: nothing was filled, and the agent is
+ * told the vault fills that app's code when the field says so.
+ */
+export const loginAuthenticatorReportSchema = z.object({
+  type: z.literal('authenticator'),
+  site: z.string(),
+  username: z.string(),
+})
+
 export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginFillReportSchema,
   loginManualReportSchema,
@@ -191,5 +212,22 @@ export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginViaReportSchema,
   loginBrowserClosedReportSchema,
   loginSessionReportSchema,
+  loginAuthenticatorReportSchema,
 ])
 export type LoginResolution = z.infer<typeof loginResolutionSchema>
+
+/**
+ * How the host answered add_sign_in_method (a refusal rejects the call instead):
+ * - authenticator_added: the app's key was read from the page and saved to
+ *   the account, and its code went into the page (the fill's report);
+ * - authenticator_not_added: the key was read, but its code did not go in,
+ *   so nothing was saved;
+ * - unavailable_noted: the agent found none to add; the user's request is
+ *   answered with why.
+ */
+export const signInMethodResolutionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('authenticator_added'), site: z.string(), username: z.string(), issuer: z.string().nullable(), report: loginFillReportSchema }),
+  z.object({ type: z.literal('authenticator_not_added'), site: z.string(), username: z.string(), report: loginFillReportSchema }),
+  z.object({ type: z.literal('unavailable_noted'), site: z.string(), username: z.string() }),
+])
+export type SignInMethodResolution = z.infer<typeof signInMethodResolutionSchema>
