@@ -205,6 +205,17 @@ describe("AgentDurableObject saving the container's changes", () => {
     expect(agent.r2.has(workspaceBlobKey(OBJECT, H2))).toBe(false)
   })
 
+  it('keeps the bytes of a renamed file, which the removed path and the new one share', async () => {
+    const agent = runningAgent()
+    agent.r2.set(workspaceBlobKey(OBJECT, H1), 'v1')
+    await agent.send([file('notes/leads.md.tmp', H1)])
+
+    expect((await agent.send([file('notes/leads.md', H1)], ['notes/leads.md.tmp'])).status).toBe(204)
+
+    expect(agent.saved()).toEqual([{ path: 'notes/leads.md', hash: H1, kind: 'file' }])
+    expect(agent.r2.has(workspaceBlobKey(OBJECT, H1))).toBe(true)
+  })
+
   it('refuses changes when the agent is not running, so a stray container cannot replace the saved workspace', async () => {
     const agent = runningAgent(false)
     agent.r2.set(workspaceBlobKey(OBJECT, H1), 'a')

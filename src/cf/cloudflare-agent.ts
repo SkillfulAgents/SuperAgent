@@ -238,8 +238,10 @@ export class AgentDurableObject extends DurableObject<Env> {
       if (!(await this.agentUp())) return new Response('the agent is not running', { status: 409 })
       const missing = await this.missingBlobs(entries)
       if (missing.length > 0) return Response.json({ missing }, { status: 409 })
-      for (const rel of removed) await this.removeSaved(rel)
-      if (entries.length > 0) await this.recordFiles(entries)
+      // Bytes are dropped after both: a rename removes a path and adds one with the same bytes.
+      const released = removed.flatMap((rel) => this.removeSaved(rel))
+      if (entries.length > 0) released.push(...this.recordFiles(entries))
+      await this.dropUnreferenced(released)
       return new Response(null, { status: 204 })
     })
   }
@@ -300,18 +302,20 @@ export class AgentDurableObject extends DurableObject<Env> {
       sql.exec('INSERT OR IGNORE INTO workspace_pending (hash) VALUES (?)', hash)
       await this.env.WORKSPACES.put(this.blobKey(hash), bytes)
       const previous = sql.exec<{ mode: number }>('SELECT mode FROM workspace_file WHERE path = ?', rel).toArray()[0]
-      await this.recordFiles([{ path: rel, hash, size: bytes.byteLength, mode: previous?.mode ?? NEW_FILE_MODE, mtimeMs: Date.now(), kind: 'file' }])
+      await this.dropUnreferenced(this.recordFiles([{ path: rel, hash, size: bytes.byteLength, mode: previous?.mode ?? NEW_FILE_MODE, mtimeMs: Date.now(), kind: 'file' }]))
       await this.settlePending()
     })
   }
 
   /** Removes a file, or a folder with everything under it. False when the agent is running. */
   storedRemove(rel: string): Promise<boolean> {
-    return this.storeChange(() => this.removeSaved(rel))
+    return this.storeChange(async () => {
+      await this.dropUnreferenced(this.removeSaved(rel))
+    })
   }
 
-  // Sets these entries in the saved file list and drops bytes no file uses any more.
-  private async recordFiles(files: WorkspaceFile[]): Promise<void> {
+  // Sets these entries in the saved file list. Returns the hashes they replaced, for the caller to drop.
+  private recordFiles(files: WorkspaceFile[]): string[] {
     const sql = this.ctx.storage.sql
     const replaced: string[] = []
     this.ctx.storage.transactionSync(() => {
@@ -325,20 +329,20 @@ export class AgentDurableObject extends DurableObject<Env> {
       }
       this.bumpVersion()
     })
-    await this.dropUnreferenced(replaced)
+    return replaced
   }
 
-  // Removes a file, or a folder with everything under it, from the saved workspace.
-  private async removeSaved(rel: string): Promise<void> {
+  // Removes a file, or a folder with everything under it, from the saved file list. Returns their hashes, for the caller to drop.
+  private removeSaved(rel: string): string[] {
     const sql = this.ctx.storage.sql
     const match = 'path = ? OR substr(path, 1, ?) = ?'
     const hashes = sql.exec<{ hash: string }>(`SELECT DISTINCT hash FROM workspace_file WHERE ${match}`, rel, rel.length + 1, `${rel}/`).toArray().map((row) => row.hash)
-    if (hashes.length === 0) return
+    if (hashes.length === 0) return []
     this.ctx.storage.transactionSync(() => {
       sql.exec(`DELETE FROM workspace_file WHERE ${match}`, rel, rel.length + 1, `${rel}/`)
       this.bumpVersion()
     })
-    await this.dropUnreferenced(hashes)
+    return hashes
   }
 
   // Hashes of these files whose bytes R2 does not have.
