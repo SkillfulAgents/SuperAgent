@@ -35,7 +35,7 @@ import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-
 import { HOME_GLASS_COMPOSER_CLASS, HomeGlassPanel } from './home-glass-panel'
 import { HomeHalftoneBackdrop } from './home-halftone-backdrop'
 import { ContentBackdrop } from '@renderer/components/layout/content-shell'
-import { HomeSidePanel, SIDE_PANEL_BESIDE_PAGE, SIDE_PANEL_ROOM } from './home-side-panel'
+import { HomeSidePanel, SIDE_PANEL_BESIDE_PAGE } from './home-side-panel'
 import { useMediaQuery } from '@renderer/hooks/use-media-query'
 import { HomeBookmarks } from './home-bookmarks'
 import { AgentSettingsColumn } from './agent-settings-column'
@@ -282,24 +282,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const wide = useMediaQuery(SIDE_PANEL_BESIDE_PAGE)
   const sidePanelBeside = showSidePanel && wide
 
-  // Beside the page, the side panel sticks at the top of the view as the page scrolls: at the page's top padding
-  // (sticky offsets count from inside it), whose height is read off the scroller, and no taller than the view.
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [dockTop, setPageTop] = useState(0)
-  const [viewHeight, setViewHeight] = useState(0)
-  useLayoutEffect(() => {
-    const scroller = scrollRef.current
-    if (!scroller) return
-    const measure = () => {
-      setPageTop(Math.round(parseFloat(getComputedStyle(scroller).paddingTop) || 0))
-      setViewHeight(scroller.clientHeight)
-    }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
-    observer.observe(scroller)
-    return () => observer.disconnect()
-  }, [])
   // Beside the page, the panel's top edge lines up with the top edge of the title row's buttons (they sit centred in
   // that row, so a little below its top): the agent menu button's offset in the page's column, measured.
   const columnRef = useRef<HTMLDivElement>(null)
@@ -343,7 +325,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     <div className="home-glass-controls relative flex min-h-0 min-w-0 flex-1 flex-col">
     <ContentBackdrop><HomeHalftoneBackdrop agent={agent} /></ContentBackdrop>
     <div
-      ref={scrollRef}
       data-testid="agent-home"
       // Surfaces the one-shot new-agent intro state for tests/debugging without
       // coupling to CSS classes: absent when no morph, 'pending' while the
@@ -366,12 +347,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       {/* Team Brain's home-page layout: one column the composer's width, centred in the page; the side panel opens
           beside it from xl, the column making room on the right while the page stays where it is. */}
       <div data-testid="agent-home-layout" className="mx-auto min-w-0 w-full max-w-[1040px]">
-        <div
-          ref={columnRef}
-          // Makes room on the panel's own curves (globals.css), so the two move as one.
-          className={cn('relative', sidePanelBeside && SIDE_PANEL_ROOM)}
-        >
-          <div className="mx-auto w-full max-w-[720px] space-y-6">
+        <div ref={columnRef} className={cn(sidePanelBeside && 'flex items-start gap-8')}>
+          <div className="mx-auto w-full min-w-0 max-w-[720px] space-y-6">
             <div>
             <ScrollAwarePageTitle className="home-title-row flex items-center justify-between gap-2 intro-step intro-step-1">
               <AgentContextMenu
@@ -672,17 +649,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
           </div>
 
           {sidePanelBeside && (
-            // Beside the page, in the room the column makes: top-aligned with the title row's buttons, it scrolls with
-            // the column and then sticks at the top.
-            <div className="pointer-events-none absolute bottom-0 right-0 z-0 w-[336px]" style={{ top: panelTop }}>
-              <HomeSidePanel
-                placement="beside"
-                // Sticky offsets count from inside the scroller's padding, so its cards stick level with the composer
-                // at 0; its box reaches 32px past them (home-side-panel.tsx), so it sticks at -32 and is 64px taller.
-                style={{ top: -32, maxHeight: Math.max(viewHeight - dockTop - 24, 320) + 64 }}
-              >
-                {sidePanelContent}
-              </HomeSidePanel>
+            // Beside the page, top-aligned with the title row's buttons; it scrolls with the page rather than on its own.
+            <div className="w-[336px] shrink-0" style={{ marginTop: panelTop }}>
+              <HomeSidePanel placement="beside">{sidePanelContent}</HomeSidePanel>
             </div>
           )}
         </div>
