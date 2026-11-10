@@ -344,8 +344,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
           </div>
         </div>
       )}
-      {/* Team Brain's home-page layout: one column the composer's width, centred in the page; the side panel opens
-          beside it from xl, the column making room on the right while the page stays where it is. */}
+      {/* Team Brain's home-page layout: one column the composer's width, centred in the page, with the side panel
+          beside it from xl. The page is the only scroller; the panel scrolls with it. */}
       <div data-testid="agent-home-layout" className="mx-auto min-w-0 w-full max-w-[1040px]">
         <div ref={columnRef} className={cn(sidePanelBeside && 'flex items-start gap-8')}>
           <div className="mx-auto w-full min-w-0 max-w-[720px] space-y-6">
@@ -642,16 +642,16 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   {/* Bookmarks get a panel of their own, when there are any. */}
                   <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
                   {/* Narrower than xl there is no room beside the page, so the side panel's cards follow its content. */}
-                  {showSidePanel && !wide && <HomeSidePanel placement="below">{sidePanelContent}</HomeSidePanel>}
+                  {showSidePanel && !wide && <HomeSidePanel>{sidePanelContent}</HomeSidePanel>}
                 </div>
               </>
             )}
           </div>
 
           {sidePanelBeside && (
-            // Beside the page, top-aligned with the title row's buttons; it scrolls with the page rather than on its own.
+            // Top-aligned with the title row's buttons.
             <div className="w-[336px] shrink-0" style={{ marginTop: panelTop }}>
-              <HomeSidePanel placement="beside">{sidePanelContent}</HomeSidePanel>
+              <HomeSidePanel>{sidePanelContent}</HomeSidePanel>
             </div>
           )}
         </div>
