@@ -301,14 +301,14 @@ vi.mock('@renderer/components/ui/popover', () => ({
 
 vi.mock('@renderer/components/ui/sidebar', () => ({
   Sidebar: ({ children, ...props }: any) => <aside {...props}>{children}</aside>,
-  SidebarContent: ({ children }: any) => <div>{children}</div>,
+  SidebarContent: forwardRef(function SidebarContent({ children }: any, ref: any) { return <div ref={ref}>{children}</div> }),
   SidebarFooter: ({ children, className }: any) => <div data-testid="sidebar-footer" className={className}>{children}</div>,
   // Forwards `style` as well: the traffic-light reservation is an inline
   // paddingLeft, so a mock that dropped it would make that assertion vacuous.
   SidebarHeader: ({ children, className, style }: any) => (
     <div data-testid="sidebar-header" className={className} style={style}>{children}</div>
   ),
-  SidebarGroup: ({ children, className }: any) => <div className={className}>{children}</div>,
+  SidebarGroup: forwardRef(function SidebarGroup({ children, className }: any, ref: any) { return <div ref={ref} className={className}>{children}</div> }),
   SidebarGroupContent: ({ children }: any) => <div>{children}</div>,
   SidebarGroupLabel: ({ children, className }: any) => <span className={className}>{children}</span>,
   SidebarMenu: ({ children }: any) => <ul>{children}</ul>,

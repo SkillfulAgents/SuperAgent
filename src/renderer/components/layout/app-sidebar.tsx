@@ -15,6 +15,7 @@ import { openExternalUrl } from '@renderer/lib/open-external'
 import { targetIsRemote } from '@renderer/lib/api-target'
 import { resolveSidebarVersionState } from '@renderer/components/layout/sidebar-version-state'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
+import { SidebarNavPill, useScrolledAway } from '@renderer/components/layout/sidebar-nav-pill'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 import { useDialogs } from '@renderer/context/dialog-context'
@@ -1212,6 +1213,11 @@ export function AppSidebar() {
   const todoBoardEnabled = useExperiment('todo-board')
   const teamBrainEnabled = useExperiment('team-brain')
   const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
+  // The nav rows scroll with the agent list; once they are gone, the floating
+  // pill stands in for them.
+  const scrollerRef = React.useRef<HTMLDivElement>(null)
+  const navRowsRef = React.useRef<HTMLDivElement>(null)
+  const navScrolledAway = useScrolledAway(navRowsRef, scrollerRef)
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -1829,8 +1835,18 @@ export function AppSidebar() {
         <SidebarContent
           className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
           data-testid="agent-list-scroll"
+          ref={scrollerRef}
         >
-          <SidebarGroup className="shrink-0 p-0">
+          <SidebarNavPill
+            visible={navScrolledAway}
+            showTodo={todoBoardEnabled}
+            showTeamBrain={teamBrainEnabled}
+            showMarketplace={hasMarketplace}
+            isCreatingAgent={isCreatingAgent}
+            onNewAgent={() => { void createUntitledAgent({ surface: 'nav' }) }}
+            showTooltips={!isMobile}
+          />
+          <SidebarGroup className="shrink-0 p-0" ref={navRowsRef}>
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
                 SidebarBannerStack wrapper owns horizontal padding, inter-banner
