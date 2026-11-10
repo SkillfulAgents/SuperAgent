@@ -774,7 +774,7 @@ import {
   resolveBrowserRuntimeLocation,
   shouldRefuseImplicitHostLoopback,
 } from './browser-location';
-import { confirmNoPagesLeft, readTabSources, recheckPageTarget } from './browser-liveness';
+import { confirmNoPagesLeft, listPageTargetsExcept, readTabSources, recheckPageTarget } from './browser-liveness';
 
 // Bumped each time /browser/open succeeds. External-close detection spans real
 // time (two target lookups 750ms apart, then a confirmation request); a browser
@@ -3927,18 +3927,28 @@ function handleBrowserStreamConnection(ws: WebSocket) {
               params: { targetId: data.targetId },
             }));
           });
-          browserWs.on('message', () => {
+          browserWs.on('message', async (raw) => {
             browserWs.close();
-            // If we just closed the tab we were screencasting, switch to another
-            if (cdpScreencast?.currentTargetId === data.targetId) {
-              findActivePageTarget().then(target => {
+            const reply = JSON.parse(raw.toString()) as { error?: unknown };
+            const listPageTargets = reply.error
+              ? getAllPageTargets
+              : listPageTargetsExcept(getAllPageTargets, data.targetId);
+            try {
+              const sources = await readTabSources(listPageTargets, () => tabManager.queryTabs());
+              // If we just closed the tab we were screencasting, switch to another
+              if (cdpScreencast?.currentTargetId === data.targetId) {
+                const target = selectActivePageTarget(
+                  sources.allTargets,
+                  sources.daemonTabs,
+                  (left, right) => tabManager.urlsMatch(left, right),
+                );
                 if (target && cdpScreencast) {
                   switchScreencastTarget(target, ws);
                 }
-                broadcastTabList();
-              });
-            } else {
-              broadcastTabList();
+              }
+              broadcastTabList(sources);
+            } catch (err) {
+              console.error('[CDP] Failed to refresh tabs after close:', err);
             }
           });
           browserWs.on('error', () => {});
