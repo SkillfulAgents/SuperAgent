@@ -13,8 +13,10 @@ import {
   grantAccount,
   listAccountAgentSlugs,
   listOwnedAccounts,
+  removeAuthenticator,
   renameAccount,
   revokeAccount,
+  setSignInMethodRequest,
   type VaultAccount,
 } from '@shared/lib/browser-vault/vault-service'
 import { countOtherMembers } from '@shared/lib/services/agent-members-service'
@@ -46,13 +48,34 @@ function accountDto(
     updatedAt: account.updatedAt.toISOString(),
     lastUsedAt: account.lastUsedAt?.toISOString() ?? null,
     rejectedAt: account.rejectedAt?.toISOString() ?? null,
+    signInMethods: methodsDto(account),
     ...(agents ? { agentSlugs: agents.map((agent) => agent.slug), agents } : {}),
     // Which browser types hold a saved session of it, and since when: never the session.
     ...(sessions ? { sessions: sessions.map((session) => ({ browserType: session.browserType, capturedAt: session.capturedAt.toISOString() })) } : {}),
   }
 }
 
+/** The account's sign-in methods beyond its parts, in plain text (the seed itself never leaves the vault). */
+function methodsDto(account: VaultAccount) {
+  const { authenticator, requested, unavailable } = account.signInMethods
+  const at = (ms: number) => new Date(ms).toISOString()
+  return {
+    authenticator: authenticator
+      ? {
+          addedAt: at(authenticator.addedAt),
+          issuer: authenticator.issuer,
+          accountName: authenticator.accountName,
+          name: authenticator.name ?? null,
+          rejectedAt: authenticator.rejectedAt ? at(authenticator.rejectedAt) : null,
+        }
+      : null,
+    requestedAt: requested ? at(requested.at) : null,
+    unavailable: unavailable ? { at: at(unavailable.at), reason: unavailable.reason } : null,
+  }
+}
+
 const renameBodySchema = z.object({ label: z.string().trim().max(200).nullable() }).strict()
+const methodRequestBodySchema = z.object({ requested: z.boolean() }).strict()
 
 // GET /api/browser-accounts - The caller's saved accounts, with the agents that may use each
 browserAccounts.get('/', async (c) => {
@@ -88,6 +111,26 @@ browserAccounts.delete('/:id', async (c) => {
   if (!deleted) return c.json({ error: 'Saved account not found' }, 404)
   stopSessionWatches(id)
   await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: id, action: 'deleted', details: { agentSlugs: deleted.agentSlugs } })
+  return c.json({ success: true })
+})
+
+// PUT /api/browser-accounts/:id/sign-in-method-request - Ask agents to add a sign-in
+// method (an authenticator app) when one next signs in with the account, or take that back
+browserAccounts.put('/:id/sign-in-method-request', zValidator('json', methodRequestBodySchema), async (c) => {
+  const viewer = getViewerUserId(c)
+  const id = c.req.param('id')
+  const { requested } = c.req.valid('json')
+  if (!(await setSignInMethodRequest(viewer, id, requested, 'logins'))) return c.json({ error: 'Saved account not found' }, 404)
+  await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: id, action: 'updated', details: { signInMethodRequested: requested } })
+  return c.json({ success: true })
+})
+
+// DELETE /api/browser-accounts/:id/authenticator - Remove the authenticator app from the
+// vault: agents ask the user for its codes again. The site still lists the app.
+browserAccounts.delete('/:id/authenticator', async (c) => {
+  const viewer = getViewerUserId(c)
+  const id = c.req.param('id')
+  if (!(await removeAuthenticator(viewer, id))) return c.json({ error: 'No authenticator app is saved for this account' }, 404)
   return c.json({ success: true })
 })
 

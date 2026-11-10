@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { LoginFieldKind } from '@shared/lib/tools/request-login/login-request'
+import type { CodeSource, LoginFieldKind } from '@shared/lib/tools/request-login/login-request'
 
 /**
  * What a saved account's sealed column holds, and how its parts are named.
@@ -27,13 +27,32 @@ export function partKeyOf(field: { kind: LoginFieldKind; label: string }): strin
 
 export const partKeySchema = z.string().regex(/^(password|text:.{1,120})$/s)
 
-/** A TOTP seed (part 4): the host generates the code and fills it like any part. */
-const totpSchema = z.object({
-  secret: z.string().max(256),
-  algorithm: z.enum(['SHA1', 'SHA256', 'SHA512']),
+/**
+ * The key a field fills from: its part, or `totp` for a code the page asks
+ * for from an authenticator app, which the vault makes from the account's
+ * seed when it holds one. Never what a field saves: a code is used once.
+ */
+export function fillKeyOf(field: { kind: LoginFieldKind; label: string; from?: CodeSource }): string | null {
+  if (field.kind === 'otp') return field.from === 'authenticator_app' ? TOTP_FILL_KEY : null
+  return partKeyOf(field)
+}
+
+/** The fill key of an authenticator app's current code. */
+export const TOTP_FILL_KEY = 'totp'
+
+export const TOTP_ALGORITHMS = ['SHA1', 'SHA256', 'SHA512'] as const
+
+/**
+ * An authenticator app's seed (RFC 6238): the host makes the code and fills
+ * it like any part. `secret` is base32, upper case, without padding.
+ */
+export const totpSeedSchema = z.object({
+  secret: z.string().regex(/^[A-Z2-7]{16,128}$/),
+  algorithm: z.enum(TOTP_ALGORITHMS),
   digits: z.number().int().min(6).max(8),
   period: z.number().int().min(15).max(120),
 }).strict()
+export type TotpSeed = z.infer<typeof totpSeedSchema>
 
 /** A passkey registered through the WebAuthn virtual authenticator (part 4). */
 const passkeySchema = z.object({
@@ -48,13 +67,43 @@ const passkeySchema = z.object({
 export const accountSecretsSchema = z.object({
   /** Saved parts by key (partKeyOf). */
   values: z.record(partKeySchema, z.string().max(MAX_VALUE)),
-  totp: totpSchema.optional(),
+  /** The authenticator app an agent added for the account (`signInMethods.authenticator` says so in plain text). */
+  totp: totpSeedSchema.optional(),
   passkeys: z.array(passkeySchema).max(20).optional(),
 }).strict()
 export type AccountSecrets = z.infer<typeof accountSecretsSchema>
 
 /** The part keys a row lists in plain text (never values). */
 export const accountPartsSchema = z.array(partKeySchema).max(MAX_PARTS)
+
+/** Timestamps in `signInMethods` are milliseconds since the epoch. */
+const msSchema = z.number().int().min(0)
+
+/**
+ * What a row says in plain text about the account's sign-in methods beyond
+ * its parts (never a secret): the authenticator app the vault holds, and
+ * whether the owner asked agents to add one. The seed itself is in `secrets`.
+ */
+export const signInMethodsSchema = z.object({
+  authenticator: z.object({
+    addedAt: msSchema,
+    /** As the site's setup named it ("GitHub", "octocat"), when it did. */
+    issuer: z.string().max(200).nullable(),
+    accountName: z.string().max(320).nullable(),
+    /** What the agent named it on the site, when the site asked ("Gamut"): how a list of apps at sign-in shows it. */
+    name: z.string().max(64).nullable().optional(),
+    /** An agent said the site rejected a code the vault filled: the user is asked for codes until one is added again. */
+    rejectedAt: msSchema.optional(),
+  }).strict().optional(),
+  /**
+   * The owner asked agents to add a sign-in method: in the sign-in card, or in
+   * Settings → Logins. `askedIn`: the session last asked, as the owner's message.
+   */
+  requested: z.object({ at: msSchema, from: z.enum(['card', 'logins']), askedIn: z.string().max(200).optional() }).strict().optional(),
+  /** An agent found none it may add on the site (two-step verification is off, or adding one would replace another): why, in its words. */
+  unavailable: z.object({ at: msSchema, reason: z.string().max(500) }).strict().optional(),
+}).strict()
+export type SignInMethods = z.infer<typeof signInMethodsSchema>
 
 
 // ── Saved sessions ─────────────────────────────────────────────────────────

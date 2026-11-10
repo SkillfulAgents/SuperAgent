@@ -246,7 +246,11 @@ export const browserAccounts = sqliteTable('browser_accounts', {
   viaAccountId: text('via_account_id').references((): AnySQLiteColumn => browserAccounts.id, { onDelete: 'set null' }),
   secrets: text('secrets'), // Sealed JSON (vault-crypto, accountSecretsSchema); null until a secret part is saved
   parts: text('parts').notNull().default('[]'), // JSON list of the part keys `secrets` holds ('password', 'text:…'), never values
-  revision: integer('revision').notNull().default(1), // Bumped on every write: the compare-and-set guard for `secrets`
+  // Part 4: its sign-in methods beyond the parts, in plain text
+  // (signInMethodsSchema): the authenticator app the vault holds, and whether
+  // the owner asked agents to add one. The seed itself is in `secrets`.
+  signInMethods: text('sign_in_methods').notNull().default('{}'),
+  revision: integer('revision').notNull().default(1), // Bumped on every write: the compare-and-set guard for `secrets` and `sign_in_methods`
   // An agent said the site rejected what the vault filled: the user is asked
   // until they enter its password again. Null while it signs in fine.
   rejectedAt: integer('rejected_at', { mode: 'timestamp_ms' }),

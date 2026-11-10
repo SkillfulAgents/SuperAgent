@@ -21,6 +21,22 @@ const browserAccountSchema = z.object({
   agents: z.array(z.object({ slug: z.string(), name: z.string() })),
   /** The browser types it has a signed-in session saved for, and when it was saved (none from a workspace older than saved sessions). */
   sessions: z.array(z.object({ browserType: z.enum(['container', 'chrome', 'browserbase', 'platform']), capturedAt: z.string() })).default([]),
+  /** Sign-in methods beyond its parts: the authenticator app an agent added, and the user's request for one. */
+  signInMethods: z.object({
+    authenticator: z.object({
+      addedAt: z.string(),
+      issuer: z.string().nullable(),
+      accountName: z.string().nullable(),
+      /** What the agent named it on the site. */
+      name: z.string().nullable().default(null),
+      /** An agent said the site rejected a code from it: agents ask the user for codes. */
+      rejectedAt: z.string().nullable(),
+    }).nullable(),
+    /** Agents are asked to add one at their next sign-in with the account. */
+    requestedAt: z.string().nullable(),
+    /** An agent found none it may add on the site, and why. */
+    unavailable: z.object({ at: z.string(), reason: z.string() }).nullable(),
+  }).default({ authenticator: null, requestedAt: null, unavailable: null }),
 })
 export type BrowserAccount = z.infer<typeof browserAccountSchema>
 
@@ -92,6 +108,22 @@ export function useRenameBrowserAccount() {
 export function useForgetBrowserAccountSessions() {
   return useAccountMutation((accountId: string) =>
     send(`/api/browser-accounts/${encodeURIComponent(accountId)}/sessions`, { method: 'DELETE' }))
+}
+
+/** Ask agents to add an authenticator app at their next sign-in with the account, or take that back. */
+export function useRequestSignInMethod() {
+  return useAccountMutation(({ accountId, requested }: { accountId: string; requested: boolean }) =>
+    send(`/api/browser-accounts/${encodeURIComponent(accountId)}/sign-in-method-request`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requested }),
+    }))
+}
+
+/** Remove the authenticator app from the vault: agents ask the user for its codes again. */
+export function useRemoveAuthenticator() {
+  return useAccountMutation((accountId: string) =>
+    send(`/api/browser-accounts/${encodeURIComponent(accountId)}/authenticator`, { method: 'DELETE' }))
 }
 
 export function useDeleteBrowserAccount() {

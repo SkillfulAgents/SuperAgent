@@ -219,7 +219,8 @@ export interface LocatedElement {
 /** Why no focused element was found: nothing has focus, or focus is in a frame that could not be reached. */
 export type LocateMiss = { missed: 'nothing_focused' | 'frame_unreachable' }
 
-async function isolatedWorld(cdp: CdpConnection, frameId: string, sessionId: string | undefined): Promise<number> {
+/** A world of the frame's own that page scripts cannot reach or patch: where the host's page functions run. */
+export async function isolatedWorld(cdp: CdpConnection, frameId: string, sessionId: string | undefined): Promise<number> {
   const world = await cdp.send<{ executionContextId: number }>(
     'Page.createIsolatedWorld',
     { frameId, worldName: WORLD_NAME, grantUniveralAccess: false },

@@ -207,6 +207,7 @@ export function LoginForm({
   // The saved account a click is signing in with, while it runs.
   const [usingOffer, setUsingOffer] = useState<(VaultOffer & { covered: Set<number> }) | null>(null)
   const [saveChoice, setSaveChoice] = useState<boolean | null>(null)
+  const [addMethod, setAddMethod] = useState(false)
   const [saveUsername, setSaveUsername] = useState('')
   // What the server said the saved account could not fill after all: those
   // fields are asked for, and a saved account that is gone fills nothing.
@@ -313,7 +314,9 @@ export function LoginForm({
 
   const fillOptions = (accountId?: string, granting = false) => ({
     ...(held.length && heldValues.some(Boolean) ? { heldValues: held.map((_, index) => heldValues[index] ?? '') } : {}),
-    ...(canSave && save ? { save: true, ...(askUsername && saveUsername.trim() ? { username: saveUsername.trim() } : {}) } : {}),
+    ...(canSave && save
+      ? { save: true, ...(addMethod ? { addSignInMethod: true } : {}), ...(askUsername && saveUsername.trim() ? { username: saveUsername.trim() } : {}) }
+      : {}),
     ...(accountId ? { accountId } : {}),
     // The notice was on screen where the user chose to save or to use a saved account.
     ...(otherMembers > 0 && ((canSave && save) || granting) ? { sharedAgentAcknowledged: true } : {}),
@@ -508,7 +511,9 @@ export function LoginForm({
           kind="login"
           disabled={busy}
           // "Save for later" covers a login from the password manager too: the whole login goes to the vault.
-          loginOptions={canSave && save ? { save: true, ...(otherMembers > 0 ? { sharedAgentAcknowledged: true } : {}) } : undefined}
+          loginOptions={canSave && save
+            ? { save: true, ...(addMethod ? { addSignInMethod: true } : {}), ...(otherMembers > 0 ? { sharedAgentAcknowledged: true } : {}) }
+            : undefined}
           onFilled={(body) => {
             const key = loginRequestKey(agentSlug, sessionId, toolUseId)
             // Answered in another window first: nothing was filled from here.
@@ -640,6 +645,8 @@ export function LoginForm({
         <SaveForLater
           checked={save}
           onCheckedChange={setSaveChoice}
+          addMethod={addMethod}
+          onAddMethodChange={setAddMethod}
           site={site}
           username={identity}
           askUsername={askUsername}

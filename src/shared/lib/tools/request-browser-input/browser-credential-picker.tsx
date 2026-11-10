@@ -46,7 +46,7 @@ interface BrowserCredentialPickerProps {
    */
   kind?: 'browser_input' | 'login'
   /** 'login': what goes with the pick — the card's "Save for later", and that the user saw who else can use it. */
-  loginOptions?: { save?: boolean; sharedAgentAcknowledged?: boolean }
+  loginOptions?: { save?: boolean; addSignInMethod?: boolean; sharedAgentAcknowledged?: boolean }
   /** Called with the route's answer once a saved login was filled into the page. */
   onFilled?: (result: unknown) => void
 }

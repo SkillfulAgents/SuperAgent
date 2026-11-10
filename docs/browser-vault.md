@@ -8,11 +8,14 @@ saved, filled by the host on the agent's request, step by step, only for the
 agents the user granted them to. Part 3 saves each account's signed-in
 session (cookies and web storage) after a sign-in and restores it into
 another agent's browser, so a sign-in the user completed once (a code, a
-phone prompt) does not need them again.
+phone prompt) does not need them again. Part 4 adds second factors: an
+authenticator app an agent adds to an account when the user asks, whose codes
+the vault then makes (passkeys follow).
 
 Code: `src/shared/lib/browser-vault/` (host), `agent-container/src/login-*.ts`,
 `agent-container/src/browser-session*.ts`, `agent-container/src/session-routes.ts`,
-`agent-container/src/browser-gate.ts`
+`agent-container/src/browser-gate.ts`, `agent-container/src/authenticator-setup.ts`,
+`agent-container/src/tools/add-sign-in-method.ts`
 and `agent-container/src/tools/request-login.ts` (container),
 `src/shared/lib/tools/request-login/` (the card), Settings → Logins
 (`src/renderer/components/settings/logins-tab.tsx`).
@@ -431,6 +434,60 @@ that file's contents; the file is then ignored (logged), and can be deleted.
 A key that is lost is lost. Logins sealed under it can be deleted in Settings →
 Logins, and once none remain, a new key is made on the next save.
 
-## Part 4
+## Authenticator apps (part 4a)
 
-The sealed `secrets` schema has room for a TOTP seed and passkeys.
+The vault can hold an account's authenticator app (TOTP, RFC 6238): an agent
+adds one in the site's security settings, and from then on the vault makes its
+codes, so a sign-in that asks for one needs nobody. Passkeys follow (part 4b).
+
+**Asking for one.** Only the user asks, and an agent adds one only next to the
+two-step verification the account already has: never turning it on where it is
+off (the user would need the vault to sign in themselves), never replacing or
+removing a method (their phone's app). Three ways to ask:
+
+- The sign-in card: "Also add an authenticator app", under "Save for later"
+  and only with it (the app goes to the saved account).
+- Settings → Logins: the account's "Have an agent add one" switch, for an
+  account that never shows a card (the vault signs in with it unattended).
+- The conversation: the user asks the agent, which passes their words.
+
+The first two leave a standing request on the account (`signInMethods.requested`).
+The agent is asked as the user's own message in the session
+(`method-request.ts`), once per session: when the card's box was ticked, and
+when the vault next signs in with the account. Said in a tool result, the
+request reads as the tool's or the page's words, and agents rightly do not take
+those as the user's: in live runs they declined it every time.
+
+**Adding one** (`add_sign_in_method`, a host tool: `method-host.ts`). The agent
+opens the site's setup, and calls the tool with the account's username and the
+field for the confirming code (`code_field`, and `submit`). The host locates the
+field through the container (as request_login does), then has the container
+read the setup from the page (`authenticator-setup.ts`): an `otpauth://` link,
+else the QR code in view or further down the page (a CDP screenshot decoded
+with jsqr), else a lone key the page keeps to type (also behind "Can't scan
+it?", which the agent never needs to open). The key goes only to the host, and
+the container redacts it (every grouping and case) from what the agent reads
+from then on. The host makes the app's current code (`totp.ts`; the next
+period's when fewer than three seconds are left), the container fills and
+submits it, and only once that code went in is the seed sealed into the
+account's `secrets` (with what the site named it, the name the agent gave it
+there, and when). A request answered this way is cleared. When the site offers
+nothing that fits, the agent calls the tool with `method: "none"` and why: the
+request is answered with that, and Logins shows it.
+
+**Signing in with it.** A code field says where its code comes from
+(`from`: `authenticator_app`, `text_message`, `email`, `other`). The vault
+fills one only for `authenticator_app`, from an app it holds and the site has
+not rejected: three codes in half an hour and ten a day at most (each code a
+site turns down counts toward its lockout), the same plain-HTTP rule as
+passwords. A code field without `from` on an account whose app the vault holds
+answers the agent that the vault fills that app's code (`type: authenticator`)
+instead of asking the user for a code they may not have. Results and the
+account list tell the agent the vault holds the app (and its name on the site),
+so it picks the authenticator app where a page offers ways to verify, without
+asking the user. When the agent says the site rejected a code
+(`ask_user` with the code field mapped as the app's), the app is marked
+(`rejectedAt`) and the user is asked for codes until an app is added again.
+
+Settings → Logins shows the app (added when, its names) and removes it from the
+vault (the site still lists it); nothing here shows a code or the key.

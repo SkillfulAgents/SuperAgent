@@ -5,27 +5,32 @@ import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import {
   loginContextSchema,
   loginFillResultSchema,
+  type CodeSource,
   type LoginContext,
   type LoginFieldKind,
   type LoginFillResult,
   type LoginVaultPayload,
 } from '@shared/lib/tools/request-login/login-request'
+import { background } from '@shared/lib/background'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { claimHeldParts, heldLoginFor, recentSignInIdentity, rememberSignInIdentity, settleHeldClaim, type HeldClaim, type HeldLoginRead } from './held-values'
+import { askForSignInMethod } from './method-request'
 import { providerName } from './providers'
 import { beginSignInStep, restoreSavedSession, sessionBaseline, watchSignIn } from './session-host'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
+import { freshTotpCode } from './totp'
 import {
   findGrantedAccount,
   listGrantedAccounts,
   markAccountRejected,
-  readAccountValues,
+  markAuthenticatorRejected,
+  readAccountFill,
   recentPasswordFills,
   recordAccountUse,
   saveAccount,
   type VaultAccount,
 } from './vault-service'
-import { partKeyOf } from './vault-schemas'
+import { fillKeyOf, partKeyOf, TOTP_FILL_KEY } from './vault-schemas'
 
 /**
  * The host's side of request_login. The agent maps a page's sign-in fields;
@@ -90,26 +95,61 @@ export interface FillAccountNote {
   source: 'user' | 'vault'
   saved: boolean
   held: string[]
+  /** The vault holds an authenticator app for the account (named so on the site, when it asked): a later step's code needs no one. */
+  authenticator?: { name?: string }
+}
+
+/** Whether the vault makes the account's authenticator codes: it holds an app the site has not rejected. */
+export function authenticatorReady(account: Pick<VaultAccount, 'signInMethods'>): boolean {
+  const authenticator = account.signInMethods.authenticator
+  return authenticator !== undefined && !authenticator.rejectedAt
+}
+
+/** What the agent is told about the account's sign-in methods with a fill's result. */
+export function methodNotes(account: Pick<VaultAccount, 'signInMethods'> | null): Pick<FillAccountNote, 'authenticator'> {
+  if (!account || !authenticatorReady(account)) return {}
+  const name = account.signInMethods.authenticator?.name
+  return { authenticator: name ? { name } : {} }
+}
+
+/**
+ * The owner asked for a sign-in method on the account: the agent signing in
+ * with it is asked, as the owner's message, once per session (method-request).
+ */
+export function askForRequestedMethod(agentSlug: string, sessionId: string, account: VaultAccount): void {
+  const requested = account.signInMethods.requested
+  if (!requested || requested.askedIn === sessionId) return
+  background(askForSignInMethod({ agentSlug, sessionId, account, from: requested.from }), { name: 'browser-vault.ask-for-sign-in-method' })
 }
 
 /**
  * Hand the values to the container, which writes them into the page (re-
  * checking the origin in the page) and answers the agent's parked call.
  * On success the request is settled here too; on failure it stays open.
+ * `answer: false`: the caller answers the call itself (a host tool's), and
+ * the result carries the container's report of the fill for it.
  */
 export async function fillLoginInContainer(
   agentSlug: string,
   sessionId: string,
   toolUseId: string,
-  context: LoginContext,
+  context: Pick<LoginContext, 'origin'>,
   values: string[],
   account?: FillAccountNote,
+  options: { answer?: false } = {},
 ): Promise<{ ok: true; result: LoginFillResult } | { ok: false; status: 409 | 502; error: string; browserClosed?: true }> {
   const actor = agentRegistry.get(agentSlug)
   const response = await actor.container.fetch('/browser/login/fill', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, toolUseId, expectedOrigin: context.origin, values, ...(account ? { account } : {}) }),
+    body: JSON.stringify({
+      sessionId,
+      toolUseId,
+      expectedOrigin: context.origin,
+      values,
+      ...(account ? { account } : {}),
+      ...(options.answer === false ? { answer: false } : {}),
+    }),
   })
   const data: unknown = await response.json().catch(() => null)
   if (!response.ok) {
@@ -124,7 +164,7 @@ export async function fillLoginInContainer(
   }
   const result = loginFillResultSchema.safeParse(data)
   if (!result.success) return { ok: false, status: 502, error: 'The browser returned an unreadable result' }
-  await actor.inputs.complete(sessionId, toolUseId, 'answered')
+  if (options.answer !== false) await actor.inputs.complete(sessionId, toolUseId, 'answered')
   return { ok: true, result: result.data }
 }
 
@@ -153,28 +193,32 @@ export async function answerLoginRequest(agentSlug: string, toolUseId: string, r
 
 /** A saved account as the agent may see it: never a value. */
 export function accountView(account: VaultAccount) {
+  const authenticator = account.signInMethods.authenticator
   return {
     username: account.username,
     label: account.label,
     parts: account.parts,
     via: account.via ? { site: account.via.site, username: account.via.username, name: providerName(account.via.site) } : null,
     ...(account.rejectedAt ? { rejected: true } : {}),
+    ...(authenticator ? { authenticator: authenticator.rejectedAt ? 'rejected' as const : 'ready' as const } : {}),
+    ...(authenticator?.name ? { authenticatorName: authenticator.name } : {}),
   }
 }
 
 /**
- * The value for each located field, from a username and saved parts; '' for
- * a field they do not cover (a code, a field never saved).
+ * The value for each located field, from a username and saved parts (with
+ * `totp`, the authenticator app's current code); '' for a field they do not
+ * cover (a code sent to the user, a field never saved).
  */
 export function valuesFor(
-  fields: ReadonlyArray<{ kind: LoginFieldKind; label: string }>,
+  fields: ReadonlyArray<{ kind: LoginFieldKind; label: string; from?: CodeSource }>,
   username: string | null,
   parts: Record<string, string>,
 ): string[] {
   return fields.map((field) => {
     if (field.kind === 'username') return username ?? ''
-    const part = partKeyOf(field)
-    return part ? parts[part] ?? '' : ''
+    const key = fillKeyOf(field)
+    return key ? parts[key] ?? '' : ''
   })
 }
 
@@ -376,9 +420,14 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   if (!site || (await isOwnOrigin(context.origin, []))) return ask({ mode: 'new' }, context)
   if (askUser) {
     const turnedDown = username ? await findGrantedAccount(agentSlug, site, username) : null
-    // Only a step that asks for the password can have turned it down: not a wrong code.
+    // A step that asks for the password turned the password down; one that
+    // asks for the authenticator app's code, the app the vault holds. Not a
+    // code the site sent the user.
     const asksPassword = context.fields.some((field) => field.kind === 'password')
     if (asksPassword && turnedDown?.parts.includes('password')) await markAccountRejected({ agentSlug, accountId: turnedDown.id, sessionId })
+    if (asksAuthenticatorCode(context) && turnedDown && authenticatorReady(turnedDown)) {
+      await markAuthenticatorRejected({ agentSlug, accountId: turnedDown.id, sessionId })
+    }
     return ask({ mode: 'ask', ...(username ? { username: turnedDown?.username ?? username } : {}), ...(reason ? { reason } : {}) }, context)
   }
 
@@ -393,6 +442,26 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
 
 /** How often a decision starts over after what was held for its step was taken under it. */
 const HELD_DECISION_ATTEMPTS = 3
+
+/** Whether the step asks for the code of an authenticator app (as the agent mapped it). */
+function asksAuthenticatorCode(context: Pick<LoginContext, 'fields'>): boolean {
+  return context.fields.some((field) => fillKeyOf(field) === TOTP_FILL_KEY)
+}
+
+/** How many codes the vault's authenticator app fills by itself within half an hour, and within a day. */
+const CODES_PER_HALF_HOUR = 3
+const CODES_PER_DAY = 10
+
+/**
+ * Whether the vault filled the account's authenticator codes too often for
+ * another without the user: a site that turns its codes down (an app removed
+ * there since) counts each one toward its lockout.
+ */
+async function codesFilledTooOften(account: VaultAccount, now = Date.now()): Promise<boolean> {
+  const fills = await recentPasswordFills(account.id, DAY_MS, now, 'code')
+  const lately = fills.filter((fill) => now - fill.at.getTime() <= HALF_HOUR_MS)
+  return lately.length >= CODES_PER_HALF_HOUR || fills.length >= CODES_PER_DAY
+}
 
 /**
  * The vault's answer to a call that names an account or follows a held step.
@@ -423,6 +492,7 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   if (username && account && await restoresHere({ agentSlug, sessionId, account, context, held })) {
     const restored = await restoreSavedSession({ agentSlug, sessionId, account })
     if (restored) {
+      if (restored.restored) askForRequestedMethod(agentSlug, sessionId, account)
       if (await answerLoginRequest(agentSlug, toolUseId, restored)) return { action: 'settled' }
       return ask({ mode: 'ask', username: account.username }, context)
     }
@@ -447,6 +517,13 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
     }
     return ask({ mode: 'ask', username: account.username }, context)
   }
+  // A code the agent did not say the source of, for an account whose
+  // authenticator app the vault holds: it is told the vault fills that one,
+  // rather than the user being asked for a code they may not have.
+  if (account && authenticatorReady(account) && context.fields.some((field) => field.kind === 'otp' && !field.from)) {
+    if (await answerLoginRequest(agentSlug, toolUseId, { type: 'authenticator', site, username: account.username })) return { action: 'settled' }
+    return ask({ mode: 'ask', username: account.username }, context)
+  }
   if (context.fields.length === 0) {
     // Named, but no field mapped to fill: say so, rather than list it back.
     const listed = account && await answerLoginRequest(agentSlug, toolUseId, { type: 'accounts', site, accounts: [accountView(account)], named: true })
@@ -464,8 +541,13 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   }
 
   // A secret first typed on an encrypted page does not go to a plain-HTTP one unasked.
-  const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
-  const covered = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) }).flatMap((value, index) => (value ? [index] : []))
+  const fill = account && vaultFillsInto(account.origin, context.origin) ? await readAccountFill(account.id) : null
+  const saved = fill?.values ?? {}
+  // The authenticator app's code, when the step asks for one: made just
+  // before the fill (below), so here only whether it can be.
+  const totp = fill?.totp && account && asksAuthenticatorCode(context) && !(await codesFilledTooOften(account)) ? fill.totp : null
+  const fillable = totp ? { ...saved, [TOTP_FILL_KEY]: 'made at the fill' } : saved
+  const covered = valuesFor(context.fields, identity, { ...fillable, ...(held?.values ?? {}) }).flatMap((value, index) => (value ? [index] : []))
   if (covered.length < context.fields.length) {
     return ask({ mode: 'complete', ...(identity ? { username: identity } : {}), ...(account ? { accountId: account.id } : {}), covered }, context)
   }
@@ -477,13 +559,15 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
     claim = await claimHeldParts(agentSlug, sessionId, site, held, fromHeld)
     if (!claim) return null
   }
-  const values = valuesFor(context.fields, identity, { ...saved, ...(claim?.values ?? {}) })
   const shown = noteUsername(identity)
   // Nothing watched before the step watches what it leaves; the site as it is
   // before the step is what the watch after it compares with.
   const watched = account !== null && await watchesStep({ agentSlug, sessionId, site, context, username: identity })
   beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
   const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
+  // Made last, so it has most of its period left when the page sends it.
+  const code = totp ? await freshTotpCode(totp) : null
+  const values = valuesFor(context.fields, identity, { ...saved, ...(claim?.values ?? {}), ...(code ? { [TOTP_FILL_KEY]: code } : {}) })
   let filled: Awaited<ReturnType<typeof fillLoginInContainer>>
   try {
     filled = await fillLoginInContainer(agentSlug, sessionId, toolUseId, context, values, {
@@ -492,6 +576,7 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
       source: account && fromHeld.length === 0 ? 'vault' : 'user',
       saved: false,
       held: [],
+      ...methodNotes(account),
     })
   } catch (error) {
     // No answer: the values may be in the page, so what was held for it is used.
@@ -521,8 +606,18 @@ async function decideFromVault(call: LoginRequestCall, context: LoginContext, si
   // (filledTooOften counts it); held, the user had just entered it.
   if (account && wentIn.some(Boolean)) {
     const password = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
-    await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password, by: fromHeld.includes('password') ? 'user' : 'vault' })
+    // Counted toward how often the vault fills the app's codes by itself.
+    const codeWentIn = code !== null && context.fields.some((field, index) => fillKeyOf(field) === TOTP_FILL_KEY && wentIn[index])
+    await recordAccountUse({
+      agentSlug,
+      accountId: account.id,
+      sessionId,
+      password,
+      by: fromHeld.includes('password') ? 'user' : 'vault',
+      ...(codeWentIn ? { code: true as const } : {}),
+    })
     watchSignIn({ agentSlug, sessionId, account, baseline })
+    askForRequestedMethod(agentSlug, sessionId, account)
   }
   return { action: 'settled' }
 }

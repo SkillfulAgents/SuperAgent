@@ -6,6 +6,7 @@
  * delivers the result back to the container.
  */
 import type { HostToolName, HostToolRequest, HostToolResult } from '@shared/lib/agent-actor/host-port'
+import { addSignInMethod } from '@shared/lib/browser-vault/method-host'
 import {
   cancelScheduledTaskTool,
   listScheduledTasks,
@@ -34,6 +35,7 @@ const handlers: Record<HostToolName, (request: HostToolRequest) => Promise<HostT
   create_webhook_endpoint: createWebhookEndpoint,
   update_webhook_endpoint: updateWebhookEndpoint,
   inspect_webhook_events: inspectWebhookEvents,
+  add_sign_in_method: addSignInMethod,
 }
 
 export function runHostTool(request: HostToolRequest): Promise<HostToolResult> {

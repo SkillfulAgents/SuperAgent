@@ -9,6 +9,8 @@
  */
 import { randomUUID } from 'crypto'
 import type { Hono } from 'hono'
+import { z } from 'zod'
+import { readAuthenticatorSetup, setupKeyForms } from './authenticator-setup'
 import { inputManager } from './input-manager'
 import { rememberInjectedSecret } from './injected-secrets'
 import {
@@ -37,7 +39,21 @@ import {
   putPreparedLogin,
   waitForPreparedLogin,
 } from './login-requests'
-import { loginFillRequestSchema, loginPrepareRequestSchema, type LoginFillReport } from './login-schema'
+import { elementRefSchema, loginFillRequestSchema, loginPrepareRequestSchema, type LoginFillReport } from './login-schema'
+
+/**
+ * The parked calls a fill can be for: request_login's, or add_sign_in_method's
+ * (the host fills the code that confirms an authenticator app, and answers
+ * that call itself).
+ */
+const FILLED_CALL_TYPES = ['login', 'add_sign_in_method'] as const
+
+/** host → server: read the authenticator app's setup from the page of an add_sign_in_method call. */
+const authenticatorReadRequestSchema = z.object({
+  toolUseId: z.string().min(1).max(256),
+  /** The setup QR code, when the agent named it. */
+  qr: elementRefSchema.optional(),
+}).strict()
 
 /** How the form gets submitted, and what the page did after. */
 export interface SubmitPlan {
@@ -137,7 +153,7 @@ const HOLDABLE_KINDS = new Set<HeldLoginField['kind']>(['password', 'text'])
  */
 async function pendingLoginOpened(toolUseId: string, waitMs: number): Promise<boolean> {
   const deadline = Date.now() + waitMs
-  while (!inputManager.hasPendingOfType(toolUseId, 'login')) {
+  while (!FILLED_CALL_TYPES.some((type) => inputManager.hasPendingOfType(toolUseId, type))) {
     if (Date.now() >= deadline || !getPreparedLogin(toolUseId)) return false
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
@@ -225,6 +241,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       fields: prepared.fields.map((field) => ({
         kind: field.kind,
         label: field.label,
+        ...(field.from ? { from: field.from } : {}),
         inputType: field.inputType,
         inputMode: field.inputMode,
         autocomplete: field.autocomplete,
@@ -233,6 +250,35 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       held: prepared.held,
       providers: prepared.providers,
     })
+  })
+
+  // POST /browser/login/authenticator - add_sign_in_method: the host reads the
+  // authenticator app's setup (an otpauth URI, or a key) from the page its call
+  // prepared. It goes only to the host, and is redacted from what the agent
+  // reads from here on.
+  app.post('/browser/login/authenticator', async (c) => {
+    if (!deps.hostAuthEnabled()) return c.json({ error: 'Host authentication is required' }, 503)
+    const parsed = authenticatorReadRequestSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid authenticator setup request' }, 400)
+    const body = parsed.data
+    const prepared = getPreparedLogin(body.toolUseId)
+    // The tool parks its call as the host starts on it: wait out that gap.
+    const open = prepared !== null && await pendingLoginOpened(body.toolUseId, deps.pendingWaitMs ?? 3000)
+    if (!open || !inputManager.hasPendingOfType(body.toolUseId, 'add_sign_in_method')) {
+      return c.json({ error: 'This request is no longer open' }, 409)
+    }
+    const sessionError = deps.validateSession(prepared.sessionId)
+    if (sessionError) return c.json({ error: sessionError }, 409)
+    if (isPreparedLoginClosed(body.toolUseId) || !deps.browserActive()) return c.json({ error: 'The browser was closed' }, 409)
+    try {
+      const read = await readAuthenticatorSetup(deps.fillDeps(), { qrRef: body.qr ?? null })
+      if (!read.ok) return c.json({ error: read.problem }, 422)
+      for (const form of setupKeyForms(read.key)) rememberInjectedSecret(form)
+      return c.json({ key: read.key, source: read.source })
+    } catch (error) {
+      console.error('[Browser] Reading an authenticator setup failed:', error instanceof Error ? error.message : 'Unknown error')
+      return c.json({ error: 'the page could not be read' }, 500)
+    }
   })
 
   // POST /browser/login/fill - the host posts the user's values. Writes them,
@@ -361,7 +407,8 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       deps.notifyBrowserAction()
       // The answer goes to the agent; the fill is over either way, and a
       // failed fill is the agent's to act on (re-map, or hand over the browser).
-      inputManager.resolve(body.toolUseId, JSON.stringify(report))
+      // A host that answers the call itself gets the report instead.
+      if (body.answer !== false) inputManager.resolve(body.toolUseId, JSON.stringify(report))
       forgetPreparedLogin(body.toolUseId)
       const count = (status: string) => report.outcomes.filter((outcome) => outcome.status === status).length
       const label = (ref: string) => prepared.fields.find((field) => field.ref === ref)?.label ?? ref
@@ -378,6 +425,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
           ...report.lost.map(({ ref, state }) => `${label(ref)}: ${LOST_PROBLEMS[state]}, so nothing was clicked or pressed`),
           ...(report.submitError ? [`${report.submitError.charAt(0).toUpperCase()}${report.submitError.slice(1)}`] : []),
         ],
+        ...(body.answer === false ? { report } : {}),
       })
     } catch (error) {
       // Left open: the user can try again or take over the browser.

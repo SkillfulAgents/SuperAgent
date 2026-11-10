@@ -354,7 +354,7 @@ describe('the sign-in watch', () => {
 })
 
 describe('restoring a saved session', () => {
-  const OCTOCAT = { ...ACCOUNT, username: 'octocat', label: null, parts: ['password'], via: null, rejectedAt: null, createdAt: new Date(0), updatedAt: new Date(0), lastUsedAt: null }
+  const OCTOCAT = { ...ACCOUNT, username: 'octocat', label: null, parts: ['password'], via: null, rejectedAt: null, signInMethods: {}, createdAt: new Date(0), updatedAt: new Date(0), lastUsedAt: null }
   const SAVED = { version: 7, capturedAt: new Date(0), bundle: { version: 1 as const, site: 'github.com', capturedAt: '2026-10-26T00:00:00.000Z', cookies: [], origins: [] } }
   const restoreCalls = () => container.calls.filter((call) => call.path === '/browser/session/restore')
   const restore = () => restoreSavedSession({ agentSlug: 'agent-a', sessionId: 's-1', account: OCTOCAT })

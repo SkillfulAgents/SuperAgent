@@ -29,6 +29,8 @@ const container = vi.hoisted(() => ({
   /** The fill is sent and no answer comes back. */
   fillThrows: false,
   calls: [] as Array<{ path: string; body?: unknown }>,
+  /** Messages delivered into sessions: the owner's request for a sign-in method. */
+  delivered: [] as Array<{ sessionId: string; content: string }>,
 }))
 
 vi.mock('@shared/lib/agent-actor', () => ({
@@ -39,6 +41,12 @@ vi.mock('@shared/lib/agent-actor', () => ({
         enrich: async () => false,
         complete: async () => {},
         snapshot: async () => [],
+      },
+      messages: {
+        deliver: async (request: { sessionId: string; content: string }) => {
+          container.delivered.push({ sessionId: request.sessionId, content: request.content })
+          return { status: 'sent', queued: true }
+        },
       },
       container: {
         fetch: async (url: string, init?: RequestInit) => {
@@ -75,7 +83,9 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 
 const { decideLoginRequest } = await import('./login-host')
-const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, listAccountAgentSlugs } = await import('./vault-service')
+const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, saveAuthenticator, setSignInMethodRequest, listAccountAgentSlugs } = await import('./vault-service')
+const { totpCode } = await import('./totp')
+const { backgroundSettled } = await import('@shared/lib/background')
 const { heldLoginKey, holdLoginValues, heldLoginFor, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
 const { heldSessionVersion, readAccountSession, saveAccountSession } = await import('./session-service')
 const { resetSessionWatches } = await import('./session-host')
@@ -122,6 +132,7 @@ beforeEach(async () => {
   container.restore = { status: 200, body: {} }
   container.fillThrows = false
   container.calls = []
+  container.delivered = []
 })
 
 afterEach(async () => {
@@ -795,5 +806,142 @@ describe('decideLoginRequest with held values', () => {
       for (const spy of logged) spy.mockRestore()
       published.mockRestore()
     }
+  })
+})
+
+describe('decideLoginRequest with an authenticator app', () => {
+  const SEED = { secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', algorithm: 'SHA1' as const, digits: 6, period: 30 }
+  // Ten seconds into a period: the current code has twenty left.
+  const NOW = 1_800_000_010_000
+  const CODE_STEP: LoginContext = { ...GITHUB, url: 'https://github.com/sessions/two-factor/app', fields: [{ ...field('otp', 'Authentication code'), from: 'authenticator_app' }] }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function withAuthenticator(username = 'octocat') {
+    const account = await grantedAccount(username, { password: 'pw' })
+    await saveAuthenticator({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-0', setup: { seed: SEED, issuer: 'GitHub', accountName: username }, name: 'Gamut', asked: { request: true } })
+    await testDb.delete(auditLog).run()
+    return account
+  }
+
+  it('fills the app\'s current code into a field the agent says wants it, and counts the use', async () => {
+    const account = await withAuthenticator()
+    container.context = CODE_STEP
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+
+    expect(fills()).toEqual([{
+      path: '/browser/login/fill',
+      body: {
+        sessionId: 's-1',
+        toolUseId: 't-1',
+        expectedOrigin: 'https://github.com',
+        values: [totpCode(SEED, NOW)],
+        account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [], authenticator: { name: 'Gamut' } },
+      },
+    }])
+    const [use] = await testDb.select({ action: auditLog.action, details: auditLog.details }).from(auditLog).all()
+    expect(use.action).toBe('used')
+    expect(JSON.parse(use.details!)).toMatchObject({ password: false, by: 'vault', code: true })
+    expect(JSON.stringify(container.calls.filter((call) => call.path !== '/browser/login/fill'))).not.toContain(totpCode(SEED, NOW))
+    expect(account.id).toBeTruthy()
+  })
+
+  it('tells the agent the vault fills the app\'s code when the call did not say where the code comes from', async () => {
+    await withAuthenticator()
+    container.context = { ...CODE_STEP, fields: [field('otp', 'Authentication code')] }
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toEqual([])
+    expect(answers()).toEqual([{ path: '/inputs/t-1/resolve', value: { type: 'authenticator', site: 'github.com', username: 'octocat' } }])
+  })
+
+  it('asks the user for a code the site sent, even with the app in the vault', async () => {
+    const account = await withAuthenticator()
+    container.context = { ...CODE_STEP, fields: [{ ...field('otp', 'Code we texted you'), from: 'text_message' }] }
+    expect(await decide({ username: 'octocat' })).toEqual({
+      action: 'ask',
+      vault: { mode: 'complete', username: 'octocat', accountId: account.id, covered: [] },
+      login: container.context,
+    })
+    expect(fills()).toEqual([])
+  })
+
+  it('fills its codes with the password on one page, and tells the agent after the password that the app is there', async () => {
+    await withAuthenticator()
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()[0].body).toMatchObject({ values: ['octocat', 'pw'], account: { authenticator: { name: 'Gamut' } } })
+    container.calls = []
+    container.context = { ...GITHUB, fields: [...GITHUB.fields, { ...field('otp', 'Code'), from: 'authenticator_app' }] }
+    expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
+    expect(fills()[0].body).toMatchObject({ values: ['octocat', 'pw', totpCode(SEED, NOW)] })
+  })
+
+  it('stops filling the app\'s codes once the agent says the site rejected one', async () => {
+    const account = await withAuthenticator()
+    container.context = CODE_STEP
+    expect(await decide({ username: 'octocat', ask_user: true, reason: 'The page says "Two-factor code verification failed."' })).toMatchObject({
+      action: 'ask',
+      vault: { mode: 'ask', username: 'octocat' },
+    })
+    const marked = await getOwnedAccount(null, account.id)
+    expect(marked?.signInMethods.authenticator?.rejectedAt).toBe(NOW)
+    // The password is not what the site turned down.
+    expect(marked?.rejectedAt).toBeNull()
+
+    expect(await decide({ username: 'octocat' }, 's-2')).toEqual({
+      action: 'ask',
+      vault: { mode: 'complete', username: 'octocat', accountId: account.id, covered: [] },
+      login: CODE_STEP,
+    })
+    expect(fills()).toEqual([])
+    expect(await decide({}, 's-2')).toEqual({ action: 'settled' })
+    expect(answers().at(-1)?.value.accounts).toEqual([expect.objectContaining({ username: 'octocat', authenticator: 'rejected' })])
+  })
+
+  it('fills the app\'s codes by itself at most three times in half an hour', async () => {
+    await withAuthenticator()
+    container.context = CODE_STEP
+    for (const [index, session] of ['s-1', 's-2', 's-3'].entries()) {
+      expect(await decide({ username: 'octocat' }, session)).toEqual({ action: 'settled' })
+      expect(fills()).toHaveLength(index + 1)
+    }
+    expect(await decide({ username: 'octocat' }, 's-4')).toMatchObject({ action: 'ask', vault: { mode: 'complete', covered: [] } })
+    expect(fills()).toHaveLength(3)
+  })
+
+  it('lists the app with the account', async () => {
+    await grantedAccount('hubot', { password: 'pw' })
+    await withAuthenticator()
+    expect(await decide({})).toEqual({ action: 'settled' })
+    expect(answers()[0].value.accounts).toEqual(expect.arrayContaining([
+      { username: 'octocat', label: null, parts: ['password'], via: null, authenticator: 'ready', authenticatorName: 'Gamut' },
+      { username: 'hubot', label: null, parts: ['password'], via: null },
+    ]))
+  })
+
+  it('asks the agent signing in with the account for the method its owner requested, as the owner\'s message, once a session', async () => {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    await setSignInMethodRequest(null, account.id, true, 'logins')
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    await backgroundSettled()
+    expect(container.delivered).toEqual([{ sessionId: 's-1', content: expect.stringMatching(/^From Settings → Logins: once you are signed in, also add an authenticator app to my account octocat on github\.com with add_sign_in_method/) }])
+    // Nothing about it in what the tool returns: that reads as the tool's words, not the user's.
+    expect(fills()[0].body).toMatchObject({ account: { username: 'octocat', source: 'vault', saved: false, held: [] } })
+    expect(loginFillAccountSchema.safeParse((fills()[0].body as { account: unknown }).account).success).toBe(true)
+
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    await backgroundSettled()
+    expect(container.delivered).toHaveLength(1)
+    // Past the half hour in which the vault fills a saved password twice at most.
+    vi.setSystemTime(NOW + 31 * 60 * 1000)
+    expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
+    await backgroundSettled()
+    expect(container.delivered.map((message) => message.sessionId)).toEqual(['s-1', 's-2'])
   })
 })

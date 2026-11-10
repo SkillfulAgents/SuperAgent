@@ -1334,6 +1334,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             'mcp__user-input__request_file',
             'mcp__user-input__request_browser_input',
             'mcp__user-input__request_login',
+            'mcp__user-input__add_sign_in_method',
           ],
           prompt: WEB_BROWSER_AGENT_PROMPT,
           maxTurns: 500,
