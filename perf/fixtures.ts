@@ -271,6 +271,13 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
       longSession = { agentSlug: slug, sessionId: id, bytes: Buffer.byteLength(content), newestItemId }
     }
 
+    // Long unchanged, as an agent's transcripts directory mostly is: a
+    // directory changed in the last minute is listed on every read until a
+    // tick of its clock has passed (see `SessionIndex`), which is not the
+    // steady state these budgets pin.
+    const settledAt = new Date(BASE_TIME - 3_600_000)
+    await fs.promises.utimes(sessionsDir, settledAt, settledAt)
+
     // As a workspace from before the session index left it: opening the
     // database takes the file into the agent's index (data migration 0010).
     await fs.promises.writeFile(

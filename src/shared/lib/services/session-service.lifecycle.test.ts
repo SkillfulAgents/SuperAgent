@@ -302,6 +302,9 @@ describe('many sessions', () => {
     for (let i = 0; i < COUNT; i++) {
       fs.writeFileSync(transcriptFile(`session-${i}`), '{}\n')
     }
+    // Long unchanged, as an agent's directory mostly is: one listing settles it.
+    const anHourAgo = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(sessionsDir(), anHourAgo, anHourAgo)
     await store.index.fill(Array.from({ length: COUNT }, (_, i) => ({
       sessionId: `session-${i}`,
       meta: { name: `Session ${i}`, createdAt: '2030-01-01T00:00:00.000Z' },

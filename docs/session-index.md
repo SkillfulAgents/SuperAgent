@@ -30,7 +30,7 @@ Reconciliation is cheap by construction:
 
 A transcript is statted once in its life. A transcript the listing lacks is confirmed gone by its own stat before its entry (metadata included) is dropped. A transcripts directory that is not there is no evidence of anything, and neither is one with no transcript in it (`index.canConfirmGone()`): a volume that went away can leave an empty directory at its path, and it must not cost every session its name. The price is that sessions really all removed by hand keep their entries until a transcript is written again or they are deleted in the app. The background prune of registrations whose transcript never came follows the same rule.
 
-A directory's mtime cannot tell two changes in one tick of the filesystem's clock apart. So activity recorded for a transcript the index has not seen makes the next read list the directory again, whatever its mtime says (`index.lookAgain()`).
+A directory's mtime cannot tell two changes in one tick of the filesystem's clock apart, and a network filesystem can tick as slowly as once a second. So an mtime is trusted to mean "unchanged" only once the directory has been listed a whole tick (`DIRECTORY_TICK_MS`) after that mtime was first seen, or when it was already long past by then; until that, every read lists the directory again (a listing, no stats). That is what catches a transcript removed by hand a moment after a listing. Independently, activity recorded for a transcript the index has not seen makes the next read list the directory again, whatever its mtime says (`index.lookAgain()`).
 
 ## Last activity
 

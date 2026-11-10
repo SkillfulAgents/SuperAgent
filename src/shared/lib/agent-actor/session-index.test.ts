@@ -27,11 +27,15 @@ import { createInMemorySessionIndexStorage } from './testing/in-memory-session-i
 
 const transcript = (sessionId: string) => `${CLI_TRANSCRIPTS_DIR}/${sessionId}.jsonl`
 
-function setup(overrides: Partial<SessionIndexStorage> = {}) {
+/**
+ * `directoryTickMs` is 0 unless a test is about it: the in-memory files stamp
+ * every change with a later mtime, so one listing is always enough.
+ */
+function setup(overrides: Partial<SessionIndexStorage> = {}, directoryTickMs = 0) {
   const files = new InMemoryFileOps()
   const storage = { ...createInMemorySessionIndexStorage(), ...overrides }
   let key = 'workspace-one'
-  const index = new SessionIndex({ files, transcriptsDir: CLI_TRANSCRIPTS_DIR, key: () => key, storage })
+  const index = new SessionIndex({ files, transcriptsDir: CLI_TRANSCRIPTS_DIR, key: () => key, storage, directoryTickMs })
   return {
     files,
     storage,
@@ -40,7 +44,7 @@ function setup(overrides: Partial<SessionIndexStorage> = {}) {
       key = next
     },
     /** A second index over the same workspace and storage: the agent's actor after a restart. */
-    restarted: () => new SessionIndex({ files, transcriptsDir: CLI_TRANSCRIPTS_DIR, key: () => key, storage }),
+    restarted: () => new SessionIndex({ files, transcriptsDir: CLI_TRANSCRIPTS_DIR, key: () => key, storage, directoryTickMs }),
   }
 }
 
@@ -49,8 +53,84 @@ const activityOf = async (index: SessionIndex) =>
 
 afterEach(async () => {
   await backgroundSettled()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   expect(backgroundFailures.splice(0)).toEqual([])
+})
+
+describe('SessionIndex and a directory clock that ticks slowly', () => {
+  /** The files, stamping directories as a filesystem with a one-second clock does. */
+  function coarse(files: InMemoryFileOps): void {
+    const stat = InMemoryFileOps.prototype.stat
+    vi.spyOn(files, 'stat').mockImplementation(async (path) => {
+      const found = await stat.call(files, path)
+      return found?.kind === 'directory' ? { ...found, mtimeMs: Math.floor(found.mtimeMs / 1000) * 1000 } : found
+    })
+  }
+
+  it('sees a transcript removed, and one added, in the same tick as the listing before', async () => {
+    vi.useFakeTimers({ now: new Date('2030-01-01T00:00:00.100Z'), toFake: ['Date'] })
+    const { index, files } = setup({}, 1_000)
+    coarse(files)
+    await index.update('removed', () => ({ name: 'Removed' }))
+    await files.putDoc(transcript('kept'), 'x')
+    await files.putDoc(transcript('removed'), 'x')
+    expect((await index.entries()).map((entry) => entry.sessionId).sort()).toEqual(['kept', 'removed'])
+
+    // The directory's mtime says nothing of either change.
+    vi.setSystemTime(new Date('2030-01-01T00:00:00.500Z'))
+    await files.delete(transcript('removed'))
+    await files.putDoc(transcript('added'), 'x')
+
+    expect((await index.entries()).map((entry) => entry.sessionId).sort()).toEqual(['added', 'kept'])
+    expect(await index.metadata()).toEqual({})
+  })
+
+  it('lists on every read until a tick has passed since it first saw the directory\'s mtime, then trusts it', async () => {
+    vi.useFakeTimers({ now: new Date('2030-01-01T00:00:00.100Z'), toFake: ['Date'] })
+    const { index, files } = setup({}, 1_000)
+    await files.putDoc(transcript('s1'), 'x')
+    const list = vi.spyOn(files, 'list')
+    const stat = vi.spyOn(files, 'stat')
+
+    await index.entries()
+    await index.entries()
+    expect(list).toHaveBeenCalledTimes(2)
+    // Known transcripts are not statted again: listing is all it costs.
+    expect(stat.mock.calls.filter(([path]) => path !== CLI_TRANSCRIPTS_DIR)).toEqual([[transcript('s1')]])
+
+    vi.setSystemTime(new Date('2030-01-01T00:00:01.100Z'))
+    await index.entries()
+    expect(list).toHaveBeenCalledTimes(3)
+    await index.entries()
+    await index.entries()
+    expect(list).toHaveBeenCalledTimes(3)
+  })
+
+  it('trusts at once a directory that has long been unchanged', async () => {
+    vi.useFakeTimers({ now: new Date('2030-01-01T00:00:00.000Z'), toFake: ['Date'] })
+    const { files, restarted } = setup({}, 1_000)
+    await files.putDoc(transcript('s1'), 'x')
+    vi.setSystemTime(new Date('2030-01-01T00:05:00.000Z'))
+    const list = vi.spyOn(files, 'list')
+    const index = restarted()
+
+    await index.entries()
+    await index.entries()
+
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets readers that arrive together share one listing', async () => {
+    vi.useFakeTimers({ now: new Date('2030-01-01T00:00:00.100Z'), toFake: ['Date'] })
+    const { index, files } = setup({}, 1_000)
+    await files.putDoc(transcript('s1'), 'x')
+    const list = vi.spyOn(files, 'list')
+
+    await Promise.all([index.entries(), index.entries(), index.entries(), index.entries()])
+
+    expect(list.mock.calls.length).toBeLessThanOrEqual(2)
+  })
 })
 
 describe('SessionIndex and the transcripts directory', () => {

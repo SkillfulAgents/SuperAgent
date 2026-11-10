@@ -92,12 +92,41 @@ export interface SessionIndexDeps {
   /** Identifies the storage behind `files`; what was learned from one directory is never applied to another. */
   key: () => string
   storage: SessionIndexStorage
+  /** {@link DIRECTORY_TICK_MS}, for a test over a filesystem whose clock it knows. */
+  directoryTickMs?: number
+}
+
+/**
+ * The coarsest clock a filesystem is expected to stamp a directory with. A
+ * change made in the same tick as the one before it leaves the directory's
+ * mtime as it was, and network filesystems tick as slowly as once a second.
+ */
+export const DIRECTORY_TICK_MS = 2_000
+
+/**
+ * A directory whose mtime is this far behind the host's clock has not
+ * changed within a tick, whatever the two clocks disagree by.
+ */
+const LONG_UNCHANGED_MS = 60_000
+
+/** What the index last learned from the transcripts directory. */
+interface Reconciled {
+  key: string
+  directoryMtimeMs: number | null
+  /** When (host clock) this mtime was first seen on the directory. */
+  firstSeenAtMs: number
+  /**
+   * Whether the mtime can be trusted to mean "nothing changed since": only
+   * once the directory was listed a whole tick after the mtime was first
+   * seen (or was long unchanged by then). Until that, a change in the same
+   * tick as the listing would go unseen, so every read lists again.
+   */
+  settled: boolean
 }
 
 export class SessionIndex {
-  /** The directory state the index was last reconciled with. */
-  private reconciled: { key: string; directoryMtimeMs: number | null } | undefined
-  private reconciling: Promise<void> | undefined
+  private reconciled: Reconciled | undefined
+  private reconciling: { run: Promise<void>; startedAtMs: number } | undefined
   /** Counts {@link lookAgain}: a run it was called during does not get to say the directory was seen. */
   private lookAgainCalls = 0
   /** Recorded activity not yet stored. */
@@ -276,30 +305,41 @@ export class SessionIndex {
 
   /**
    * Bring the index in line with the transcripts directory, if the directory
-   * changed since the last time. Concurrent callers share one run.
+   * changed since the last time, or may have (see {@link Reconciled.settled}).
+   * Concurrent callers share one run.
    */
   private async reconcile(): Promise<void> {
+    const arrivedAtMs = Date.now()
     for (;;) {
       const key = this.deps.key()
       const directoryMtimeMs = await this.directoryMtime()
-      if (this.reconciled?.key === key && this.reconciled.directoryMtimeMs === directoryMtimeMs) return
+      const last = this.reconciled?.key === key && this.reconciled.directoryMtimeMs === directoryMtimeMs ? this.reconciled : undefined
+      if (last?.settled) return
       if (this.reconciling) {
-        // Another reader's run, started from the directory as it saw it:
-        // wait, then compare again with what this reader saw.
-        await this.reconciling
+        // Another reader's run. One that started after this reader arrived
+        // saw everything this reader could expect to; an earlier one may
+        // not have, so compare again with what this reader saw.
+        const { run, startedAtMs } = this.reconciling
+        await run
+        if (startedAtMs >= arrivedAtMs) return
         continue
       }
       // The mtime was read before the listing, so a change in between is
       // seen as a change again by the next read.
+      const startedAtMs = Date.now()
+      const firstSeenAtMs = last?.firstSeenAtMs ?? startedAtMs
+      const settled = directoryMtimeMs === null
+        || startedAtMs - directoryMtimeMs > LONG_UNCHANGED_MS
+        || startedAtMs - firstSeenAtMs >= (this.deps.directoryTickMs ?? DIRECTORY_TICK_MS)
       const lookAgainCalls = this.lookAgainCalls
       const run = this.reconcileWithDirectory(directoryMtimeMs !== null)
         .then(() => {
-          if (this.lookAgainCalls === lookAgainCalls) this.reconciled = { key, directoryMtimeMs }
+          if (this.lookAgainCalls === lookAgainCalls) this.reconciled = { key, directoryMtimeMs, firstSeenAtMs, settled }
         })
         .finally(() => {
-          if (this.reconciling === run) this.reconciling = undefined
+          if (this.reconciling?.run === run) this.reconciling = undefined
         })
-      this.reconciling = run
+      this.reconciling = { run, startedAtMs }
       return run
     }
   }
