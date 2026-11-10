@@ -66,7 +66,7 @@ const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
   github: {
     ...volumeType(githubVolumeConfigSchema, (row, config, agentSlug) => new GithubMountableVolume(row.id, row.name, config,
       'volumeId' in row && typeof row.volumeId === 'string' ? row.volumeId : row.id, agentSlug), prepareGithubVolume,
-      { browseFolders: GithubMountableVolume.browseFolders }),
+      { browseFolders: GithubMountableVolume.browseFolders, createFolder: GithubMountableVolume.createFolder }),
     remove: removeGithubSync,
   },
   s3: volumeType(s3VolumeConfigSchema, (row, config, agentSlug) => new S3MountableVolume(row.id, row.name, config, agentSlug), prepareS3Volume,
