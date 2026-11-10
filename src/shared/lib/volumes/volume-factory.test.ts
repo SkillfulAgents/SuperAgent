@@ -44,6 +44,6 @@ describe('createVolumeFolder', () => {
   it('rejects unknown types, and a type that cannot make folders from setup', async () => {
     const viewer = { userId: 'alice' }
     await expect(createVolumeFolder('toString', {}, viewer)).rejects.toMatchObject({ status: 404 })
-    await expect(createVolumeFolder('github', { accountId: 'a', name: 'x' }, viewer)).rejects.toMatchObject({ status: 400 })
+    await expect(createVolumeFolder('s3', { bucket: 'b', name: 'x' }, viewer)).rejects.toMatchObject({ status: 400 })
   })
 })
