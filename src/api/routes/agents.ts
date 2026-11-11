@@ -2238,12 +2238,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const actor = agentRegistry.get(slug)
 
-    await actor.container.start()
-    const availableEnvVars = await getSecretEnvVars(slug)
-
     // One read of the settings for this session's start: limits, custom env,
-    // tab limit, models and the runtime below all come from it.
-    const launch = await resolveSessionDefaults(await getSettings(), slug)
+    // tab limit, models and the runtime below all come from it. Read while the
+    // container starts; the workspace files wait for it, since its boot
+    // repairs their permissions.
+    const [, settings] = await Promise.all([actor.container.start(), getSettings()])
+    const availableEnvVars = await getSecretEnvVars(slug)
+    const launch = await resolveSessionDefaults(settings, slug)
     const { agentLimits, customEnvVars, maxBrowserTabs, models } = launch
 
     // Server-generated uuid for the initial message (never client-supplied —
@@ -7414,39 +7415,43 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
     const slug = getAgentId(c)
 
 
-    // Always read name/description from host filesystem (source of truth for metadata)
-    const fsDashboards = await listArtifactsFromFilesystem(slug)
-
-    // Try to merge with running container data (provides live status + port)
-    try {
-      const actor = agentRegistry.get(slug)
-      // Use cached status to avoid spawning docker process
-      const info = await agentRegistry.get(slug).container.status()
-
-      if (info.status === 'running') {
+    // Always read name/description from host filesystem (source of truth for metadata),
+    // alongside the running container's list (live status + port).
+    const readContainerDashboards = async (): Promise<ArtifactInfo[] | null> => {
+      try {
+        const actor = agentRegistry.get(slug)
+        // Use cached status to avoid spawning docker process
+        const info = await actor.container.status()
+        if (info.status !== 'running') return null
         const response = await actor.container.fetch('/artifacts')
-        if (response.ok) {
-          const containerDashboards = await response.json() as ArtifactInfo[]
-          const fsMap = new Map(fsDashboards.map(d => [d.slug, d]))
+        return response.ok ? await response.json() as ArtifactInfo[] : null
+      } catch {
+        // Container not running, fall through to filesystem-only data
+        return null
+      }
+    }
+    const [fsDashboards, containerDashboards] = await Promise.all([
+      listArtifactsFromFilesystem(slug),
+      readContainerDashboards(),
+    ])
 
-          // Use container status/port but filesystem name/description
-          const merged = containerDashboards.map(cd => {
-            const fs = fsMap.get(cd.slug)
-            return fs
-              ? { ...cd, name: fs.name, description: fs.description }
-              : cd
-          })
-          // Include any filesystem-only dashboards (not yet tracked by container)
-          for (const fsd of fsDashboards) {
-            if (!containerDashboards.some(cd => cd.slug === fsd.slug)) {
-              merged.push(fsd)
-            }
-          }
-          return c.json(merged)
+    if (containerDashboards) {
+      const fsMap = new Map(fsDashboards.map(d => [d.slug, d]))
+
+      // Use container status/port but filesystem name/description
+      const merged = containerDashboards.map(cd => {
+        const fs = fsMap.get(cd.slug)
+        return fs
+          ? { ...cd, name: fs.name, description: fs.description }
+          : cd
+      })
+      // Include any filesystem-only dashboards (not yet tracked by container)
+      for (const fsd of fsDashboards) {
+        if (!containerDashboards.some(cd => cd.slug === fsd.slug)) {
+          merged.push(fsd)
         }
       }
-    } catch {
-      // Container not running, fall through to filesystem-only data
+      return c.json(merged)
     }
 
     return c.json(fsDashboards)
