@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back within seconds.",
+  "reason": "Verified that the agent can successfully execute browser commands, navigate to a URL, retrieve page title, and respond with the expected content \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded the Gamut application homepage with sidebar showing available agents.",
-    "Found and clicked the \"QA-20261110-212816-hwde\" agent in the sidebar - Successfully opened the agent page showing the chat interface.",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully entered in the input textbox and sent via the Send button.",
-    "Waited for agent response with up to 3 minute timeout - Agent completed processing in approximately 7 seconds (status changed from \"Working...\" to idle).",
-    "Verified response mentions \"Example Domain\" and captured screenshot - Response clearly states: 'The page title is \"Example Domain\". The page loaded normally, and I've closed the browser.' Screenshot captured showing the full response in the chat interface with metadata indicating 3 tool calls and 160,078 tokens used."
+    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully showing Gamut app with agent list in sidebar",
+    "Step 2: Found and clicked \"QA-20261111-000155-uutf\" agent in sidebar - Agent page opened with session title \"Check Example.com Page Title\"",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully sent, agent status changed to \"working\"",
+    "Step 4: Waited for agent response - Agent completed work within 8 seconds, using 3 tool calls and 160,077 tokens",
+    "Step 5: Verified response and took screenshot - Response clearly states \"The page title is Example Domain. I opened https://example.com in the browser, then closed it.\" confirming successful browser navigation and page title retrieval"
   ],
   "bugs": [],
-  "durationMs": 63655,
-  "sessionId": "5cd4dd67-731e-4f46-9c7a-0db311a24522",
+  "durationMs": 70765,
+  "sessionId": "9cd890ba-b997-4420-9c43-c6894ac66b46",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 11238,
-    "cacheCreationTokens": 67423,
-    "cacheReadTokens": 859130,
+    "inputTokens": 290,
+    "outputTokens": 9939,
+    "cacheCreationTokens": 61597,
+    "cacheReadTokens": 757694,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.226702
+    "totalCostUsd": 0.202751
   }
 }
