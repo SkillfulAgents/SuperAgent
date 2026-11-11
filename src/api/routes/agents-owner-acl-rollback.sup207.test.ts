@@ -168,7 +168,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 vi.mock('@shared/lib/services/session-service', () => ({
-  listSessions: vi.fn(), listSessionsFromSummary: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
+  listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(), removeMessage: vi.fn(), removeToolCall: vi.fn(),

@@ -12,7 +12,7 @@
 
 import { db } from '@shared/lib/db'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
+import { notifications, agentAcl, user, type Notification, type NewNotification } from '@shared/lib/db/schema'
 import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
@@ -51,6 +51,20 @@ export async function getAccessibleAgentSlugs(userId: string): Promise<string[]>
     .select({ agentSlug: agentAcl.agentSlug })
     .from(agentAcl)
     .where(eq(agentAcl.userId, userId))
+  return rows.map((r) => r.agentSlug)
+}
+
+/**
+ * The agents a device of this user may be pushed about: none for someone
+ * invited who hasn't joined (they can't have signed in on a device, and a
+ * row whose status somehow lags must still hear nothing).
+ */
+export async function getPushableAgentSlugs(userId: string): Promise<string[]> {
+  const rows = await db
+    .select({ agentSlug: agentAcl.agentSlug })
+    .from(agentAcl)
+    .innerJoin(user, eq(user.id, agentAcl.userId))
+    .where(and(eq(agentAcl.userId, userId), eq(user.status, 'active')))
   return rows.map((r) => r.agentSlug)
 }
 
@@ -444,12 +458,12 @@ export async function deleteNotification(notificationId: string): Promise<boolea
  *
  * No-op (returns 0) when the input list is empty.
  */
-export async function deleteNotificationsBySessionIds(sessionIds: string[]): Promise<number> {
+export async function deleteNotificationsBySessionIds(agentSlug: string, sessionIds: string[]): Promise<number> {
   if (sessionIds.length === 0) return 0
 
   const result = await db
     .delete(notifications)
-    .where(inArray(notifications.sessionId, sessionIds))
+    .where(and(eq(notifications.agentSlug, agentSlug), inArray(notifications.sessionId, sessionIds)))
     .returning(changeAudience())
 
   publishChanges(result)

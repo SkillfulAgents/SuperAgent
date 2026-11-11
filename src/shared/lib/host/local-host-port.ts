@@ -8,7 +8,7 @@
  * import graph of anything that touches an agent. Notifications, analytics
  * and the global feed are handed over synchronously, as they always were.
  */
-import { createLocalHostPort, type SessionNotification } from '@shared/lib/agent-actor/host-port'
+import { createLocalHostPort, type ComputerUseCaller, type SessionNotification } from '@shared/lib/agent-actor/host-port'
 import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -19,13 +19,45 @@ const isE2EMock = () => process.env.E2E_MOCK === 'true'
 
 const computerUse = () => import('@shared/lib/computer-use/executor')
 
+/** The app a mock E2E call names, as the machine would place it: its app or other target, if it names one. */
+async function mockTargetApp(method: string, params: Record<string, unknown>): Promise<string | undefined> {
+  const [{ commandLineOf }, { callTargets }] = await Promise.all([
+    import('@shared/lib/computer-use/command-line'),
+    import('@shared/lib/computer-use/commands'),
+  ])
+  try {
+    const line = commandLineOf(method, params)
+    const targets = callTargets(line.method, line.params)
+    return targets.app ?? targets.system
+  } catch {
+    return undefined
+  }
+}
+
+/** The caller as the executor draws its cursor: labelled with the agent's name, in its avatar colour. */
+async function computerUseCaller(caller: ComputerUseCaller): Promise<import('@shared/lib/computer-use/executor').ComputerUseCaller> {
+  const [{ getAgentRecord }, { agentAvatarAccent }] = await Promise.all([
+    import('@shared/lib/services/agent-service'),
+    import('@shared/lib/types/agent-avatar-orbs'),
+  ])
+  const record = await getAgentRecord(caller.agentSlug).catch(() => null)
+  return {
+    ...caller,
+    label: record?.name ?? caller.agentSlug,
+    ...(record?.avatar && { accent: agentAvatarAccent(record.avatar.color), avatar: record.avatar }),
+  }
+}
+
 function notify(notification: SessionNotification): Promise<void> {
   switch (notification.kind) {
     case 'session_complete':
       return notificationManager.triggerSessionComplete(notification.sessionId, notification.agentSlug, {
         responseText: notification.responseText,
         responseTranscriptEndOffset: notification.responseTranscriptEndOffset,
+        taggedUserIds: notification.taggedUserIds,
       })
+    case 'message_mentions':
+      return notificationManager.triggerAgentMentions(notification)
     case 'session_waiting_input':
       return notificationManager.triggerSessionWaitingInput(notification.sessionId, notification.agentSlug, notification.request)
     case 'api_review_waiting':
@@ -64,10 +96,16 @@ async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
 export const localHostPort = createLocalHostPort({
   calls: {
     hostTool: async (request) => (await import('./tools')).runHostTool(request),
-    computerUse: async ({ method, params }) =>
-      isE2EMock() ? `[mock] ${method} executed successfully` : (await computerUse()).executeComputerUseCommand(method, params),
-    computerUsePermissions: async () => (isE2EMock() ? null : (await computerUse()).checkACPermissions()),
-    computerUseWindowApp: async ({ ref }) => (await computerUse()).resolveAppFromWindowRef(ref),
+    computerUse: async ({ method, params, caller, startBy, app }) => {
+      if (!isE2EMock()) return (await computerUse()).executeComputerUseCommand(method, params, await computerUseCaller(caller), { startBy, app })
+      const acted = app ?? (await mockTargetApp(method, params))
+      return { output: `[mock] ${method} executed successfully`, ...(acted !== undefined && { app: acted }) }
+    },
+    computerUsePermissions: async (needs) => (isE2EMock() ? null : (await computerUse()).checkComputerUsePermissions(needs)),
+    computerUseTargetApp: async ({ method, params }) =>
+      isE2EMock()
+        ? mockTargetApp(method, params)
+        : (await computerUse()).resolveComputerUseTargetApp(method, params),
     computerUseAppIcon: async ({ app }) => (await import('@shared/lib/computer-use/app-icon')).getAppIconBase64(app),
     hostScript: async ({ script, scriptType }) => (await import('./script')).runHostScript(script, scriptType),
     loginRequest: async (request) => (await import('@shared/lib/browser-vault/login-host')).decideLoginRequest(request),

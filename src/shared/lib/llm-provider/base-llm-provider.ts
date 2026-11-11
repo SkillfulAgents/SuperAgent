@@ -6,6 +6,7 @@ import { getSettings, type ApiKeySettings, type ApiKeyStatus, type AppSettings }
 import type { ConnectionConfig } from './connection-schema'
 import type { ModelCatalogSettings, ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { ModelAvailability } from './model-availability-schema'
+import type { ModelDownload, ServerStatus } from './server-status-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 import type { Attribution } from '../platform-attribution'
@@ -119,6 +120,31 @@ export abstract class BaseLlmProvider {
   /** Whether model availability may need a provider-backed policy request. */
   readonly supportsModelAvailability: boolean = false
 
+  /** Whether this provider runs a model server that can say how it is, and what it has installed. */
+  readonly supportsServerStatus: boolean = false
+
+  /** Whether models are downloaded to that server before use. */
+  readonly supportsModelDownloads: boolean = false
+
+  async getServerStatus(): Promise<ServerStatus> {
+    throw new Error(`${this.name} has no server to check`)
+  }
+
+  /** Downloads under way or failed; a finished one leaves the list. */
+  async listModelDownloads(): Promise<ModelDownload[]> {
+    throw new Error(`${this.name} does not download models`)
+  }
+
+  /** Starts a download, or does nothing if this model is already downloading. Throws, saying why, on a name it cannot take. */
+  async startModelDownload(_model: string): Promise<void> {
+    throw new Error(`${this.name} does not download models`)
+  }
+
+  /** Stops a running download, or dismisses a failed one. */
+  async cancelModelDownload(_model: string): Promise<void> {
+    throw new Error(`${this.name} does not download models`)
+  }
+
   /** Read-only allowance snapshot; never gates inference or model selection. */
   async getUsage(): Promise<ProviderUsage> {
     return { status: 'unsupported', observedAt: new Date().toISOString(), limits: [] }
@@ -202,6 +228,11 @@ export abstract class BaseLlmProvider {
    * See ./model-catalog.ts for how a stored selection resolves against this.
    */
   abstract getBuiltinCatalog(): ModelDefinition[]
+
+  /** The config a save stores. Throws, saying what to fix, on one this provider cannot use. */
+  normalizeConnectionConfig(config: ConnectionConfig): ConnectionConfig {
+    return config
+  }
 
   /**
    * Current restrictions for a connection's catalog, for the account the

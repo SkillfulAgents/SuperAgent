@@ -24,7 +24,7 @@ const mockRecordProvisionalSessionActivity = vi.fn((_store: unknown, _id: string
   previous: { mtimeMs: at - 60_000, size: 10 },
 }))
 const mockRevertSessionActivity = vi.fn()
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
   recordProvisionalSessionActivity: (...args: unknown[]) =>
     mockRecordProvisionalSessionActivity(...(args as [unknown, string, number])),
@@ -81,7 +81,7 @@ const completions = () =>
   live.host.sent('notification').filter((n): n is SessionComplete => n.kind === 'session_complete')
 /** This session's completion notification, with these fields. */
 const completion = (fields: Pick<SessionComplete, 'responseText' | 'responseTranscriptEndOffset'>): SessionComplete =>
-  ({ kind: 'session_complete', agentSlug: AGENT_SLUG, sessionId: SESSION_ID, ...fields })
+  ({ kind: 'session_complete', agentSlug: AGENT_SLUG, sessionId: SESSION_ID, taggedUserIds: [], ...fields })
 
 // A turn's completion notification goes out once the transcript's end is
 // known (an async stat); let that settle before asserting on it, either way.
@@ -1595,5 +1595,45 @@ describe('activity projection (pull)', () => {
 
     expect(sseEvents.filter(e => e.type === 'session_activity')).toHaveLength(0)
     expect(sessions().activity(SESSION_ID)).toBe('idle')
+  })
+})
+
+describe('agent tags', () => {
+  it('reports each message that tags a member once, and who the turn tagged', async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    const tagging = {
+      type: 'assistant',
+      uuid: 'tag-entry',
+      message: { id: 'msg-tag', content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] },
+    }
+    mockClient.emit(tagging)
+    // A resumed CLI can replay a frame it already sent: it reports once.
+    mockClient.emit(tagging)
+    // A later frame of the same message tags no one twice. A frame that tags nobody reports nothing.
+    mockClient.emit({ ...tagging, uuid: 'tag-entry-2', message: { id: 'msg-tag', content: [{ type: 'text', text: 'and [@Mike Smith](user:u_mike1) once more' }] } })
+    mockClient.emit({ type: 'assistant', uuid: 'plain-entry', message: { id: 'msg-plain', content: [{ type: 'text', text: 'No tags here.' }] } })
+    // A new message that tags them again tells them again.
+    mockClient.emit({ type: 'assistant', uuid: 'tag-entry-3', message: { id: 'msg-tag-2', content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) one more thing' }] } })
+    mockClient.emit({ type: 'result', subtype: 'success', is_error: false, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+    mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions')).toEqual([{
+      kind: 'message_mentions',
+      agentSlug: AGENT_SLUG,
+      sessionId: SESSION_ID,
+      messageUuid: 'tag-entry',
+      userIds: ['u_mike1'],
+      text: '@Mike Smith please decide',
+    }, {
+      kind: 'message_mentions',
+      agentSlug: AGENT_SLUG,
+      sessionId: SESSION_ID,
+      messageUuid: 'tag-entry-3',
+      userIds: ['u_mike1'],
+      text: '@Mike Smith one more thing',
+    }])
+    expect(completions().at(-1)?.taggedUserIds).toEqual(['u_mike1'])
   })
 })

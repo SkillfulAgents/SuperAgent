@@ -6,7 +6,7 @@ import type { computerUsePermissionManager } from '@shared/lib/computer-use/perm
 import type { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import type * as sessionService from '@shared/lib/services/session-service'
 import type { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import type { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import type { recordSessionActivity } from '@shared/lib/services/session-activity'
 import type * as transcriptOps from './local-transcript-ops'
 import type { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import type { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
@@ -19,10 +19,12 @@ import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { background } from '@shared/lib/background'
 import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
+import { findDeliveredFile, readTranscriptView } from '@shared/lib/services/x-agent-transcript-view'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
+import { exportSessionMetadata, ingestSessionMetadataFile } from '@shared/lib/services/session-metadata-file'
 import { transcriptPath, type SessionStore } from './session-store'
 import { sessionEvents, sessionFrames } from './session-streams'
 import type { UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
@@ -255,7 +257,6 @@ function createSessionOps(
   }
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
-    listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(store, ...args),
     listByIds: (...args) => deps.sessionService.listSessionsByIds(store, ...args),
     get: (...args) => deps.sessionService.getSession(store, ...args),
     summary: () => deps.sessionService.getSessionSummary(store),
@@ -293,6 +294,8 @@ function createSessionOps(
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),
+    exportMetadata: () => exportSessionMetadata(store),
+    ingestMetadataFile: () => ingestSessionMetadataFile(store),
     updateMetadata: (sessionId, updates) => deps.sessionService.updateSessionMetadata(store, sessionId, updates),
     fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(store, sessionId),
     usage: (sessionId) =>
@@ -371,6 +374,10 @@ function createMessageOps(
     },
 
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
+    transcriptView: (sessionId, opts) =>
+      readTranscriptView(deps.sessionService.streamSessionMessagesWithCompact(store, sessionId), opts),
+    findDeliveredFile: (sessionId, deliveryId) =>
+      findDeliveredFile(deps.sessionService.streamSessionMessagesWithCompact(store, sessionId), deliveryId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
     delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(store, sessionId, opts),
     findLastEntry: (sessionId, query, options) =>
@@ -484,18 +491,18 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
 function createComputerUseOps(state: AgentState, deps: LocalActorDeps): ComputerUseOps {
   const computerUse = state.computerUse
   return {
-    releaseGrab: async (sessionId) => {
-      const appName = computerUse.grabbed()
-      computerUse.clearGrabbed()
+    releaseApp: async (sessionId) => {
+      const appName = computerUse.activeApp(sessionId)
+      computerUse.clearActiveApp(sessionId)
       if (appName) await computerUse.revoke('use_application', appName)
       // Taking the app back ends the session's any-app grant too: its next
       // app asks again.
       computerUse.revokeSession(sessionId)
-      state.sessions.emit(sessionId, { type: 'computer_use_grab_changed', app: null })
+      state.sessions.emit(sessionId, { type: 'computer_use_app_changed', app: null })
       return { appName }
     },
-    setGrabbedApp: async (appName) => computerUse.setGrabbed(appName),
-    clearGrabbedApp: async () => computerUse.clearGrabbed(),
+    setActiveApp: async (sessionId, appName) => computerUse.setActiveApp(sessionId, appName),
+    clearActiveApp: async (sessionId) => computerUse.clearActiveApp(sessionId),
     grant: async (...args) => computerUse.grant(...args),
     consumeOnce: async (...args) => computerUse.consumeOnce(...args),
     clearPending: async (...args) => state.sessions.clearComputerUseRequest(...args),

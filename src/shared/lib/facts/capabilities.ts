@@ -28,11 +28,11 @@ export function runsHostScripts(server: ServerFacts): boolean {
 
 /**
  * Whether the server can use the person's installed Chrome: launch it with a
- * debugging port as the agents' browser, copy a profile's logins into the
- * built-in browser, and read Apple Passwords through Chrome's extension. A
- * sandboxed app can't: macOS strips the arguments of an app it opens, Chrome
- * aborts when started inside the sandbox, and Chrome's profiles are outside the
- * app's container. Agents there browse in their built-in browser.
+ * debugging port as the agents' browser, and read Apple Passwords through
+ * Chrome's extension, found in the person's Chrome profiles. A sandboxed app
+ * can't: macOS strips the arguments of an app it opens, Chrome aborts when
+ * started inside the sandbox, and Chrome's profiles are outside the app's
+ * container. Agents there browse in their built-in browser.
  */
 export function drivesUserChrome(server: ServerFacts): boolean {
   return !runsInAppSandbox(server)
@@ -46,6 +46,15 @@ export function drivesUserChrome(server: ServerFacts): boolean {
  * a local drive needs that bookmark, and a dropped folder uploads its files.
  */
 export function readsHostFolders(server: ServerFacts): boolean {
+  return !runsInAppSandbox(server)
+}
+
+/**
+ * Whether the server can tell an app is installed on its machine by looking for
+ * its files. A sandboxed app cannot see outside its container, so it could only
+ * ever say it found nothing, never that the app is missing.
+ */
+export function findsHostApps(server: ServerFacts): boolean {
   return !runsInAppSandbox(server)
 }
 

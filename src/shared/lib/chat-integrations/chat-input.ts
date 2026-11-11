@@ -6,6 +6,7 @@ import { isHostOrSubdomain, tryParseUrl } from '../utils/url-safety'
 import { formatSenderPrefix } from '../utils/sender-prefix'
 import { agentRegistry } from '../agent-actor'
 import { captureException } from '../error-reporting'
+import { chunksOf } from '../agent-actor/jsonl-files'
 import { heicUploadAsJpeg } from '@/api/routes/heic-jpeg'
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
@@ -96,8 +97,8 @@ export class ChatInputBuilder {
       // Telegram & iMessage: direct URL download (no auth needed)
       const response = await fetch(fileUrl)
       if (!response.ok) return null
-      const buffer = Buffer.from(await response.arrayBuffer())
-      if (!this.validateFileContent(buffer)) return null
+      const buffer = await this.readDownload(response)
+      if (!buffer || !this.validateFileContent(buffer)) return null
       return buffer
     } catch (err) {
       console.error(`[ChatAgentIntegration] File download failed:`, err)
@@ -171,11 +172,33 @@ export class ChatInputBuilder {
       return null
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer())
-    if (!this.validateFileContent(buffer)) {
+    const buffer = await this.readDownload(response)
+    if (!buffer || !this.validateFileContent(buffer)) {
       return null
     }
     return buffer
+  }
+
+  /** The response body, or null once it is over the size limit: an oversized file is never held whole. */
+  private async readDownload(response: Response): Promise<Buffer | null> {
+    const declared = Number(response.headers.get('content-length'))
+    if (declared > MAX_FILE_DOWNLOAD_SIZE) {
+      await response.body?.cancel().catch(() => {})
+      console.error(`[ChatAgentIntegration] Downloaded file too large (${(declared / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
+      return null
+    }
+    if (!response.body) return Buffer.alloc(0)
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of chunksOf(response.body)) {
+      size += chunk.length
+      if (size > MAX_FILE_DOWNLOAD_SIZE) {
+        console.error(`[ChatAgentIntegration] Downloaded file too large (over ${MAX_FILE_DOWNLOAD_SIZE / 1024 / 1024} MB)`)
+        return null
+      }
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks, size)
   }
 
   /** Validate downloaded content is actual file data, not an HTML error page. */

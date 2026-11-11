@@ -1,345 +1,856 @@
 /**
  * Computer Use Executor
  *
- * Wraps the @skillful-agents/agent-computer SDK to execute commands on the host machine.
- * Reached through the host port (see host/local-host-port.ts) for both the auto-execute path and the API endpoint.
+ * Runs agents' agent-desktop commands on this machine, as given, and hands
+ * back what agent-desktop printed. Reached through the host port (see
+ * host/local-host-port.ts). Around each command it does only what the app
+ * owns:
+ * - the session: each app session gets its own agent-desktop session, started
+ *   on its first command, and agent-desktop resolves a ref only inside the
+ *   session whose snapshot made it, so one session never acts on another's
+ *   refs. The session carries the agent's cursor, in its colour and with its
+ *   name, when the user shows cursors.
+ * - the target, for the per-app permission check: the executor remembers
+ *   which app each snapshot and window belongs to, so a ref-only call
+ *   (`click @s8f3k2p9:e5`) can be checked and shown in the activity indicator.
+ * - physical input: `--headed` runs only when the user's settings allow it.
+ * - time: a command that outlives its own budget is stopped.
+ * - screenshots: the image comes back to the agent as an image (see
+ *   screenshotOutput).
  */
 
-import { AC, formatOutput } from '@skillful-agents/agent-computer'
-import { COMPUTER_RUN_METHOD, unwrapComputerRun } from './computer-run'
-import * as fs from 'fs'
-import { createRequire } from 'module'
+import { getSettings } from '@shared/lib/config/settings'
+import {
+  buildCommandArgs,
+  callTargets,
+  ComputerUseArgumentError,
+  OBSERVATION_COMMANDS,
+  requestsHeaded,
+  SYSTEM_TARGETS,
+  type CallTargets,
+  type ScreenPoint,
+} from './commands'
+import { commandLineOf } from './command-line'
+import {
+  AgentDesktopAbortedError,
+  AgentDesktopTimeoutError,
+  agentDesktopHome,
+  commandTimeoutMs,
+  displayListSchema,
+  cursorOverlayDataSchema,
+  launchDataSchema,
+  permissionsDataSchema,
+  runAgentDesktop,
+  runAgentDesktopOrThrow,
+  runAgentDesktopOutput,
+  screenshotDataSchema,
+  sessionStartDataSchema,
+  snapshotDataSchema,
+  windowListSchema,
+  type AgentDesktopEnvelope,
+} from './agent-desktop'
+import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
+import { computerUsePreferences } from './types'
+import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
+import { sameApp } from './app-identity'
+import { activateStartMenuApp, findStartMenuApp, startMenuApps, waitForActivatedWindow } from './windows-start-menu'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import * as path from 'path'
-import { platform, arch } from 'os'
 
-let acInstance: AC | null = null
-
-/**
- * Resolve the ac-core binary path, rewriting asar paths for packaged Electron apps.
- * In packaged apps, node_modules live inside app.asar (a virtual FS). child_process.spawn
- * can't execute from inside asar, but asarUnpack extracts binaries to app.asar.unpacked.
- */
-function resolveACBinaryPath(): string {
-  const require = createRequire(import.meta.url)
-  // Resolve the main entry point, then walk up to the package root
-  const acEntry = require.resolve('@skillful-agents/agent-computer')
-  // Entry is at <pkg>/dist/src/index.js — dirname gives dist/src, walk up 2 levels
-  const acPkgDir = path.resolve(path.dirname(acEntry), '..', '..')
-  const ext = platform() === 'win32' ? '.exe' : ''
-  const key = `${platform()}-${arch() === 'arm64' ? 'arm64' : 'x64'}`
-  const binaryPath = path.join(acPkgDir, 'bin', `ac-core-${key}${ext}`)
-  return binaryPath.replace('app.asar', 'app.asar.unpacked')
+/** Who is running a command: the app session, and how its agent's cursor looks. */
+export interface ComputerUseCaller {
+  sessionId: string
+  agentSlug: string
+  /** The cursor's label: the agent's name. */
+  label: string
+  /** The cursor's colour, as a hex value: the agent's avatar colour. */
+  accent?: string
+  /** The agent's orb, drawn beside its name under the cursor. */
+  avatar?: AgentAvatar | null
 }
 
-function getAC(): AC {
-  if (!acInstance) {
-    acInstance = new AC({ binaryPath: resolveACBinaryPath() })
-  }
-  return acInstance
+export interface ComputerUseResult {
+  /** What the agent reads. */
+  output: string
+  /** The app the command acted in, when it is known. */
+  app?: string
+  /**
+   * agent-desktop refused it for want of an OS permission, before it acted.
+   * Not the agent's to handle: the app asks the user for the permission.
+   */
+  permissionDenied?: true
 }
 
-/**
- * Execute an AC command and return the formatted result as a string.
- */
-export async function executeComputerUseCommand(
-  method: string,
-  params: Record<string, unknown>,
-): Promise<string> {
-  // Requests are normally unwrapped when they arrive from the container, but
-  // this is the last stop for every path, so be safe here too.
-  ;({ method, params } = unwrapComputerRun(method, params))
-  const ac = getAC()
-  const result = await dispatchMethod(ac, method, params)
-  return formatResult(method, result)
+/** The cursor label's word limit, the CLI's own default made explicit. */
+export const CURSOR_LABEL_MAX_WORDS = 6
+
+/** An agent's name as its cursor label: the first six words. */
+export function cursorLabel(name: string): string {
+  return name.trim().split(/\s+/).slice(0, CURSOR_LABEL_MAX_WORDS).join(' ')
 }
 
-/**
- * The SDK keeps its JSON-RPC bridge private, but the daemon understands far
- * more methods than the SDK wraps (clipboard_read, drag, wait, box, children,
- * ...). The container's `computer_run` escape hatch exists precisely to reach
- * those, so forward anything without a wrapper straight to the bridge.
- */
-type RawBridge = { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
-
-function rawBridge(ac: AC): RawBridge | undefined {
-  const bridge = (ac as unknown as { bridge?: unknown }).bridge
-  return bridge && typeof (bridge as RawBridge).send === 'function' ? (bridge as RawBridge) : undefined
+interface AppSession {
+  agentDesktopSession: string
+  agentSlug: string
+  /** The cursor the session was last given, to tell when the settings or the agent changed. */
+  cursor: string | null
 }
 
-/**
- * Dispatch an AC SDK method call based on the method name.
- */
-async function dispatchMethod(
-  ac: AC,
-  method: string,
-  params: Record<string, unknown>,
-): Promise<unknown> {
-  switch (method) {
-    // --- Observation ---
-    case 'apps':
-      return ac.apps()
-    case 'windows':
-      return ac.windows(params.app as string | undefined)
-    case 'snapshot':
-      return ac.snapshot({
-        app: params.app as string | undefined,
-        interactive: params.interactive as boolean | undefined,
-        compact: params.compact as boolean | undefined,
-        depth: params.depth as number | undefined,
-      })
-    case 'find':
-      return ac.find(
-        params.text as string,
-        {
-          role: params.role as string | undefined,
-          app: params.app as string | undefined,
-        },
-      )
-    case 'screenshot':
-      return ac.screenshot({
-        ref: params.ref as string | undefined,
-      })
-    case 'read':
-      return ac.read(params.ref as string)
-    case 'status':
-      return ac.status()
-    case 'displays':
-      return ac.displays()
-    case 'permissions':
-      return ac.permissions()
+const sessions = new Map<string, Promise<AppSession>>()
 
-    // --- Actions ---
-    case 'click':
-      return ac.click(
-        params.ref as string,
-        {
-          right: params.right as boolean | undefined,
-          double: params.double as boolean | undefined,
-        },
-      )
-    case 'type':
-      return ac.type(params.text as string)
-    case 'fill':
-      return ac.fill(params.ref as string, params.text as string)
-    case 'key':
-      return ac.key(params.combo as string, params.repeat as number | undefined)
-    case 'scroll':
-      return ac.scroll(
-        params.direction as 'up' | 'down' | 'left' | 'right',
-        {
-          amount: params.amount as number | undefined,
-          on: params.on as string | undefined,
-        },
-      )
-    case 'select':
-      return ac.select(params.ref as string, params.value as string)
-    case 'hover':
-      return ac.hover(params.ref as string)
+/** Snapshot id → app, and window id → app, as commands report them. Bounded; oldest first out. */
+const MAX_REMEMBERED = 5000
+const snapshotApps = new Map<string, string>()
+const windowApps = new Map<string, string>()
 
-    // --- App management ---
-    case 'launch': {
-      try {
-        await ac.launch(params.name as string, { wait: true })
-      } catch (launchErr: unknown) {
-        const msg = launchErr instanceof Error ? launchErr.message : String(launchErr)
-        // CDP errors mean the app is running but CDP (needed for Electron/Chromium apps)
-        // couldn't connect — likely because the app was already open without CDP enabled.
-        if (msg.includes('CDP')) {
-          return {
-            ok: false,
-            launched: params.name,
-            error: msg,
-            hint: `The app "${params.name}" appears to be an Electron/Chromium app that was already running without CDP (remote debugging) enabled. `
-              + `To fix this, use computer_run("relaunch", { name: "${params.name}" }) which will force-quit and relaunch the app with CDP enabled. `
-              + `IMPORTANT: Ask the user for permission before relaunching, as it will force-quit the app and any unsaved work may be lost.`,
-          }
-        }
-        throw launchErr
-      }
-      // Auto-grab the launched app so subsequent commands target it
-      // and the user sees a visual halo indicating AI control.
-      // Non-fatal: if grab fails (e.g., window not yet registered), launch still succeeds.
-      let grabbed = false
-      let snapshot: unknown = null
-      try {
-        await ac.grab(params.name as string)
-        grabbed = true
-        snapshot = await ac.snapshot({ interactive: true, compact: true })
-      } catch {
-        // Window may not be registered yet — agent can grab manually later
-      }
-      return snapshot
-        ? { ok: true, launched: params.name, grabbed, snapshot: formatOutput(snapshot, true) }
-        : { ok: true, launched: params.name, grabbed }
-    }
-    case 'relaunch': {
-      await ac.relaunch(params.name as string, { wait: true })
-      // Auto-grab after relaunch (same as launch)
-      let grabbed = false
-      let snapshot: unknown = null
-      try {
-        await ac.grab(params.name as string)
-        grabbed = true
-        snapshot = await ac.snapshot({ interactive: true, compact: true })
-      } catch {
-        // Window may not be registered yet
-      }
-      return snapshot
-        ? { ok: true, relaunched: params.name, grabbed, snapshot: formatOutput(snapshot, true) }
-        : { ok: true, relaunched: params.name, grabbed }
-    }
-    case 'quit':
-      await ac.quit(params.name as string, {
-        force: params.force as boolean | undefined,
-      })
-      return { ok: true, quit: params.name }
-    case 'grab': {
-      await ac.grab((params.app || params.ref) as string)
-      // Auto-snapshot after grab to save a round-trip
-      let snapshot: unknown = null
-      try {
-        snapshot = await ac.snapshot({ interactive: true, compact: true })
-      } catch {
-        // Non-fatal — agent can snapshot manually
-      }
-      const target = params.app || params.ref
-      return snapshot
-        ? { ok: true, grabbed: target, snapshot: formatOutput(snapshot, true) }
-        : { ok: true, grabbed: target }
-    }
-    case 'ungrab':
-      await ac.ungrab()
-      return { ok: true, ungrabbed: true }
-
-    // --- Menus ---
-    case 'menuClick':
-      await ac.menuClick(params.path as string, params.app as string | undefined)
-      return { ok: true, clicked: params.path }
-
-    // --- Dialogs ---
-    case 'dialog': {
-      const action = params.action as string | undefined
-      if (action === 'accept') {
-        await ac.dialogAccept(params.app as string | undefined)
-        return { ok: true, action: 'accepted' }
-      } else if (action === 'cancel') {
-        await ac.dialogCancel(params.app as string | undefined)
-        return { ok: true, action: 'cancelled' }
-      } else {
-        return ac.dialog(params.app as string | undefined)
-      }
-    }
-
-    default: {
-      const bridge = rawBridge(ac)
-      // `run` is the escape hatch itself; reaching here means it carried no
-      // usable `command`, and it is never a daemon method.
-      if (!bridge || method === COMPUTER_RUN_METHOD || !/^[a-z][a-z0-9_]*$/.test(method)) {
-        throw new Error(`Unknown computer use method: ${method}`)
-      }
-      return bridge.send(method, params)
-    }
+function remember<T>(map: Map<string, T>, key: string, value: T): void {
+  map.delete(key)
+  map.set(key, value)
+  if (map.size > MAX_REMEMBERED) {
+    const oldest = map.keys().next().value
+    if (oldest !== undefined) map.delete(oldest)
   }
 }
 
-/**
- * Format the result of an AC command into a string suitable for the agent.
- * Uses the SDK's built-in text formatter for token efficiency.
- * Screenshots are special-cased to return base64 JSON for image blocks.
- */
-function formatResult(method: string, result: unknown): string {
-  if (result === undefined || result === null) {
-    return `${method} completed successfully.`
-  }
-
-  // Screenshots return a file path — read and return as base64 image reference
-  if (method === 'screenshot' && typeof result === 'object' && result !== null) {
-    const screenshotResult = result as { path?: string; width?: number; height?: number }
-    if (screenshotResult.path) {
-      try {
-        const imageData = fs.readFileSync(screenshotResult.path)
-        // Clean up the temp file now that we've read it
-        try { fs.unlinkSync(screenshotResult.path) } catch { /* best effort */ }
-        const base64 = imageData.toString('base64')
-        return JSON.stringify({
-          type: 'screenshot',
-          path: screenshotResult.path,
-          width: screenshotResult.width,
-          height: screenshotResult.height,
-          base64,
-          media_type: 'image/png',
-        })
-      } catch {
-        return JSON.stringify(screenshotResult)
-      }
-    }
-  }
-
-  if (typeof result === 'string') return result
-  return formatOutput(result, true)
+function cursorKey(caller: ComputerUseCaller, showCursor: boolean): string | null {
+  return showCursor
+    ? JSON.stringify({ label: cursorLabel(caller.label), accent: caller.accent ?? null, avatar: caller.avatar ?? null })
+    : null
 }
 
 /**
- * Check macOS accessibility and screen recording permissions via the AC daemon.
- * Returns which permissions are missing, or null if all are granted.
+ * The agent's own cursor image (arrow, orb and name chip), drawn on macOS
+ * where this process can render one; null to use agent-desktop's arrow.
  */
-export async function checkACPermissions(): Promise<{ accessibility: boolean; screen_recording: boolean } | null> {
+async function cursorImage(caller: ComputerUseCaller): Promise<{ path: string; hotspot: { x: number; y: number } } | null> {
+  if (process.platform !== 'darwin' || !hasCursorImageRenderer()) return null
   try {
-    const ac = getAC()
-    const perms = await ac.permissions()
-    if (perms.accessibility && perms.screen_recording) {
-      return null // All granted
-    }
-    return perms
-  } catch {
-    // If we can't check (daemon not running yet), don't block — let it fail later
+    return await cursorImageFile(
+      { name: cursorLabel(caller.label), avatar: caller.avatar },
+      path.join(agentDesktopHome(), 'cursors'),
+    )
+  } catch (error) {
+    console.warn('[ComputerUse] Could not draw the agent cursor image; using the plain cursor:', error)
     return null
   }
 }
 
+async function applyCursor(session: string, caller: ComputerUseCaller, showCursor: boolean): Promise<void> {
+  if (!showCursor) {
+    await runAgentDesktop(['--session', session, 'cursor-overlay', 'disable'])
+    return
+  }
+  const accent = caller.accent ? [`--accent=${caller.accent}`] : []
+  const image = await cursorImage(caller)
+  if (image) {
+    // The image carries the name, so agent-desktop draws no label of its own,
+    // and with an image it shows no greeting either.
+    warnIfNotRendered(await runAgentDesktopOrThrow([
+      '--session', session,
+      'cursor-overlay', 'enable',
+      `--image=${image.path}`,
+      `--hotspot=${image.hotspot.x},${image.hotspot.y}`,
+      ...accent,
+    ]))
+    return
+  }
+  // The accent colours the cursor's body, its ripple and its highlight.
+  warnIfNotRendered(await runAgentDesktopOrThrow([
+    '--session', session,
+    'cursor-overlay', 'enable',
+    `--label=${cursorLabel(caller.label)}`,
+    `--max-words=${CURSOR_LABEL_MAX_WORDS}`,
+    ...accent,
+  ]))
+}
+
+/** `cursor-overlay enable` succeeds when no renderer came up to draw the cursor too; it says so in `rendered`. */
+function warnIfNotRendered(data: unknown): void {
+  if (cursorOverlayDataSchema.safeParse(data).data?.rendered === false) {
+    console.warn('[ComputerUse] agent-desktop enabled the agent cursor but drew none (rendered: false)')
+  }
+}
+
+async function startSession(caller: ComputerUseCaller, showCursor: boolean): Promise<AppSession> {
+  const data = sessionStartDataSchema.parse(
+    await runAgentDesktopOrThrow(['session', 'start', '--no-trace', `--name=${caller.label.slice(0, 128) || caller.agentSlug}`]),
+  )
+  const session: AppSession = { agentDesktopSession: data.session_id, agentSlug: caller.agentSlug, cursor: null }
+  if (showCursor) {
+    try {
+      await applyCursor(session.agentDesktopSession, caller, true)
+      session.cursor = cursorKey(caller, true)
+    } catch (error) {
+      // A missing cursor is cosmetic; the commands still run.
+      console.warn('[ComputerUse] Could not show the agent cursor:', error)
+    }
+  }
+  return session
+}
+
+/** The agent-desktop session for an app session, started on first use and kept in step with the cursor settings. */
+async function sessionFor(caller: ComputerUseCaller): Promise<string> {
+  const { showCursor } = computerUsePreferences((await getSettings()).computerUse)
+  let pending = sessions.get(caller.sessionId)
+  if (!pending) {
+    // A start that failed is forgotten, so the next command tries again.
+    pending = startSession(caller, showCursor).catch((error: unknown) => {
+      sessions.delete(caller.sessionId)
+      throw error
+    })
+    sessions.set(caller.sessionId, pending)
+  }
+  const session = await pending
+  const wanted = cursorKey(caller, showCursor)
+  if (wanted !== session.cursor) {
+    try {
+      await applyCursor(session.agentDesktopSession, caller, showCursor)
+      session.cursor = wanted
+    } catch (error) {
+      console.warn('[ComputerUse] Could not update the agent cursor:', error)
+    }
+  }
+  return session.agentDesktopSession
+}
+
 /**
- * Look up which app owns a window reference by querying the AC daemon.
- * Returns the app name or undefined if the window can't be found.
+ * Commands that read the focused app when they name none. Such a call is
+ * pinned to the app it was placed in (withFocusedApp), so focus moving
+ * afterwards cannot point it elsewhere.
  */
-export async function resolveAppFromWindowRef(ref: string): Promise<string | undefined> {
+const FOCUSED_APP_COMMANDS: ReadonlySet<string> = new Set(['snapshot', 'find'])
+
+/** The name a window of this app itself is placed under: agents do not act in it. */
+const THIS_APP = 'this app'
+
+/** What placing a call found: the apps it acts in, and whether some of it could not be placed. */
+interface Placement {
+  apps: Set<string>
+  /** A point not over exactly one app, or a focused app the window list could not tell. */
+  unplaced: boolean
+}
+
+/**
+ * Where a call acts, from what it names and what earlier commands reported:
+ * its app, its refs' snapshots, its windows, the window on top at the points
+ * it acts at, the focused app for a call that acts in whatever has focus, or
+ * a target that is not an app (the clipboard).
+ */
+async function placeCall(method: string, targets: CallTargets, reread = false): Promise<Placement> {
+  const apps = new Set<string>()
+  // One entry per app, however each part of the call spells it (sameApp).
+  const add = (app: string) => { if (![...apps].some((known) => sameApp(known, app))) apps.add(app) }
+  let unplaced = false
+  if (targets.app) add(targets.app)
+  if (targets.system) add(targets.system)
+  for (const id of targets.snapshotIds) {
+    const app = snapshotApps.get(id)
+    if (app) add(app)
+  }
+  for (const id of targets.windowIds) {
+    const app = windowApps.get(id) ?? (await lookUpWindowApp(id))
+    if (app) add(app)
+  }
+  const windows = targets.points?.length || targets.focused ? await listWindows() : []
+  for (const point of targets.points ?? []) {
+    const app = appAt(point, windows, OBSERVATION_COMMANDS.has(method))
+    if (app) add(app)
+    else unplaced = true
+  }
+  if (targets.focused) {
+    const focused = windows.find((window) => window.is_focused)
+    if (focused) add(ownerOf(focused))
+    else unplaced = true
+  }
+  if (apps.size > 1 && !reread && targets.windowIds.length > 0) {
+    // A remembered window id may since belong to another window: ask again.
+    for (const id of targets.windowIds) windowApps.delete(id)
+    return placeCall(method, targets, true)
+  }
+  return { apps, unplaced }
+}
+
+/**
+ * The app a call targets, for its permission check and the activity
+ * indicator; undefined when some of it cannot be placed (the user is then
+ * asked about the call itself). Refuses a call that acts in two apps, or in
+ * this app's own windows.
+ */
+async function targetAppOf(method: string, targets: CallTargets): Promise<string | undefined> {
+  const { apps, unplaced } = await placeCall(method, targets)
+  if (apps.has(THIS_APP)) {
+    throw new ComputerUseArgumentError(`${method} would act in this app's own window, which agents do not use. Nothing was sent. Name the app to act in (app).`)
+  }
+  if (apps.size > 1) {
+    throw new ComputerUseArgumentError(`One call acts in one app; this one names ${[...apps].join(', ')}`)
+  }
+  return unplaced ? undefined : apps.values().next().value
+}
+
+/**
+ * The app an approved call still acts in when it runs. A call that names its
+ * app (or target) must name the one it was approved for. A call placed by
+ * focus or by a point is placed again: approving it in this app's window
+ * moves focus here, and another window can come over the point. A snapshot
+ * or find is not, being pinned to its app. When the window list cannot tell,
+ * the approval stands.
+ */
+async function confirmPlacement(method: string, targets: CallTargets, approved: string): Promise<string> {
+  const named = targets.app ?? targets.system
+  if (named !== undefined && !sameApp(named, approved)) {
+    throw new ComputerUseArgumentError(`${method} names ${named}, but it was approved for ${approved}. Nothing was sent.`)
+  }
+  const moves = (targets.points?.length ?? 0) > 0 || (targets.focused && !FOCUSED_APP_COMMANDS.has(method))
+  if (!moves) return approved
+  const { apps } = await placeCall(method, targets)
+  const now = [...apps].filter((app) => !sameApp(app, approved))
+  if (now.length === 0) return approved
+  const where = now.join(', ')
+  throw new ComputerUseArgumentError(targets.focused
+    ? `The focused app is now ${where}; this ${method} was approved for ${approved}. Nothing was sent. Pass app "${approved}" to send it there without focusing it, or look at the screen first.`
+    : `The window at that point is now ${where}'s; this ${method} was approved for ${approved}. Nothing was sent. Take a new screenshot before acting at a point.`)
+}
+
+type WindowEntry = ReturnType<typeof windowListSchema.parse>[number]
+
+/** How long placing a call waits on the window list (it can stall while a modal or panel is up). */
+const WINDOW_LIST_TIMEOUT_MS = 2_000
+
+/** A window's app, or THIS_APP for a window of this process (the app's own UI). */
+function ownerOf(window: WindowEntry): string {
+  return window.pid !== undefined && window.pid === process.pid ? THIS_APP : window.app_name
+}
+
+async function listWindows(): Promise<WindowEntry[]> {
+  let listed: unknown
   try {
-    const ac = getAC()
-    const { windows } = await ac.windows()
-    const match = windows.find((w) => w.ref === ref)
-    return match?.app
+    listed = (await runAgentDesktop(['list-windows'], { timeoutMs: WINDOW_LIST_TIMEOUT_MS })).data
+  } catch {
+    return []
+  }
+  const windows = windowListSchema.safeParse(listed)
+  if (!windows.success) return []
+  for (const window of windows.data) remember(windowApps, window.id, window.app_name)
+  return windows.data
+}
+
+/**
+ * The app whose window is on top at a screen point. The window list is not in
+ * stacking order, so: the focused window when it covers the point (it is in
+ * front of every other), else the one app whose shown windows cover it. A
+ * point no one app covers is the whole screen for a command that only looks,
+ * and placed nowhere for one that sends input: the user is asked about it.
+ */
+function appAt(point: ScreenPoint, windows: readonly WindowEntry[], observes: boolean): string | undefined {
+  const under = windows.filter((window) => !window.minimized && window.visible !== false && window.bounds
+    && point.x >= window.bounds.x && point.x < window.bounds.x + window.bounds.width
+    && point.y >= window.bounds.y && point.y < window.bounds.y + window.bounds.height)
+  const focused = under.find((window) => window.is_focused)
+  if (focused) return ownerOf(focused)
+  const apps = new Set(under.map(ownerOf))
+  if (apps.size === 1) return apps.values().next().value
+  return observes ? SYSTEM_TARGETS.screen : undefined
+}
+
+async function lookUpWindowApp(windowId: string): Promise<string | undefined> {
+  await listWindows()
+  return windowApps.get(windowId)
+}
+
+/** Learn which app the snapshots and windows a result reports belong to. */
+function rememberTargets(method: string, envelope: AgentDesktopEnvelope, app: string | undefined): string | undefined {
+  if (!envelope.ok) return app
+  const data = envelope.data
+  if (method === 'list-windows') {
+    const windows = windowListSchema.safeParse(data)
+    if (windows.success) for (const window of windows.data) remember(windowApps, window.id, window.app_name)
+    return app
+  }
+  if (method === 'launch') {
+    const launched = launchDataSchema.safeParse(data)
+    const name = (launched.success && launched.data.app) || app
+    if (launched.success && launched.data.window && name) remember(windowApps, launched.data.window.id, name)
+    return name
+  }
+  if (method === 'batch') {
+    // A batch's entries report snapshots of their own, wherever in its result.
+    rememberNestedSnapshots(data, app, 0)
+    return app
+  }
+  // snapshot, find and drill-downs report the snapshot that owns their refs.
+  const snapshot = snapshotDataSchema.safeParse(data)
+  if (snapshot.success) {
+    const name = snapshot.data.app ?? app
+    if (name) {
+      remember(snapshotApps, snapshot.data.snapshot_id, name)
+      if (snapshot.data.window) remember(windowApps, snapshot.data.window.id, name)
+    }
+    return name
+  }
+  return app
+}
+
+function rememberNestedSnapshots(value: unknown, app: string | undefined, depth: number): void {
+  if (!value || typeof value !== 'object' || depth > 6) return
+  if (Array.isArray(value)) {
+    for (const item of value) rememberNestedSnapshots(item, app, depth + 1)
+    return
+  }
+  const snapshot = snapshotDataSchema.safeParse(value)
+  const name = snapshot.success ? snapshot.data.app ?? app : undefined
+  if (snapshot.success && name) remember(snapshotApps, snapshot.data.snapshot_id, name)
+  for (const [key, child] of Object.entries(value)) {
+    if (key !== 'tree') rememberNestedSnapshots(child, app, depth + 1)
+  }
+}
+
+/** A flag's value in a command line: `--app=x` or `--app x`. */
+function flagValue(commandArgs: readonly string[], name: string): string | undefined {
+  for (let i = 0; i < commandArgs.length; i++) {
+    if (commandArgs[i] === '--') return undefined
+    if (commandArgs[i].startsWith(`${name}=`)) return commandArgs[i].slice(name.length + 1)
+    if (commandArgs[i] === name) return commandArgs[i + 1]
+  }
+  return undefined
+}
+
+/** The windows a screenshot may show, by what the command named. */
+async function screenshotTarget(commandArgs: readonly string[]): Promise<{ target: ScreenshotTarget | null; reason?: string }> {
+  const app = flagValue(commandArgs, '--app')
+  const windowId = flagValue(commandArgs, '--window-id')
+  // A screenshot that names nothing captures the main display, as --screen 0 does.
+  const screenArg = flagValue(commandArgs, '--screen') ?? (!app && !windowId ? '0' : undefined)
+  if (screenArg !== undefined) {
+    const screen = Number(screenArg)
+    const displays = displayListSchema.safeParse((await runAgentDesktop(['list-displays'], { timeoutMs: WINDOW_LIST_TIMEOUT_MS })).data)
+    const display = displays.success && Number.isInteger(screen) ? displays.data[screen] : undefined
+    return display
+      ? { target: { kind: 'screen', bounds: display.bounds, label: `display ${screen}` } }
+      : { target: null, reason: 'its display was not found in the display list' }
+  }
+  if (!windowId && !app) return { target: null, reason: 'it names no window' }
+  const listed = await runAgentDesktop(['list-windows', ...(app && !windowId ? [`--app=${app}`] : [])], { timeoutMs: WINDOW_LIST_TIMEOUT_MS })
+  const windows = windowListSchema.safeParse(listed.data)
+  if (!windows.success) return { target: null, reason: 'the window list could not be read' }
+  for (const window of windows.data) remember(windowApps, window.id, window.app_name)
+  const candidates = windows.data
+    .filter((window) => (windowId ? window.id === windowId : !window.minimized))
+    .flatMap((window) => (window.bounds ? [{ id: window.id, app: window.app_name, bounds: window.bounds, ...(window.is_focused && { focused: true }) }] : []))
+  return { target: { kind: 'window', candidates } }
+}
+
+/** A number as the note prints it: at most four decimals. */
+function decimal(value: number): string {
+  return String(Math.round(value * 10_000) / 10_000)
+}
+
+/**
+ * A screenshot as the agent gets it: an image the model can take (the
+ * window's transparent shadow cropped off, shrunk to the model's limits),
+ * and one line saying which screen points it shows, since the image is no
+ * longer the size agent-desktop captured. The container turns the JSON into
+ * an image block and the line.
+ */
+async function screenshotOutput(
+  envelope: AgentDesktopEnvelope,
+  { target, reason }: { target: ScreenshotTarget | null; reason?: string },
+): Promise<string | null> {
+  if (!envelope.ok) return null
+  const shot = screenshotDataSchema.safeParse(envelope.data)
+  if (!shot.success) return null
+  let prepared: ReturnType<typeof prepareScreenshot>
+  try {
+    prepared = prepareScreenshot(Buffer.from(shot.data.data, 'base64'), target, reason, shot.data.scale_factor)
+  } catch (error) {
+    console.warn('[ComputerUse] Could not read a screenshot:', error)
+    return null
+  }
+  const { width, height, frame } = prepared
+  let note = `This image is ${width}×${height} pixels.`
+  if (frame) {
+    const { x, y } = frame.area
+    const sx = decimal(frame.area.width / width)
+    const sy = decimal(frame.area.height / height)
+    note = `This image is ${width}×${height} pixels and shows ${frame.label}, at screen points x ${decimal(x)}–${decimal(x + frame.area.width)}, y ${decimal(y)}–${decimal(y + frame.area.height)}: the pixel (px, py) is the screen point (${decimal(x)} + px × ${sx}, ${decimal(y)} + py × ${sy}).`
+  } else if (prepared.unalignedReason) {
+    note = `This image is ${width}×${height} pixels; where it is on screen is not known (${prepared.unalignedReason}).`
+  }  return JSON.stringify({
+    type: 'screenshot',
+    base64: prepared.png.toString('base64'),
+    media_type: 'image/png',
+    width,
+    height,
+    note,
+  })
+}
+
+/**
+ * A result with the base64 of every screenshot in it replaced by a note, or
+ * null when it has none: a screenshot that did not come back as an image
+ * (inside a batch, or unreadable) would reach the agent as megabytes of text.
+ */
+function withoutScreenshotData(envelope: AgentDesktopEnvelope, isScreenshot: boolean): AgentDesktopEnvelope | null {
+  let left = 0
+  const strip = (value: unknown, inScreenshot: boolean, depth: number): unknown => {
+    if (!value || typeof value !== 'object' || depth > 8) return value
+    if (Array.isArray(value)) return value.map((item) => strip(item, inScreenshot, depth + 1))
+    const record = value as Record<string, unknown>
+    const screenshot = inScreenshot || record.command === 'screenshot'
+    const out: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(record)) {
+      if (key === 'data' && screenshot && typeof child === 'string' && child.length > 256) {
+        left++
+        out[key] = `[image left out: ${child.length} characters of base64. Take the screenshot as its own computer_screenshot call to see it.]`
+      } else {
+        out[key] = strip(child, screenshot, depth + 1)
+      }
+    }
+    return out
+  }
+  const stripped = strip(envelope, isScreenshot, 0) as AgentDesktopEnvelope
+  return left > 0 ? stripped : null
+}
+
+/**
+ * Resolve the app a call targets, before it runs, for the permission check.
+ * Undefined when the call names no app the executor can place.
+ */
+export async function resolveComputerUseTargetApp(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<string | undefined> {
+  ;({ method, params } = commandLineOf(method, params))
+  try {
+    return await targetAppOf(method, callTargets(method, params))
   } catch {
     return undefined
   }
 }
 
 /**
- * Ungrab any currently grabbed window. Safe to call even if nothing is grabbed.
+ * Each session's commands, run one at a time in the order they arrive. An
+ * agent that issues several tool calls at once (click 1, click 2, click 3)
+ * means them in order, and concurrent agent-desktop processes acting on one
+ * window see each other's focus and pointer moves as occlusion. Sessions of
+ * different agents still run side by side; agent-desktop serializes their
+ * input itself.
  */
-export async function ungrabAC(): Promise<void> {
-  if (acInstance) {
-    try {
-      await acInstance.ungrab()
-    } catch {
-      // Ignore — nothing may be grabbed
-    }
+const sessionQueues = new Map<string, Promise<unknown>>()
+
+/**
+ * Each app session's agent, how many times its computer use was ended, and
+ * the commands it has running. Ending it (endComputerUseSessions) stops
+ * those, and drops the ones still queued from before the end.
+ */
+interface SessionWork {
+  agentSlug: string
+  ended: number
+  running: Set<AbortController>
+}
+const sessionWork = new Map<string, SessionWork>()
+
+function workOf(caller: ComputerUseCaller): SessionWork {
+  let work = sessionWork.get(caller.sessionId)
+  if (!work) {
+    work = { agentSlug: caller.agentSlug, ended: 0, running: new Set() }
+    sessionWork.set(caller.sessionId, work)
   }
+  return work
+}
+
+function inSessionOrder<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+  const previous = sessionQueues.get(sessionId) ?? Promise.resolve()
+  const next = previous.then(run, run)
+  // The queue's tail settles either way, and forgets an idle session.
+  const tail: Promise<void> = next.then(() => forget(), () => forget())
+  const forget = () => {
+    if (sessionQueues.get(sessionId) === tail) sessionQueues.delete(sessionId)
+  }
+  sessionQueues.set(sessionId, tail)
+  return next
+}
+
+/** Options for one command. */
+export interface ComputerUseCommandOptions {
+  /** The latest time (epoch ms) it may start; still queued then, it is dropped unrun. */
+  startBy?: number
+  /** The app the call was placed in when it was approved; it is not placed again. */
+  app?: string
+}
+
+/** Run one computer-use command for an app session, after the session's earlier ones. */
+export function executeComputerUseCommand(
+  method: string,
+  params: Record<string, unknown>,
+  caller: ComputerUseCaller,
+  options: ComputerUseCommandOptions = {},
+): Promise<ComputerUseResult> {
+  const work = workOf(caller)
+  const ended = work.ended
+  return inSessionOrder(caller.sessionId, async () => {
+    if (work.ended !== ended) {
+      throw new ComputerUseArgumentError(`${method} was not run: computer use for this session was ended (the app was taken back, or the session stopped) before its turn. Nothing was done.`)
+    }
+    if (options.startBy !== undefined && Date.now() > options.startBy) {
+      const waited = Math.round((Date.now() - options.startBy) / 1000)
+      throw new ComputerUseArgumentError(`${method} was not run: it was still waiting behind this session's earlier commands ${waited}s past its start time. Nothing was done; you can try it again.`)
+    }
+    const stop = new AbortController()
+    work.running.add(stop)
+    try {
+      return await runCommand(method, params, caller, options.app, stop.signal)
+    } finally {
+      work.running.delete(stop)
+    }
+  })
+}
+
+/** Whether the user lets agents send physical input (`--headed`). */
+async function physicalInputAllowed(): Promise<boolean> {
+  return computerUsePreferences((await getSettings()).computerUse).inputMode === 'headed'
 }
 
 /**
- * Ungrab + shut down the AC daemon. Call on app exit.
+ * Run one agent-desktop command within the budget its own flags give it. A
+ * command that outlives that is stopped and answered as agent-desktop answers
+ * a timeout: delivery unknown for an action, so the agent re-reads the UI
+ * instead of acting twice.
  */
-export async function shutdownAC(): Promise<void> {
-  if (acInstance) {
-    try {
-      await acInstance.ungrab()
-    } catch {
-      // Ignore ungrab errors
+async function runInBudget(
+  session: string,
+  commandArgs: readonly string[],
+  signal?: AbortSignal,
+): Promise<{ stdout: string; envelope: AgentDesktopEnvelope | null }> {
+  const timeoutMs = commandTimeoutMs(commandArgs)
+  try {
+    const output = await runAgentDesktopOutput(['--session', session, ...commandArgs], { timeoutMs, ...(signal && { signal }) })
+    // Help and version print text, not an envelope.
+    const printsText = commandArgs[0] === 'help' || commandArgs.some((arg) => arg === '--help' || arg === '-h' || arg === '--version' || arg === '-V')
+    if (output.envelope || printsText) {
+      const stdout = output.stdout || `agent-desktop ${commandArgs[0] ?? ''} exited with code ${output.code} and printed nothing${output.stderr ? `: ${output.stderr.trim().slice(0, 500)}` : ''}`
+      return { stdout, envelope: output.envelope }
     }
-    try {
-      await acInstance.shutdown()
-    } catch {
-      // Ignore shutdown errors
+    // It stopped without its result (a crash): answered as a failure whose
+    // delivery is unknown for an action, so the agent re-reads the UI rather
+    // than doing it again another way.
+    const command = commandArgs[0] ?? ''
+    const detail = output.stderr.trim().split('\n').find((line) => line.trim()) ?? output.stdout.trim().slice(0, 300)
+    const envelope: AgentDesktopEnvelope = {
+      ok: false,
+      command,
+      error: {
+        code: 'INTERNAL',
+        message: `agent-desktop ${command} exited with code ${output.code} without a result${detail ? `: ${detail.slice(0, 500)}` : ''}`,
+        disposition: OBSERVATION_COMMANDS.has(command)
+          ? { delivery: 'not_delivered', retry: 'safe' }
+          : { delivery: 'delivered_unverified', retry: 'unsafe' },
+      },
     }
-    acInstance = null
+    return { stdout: JSON.stringify(envelope), envelope }
+  } catch (error) {
+    if (!(error instanceof AgentDesktopTimeoutError) && !(error instanceof AgentDesktopAbortedError)) throw error
+    const command = commandArgs[0] ?? ''
+    const envelope: AgentDesktopEnvelope = {
+      ok: false,
+      command,
+      error: error instanceof AgentDesktopAbortedError ? {
+        code: 'CANCELLED',
+        message: 'the app stopped it: computer use for this session was ended (the app was taken back, or the session stopped)',
+        disposition: OBSERVATION_COMMANDS.has(command)
+          ? { delivery: 'not_delivered', retry: 'safe' }
+          : { delivery: 'delivered_unverified', retry: 'unsafe' },
+      } : {
+        code: 'TIMEOUT',
+        message: `agent-desktop gave no result within ${timeoutMs / 1000}s, so the app stopped it`,
+        disposition: OBSERVATION_COMMANDS.has(command)
+          ? { delivery: 'not_delivered', retry: 'safe' }
+          : { delivery: 'delivered_unverified', retry: 'unsafe' },
+      },
+    }
+    return { stdout: JSON.stringify(envelope), envelope }
+  }
+}
+
+async function runCommand(
+  method: string,
+  params: Record<string, unknown>,
+  caller: ComputerUseCaller,
+  placedIn?: string,
+  signal?: AbortSignal,
+): Promise<ComputerUseResult> {
+  ;({ method, params } = commandLineOf(method, params))
+  let commandArgs = buildCommandArgs(method, params)
+  if (requestsHeaded(commandArgs) && !(await physicalInputAllowed())) {
+    throw new ComputerUseArgumentError('--headed (physical input) is off in this app\'s settings (Settings → Computer Use → Physical Input: Never). Run the command without it, or tell the user if the task needs physical input.')
+  }
+  const targets = callTargets(method, params)
+  const targetApp = placedIn === undefined ? await targetAppOf(method, targets) : await confirmPlacement(method, targets, placedIn)
+  commandArgs = withFocusedApp(method, commandArgs, targets, targetApp)
+  const session = await sessionFor(caller)
+  // agent-desktop does not say where the window it captured is, so the window
+  // list is read for that, alongside the capture rather than after it: the
+  // two reads are then as close in time as they can be.
+  const placeScreenshot = (args: readonly string[]) => screenshotTarget(args).catch(() => ({ target: null, reason: 'the window list could not be read' }))
+  let placing = method === 'screenshot' ? placeScreenshot(commandArgs) : null
+  let { stdout, envelope } = await runInBudget(session, commandArgs, signal)
+  if (process.platform === 'win32' && envelope?.error?.code === 'APP_NOT_FOUND') {
+    if (method === 'launch') {
+      const launched = await launchFromStartMenu(commandArgs, envelope, signal)
+      if (launched) ({ stdout, envelope } = launched)
+    } else if (method === 'screenshot') {
+      const byWindow = await screenshotArgsByWindow(commandArgs)
+      if (byWindow) {
+        placing = placeScreenshot(byWindow)
+        ;({ stdout, envelope } = await runInBudget(session, byWindow, signal))
+      }
+    }
+  }
+  if (envelope?.error?.code === 'PERM_DENIED') {
+    believedUntil.accessibility = 0
+    believedUntil.screen_recording = 0
+    // A batch's earlier entries may have acted, so its result goes back as it is.
+    if (method !== 'batch') return { output: stdout, permissionDenied: true }
+  }
+  const app = envelope ? rememberTargets(method, envelope, targetApp) : targetApp
+
+  if (placing && envelope) {
+    const output = await screenshotOutput(envelope, await placing)
+    if (output) return { output, ...(app && { app }) }
+  }
+  // A screenshot that did not come back as an image goes back without its data.
+  const stripped = envelope && (method === 'screenshot' || method === 'batch')
+    ? withoutScreenshotData(envelope, method === 'screenshot')
+    : null
+  return { output: stripped ? JSON.stringify(stripped) : stdout, ...(app && { app }) }
+}
+
+/** How long a launch from the Start menu waits for the app's window. */
+const START_MENU_LAUNCH_WAIT_MS = 20_000
+
+/** The name a `launch` command line launches: its one positional argument. */
+function launchName(commandArgs: readonly string[]): string | undefined {
+  const separator = commandArgs.indexOf('--')
+  if (separator !== -1) return commandArgs[separator + 1]
+  const last = commandArgs.at(-1)
+  return commandArgs.length > 1 && last !== undefined && !last.startsWith('-') ? last : undefined
+}
+
+/**
+ * A Windows app agent-desktop could not launch by that name, launched by the
+ * name the Start menu shows (Calculator, Spotify, Settings): agent-desktop
+ * launches only paths and executables in the Windows directory, which no
+ * Store app has. Answers as `launch` does, with the window that came up;
+ * null when the Start menu has no app by that name.
+ */
+async function launchFromStartMenu(
+  commandArgs: readonly string[],
+  failed: AgentDesktopEnvelope,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; envelope: AgentDesktopEnvelope } | null> {
+  const name = launchName(commandArgs)
+  // A path is agent-desktop's to launch: it failed because nothing is there.
+  if (!name || name.includes('\\') || name.includes('/')) return null
+  const entry = findStartMenuApp(name, await startMenuApps().catch(() => []))
+  if (!entry || signal?.aborted) return null
+  const before = await listWindows()
+  activateStartMenuApp(entry)
+  const window = await waitForActivatedWindow(before, listWindows, START_MENU_LAUNCH_WAIT_MS, signal)
+  const startMenu = { name: entry.name, app_id: entry.appId }
+  const envelope: AgentDesktopEnvelope = {
+    ...(failed.version !== undefined && { version: failed.version }),
+    ok: true,
+    command: 'launch',
+    data: window
+      ? { app: window.app_name, window: { id: window.id, ...(window.title !== undefined && { title: window.title }) }, start_menu: startMenu }
+      : { app: entry.name, start_menu: startMenu, note: `Started from the Start menu; no window of it appeared within ${START_MENU_LAUNCH_WAIT_MS / 1000}s` },
+  }
+  return { stdout: JSON.stringify(envelope), envelope }
+}
+
+/**
+ * A screenshot of a Windows app agent-desktop could not capture by its name
+ * (a Store app, whose window a frame host owns), as a capture of that app's
+ * window: the focused one, else the first. Null when no window is the app's.
+ */
+async function screenshotArgsByWindow(commandArgs: readonly string[]): Promise<string[] | null> {
+  const app = flagValue(commandArgs, '--app')
+  if (!app || flagValue(commandArgs, '--window-id') !== undefined || flagValue(commandArgs, '--screen') !== undefined) return null
+  const windows = (await listWindows()).filter((window) => !window.minimized && sameApp(window.app_name, app))
+  const window = windows.find((candidate) => candidate.is_focused) ?? windows[0]
+  if (!window) return null
+  const [command, ...rest] = commandArgs
+  const withoutApp = rest.filter((token, i) => !token.startsWith('--app=') && token !== '--app' && rest[i - 1] !== '--app')
+  return [command, `--window-id=${window.id}`, ...withoutApp]
+}
+
+/**
+ * A snapshot or find that names no app reads the focused one. The call is
+ * pinned to the app it was placed in (and permitted for), so a change of
+ * focus in between cannot point it at another.
+ */
+function withFocusedApp(method: string, commandArgs: string[], targets: CallTargets, app: string | undefined): string[] {
+  const unscoped = FOCUSED_APP_COMMANDS.has(method) && targets.focused === true
+  if (!unscoped || !app) return commandArgs
+  const [command, ...rest] = commandArgs
+  return [command, `--app=${app}`, ...rest]
+}
+
+/**
+ * End the agent-desktop sessions of an agent, or of one app session: their
+ * cursors go with them, a command they have running is stopped, and one still
+ * queued from before is dropped unrun.
+ */
+export async function endComputerUseSessions(filter: { agentSlug?: string; sessionId?: string } = {}): Promise<void> {
+  for (const [sessionId, work] of sessionWork) {
+    if (filter.sessionId && filter.sessionId !== sessionId) continue
+    if (filter.agentSlug && filter.agentSlug !== work.agentSlug) continue
+    work.ended++
+    for (const stop of work.running) stop.abort()
+  }
+  const ending: Promise<unknown>[] = []
+  for (const [sessionId, pending] of sessions) {
+    ending.push(pending.then(async (session) => {
+      if (filter.sessionId && filter.sessionId !== sessionId) return
+      if (filter.agentSlug && filter.agentSlug !== session.agentSlug) return
+      sessions.delete(sessionId)
+      await runAgentDesktop(['session', 'end', session.agentDesktopSession])
+    }).catch(() => {
+      // A session that never started, or a CLI that is gone: nothing to end.
+    }))
+  }
+  await Promise.all(ending)
+}
+
+/** End every session on app exit. */
+export async function shutdownComputerUse(): Promise<void> {
+  await endComputerUseSessions()
+}
+
+const PERMISSIONS_BELIEVED_MS = 60_000
+/** Until when each permission is believed granted without asking again. */
+const believedUntil = { accessibility: 0, screen_recording: 0 }
+
+/**
+ * Check the macOS permissions a computer-use call needs, through
+ * agent-desktop: Accessibility for every call, and Screen Recording for one
+ * that takes a screenshot. Returns the permission report when one it needs is
+ * missing, or null when it can run (or the check cannot tell). Runs before
+ * every call, so a grant is believed for a minute, and until a command
+ * reports PERM_DENIED.
+ */
+export async function checkComputerUsePermissions(needs: { screenRecording?: boolean } = {}): Promise<{ accessibility: boolean; screen_recording: boolean } | null> {
+  const now = Date.now()
+  if (now < believedUntil.accessibility && (!needs.screenRecording || now < believedUntil.screen_recording)) return null
+  try {
+    const data = permissionsDataSchema.parse(await runAgentDesktopOrThrow(['permissions']))
+    const granted = (state?: string) => state === undefined || state === 'granted' || state === 'not_required'
+    const report = { accessibility: granted(data.accessibility?.state), screen_recording: granted(data.screen_recording?.state) }
+    const until = Date.now() + PERMISSIONS_BELIEVED_MS
+    if (report.accessibility) believedUntil.accessibility = until
+    if (report.screen_recording) believedUntil.screen_recording = until
+    return report.accessibility && (report.screen_recording || !needs.screenRecording) ? null : report
+  } catch {
+    // If the check itself fails, don't block: the command will report it.
+    return null
   }
 }

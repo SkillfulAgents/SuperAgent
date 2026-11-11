@@ -22,12 +22,35 @@ import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request
 export interface HostCalls {
   /** Run a host tool for a session. The actor delivers the outcome to the container. */
   hostTool: { request: HostToolRequest; response: HostToolResult }
-  /** Run one computer-use command on this machine; resolves to its output, rejects with its error. */
-  computerUse: { request: { method: string; params: Record<string, unknown> }; response: string }
-  /** The macOS permissions computer use needs on this machine, or null when it has them all. */
-  computerUsePermissions: { request: Record<string, never>; response: ComputerUsePermissionStatus | null }
-  /** The app that owns a window ref, resolved on this machine; undefined when it cannot be. */
-  computerUseWindowApp: { request: { ref: string }; response: string | undefined }
+  /**
+   * Run one computer-use command on this machine for one of the agent's
+   * sessions; resolves to what the agent reads and the app it acted in,
+   * rejects when it could not run.
+   */
+  computerUse: {
+    /**
+     * `startBy`: the latest time (epoch ms) the command may start; later, it is dropped unrun.
+     * `app`: the app the call was placed in and approved for, so the machine need not place it again.
+     */
+    request: { method: string; params: Record<string, unknown>; caller: ComputerUseCaller; startBy?: number; app?: string }
+    /** `permissionDenied`: refused for want of an OS permission before it acted; the user is asked, not the agent. */
+    response: { output: string; app?: string; permissionDenied?: boolean }
+  }
+  /**
+   * The macOS permissions a computer-use call needs on this machine
+   * (Accessibility, and Screen Recording when `screenRecording`), or null when
+   * it has them.
+   */
+  computerUsePermissions: { request: { screenRecording?: boolean }; response: ComputerUsePermissionStatus | null }
+  /**
+   * The app a computer-use command targets, from its `--app`, the window it
+   * names, the snapshot its ref came from, or the window on top at a point it
+   * acts at, resolved on this machine; undefined when it cannot be.
+   */
+  computerUseTargetApp: {
+    request: { method: string; params: Record<string, unknown> }
+    response: string | undefined
+  }
   /** An app's icon as base64 PNG, from this machine; null when it has none. */
   computerUseAppIcon: { request: { app: string }; response: string | null }
   /** Run a script on this machine. A script that fails still resolves, with its exit code. */
@@ -124,6 +147,12 @@ export interface ComputerUsePermissionStatus {
   screen_recording: boolean
 }
 
+/** The agent session a computer-use command runs for: its refs and its cursor are this session's. */
+export interface ComputerUseCaller {
+  sessionId: string
+  agentSlug: string
+}
+
 export interface HostScriptOutput {
   /** The exit status, or the spawn error's name (ENOENT) when the interpreter could not run. */
   exitCode: number | string
@@ -140,6 +169,18 @@ export type SessionNotification =
       responseText: string
       /** Where the transcript ended when the turn did; bounds the body's context lookup. */
       responseTranscriptEndOffset: number | null
+      /** Who the run's messages tagged. */
+      taggedUserIds: string[]
+    }
+  | {
+      /** An agent message that tags people: each member it tags is told. */
+      kind: 'message_mentions'
+      agentSlug: string
+      sessionId: string
+      messageUuid: string
+      userIds: string[]
+      /** The message as plain text, each tag as @Name. */
+      text: string
     }
   | {
       kind: 'session_waiting_input'

@@ -14,6 +14,8 @@ export const fakeLoginWindow = {
   navigate: vi.fn(async (_url: string) => {}),
   close: vi.fn(),
   source: new MessageChannel().port1,
+  /** Set when the hook opened a sign-in sheet; calling it is the person closing the sheet. */
+  cancelAuthSession: null as (() => void) | null,
 }
 
 export function prepareOAuthPopup() {
@@ -23,4 +25,10 @@ export function prepareOAuthPopup() {
     close: fakeLoginWindow.close,
     isSource: (source: MessageEventSource | null) => source === fakeLoginWindow.source,
   }
+}
+
+/** The sign-in sheet stands in as the same fake window; tests cancel it through `cancelAuthSession`. */
+export function prepareAuthSession(onCancelled: () => void) {
+  fakeLoginWindow.cancelAuthSession = onCancelled
+  return prepareOAuthPopup()
 }

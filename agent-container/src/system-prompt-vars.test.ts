@@ -352,7 +352,9 @@ describe('generateSystemPrompt rendering', () => {
     }
     const shipped = readdirSync(join(__dirname, '..', 'docs'))
       .filter(name => name.endsWith('.md') && name !== 'README.md')
-    expect([...referenced].sort()).toEqual(shipped.sort())
+    // Every top-level guide is reachable from the prompt; a guide's own
+    // references (computer-use/macos.md) may be named too, and exist (above).
+    expect([...referenced].filter(path => !path.includes('/')).sort()).toEqual(shipped.sort())
   })
 
   // Same failure as a missing guide, one step worse: the agent runs the command
@@ -370,7 +372,8 @@ describe('generateSystemPrompt rendering', () => {
       for (const match of source.matchAll(/\/opt\/gamut\/bin\/([\w.-]+)/g)) referenced.add(match[1])
     }
 
-    const shipped = readdirSync(join(__dirname, '..', 'bin'))
+    // gamut_host.py is the module the helpers import to reach the app, not a command.
+    const shipped = readdirSync(join(__dirname, '..', 'bin')).filter((name) => name !== 'gamut_host.py')
     expect([...referenced].sort()).toEqual(shipped.sort())
   })
 

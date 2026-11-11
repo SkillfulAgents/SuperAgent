@@ -1,8 +1,8 @@
 import { BookOpen, Code2, FileText, type LucideIcon } from 'lucide-react'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
-import { DEFAULT_ORBS } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { DEFAULT_ORBS } from '@shared/lib/types/agent-avatar-orbs'
 import { avatarSource, type AvatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
-import { ORB_SHAPES } from '@renderer/components/agents/agent-avatar/orb-shapes'
+import { ORB_SHAPES } from '@shared/lib/types/agent-avatar-shapes'
 
 /**
  * Presentation helpers for marketplace templates.

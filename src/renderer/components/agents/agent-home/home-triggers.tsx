@@ -41,7 +41,7 @@ import {
 } from '@renderer/hooks/use-webhook-triggers'
 import { formatDistanceToNow } from 'date-fns'
 import { HomeCollapsible } from './home-collapsible'
-import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
+import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
 import { ActivitySparkChart, ActivitySparkChartSkeleton, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
@@ -123,9 +123,9 @@ export function HomeTriggers({
   const hasCompleted = completedCount > 0
 
   return (
-    <HomeCollapsible title="Triggers" className={className}>
+    <HomeCollapsible id="triggers" title="Triggers" count={webhookTriggersData ? items.length : undefined} className={className}>
       {items.length > 0 || hasDeleted || hasCompleted ? (
-        <div className="mt-2 divide-y divide-border/50">
+        <div className="mt-2">
           {items.map((item) =>
             item.kind === 'cron' ? (
               <CronRow
@@ -159,7 +159,7 @@ export function HomeTriggers({
             <>
               <button
                 type="button"
-                className="flex w-full items-center gap-1 py-2 px-4 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                className="flex w-full items-center gap-1 py-2 px-4 text-xs text-muted-foreground"
                 onClick={() => setShowDeleted((v) => !v)}
               >
                 <span>{showDeleted ? 'Hide deleted' : `Show ${deletedItems.length} deleted`}</span>
@@ -191,7 +191,7 @@ export function HomeTriggers({
           {hasCompleted && (
             <button
               type="button"
-              className="flex w-full items-center justify-between px-4 py-3 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              className="flex w-full items-center justify-between px-4 py-3 text-xs text-muted-foreground"
               onClick={onSelectCompletedTasks}
               aria-label={`View ${completedCount} completed one-time ${completedCount === 1 ? 'session' : 'sessions'}`}
             >
@@ -267,6 +267,7 @@ function TriggerRow({
             icon={null}
             name={name}
             muted={isDeleted}
+            hoverFill={false}
             nameBadge={isPaused ? (
               <span className="inline-flex items-center gap-0.5 px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
                 <Pause className="h-2.5 w-2.5 fill-current" />
@@ -279,7 +280,6 @@ function TriggerRow({
             right={
               <>
                 {activityChart}
-                <RowHoverChevron />
               </>
             }
           />
@@ -371,11 +371,11 @@ function InboundXAgentRow({
         </span>
       }
       onActivate={onSelect}
+      hoverFill={false}
       data-testid="home-trigger-row-inbound-x-agent"
       right={
         <>
           <ActivitySparkChart label="Invocations" data={activity} />
-          <RowHoverChevron />
         </>
       }
     />

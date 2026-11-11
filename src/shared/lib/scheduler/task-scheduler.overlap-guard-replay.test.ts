@@ -19,6 +19,11 @@ const mockMarkTaskExecuted = vi.fn()
 const mockUpdateNextExecution = vi.fn()
 const mockRecordTaskSkip = vi.fn()
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...a: unknown[]) => mockGetDueTasks(...a),
   markTaskExecuted: (...a: unknown[]) => mockMarkTaskExecuted(...a),
@@ -99,21 +104,18 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: {
     checkPermission: vi.fn(() => 'prompt_needed'),
-    getGrabbedApp: vi.fn(() => undefined),
-    setGrabbedApp: vi.fn(),
-    clearGrabbedApp: vi.fn(),
+    getActiveApp: vi.fn(() => undefined),
+    setActiveApp: vi.fn(),
+    clearActiveApp: vi.fn(),
     consumeOnceGrant: vi.fn(),
   },
 }))
-vi.mock('@shared/lib/computer-use/types', () => ({
+vi.mock('@shared/lib/computer-use/types', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/computer-use/types')>()),
   getRequiredPermissionLevel: vi.fn(() => 'use_application'),
-  resolveTargetApp: vi.fn(() => undefined),
-  READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
-  TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
-vi.mock('@shared/lib/computer-use/executor', () => ({
-  resolveAppFromWindowRef: vi.fn(() => undefined),
-}))
+// Replays drive no machine.
+vi.mock('@shared/lib/computer-use/executor', () => ({}))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 // The actor's session store is a local one: its workspace is nowhere, so the
 // replay writes nothing to disk.

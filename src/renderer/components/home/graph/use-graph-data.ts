@@ -97,10 +97,9 @@ export interface GraphEdgeSpec {
  */
 export type GraphRoleAccess = {
   canUse: (agentSlug: string) => boolean
-  canAdmin: (agentSlug: string) => boolean
 }
 
-const FULL_ACCESS: GraphRoleAccess = { canUse: () => true, canAdmin: () => true }
+const FULL_ACCESS: GraphRoleAccess = { canUse: () => true }
 
 export interface GraphModel {
   nodes: GraphNodeSpec[]
@@ -358,18 +357,14 @@ export function buildGraph(input: {
       permissionCallersByPair.set(key, callers)
     }
   }
-  // Policy rows live on the caller agent, so editing/revoking a direction
-  // needs owner role on that caller. A pair the user can't admin in either
-  // direction renders with no edit/delete affordance at all.
-  const editablePolicyCallers = (key: string): string[] =>
-    (permissionCallersByPair.get(key) ?? []).filter((slug) => roles.canAdmin(slug))
-
   // One edge per permitted pair (A→B and B→A are visually one line). An
   // agent↔agent edge is a relationship the user configured, nothing more:
   // the graph does not count how often it was used.
   for (const key of [...permissionCallersByPair.keys()].sort((a, b) => a.localeCompare(b))) {
     const [a, b] = key.split('|')
-    const editable = editablePolicyCallers(key)
+    // Changing a link needs someone who uses both agents, in either direction.
+    // A pair the user can't change renders with no edit/delete affordance.
+    const editable = roles.canUse(a) && roles.canUse(b) ? permissionCallersByPair.get(key) ?? [] : []
     edges.push({
       id: `${nodeId.agent(a)}~${nodeId.agent(b)}`,
       source: nodeId.agent(a),
@@ -425,7 +420,7 @@ export function useGraphData(): GraphModel & { isLoading: boolean; topologyFaile
 
   // Edge affordances (deletable, edit target) must reflect the caller's
   // per-agent role in auth mode — the server rejects what these gate off.
-  const { canUseAgent, canAdminAgent } = useUser()
+  const { canUseAgent } = useUser()
 
   const graph = useMemo(
     () =>
@@ -434,9 +429,9 @@ export function useGraphData(): GraphModel & { isLoading: boolean; topologyFaile
         accounts: Array.isArray(accountsData?.accounts) ? accountsData.accounts : [],
         mcps: Array.isArray(mcpsData?.servers) ? mcpsData.servers : [],
         topology: topologyQuery.data,
-        roles: { canUse: canUseAgent, canAdmin: canAdminAgent },
+        roles: { canUse: canUseAgent },
       }),
-    [agents, accountsData, mcpsData, topologyQuery.data, canUseAgent, canAdminAgent],
+    [agents, accountsData, mcpsData, topologyQuery.data, canUseAgent],
   )
 
   return {

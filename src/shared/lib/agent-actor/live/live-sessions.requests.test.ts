@@ -32,7 +32,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: vi.fn(),
   recordProvisionalSessionActivity: vi.fn(() => ({ recordedAtMs: 0, previous: null })),
   revertSessionActivity: vi.fn(),
@@ -335,7 +335,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     const TOOL = 'mcp__computer-use__computer_click'
 
     it('opens into the computer-use store, NOT the input-request store', async () => {
-      await simulateToolUse(TOOL, 'cu-open-1', { x: 1, y: 2 })
+      await simulateToolUse(TOOL, 'cu-open-1', {})
 
       const cards = cardsFor('computer_use')
       expect(cards).toHaveLength(1)
@@ -356,7 +356,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     })
 
     it('a tool_result alone does NOT drop the parked entry — and awaiting stays on with it', async () => {
-      await simulateToolUse(TOOL, 'cu-clear-1', { x: 1, y: 2 })
+      await simulateToolUse(TOOL, 'cu-clear-1', {})
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       // The computer-use store is cleared only via the decision route's
@@ -375,7 +375,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
     it('the route clear flips awaiting and broadcasts when it was the last blocking wait', async () => {
       const globalEvents = globalFeedFromNow()
-      await simulateToolUse(TOOL, 'cu-clear-2', { x: 1, y: 2 })
+      await simulateToolUse(TOOL, 'cu-clear-2', {})
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       // The route clear applies the shared waiting-light rule: with both
@@ -393,7 +393,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      await simulateToolUse(TOOL, 'cu-clear-3', { x: 1, y: 2 })
+      await simulateToolUse(TOOL, 'cu-clear-3', {})
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       // Clearing the computer-use entry must NOT flip awaiting: the secret
@@ -490,7 +490,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      await simulateToolUse('mcp__computer-use__computer_click', 'mix-cu-1', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'mix-cu-1', {})
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       // The secret resolves, but the cu entry AND the review are still open.
@@ -566,7 +566,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     {
       label: 'computer use',
       toolName: 'mcp__computer-use__computer_click',
-      input: { x: 1, y: 2 },
+      input: {},
       kind: 'computer_use',
       surfacesToday: true,
     },
@@ -745,7 +745,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         'parent-mix',
         'complete'
       )
-      await simulateToolUse('mcp__computer-use__computer_click', 'side-cu-1', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'side-cu-1', {})
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       sendSidechainToolResult('side-q-1', 'parent-mix')
@@ -859,7 +859,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     })
 
     it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (store-scoped resolve)', async () => {
-      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', {})
       expect(userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'computer_use')).toEqual([
         'shadow-cu-1',
       ])
@@ -952,7 +952,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
 
       // Computer use denied, then a second one consumed by an execution failure.
-      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', {})
       sessions().clearComputerUseRequest(SESSION_ID, 'shadow-out-2', 'declined')
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-2',
@@ -960,7 +960,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         outcome: 'declined',
       })
 
-      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', { x: 3, y: 4 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', {})
       sessions().clearComputerUseRequest(SESSION_ID, 'shadow-out-3', 'invalidated')
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-3',
@@ -975,7 +975,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', { x: 1, y: 2 })
+      await simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', {})
       expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(2)
 
       sessions().unsubscribe(SESSION_ID)

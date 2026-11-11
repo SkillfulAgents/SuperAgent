@@ -7,9 +7,11 @@ import xAgentChat from './routes/x-agent-chat'
 import xAgentRules from './routes/x-agent-rules'
 import xAgentIntegrations from './routes/x-agent-integrations'
 import xAgentMeetings from './routes/x-agent-meetings'
+import xAgentSessions from './routes/x-agent-sessions'
 import webSearch from './routes/web-search'
 import volumes from './routes/volumes'
 import volumeDefinitions from './routes/volume-definitions'
+import teamBrain from './routes/team-brain'
 import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
@@ -50,10 +52,12 @@ import serverFactsRouter from './routes/server-facts'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
+import teamDirectoriesRouter from './routes/team-directories'
 import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
+import accountDeletion from './routes/account-deletion'
 import platformSsoStart from './routes/platform-sso-start'
 import tokenExchange from './routes/token-exchange'
 import mobilePairing from './routes/mobile-pairing'
@@ -221,6 +225,7 @@ app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/x-agent/integrations', xAgentIntegrations)
 app.route('/api/x-agent/meetings', xAgentMeetings)
 app.route('/api/x-agent/rules', xAgentRules)
+app.route('/api/x-agent/sessions', xAgentSessions)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
@@ -240,6 +245,7 @@ app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/volumes', volumes)
 app.route('/api/volume-definitions', volumeDefinitions)
+app.route('/api/team-brain', teamBrain)
 app.route('/api/volume-types', volumeTypes)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
@@ -259,9 +265,11 @@ app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
+app.route('/api/team-directories', teamDirectoriesRouter)
 app.route('/api/audit-log', auditLogRouter)
 app.route('/api/connection-logs', connectionLogsRouter)
 app.route('/api/platform-auth', platformAuth)
+app.route('/api/account-deletion', accountDeletion)
 if (isAuthMode()) {
   // Public RP-initiated Platform SSO launcher (SUP-466). Outside /api so the
   // Platform "Open Cloud Agents" link can target a stable deployment path.

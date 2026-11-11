@@ -5,7 +5,7 @@ import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-p
 import { listConnections, getConnection, providerForConnection, resolveGlobalSelection, storedSelection } from '@shared/lib/llm-provider/connections'
 import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 import { loadTargetContext } from '@shared/lib/proxy/rules/service'
-import { requiresOneTimeXAgentReview } from '@shared/lib/proxy/x-agent-review'
+import { requiresOneTimeXAgentReview, xAgentReviewNamesTarget, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
@@ -15,7 +15,9 @@ import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-commen
 import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
-import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { getUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
+import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
+import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
 import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -42,7 +44,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -103,13 +105,16 @@ import {
   accountView,
   answerLoginRequest,
   fillLoginInContainer,
+  isFirstSignInPage,
   noteUsername,
   fieldsWentIn,
   partsFrom,
   readLoginContext,
+  restoresHere,
   saveHeldParts,
   usableHeld,
   valuesFor,
+  watchesStep,
 } from '@shared/lib/browser-vault/login-host'
 import {
   claimHeldParts,
@@ -123,6 +128,7 @@ import {
   type HeldClaim,
 } from '@shared/lib/browser-vault/held-values'
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
+import { beginSignInStep, restoreSavedSession, sessionBaseline, watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
 import { partKeyOf } from '@shared/lib/browser-vault/vault-schemas'
 import {
@@ -184,7 +190,7 @@ import {
   listCancelledScheduledTasks,
   listCompletedOneTimeTasks,
   createScheduledTask,
-  cancelPendingWakeForSession,
+  updateScheduleExpression,
   getPendingWakeForSession,
   listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
@@ -232,10 +238,10 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
-import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
+import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents } from '@shared/lib/services/session-unread-service'
+import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { withSessionStatus } from '@shared/lib/session-status'
@@ -274,17 +280,18 @@ import {
   refreshAgentTemplates,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
-  type TemplateZipSource,
 } from '@shared/lib/services/agent-template-service'
+import type { ZipSource } from '@shared/lib/utils/zip'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { readyTeamBrain } from '@shared/lib/config/team-brain-schema'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
+import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
@@ -584,7 +591,11 @@ interface AgentSummaryOptions {
    * outside auth mode), so there is no caller that legitimately lacks it.
    */
   userId: string
+  /** The unread projection for exactly these agents, when the caller already started it. */
+  unreadProjection?: UnreadProjection
 }
+
+type UnreadProjection = Awaited<ReturnType<typeof readUnreadProjection>>
 
 function attentionSessionCountsOutsideLatest(
   sessionId: string,
@@ -712,12 +723,11 @@ async function getVisibleSessionExpansion(
   try {
     // Keep the complete visibility-filtered snapshot: its first item selects
     // latest, while the remaining metadata-only items answer the two attention
-    // booleans without loading older transcripts. Built from the summary
-    // cache with the metadata map the caller already read, so a warm poll
-    // costs one directory stat per agent instead of one stat per transcript.
+    // booleans without loading older transcripts. Listed from the agent's
+    // session index, so a warm poll costs one directory stat per agent
+    // instead of one stat per transcript.
     sessionMetadata = await sessionMetadataPromise
-    visibleSessions = await agentRegistry.get(agentSlug).sessions.listFromSummary({
-      metadata: sessionMetadata,
+    visibleSessions = await agentRegistry.get(agentSlug).sessions.list({
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -773,6 +783,24 @@ async function getVisibleSessionExpansion(
 }
 
 /**
+ * Both halves of the unread projection, one query each rather than one per
+ * agent — the list route hydrates every agent on every poll. Needs only the
+ * slugs, so a caller can start it before it has the agents.
+ */
+async function readUnreadProjection(slugs: string[], userId: string) {
+  const [previewsByAgent, markedUnreadByAgent, mentionsByAgent] = await Promise.all([
+    getUnreadNotificationPreviewsByAgents(slugs, userId),
+    getSessionIdsMarkedUnreadByAgents(slugs, userId),
+    // Only auth mode has people to mention.
+    isAuthMode() ? getUnreadMentionsByAgents(slugs, userId) : new Map<string, Set<string>>(),
+  ])
+  // The previews are the unread rows themselves, so their sessions are the unread sessions: no second query.
+  const unreadByAgent = new Map<string, Set<string>>()
+  for (const [slug, previews] of previewsByAgent) unreadByAgent.set(slug, new Set(previews.map((preview) => preview.sessionId)))
+  return [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] as const
+}
+
+/**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
@@ -781,17 +809,8 @@ async function enrichAgentsWithSummary(
   agents: ApiAgent[],
   options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
-  const slugs = agents.map(a => a.slug)
-
-  // Both halves of the unread projection, one query each rather than one per
-  // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs, options.userId),
-    getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
-    // Only auth mode has people to mention.
-    isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
-    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
-  ])
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] =
+    options.unreadProjection ?? await readUnreadProjection(agents.map(a => a.slug), options.userId)
 
   const limit = pLimit(5)
   return Promise.all(
@@ -804,7 +823,9 @@ async function enrichAgentsWithSummary(
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
       const actor = agentRegistry.get(agent.slug)
-      const sessionMetadataPromise = actor.sessions.readMetadata()
+      // One read of the agent's index answers both.
+      const sessionSummaryPromise = actor.sessions.summary()
+      const sessionMetadataPromise = sessionSummaryPromise.then((summary) => summary.metadata)
       const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
         ? getVisibleSessionExpansion(
             agent.slug,
@@ -818,7 +839,7 @@ async function enrichAgentsWithSummary(
       // outer p-limit).
       const [sessionSummary, { dashboards: artifacts, widgets }, sessionMetadata, visibleSessionExpansion] =
         await Promise.all([
-          actor.sessions.summary(),
+          sessionSummaryPromise,
           // Dashboards and widgets are two halves of the same artifacts, read
           // in one scan: listing them separately doubled the manifest reads.
           listArtifactsAndWidgets(agent.slug),
@@ -985,9 +1006,27 @@ agents.route('/members/batch', agentMembersBatch)
 // (paths like /import-template would otherwise match as :id)
 // ============================================================
 
+// Per-request body cap for the multipart upload routes (files, templates, skills). formData() buffers the whole
+// multipart body in memory, so without this any client (curl, proxies) could
+// POST a single multi-GB body and the server would hold it all in RAM. The web
+// client splits files above 50MB into chunks, so no legitimate request body
+// exceeds ~50MB plus multipart framing; 64MB leaves comfortable headroom.
+// Content-Length requests are rejected from the header alone; bodies without a
+// length (chunked transfer-encoding) are counted and cut off at the cap.
+const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
+
+const uploadRequestBodyLimit = bodyLimit({
+  maxSize: MAX_UPLOAD_REQUEST_SIZE,
+  onError: (c) =>
+    c.json(
+      { error: `Request body too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB per request); use chunked upload for larger files` },
+      413,
+    ),
+})
+
 // POST /api/agents/import-template - Import agent from uploaded ZIP
 // Supports both single-request (file field) and chunked upload (chunk field)
-agents.post('/import-template', async (c) => {
+agents.post('/import-template', uploadRequestBodyLimit, async (c) => {
   try {
     const formData = await c.req.formData()
 
@@ -1080,7 +1119,7 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   return result.result
 }
 
-async function processImport(c: Context, zip: TemplateZipSource, formData: FormData) {
+async function processImport(c: Context, zip: ZipSource, formData: FormData) {
   // File sources are size-checked by the caller before reaching here.
   if (Buffer.isBuffer(zip) && zip.length > MAX_COMPRESSED_SIZE) {
     return c.json({ error: formatUploadTooLargeMessage(zip.length, MAX_COMPRESSED_SIZE) }, 413)
@@ -1417,16 +1456,22 @@ agents.get('/', async (c) => {
     // admins for them to appear in the sidebar. This prevents admins from
     // seeing every agent in large deployments.
     let agentList: ApiAgent[]
+    let unreadProjection: UnreadProjection | undefined
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
       const rows = await db
         .select({ agentSlug: agentAcl.agentSlug })
         .from(agentAcl)
         .where(eq(agentAcl.userId, userId))
+      const slugs = rows.map((r) => r.agentSlug)
       // One catalog query for the visible slugs, newest first like the
       // non-auth listing, so a freshly created agent lands at the top of the
-      // sidebar (the client's applyAgentOrder floats new agents up).
-      agentList = await listAgentsWithStatus({ slugs: rows.map((r) => r.agentSlug) })
+      // sidebar (the client's applyAgentOrder floats new agents up). The
+      // unread projection needs only the slugs, so it runs beside it.
+      ;[agentList, unreadProjection] = await Promise.all([
+        listAgentsWithStatus({ slugs }),
+        readUnreadProjection(slugs, userId),
+      ])
     } else {
       agentList = await listAgentsWithStatus()
     }
@@ -1436,6 +1481,7 @@ agents.get('/', async (c) => {
         parsedQuery.data.includeLatestVisibleSessionTail === true,
       signal: c.req.raw.signal,
       userId: getCurrentUserId(c),
+      unreadProjection,
     }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
@@ -1471,14 +1517,19 @@ agents.post('/', async (c) => {
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const slug = getAgentId(c)
-    const agent = await getAgentWithStatus(slug, { includeSummary: false })
+    const resolved = getResolvedAgent(c)
+    const userId = getCurrentUserId(c)
+    // Needs only the slug, so it runs in parallel with the status read.
+    const [agent, unreadProjection] = await Promise.all([
+      getAgentWithStatus(resolved, { includeSummary: false }),
+      readUnreadProjection([resolved.slug], userId),
+    ])
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent], { userId: getCurrentUserId(c) })
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId, unreadProjection })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
@@ -1568,9 +1619,10 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays.
+    // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays. A set-up
+    // keeps its claim: it resumes at where Team Brain lives, or Discard removes it.
     await mutateSettings((settings) => {
-      if (settings.teamBrain?.agentSlug !== slug) return false
+      if (readyTeamBrain(settings.teamBrain)?.agentSlug !== slug) return false
       delete settings.teamBrain
     })
 
@@ -1681,18 +1733,81 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
   }
 })
 
-// POST /api/agents/:id/access - Invite user (assign role)
+const directoryRefSchema = z.object({ directoryId: z.string().min(1).max(200), remoteId: z.string().min(1).max(200) })
+const grantAccessBodySchema = z.object({
+  userId: z.string().min(1).optional(),
+  // A team-directory person with no account: an invited user is made for them.
+  directoryRef: directoryRefSchema.optional(),
+  role: z.enum(['owner', 'user', 'viewer']),
+  // False when a mention follows, which tells them itself.
+  notify: z.boolean().optional(),
+})
+
+/** The person `directoryRef` names, as a user id: theirs, or a new invited row. */
+async function directoryPersonUserId(c: Context, directoryRef: z.infer<typeof directoryRefSchema>): Promise<string | Response> {
+  if (!isAuthMode()) return c.json({ error: 'Directory people can be invited in auth mode only' }, 400)
+  try {
+    return (await inviteDirectoryPerson(directoryRef, getCurrentUserId(c))).userId
+  } catch (error) {
+    if (error instanceof DirectoryInviteError) return c.json({ error: error.message }, error.status)
+    throw error
+  }
+}
+
+/** Tells someone not on Gamut yet, through their directory, that an agent was shared with them. */
+async function tellInvitedAboutShare(slug: string, userId: string, sharerId: string): Promise<void> {
+  const [agent, sharer] = await Promise.all([getAgent(slug), getUserSummaries([sharerId])])
+  const outcome = await notifyInvitedUser(userId, {
+    kind: 'shared',
+    agentName: agent?.frontmatter.name ?? slug,
+    byName: sharer.get(sharerId)?.name ?? 'A teammate',
+  })
+  if (outcome === 'sent') console.log(`[Agents] Told invited user ${userId} that ${slug} was shared with them`)
+}
+
+// POST /api/agents/:id/access/invitees - The user id of a team-directory person,
+// making an invited user for them if they have no account. The mention menu
+// calls it when such a person is picked, so the chip names a user like any other.
+agents.post('/:id/access/invitees', AgentAdmin(), async (c) => {
+  try {
+    const parsed = z.object({ directoryRef: directoryRefSchema }).safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'directoryRef is required' }, 400)
+    const userId = await directoryPersonUserId(c, parsed.data.directoryRef)
+    if (typeof userId !== 'string') return userId
+    const profile = (await getUserSummaries([userId])).get(userId)
+    if (!profile) return c.json({ error: 'User not found' }, 404)
+    return c.json(profile)
+  } catch (error) {
+    console.error('Failed to invite a directory person:', error)
+    return c.json({ error: 'Failed to invite them' }, 500)
+  }
+})
+
+// POST /api/agents/:id/access - Invite user (assign role). Names an account by
+// `userId`, or a team-directory person by `directoryRef`. Someone not on Gamut
+// yet is told through their directory, unless `notify` is false.
 agents.post('/:id/access', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const { userId, role } = await c.req.json()
-
-    if (!userId || !role) {
+    const raw = await c.req.json().catch(() => ({})) as Record<string, unknown>
+    if ((!raw.userId && !raw.directoryRef) || !raw.role) {
       return c.json({ error: 'userId and role are required' }, 400)
     }
-    if (!['owner', 'user', 'viewer'].includes(role)) {
+    if (!['owner', 'user', 'viewer'].includes(String(raw.role))) {
       return c.json({ error: 'Invalid role. Must be owner, user, or viewer' }, 400)
     }
+    const body = grantAccessBodySchema.safeParse(raw)
+    if (!body.success || (body.data.userId && body.data.directoryRef)) {
+      return c.json({ error: 'Give either userId or directoryRef' }, 400)
+    }
+    const { role, directoryRef, notify } = body.data
+    let userId = body.data.userId
+    if (directoryRef) {
+      const resolved = await directoryPersonUserId(c, directoryRef)
+      if (typeof resolved !== 'string') return resolved
+      userId = resolved
+    }
+    if (!userId) return c.json({ error: 'User not found' }, 404)
 
     // Check user exists
     if (!(await userExists(userId))) {
@@ -1719,7 +1834,8 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
 
     await notifyAgentMembersChanged(slug)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
-    return c.json({ ok: true }, 201)
+    if (notify !== false) background(tellInvitedAboutShare(slug, userId, getCurrentUserId(c)), { name: 'agents-route.tell-invited-about-share' })
+    return c.json({ ok: true, userId }, 201)
   } catch (error) {
     console.error('Failed to add agent access:', error)
     return c.json({ error: 'Failed to add agent access' }, 500)
@@ -1791,7 +1907,10 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
 
 // GET /api/agents/:id/access/search-users - List/search users for invite.
 // Without a query, returns all invitable users (teams are small enough to
-// show everyone as suggestions in the share popover).
+// show everyone as suggestions in the share popover). In auth mode, people in
+// connected team directories who have no account follow, as `kind:
+// 'directory'` with `notOnGamut`; an empty query also starts listing any
+// directory with nothing fresh cached, so the picker's next keystroke has them.
 agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
   try {
     const query = c.req.query('q')?.trim()
@@ -1805,7 +1924,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 
     const excludeIds = existingUserIds.map((r) => r.userId)
 
-    return c.json(await searchUserSummaries(query, excludeIds))
+    return c.json(await searchInviteCandidates(query, excludeIds))
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)
@@ -1854,8 +1973,9 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     await actor.container.start()
     if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
-    // Skip the session-summary enrichment: it stats every transcript, and every
-    // caller of this command discards the body and refetches agent data anyway.
+    // Read the agent again: a rename or delete can land while the container starts, and a
+    // null answer makes the client refetch. Skip the session-summary enrichment: it reads
+    // the agent's whole session index, and the client keeps the summary it already has.
     const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
@@ -1955,7 +2075,7 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/sessions - List sessions for an agent
 // ?notable=true means active/awaiting-input or unread. Its fast path intersects
 // those targeted IDs with server-visible sessions before sort_by and limit,
-// avoiding a stat of every transcript. Supported ordering is deterministic
+// avoiding a read of every session. Supported ordering is deterministic
 // newest-first activity via sort_by=last_activity_at.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
@@ -2014,11 +2134,11 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
-    // Independent lookups (filesystem summary, notifications table, unread
+    // Independent lookups (session index, notifications table, unread
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
     const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
-      actor.sessions.listFromSummary({
+      actor.sessions.list({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
@@ -3137,36 +3257,15 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // deleteSession is the authority for existence here: it removes the JSONL
-    // transcript and/or a lingering metadata entry and returns false only when
+    // The delete itself is the authority for existence: it removes the
+    // transcript and/or a lingering index entry and answers false only when
     // neither existed (the session is truly unknown). Deleting directly, rather
     // than gating on a prior read, keeps a dangling session with only one half
-    // left (e.g. a metadata entry whose transcript was already removed)
-    // removable instead of wrongly reported as not-found.
-    const deleted = await actor.sessions.delete(sessionId)
-    if (!deleted) {
+    // left (e.g. an entry whose transcript was already removed) removable
+    // instead of wrongly reported as not-found.
+    if (!(await deleteSessionAndRecords(agentSlug, sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
-
-    // A pending wake targeting this session would otherwise fire into nothing
-    // and be marked failed — cancel it alongside the session.
-    await cancelPendingWakeForSession(agentSlug, sessionId).catch((error) => {
-      console.error('Failed to cancel pending wake for deleted session:', error)
-    })
-
-    // Clean up message author records for this session: people (auth mode)
-    // and integrations (every mode).
-    await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
-
-    // Clean up notification rows for this session in BOTH modes (notifications
-    // are stored regardless of auth mode; userId is nullable), so deleting a
-    // session never leaves stale notification history pointing at it.
-    await deleteNotificationsBySessionIds([sessionId])
-    // A mark left behind would be an unreachable row: nothing lists the
-    // session any more, so nothing could ever clear it.
-    await deleteSessionUnreadMarks(agentSlug, [sessionId])
-    // A Todo board item started in it goes back to Drafts (or, if finished, keeps its place).
-    await unlinkTodosFromSessions(agentSlug, [sessionId])
 
     return c.body(null, 204)
   } catch (error) {
@@ -4037,6 +4136,9 @@ agents.post(
       url,
     )
     const credential = retrieved.credential
+    // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
+    const filledSite = siteOfOrigin(retrieved.expectedOrigin)
+    if (filledSite) beginSignInStep(agentSlug, { site: filledSite, username: credential.username || null, accountId: null })
 
     const actor = agentRegistry.get(agentSlug)
     const fillResponse = await actor.container.fetch('/browser/fill-credential', {
@@ -4278,6 +4380,32 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     if (body.save && !identity) return c.json({ error: 'Enter the username of this account to save it' }, 400)
     if (body.save && identity && identity.length > MAX_USERNAME) return c.json({ error: 'That username is too long to save' }, 400)
     const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
+    // A saved account picked as it is, on a sign-in that has not begun for it:
+    // its saved session signs the agent in, as when the agent names it. With
+    // none for this browser, or one the browser already held, the values fill.
+    if (account && !body.values.some(Boolean) && !heldValues.some(Boolean) && await restoresHere({ agentSlug, sessionId, account, context, held })) {
+      if (grantsAccount) {
+        const refused = await sharedAgentRefusal(c, agentSlug, body.sharedAgentAcknowledged)
+        if (refused) return refused
+      }
+      const claim = await actor.inputs.claim(body.toolUseId)
+      if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+      claimed = { id: body.toolUseId, token: claim.token }
+      const picked = account
+      const restored = await restoreSavedSession({
+        agentSlug,
+        sessionId,
+        account: picked,
+        picked: { userId: viewer, ...(grantsAccount ? { grant: () => grantToAgent(viewer, agentSlug, picked.id) } : {}) },
+      })
+      if (restored) {
+        if (!(await answerLoginRequest(agentSlug, body.toolUseId, restored))) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+        await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+        claimed = null
+        trackServerEvent('login_request_session', { restored: restored.restored, from: 'form' })
+        return c.json({ success: true, session: { restored: restored.restored, username: picked.username } })
+      }
+    }
     const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
     const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
     const values = body.values.map((value, index) => value || fallback[index])
@@ -4301,9 +4429,12 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       if (refused) return refused
     }
 
-    const claim = await actor.inputs.claim(body.toolUseId)
-    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
-    claimed = { id: body.toolUseId, token: claim.token }
+    // Already held when a saved session was tried first.
+    if (!claimed) {
+      const claim = await actor.inputs.claim(body.toolUseId)
+      if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+      claimed = { id: body.toolUseId, token: claim.token }
+    }
 
     const heldParts = partsFrom(context.held, heldValues)
     const heldLabels = context.held.filter((field, index) => heldValues[index] && heldParts[partKeyOf(field) ?? '']).map((field) => field.label)
@@ -4324,6 +4455,11 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const sent = body.values.map((value, index) => value || claimedFallback[index])
 
     const shown = noteUsername(identity)
+    // The site as it is before the step, for the watch after it: only when the
+    // step can be an account's, from where it signs that account in.
+    const watched = (account !== null || saving) && await watchesStep({ agentSlug, sessionId, site, context, username: identity })
+    beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
+    const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: { site, origin: account?.origin ?? context.origin } }) : null
     let filled: Awaited<ReturnType<typeof fillLoginInContainer>>
     try {
       filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, sent, {
@@ -4428,6 +4564,13 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     if (usedAccount && wentIn.some(Boolean)) {
       await recordAccountUse({ agentSlug, accountId: usedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
     }
+    // Its session, as the sign-in leaves it: saved to that account, and only
+    // when it is the one that signed in. The user may have typed another, or
+    // an account not saved: then nothing the site holds next is saved, to
+    // this account or one before it (beginSignInStep, above).
+    if (wentIn.some(Boolean) && usedAccount && (!identity || usernameKey(identity) === usernameKey(usedAccount.username))) {
+      watchSignIn({ agentSlug, sessionId, account: usedAccount, baseline })
+    }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
@@ -4513,6 +4656,22 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     if (await grantAccount({ accountId: account.id, agentSlug, grantedBy: viewer })) {
       await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: 'assigned', details: { agentSlug } })
     }
+    // A saved account, on a sign-in that has not begun for it: its saved
+    // session signs the agent in, and the provider is not needed.
+    const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, account.username), context.origin)
+    if (existing && await restoresHere({ agentSlug, sessionId, account, context, held })) {
+      const restored = await restoreSavedSession({ agentSlug, sessionId, account, picked: { userId: viewer } })
+      if (restored) {
+        if (!(await answerLoginRequest(agentSlug, body.toolUseId, restored))) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+        await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+        claimed = null
+        trackServerEvent('login_request_session', { restored: restored.restored, from: 'via' })
+        return c.json({ success: true, session: { restored: restored.restored, username: account.username } })
+      }
+    }
+    // The site before the agent goes to the provider, from a sign-in's first page only (session-host).
+    beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
+    const baseline = isFirstSignInPage(context) ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
     const answered = await answerLoginRequest(agentSlug, body.toolUseId, {
       type: 'via',
       site,
@@ -4523,6 +4682,8 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
     await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
     claimed = null
+    // The site's own session, once the provider sends the agent back signed in.
+    watchSignIn({ agentSlug, sessionId, account, baseline })
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
@@ -4583,6 +4744,8 @@ agents.post(
     const saving = Boolean(body.save && site && identity && credential.password)
     const shown = noteUsername(identity)
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
+    // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
+    if (site) beginSignInStep(agentSlug, { site, username: credential.username || null, accountId: null })
     const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, site
       ? { ...(shown ? { username: shown } : {}), site, source: 'user', saved: saving, held: [] }
       : undefined)
@@ -4695,6 +4858,9 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
 
     await actor.inputs.complete(sessionId, body.toolUseId, body.action === 'manual' ? 'answered' : 'declined')
     claimed = null
+    // The user had the browser while the card was open (session-host): signed
+    // in by hand, it is as a hand-over done there; declined, done nowhere.
+    watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: body.action === 'manual' ? site : null })
     if (body.action === 'decline') {
       // As with a browser hand-off: stop the turn so the user can talk to the agent.
       await actor.messages.stop(sessionId, { scope: 'turn' })
@@ -4757,6 +4923,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
       const sessionId = c.req.param('sessionId')
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
+      watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: null })
 
       // Stop the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
@@ -4789,6 +4956,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     }
 
     await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    // A step the user did by hand may have finished a sign-in (a passkey, a phone prompt): on the page it was asked on.
+    const handedOver = claim.request.kind === 'browser_input' ? claim.request.payload.browserContext?.url : undefined
+    watchAfterHandOver({ agentSlug, sessionId: c.req.param('sessionId'), viewer: getViewerUserId(c), site: handedOver ? siteOfOrigin(handedOver) : null })
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
@@ -4947,7 +5117,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
   }
 })
 
-// POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Ungrab window and revoke permission for the app
+// POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Take back the app the agent is acting in and revoke its permission
 agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
@@ -4957,11 +5127,13 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // Forgets the grab, revokes use_application for the app and tells the
-    // session's viewers. Before the ungrab: the app revoked is the one the
-    // user saw, not one grabbed while the ungrab ran.
-    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseGrab(sessionId)
-    await ungrabAC()
+    // Forgets the active app, revokes use_application for it and tells the
+    // session's viewers. Before the session ends: the app revoked is the one
+    // the user saw, not one a command reached while the session ended.
+    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseApp(sessionId)
+    // Ending the session's agent-desktop session takes its cursor away; the
+    // next command starts a new one, under whatever permission it then has.
+    await endComputerUseSessions({ sessionId })
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
@@ -4976,15 +5148,22 @@ const BRAIN_UPKEEP_PROMPT = 'Run the maintain-brain skill (scheduled upkeep). Fo
 const brainUpkeepBodySchema = z.object({ scheduleExpression: z.string().trim().min(1, 'scheduleExpression is required') })
 
 // POST /api/agents/:id/team-brain/upkeep - Schedule the Team Brain's upkeep at
-// set-up, so it never depends on the agent's first turn. Once only.
+// set-up, so it never depends on the agent's first turn. Once; again, it moves
+// the task to the schedule given, so a Start chat run again lands on the choice.
 agents.post('/:id/team-brain/upkeep', AgentUser(), zValidator('json', brainUpkeepBodySchema), async (c) => {
   const slug = getAgentId(c)
-  if ((await getTeamBrain())?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
+  // Start chat schedules it before the set-up is marked ready.
+  if ((await getSettings()).teamBrain?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
   const { scheduleExpression } = c.req.valid('json')
   if (!validateCronExpression(scheduleExpression).valid) return c.json({ error: 'Invalid cron expression' }, 400)
   try {
     const existing = (await listPendingScheduledTasks(slug)).find((task) => task.name === BRAIN_UPKEEP_NAME)
-    if (existing) return c.json({ taskId: existing.id })
+    if (existing) {
+      if (existing.scheduleExpression !== scheduleExpression && await updateScheduleExpression(existing.id, scheduleExpression)) {
+        globalFeed.publish({ type: 'scheduled_task_updated', taskId: existing.id, agentSlug: slug })
+      }
+      return c.json({ taskId: existing.id })
+    }
     const taskId = await createScheduledTask({
       agentSlug: slug,
       scheduleType: 'cron',
@@ -6193,36 +6372,62 @@ agents.delete('/:id/skills/:dir', AgentAdmin(), async (c) => {
 })
 
 // POST /api/agents/:id/skills/import-zip - Import a skill from uploaded ZIP
-agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
+// Supports both single-request (file field) and chunked upload (chunk field)
+agents.post('/:id/skills/import-zip', AgentAdmin(), uploadRequestBodyLimit, async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const formData = await c.req.formData()
-    const file = formData.get('file') as File | null
 
-    if (!file) {
-      return c.json({ error: 'No file provided' }, 400)
+    const chunk = formData.get('chunk') as File | null
+    if (chunk) {
+      const parsed = parseChunkFields(formData)
+      if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+      const stored = await storeUploadChunk({
+        ownerId: getCurrentUserId(c),
+        uploadId: parsed.uploadId,
+        target: `skill-import:${agentSlug}`,
+        chunkIndex: parsed.chunkIndex,
+        totalChunks: parsed.totalChunks,
+        chunk: Buffer.from(await chunk.arrayBuffer()),
+        maxTotalBytes: SKILL_MAX_COMPRESSED_SIZE,
+      }, async (assembled) => {
+        if (assembled.size > SKILL_MAX_COMPRESSED_SIZE) {
+          return c.json({ error: formatUploadTooLargeMessage(assembled.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
+        }
+        return await respondSkillImport(c, agentSlug, { filePath: await assembled.toFile() })
+      })
+      if (stored.status === 'received') {
+        return c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex })
+      }
+      return stored.result
     }
 
+    const file = formData.get('file') as File | null
+    if (!file) {
+      return c.json({ error: 'No file or chunk provided' }, 400)
+    }
     if (file.size > SKILL_MAX_COMPRESSED_SIZE) {
       return c.json({ error: formatUploadTooLargeMessage(file.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
     }
-
-    const arrayBuffer = await file.arrayBuffer()
-    const zipBuffer = Buffer.from(arrayBuffer)
-
-    if (zipBuffer.length > SKILL_MAX_COMPRESSED_SIZE) {
-      return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, SKILL_MAX_COMPRESSED_SIZE) }, 413)
-    }
-
-    const result = await importSkillFromZip(agentSlug, zipBuffer)
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${result.skillDir}`, action: 'created', details: { skillName: result.skillName, source: 'zip-import' } })
-    return c.json(result, 201)
+    return await respondSkillImport(c, agentSlug, Buffer.from(await file.arrayBuffer()))
   } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      return c.json({ error: error.message }, 413)
+    }
+    if (error instanceof UploadConflictError) {
+      return c.json({ error: error.message }, 409)
+    }
     const message = error instanceof Error ? error.message : 'Failed to import skill'
     console.error('Failed to import skill:', error)
     return c.json({ error: message }, 500)
   }
 })
+
+async function respondSkillImport(c: Context, agentSlug: string, zip: ZipSource) {
+  const result = await importSkillFromZip(agentSlug, zip)
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${result.skillDir}`, action: 'created', details: { skillName: result.skillName, source: 'zip-import' } })
+  return c.json(result, 201)
+}
 
 /** The workspace path of an installed skill's directory. `dir` is validated by the route. */
 function skillWorkspaceDir(dir: string): string {
@@ -6538,24 +6743,6 @@ async function respondUploadFile(c: Context) {
     return c.json({ error: 'Failed to upload file' }, 500)
   }
 }
-
-// Per-request body cap for the upload-file routes. formData() buffers the whole
-// multipart body in memory, so without this any client (curl, proxies) could
-// POST a single multi-GB body and the server would hold it all in RAM. The web
-// client splits files above 50MB into chunks, so no legitimate request body
-// exceeds ~50MB plus multipart framing; 64MB leaves comfortable headroom.
-// Content-Length requests are rejected from the header alone; bodies without a
-// length (chunked transfer-encoding) are counted and cut off at the cap.
-const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
-
-const uploadRequestBodyLimit = bodyLimit({
-  maxSize: MAX_UPLOAD_REQUEST_SIZE,
-  onError: (c) =>
-    c.json(
-      { error: `Request body too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB per request); use chunked upload for larger files` },
-      413,
-    ),
-})
 
 // POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
 agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
@@ -7265,39 +7452,43 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
     const slug = getAgentId(c)
 
 
-    // Always read name/description from host filesystem (source of truth for metadata)
-    const fsDashboards = await listArtifactsFromFilesystem(slug)
-
-    // Try to merge with running container data (provides live status + port)
-    try {
-      const actor = agentRegistry.get(slug)
-      // Use cached status to avoid spawning docker process
-      const info = await agentRegistry.get(slug).container.status()
-
-      if (info.status === 'running') {
+    // Always read name/description from host filesystem (source of truth for metadata),
+    // alongside the running container's list (live status + port).
+    const readContainerDashboards = async (): Promise<ArtifactInfo[] | null> => {
+      try {
+        const actor = agentRegistry.get(slug)
+        // Use cached status to avoid spawning docker process
+        const info = await actor.container.status()
+        if (info.status !== 'running') return null
         const response = await actor.container.fetch('/artifacts')
-        if (response.ok) {
-          const containerDashboards = await response.json() as ArtifactInfo[]
-          const fsMap = new Map(fsDashboards.map(d => [d.slug, d]))
+        return response.ok ? await response.json() as ArtifactInfo[] : null
+      } catch {
+        // Container not running, fall through to filesystem-only data
+        return null
+      }
+    }
+    const [fsDashboards, containerDashboards] = await Promise.all([
+      listArtifactsFromFilesystem(slug),
+      readContainerDashboards(),
+    ])
 
-          // Use container status/port but filesystem name/description
-          const merged = containerDashboards.map(cd => {
-            const fs = fsMap.get(cd.slug)
-            return fs
-              ? { ...cd, name: fs.name, description: fs.description }
-              : cd
-          })
-          // Include any filesystem-only dashboards (not yet tracked by container)
-          for (const fsd of fsDashboards) {
-            if (!containerDashboards.some(cd => cd.slug === fsd.slug)) {
-              merged.push(fsd)
-            }
-          }
-          return c.json(merged)
+    if (containerDashboards) {
+      const fsMap = new Map(fsDashboards.map(d => [d.slug, d]))
+
+      // Use container status/port but filesystem name/description
+      const merged = containerDashboards.map(cd => {
+        const fs = fsMap.get(cd.slug)
+        return fs
+          ? { ...cd, name: fs.name, description: fs.description }
+          : cd
+      })
+      // Include any filesystem-only dashboards (not yet tracked by container)
+      for (const fsd of fsDashboards) {
+        if (!containerDashboards.some(cd => cd.slug === fsd.slug)) {
+          merged.push(fsd)
         }
       }
-    } catch {
-      // Container not running, fall through to filesystem-only data
+      return c.json(merged)
     }
 
     return c.json(fsDashboards)
@@ -7981,6 +8172,16 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 // Proxy review endpoints
 // =============================================================================
 
+const ALLOW_NEEDS_BOTH = 'Only a User or Owner of both agents can allow this request.'
+/** Every route that saves a link checks the other agent with this, after its gate checked the calling agent. */
+const LINK_NEEDS_BOTH = 'Only a User or Owner of both agents can change this connection.'
+
+/** Allowing a request to read or message another agent needs someone who uses both. List and create requests name no other agent. */
+async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview | undefined): Promise<boolean> {
+  if (!review || !xAgentReviewNamesTarget(review)) return true
+  return canUseAgent(c, review.targetAgentSlug)
+}
+
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
@@ -7993,7 +8194,11 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
 
   // Approving an agent's proxy rule persists access on the account or MCP
   // server, so (like "always allow") only its owner may approve it.
-  const proposal = (await agentRegistry.get(slug).inputs.reviews.get(reviewId))?.ruleProposal
+  const pendingReview = await agentRegistry.get(slug).inputs.reviews.get(reviewId)
+  const proposal = pendingReview?.ruleProposal
+  if (body.decision === 'allow' && !(await canAllowXAgentCard(c, slug, pendingReview?.xAgent))) {
+    return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
+  }
   if (proposal && body.decision === 'allow' && isAuthMode()) {
     const context = await loadTargetContext({ kind: proposal.ruleKind, targetId: proposal.targetId })
     if (!context || context.userId !== getCurrentUserId(c)) {
@@ -8034,7 +8239,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
   const pendingReview = await agentRegistry.get(slug).inputs.reviews.get(reviewId)
   if (body.decision === 'allow' && requiresOneTimeXAgentReview(pendingReview?.xAgent)) {
-    return c.json({ error: 'File-sharing reviews can only be allowed once' }, 400)
+    return c.json({ error: 'Creating an agent can only be allowed once' }, 400)
   }
   // An unnamed call's scopes union every action on its path: a policy on one of them can allow a delete.
   if (body.decision === 'allow' && body.scope !== '*' && pendingReview?.endpointAmbiguous) {
@@ -8042,6 +8247,13 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   }
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
+  }
+  // The card this settles, and the connection this saves, each need someone who uses both agents.
+  if (body.decision === 'allow' && !(await canAllowXAgentCard(c, slug, pendingReview?.xAgent))) {
+    return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
+  }
+  if (body.reviewType === 'xagent' && body.xAgent?.targetSlug != null && !(await canUseAgent(c, body.xAgent.targetSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
   // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
   const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
@@ -8229,26 +8441,6 @@ agents.get('/:id/inbound-x-agent', AgentRead(), async (c) => {
   }
 })
 
-/**
- * Agents the caller may see: their agentAcl entries in auth mode, everything
- * in non-auth mode (null = no restriction). One query, reused by the policy
- * read + write paths so their visibility rules can't drift.
- */
-async function callerVisibleAgents(c: Context): Promise<Set<string> | null> {
-  if (!isAuthMode()) return null
-  const userId = getCurrentUserId(c)
-  const aclRows = await db
-    .select({ agentSlug: agentAcl.agentSlug })
-    .from(agentAcl)
-    .where(eq(agentAcl.userId, userId))
-  return new Set(aclRows.map((r) => r.agentSlug))
-}
-
-async function callerCanSeeAgent(c: Context, agentSlug: string): Promise<boolean> {
-  const visible = await callerVisibleAgents(c)
-  return visible === null || visible.has(agentSlug)
-}
-
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
 agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const slug = getAgentId(c)
@@ -8261,17 +8453,17 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   // In auth mode, hide policies whose target the viewer can't see — otherwise
   // the policy editor leaks workspace topology (target slugs the user has no ACL on).
   // null targets ('list' policy) are always visible.
-  const visibleTargets = await callerVisibleAgents(c)
+  const visibleTargets = await getReadableAgentIds(c, targetSlugs)
 
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
-    if (visibleTargets && !visibleTargets.has(targetSlug)) continue
+    if (!visibleTargets.has(targetSlug)) continue
     const target = await getAgentRecord(targetSlug)
     if (target) nameMap.set(targetSlug, target.name)
   }
   return c.json({
     policies: rows
-      .filter((r) => r.targetAgentSlug === null || !visibleTargets || visibleTargets.has(r.targetAgentSlug))
+      .filter((r) => r.targetAgentSlug === null || visibleTargets.has(r.targetAgentSlug))
       .map((r) => ({
         id: r.id,
         operation: r.operation,
@@ -8286,7 +8478,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
 // PATCH /api/agents/:id/x-agent-policies - Atomically update or clear one
 // policy. The editor sends independent controls through this route so rapid
 // edits never race through the whole-list replacement endpoint below.
-agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
+agents.patch('/:id/x-agent-policies', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
@@ -8312,8 +8504,11 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   }
   if (targetSlug !== null) {
     const targetAgent = await getAgentRecord(targetSlug)
-    if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+    if (!targetAgent || !(await getReadableAgentIds(c, [targetSlug])).has(targetSlug)) {
       return c.json({ error: 'Agent not found' }, 404)
+    }
+    if (!(await canUseAgent(c, targetSlug))) {
+      return c.json({ error: LINK_NEEDS_BOTH }, 403)
     }
   }
 
@@ -8345,6 +8540,14 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
       return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
     }
   }
+  // A replace adds the new links and removes the old ones, so each agent on either side needs the same check.
+  const existing = await listPoliciesForCaller(slug)
+  const targets = new Set([...parsed.data.policies.map((p) => p.targetSlug), ...existing.map((p) => p.targetAgentSlug)].filter((t) => t !== null))
+  for (const target of targets) {
+    if (!(await canUseAgent(c, target))) {
+      return c.json({ error: LINK_NEEDS_BOTH }, 403)
+    }
+  }
   await replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
@@ -8355,7 +8558,7 @@ const targetedOperationSchema = z.enum(['invoke', 'read'])
 // targeted policy atomically. The batch PUT above is a whole-form replace: concurrent
 // single-edge edits through it read-modify-write the full list and the last
 // writer silently drops the other's change. Graph edge edits go through here.
-agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
+agents.put('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
   if (!operation.success) {
@@ -8365,14 +8568,17 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) =
   if (targetSlug === slug) {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
-  // AgentAdmin checks role but not existence; assert both ends so a typo'd
+  // AgentUser checks role but not existence; assert both ends so a typo'd
   // slug doesn't write phantom rows that nothing references. In auth mode the
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
   // the GET route enforces) — and an invisible target returns the SAME 404 as
   // a nonexistent one, so this can't be used as an agent-existence oracle.
   const [callerAgent, targetAgent] = await Promise.all([getAgentRecord(slug), getAgentRecord(targetSlug)])
-  if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+  if (!callerAgent || !targetAgent || !(await getReadableAgentIds(c, [targetSlug])).has(targetSlug)) {
     return c.json({ error: 'Agent not found' }, 404)
+  }
+  if (!(await canUseAgent(c, targetSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
   const body = await c.req.json().catch(() => ({}))
   const parsed = z.object({ decision: xAgentDecisionSchema.default('allow') }).safeParse(body)
@@ -8387,13 +8593,16 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) =
 // grant for one target atomically. Preserves 'block' rows: deleting a drawn
 // graph edge revokes a grant, and lifting an explicit block here would
 // silently escalate (effective decision falls back to a global allow).
-agents.delete('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
+agents.delete('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
   if (!operation.success) {
     return c.json({ error: 'Unknown operation' }, 400)
   }
   const targetSlug = c.req.param('target')
+  if (!(await canUseAgent(c, targetSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
+  }
   const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
   return c.json({ ok: true, removed })
 })

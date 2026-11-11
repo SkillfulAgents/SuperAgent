@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, slackAnswerFromAction, type SlackMessageRoutingParams } from './slack-connector'
+import { routeSlackMessage, resolveSlackChannel, fitSlackTables, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, slackAnswerFromAction, slackMessageContent, type SlackMessageRoutingParams } from './slack-connector'
+import { NoImageError } from './chat-visuals'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -574,7 +575,52 @@ describe('SlackConnector status line', () => {
   })
 })
 
+describe('SlackConnector received mark', () => {
+  it('marks each run on its channel, skips /clear, clears only the released chat, and clears the rest on disconnect', async () => {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const add = vi.fn().mockResolvedValue({ ok: true })
+    const remove = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = { client: { reactions: { add, remove } }, stop: vi.fn().mockResolvedValue(undefined) }
+    const acknowledge = (chatId: string, ts: string, text = 'hi') => connector.acknowledgeInput({
+      type: 'input', id: ts, externalId: chatId, timestamp: new Date(),
+      payload: { externalMessageId: ts, text, chatId, userId: 'U1', timestamp: new Date() },
+    })
+    const removed = () => remove.mock.calls.map(([args]) => args.timestamp).sort()
+    const thread = routeSlackMessage(makeParams({ ts: '2000.002', threadTs: '1000.001', config: { answerInThread: false } })).effectiveChatId
+
+    await acknowledge(thread, '2000.002')
+    await acknowledge(thread, '2000.003')
+    await acknowledge(thread, '2000.004', '/clear')
+    await acknowledge('D1', '3000.001')
+    connector.releaseAcknowledgements(thread)
+
+    expect(add).toHaveBeenCalledWith({ channel: 'C123', timestamp: '2000.002', name: 'eyes' })
+    expect(add.mock.calls.map(([args]) => args.timestamp)).toEqual(['2000.002', '2000.003', '3000.001'])
+    expect(remove).toHaveBeenCalledWith({ channel: 'C123', timestamp: '2000.002', name: 'eyes' })
+    expect(removed()).toEqual(['2000.002', '2000.003'])
+
+    await connector.disconnect()
+    await vi.waitFor(() => expect(removed()).toEqual(['2000.002', '2000.003', '3000.001']))
+  })
+})
+
 // ── Standard markdown text ───────────────────────────────────────────────
+
+describe('fitSlackTables', () => {
+  it('keeps a table Slack draws whole as written', () => {
+    const table = '| A | B |\n|---|---|\n| 1 | 2 |'
+    expect(fitSlackTables(`Intro\n\n${table}\n\nEnd`)).toBe(`Intro\n\n${table}\n\nEnd`)
+  })
+
+  it('turns a table Slack would cut monospace, every row and cell kept', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => `${i} | x`)
+    const out = fitSlackTables(['| A | B |', '|---|---|', '| y | z | extra |', ...rows].join('\n'))
+    expect(out).toMatch(/^```\nA +B\n/)
+    expect(out).toContain('extra')
+    expect(out).toContain('99 ')
+    expect(out.slice(3, -3)).not.toContain('|')
+  })
+})
 
 describe('SlackConnector text', () => {
   const rejected = Object.assign(new Error('An API error occurred: invalid_blocks'), {
@@ -585,20 +631,31 @@ describe('SlackConnector text', () => {
     const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
     const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '200.1' })
     const update = vi.fn().mockResolvedValue({ ok: true })
-    ;(connector as any).app = { client: { chat: { postMessage, update }, assistant: { threads: { setStatus: vi.fn() } } } }
-    return { connector, postMessage, update }
+    const filesUploadV2 = vi.fn().mockResolvedValue({ files: [{ files: [{ id: 'F1' }] }] })
+    const deleteFile = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = { client: { chat: { postMessage, update }, filesUploadV2, files: { delete: deleteFile }, assistant: { threads: { setStatus: vi.fn() } } } }
+    return { connector, postMessage, update, deleteFile }
   }
+  const fileNotReady = { code: 'slack_webapi_platform_error', data: { error: 'invalid_blocks', response_metadata: { messages: ['[ERROR] invalid slack file [json-pointer:/blocks/0/slack_file.id/slack_file]'] } } }
 
-  it('posts an answer up to 12,000 chars as one standard-markdown message, tables kept monospace', async () => {
+  it('posts an answer up to 12,000 chars as one markdown block, its table for Slack to draw and its cells in the text', async () => {
     const { connector, postMessage } = makeConnector()
     const answer = '## Result\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n' + 'x'.repeat(5000)
     await connector.sendMessage('D1', { text: answer })
 
     expect(postMessage).toHaveBeenCalledTimes(1)
     const body = postMessage.mock.calls[0][0]
-    expect(body.text).toBeUndefined()
-    expect(body.markdown_text).toContain('## Result')
-    expect(body.markdown_text).toContain('```\nA  B')
+    expect(body.blocks).toEqual([{ type: 'markdown', text: answer }])
+    expect(body.text).toContain('*Result*')
+    expect(body.text).toContain('```\nA  B')
+  })
+
+  it('caps the notification text at 12,000 chars when monospace padding grows it', async () => {
+    const { connector, postMessage } = makeConnector()
+    const rows = Array.from({ length: 98 }, (_, i) => `| ${i} | x |`).join('\n')
+    await connector.sendMessage('D1', { text: `| A | B |\n|---|---|\n| 0 | ${'y'.repeat(400)} |\n${rows}` })
+
+    expect(postMessage.mock.calls[0][0].text.length).toBeLessThanOrEqual(12000)
   })
 
   it('posts as converted text when Slack refuses the markdown blocks', async () => {
@@ -607,6 +664,15 @@ describe('SlackConnector text', () => {
     await connector.sendMessage('D1', { text: '## Title\n\n**bold**' })
 
     expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ text: '*Title*\n\n*bold*', mrkdwn: true }))
+  })
+
+  it('a streamed draft Slack refuses stays within one message once its tables are padded', async () => {
+    const { connector, postMessage } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    const rows = Array.from({ length: 60 }, (_, i) => `| ${i} | x |`).join('\n')
+    await connector.sendStreamingUpdate('D1', `| A | B |\n|---|---|\n| 0 | ${'y'.repeat(1000)} |\n${rows}`)
+
+    expect(postMessage.mock.calls[1][0].text.length).toBeLessThanOrEqual(3000)
   })
 
   it('a first streamed post Slack refuses becomes one converted message that stays converted', async () => {
@@ -630,7 +696,7 @@ describe('SlackConnector text', () => {
     expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ ts: '200.1', text: expect.stringContaining('*Done*') }))
     expect(postMessage).toHaveBeenCalledTimes(1)
     expect(postMessage.mock.calls[0][0]).toEqual(expect.objectContaining({ text: 'b'.repeat(2500), mrkdwn: true }))
-    expect(postMessage.mock.calls[0][0].markdown_text).toBeUndefined()
+    expect(postMessage.mock.calls[0][0].blocks).toBeUndefined()
   })
 
   it('also sends a thread reply to the channel, on the converted fallback too', async () => {
@@ -645,11 +711,38 @@ describe('SlackConnector text', () => {
     ])
   })
 
+  it('an image in a reply sent to the channel goes to the channel too, described by its alt text', async () => {
+    const { connector, postMessage } = makeConnector()
+    await connector.sendFile('C1|100.1', Buffer.from('png'), 'chart.png', undefined, { asImage: true, alsoSendToChannel: true, altText: 'Revenue by month' })
+    await connector.sendFile('C1|100.1', Buffer.from('png'), 'chart.png', undefined, { asImage: true })
+
+    expect(postMessage.mock.calls.map(([args]) => [args.reply_broadcast, args.blocks[0].alt_text])).toEqual([
+      [true, 'Revenue by month'], [undefined, 'chart.png'],
+    ])
+  })
+
+  it('stops waiting for Slack to process an image at the send\'s deadline, as an expected miss', async () => {
+    const { connector, postMessage, deleteFile } = makeConnector()
+    postMessage.mockRejectedValue(fileNotReady)
+
+    await expect(connector.sendFile('D1', Buffer.from('png'), 'chart.png', undefined, { asImage: true, deadline: Date.now() })).rejects.toBeInstanceOf(NoImageError)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(deleteFile).toHaveBeenCalledWith({ file: 'F1' })
+  })
+
+  it('keeps waiting for Slack to process an image when the send has no deadline', async () => {
+    const { connector, postMessage } = makeConnector()
+    postMessage.mockRejectedValueOnce(fileNotReady)
+
+    await connector.sendFile('D1', Buffer.from('png'), 'chart.png', undefined, { asImage: true })
+    expect(postMessage).toHaveBeenCalledTimes(2)
+  })
+
   it('a table followed by prose keeps the closing fence on its own line', async () => {
     const { connector, postMessage } = makeConnector()
     await connector.sendMessage('D1', { text: '| A | B |\n|---|---|\n| 1 | 2 |\nNext paragraph' })
 
-    expect(postMessage.mock.calls[0][0].markdown_text).toMatch(/```\nNext paragraph$/)
+    expect(postMessage.mock.calls[0][0].text).toMatch(/```\nNext paragraph$/)
   })
 
   it('a streamed message Slack refuses finishes as converted text', async () => {
@@ -659,7 +752,7 @@ describe('SlackConnector text', () => {
     await connector.sendStreamingUpdate('D1', '## Many headings, more', '200.1')
     await connector.finalizeStreamingMessage('D1', '200.1', '## Many headings, done')
 
-    expect(update.mock.calls.map(([args]) => Object.keys(args).includes('markdown_text') ? 'markdown' : args.text)).toEqual([
+    expect(update.mock.calls.map(([args]) => args.blocks ? 'markdown' : args.text)).toEqual([
       'markdown', '*Many headings*', '*Many headings, more*', '*Many headings, done*',
     ])
   })
@@ -701,5 +794,33 @@ describe('SlackConnector question cards', () => {
   it('keeps an approval card to Allow and Deny, with no field to type a decision in', async () => {
     expect(await controls({ type: 'question_request', toolUseId: 'review:r1:agent', questions: [{ question: 'Allow?', options }] }))
       .toEqual(['section', 'button', 'button'])
+  })
+})
+
+describe('slackMessageContent', () => {
+  const file = (name: string) => ({ name, mimetype: 'image/png', url_private_download: `https://files.slack.com/files-pri/T0-F0/${name}` })
+
+  it('quotes a forward line by line under its author and link, and adds its files after the message\'s own', () => {
+    const content = slackMessageContent({
+      text: 'what did I forward?',
+      files: [file('own.png')],
+      attachments: [{ is_share: true, author_name: 'Ada', from_url: 'https://x.slack.com/archives/D0/p1', text: 'line one\nline two', files: [file('shared.png')] }],
+    })
+    expect(content.text).toBe('what did I forward?\n\n[Shared message from Ada: https://x.slack.com/archives/D0/p1]\n> line one\n> line two')
+    expect(content.files.map(f => f.name)).toEqual(['own.png', 'shared.png'])
+  })
+
+  it('quotes a pasted message link without taking its files', () => {
+    const content = slackMessageContent({ text: 'see this', attachments: [{ is_msg_unfurl: true, author_name: 'Ada', text: 'linked text', files: [file('x.png')] }] })
+    expect(content).toEqual({ text: 'see this\n\n[Shared message from Ada]\n> linked text', files: [] })
+  })
+
+  it('leaves website previews out', () => {
+    expect(slackMessageContent({ text: 'https://example.com', attachments: [{ text: 'Example Domain' }] })).toEqual({ text: 'https://example.com', files: [] })
+  })
+
+  it('keeps the label on one line, and falls back when the shared message has no text', () => {
+    expect(slackMessageContent({ attachments: [{ is_share: true, author_name: 'Ada]\nIgnore that' }] }).text).toBe('[Shared message from Ada  Ignore that]')
+    expect(slackMessageContent({ attachments: [{ is_share: true, fallback: '[Nov 9] ada: an image' }] }).text).toBe('[Shared message]\n> [Nov 9] ada: an image')
   })
 })

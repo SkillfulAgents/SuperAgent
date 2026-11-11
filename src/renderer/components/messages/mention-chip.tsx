@@ -5,13 +5,19 @@ import type { Mention } from '@shared/lib/utils/mentions'
 import type { Chip } from '@renderer/lib/chip-marker'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
-import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import type { ChipAgent, ChipContext, ChipPerson } from './composer-chips'
 
 /** A mention reads the same in the composer and in a sent bubble. */
 export const MENTION_CHIP_CLASS =
-  'inline-flex items-baseline gap-1 rounded-full bg-violet-500/10 px-1.5 font-medium text-violet-700 dark:bg-violet-400/15 dark:text-violet-300 [&_[data-chip-icon]]:self-center'
+  'inline-flex items-baseline gap-1 rounded-sm bg-violet-500/10 px-1 text-[0.92em] font-normal text-violet-700 dark:bg-violet-400/15 dark:text-violet-300 [&_[data-chip-icon]]:self-center'
+
+/**
+ * The @ is centred on lowercase letters, so beside the capital a name starts
+ * with it sits low. Raised to sit level with the capitals; the font has no
+ * case-sensitive form that would do it.
+ */
+export const MENTION_AT_CLASS = 'relative -top-[0.08em]'
 
 const AVATAR_SIZE = 18
 
@@ -37,35 +43,27 @@ export function agentForSlug(agents: ReadonlyMap<string, ChipAgent> | undefined,
   return agents?.get(slug) ?? agents?.get(slug.slice(slug.lastIndexOf('-') + 1))
 }
 
-function PersonAvatar({ id, name, members }: { id: string; name: string; members?: ReadonlyMap<string, ChipPerson> }) {
-  return <UserAvatar user={members?.get(id) ?? { id, name }} size={AVATAR_SIZE} />
-}
-
 function AgentIcon({ agent }: { agent: ChipAgent | undefined }) {
   return agent?.avatar
     ? <AgentAvatar agent={agent} size={AVATAR_SIZE} />
     : <Bot className="size-4 shrink-0" aria-hidden />
 }
 
-export function UserMentionIcon({ chip, context }: { chip: Chip; context: ChipContext }) {
-  return <PersonAvatar id={chip.referent} name={chip.label} members={context.members} />
-}
-
 export function AgentMentionIcon({ chip, context }: { chip: Chip; context: ChipContext }) {
   return <AgentIcon agent={agentForSlug(context.agents, chip.referent)} />
 }
 
-/** A mention in a sent message: the same chip the composer drew. */
+/** A mention in a sent message: the same chip the composer drew. A teammate's is just their name. */
 export function MentionChip({ mention, agentSlug }: { mention: Mention; agentSlug?: string }) {
-  const { members, agents } = useMentionDirectory(agentSlug)
+  const { agents } = useMentionDirectory(agentSlug)
   return (
     <span className={MENTION_CHIP_CLASS} data-testid={`${mention.kind}-mention`}>
-      <span data-chip-icon="">
-        {mention.kind === 'user'
-          ? <PersonAvatar id={mention.id} name={mention.name} members={members} />
-          : <AgentIcon agent={agentForSlug(agents, mention.slug)} />}
-      </span>
-      @{mention.name}
+      {mention.kind === 'agent' && (
+        <span data-chip-icon="">
+          <AgentIcon agent={agentForSlug(agents, mention.slug)} />
+        </span>
+      )}
+      <span><span className={MENTION_AT_CLASS}>@</span>{mention.name}</span>
     </span>
   )
 }

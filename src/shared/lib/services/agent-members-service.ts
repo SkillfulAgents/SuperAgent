@@ -54,6 +54,8 @@ export async function countOtherMembers(agentSlug: string, userId: string | null
   const row = await db.select({ n: count() }).from(user).where(and(
     or(eq(user.role, 'admin'), inArray(user.id, members)),
     or(eq(user.banned, false), isNull(user.banned)),
+    // Someone invited who hasn't joined can't use it yet.
+    eq(user.status, 'active'),
     userId === null ? undefined : ne(user.id, userId),
   )).get()
   return row?.n ?? 0
@@ -103,11 +105,11 @@ export async function removeMember(agentSlug: string, userId: string): Promise<M
 
 /**
  * Make users members of `agentSlug` with the `user` role, keeping any role a user already has there. With no `userIds`,
- * every user in the workspace.
+ * every user in the workspace (not people invited who haven't joined: they get what everyone has when they claim).
  */
 export async function addAgentUsers(agentSlug: string, userIds?: readonly string[]): Promise<void> {
   if (!isAuthMode()) return
-  const ids = userIds ?? (await db.select({ id: user.id }).from(user).all()).map((row) => row.id)
+  const ids = userIds ?? (await db.select({ id: user.id }).from(user).where(eq(user.status, 'active')).all()).map((row) => row.id)
   if (ids.length === 0) return
   const createdAt = new Date()
   await db.insert(agentAcl)

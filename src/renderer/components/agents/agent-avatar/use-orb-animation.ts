@@ -1,22 +1,35 @@
 import { createRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { OrbAppearance } from './avatar-orbs'
+import type { OrbAppearance } from '@shared/lib/types/agent-avatar-orbs'
 import { OrbAnimation } from './orb-animation'
 import { createOrbPainter, type OrbLayers } from './orb-painter'
-import type { OrbShape } from './orb-shapes'
+import type { OrbShape } from '@shared/lib/types/agent-avatar-shapes'
 import type { OrbState } from './orb-states'
 import { subscribeToFrames } from './orb-ticker'
 import { observeOrbVisibility } from './orb-visibility'
 
 const layer = () => createRef<HTMLSpanElement>()
 
+/** Degrees the face rolls per pixel scrolled. */
+const ROLL_DEG_PER_PX = 1
+
+/** The element matching `selector` nearest `from` in the tree: searched for in each ancestor in turn. */
+function findNearest(from: Element, selector: string): Element | null {
+  for (let el = from.parentElement; el; el = el.parentElement) {
+    const hit = el.querySelector(selector)
+    if (hit) return hit
+  }
+  return null
+}
+
 /** Owns the animation lifecycle; the component only supplies the static layers. */
-export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer, still = false }: {
+export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer, rollWithScroll, still = false }: {
   orb: OrbAppearance
   shape: OrbShape
   diameter: number
   restingPhi: number
   state: OrbState
   followPointer: boolean | string
+  rollWithScroll?: string
   /** Hold the state's still frame, as reduced motion does. */
   still?: boolean
 }): OrbLayers {
@@ -67,6 +80,22 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
     }
     const tick = (now: number) => paintRef.current(animation.advance(now))
 
+    // Rolling: the nearest scroller is re-resolved whenever it is replaced
+    // (a session switch remounts the transcript under the same avatar).
+    let scroller: Element | null = null
+    let lastTop = 0
+    const onScroll = (event: Event) => {
+      if (!rollWithScroll || !(event.target instanceof Element) || !event.target.matches(rollWithScroll)) return
+      if (!scroller?.isConnected) {
+        scroller = findNearest(root, rollWithScroll)
+        lastTop = scroller?.scrollTop ?? 0
+      }
+      if (event.target !== scroller) return
+      const top = scroller.scrollTop
+      animation.rollBy((top - lastTop) * ROLL_DEG_PER_PX)
+      lastTop = top
+    }
+
     const unobserve = observeOrbVisibility(root, visible => {
       if (!visible) {
         stop?.()
@@ -76,6 +105,11 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
       if (stop) return
       animation.resume(performance.now())
       const unsubscribe = subscribeToFrames(tick, followPointer ? measure : undefined)
+      if (rollWithScroll) {
+        scroller = findNearest(root, rollWithScroll)
+        lastTop = scroller?.scrollTop ?? 0
+        window.addEventListener('scroll', onScroll, { capture: true, passive: true })
+      }
       if (followPointer) {
         target.addEventListener('pointermove', onMove, { passive: true })
         leaveFrom.addEventListener('pointerleave', onLeave)
@@ -88,6 +122,7 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
         leaveFrom.removeEventListener('pointerleave', onLeave)
         window.removeEventListener('scroll', invalidateBounds, true)
         window.removeEventListener('resize', invalidateBounds)
+        window.removeEventListener('scroll', onScroll, true)
         onLeave()
       }
     })
@@ -95,7 +130,7 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
       unobserve()
       stop?.()
     }
-  }, [animation, layers, followPointer, reduced])
+  }, [animation, layers, followPointer, rollWithScroll, reduced])
 
   return layers
 }

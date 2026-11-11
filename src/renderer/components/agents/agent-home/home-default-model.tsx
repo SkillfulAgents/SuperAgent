@@ -35,6 +35,8 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
     >
       <span className={look.label}>Agent Default Model</span>
       <SettingsModelSelect
+        // The side panel's row style: a muted value and soft chevron, like the section rows above.
+        variant={look.grouped ? 'row' : undefined}
         agentSlug={agentSlug}
         model={displayModel}
         llmProviderId={prefs?.defaultLlmProviderId}

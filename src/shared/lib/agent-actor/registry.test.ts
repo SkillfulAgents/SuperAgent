@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
-import { getSessionSummaryCacheSlot } from '@shared/lib/services/session-summary-cache'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { ReviewManager } from '@shared/lib/proxy/review-manager'
 import { AccountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
@@ -29,8 +28,8 @@ vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(),
   appendAssistantEntry: vi.fn(),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@shared/lib/services/session-summary-cache')>()),
+vi.mock('@shared/lib/services/session-activity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-activity')>()),
   recordSessionActivity: vi.fn(),
 }))
 vi.mock('./local-transcript-ops', () => ({
@@ -227,12 +226,8 @@ describe('createAgentRegistry', () => {
     const registry = createAgentRegistry(fake.deps)
     expect(fake.containerHost.attachAgentWorkspaces).toHaveBeenCalledTimes(1)
     const access = fake.containerHost.attachAgentWorkspaces.mock.calls[0][0] as {
-      files: (slug: string) => unknown
       instructions: (slug: string) => Promise<string | null>
     }
-    // The same file operations the actor hands out, for the same agent.
-    expect(access.files('a')).toBe(registry.get('a').files)
-    expect(access.files('b')).not.toBe(registry.get('a').files)
     // Instructions are the actor's config document.
     const getDoc = vi.spyOn(registry.get('a').config, 'get').mockResolvedValue('---\nname: A\n---\n')
     expect(await access.instructions('a')).toBe('---\nname: A\n---\n')
@@ -583,7 +578,7 @@ describe('createAgentRegistry', () => {
       scopeDescriptions: {},
     }
 
-    it('settles every open request, rejects every parked call, and forgets the grants and the summary', async () => {
+    it('settles every open request, rejects every parked call, and forgets the grants and what its index learned', async () => {
       const registry = createAgentRegistry(fake.deps)
       const actor = registry.get('a') as LocalAgentActor
 
@@ -593,8 +588,7 @@ describe('createAgentRegistry', () => {
       const account = actor.inputs.accountReauth.request({ accountId: 'acct', toolkit: 'gmail', accountStatus: 'expired' }, { waitId: 'wait-1' })
       const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' }, { waitId: 'wait-2' })
       await actor.inputs.computerUse.grant('use_host_shell', 'once')
-      await actor.inputs.computerUse.setGrabbedApp('Calculator')
-      getSessionSummaryCacheSlot(actor.store).revision = 7
+      await actor.inputs.computerUse.setActiveApp('s1', 'Calculator')
       expect((await actor.live()).openRequests).toHaveLength(4)
       fake.transitions.mockClear()
       const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
@@ -628,11 +622,11 @@ describe('createAgentRegistry', () => {
       expect(freshLive.openRequests).toEqual([])
       expect(freshLive.pendingReviews).toEqual([])
       expect(await fresh.inputs.recentResolution('q1')).toBeUndefined()
-      expect(fresh.state.computerUse.grabbed()).toBeUndefined()
+      expect(fresh.state.computerUse.activeApp('s1')).toBeUndefined()
       expect(await fresh.state.computerUse.activeGrants()).toEqual([])
       expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
       expect(fresh.state.mcpReauth.openEntryIds()).toEqual([])
-      expect(getSessionSummaryCacheSlot(fresh.store).revision).toBe(0)
+      expect(fresh.store.index).not.toBe(actor.store.index)
       // And the old handle holds nothing either.
       expect((await actor.live()).openRequests).toEqual([])
       expect(actor.state.reviews.settlerIds()).toEqual([])
@@ -772,19 +766,32 @@ describe('createAgentRegistry', () => {
       })
     })
 
-    it('computerUse.releaseGrab forgets the grab, revokes the app and tells the session\'s viewers', async () => {
+    it('computerUse.releaseApp forgets the grab, revokes the app and tells the session\'s viewers', async () => {
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       await actor.inputs.computerUse.grant('use_application', 'always', 'Calculator')
-      await actor.inputs.computerUse.setGrabbedApp('Calculator')
+      await actor.inputs.computerUse.setActiveApp('s1', 'Calculator')
       const emit = vi.spyOn(actor.state.sessions, 'emit')
       const revoke = vi.spyOn(actor.state.computerUse, 'revoke')
 
-      expect(await actor.inputs.computerUse.releaseGrab('s1')).toEqual({ appName: 'Calculator' })
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: 'Calculator' })
 
-      expect(actor.state.computerUse.grabbed()).toBeUndefined()
+      expect(actor.state.computerUse.activeApp('s1')).toBeUndefined()
       expect(revoke).toHaveBeenCalledWith('use_application', 'Calculator')
-      expect(emit).toHaveBeenCalledWith('s1', { type: 'computer_use_grab_changed', app: null })
-      expect(await actor.inputs.computerUse.releaseGrab('s1')).toEqual({ appName: undefined })
+      expect(emit).toHaveBeenCalledWith('s1', { type: 'computer_use_app_changed', app: null })
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: undefined })
+    })
+
+    it('computerUse.releaseApp takes back the app of the session it is asked for, not another session\'s', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
+      await actor.inputs.computerUse.setActiveApp('s1', 'Safari')
+      await actor.inputs.computerUse.setActiveApp('s2', 'Mail')
+      const revoke = vi.spyOn(actor.state.computerUse, 'revoke')
+
+      expect(await actor.inputs.computerUse.releaseApp('s1')).toEqual({ appName: 'Safari' })
+
+      expect(revoke).toHaveBeenCalledWith('use_application', 'Safari')
+      expect(revoke).not.toHaveBeenCalledWith('use_application', 'Mail')
+      expect(actor.state.computerUse.activeApp('s2')).toBe('Mail')
     })
 
     it('a re-auth card answered with another connection releases its parked calls, or settles the card when none are parked', async () => {

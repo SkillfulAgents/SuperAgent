@@ -590,6 +590,38 @@ describe('mcp-proxy route', () => {
       )
     })
 
+    it('shares one refresh between requests that find the token expired together', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ tokenExpiresAt: new Date(Date.now() - 60_000) }))
+      let answerRefresh!: () => void
+      mockFetch.mockImplementation(async (url: string) => {
+        if (url === 'https://auth.example.com/token') {
+          await new Promise<void>((resolve) => { answerRefresh = resolve })
+          return Response.json({ access_token: 'new-access-tok', refresh_token: 'new-refresh-tok', expires_in: 3600 })
+        }
+        return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      })
+
+      const request = () => makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', { headers: { Authorization: 'Bearer synth_valid' } })
+      const first = request()
+      await vi.waitFor(() => expect(answerRefresh).toBeTypeOf('function'))
+      // The second request makes the same reads, then reaches the refresh while
+      // the first is still waiting on it (the mocked steps between are microtasks).
+      const readsPerRequest = mockLimit.mock.calls.length
+      const second = request()
+      await vi.waitFor(() => expect(mockLimit.mock.calls.length).toBe(2 * readsPerRequest))
+      await new Promise((resolve) => setImmediate(resolve))
+      answerRefresh()
+      const responses = await Promise.all([first, second])
+
+      expect(responses.map((res) => res.status)).toEqual([200, 200])
+      const refreshes = mockFetch.mock.calls.filter(([url]) => url === 'https://auth.example.com/token')
+      expect(refreshes).toHaveLength(1)
+      const upstream = mockFetch.mock.calls.filter(([url]) => url !== 'https://auth.example.com/token')
+      expect(upstream.map(([, init]) => (init.headers as Headers).get('Authorization')))
+        .toEqual(['Bearer new-access-tok', 'Bearer new-access-tok'])
+    })
+
     it('requires reconnect without persisting a malformed token refresh response', async () => {
       setupSuccessPath({ mcpOverrides: { tokenExpiresAt: new Date(1) } })
       mockFetch.mockResolvedValueOnce(Response.json({ access_token: 123, expires_in: 3600 }))

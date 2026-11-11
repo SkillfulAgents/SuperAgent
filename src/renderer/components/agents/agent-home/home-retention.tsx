@@ -1,4 +1,4 @@
-import { Check, ChevronDown, RotateCcw } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
@@ -126,16 +126,19 @@ function RetentionRow({
         <PopoverTrigger asChild>
           <Button
             type="button"
-            variant="outline"
+            variant={look.grouped ? 'ghost' : 'outline'}
             size="sm"
             disabled={disabled}
-            // Fixed width so the two rows' triggers line up whatever they read.
-            className="h-[34px] w-20 justify-between gap-1.5 px-2 text-xs font-medium"
+            // The side panel's row style: a value lighter than its label and a soft right chevron, like the section rows, with no frame or
+            // hover fill. Right-aligned, so the values line up at their chevrons whatever they read.
+            className={look.grouped
+              ? '-mr-1 h-8 gap-1 px-1 text-[12px]/5 font-normal text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground/70'
+              : 'h-[34px] w-20 justify-between gap-1.5 px-2 text-xs font-medium'}
             aria-label={`${label}: ${triggerLabel}. Click to change.`}
             data-testid={`${testId}-trigger`}
           >
             <span className="truncate">{triggerLabel}</span>
-            <ChevronDown className="h-3.5 w-3.5" />
+            {look.grouped ? <ChevronRight className="h-4 w-4 text-muted-foreground/50" /> : <ChevronDown className="h-3.5 w-3.5" />}
           </Button>
         </PopoverTrigger>
         <PopoverContent

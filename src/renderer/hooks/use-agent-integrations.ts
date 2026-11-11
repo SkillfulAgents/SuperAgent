@@ -51,8 +51,8 @@ export const agentIntegrationKeys = {
 
 /** Host owns the decision; capability changes only invalidate discovery. */
 export function useAvailableAgentIntegrationProviders() {
-  const { data: platform } = usePlatformAuthStatus()
-  const { data: relay } = useWebhookRelay()
+  const { data: platform, isLoading: platformLoading } = usePlatformAuthStatus()
+  const { data: relay, isLoading: relayLoading } = useWebhookRelay()
   return useQuery<AgentIntegrationDefinition[]>({
     queryKey: ['agent-integration-providers', platform?.connected, relay?.available],
     queryFn: async () => {
@@ -60,6 +60,8 @@ export function useAvailableAgentIntegrationProviders() {
       if (!response.ok) throw new Error('Failed to fetch available integrations')
       return response.json()
     },
+    // Both answers are in the key, so a read before they arrive is read again right after.
+    enabled: !platformLoading && !relayLoading,
   })
 }
 
@@ -410,6 +412,26 @@ export function useAgentIntegrationSetup(agentSlug: string, provider: string, na
     },
     staleTime: 60_000,
     enabled,
+  })
+}
+
+/** Renames the app a team directory created for an installation, and/or sets its icon (base64 PNG). */
+export function useUpdateProvisionedApp() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, name, icon }: { id: string; agentSlug: string; name?: string; icon?: string }) => {
+      const response = await apiFetch(`/api/agent-integrations/${id}/app`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(name ? { name } : {}), ...(icon ? { icon } : {}) }),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(typeof result?.error === 'string' && result.error ? result.error : 'Could not update the app')
+      return result
+    },
+    onSuccess: (_, { id, agentSlug }) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.detail(id) }),
+      queryClient.invalidateQueries({ queryKey: agentIntegrationKeys.lists(agentSlug) }),
+    ]),
   })
 }
 

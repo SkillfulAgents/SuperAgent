@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, onTestFinished, vi } from 'vitest'
 import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
 import { AgentComputerUse } from './agent-permissions'
 import { ComputerUsePermissionManager } from './permission-manager'
@@ -132,10 +132,12 @@ describe('ComputerUsePermissionManager', () => {
       expect(await pm.checkPermission('agent-1', 'use_application', 'Safari')).toBe('prompt_needed')
     })
 
-    it('use_application: undefined appName only matches undefined grant', async () => {
-      await pm.grantPermission('agent-1', 'use_application', 'once', undefined)
-      expect(await pm.checkPermission('agent-1', 'use_application', undefined)).toBe('granted')
+    it('use_application: a grant for no app covers nothing, so a call that names no app is always asked about', async () => {
+      await pm.grantPermission('agent-1', 'use_application', 'always', undefined)
+      expect(await pm.checkPermission('agent-1', 'use_application', undefined)).toBe('prompt_needed')
       expect(await pm.checkPermission('agent-1', 'use_application', 'Calculator')).toBe('prompt_needed')
+      // Nor is it kept: "always" for no app is for that call only.
+      expect((await pm.getGrantsForAgent('agent-1')).filter((g) => g.grantType === 'always')).toEqual([])
     })
 
     it('use_application: grant with appName does NOT match undefined check', async () => {
@@ -319,10 +321,10 @@ describe('ComputerUsePermissionManager', () => {
     })
 
     it('matches appName strictly (undefined vs string)', async () => {
-      await pm.grantPermission('agent-1', 'use_application', 'once', undefined)
-      pm.consumeOnceGrant('agent-1', 'use_application', 'Calculator')
-      // undefined grant should still be there (didn't match 'Calculator')
-      expect(await pm.checkPermission('agent-1', 'use_application', undefined)).toBe('granted')
+      await pm.grantPermission('agent-1', 'use_application', 'once', 'Calculator')
+      pm.consumeOnceGrant('agent-1', 'use_application', undefined)
+      // The Calculator grant is still there (no app matched nothing).
+      expect(await pm.checkPermission('agent-1', 'use_application', 'Calculator')).toBe('granted')
     })
   })
 
@@ -337,10 +339,10 @@ describe('ComputerUsePermissionManager', () => {
       expect(await pm.getGrantsForAgent('agent-1')).toHaveLength(0)
     })
 
-    it('clears grabbed app state', async () => {
-      pm.setGrabbedApp('agent-1', 'Calculator')
+    it('forgets the active app', async () => {
+      pm.setActiveApp('agent-1', 's1', 'Calculator')
       await pm.revokeAllForAgent('agent-1')
-      expect(pm.getGrabbedApp('agent-1')).toBeUndefined()
+      expect(pm.getActiveApp('agent-1', 's1')).toBeUndefined()
     })
 
     it('persists to settings', async () => {
@@ -426,32 +428,32 @@ describe('ComputerUsePermissionManager', () => {
   // ─── Grabbed app tracking ─────────────────────────────────────────
 
   describe('grabbed app tracking', () => {
-    it('setGrabbedApp / getGrabbedApp round-trip', async () => {
-      pm.setGrabbedApp('agent-1', 'Calculator')
-      expect(pm.getGrabbedApp('agent-1')).toBe('Calculator')
+    it('setActiveApp / getActiveApp round-trip', () => {
+      pm.setActiveApp('agent-1', 's1', 'Calculator')
+      expect(pm.getActiveApp('agent-1', 's1')).toBe('Calculator')
     })
 
-    it('getGrabbedApp returns undefined for unknown agent', async () => {
-      expect(pm.getGrabbedApp('agent-1')).toBeUndefined()
+    it('getActiveApp returns undefined for unknown agent', () => {
+      expect(pm.getActiveApp('agent-1', 's1')).toBeUndefined()
     })
 
-    it('clearGrabbedApp removes the entry', async () => {
-      pm.setGrabbedApp('agent-1', 'Calculator')
-      pm.clearGrabbedApp('agent-1')
-      expect(pm.getGrabbedApp('agent-1')).toBeUndefined()
+    it('clearActiveApp removes the entry', () => {
+      pm.setActiveApp('agent-1', 's1', 'Calculator')
+      pm.clearActiveApp('agent-1')
+      expect(pm.getActiveApp('agent-1', 's1')).toBeUndefined()
     })
 
-    it('setGrabbedApp overwrites previous value', async () => {
-      pm.setGrabbedApp('agent-1', 'Calculator')
-      pm.setGrabbedApp('agent-1', 'Safari')
-      expect(pm.getGrabbedApp('agent-1')).toBe('Safari')
+    it('setActiveApp overwrites previous value', () => {
+      pm.setActiveApp('agent-1', 's1', 'Calculator')
+      pm.setActiveApp('agent-1', 's1', 'Safari')
+      expect(pm.getActiveApp('agent-1', 's1')).toBe('Safari')
     })
 
-    it('agents have independent grabbed app state', async () => {
-      pm.setGrabbedApp('agent-1', 'Calculator')
-      pm.setGrabbedApp('agent-2', 'Safari')
-      expect(pm.getGrabbedApp('agent-1')).toBe('Calculator')
-      expect(pm.getGrabbedApp('agent-2')).toBe('Safari')
+    it('agents have independent active apps', () => {
+      pm.setActiveApp('agent-1', 's1', 'Calculator')
+      pm.setActiveApp('agent-2', 's1', 'Safari')
+      expect(pm.getActiveApp('agent-1', 's1')).toBe('Calculator')
+      expect(pm.getActiveApp('agent-2', 's1')).toBe('Safari')
     })
   })
 
@@ -609,7 +611,10 @@ describe('ComputerUsePermissionManager', () => {
       expect(await pm.checkPermission('agent-1', 'use_application', 'Calculator')).toBe('prompt_needed')
     })
 
-    it('case-sensitive appName matching', async () => {
+    it('case-sensitive appName matching on macOS', async () => {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+      onTestFinished(() => { Object.defineProperty(process, 'platform', platform) })
       await pm.grantPermission('agent-1', 'use_application', 'once', 'Calculator')
       expect(await pm.checkPermission('agent-1', 'use_application', 'calculator')).toBe('prompt_needed')
       expect(await pm.checkPermission('agent-1', 'use_application', 'CALCULATOR')).toBe('prompt_needed')

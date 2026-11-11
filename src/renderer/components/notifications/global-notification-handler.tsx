@@ -17,7 +17,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, type QueryKey } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
@@ -30,12 +30,15 @@ import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import { WEBHOOK_RELAY_QUERY_KEY } from '@renderer/hooks/use-webhook-relay'
 import {
+  agentDetailQueryKeys,
   applyDashboardRuntimeStatus,
   applySessionActivityStatus,
   invalidateAgentArtifacts,
   invalidateAgentWidgets,
+  invalidateAutomationSessionLists,
   markDashboardScreenshotReady,
   patchAgentWidget,
+  sessionListMembership,
   updateAgentRuntimeCache,
   type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
@@ -257,6 +260,24 @@ export function GlobalNotificationHandler() {
     const es = new EventSource(url)
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
+    // One agent's session changed: its detail under every route key and the
+    // list, once per burst. The list key is exact, since a prefix would also
+    // refetch the detail of every agent a tab shows. Without an agent, any
+    // agent may have changed.
+    const confirmAgentSummaries = (agentSlug: string | undefined) => {
+      if (!agentSlug) {
+        confirmations.invalidate(['agents'])
+        return
+      }
+      for (const key of agentDetailQueryKeys(queryClient, agentSlug)) confirmations.invalidate(key, { exact: true })
+      confirmations.invalidate(['agents'], { exact: true })
+    }
+    // A patch does not stop a read already in flight, and that read would land
+    // over it with the state from before the event. Refetching cancels it; a
+    // query at rest is left alone.
+    const refetchIfInFlight = (queryKey: QueryKey) => {
+      if (queryClient.isFetching({ queryKey, exact: true }) > 0) void queryClient.invalidateQueries({ queryKey, exact: true })
+    }
 
     es.onmessage = (event) => {
       try {
@@ -329,10 +350,12 @@ export function GlobalNotificationHandler() {
               noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
               queryClient.invalidateQueries({ queryKey: ['notifications'] })
             }
-            // Refresh sessions so unread indicators update in sidebar
+            // Refresh sessions so unread indicators update in sidebar. In the
+            // batch: a completion lands just after its session_idle, which
+            // refreshes the same list.
             const notifAgentSlug = data.agentSlug as string | undefined
             if (notifAgentSlug) {
-              queryClient.invalidateQueries({ queryKey: ['sessions', notifAgentSlug] })
+              confirmations.invalidate(['sessions', notifAgentSlug])
             }
 
             // Automation-triggered sessions: refresh the trigger/task session lists
@@ -347,8 +370,9 @@ export function GlobalNotificationHandler() {
             }
             if (notifType && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notifType)) {
               // Completion enrichment may finish after the lifecycle refetch.
-              queryClient.invalidateQueries({ queryKey: ['agents'] })
-              queryClient.invalidateQueries({ queryKey: ['session'] })
+              confirmAgentSummaries(notifAgentSlug)
+              const notifSessionId = data.sessionId as string | undefined
+              queryClient.invalidateQueries({ queryKey: notifSessionId ? ['session', notifSessionId] : ['session'] })
             }
 
             // Skip if user doesn't have access to the notification's agent
@@ -480,26 +504,50 @@ export function GlobalNotificationHandler() {
             if (statusPatch && eventAgentSlug && eventSessionId) {
               applySessionActivityStatus(queryClient, eventAgentSlug, eventSessionId, statusPatch)
             }
-            if (eventAgentSlug) {
-              queryClient.invalidateQueries({ queryKey: ['sessions', eventAgentSlug] })
+            // A status flip of a session this tab already lists: the echo above
+            // is the whole update for its rows. A raise also proves the agent's
+            // rollup; a clear does not, since hidden automated sessions and
+            // agent-level reviews count toward it unseen.
+            const raise = data.type === 'session_active' || data.type === 'session_awaiting_input'
+            const lists = (raise || data.type === 'session_input_provided') && eventAgentSlug && eventSessionId
+              ? sessionListMembership(queryClient, eventAgentSlug, eventSessionId)
+              : []
+            const listed = lists.some((list) => list.full && list.holds)
+            const sessionsKey = eventAgentSlug ? ['sessions', eventAgentSlug] : ['sessions']
+            if (listed) {
+              // Only the server can add the session to a list that lacks it,
+              // or take it out of a slice of live sessions after a clear.
+              for (const list of lists) {
+                if (!list.holds || (!raise && !list.full)) queryClient.invalidateQueries({ queryKey: list.queryKey, exact: true })
+                else refetchIfInFlight(list.queryKey)
+              }
+            } else if (data.hidden === true && eventAgentSlug) {
+              // A hidden automated session (cron, webhook, chat): only the
+              // slices that hold automations can change.
+              invalidateAutomationSessionLists(queryClient, eventAgentSlug)
+            } else if (data.type === 'session_idle') {
+              // A finished turn's completion notification follows and refreshes
+              // the same list; in one batch the two fetch it once.
+              confirmations.invalidate(sessionsKey)
             } else {
-              queryClient.invalidateQueries({ queryKey: ['sessions'] })
+              queryClient.invalidateQueries({ queryKey: sessionsKey })
             }
             // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.).
-            // The event's own agent refetches now; the list (whose prefix also
-            // covers every cached agent detail) confirms with the batch.
-            if (eventAgentSlug) {
-              queryClient.invalidateQueries({ queryKey: ['agents', eventAgentSlug] })
+            if (listed && raise && eventAgentSlug) {
+              for (const key of [['agents'], ...agentDetailQueryKeys(queryClient, eventAgentSlug)]) refetchIfInFlight(key)
+            } else {
+              confirmAgentSummaries(eventAgentSlug)
             }
-            confirmations.invalidate(['agents'])
             // Todo board columns are live session state.
             confirmations.invalidate(TODOS_QUERY_KEY)
-            // Artifacts may have been created/modified during the session —
-            // that agent's, not every agent's.
-            if (eventAgentSlug) {
-              invalidateAgentArtifacts(queryClient, eventAgentSlug)
-            } else {
-              queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+            // Artifacts can only change while the agent works: read that
+            // agent's when it stops, not when it starts.
+            if (data.type === 'session_idle' || data.type === 'session_error' || data.type === 'session_awaiting_input') {
+              if (eventAgentSlug) {
+                invalidateAgentArtifacts(queryClient, eventAgentSlug)
+              } else {
+                queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+              }
             }
 
             // A finished run may have changed Team Brain's drive: its tree and sync summaries read again (none for other agents).

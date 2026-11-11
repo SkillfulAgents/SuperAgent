@@ -6,6 +6,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { getRequestListener } from '@hono/node-server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { taskManager } from '@shared/lib/background-work'
 const mocks = vi.hoisted(() => ({
   providerName: 'openai' as string | undefined, alternateEnabled: false, user: 'alice', authenticated: true,
   agentExists: true, agentRole: 'user', getAgent: vi.fn(),
@@ -46,6 +47,9 @@ const resolveSetting = vi.hoisted(() => vi.fn(async () => undefined as unknown))
 vi.mock('@shared/lib/agent-integrations/live-setting', () => ({ resolveLiveConversationSetting: resolveSetting }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({}) }))
 import voice from './voice'
+import { liveSessions } from '@shared/lib/voice/live-sessions'
+
+beforeEach(() => taskManager().register(liveSessions.hangUpTask))
 
 // Exercise the same error boundary as the production API.
 const app = new Hono().route('/api/voice', voice)
@@ -221,8 +225,17 @@ describe('Live voice routes', () => {
   })
   it('rejects invalid and oversized mappings before calling the LLM', async () => {
     expect((await request('/live/map', { kind: 'request', transcript: '' })).status).toBe(400)
+    expect((await request('/live/map', { kind: 'request', transcript: 'user: hi', userWords: '', history: [], previousRequest: '', agentBusy: false })).status).toBe(400)
     expect((await request('/live/map', { kind: 'reply', text: 'a'.repeat(140000) })).status).toBe(413)
     expect(mocks.map).not.toHaveBeenCalled()
+  })
+  it('still accepts a request mapping without userWords from an older client', async () => {
+    mocks.map.mockResolvedValueOnce({ action: 'message', text: 'mapped' })
+    const creation = await request('/live/session', { sdp: 'offer', history: [] })
+    expect(creation.status).toBe(201)
+    const input = { kind: 'request', transcript: 'user: hi', history: [], previousRequest: '', agentBusy: false }
+    expect(await (await request('/live/map', input)).json()).toEqual({ action: 'message', text: 'mapped' })
+    expect(mocks.map).toHaveBeenCalledExactlyOnceWith(input, expect.any(AbortSignal), expect.anything())
   })
   it.each(['openai', 'platform'] as const)('creates, maps, and closes a Live session for %s', async (id) => {
     mocks.providerName = id

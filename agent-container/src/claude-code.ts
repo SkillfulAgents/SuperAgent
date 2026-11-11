@@ -1,7 +1,7 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import { webhookRelayAvailable } from './webhook-relay-env';
-import { isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
+import { computerUseGuides, computerUseHostLine, isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
 import {
   query,
   startup,
@@ -25,7 +25,7 @@ import { gamutPluginDir } from './gamut-plugin';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createMeetingsMcpServer, createRulesMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
-import { computerUseTools } from './tools/computer-use';
+import { COMPUTER_USE_SERVER, COMPUTER_USE_TOOL_PREFIX, computerUseTools } from './tools/computer-use';
 import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { builtinHints, createHintHookMatchers } from './hints';
@@ -345,6 +345,8 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** With computer use: the host's OS and agent-desktop's guide for it, rendered in the tail; '' otherwise. */
+  computerUseHostLine: string;
   /** The Mac App Store edition: the prompt says what its sandbox leaves out. */
   appSandbox: boolean;
   /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
@@ -422,6 +424,9 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    // In the tail, not the computer-use section: the static body stays the
+    // same bytes on every host.
+    computerUseHostLine: isComputerUseHost() ? computerUseHostLine() : '',
     appSandbox: isAppSandboxHost(),
     meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
@@ -1039,7 +1044,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
-      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer({ alwaysLoad: this.preloadToolsets.has('computer-use') }) } : {}),
+      ...(isComputerUseHost() ? { [COMPUTER_USE_SERVER]: createComputerUseMcpServer({ alwaysLoad: this.preloadToolsets.has('computer-use') }) } : {}),
     };
     this.sdkMcpServerConfigs = servers;
     return servers;
@@ -1201,6 +1206,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         // a session the host already counts as settled. Auto-compaction still
         // runs when the context actually fills.
         idleCompaction: false,
+        // No commit/PR attribution lines. Left at the default, the CLI adds a
+        // "remote_session_change" system-reminder to the first turn of every
+        // session ("Attribution for git commits and pull requests you create
+        // from here on ... End git commit messages with: Co-Authored-By:
+        // Claude Code ..."). It lands in the messages, not the system prompt,
+        // so replacing the prompt doesn't remove it. Small models read it as
+        // the task: one answered "Hey!" by writing both lines into AGENTS.md.
+        // It also credits "Claude Code" for whatever model the agent runs on.
+        // With both lines empty the CLI skips the reminder entirely.
+        attribution: { commit: '', pr: '' },
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the
@@ -1356,15 +1371,21 @@ export class ClaudeCodeProcess extends EventEmitter {
         },
         ...(isComputerUseHost() ? {
           'computer-use': {
-            description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
+            description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. Launch the app first (computer_launch) and name it in the task. This agent runs on a cheaper model and handles all app interactions autonomously.',
             // Cheap tier (browser model); falls back to the main model — never a
             // hardcoded Claude alias.
             model: this.browserModel || this.model,
             tools: [
-              ...mcpToolNames('computer-use', computerUseTools, ['computer_launch', 'computer_quit', 'computer_ungrab']),
+              // The parent owns the app's lifecycle: it launches and quits.
+              ...mcpToolNames(COMPUTER_USE_SERVER, computerUseTools, ['computer_launch', 'computer_close_app']),
+              // Read for the computer-use guides; Grep for them too, and for a
+              // long result the SDK set aside in a file.
               'Read',
+              'Grep',
             ],
-            prompt: COMPUTER_USE_AGENT_PROMPT,
+            // agent-desktop's own guides follow our few lines, so the agent
+            // starts from the library's guidance, not a summary of it.
+            prompt: [COMPUTER_USE_AGENT_PROMPT, computerUseHostLine(), computerUseGuides()].filter(Boolean).join('\n\n'),
             maxTurns: 500,
           },
         } : {}),
@@ -1440,7 +1461,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // not additive). This is acceptable because they write the same ID,
         // but if two user-input tools fire concurrently the first ID could
         // be overwritten before consumeCurrentToolUseId is called.
-        if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
+        if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith(COMPUTER_USE_TOOL_PREFIX)) && options.toolUseID) {
           inputManager.setCurrentToolUseId(options.toolUseID, this.sessionId);
         }
 
@@ -1476,7 +1497,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             ],
           },
           {
-            matcher: 'mcp__computer-use__.*',
+            matcher: `${COMPUTER_USE_TOOL_PREFIX}.*`,
             hooks: [
               async (_input, toolUseId) => {
                 if (toolUseId) {

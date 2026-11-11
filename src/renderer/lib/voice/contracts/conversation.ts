@@ -4,7 +4,8 @@ import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outc
 export type VoiceModePhase = 'listening' | 'thinking' | 'speaking'
 export type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
 
-export type VoiceAgentCommand = { type: 'submit'; text: string } | { type: 'cancel' }
+/** `queue`: the words join a running turn instead of interrupting it; ignored when the agent is idle. */
+export type VoiceAgentCommand = { type: 'submit'; text: string; queue?: boolean } | { type: 'cancel' }
 export type VoiceCommandResult = { accepted: true } | { accepted: false; error?: string }
 
 /** Snapshot of the existing agent stream; protocol heuristics are confined to the coordinator. */

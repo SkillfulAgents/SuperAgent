@@ -13,16 +13,17 @@
  * imessage-webhooks.ts and imessage-gateway-client.ts.
  */
 
-import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationInputResult } from '../agent-integrations/types'
 import type { IntegrationRelayAttachment, IntegrationRelayHost } from '../agent-integrations/transport'
 import { relayAcceptResult } from '../agent-integrations/relay-transport'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import type { RelayAcceptResult, RelayEvent } from '../webhook-relay'
 import type { IMessageConfig } from './config-schema'
 import { IMESSAGE_WEBHOOK_EVENTS, checkIMessageWebhook, ensureIMessageWebhook } from './imessage-webhooks'
+import { incomingMessageSchema } from './message-schema'
 import {
   markGatewayChatRead, registerGatewayWebhook, requestGatewayUpload, sendGatewayMessage, sendGatewayReaction, startGatewayTyping,
-  type GatewayMessagePart, type GatewayUpload,
+  GatewayRequestError, type GatewayMessagePart, type GatewayTextDecoration, type GatewayUpload,
 } from './imessage-gateway-client'
 import { getAgentRecord } from '../services/agent-service'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
@@ -30,6 +31,7 @@ import { displaySlug } from '../utils/file-storage'
 import { sanitizeUploadFilename } from '../utils/path-safety'
 
 import WebSocket from 'ws'
+import { Marked, type Token, type Tokens } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
@@ -72,7 +74,14 @@ const MAX_HANDLED_EVENTS = 1000
 
 // ── Reaction tag parsing ────────────────────────────────────────────────
 
-const REACTION_TAG_RE = /\[\[reaction:(\w+)\]\]/g
+const REACTION_TAG_RE = /\[\[reaction:([^\]\s]+)\]\]/g
+const EMOJI_START_RE = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}{2}|[0-9#*]\uFE0F?\u20E3)/u
+const GRAPHEMES = new Intl.Segmenter()
+
+/** Whether a reaction tag holds exactly one emoji, which goes out as a custom tapback. */
+function isSingleEmoji(text: string): boolean {
+  return EMOJI_START_RE.test(text) && [...GRAPHEMES.segment(text)].length === 1
+}
 
 const REACTION_NAME_TO_TYPE: Record<string, string> = {
   heart: 'love',
@@ -88,6 +97,117 @@ const REACTION_NAME_TO_TYPE: Record<string, string> = {
   question: 'question',
   '!!': 'emphasize',
   '?': 'question',
+}
+
+// ── Markdown → iMessage text ────────────────────────────────────────────
+
+const imessageMarked = new Marked({ async: false, gfm: true })
+const isList = (token: Token): token is Tokens.List => token.type === 'list'
+const isTable = (token: Token): token is Tokens.Table => token.type === 'table'
+/** Past about one phone line, an item wraps to the bubble's left edge, so its list needs a blank line between items to read. */
+const LONG_LIST_ITEM = 50
+
+/**
+ * Markdown as iMessage shows it: plain text, with bold, italic and
+ * strikethrough as decorations over ranges of that text. Linq sends text
+ * as-is, so markdown syntax would otherwise arrive as literal characters.
+ * With `previews`, https links leave the text for `links`, each to be sent
+ * as its own message so iMessage draws a preview card.
+ */
+export function markdownToIMessage(md: string, { previews = false } = {}): { text: string; decorations: GatewayTextDecoration[]; links: string[] } {
+  let text = ''
+  const decorations: GatewayTextDecoration[] = []
+  const links: string[] = []
+
+  const styled = (type: GatewayTextDecoration['type'], tokens: Token[]) => {
+    const start = text.length
+    inline(tokens)
+    if (text.slice(start).trim()) decorations.push({ type, range: { start, length: text.length - start } })
+  }
+
+  const inline = (tokens: Token[]) => {
+    for (const token of tokens) {
+      switch (token.type) {
+        case 'strong': styled('bold', token.tokens ?? []); break
+        case 'em': styled('italic', token.tokens ?? []); break
+        case 'del': styled('strikethrough', token.tokens ?? []); break
+        case 'link': {
+          const bare = token.autolink || token.href === token.text
+          if (previews && /^https:\/\//i.test(token.href)) {
+            if (!links.includes(token.href)) links.push(token.href)
+            if (!bare) inline(token.tokens ?? [])
+            break
+          }
+          inline(token.tokens ?? [])
+          if (!bare) text += ` (${token.href})`
+          break
+        }
+        case 'image': text += token.text ? `${token.text} (${token.href})` : token.href; break
+        case 'checkbox': text += token.checked ? '☑ ' : '☐ '; break
+        case 'br': text += '\n'; break
+        case 'text': if (token.tokens) inline(token.tokens); else text += token.text; break
+        case 'codespan':
+        case 'escape':
+        case 'html': text += token.text; break
+        default: text += token.raw
+      }
+    }
+  }
+
+  const blocks = (tokens: Token[], indent: string) => {
+    let first = true
+    const startBlock = () => { if (!first) text += '\n\n'; first = false }
+    for (const token of tokens) {
+      const before = text.length
+      const wasFirst: boolean = first
+      switch (token.type) {
+        case 'space':
+        case 'hr':
+        case 'def': break
+        case 'paragraph':
+        case 'text': startBlock(); inline(token.tokens ?? [token]); break
+        case 'heading': startBlock(); styled('bold', token.tokens ?? []); break
+        case 'code': startBlock(); text += token.text; break
+        case 'blockquote': startBlock(); blocks(token.tokens ?? [], indent); break
+        default:
+          startBlock()
+          if (isList(token)) list(token, indent)
+          else if (isTable(token)) {
+            for (const [i, row] of [token.header, ...token.rows].entries()) {
+              if (i > 0) text += '\n'
+              row.forEach((cell, j) => { if (j > 0) text += ' · '; inline(cell.tokens) })
+            }
+          } else text += token.raw.trim()
+      }
+      // A block that was only a moved-out link leaves no empty paragraph behind.
+      if (previews && !text.slice(before).trim()) { text = text.slice(0, before); first = wasFirst }
+    }
+  }
+
+  const list = (token: Tokens.List, indent: string) => {
+    // An item's own line as shown: nested lists below it and link addresses inside it don't count.
+    const shownLength = (item: Tokens.ListItem) => item.text.split('\n')[0].replace(/\]\([^)]*\)/g, ']').length
+    const gap = token.items.some(item => shownLength(item) > LONG_LIST_ITEM) ? '\n\n' : '\n'
+    let shown = 0
+    for (const item of token.items) {
+      const before = text.length
+      if (shown > 0) text += gap
+      text += indent + (token.ordered ? `${Number(token.start) + shown}. ` : '• ')
+      const content = text.length
+      item.tokens.forEach((child, j) => {
+        if (isList(child)) { text += '\n'; list(child, indent + '  ') }
+        else if (child.type === 'checkbox') inline([child])
+        else { if (j > 0 && item.tokens[j - 1].type !== 'checkbox') text += '\n'; blocks([child], indent) }
+      })
+      // A nested list or paragraph left empty by moved-out links leaves no blank line in the item.
+      if (previews) text = text.slice(0, content) + text.slice(content).replace(/\n+$/, '')
+      if (!previews || text.slice(content).trim()) shown++
+      else text = text.slice(0, before)
+    }
+  }
+
+  blocks(imessageMarked.lexer(md), '')
+  return { text, decorations, links }
 }
 
 // Map incoming gateway reaction types to approval decisions
@@ -120,8 +240,10 @@ export function classifyIMessageChat(chat: ChatClassifyContext): ChatConversatio
 }
 
 const IMESSAGE_PROVIDER_RULES = `- Prefer asking questions directly in natural language rather than using the ask questions tool.
-- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
-- The user may send voice notes which are automatically transcribed.`
+
+- Before your first tool call, write [[reaction:<emoji>]] for what you're about to do, using the object for the action: 👀 starting, 🔍 searching, 📖 reading, ✍️ writing, ✉️ email, 📅 calendar, ⏰ reminder, 🛒 buying, ✋ need your OK, 👍 done, 🚧 couldn't. React again when the kind of work changes. Each reaction replaces your last one on the user's latest message. A reaction alone can be the whole answer. When you finish an action and nothing else needs saying, end on its object instead of a text.
+- The user may send voice notes which are automatically transcribed.
+- Each https link in your reply arrives as its own message after your text, where iMessage shows it as a preview card. Give a link a label, like [the menu](https://example.com), so your sentence keeps its words. A bare address is taken out of the sentence.`
 
 export function buildIMessageSystemPrompt(message: SystemPromptContext): string {
   const kind = classifyIMessageChat(message)
@@ -145,7 +267,14 @@ export class IMessageConnector extends ChatAgentIntegration {
     const name = integration.name?.trim() || agent.name
     const card = buildAgentContactCard({ slug: integration.agentSlug, name, description: agent.description,
       appUrl: await resolveAgentWebUrl(displaySlug(agent.name, integration.agentSlug)) })
-    await this.sendFile('', card, `${sanitizeUploadFilename(name)}.vcf`, "Save me as a contact so I'm not just a number. Text me anytime.")
+    const filename = `${sanitizeUploadFilename(name)}.vcf`
+    const caption = "Save me as a contact so I'm not just a number. Text me anytime."
+    try {
+      await this.sendFile('', card, filename, caption)
+    } catch (err) {
+      captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-send-file' } })
+      await this.sendMessage('', { text: `[File: ${filename}] — ${caption}` })
+    }
   }
 
   readonly provider = 'imessage' as const
@@ -166,7 +295,8 @@ export class IMessageConnector extends ChatAgentIntegration {
   private static readonly PING_INTERVAL_MS = 30_000
   private static readonly PONG_TIMEOUT_MS = 10_000
 
-  private lastReceivedMessageId: string | null = null
+  /** Each chat's newest message, which reactions in that chat go to. */
+  private readonly latestMessages = new Map<string, { id: string; at: number }>()
   private lastChatId: string | null = null
   // Chats currently showing the typing bubble. The manager's tick calls startWorking
   // every ~1s for keep-alive; iMessage's bubble self-expires, so we send start_typing
@@ -188,6 +318,8 @@ export class IMessageConnector extends ChatAgentIntegration {
   private relayAttachment?: IntegrationRelayAttachment
   /** Read receipts waiting to go out over HTTP, one per chat however many messages arrive. */
   private readonly readReceipts = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Per group chat, the newest accepted message waiting for its 👀, until the agent reacts first. */
+  private readonly groupAcks = new Map<string, { messageId: string; at: number; timer: ReturnType<typeof setTimeout> }>()
   private static readonly READ_RECEIPT_DELAY_MS = 1_000
   /** One event at a time, in arrival order, whichever path it came on. */
   private processing: Promise<unknown> = Promise.resolve()
@@ -329,6 +461,8 @@ export class IMessageConnector extends ChatAgentIntegration {
     this.relayAttachment = undefined
     for (const timer of this.readReceipts.values()) clearTimeout(timer)
     this.readReceipts.clear()
+    for (const ack of this.groupAcks.values()) clearTimeout(ack.timer)
+    this.groupAcks.clear()
 
     this.stopPingLoop()
 
@@ -370,17 +504,54 @@ export class IMessageConnector extends ChatAgentIntegration {
     // Parse and handle reaction tags
     const { cleanText, reactions } = this.extractReactions(text)
 
-    // Send reactions to the user's last message
-    if (reactions.length > 0 && this.lastReceivedMessageId) {
-      for (const reactionType of reactions) this.react(this.lastReceivedMessageId, reactionType)
+    // Send reactions to the user's last message in this chat
+    const latest = targetChatId && this.latestMessages.get(targetChatId)
+    if (latest && reactions.length > 0) {
+      this.cancelGroupAck(targetChatId)
+      for (const reaction of reactions) this.react(latest.id, reaction)
     }
 
+    // Previews need an existing chat (a chat's first message can't be a link) and sends that
+    // complete in order, which only the HTTP path awaits.
+    const previews = !!targetChatId && this.mode === 'webhooks'
+    const { text: converted, decorations, links } = markdownToIMessage(cleanText, { previews })
+    // Text that converts to nothing (a lone rule or link definition) still goes out as written.
+    const body = converted.trim() ? converted : links.length > 0 ? '' : cleanText.trim()
+
     // If only reactions, no text to send
-    if (!cleanText.trim()) {
+    if (!body && links.length === 0) {
       return `reaction-only-${Date.now()}`
     }
 
-    return await this.postMessage(targetChatId, [{ type: 'text', value: cleanText }]) ?? `msg-${Date.now()}`
+    // The reply's id is its text message's, or its first preview's when it has no text.
+    let replyId = body ? await this.postMessage(targetChatId, [{ type: 'text', value: body }], decorations) : null
+    // Once part of the reply is out, a failure must not fail the reply: delivery would resend it all.
+    let delivered = !!body
+    for (const [i, url] of links.entries()) {
+      try {
+        const linkId = await this.postMessage(targetChatId, [{ type: 'link', value: url }])
+        replyId ??= linkId
+        delivered = true
+      } catch (err) {
+        // Only a preview the gateway answered as refused is known unsent. Its address and the
+        // rest still go out, as text. Otherwise it may have arrived, so nothing is resent.
+        const statusOf = (e: unknown) => e instanceof GatewayRequestError ? e.status : 'error'
+        console.warn('[IMessageConnector] Link preview not sent:', statusOf(err))
+        if (!(err instanceof GatewayRequestError && err.status !== null && !err.retryable)) {
+          if (!delivered) throw err
+          break
+        }
+        try {
+          const fallbackId = await this.postMessage(targetChatId, [{ type: 'text', value: links.slice(i).join('\n') }])
+          replyId ??= fallbackId
+        } catch (fallbackErr) {
+          if (!delivered) throw fallbackErr
+          console.warn('[IMessageConnector] Link addresses not sent:', statusOf(fallbackErr))
+        }
+        break
+      }
+    }
+    return replyId ?? `msg-${Date.now()}`
   }
 
   async sendStreamingUpdate(_chatId: string, _text: string, existingMessageId?: string): Promise<string> {
@@ -412,41 +583,34 @@ export class IMessageConnector extends ChatAgentIntegration {
   async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
     const targetChatId = chatId || this.lastChatId || undefined
     const mimeType = guessMimeType(filename)
+    const { text: captionText, decorations } = markdownToIMessage(caption ?? '')
 
-    try {
-      // 1. Request upload URL
-      const uploadInfo = await this.requestUpload({ filename, contentType: mimeType, sizeBytes: fileData.length })
+    // 1. Request upload URL
+    const uploadInfo = await this.requestUpload({ filename, contentType: mimeType, sizeBytes: fileData.length })
 
-      // 2. Upload the file
-      const uploadHeaders = new Headers(uploadInfo.requiredHeaders)
-      // Fetch computes the byte body's length; forwarding it duplicates the header with Undici's dispatcher.
-      uploadHeaders.delete('content-length')
-      const uploadRes = await fetch(uploadInfo.uploadUrl, {
-        method: 'PUT',
-        headers: uploadHeaders,
-        body: new Uint8Array(fileData),
-      })
-      if (!uploadRes.ok) {
-        throw new Error(`File upload failed: ${uploadRes.status}`)
-      }
-
-      // 3. Send message with attachment
-      const parts: GatewayMessagePart[] = [
-        { type: 'media', attachmentId: uploadInfo.attachmentId },
-      ]
-      if (caption) {
-        parts.push({ type: 'text', value: caption })
-      }
-
-      await this.postMessage(targetChatId, parts)
-      return `file-${Date.now()}`
-    } catch (err) {
-      console.error('[IMessageConnector] Failed to send file:', err)
-      captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-send-file' } })
-      // Fall back to a text message about the file
-      await this.postMessage(targetChatId, [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }])
-      return `file-fallback-${Date.now()}`
+    // 2. Upload the file
+    const uploadHeaders = new Headers(uploadInfo.requiredHeaders)
+    // Fetch computes the byte body's length; forwarding it duplicates the header with Undici's dispatcher.
+    uploadHeaders.delete('content-length')
+    const uploadRes = await fetch(uploadInfo.uploadUrl, {
+      method: 'PUT',
+      headers: uploadHeaders,
+      body: new Uint8Array(fileData),
+    })
+    if (!uploadRes.ok) {
+      throw new Error(`File upload failed: ${uploadRes.status}`)
     }
+
+    // 3. Send message with attachment
+    const parts: GatewayMessagePart[] = [
+      { type: 'media', attachmentId: uploadInfo.attachmentId },
+    ]
+    if (captionText) {
+      parts.push({ type: 'text', value: captionText })
+    }
+
+    await this.postMessage(targetChatId, parts, decorations)
+    return `file-${Date.now()}`
   }
 
   // ── User request cards ──────────────────────────────────────────────
@@ -646,14 +810,11 @@ export class IMessageConnector extends ChatAgentIntegration {
     const sentAt = data.sentAt ? new Date(data.sentAt) : new Date()
 
     // Reactions go to the newest message, which relayed backlog may not be.
+    if (!(sentAt.getTime() < (this.latestMessages.get(chatId)?.at ?? 0))) this.latestMessages.set(chatId, { id: messageId, at: sentAt.getTime() })
     if (!(sentAt.getTime() < this.lastReceivedAt)) {
-      this.lastReceivedMessageId = messageId
       this.lastChatId = chatId
       this.lastReceivedAt = sentAt.getTime()
     }
-
-    // Send read receipt immediately
-    this.markRead(chatId)
 
     // Extract text and files from parts
     let text = ''
@@ -673,6 +834,7 @@ export class IMessageConnector extends ChatAgentIntegration {
 
     // Check if there's a pending question — resolve it with this message
     if (this.pendingQuestions.size > 0) {
+      this.markRead(chatId)
       this.resolveNextQuestion(text)
       // Don't emit as a regular message — it's an answer to a question
       return 'accepted'
@@ -818,7 +980,7 @@ export class IMessageConnector extends ChatAgentIntegration {
   private extractReactions(text: string): { cleanText: string; reactions: string[] } {
     const reactions: string[] = []
     const cleanText = text.replace(REACTION_TAG_RE, (_, name: string) => {
-      const mapped = REACTION_NAME_TO_TYPE[name.toLowerCase()]
+      const mapped = REACTION_NAME_TO_TYPE[name.toLowerCase()] ?? (isSingleEmoji(name) ? name : undefined)
       if (mapped) reactions.push(mapped)
       return ''
     })
@@ -869,18 +1031,21 @@ export class IMessageConnector extends ChatAgentIntegration {
   // ── Gateway commands: over HTTP with webhooks, over the socket otherwise ──
 
   /** Resolves to Linq's id for the message when the gateway says, which it does over HTTP. */
-  private async postMessage(chatId: string | undefined, parts: GatewayMessagePart[]): Promise<string | null> {
-    if (this.mode === 'webhooks') return (await sendGatewayMessage(this.config, { chatId, parts })).messageId
-    this.send({ type: 'send_message', data: { chatId, parts } })
+  private async postMessage(chatId: string | undefined, parts: GatewayMessagePart[], decorations: GatewayTextDecoration[] = []): Promise<string | null> {
+    const message = { chatId, parts, ...(decorations.length > 0 && { textDecorations: decorations }) }
+    if (this.mode === 'webhooks') return (await sendGatewayMessage(this.config, message)).messageId
+    this.send({ type: 'send_message', data: message })
     return null
   }
 
-  private react(messageId: string, reactionType: string): void {
+  /** A tapback name, or one emoji, sent as a custom tapback. */
+  private react(messageId: string, reaction: string): void {
+    const tapback = isSingleEmoji(reaction) ? { reactionType: 'custom', customEmoji: reaction } : { reactionType: reaction }
     if (this.mode !== 'webhooks') {
-      this.send({ type: 'send_reaction', data: { messageId, operation: 'add', reactionType, partIndex: 0 } })
+      this.send({ type: 'send_reaction', data: { messageId, operation: 'add', ...tapback, partIndex: 0 } })
       return
     }
-    background(sendGatewayReaction(this.config, { messageId, reactionType, partIndex: 0 })
+    background(sendGatewayReaction(this.config, { messageId, ...tapback, partIndex: 0 })
       .catch(error => console.warn('[IMessageConnector] Reaction not sent:', error)), { name: 'imessage-connector.send-reaction' })
   }
 
@@ -890,6 +1055,35 @@ export class IMessageConnector extends ChatAgentIntegration {
       return
     }
     background(startGatewayTyping(this.config, chatId).catch(error => console.warn('[IMessageConnector] Typing indicator not shown:', error)), { name: 'imessage-connector.start-typing' })
+  }
+
+  /** Once the host accepts a message: "Read" in a 1:1 chat, 👀 in a group, where iMessage shows no read receipts. */
+  override async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {
+    const message = incomingMessageSchema.parse(event.payload)
+    const chatId = message.chatId
+    if (classifyIMessageChat(message) !== 'group') { this.markRead(chatId); return }
+    // 👀 says the agent will start on it, so a command that starts no turn (/clear) gets none.
+    if (this.resolveRoute(event).action !== 'run') { this.cancelGroupAck(chatId); return }
+    // One 👀 per burst (like a backlog), on the newest accepted message, within the gateway's rate limit.
+    const at = message.timestamp.getTime()
+    const pending = this.groupAcks.get(chatId)
+    if (pending) {
+      if (!(at < pending.at)) Object.assign(pending, { messageId: message.externalMessageId, at })
+      return
+    }
+    const ack = { messageId: message.externalMessageId, at, timer: setTimeout(() => {
+      this.groupAcks.delete(chatId)
+      this.react(ack.messageId, '👀')
+    }, IMessageConnector.READ_RECEIPT_DELAY_MS) }
+    this.groupAcks.set(chatId, ack)
+  }
+
+  /** The agent's own reaction replaces the received mark, so a pending 👀 must not land after it. */
+  private cancelGroupAck(chatId: string): void {
+    const pending = this.groupAcks.get(chatId)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    this.groupAcks.delete(chatId)
   }
 
   /** Over HTTP, one receipt per chat for a burst of messages (like a backlog), within the gateway's rate limit. */

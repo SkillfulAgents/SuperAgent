@@ -3,9 +3,11 @@
 
 Each session is one JSONL transcript under
 $CLAUDE_CONFIG_DIR/projects/-workspace/<session-id>.jsonl. This prints one row
-per session: last activity, session id, size, and its headline — the name from
-/workspace/session-metadata.json when it has one, otherwise the first user
-message, which is what the Gamut UI falls back to.
+per session: last activity, session id, size, and its headline — the name the
+session has in the Gamut UI when it has one, otherwise the first user message,
+which is what the UI falls back to. The names are kept by the app, not in the
+workspace, so they are asked of it; when it cannot be reached every session is
+headlined by its first message.
 
 Times come from the transcripts themselves, not from file mtimes, which a
 container restart rewrites.
@@ -29,6 +31,10 @@ import json
 import os
 import re
 import sys
+
+# The helpers' directory is read-only in the image: no bytecode cache beside them.
+sys.dont_write_bytecode = True
+from gamut_host import HostError, host_configured, session_names  # noqa: E402
 
 DEFAULT_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", "/workspace/.claude")
 
@@ -75,23 +81,6 @@ def sessions_dir(explicit):
     except OSError:
         return preferred
     return candidates[0] if len(candidates) == 1 else preferred
-
-
-def load_metadata(directory):
-    """Names and stars the app keeps for these sessions, keyed by session id.
-
-    Lives at <workspace>/session-metadata.json, three levels above the
-    transcript directory (<workspace>/.claude/projects/-workspace). Absent on a
-    workspace the app has never named a session in — that is not an error.
-    """
-    workspace = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(directory))))
-    path = os.path.join(workspace, "session-metadata.json")
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def clean_text(text):
@@ -334,7 +323,14 @@ def main():
 
     cutoff = parse_since(args.since) if args.since else None
     pattern = compile_pattern(args.grep) if args.grep else None
-    metadata = load_metadata(directory)
+    # Asked only where there is an app to ask (always, in the agent's
+    # container). Its answer is a nicety: without it the listing still works.
+    names, names_note = {}, None
+    if host_configured():
+        try:
+            names = session_names()
+        except HostError as error:
+            names_note = f"Session names are missing ({error}); each session shows its first message instead."
 
     rows = []
     hid_current = False
@@ -363,7 +359,6 @@ def main():
         if pattern and not matches:
             continue
         session_id = name[: -len(".jsonl")]
-        meta = metadata.get(session_id) or {}
         rows.append({
             "session_id": session_id,
             "current": session_id == CURRENT_SESSION_ID,
@@ -371,8 +366,7 @@ def main():
             "last_activity": last_activity,
             "bytes": stat.st_size,
             "path": path,
-            "name": meta.get("name") if isinstance(meta.get("name"), str) else None,
-            "starred": bool(meta.get("starred")),
+            "name": names.get(session_id) if isinstance(names.get(session_id), str) else None,
             "first_user_message": first_user_message(path),
             **({"matches": matches} if pattern else {}),
         })
@@ -413,14 +407,16 @@ def main():
             headline = headline[:99] + "…"
         if row["current"]:
             headline = f"[THIS IS YOUR CURRENT SESSION — not a past one] {headline}"
-        star = "★ " if row["starred"] else ""
         stamp = row[key].replace("T", " ").replace("+00:00", "")[:19]
         hits = f"  {row['matches']:>4} hits" if pattern else ""
-        print(f"{stamp}  {row['session_id']}  {human_size(row['bytes']):>6}{hits}  {star}{headline}")
+        print(f"{stamp}  {row['session_id']}  {human_size(row['bytes']):>6}{hits}  {headline}")
     label = "started" if key == "started" else "last activity"
     ranked = ", best match first" if pattern and args.sort == "activity" else ""
     print(f"\n{len(rows)} session(s); times are UTC {label}{ranked}. Read one: "
-          f"python3 /opt/gamut/bin/read-session.py <session-id>")
+          f"python3 /opt/gamut/bin/read-session.py <session-id>. Rename or delete one: "
+          f"python3 /opt/gamut/bin/manage-session.py --help")
+    if names_note:
+        print(names_note)
     if current_note:
         print(current_note)
     print("If the user is trying to get back to one of these, also surface it "

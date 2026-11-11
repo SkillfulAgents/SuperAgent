@@ -157,10 +157,27 @@ describe('MessageItem', () => {
       const bubble = screen.getByTestId('message-user')
       expect(bubble).not.toHaveTextContent('Mentioned')
       expect(screen.getByTestId('agent-mention')).toHaveTextContent('@Billing Agent')
-      // The avatar's initials and then the name.
-      expect(screen.getByTestId('user-mention')).toHaveTextContent('MS@Mike Smith')
+      // A teammate's chip is just their name, with no avatar.
+      expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
       expect(screen.getByTestId('user-mention').previousSibling?.textContent).toBe(', then ping ')
+      expect(screen.getByTestId('message-user').querySelector('[data-notify-only]')).toBeNull()
       expect(screen.queryByTestId('mention-notified')).toBeNull()
+    })
+
+    it("draws an agent's [@Name](user:<id>) tag as a person's chip", () => {
+      render(<MessageItem message={createAssistantMessage({ content: { text: '[@Mike Smith](user:mike-id), please decide' } })} agentSlug="support01x" />)
+      expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
+      expect(screen.getByTestId('message-assistant')).not.toHaveTextContent('user:')
+    })
+
+    it('draws no chip for a user: link the server would not read as a tag, or in a person\'s message', () => {
+      for (const text of ['see [Mike](user:mike-id)', '[@](user:mike-id)', '[**@Mike**](user:mike-id)', '[@Mike](user:mike-id "title")']) {
+        const { unmount } = render(<MessageItem message={createAssistantMessage({ content: { text } })} />)
+        expect(screen.queryByTestId('user-mention')).toBeNull()
+        unmount()
+      }
+      render(<MessageItem message={createUserMessage({ content: { text: '[@Mike](user:mike-id)' } })} />)
+      expect(screen.queryByTestId('user-mention')).toBeNull()
     })
 
     it('leaves a name inside code as typed', () => {
@@ -175,8 +192,11 @@ describe('MessageItem', () => {
       const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
       render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
 
+      // A dashed bubble, and under it who was notified in place of a reply.
+      const bubble = screen.getByTestId('user-mention').closest('[data-notify-only]')
+      expect(bubble).not.toBeNull()
+      expect(bubble).toHaveClass('border-dashed')
       expect(screen.getByTestId('mention-notified')).toHaveTextContent('Notified Mike Smith')
-      expect(screen.getByTestId('user-mention').closest('.border-dashed')).not.toBeNull()
     })
   })
 
@@ -698,7 +718,54 @@ describe('MessageItem', () => {
       expect(screen.getByText('Alice Baker')).toBeInTheDocument()
     })
 
-    it('draws the sender avatar beside the name, from their profile image', () => {
+    it('puts when it was sent beside the sender, shown on hover only', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} />)
+      const meta = screen.getByTestId('message-meta')
+      expect(meta).toHaveTextContent(/^Alice Bakerjust now$/)
+      expect(meta).toHaveClass('opacity-0', 'group-hover/message:opacity-100')
+    })
+
+    it('keeps the time current as minutes pass', () => {
+      vi.useFakeTimers()
+      try {
+        const msg = createUserMessage({
+          content: { text: 'Hello' },
+          createdAt: new Date(),
+          sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+        })
+        render(<MessageItem message={msg} />)
+        expect(screen.getByTestId('message-meta')).toHaveTextContent('just now')
+        act(() => { vi.advanceTimersByTime(2 * 60_000) })
+        expect(screen.getByTestId('message-meta')).toHaveTextContent('2m ago')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('holds no time row without a sender (non-auth mode)', () => {
+      const msg = createUserMessage({ content: { text: 'Hello' }, createdAt: new Date() })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('message-meta')).not.toBeInTheDocument()
+      expect(screen.queryByText('just now')).not.toBeInTheDocument()
+    })
+
+    it('names the sender of a message that only carried files', () => {
+      const msg = createUserMessage({
+        content: { text: '[Attached files:]\n- /workspace/uploads/1-b.pdf' },
+        createdAt: new Date(),
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com' },
+      })
+      render(<MessageItem message={msg} agentSlug="a1" />)
+      expect(screen.getByTestId('sent-files')).toBeInTheDocument()
+      expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Alice Bakerjust now$/)
+    })
+
+    it('draws the sender avatar beside the bubble, from their profile image', () => {
       const msg = createUserMessage({
         content: { text: 'Hello' },
         sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com', image: 'https://example.com/alice.png' },

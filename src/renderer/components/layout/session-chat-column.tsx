@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { AtSign } from 'lucide-react'
 import { MessageInput } from '@renderer/components/messages/message-input'
 import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
 import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
@@ -70,6 +71,8 @@ export function SessionChatColumn({
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug, ['isActive', 'browserActive', 'isWaitingBackground'])
   const voiceModeActive = useIsVoiceModeActive(sessionId)
+  // Who the composer's message only notifies, said in place of the key hints.
+  const [notifiesOnly, setNotifiesOnly] = useState<string | null>(null)
   // Keep the phone awake (PWA only) while this session is actively working.
   useScreenWakeLock(isActive || isWaitingBackground)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
@@ -163,8 +166,9 @@ export function SessionChatColumn({
                     registerSnapshot={staleSession.registerSnapshot}
                     suspended={pendingRequestCount > 0 || displaced}
                     inputRequests={voiceInputRequests}
+                    onNotifiesOnlyChange={setNotifiesOnly}
                   />}
-                  <SessionComposerHints contextPercent={contextPercent} isActive={isActive} voiceModeActive={voiceModeActive} />
+                  <SessionComposerHints contextPercent={contextPercent} isActive={isActive} voiceModeActive={voiceModeActive} notifiesOnly={isViewOnly ? null : notifiesOnly} />
                 </>
               )}
             </ProviderErrorPlacement>
@@ -175,10 +179,12 @@ export function SessionChatColumn({
   )
 }
 
-function SessionComposerHints({ contextPercent, isActive = false, voiceModeActive = false }: {
+function SessionComposerHints({ contextPercent, isActive = false, voiceModeActive = false, notifiesOnly = null }: {
   contextPercent: number | null
   isActive?: boolean
   voiceModeActive?: boolean
+  /** The message only notifies this teammate: said instead of the context usage. */
+  notifiesOnly?: string | null
 }) {
   return (
     <div className="relative isolate flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5 overflow-hidden px-6 py-3">
@@ -198,7 +204,13 @@ function SessionComposerHints({ contextPercent, isActive = false, voiceModeActiv
           WebkitMaskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
         }}
       />
-      {contextPercent != null ? (
+      {/* Left: who a notify-only message reaches, in place of the context usage. */}
+      {notifiesOnly ? (
+        <span className="relative z-10 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" data-testid="mention-notify-only-hint">
+          <AtSign className="h-3 w-3 shrink-0 text-violet-500" aria-hidden />
+          <span className="truncate" title={`Only notifies ${notifiesOnly}`}>Message ignored by agent</span>
+        </span>
+      ) : contextPercent != null ? (
         <TooltipProvider delayDuration={0}>
           <Tooltip>
             <TooltipTrigger asChild>

@@ -50,9 +50,9 @@ function drive(target: 'local' | 'cloud') {
   setActiveTarget(target, null)
 }
 
-/** Approve once, so the API can answer with the missing-permission payload. */
+/** Approve for 15 minutes, so the API can answer with the missing-permission payload. */
 async function triggerPermissionPrompt() {
-  await userEvent.click(screen.getByRole('button', { name: /allow/i }))
+  await userEvent.click(screen.getByTestId('computer-use-allow-once-btn'))
   await waitFor(() => expect(screen.getByText('Accessibility')).toBeInTheDocument())
 }
 
@@ -110,7 +110,7 @@ describe('ComputerUseRequestItem permission labels', () => {
     render(<ComputerUseRequestItem {...PROPS} method="apps" permissionLevel="list_apps_windows" />)
 
     expect(
-      screen.getByText('Allow the agent to list apps & windows (read-only)?'),
+      screen.getByText('Allow this agent to list apps & windows (read-only)?'),
     ).toBeInTheDocument()
     expect(screen.getByText('List Apps & Windows (read-only)')).toBeInTheDocument()
   })
@@ -118,8 +118,23 @@ describe('ComputerUseRequestItem permission labels', () => {
   it('uses the self-explanatory shell permission wording', () => {
     render(<ComputerUseRequestItem {...PROPS} method="run" permissionLevel="use_host_shell" />)
 
-    expect(screen.getByText('Allow the agent to run shell commands & scripts?')).toBeInTheDocument()
+    expect(screen.getByText('Allow this agent to run shell commands & scripts?')).toBeInTheDocument()
     expect(screen.getByText('Run Shell Commands & Scripts')).toBeInTheDocument()
     expect(screen.queryByText('Host Shell')).not.toBeInTheDocument()
+  })
+})
+
+describe('ComputerUseRequestItem grants', () => {
+  it.each([
+    ['computer-use-allow-once-btn', 'timed'],
+    ['computer-use-always-allow-btn', 'always'],
+  ])('%s sends a %s grant', async (testId, grantType) => {
+    mockApiFetch.mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    render(<ComputerUseRequestItem {...PROPS} />)
+    await userEvent.click(screen.getByTestId(testId))
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/computer-use'),
+      expect.objectContaining({ body: expect.stringContaining(`"grantType":"${grantType}"`) }),
+    ))
   })
 })

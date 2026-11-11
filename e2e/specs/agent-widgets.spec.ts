@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createAgent, createSession, listSessions, uniqueName, waitForSessionIdle } from '../helpers/agents'
+import { openHomeSection, openHomeSidePanel } from '../helpers/agent-home'
+import { readSessionMetadata } from '../helpers/session-metadata'
 
 /**
  * Agent widgets: an artifact that exposes a widget (a `gamut.widget` block +
@@ -35,12 +37,8 @@ function artifactsDir(agentSlug: string): string {
 }
 
 /** Session metadata is where automated provenance lands; repair sessions live here. */
-function readSessionMetadata(agentSlug: string): Record<string, Record<string, unknown>> {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(workspaceDir(agentSlug), 'session-metadata.json'), 'utf-8'))
-  } catch {
-    return {}
-  }
+async function repairSessions(request: APIRequestContext, agentSlug: string) {
+  return Object.entries(await readSessionMetadata(request, agentSlug)).filter(([, meta]) => meta.isWidgetRepair === true)
 }
 
 const WIDGET_HTML = `<!DOCTYPE html><html><head><style>
@@ -125,6 +123,34 @@ async function listWidgets(request: APIRequestContext, agentSlug: string): Promi
 }
 
 test.describe('agent widgets', () => {
+  for (const width of [390, 1440]) {
+    test(`refreshes only once per visit at ${width}px`, async ({ page, request }, testInfo) => {
+      const agent = await createAgent(request, uniqueName(testInfo, 'Hidden widget'))
+      seedArtifact(agent.slug, 'hidden', { validUntil: '2999-01-01T09:00:00.000Z' })
+      await page.setViewportSize({ width, height: 900 })
+      let refreshes = 0
+      page.on('request', req => {
+        if (req.method() === 'POST' && req.url().endsWith(`/api/agents/${agent.slug}/widgets/refresh-stale`)) refreshes++
+      })
+      await page.goto(`/agents/${agent.slug}`)
+      await expect.poll(async () => (await listWidgets(request, agent.slug))[0].isStale).toBe(false)
+      expect(refreshes).toBe(1)
+
+      await openHomeSidePanel(page)
+      await expect(page.getByTestId('widget-card-hidden')).toBeVisible()
+      expect(refreshes).toBe(1)
+
+      // Use client-side navigation so the return visit sees the cached listing.
+      if (width < 768) await page.getByRole('button', { name: 'Toggle Sidebar' }).click()
+      await page.getByTestId('home-button').click()
+      await expect(page.getByRole('heading', { name: 'Your Agents' })).toBeVisible()
+      expect(refreshes).toBe(1)
+      if (width < 768) await page.getByRole('button', { name: 'Toggle Sidebar' }).click()
+      await page.getByTestId(`agent-item-${agent.slug}`).click()
+      await expect.poll(() => refreshes).toBe(2)
+    })
+  }
+
   test('authored markup cannot swallow the widget CSP or override the requested theme', async ({
     page,
     request,
@@ -151,6 +177,7 @@ test.describe('agent widgets', () => {
     })
 
     await page.goto(`/agents/${agent.slug}`)
+    await openHomeSidePanel(page)
     const frame = page.frameLocator('[data-testid="widget-card-policy"] iframe')
     await expect(frame.getByTestId('widget-value')).toHaveText('value')
     await expect(frame.locator('html')).toHaveAttribute('data-theme', /^(light|dark)$/)
@@ -184,6 +211,7 @@ test.describe('agent widgets', () => {
     expect(await html.text()).toContain('<html data-theme="dark">')
 
     await page.goto(`/agents/${agent.slug}`)
+    await openHomeSidePanel(page)
     const card = page.getByTestId('widget-card-daily-macros')
     await expect(card).toBeVisible({ timeout: 15_000 })
 
@@ -288,6 +316,7 @@ test.describe('agent widgets', () => {
     fs.writeFileSync(path.join(dir, 'widget.mock-fail'), '')
 
     await page.goto(`/agents/${agent.slug}`)
+    await openHomeSidePanel(page)
     const card = page.getByTestId('widget-card-broken')
     await expect(card).toBeVisible({ timeout: 15_000 })
     await expect(card.getByTestId('widget-error')).toBeVisible({ timeout: 15_000 })
@@ -299,14 +328,8 @@ test.describe('agent widgets', () => {
 
     // The script is the agent's own code and no turn would notice it broke, so
     // the platform opens an automated session asking the agent to fix it.
-    await expect
-      .poll(() => Object.values(readSessionMetadata(agent.slug)).filter((m) => m.isWidgetRepair === true).length, {
-        timeout: 30_000,
-      })
-      .toBe(1)
-    const [repairSessionId, repairMeta] = Object.entries(readSessionMetadata(agent.slug)).find(
-      ([, meta]) => meta.isWidgetRepair === true,
-    )!
+    await expect.poll(async () => (await repairSessions(request, agent.slug)).length, { timeout: 30_000 }).toBe(1)
+    const [[repairSessionId, repairMeta]] = await repairSessions(request, agent.slug)
     expect(repairMeta).toMatchObject({ widgetRepairSlug: 'broken', name: 'Invoked to fix widget' })
 
     // Automated: hidden from the session list like a cron or webhook run.
@@ -315,14 +338,11 @@ test.describe('agent widgets', () => {
 
     // A widget that stays broken must not open a session per refresh.
     await request.post(`/api/agents/${agent.slug}/artifacts/broken/widget/refresh`)
-    await expect
-      .poll(() => Object.values(readSessionMetadata(agent.slug)).filter((m) => m.isWidgetRepair === true).length, {
-        timeout: 10_000,
-      })
-      .toBe(1)
+    await expect.poll(async () => (await repairSessions(request, agent.slug)).length, { timeout: 10_000 }).toBe(1)
 
     // Even an agent with no x-agent calls exposes repairs through the history
     // entry, without a reload or adding them to the normal session list.
+    await openHomeSection(page, 'Triggers')
     const historyEntry = page.getByTestId('home-trigger-row-inbound-x-agent')
     await expect(historyEntry).toBeVisible({ timeout: 15_000 })
     await historyEntry.click()

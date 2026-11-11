@@ -7,6 +7,7 @@ import { background } from '../background'
 interface EventPayload {
   event_type: string
   user_id: string
+  time: number
   event_properties: Record<string, unknown>
   user_properties?: { $set: Record<string, unknown> }
   app_version?: string
@@ -90,7 +91,7 @@ async function sendToGA(measurementId: string, event: string, properties: Record
   }
 }
 
-function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties: Record<string, unknown>, userId: string, userProperties?: Record<string, unknown>) {
+function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties: Record<string, unknown>, userId: string, time: number, userProperties?: Record<string, unknown>) {
   for (const target of targets) {
     if (!target.enabled) continue
     switch (target.type) {
@@ -99,6 +100,7 @@ function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties
           background(sendToAmplitude(target.config.apiKey, [{
             event_type: event,
             user_id: userId,
+            time,
             event_properties: properties,
             ...(userProperties ? { user_properties: { $set: userProperties } } : {}),
             app_version: appVersion,
@@ -134,8 +136,11 @@ export function trackServerEvent(
   userProperties?: Record<string, unknown>,
 ) {
   if (process.env.E2E_MOCK === 'true') return
+  // Stamped here: the send waits on settings and tenant reads, and without it
+  // Amplitude orders events by arrival.
+  const time = Date.now()
   background(
-    sendServerEvent(event, properties, userId, userProperties).catch((err) => {
+    sendServerEvent(event, properties, userId, userProperties, time).catch((err) => {
       // Settings or the tenant id unreadable (or not available yet, early in
       // boot): consent is unknown, so the event is dropped.
       console.warn(`[Analytics] Dropped ${event}:`, err)
@@ -149,6 +154,7 @@ async function sendServerEvent(
   properties: Record<string, unknown>,
   userId: string | undefined,
   userProperties: Record<string, unknown> | undefined,
+  time: number,
 ) {
   const settings = await getSettings()
   const targets = settings.analyticsTargets ?? []
@@ -164,7 +170,7 @@ async function sendServerEvent(
 
   // Send to admin-configured analytics targets
   if (targets.length > 0) {
-    dispatchToTargets(targets, event, fullProperties, effectiveUserId, userProperties)
+    dispatchToTargets(targets, event, fullProperties, effectiveUserId, time, userProperties)
   }
 
   // Send to hardcoded Amplitude (Datawizz) only if shareAnalytics is enabled
@@ -172,6 +178,7 @@ async function sendServerEvent(
     background(sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
       event_type: event,
       user_id: effectiveUserId,
+      time,
       event_properties: fullProperties,
       ...(userProperties ? { user_properties: { $set: userProperties } } : {}),
       app_version: appVersion,

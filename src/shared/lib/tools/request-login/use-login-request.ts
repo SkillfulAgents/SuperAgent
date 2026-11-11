@@ -5,6 +5,7 @@ import {
   loginBrowserClosedSchema,
   loginContextSchema,
   loginFillResultSchema,
+  loginSessionAnswerSchema,
   loginVaultInfoSchema,
   type LoginContext,
   type LoginVaultInfo,
@@ -76,6 +77,12 @@ export function useLoginContext(agentSlug: string, sessionId: string, toolUseId:
 export function browserClosedState(data: unknown): LoginRequestState | null {
   const closed = loginBrowserClosedSchema.safeParse(data)
   return closed.success ? { status: 'browser_closed', kept: closed.data.kept ?? null } : null
+}
+
+/** A picked account that signed in with its saved session instead of its values. Null for any other answer. */
+export function sessionState(data: unknown): LoginRequestState | null {
+  const answer = loginSessionAnswerSchema.safeParse(data)
+  return answer.success ? { status: 'session', ...answer.data.session } : null
 }
 
 export function useLoginVaultInfo(agentSlug: string, sessionId: string, toolUseId: string, enabled: boolean) {
@@ -153,6 +160,8 @@ export function useLoginRequestActions({ agentSlug, sessionId, toolUseId }: UseL
       if (data.alreadySettled) return { status: 'settled' }
       const closed = browserClosedState(data)
       if (closed) return closed
+      const session = sessionState(data)
+      if (session) return session
       const result = loginFillResultSchema.parse(data)
       rememberLoginValues(agentSlug, sessionId, context.origin, context.fields, values)
       return { status: 'filled', result }
@@ -163,6 +172,8 @@ export function useLoginRequestActions({ agentSlug, sessionId, toolUseId }: UseL
     runLoginAction<LoginRequestState>(key, 'via', async () => {
       const data = await postJson(`${base}/login-via`, { toolUseId, origin: context.origin, provider, sharedAgentAcknowledged })
       if (data.alreadySettled) return { status: 'settled' }
+      const session = sessionState(data)
+      if (session) return session
       const answer = data as { provider?: { site?: unknown; username?: unknown } }
       return {
         status: 'via',

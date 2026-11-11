@@ -1,10 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 
 import { appendInformationalEntry } from './session-transcript-append'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
 
 describe('appendInformationalEntry', () => {
   let testDir: string

@@ -1,3 +1,5 @@
+vi.mock('@shared/lib/agent-actor/db-session-index-storage', async () =>
+  (await import('@shared/lib/agent-actor/testing/in-memory-session-index-storage')).inMemorySessionIndexModule())
 vi.mock('@shared/lib/services/agent-members-service', () => ({
   notifyAgentMembersChanged: (...args: unknown[]) => mockNotifyAgentMembersChanged(...args),
   listAgentMembers: vi.fn(() => []),
@@ -213,6 +215,7 @@ vi.mock('../middleware/auth', () => ({
     return next()
   },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
+  getResolvedAgent: (c: any) => ({ slug: c.get('agentId') ?? c.req.param('id') }),
   getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
   getMeetingParticipant: () => mockMeetingParticipant.value,
 }))
@@ -448,6 +451,14 @@ vi.mock('@shared/lib/services/user-profile-service', async (importOriginal) => (
 }))
 import { getUserSummaries, userExists } from '@shared/lib/services/user-profile-service'
 
+// Team directories: a directory person shared with becomes an invited user.
+vi.mock('@shared/lib/team-directory/invited-users', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/team-directory/invited-users')>(),
+  inviteDirectoryPerson: vi.fn(),
+  notifyInvitedUser: vi.fn(async () => 'sent'),
+}))
+import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
+
 // Auth
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
 const mockInsertAuthor = vi.fn().mockResolvedValue(true)
@@ -500,7 +511,6 @@ vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/lib/services/session-service')>()
   return {
   listSessions: vi.fn(),
-  listSessionsFromSummary: vi.fn(),
   listSessionsByIds: vi.fn(),
   sortSessionsNewestFirst: actual.sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT: actual.SESSIONS_LIST_MAX_LIMIT,
@@ -519,7 +529,7 @@ vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
-  getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
+  getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null, metadata: {} }),
   readSessionMetadata: vi.fn(() => Promise.resolve({})),
   }
 })
@@ -584,6 +594,17 @@ vi.mock('@shared/lib/browser-vault/vault-service', () => ({
   MAX_USERNAME: 320,
   VaultConflictError: class VaultConflictError extends Error {},
 }))
+const SIGN_IN_BASELINE = { browserType: 'container', scope: { site: 'github.com', origin: 'https://github.com' }, hash: 'before' } as const
+const sessionWatch = vi.hoisted(() => ({
+  watchSignIn: vi.fn(),
+  watchAfterHandOver: vi.fn(),
+  beginSignInStep: vi.fn(),
+  // The site's state read before a step: what the watch after it compares with.
+  sessionBaseline: vi.fn(async () => ({ browserType: 'container', scope: { site: 'github.com', origin: 'https://github.com' }, hash: 'before' })),
+  // No saved session this browser has not held: the values fill.
+  restoreSavedSession: vi.fn(async (_input: { picked?: { grant?: () => Promise<void> } }): Promise<unknown> => null),
+}))
+vi.mock('@shared/lib/browser-vault/session-host', () => sessionWatch)
 
 vi.mock('@shared/lib/services/audit-log-service', () => ({
   logAuditEvent: vi.fn(),
@@ -596,6 +617,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listCancelledScheduledTasks: vi.fn(),
   listCompletedOneTimeTasks: vi.fn(),
   createScheduledTask: vi.fn(),
+  updateScheduleExpression: vi.fn(),
   listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
   cancelPendingWakeForSession: vi.fn(() => Promise.resolve(false)),
@@ -642,7 +664,6 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
   getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
-  getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationPreviewsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
   deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
@@ -891,10 +912,29 @@ import { attachMount, removeMount, resolveMountPath } from '@shared/lib/services
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
-import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent, updateScheduleExpression } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
+
+/**
+ * The summary a test describes, with every session's metadata beside it as
+ * the real one has: whatever the test's `readSessionMetadata` answers.
+ */
+function mockSessionSummary(summary: { sessionIds: string[]; sessionCount: number; lastActivityAt: Date | null }): void {
+  vi.mocked(getSessionSummary).mockImplementation(async (store) => ({
+    ...summary,
+    metadata: (await readSessionMetadata(store)) ?? {},
+  }))
+}
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents, type UnreadNotificationPreview } from '@shared/lib/services/notification-service'
+
+/** The unread rows of these sessions, as the list route reads them: one preview a session. */
+function unreadPreviews(sessionsByAgent: Map<string, Set<string>>): Map<string, UnreadNotificationPreview[]> {
+  return new Map([...sessionsByAgent].map(([slug, sessionIds]) => [
+    slug,
+    [...sessionIds].map((sessionId) => ({ id: `notification-${sessionId}`, sessionId, type: 'session_complete' as const, text: '' })),
+  ]))
+}
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
@@ -2327,6 +2367,18 @@ describe('POST /api/agents/import-template (chunked)', () => {
     }, expect.any(Function))
   })
 
+  it('rejects a request whose Content-Length exceeds the per-request cap without reading the body', async () => {
+    const res = await app.request('http://localhost/api/agents/import-template', {
+      method: 'POST',
+      body: 'tiny',
+      headers: { 'content-length': String(65 * 1024 * 1024) },
+    })
+    expect(res.status).toBe(413)
+    expect((await res.json()).error).toContain('use chunked upload')
+    expect(mockStoreUploadChunk).not.toHaveBeenCalled()
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
   it('assembles and processes on final chunk', async () => {
     const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
     mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
@@ -2771,6 +2823,62 @@ describe('ACL — POST /:id/access (invite user)', () => {
 
     const res = await postJson(app, INVITE_URL, { userId: 'user-1', role })
     expect(res.status).toBe(201)
+  })
+
+  describe('a team-directory person', () => {
+    const directoryRef = { directoryId: 'dir-1', remoteId: 'U7' }
+    beforeEach(() => {
+      mockIsAuthMode.mockReturnValue(true)
+      vi.mocked(userExists).mockResolvedValue(true)
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['test-user-id', { id: 'test-user-id', name: 'Ada Admin', email: 'ada@acme.test', image: null }]]))
+      vi.mocked(inviteDirectoryPerson).mockResolvedValue({ userId: 'invited-dana', invited: true })
+    })
+    afterEach(() => mockIsAuthMode.mockReturnValue(false))
+
+    it('is given access as an invited user, who is told through their directory', async () => {
+      mockDbSelectFrom.mockReturnValueOnce({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })
+      mockDbInsertValues.mockResolvedValueOnce(undefined)
+
+      const res = await postJson(app, INVITE_URL, { directoryRef, role: 'user' })
+      expect(res.status).toBe(201)
+      expect(await res.json()).toEqual({ ok: true, userId: 'invited-dana' })
+      expect(inviteDirectoryPerson).toHaveBeenCalledWith(directoryRef, 'test-user-id')
+      expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({ userId: 'invited-dana', agentSlug: 'test-agent', role: 'user' }))
+      // In the background, after the answer.
+      await vi.waitFor(() => expect(notifyInvitedUser).toHaveBeenCalledWith('invited-dana', expect.objectContaining({ kind: 'shared', byName: 'Ada Admin' })))
+    })
+
+    it('is not told of a share a mention will tell them about', async () => {
+      mockDbSelectFrom.mockReturnValueOnce({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })
+      mockDbInsertValues.mockResolvedValueOnce(undefined)
+      expect((await postJson(app, INVITE_URL, { userId: 'invited-dana', role: 'user', notify: false })).status).toBe(201)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(notifyInvitedUser).not.toHaveBeenCalled()
+    })
+
+    it('passes on why someone cannot be invited', async () => {
+      vi.mocked(inviteDirectoryPerson).mockRejectedValueOnce(new DirectoryInviteError('That person is no longer in the directory.', 404))
+      const res = await postJson(app, INVITE_URL, { directoryRef, role: 'user' })
+      expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'That person is no longer in the directory.' })
+    })
+
+    it('needs auth mode, where there is someone to share with', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      expect((await postJson(app, INVITE_URL, { directoryRef, role: 'user' })).status).toBe(400)
+      expect(inviteDirectoryPerson).not.toHaveBeenCalled()
+    })
+
+    it('takes a user id or a directory person, not both', async () => {
+      expect((await postJson(app, INVITE_URL, { userId: 'user-1', directoryRef, role: 'user' })).status).toBe(400)
+    })
+
+    it('names the invited user for a mention chip', async () => {
+      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['invited-dana', { id: 'invited-dana', name: 'Dana', email: 'dana@acme.test', image: null, invited: true }]]))
+      const res = await postJson(app, `${INVITE_URL}/invitees`, { directoryRef })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ id: 'invited-dana', name: 'Dana', email: 'dana@acme.test', image: null, invited: true })
+    })
   })
 })
 
@@ -5935,7 +6043,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     const res = await deleteReq(app, URL)
 
     expect(res.status).toBe(204)
-    expect(deleteNotificationsBySessionIds).toHaveBeenCalledWith(['sess-1'])
+    expect(deleteNotificationsBySessionIds).toHaveBeenCalledWith('test-agent', ['sess-1'])
   })
 
   it('cleans up every user unread mark for the deleted session', async () => {
@@ -6202,6 +6310,9 @@ describe('browser credential broker routes', () => {
       password: 'host-only-secret',
       expectedOrigin: 'https://example.com',
     })
+    // Not a vault account's sign-in: the sign-ins watched in the browser end before it goes in.
+    expect(sessionWatch.beginSignInStep).toHaveBeenCalledWith('test-agent', { site: 'example.com', username: 'person@example.com', accountId: null })
+    expect(sessionWatch.beginSignInStep.mock.invocationCallOrder[0]).toBeLessThan(mockContainerFetch.mock.invocationCallOrder[1])
     const [resolvePath, resolveOptions] = mockContainerFetch.mock.calls[2]
     expect(resolvePath).toBe('/inputs/tool-credential/resolve')
     expect(JSON.parse(resolveOptions.body)).toEqual({ value: 'credentials_filled' })
@@ -6460,6 +6571,26 @@ describe('decision routes settle their request immediately', () => {
     const res = await postJson(app, url, body)
     expect(res.status).toBe(200)
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', body.toolUseId, outcome, )
+  })
+
+  it('watches the last sign-in of the session again once the user finished a hand-over, on the site it was asked on', async () => {
+    userInputRequestManager.register({
+      id: 'tool-dec-12',
+      kind: 'browser_input',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: { message: 'Approve the sign-in.', requirements: [], browserContext: { url: 'https://www.github.com/sessions/two-factor', capturedAt: 1 } },
+    })
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/complete-browser-input', { toolUseId: 'tool-dec-12' })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.watchAfterHandOver).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', viewer: null, site: 'github.com' })
+
+    // Declined: done nowhere, which ends the sign-ins for anyone but their owner.
+    parkOpen('tool-dec-13', 'browser_input')
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+    expect((await postJson(app, '/api/agents/test-agent/sessions/sess-1/complete-browser-input', { toolUseId: 'tool-dec-13', decline: true })).status).toBe(200)
+    expect(sessionWatch.watchAfterHandOver).toHaveBeenLastCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', viewer: null, site: null })
   })
 
   it('declines a question as the person skipping it, with their reason', async () => {
@@ -7280,6 +7411,7 @@ describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sess
       recipientUserId: 'mike-id',
       senderName: 'Test User',
       text: '@Mike Smith look at this',
+      relayToInvited: true,
     })
   })
 
@@ -7547,13 +7679,21 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
 describe('POST /api/agents/:id/team-brain/upkeep', () => {
   const URL = '/api/agents/test-agent/team-brain/upkeep'
 
+  const DEFAULT_SETTINGS = { container: {}, skillsets: [], app: { configuredPasswordManagers: ['apple-passwords'] } }
+  const teamBrainIs = (teamBrain: object) => mockRuntimeSettings.mockReturnValue({ ...DEFAULT_SETTINGS, teamBrain } as ReturnType<typeof mockRuntimeSettings>)
+
   beforeEach(() => {
     vi.clearAllMocks()
     mockIsAuthMode.mockReturnValue(false)
     mockAgentExists.mockResolvedValue(true)
-    mockGetTeamBrain.mockReturnValue({ agentSlug: 'test-agent', volumeId: 'vol-1' })
+    teamBrainIs({ agentSlug: 'test-agent', volumeId: 'vol-1' })
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(createScheduledTask).mockResolvedValue('task-1')
+    vi.mocked(updateScheduleExpression).mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    mockRuntimeSettings.mockReturnValue(DEFAULT_SETTINGS)
   })
 
   it('schedules Brain upkeep once, only for the Team Brain agent', async () => {
@@ -7563,12 +7703,22 @@ describe('POST /api/agents/:id/team-brain/upkeep', () => {
       agentSlug: 'test-agent', scheduleType: 'cron', scheduleExpression: '0 0 * * 1', name: 'Brain upkeep', timezone: 'America/Los_Angeles',
     }))
 
-    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep', scheduleExpression: '0 0 * * 1' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
     expect(await (await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).json()).toEqual({ taskId: 'task-1' })
+    expect(vi.mocked(updateScheduleExpression)).not.toHaveBeenCalled()
 
-    mockGetTeamBrain.mockReturnValue({ agentSlug: 'other-agent', volumeId: 'vol-1' })
+    teamBrainIs({ agentSlug: 'other-agent', volumeId: 'vol-1' })
     expect((await postJson(createApp(), URL, { scheduleExpression: '0 0 * * 1' })).status).toBe(400)
     expect(vi.mocked(createScheduledTask)).toHaveBeenCalledTimes(1)
+  })
+
+  it('schedules it for a set-up still in progress, and moves it to a changed schedule when Start chat runs again', async () => {
+    teamBrainIs({ status: 'setting-up', setupId: 's1', agentSlug: 'test-agent', volumeId: 'vol-1', location: 'local', step: 'intake', schedule: 'hourly', everyAgent: true, agents: {} })
+    vi.mocked(listPendingScheduledTasks).mockResolvedValue([{ id: 'task-1', name: 'Brain upkeep', scheduleExpression: '0 0 * * *' }] as Awaited<ReturnType<typeof listPendingScheduledTasks>>)
+    expect(await (await postJson(createApp(), URL, { scheduleExpression: '0 * * * *' })).json()).toEqual({ taskId: 'task-1' })
+    expect(vi.mocked(updateScheduleExpression)).toHaveBeenCalledWith('task-1', '0 * * * *')
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'scheduled_task_updated', taskId: 'task-1', agentSlug: 'test-agent' })
+    expect(vi.mocked(createScheduledTask)).not.toHaveBeenCalled()
   })
 
   it('refuses a missing or invalid schedule with a 400, scheduling nothing', async () => {
@@ -7669,15 +7819,15 @@ describe('GET /api/agents (enriched summary)', () => {
     mockIsAuthMode.mockReturnValue(false)
     userInputRequestManager.reset()
     // Default: no sessions, attention, or artifacts.
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: [],
       sessionCount: 0,
       lastActivityAt: null,
     })
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
     vi.mocked(readSessionMetadata).mockResolvedValue({})
     vi.mocked(sessionExists).mockResolvedValue(true)
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map())
     mockLiveSessions.isActive.mockReturnValue(false)
     mockLiveSessions.isAwaitingInput.mockReturnValue(false)
@@ -7706,16 +7856,16 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body[0]).not.toHaveProperty('latestVisibleSession')
     expect(body[0]).not.toHaveProperty('attentionOutsideLatest')
-    expect(listSessionsFromSummary).not.toHaveBeenCalled()
+    expect(listSessions).not.toHaveBeenCalled()
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
   it('returns the latest tail and excludes attention on that session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('settled-visible')])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('settled-visible')])
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['settled-visible'])],
-    ]))
+    ])))
     mockLiveSessions.isActive.mockImplementation(
       (_agentSlug: string, id: string) => id === 'settled-visible',
     )
@@ -7762,8 +7912,7 @@ describe('GET /api/agents (enriched summary)', () => {
       hasUnreadNotification: false,
       hasPendingInput: false,
     })
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), {
-      metadata: {},
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -7782,7 +7931,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('annotates the tail like a transcript page read', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [
         {
@@ -7813,13 +7962,13 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('reports unread and pending attention on an older visible session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('latest-visible'),
       sessionInfo('older-visible'),
     ])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['older-visible'])],
-    ]))
+    ])))
     mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 'older-visible',
     )
@@ -7848,15 +7997,15 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores unread and pending attention from hidden automation', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'hidden-scheduled': {
         isScheduledExecution: true,
       },
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['hidden-scheduled'])],
-    ]))
+    ])))
     mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 'hidden-scheduled',
     )
@@ -7886,7 +8035,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts promoted automation as visible outside attention', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('latest-visible'),
       sessionInfo('promoted-scheduled'),
     ])
@@ -7896,9 +8045,9 @@ describe('GET /api/agents (enriched summary)', () => {
         promotedToInteractive: true,
       },
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['promoted-scheduled'])],
-    ]))
+    ])))
     expect(userInputRequestManager.register({
       id: 'promoted-request',
       kind: 'question',
@@ -7929,10 +8078,10 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts unattributed unread and agent-scoped pending attention as outside', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['unknown-session'])],
-    ]))
+    ])))
     expect(userInputRequestManager.register({
       id: 'agent-scoped-review',
       kind: 'proxy_review',
@@ -7960,11 +8109,11 @@ describe('GET /api/agents (enriched summary)', () => {
   // otherwise a session marked unread reads as "nothing to see here".
   it('counts a marked-unread session outside latest with no notification row', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('latest-visible'),
       sessionInfo('older-marked'),
     ])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['older-marked'])]]),
     )
@@ -7984,8 +8133,8 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('carries a marked-unread flag on the latest visible session tail', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['latest-visible'])]]),
     )
@@ -8007,11 +8156,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores a marked-unread flag on hidden automation', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'hidden-scheduled': { isScheduledExecution: true },
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['hidden-scheduled'])]]),
     )
@@ -8031,7 +8180,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts a waiting session the visible list does not know as outside', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     // Not confirmed hidden, so not safe to ignore: iOS opens the latest session
     // directly on false/false.
     mockLiveSessions.awaitingIds.mockReturnValueOnce(['unlisted-session'])
@@ -8051,7 +8200,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns null when an agent has no visible session and skips transcript work', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
 
     const res = await getReq(
       app,
@@ -8070,7 +8219,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns null and reports a latest visible session with neither transcript nor registration', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('missing-transcript')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('missing-transcript')])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
     vi.mocked(sessionExists).mockResolvedValue(false)
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -8102,7 +8251,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('serves a registered session with an empty tail before its first transcript write', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('registered-pending')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('registered-pending')])
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'registered-pending': { name: 'Pending', createdAt: '2026-01-01T11:00:00.000Z' },
     })
@@ -8141,7 +8290,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns null attention instead of false when visible-session selection fails', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockRejectedValue(new Error('visibility unavailable'))
+    vi.mocked(listSessions).mockRejectedValue(new Error('visibility unavailable'))
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     try {
@@ -8166,7 +8315,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('keeps the latest tail but returns null when attention computation fails', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
     // The route reads the agent's open requests from its actor's own store.
     const attentionRead = vi
       .spyOn(AgentInputRequests.prototype, 'getOpenRequests')
@@ -8198,7 +8347,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('hydrates every agent in one collection response without legacy full-transcript reads', async () => {
     const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
-    vi.mocked(listSessionsFromSummary).mockImplementation(async (store) => [
+    vi.mocked(listSessions).mockImplementation(async (store) => [
       sessionInfo('session-' + store.slug, store.slug),
     ])
     vi.mocked(getSessionMessagesPage).mockImplementation(async (_store, sessionId) => ({
@@ -8222,7 +8371,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body.map((agent: { latestVisibleSession: { session: { id: string } } }) =>
       agent.latestVisibleSession.session.id,
     )).toEqual(['session-agent-1', 'session-agent-2'])
-    expect(listSessionsFromSummary).toHaveBeenCalledTimes(2)
+    expect(listSessions).toHaveBeenCalledTimes(2)
     expect(getSessionMessagesPage).toHaveBeenCalledTimes(2)
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
@@ -8230,7 +8379,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('isolates a missing or corrupt transcript to its agent', async () => {
     const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
-    vi.mocked(listSessionsFromSummary).mockImplementation(async (store) => [
+    vi.mocked(listSessions).mockImplementation(async (store) => [
       sessionInfo('session-' + store.slug, store.slug),
     ])
     vi.mocked(getSessionMessagesPage).mockImplementation(async (store) => {
@@ -8280,7 +8429,7 @@ describe('GET /api/agents (enriched summary)', () => {
       where: vi.fn().mockResolvedValue([{ agentSlug: 'agent-1' }]),
     })
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('visible-session')])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('visible-session')])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [],
       nextCursor: null,
@@ -8296,8 +8445,8 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body).toHaveLength(1)
     expect(body[0].slug).toBe('agent-1')
     expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['agent-1'] })
-    expect(listSessionsFromSummary).toHaveBeenCalledTimes(1)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
+    expect(listSessions).toHaveBeenCalledTimes(1)
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
       expect.objectContaining({ slug: 'agent-1' }),
       'visible-session',
@@ -8315,12 +8464,12 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(await res.json()).toEqual({ error: 'Invalid agent list query' })
     expect(listAgentsWithStatus).not.toHaveBeenCalled()
     expect(getSessionSummary).not.toHaveBeenCalled()
-    expect(listSessionsFromSummary).not.toHaveBeenCalled()
+    expect(listSessions).not.toHaveBeenCalled()
   })
 
   it('returns enriched agents with summary fields', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date('2026-01-01T12:00:00Z'),
@@ -8343,7 +8492,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects active sessions through the agent\'s live sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-active'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8359,7 +8508,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects sessions awaiting input', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-waiting'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8374,12 +8523,12 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('raises hasUnreadNotifications for an unread on a visible session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([['agent-1', new Set(['sess-1'])]])))
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -8391,12 +8540,12 @@ describe('GET /api/agents (enriched summary)', () => {
   it('raises hasUnreadMention when the unread one tags the viewer (auth mode)', async () => {
     mockIsAuthMode.mockReturnValue(true)
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([['agent-1', new Set(['sess-1'])]])))
     vi.mocked(getUnreadMentionsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
 
     const res = await getReq(app, '/api/agents')
@@ -8414,12 +8563,11 @@ describe('GET /api/agents (enriched summary)', () => {
 
     beforeEach(() => {
       vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-      vi.mocked(getSessionSummary).mockResolvedValue({
+      mockSessionSummary({
         sessionIds: ['sess-done', 'sess-waiting'],
         sessionCount: 2,
         lastActivityAt: new Date(),
       })
-      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting'])]]))
       vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map([['agent-1', previews]]))
     })
 
@@ -8437,7 +8585,6 @@ describe('GET /api/agents (enriched summary)', () => {
     })
 
     it('is absent with nothing unread', async () => {
-      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
       vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
       const body = await (await getReq(app, '/api/agents')).json()
       expect(body[0]).not.toHaveProperty('notificationPreview')
@@ -8454,14 +8601,14 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-chat', 'sess-cron', 'sess-x-agent'],
       sessionCount: 3,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(
       new Map([['agent-1', new Set(['sess-chat', 'sess-cron', 'sess-x-agent'])]]),
-    )
+    ))
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-chat': { isChatIntegrationSession: true },
       'sess-cron': { isScheduledExecution: true },
@@ -8476,12 +8623,12 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('counts unread on a promoted automated session — it is visible again', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-cron'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-cron'])]]))
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([['agent-1', new Set(['sess-cron'])]])))
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-cron': { isScheduledExecution: true, promotedToInteractive: true },
     })
@@ -8494,12 +8641,12 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('raises hasUnreadNotifications for a session the user marked unread', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['sess-1'])]]),
     )
@@ -8515,12 +8662,12 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('ignores a marked-unread flag on a hidden automated session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-cron'],
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-cron': { isScheduledExecution: true },
     })
@@ -8536,7 +8683,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('detects awaiting input from agent-level proxy reviews on active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-active'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8558,7 +8705,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('surfaces awaiting input from proxy reviews even without active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-idle'],
       sessionCount: 1,
       lastActivityAt: new Date(),
@@ -8578,7 +8725,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('picks the latest lastActivityAt across sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-old', 'sess-new'],
       sessionCount: 2,
       lastActivityAt: new Date('2026-01-01T15:00:00Z'),
@@ -8645,7 +8792,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('loads a single agent without a redundant service summary pass', async () => {
     const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
     vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
-    vi.mocked(getSessionSummary).mockResolvedValue({
+    mockSessionSummary({
       sessionIds: ['sess-1'],
       sessionCount: 1,
       lastActivityAt: new Date('2026-01-01T12:00:00Z'),
@@ -8659,7 +8806,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: '2026-01-01T12:00:00.000Z',
     })
-    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+    expect(getAgentWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), { includeSummary: false })
     expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
 
@@ -8883,21 +9030,18 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     mockIsAuthMode.mockReturnValue(false)
   })
 
-  it.each([
-    { operation: 'invoke', fileTransfer: { kind: 'send', paths: ['/workspace/report.pdf'] } },
-    { operation: 'read', fileTransfer: { kind: 'download', filename: 'report.pdf' } },
-    { operation: 'invoke', attachments: ['/workspace/legacy.pdf'] },
-  ])('rejects persistent allow for a one-time file review: %j', async (details) => {
+  it('rejects persistent allow for a create review', async () => {
     mockGetPendingReviewsForAgent.mockReturnValueOnce([{
       id: 'review-1', agentSlug: 'my-agent', accountId: 'target', toolkit: 'agents',
-      method: details.operation, targetPath: `agents:${details.operation}:target`, matchedScopes: [`${details.operation}:target`],
-      xAgent: { targetAgentSlug: 'target', targetAgentName: 'Target', ...details },
+      method: 'create', targetPath: 'agents:create:target', matchedScopes: ['create:target'],
+      xAgent: { targetAgentSlug: 'target', targetAgentName: 'Target', operation: 'create' },
     }])
     const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
-      decision: 'allow', scope: `${details.operation}:target`, accountId: 'target', reviewType: 'xagent',
-      xAgent: { operation: details.operation, targetSlug: 'target' },
+      decision: 'allow', scope: 'create:target', accountId: 'target', reviewType: 'xagent',
+      xAgent: { operation: 'create', targetSlug: 'target' },
     })
     expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Creating an agent can only be allowed once' })
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
@@ -9677,7 +9821,55 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
     expect(res.status).toBe(400)
 
     const body = await res.json()
-    expect(body.error).toBe('No file provided')
+    expect(body.error).toBe('No file or chunk provided')
+  })
+
+  it('imports the assembled upload from disk on the final chunk', async () => {
+    vi.mocked(importSkillFromZip).mockResolvedValue({ skillDir: 'imported-skill', skillName: 'Imported Skill' })
+    const assembledPath = '/mock/tmp/uploads/44444444-4444-4444-4444-444444444444.assembled'
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
+
+    const form = new FormData()
+    form.append('chunk', new File(['data-part-1'], 'chunk.bin', { type: 'application/octet-stream' }))
+    form.append('uploadId', '44444444-4444-4444-4444-444444444444')
+    form.append('chunkIndex', '1')
+    form.append('totalChunks', '2')
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(201)
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(expect.objectContaining({
+      target: 'skill-import:my-agent',
+      chunkIndex: 1,
+      totalChunks: 2,
+      maxTotalBytes: 100 * 1024 * 1024,
+    }), expect.any(Function))
+    expect(importSkillFromZip).toHaveBeenCalledWith('my-agent', { filePath: assembledPath })
+  })
+
+  it('returns 409 with what to do when a chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This chunk is out of order for this upload. Start a new upload to send the file again.'))
+
+    const form = new FormData()
+    form.append('chunk', new File(['data-part-1'], 'chunk.bin', { type: 'application/octet-stream' }))
+    form.append('uploadId', '44444444-4444-4444-4444-444444444444')
+    form.append('chunkIndex', '1')
+    form.append('totalChunks', '2')
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+    expect(importSkillFromZip).not.toHaveBeenCalled()
+  })
+
+  it('rejects a request whose Content-Length exceeds the per-request cap without reading the body', async () => {
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/import-zip', {
+      method: 'POST',
+      body: 'tiny',
+      headers: { 'content-length': String(65 * 1024 * 1024) },
+    })
+    expect(res.status).toBe(413)
+    expect((await res.json()).error).toContain('use chunked upload')
+    expect(importSkillFromZip).not.toHaveBeenCalled()
   })
 
   it('returns 413 when file.size exceeds SKILL_MAX_COMPRESSED_SIZE before reading', async () => {
@@ -10381,11 +10573,11 @@ describe('sessions list query contract — GET /:id/sessions', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     app = createApp()
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
   })
 
   it('preserves the full visible-list behavior when no query is supplied', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('newer-visible', '2026-01-02T00:00:00Z'),
       sessionInfo('older-visible', '2026-01-01T00:00:00Z'),
     ])
@@ -10398,7 +10590,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
       'newer-visible',
       'older-visible',
     ])
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
     })
   })
@@ -10407,7 +10599,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     // The three lookups feeding this projection are independent; whichever
     // order (or concurrency) the route runs them in, every row must still
     // pick up its own unread flag and wake details.
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('s-waking', '2026-01-02T00:00:00Z'),
       sessionInfo('s-unread', '2026-01-01T00:00:00Z'),
       sessionInfo('s-plain', '2025-12-31T00:00:00Z'),
@@ -10442,7 +10634,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
   })
 
   it('forwards deterministic activity ordering and limit to the visibility-safe service', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('newest-visible', '2026-01-03T00:00:00Z'),
     ])
 
@@ -10454,7 +10646,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     expect(res.status).toBe(200)
     expect((await res.json()).map((session: { id: string }) => session.id))
       .toEqual(['newest-visible'])
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 1,
@@ -10465,7 +10657,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     const res = await getReq(app, URL + '?limit=1000')
 
     expect(res.status).toBe(200)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       limit: 100,
     })
@@ -10475,7 +10667,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     const res = await getReq(app, URL + '?notable=false&limit=2')
 
     expect(res.status).toBe(200)
-    expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
       excludeAutomated: true,
       limit: 2,
     })
@@ -10496,7 +10688,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
 
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'Invalid sessions query' })
-    expect(listSessionsFromSummary).not.toHaveBeenCalled()
+    expect(listSessions).not.toHaveBeenCalled()
     expect(listSessionsByIds).not.toHaveBeenCalled()
   })
 })
@@ -10729,7 +10921,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
   })
 
   it('raises hasUnreadNotifications in the session list with no notification row behind it', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       {
         id: 'sess-1',
         agentSlug: 'test-agent',
@@ -10749,7 +10941,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
 
   it("marks a session where the viewer was mentioned, in both session lists", async () => {
     mockIsAuthMode.mockReturnValue(true)
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([
+    vi.mocked(listSessions).mockResolvedValue([
       { id: 'sess-1', agentSlug: 'test-agent', name: 'One', createdAt: new Date(), lastActivityAt: new Date() },
       { id: 'sess-2', agentSlug: 'test-agent', name: 'Two', createdAt: new Date(), lastActivityAt: new Date() },
     ])
@@ -10764,7 +10956,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
   // Marks are per-user, so the projections must ask for the acting user's —
   // otherwise one person's reminder would raise a dot on everyone's sidebar.
   it('scopes the session-list projection to the acting user', async () => {
-    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+    vi.mocked(listSessions).mockResolvedValue([])
 
     await getReq(app, '/api/agents/test-agent/sessions')
 
@@ -11247,7 +11439,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
       if (name === 'computerUsePermissions') return answers.permissions ?? null
       if (name === 'computerUse') {
         if (answers.error) throw answers.error
-        return answers.output ?? ''
+        return { output: answers.output ?? '' }
       }
       throw new Error(`unexpected host call ${name}`)
     }) as typeof localHostPort.call)
@@ -11258,12 +11450,12 @@ describe('run-script and computer-use decisions run through the actor', () => {
     park('cu-ok', 'computer_use')
 
     const res = await postJson(app, CU_URL, {
-      toolUseId: 'cu-ok', method: 'apps', params: {}, permissionLevel: 'list_apps_windows', grantType: 'timed',
+      toolUseId: 'cu-ok', method: 'list-apps', params: {}, permissionLevel: 'list_apps_windows', grantType: 'timed',
     })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true })
-    expect(host).toHaveBeenCalledWith('computerUse', { method: 'apps', params: {} })
+    expect(host).toHaveBeenCalledWith('computerUse', { method: 'list-apps', params: {}, caller: { sessionId: 'sess-1', agentSlug: 'test-agent' } })
     expect(mockContainerFetch).toHaveBeenCalledWith('/inputs/cu-ok/resolve', expect.objectContaining({
       body: JSON.stringify({ value: 'Calculator, Finder' }),
     }))
@@ -11276,7 +11468,7 @@ describe('run-script and computer-use decisions run through the actor', () => {
     const host = machine({ permissions })
     park('cu-perm', 'computer_use')
 
-    const res = await postJson(app, CU_URL, { toolUseId: 'cu-perm', method: 'apps', params: {} })
+    const res = await postJson(app, CU_URL, { toolUseId: 'cu-perm', method: 'list-apps', params: {} })
 
     expect(res.status).toBe(428)
     expect(await res.json()).toEqual({ success: false, missingPermissions: permissions })
@@ -12103,12 +12295,14 @@ describe('sign-in request routes (request_login)', () => {
 
   describe('POST complete-login', () => {
     it('answers the agent that the user signed in on the page', async () => {
-      parkLogin('tool-login')
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
       mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
       const res = await postJson(app, `${BASE}/complete-login`, { toolUseId: 'tool-login', action: 'manual' })
       expect(res.status).toBe(200)
       expect(containerCalls()).toEqual([{ path: '/inputs/tool-login/resolve', body: { value: JSON.stringify({ type: 'manual' }) } }])
       expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+      // The user had the browser: as a hand-over done on the card's site.
+      expect(sessionWatch.watchAfterHandOver).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', viewer: null, site: 'github.com' })
     })
 
     it('declines: rejects the call and stops the turn so the user can talk to the agent', async () => {
@@ -12120,6 +12314,7 @@ describe('sign-in request routes (request_login)', () => {
       expect(mockInterruptSession).toHaveBeenCalledWith('sess-1', { scope: 'turn' })
       expect(containerCalls()).toEqual([{ path: '/inputs/tool-login/reject', body: { reason: 'The user declined to sign in' } }])
       expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'declined')
+      expect(sessionWatch.watchAfterHandOver).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', viewer: null, site: null })
     })
 
     it('leaves the request open when the container refuses the answer', async () => {
@@ -12425,6 +12620,30 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(containerCalls()[0].body).toMatchObject({ values: ['octocat', 'saved-pw'], account: { username: 'octocat', source: 'vault', saved: false } })
     expect(vault.recordAccountUse).toHaveBeenCalledWith({ agentSlug: 'test-agent', accountId: 'acc-1', sessionId: 'sess-1', userId: null, password: true, by: 'user' })
     expect(vault.grantAccount).not.toHaveBeenCalled()
+    // The site's session, as this sign-in leaves it, goes to that account: read before the fill, watched after.
+    expect(sessionWatch.sessionBaseline).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', scope: { site: 'github.com', origin: 'https://github.com' } })
+    expect(sessionWatch.sessionBaseline.mock.invocationCallOrder[0]).toBeLessThan(mockContainerFetch.mock.invocationCallOrder[0])
+    expect(sessionWatch.watchSignIn).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-1' }), baseline: SIGN_IN_BASELINE })
+    // What was watched in the browser before ends first: the step may sign in someone else.
+    expect(sessionWatch.beginSignInStep).toHaveBeenCalledWith('test-agent', { site: 'github.com', username: 'octocat', accountId: 'acc-1' })
+    expect(sessionWatch.beginSignInStep.mock.invocationCallOrder[0]).toBeLessThan(mockContainerFetch.mock.invocationCallOrder[0])
+  })
+
+  it.each([null, 'someone-else', 'octocat'])('watches no session from a page that is not a sign-in\'s first, unless it goes on with the same account (before: %s)', async (earlier) => {
+    // "Confirm access": a password asked again, on a site the browser may be signed in to as someone else.
+    const confirm = { ...CONTEXT, fields: [field('password', 'Password')], held: [] }
+    const { rememberSignInIdentity } = await import('@shared/lib/browser-vault/held-values')
+    if (earlier) await rememberSignInIdentity('test-agent', 'sess-1', 'github.com', earlier)
+    parkLogin({ login: confirm })
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.getAccount.mockResolvedValueOnce(account())
+    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    mockContainerFetch.mockResolvedValueOnce(filled())
+
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.sessionBaseline).toHaveBeenCalledTimes(earlier === 'octocat' ? 1 : 0)
+    expect(sessionWatch.watchSignIn).toHaveBeenCalledWith(expect.objectContaining({ baseline: earlier === 'octocat' ? SIGN_IN_BASELINE : null }))
   })
 
   it('grants the user\'s own saved account picked in the form', async () => {
@@ -12436,6 +12655,61 @@ describe('sign-in requests with the vault (request_login)', () => {
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['', ''], accountId: 'acc-1' })
     expect(res.status).toBe(200)
     expect(vault.grantAccount).toHaveBeenCalledWith({ accountId: 'acc-1', agentSlug: 'test-agent', grantedBy: null })
+    // A saved session was tried first, under the same claim: none, so the values went in.
+    expect(sessionWatch.restoreSavedSession).toHaveBeenCalledTimes(1)
+    expect(containerCalls()).toEqual([expect.objectContaining({ path: '/browser/login/fill', body: expect.objectContaining({ values: ['octocat', 'saved-pw'] }) })])
+  })
+
+  it('signs the agent in with the saved session of an account picked as it is, granting it once the session went in', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
+    vault.getOwnedAccount.mockResolvedValueOnce(account())
+    const resolution = { type: 'session', site: 'github.com', username: 'octocat', restored: true }
+    sessionWatch.restoreSavedSession.mockImplementationOnce(async (input) => {
+      // Granted by the restore, once it moved the page: not before.
+      expect(vault.grantAccount).not.toHaveBeenCalled()
+      await input.picked?.grant?.()
+      return resolution
+    })
+    mockContainerFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['', ''], accountId: 'acc-1' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, session: { restored: true, username: 'octocat' } })
+    expect(sessionWatch.restoreSavedSession).toHaveBeenCalledWith({
+      agentSlug: 'test-agent',
+      sessionId: 'sess-1',
+      account: expect.objectContaining({ id: 'acc-1' }),
+      picked: { userId: null, grant: expect.any(Function) },
+    })
+    expect(vault.grantAccount).toHaveBeenCalledWith({ accountId: 'acc-1', agentSlug: 'test-agent', grantedBy: null })
+    // Nothing filled: the agent is told the session went in.
+    expect(containerCalls()).toEqual([{ path: '/inputs/tool-login/resolve', body: { value: JSON.stringify(resolution) } }])
+    expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+    expect(vault.readAccountValues).not.toHaveBeenCalled()
+    // What a restore puts in is not watched.
+    expect(sessionWatch.watchSignIn).not.toHaveBeenCalled()
+  })
+
+  it('tries no saved session on a later step of the sign-in', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('password', 'Password')], held: [] } })
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.getAccount.mockResolvedValueOnce(account())
+    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    mockContainerFetch.mockResolvedValueOnce(filled())
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: [''], accountId: 'acc-1' })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.restoreSavedSession).not.toHaveBeenCalled()
+  })
+
+  it('tries no saved session when the user typed a value over the picked account', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.getAccount.mockResolvedValueOnce(account())
+    mockContainerFetch.mockResolvedValueOnce(filled())
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['', 'typed-pw'], accountId: 'acc-1' })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.restoreSavedSession).not.toHaveBeenCalled()
+    expect(containerCalls()[0].body).toMatchObject({ values: ['octocat', 'typed-pw'] })
   })
 
   it('refuses a saved account of another site, so the form asks for every field', async () => {
@@ -12569,6 +12843,34 @@ describe('sign-in requests with the vault (request_login)', () => {
       saved: true,
     })
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+    // The site's own session once Google sends the agent back, from the page as it was before.
+    expect(sessionWatch.watchSignIn).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-site' }), baseline: SIGN_IN_BASELINE })
+    // An account made just now has no saved session.
+    expect(sessionWatch.restoreSavedSession).not.toHaveBeenCalled()
+  })
+
+  it('signs in with the saved session of a site account picked to go through its provider', async () => {
+    parkLogin()
+    const google = account({ id: 'acc-google', site: 'google.com', username: 'me@gmail.com', parts: [] })
+    const viaGoogle = account({ id: 'acc-site', username: 'me@gmail.com', parts: [], via: { id: 'acc-google', site: 'google.com', username: 'me@gmail.com' } })
+    vault.getOwnedAccount.mockResolvedValueOnce(google)
+    vault.listOwnedAccountsOnSite.mockResolvedValueOnce([viaGoogle])
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.switchAccountToVia.mockResolvedValueOnce(viaGoogle)
+    const resolution = { type: 'session', site: 'github.com', username: 'me@gmail.com', restored: true }
+    sessionWatch.restoreSavedSession.mockResolvedValueOnce(resolution)
+    mockContainerFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+
+    const res = await postJson(app, `${BASE}/login-via`, { toolUseId: 'tool-login', origin: 'https://github.com', provider: { accountId: 'acc-google' } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, session: { restored: true, username: 'me@gmail.com' } })
+    // Granted already: the pick has nothing more to grant.
+    expect(sessionWatch.restoreSavedSession).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-site' }), picked: { userId: null } })
+    expect(containerCalls()).toEqual([{ path: '/inputs/tool-login/resolve', body: { value: JSON.stringify(resolution) } }])
+    expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+    // No provider to go through, and nothing to watch.
+    expect(sessionWatch.sessionBaseline).not.toHaveBeenCalled()
+    expect(sessionWatch.watchSignIn).not.toHaveBeenCalled()
   })
 
   it('refuses an unknown provider and a provider account on the site itself', async () => {
@@ -12590,6 +12892,26 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(note).toEqual({ site: 'github.com', source: 'user', saved: false, held: [] })
     // The container's own schema, which a note without a username once failed.
     expect(loginFillAccountSchema.safeParse(note).success).toBe(true)
+    // A step for no saved account: the watches in the browser, if one ran, end before it goes in.
+    expect(sessionWatch.sessionBaseline).not.toHaveBeenCalled()
+    expect(sessionWatch.beginSignInStep).toHaveBeenCalledWith('test-agent', expect.objectContaining({ site: 'github.com', accountId: null }))
+    expect(sessionWatch.beginSignInStep.mock.invocationCallOrder[0]).toBeLessThan(mockContainerFetch.mock.invocationCallOrder[0])
+  })
+
+  it('watches no session for an account when the user typed another username over it', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.getAccount.mockResolvedValueOnce(account())
+    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    mockContainerFetch.mockResolvedValueOnce(filled())
+
+    const res = await postJson(app, `${BASE}/fill-login`, {
+      toolUseId: 'tool-login', origin: 'https://github.com', values: ['someone-else', 'their-pw'], accountId: 'acc-1',
+    })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.watchSignIn).not.toHaveBeenCalled()
+    // Nor for the one watched before: someone else signed in.
+    expect(sessionWatch.beginSignInStep).toHaveBeenCalledWith('test-agent', { site: 'github.com', username: 'someone-else', accountId: 'acc-1' })
   })
 
   it('saves and grants nothing for a fill the page never got', async () => {
@@ -12599,6 +12921,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(res.status).toBe(409)
     expect(vault.saveAccount).not.toHaveBeenCalled()
     expect(vault.grantAccount).not.toHaveBeenCalled()
+    expect(sessionWatch.watchSignIn).not.toHaveBeenCalled()
   })
 
   it('reports an account it could not save, the values having gone in', async () => {

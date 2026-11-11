@@ -43,6 +43,10 @@ export class TurnResponse {
   streamedText = ''
   /** How the last turn ended, replayed to clients that connect later. */
   outcome: SessionTurnOutcome | undefined = undefined
+  /** The people this turn's messages tagged. */
+  readonly taggedUserIds = new Set<string>()
+  /** Each message and person already told, so a message's later frames tell no one twice. */
+  readonly toldInMessage = new Set<string>()
 
   /**
    * The response a reattach starts from. Mid-turn the answer and the queued
@@ -60,6 +64,8 @@ export class TurnResponse {
       for (const id of prior.messageIds) next.messageIds.add(id)
       for (const uuid of prior.entryUuids) next.entryUuids.add(uuid)
       next.queuedTurns = prior.queuedTurns
+      for (const id of prior.taggedUserIds) next.taggedUserIds.add(id)
+      for (const key of prior.toldInMessage) next.toldInMessage.add(key)
       next.resetBeforeNextOutput = prior.resetBeforeNextOutput
     }
     return next
@@ -68,6 +74,8 @@ export class TurnResponse {
   /** A new turn: no answer yet, nothing queued. */
   newTurn(): void {
     this.clearAnswer()
+    this.taggedUserIds.clear()
+    this.toldInMessage.clear()
     this.queuedTurns = 0
     this.resetBeforeNextOutput = false
   }

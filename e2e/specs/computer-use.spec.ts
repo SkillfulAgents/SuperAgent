@@ -20,8 +20,8 @@ test.describe('Computer Use requests', () => {
     await agentPage.createAgent(testAgentName)
   })
 
-  test('computer use request: allow once', async () => {
-    // "use computer" triggers UserInputRequestScenario with mcp__computer-use__computer_apps
+  test('computer use request: allow for 15 minutes', async () => {
+    // "use computer" triggers UserInputRequestScenario with mcp__agent-desktop__computer_list_apps
     await sessionPage.sendMessage('use computer')
 
     // Wait for the computer use request UI to appear
@@ -29,11 +29,10 @@ test.describe('Computer Use requests', () => {
 
     // Verify content is shown
     const request = sessionPage.getComputerUseRequests().first()
-    await expect(request).toContainText('Allow the agent to list apps & windows (read-only)?')
+    await expect(request).toContainText('Allow this agent to list apps & windows (read-only)?')
     await expect(request).toContainText('List Apps & Windows (read-only)')
 
-    // Approve once
-    await sessionPage.approveComputerUseOnce()
+    await sessionPage.approveComputerUseTimed()
 
     // Request should disappear
     await expect(sessionPage.getComputerUseRequests()).toHaveCount(0, { timeout: 10000 })

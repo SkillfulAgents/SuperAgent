@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { AGENT_AVATAR_COLORS, AGENT_AVATAR_SHAPES, DEFAULT_AGENT_AVATAR_COLORS } from '@shared/lib/types/agent-avatar'
 import { orbRestingPhi } from './agent-avatar'
 import { avatarSource } from './avatar-source'
-import { DEFAULT_ORBS, OFFERED_ORBS } from './avatar-orbs'
-import { ORB_SHAPES } from './orb-shapes'
+import { DEFAULT_ORBS, OFFERED_ORBS } from '@shared/lib/types/agent-avatar-orbs'
+import { ORB_SHAPES } from '@shared/lib/types/agent-avatar-shapes'
 
 it('renders every persisted color and shape, including every randomly assigned default', () => {
   expect(OFFERED_ORBS.map(orb => orb.name)).toEqual([...AGENT_AVATAR_COLORS])

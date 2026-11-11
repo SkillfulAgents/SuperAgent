@@ -45,21 +45,18 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: {
     checkPermission: vi.fn(() => 'prompt_needed'),
-    getGrabbedApp: vi.fn(() => undefined),
-    setGrabbedApp: vi.fn(),
-    clearGrabbedApp: vi.fn(),
+    getActiveApp: vi.fn(() => undefined),
+    setActiveApp: vi.fn(),
+    clearActiveApp: vi.fn(),
     consumeOnceGrant: vi.fn(),
   },
 }))
-vi.mock('@shared/lib/computer-use/types', () => ({
+vi.mock('@shared/lib/computer-use/types', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/computer-use/types')>()),
   getRequiredPermissionLevel: vi.fn(() => 'use_application'),
-  resolveTargetApp: vi.fn(() => undefined),
-  READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
-  TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))
-vi.mock('@shared/lib/computer-use/executor', () => ({
-  resolveAppFromWindowRef: vi.fn(() => undefined),
-}))
+// Replays drive no machine.
+vi.mock('@shared/lib/computer-use/executor', () => ({}))
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: vi.fn(() => Promise.resolve('trigger_new_id')),
   listActiveWebhookTriggers: vi.fn(() => Promise.resolve([])),
@@ -524,8 +521,9 @@ describe('sdk 0.3.206 capture replays', () => {
 //     the child's completion re-runs the subagent under the same task_id.
 // SDK 0.3.300 / CLI 2.1.300 re-captured the same scenarios with no protocol
 // change (same task bookend, snapshot and idle order), and so did SDK 0.3.303 /
-// CLI 2.1.303, SDK 0.3.311 / CLI 2.1.311 and SDK 0.3.318 / CLI 2.1.318, so
-// every assertion below runs against all five generations.
+// CLI 2.1.303, SDK 0.3.311 / CLI 2.1.311, SDK 0.3.318 / CLI 2.1.318 and
+// SDK 0.3.321 / CLI 2.1.321, so every assertion below runs against all six
+// generations.
 const SDK296_SCENARIOS = [
   'bg-bash-premature-idle',
   'bg-subagent-no-idle',
@@ -534,7 +532,7 @@ const SDK296_SCENARIOS = [
   'sendmessage-resumed-subagent',
 ]
 
-describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318'])('%s capture replays', (sdk) => {
+describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s capture replays', (sdk) => {
   const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
 
   afterEach(() => {
@@ -701,7 +699,7 @@ describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318'])('%s capture re
 // a background subagent like any other (async_launched ack, task_started with
 // is_backgrounded, terminal task frames); only its transcript differs (see
 // subagentOwnEntries).
-describe.each(['sdk303', 'sdk311', 'sdk318'])('%s fork captures replay', (sdk) => {
+describe.each(['sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s fork captures replay', (sdk) => {
   afterEach(() => {
     vi.clearAllMocks()
   })

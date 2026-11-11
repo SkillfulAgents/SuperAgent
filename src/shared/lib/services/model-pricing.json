@@ -49,6 +49,16 @@
     "cacheCreation": 12.5,
     "cacheRead": 0.25
   },
+  "claude-fable-5-2": {
+    "input": 8,
+    "output": 40,
+    "cacheCreation": 10,
+    "cacheCreation1h": 16,
+    "cacheRead": 0.2,
+    "speedMultipliers": {
+      "fast": 2
+    }
+  },
   "claude-haiku-4-5": {
     "input": 1,
     "output": 5,
@@ -494,6 +504,13 @@
     "cacheRead": 0.2
   },
   "gemini-4-argon": {
+    "input": 2,
+    "output": 10,
+    "cacheCreation": 2,
+    "cacheCreation1h": 4,
+    "cacheRead": 0.1
+  },
+  "gemini-4-carbon": {
     "input": 2,
     "output": 10,
     "cacheCreation": 2,

@@ -42,7 +42,7 @@ browser host).
 | `usage` | Usage | Everyone | "Usage period", spend and token charts, "Breakdown" |
 | `skillsets` | Skillsets | Admins | Add, refresh, or remove skillset repositories; "Repository token (optional)" |
 | `web` | Web Search | Admins | "Web provider" (Gamut / Native / Exa / Parallel), "Exa API Key" |
-| `browser` | Browser Use | Admins | "Browser Agent Model", "Max Browser Tabs", Password Managers, "Browser host" (Container (built-in) / Google Chrome / Browserbase / Platform); under Google Chrome: "Chrome Profile", "Headless Mode"; under Browserbase or Platform: "Advanced Stealth Mode", "Enable Proxies", "Operating System" |
+| `browser` | Browser Use | Admins | "Browser Agent Model", "Max Browser Tabs", Password Managers, "Browser host" (Container (built-in) / Google Chrome / Browserbase / Platform); under Google Chrome: "Headless Mode"; under Browserbase or Platform: "Advanced Stealth Mode", "Enable Proxies", "Operating System" |
 | `computer-use` | Computer Use | Admins, local app only | "Persistent Permissions" |
 | `capabilities` | Subagents | Admins | "Launch policies" for Task-tool subagents and Workflow multi-agent runs |
 | `account-provider` | Account Provider | Admins | "Provider" (Composio / Nango), "Nango Secret Key" |

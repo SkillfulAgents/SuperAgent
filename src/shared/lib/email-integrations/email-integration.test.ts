@@ -319,6 +319,12 @@ describe('email response composition', () => {
     await connector.deliver(context(), { type: 'turn-completed', event: {} })
     expect(connector.submitted).toHaveLength(1)
   })
+  it("hands the composer an agent's tag as a plain @Name", async () => {
+    await block('[@Mike Smith](user:u_mike1), the report is ready.')
+    composer.mockResolvedValue({ action: 'send', text: 'The report is ready.' })
+    await connector.deliver(context(), { type: 'turn-completed', event: {} })
+    expect(composer).toHaveBeenLastCalledWith(connector.incoming, expect.anything(), ['@Mike Smith, the report is ready.'], 0)
+  })
   it('reports send failures without creating a separate recovery job', async () => {
     await block('The answer')
     vi.spyOn(connector, 'submit').mockRejectedValueOnce(new Error('Lost response'))

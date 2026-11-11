@@ -35,9 +35,11 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings, type AppSettings } from '@shared/lib/config/settings'
 import path from 'path'
+import pLimit from 'p-limit'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { PassTask, taskManager } from '@shared/lib/background-work'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -51,11 +53,25 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
   10
 ) * 1000
 
+/** Agents the status sync reads at once, one runner call each: enough to overlap them without crowding the VM. */
+const STATUS_SYNC_CONCURRENCY = 4
+
 export class ContainerHost {
   private runtimes: Map<string, ContainerRuntime> = new Map()
-  private syncIntervalId: NodeJS.Timeout | null = null
+  private statusSyncScheduled = false
   private isSyncing = false
-  private healthCheckIntervalId: NodeJS.Timeout | null = null
+  private healthMonitorScheduled = false
+  private readonly statusSyncTask = new PassTask('container-host.status-sync', () => this.syncAllStatuses().catch((error) => {
+    console.error('[ContainerHost] Periodic sync failed:', error)
+  }))
+  // Not waited for, so a pass does not count as running until it settles: a
+  // runtime that hangs on one agent holds up that pass, never the later ones.
+  private readonly healthCheckTask = new PassTask('container-host.health-check', async () => {
+    background(this.runHealthChecks().catch((error) => {
+      console.error('[ContainerHost] Health check failed:', error)
+    }), { name: 'container-host.run-health-checks' })
+  })
+  readonly tasks = [this.statusSyncTask, this.healthCheckTask]
 
   /** The agents' workspaces, attached by the agent registry when it is created. */
   private agentWorkspaces: AgentWorkspaceAccess | null = null
@@ -295,9 +311,10 @@ export class ContainerHost {
         }
       }
 
-      for (const runtime of runtimes) {
+      const limit = pLimit(STATUS_SYNC_CONCURRENCY)
+      await Promise.all(runtimes.map((runtime) => limit(async () => {
         // Skip agents currently being stopped
-        if (runtime.isStopping()) continue
+        if (runtime.isStopping()) return
 
         try {
           await runtime.syncAgentStatus({ idleTimeoutMs })
@@ -306,7 +323,7 @@ export class ContainerHost {
           // Mark as stopped on error
           runtime.markAsStopped()
         }
-      }
+      })))
 
       console.log(`[ContainerHost] Synced ${runtimes.length} container statuses`)
     } finally {
@@ -319,27 +336,24 @@ export class ContainerHost {
    * Note: Does not do an initial sync - call initializeAgents() first for that.
    */
   startStatusSync(): void {
-    if (this.syncIntervalId) {
+    if (this.statusSyncScheduled) {
       return // Already running
     }
+    this.statusSyncScheduled = true
 
     console.log(`[ContainerHost] Starting status sync (interval: ${STATUS_SYNC_INTERVAL_MS / 1000}s)`)
 
     // Set up periodic sync (initial sync is done by initializeAgents)
-    this.syncIntervalId = setInterval(() => {
-      background(this.syncAllStatuses().catch((error) => {
-        console.error('[ContainerHost] Periodic sync failed:', error)
-      }), { name: 'container-host.sync-statuses' })
-    }, STATUS_SYNC_INTERVAL_MS)
+    background(taskManager().ensureEvery(this.statusSyncTask.type, this.statusSyncTask.spec, { intervalMs: STATUS_SYNC_INTERVAL_MS }), { name: 'container-host.schedule-status-sync' })
   }
 
   /**
    * Stop the periodic status sync.
    */
   stopStatusSync(): void {
-    if (this.syncIntervalId) {
-      clearInterval(this.syncIntervalId)
-      this.syncIntervalId = null
+    if (this.statusSyncScheduled) {
+      this.statusSyncScheduled = false
+      background(taskManager().cancel(this.statusSyncTask.type), { name: 'container-host.cancel-status-sync' })
       console.log('[ContainerHost] Stopped status sync')
     }
   }
@@ -348,26 +362,23 @@ export class ContainerHost {
    * Start periodic health monitoring for running containers.
    */
   startHealthMonitor(): void {
-    if (this.healthCheckIntervalId) {
+    if (this.healthMonitorScheduled) {
       return // Already running
     }
+    this.healthMonitorScheduled = true
 
     console.log(`[ContainerHost] Starting health monitor (interval: ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`)
 
-    this.healthCheckIntervalId = setInterval(() => {
-      background(this.runHealthChecks().catch((error) => {
-        console.error('[ContainerHost] Health check failed:', error)
-      }), { name: 'container-host.run-health-checks' })
-    }, HEALTH_CHECK_INTERVAL_MS)
+    background(taskManager().ensureEvery(this.healthCheckTask.type, this.healthCheckTask.spec, { intervalMs: HEALTH_CHECK_INTERVAL_MS }), { name: 'container-host.schedule-health-monitor' })
   }
 
   /**
    * Stop the periodic health monitor.
    */
   stopHealthMonitor(): void {
-    if (this.healthCheckIntervalId) {
-      clearInterval(this.healthCheckIntervalId)
-      this.healthCheckIntervalId = null
+    if (this.healthMonitorScheduled) {
+      this.healthMonitorScheduled = false
+      background(taskManager().cancel(this.healthCheckTask.type), { name: 'container-host.cancel-health-monitor' })
       console.log('[ContainerHost] Stopped health monitor')
     }
   }

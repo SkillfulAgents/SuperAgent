@@ -27,8 +27,8 @@ export interface VolumeFolderSource<Cursor> {
   opensInFirst?: boolean
   /** Whether the picker offers to make a new one at `cursor`. Only a source whose type can create sets it. */
   canCreate?(cursor: Cursor): boolean
-  /** What the source lists and makes, in the picker's words: "drive", or "folder" when unset. */
-  noun?: string
+  /** What the source lists and makes at `cursor`, in the picker's words: "drive", or "folder" when unset. */
+  noun?(cursor: Cursor): string
   /** The setup field's label, when not "Select folder location". */
   fieldLabel?: string
   /** Whether a listed row can be opened. Unset means every row can. */
@@ -119,7 +119,7 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
       },
     })
   }
-  const noun = source.noun ?? 'folder'
+  const noun = source.noun?.(cursor) ?? 'folder'
   // Use only acts on a highlighted row that is on screen, whether typing or a refreshed listing hid it.
   const visible = shown.find(folder => folder.id === highlighted?.id) ?? null
   const choice = visible && source.confirmLabel(visible.cursor) !== null ? visible : null
@@ -132,7 +132,7 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
   const close = () => { setBrowsing(false); if (!create.isPending) create.reset() }
 
   return <Dialog open={browsing} onOpenChange={next => { if (next) setBrowsing(true); else close() }}>
-    <FolderLocationField dialogTrigger location={selected} disabled={disabled} label={source.fieldLabel} placeholder={source.noun && `Select a ${noun}`} onClick={() => {
+    <FolderLocationField dialogTrigger location={selected} disabled={disabled} label={source.fieldLabel} placeholder={source.noun && `Select a ${source.noun(initial)}`} onClick={() => {
       // Reopened after a folder was being made, the picker is still where it was made, with its outcome.
       if (create.isIdle) { entered.current = false; open(chosen) }
     }} />

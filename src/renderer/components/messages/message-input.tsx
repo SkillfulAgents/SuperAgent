@@ -4,7 +4,7 @@ import { useMessages, useSendMessage, useUploadFile, useUploadFolder, useInterru
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
 import { StopSessionDialog } from './stop-session-dialog'
-import { AtSign, WifiOff } from 'lucide-react'
+import { WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -78,6 +78,11 @@ interface MessageInputProps {
    */
   suspended?: boolean
   inputRequests?: readonly VoiceInputRequest[]
+  /**
+   * Who a message that opens on a teammate only notifies (null when it runs the
+   * agent). The column under the box says so, where the context usage sits.
+   */
+  onNotifiesOnlyChange?: (label: string | null) => void
 }
 
 /**
@@ -94,7 +99,7 @@ function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): 
   return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
 }
 
-export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests, onNotifiesOnlyChange }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const isMobile = useIsMobile()
   const { data: voiceAgent } = useAgent(agentSlug)
@@ -251,6 +256,12 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     silentSends: !!sessionId,
   })
   const notifiesOnly = sessionId ? silentOpener(composer.message) : null
+  const notifiesOnlyLabel = notifiesOnly?.label ?? null
+  useEffect(() => {
+    onNotifiesOnlyChange?.(notifiesOnlyLabel)
+  }, [notifiesOnlyLabel, onNotifiesOnlyChange])
+  // Leaving takes the note with it.
+  useEffect(() => () => onNotifiesOnlyChange?.(null), [onNotifiesOnlyChange])
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
   const { warmStart } = useWarmStartOnType({
@@ -670,6 +681,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         leftActions={(
           <>
             <AttachmentPicker
+              buttonClassName="h-7 w-7 shrink-0 p-0"
               onFileSelect={composer.handleFileSelect}
               onFolderSelect={composer.handleFolderSelect}
               onRecentFileAttach={(file) => composer.addFiles([{ file }])}
@@ -680,6 +692,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
             <ComposerOptions
               state={composerOptions}
               disabled={isDisabled || isActive}
+              size="sm"
               footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
             />
           </>
@@ -690,9 +703,10 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
               voiceInput={composer.voiceInput}
               message={composer.message}
               disabled={isDisabled}
+              size="compact"
             />
             {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
-            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
+            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} className="h-7 w-7" />
             <ComposerActionButton
               isActive={isActive}
               isWaitingBackground={isWaitingBackground}
@@ -709,12 +723,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
               <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
                 <WifiOff className="h-3 w-3 shrink-0" />
                 <span>No internet connection. Messages cannot be sent.</span>
-              </div>
-            )}
-            {notifiesOnly && (
-              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="mention-notify-only-hint">
-                <AtSign className="h-3 w-3 shrink-0 text-violet-500" />
-                <span>{`Only notifies ${notifiesOnly.label}. The agent won't reply.`}</span>
               </div>
             )}
             <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />

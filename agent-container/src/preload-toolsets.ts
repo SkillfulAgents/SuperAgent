@@ -3,9 +3,9 @@ import { z } from 'zod';
 /**
  * Toolsets a session can have in the prompt from its first turn instead of
  * deferred behind ToolSearch, for a session started to do one thing (the
- * launcher's computer-use toggle). Each is the name of the in-process MCP
- * server that carries it. Adding one: name it here and give its server
- * `alwaysLoad` in ClaudeCodeProcess.buildSdkMcpServers.
+ * launcher's computer-use toggle), by its name on the wire: 'computer-use'
+ * is the `agent-desktop` server's tools. Adding one: name it here and give
+ * its server `alwaysLoad` in ClaudeCodeProcess.buildSdkMcpServers.
  */
 export const PRELOAD_TOOLSETS = ['computer-use'] as const;
 

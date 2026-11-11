@@ -127,18 +127,18 @@ export function AgentGraph() {
   const navigate = useNavigate()
   const graph = useGraphData()
   // Drawing is role-gated in auth mode to mirror what the server enforces:
-  // an invoke policy is written on the DRAG-SOURCE agent (owner-only
-  // endpoint); a resource link is written on the agent side (user role).
-  const { canUseAgent, canAdminAgent } = useUser()
+  // an agent link needs someone who uses both agents; a resource link is
+  // written on the agent side (user role).
+  const { canUseAgent } = useUser()
   const canDrawConnection = useCallback(
     (source: string, target: string) => {
       const kind = drawnConnectionKind(source, target)
       if (!kind) return false
-      if (kind === 'invoke') return canAdminAgent(nodeRef(source))
+      if (kind === 'invoke') return canUseAgent(nodeRef(source)) && canUseAgent(nodeRef(target))
       const agentNodeId = nodeKind(source) === 'agent' ? source : target
       return canUseAgent(nodeRef(agentNodeId))
     },
-    [canAdminAgent, canUseAgent],
+    [canUseAgent],
   )
   // Saved positions must be loaded before nodes are seeded, or the first drag
   // would persist auto-layout coordinates over the user's arrangement.

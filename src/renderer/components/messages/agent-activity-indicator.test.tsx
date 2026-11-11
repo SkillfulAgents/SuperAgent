@@ -44,6 +44,12 @@ vi.mock('@renderer/hooks/use-messages', () => ({
   useStopBackgroundTask: () => mockStopBackgroundTask,
 }))
 
+// No avatar by default: the header falls back to the thought orb
+let mockAgent: { slug: string; name: string; avatar: { color: string; shape: string } | null } | undefined
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgent: () => ({ data: mockAgent }),
+}))
+
 // Mock useElapsedTimer
 vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
   useElapsedTimer: (startTime: unknown) => (startTime ? '10s' : null),
@@ -67,6 +73,12 @@ type MockPendingRequest = { id: string; kind: string; blocking: boolean; autoApp
 let mockPendingUserRequests: MockPendingRequest[] = []
 vi.mock('@shared/lib/tools/requests/use-pending-user-requests', () => ({
   usePendingUserRequests: () => ({ data: mockPendingUserRequests }),
+}))
+
+// The cursor colour beside the computer-use app: the agent's avatar (mockAgent) and the cursor setting.
+let mockComputerUseSettings: Record<string, unknown> | undefined
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({ data: { computerUse: mockComputerUseSettings } }),
 }))
 
 function blockingRequest(kind: string, overrides: Partial<MockPendingRequest> = {}): MockPendingRequest {
@@ -96,6 +108,7 @@ describe('AgentActivityIndicator', () => {
     mockMessages.length = 0
     mockPendingUserRequests = []
     platformAuth.connected = false
+    mockAgent = undefined
   })
 
   it('returns null when not active and no error', () => {
@@ -103,6 +116,21 @@ describe('AgentActivityIndicator', () => {
       <AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />
     )
     expect(container.innerHTML).toBe('')
+  })
+
+  it('still hides between turns when the agent has an avatar', () => {
+    mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('shows the avatar, not the thought orb, while the agent works', () => {
+    mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.querySelector('[data-avatar-shape="circle"]')).toBeInTheDocument()
+    expect(container.querySelector('canvas')).not.toBeInTheDocument()
   })
 
   it('shows LLM provider error alert when apiErrorCode indicates a provider error', () => {
@@ -1304,5 +1332,38 @@ describe('AgentActivityIndicator', () => {
       expect(screen.getByText('Checking follow-up files')).toBeInTheDocument()
       expect(screen.queryByText('✓')).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('AgentActivityIndicator computer use', () => {
+  beforeEach(() => {
+    mockComputerUseSettings = undefined
+    mockAgent = { slug: 'agent-1', name: 'Research Bot', avatar: { color: 'tonal-blue', shape: 'circle' } }
+    Object.assign(mockStreamState, { isActive: true, activeStartTime: Date.now(), error: null, apiErrorCode: null, errorPresentation: null })
+    mockPendingUserRequests = []
+  })
+
+  async function showDetails() {
+    const toggle = screen.queryByRole('button', { name: /activity details/i })
+    if (toggle && toggle.getAttribute('aria-expanded') !== 'true') await userEvent.click(toggle)
+  }
+
+  it('shows the app with the agent\'s cursor colour beside it', async () => {
+    Object.assign(mockStreamState, { computerUseApp: 'Notes', computerUseAppIcon: null })
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    await showDetails()
+
+    expect(screen.getByText('Computer use: Notes')).toBeInTheDocument()
+    expect(screen.getByTestId('computer-use-cursor-color')).toHaveStyle({ backgroundColor: '#2B79FA' })
+  })
+
+  it('shows no cursor colour when cursors are off', async () => {
+    mockComputerUseSettings = { showCursor: false }
+    Object.assign(mockStreamState, { computerUseApp: 'Notes', computerUseAppIcon: null })
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    await showDetails()
+
+    expect(screen.getByText('Computer use: Notes')).toBeInTheDocument()
+    expect(screen.queryByTestId('computer-use-cursor-color')).not.toBeInTheDocument()
   })
 })

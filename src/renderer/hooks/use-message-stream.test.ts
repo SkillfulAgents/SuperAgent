@@ -888,12 +888,38 @@ describe('useMessageStream', () => {
 
   // ---- Additional request event types ----
 
+  it('reports a session stream as open only while its connection is open', async () => {
+    const { useMessageStream, isSessionStreamOpen } = await getHookModule()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+
+    expect(isSessionStreamOpen('session-1')).toBe(true)
+    expect(isSessionStreamOpen('session-2')).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].close()
+    })
+
+    expect(isSessionStreamOpen('session-1')).toBe(false)
+  })
+
   // ---- Query invalidation ----
 
-  it('invalidates sessions query on session_active', async () => {
+  // The global stream gets every lifecycle event too and refetches the session
+  // lists itself. This stream only echoes the status into the cached rows.
+  function seedSessionLists(queryClient: QueryClient, isActive: boolean) {
+    const own = ['sessions', 'agent-1']
+    const other = ['sessions', 'agent-2']
+    queryClient.setQueryData(own, [{ id: 'session-1', agentSlug: 'agent-1', name: 'Morning check-in', isActive }])
+    queryClient.setQueryData(other, [{ id: 'session-9', agentSlug: 'agent-2', name: 'Weekly report', isActive: false }])
+    const rowIsActive = () => queryClient.getQueryData<Array<{ isActive?: boolean }>>(own)?.[0]?.isActive
+    const invalidated = (key: string[]) => queryClient.getQueryState(key)?.isInvalidated
+    return { own, other, rowIsActive, invalidated }
+  }
+
+  it('echoes session_active into the cached row without refetching session lists', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    const lists = seedSessionLists(wrapper.queryClient, false)
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
       { wrapper }
@@ -902,20 +928,22 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
     })
-    spy.mockClear()
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(lists.rowIsActive()).toBe(true)
+    expect(lists.invalidated(lists.own)).toBe(false)
+    expect(lists.invalidated(lists.other)).toBe(false)
   })
 
-  it('invalidates messages (trailing-throttled) and sessions on session_idle', async () => {
+  it('invalidates messages (trailing-throttled) and echoes the status on session_idle', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -931,8 +959,9 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
       })
 
-      // The sessions invalidation is not throttled.
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.rowIsActive()).toBe(false)
+      expect(lists.invalidated(lists.own)).toBe(false)
+      expect(lists.invalidated(lists.other)).toBe(false)
       // The messages refetch collapses into the throttle's trailing edge —
       // 'connected' consumed the leading edge moments earlier.
       expect(spy).not.toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
@@ -1505,11 +1534,12 @@ describe('useMessageStream', () => {
     expect(countFor('session-2')).toBe(1)
   })
 
-  it('invalidates messages (trailing-throttled) and sessions on session_error', async () => {
+  it('invalidates messages (trailing-throttled) and echoes the status on session_error', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -1525,7 +1555,9 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'session_error', error: 'boom' })
       })
 
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.rowIsActive()).toBe(false)
+      expect(lists.invalidated(lists.own)).toBe(false)
+      expect(lists.invalidated(lists.other)).toBe(false)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
       })
@@ -1710,10 +1742,12 @@ describe('useMessageStream', () => {
     expect(result.current.browserActive).toBe(false)
   })
 
-  it('handles session_updated event — invalidates session queries', async () => {
+  it('leaves session_updated to the global stream, which gets it too', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
-    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    const lists = seedSessionLists(wrapper.queryClient, false)
+    const detail = ['session', 'session-1', 'agent-1']
+    wrapper.queryClient.setQueryData(detail, { id: 'session-1', agentSlug: 'agent-1', name: 'Morning check-in' })
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
       { wrapper }
@@ -1722,14 +1756,14 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
     })
-    spy.mockClear()
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({ type: 'session_updated' })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['session', 'session-1'] })
+    expect(lists.invalidated(lists.own)).toBe(false)
+    expect(lists.invalidated(lists.other)).toBe(false)
+    expect(lists.invalidated(detail)).toBe(false)
   })
 
   it('handles scheduled_task_created event — invalidates scheduled tasks', async () => {
@@ -1787,9 +1821,10 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(true)
   })
 
-  it('invalidates status queries when a blocking user-input tool becomes ready', async () => {
+  it('invalidates this agent\'s session lists and the agents when a blocking user-input tool becomes ready', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
+    const lists = seedSessionLists(wrapper.queryClient, true)
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
     renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -1818,7 +1853,8 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(lists.invalidated(lists.own)).toBe(true)
+    expect(lists.invalidated(lists.other)).toBe(false)
     expect(spy).toHaveBeenCalledWith({ queryKey: ['agents'] })
   })
 
@@ -2471,11 +2507,12 @@ describe('useMessageStream', () => {
     expect(result.current.completedSubagents?.has('pt-2')).toBe(true)
   })
 
-  it('ping invalidates messages (trailing-throttled) and sessions when correcting active state', async () => {
+  it('ping invalidates messages (trailing-throttled) and this agent\'s session lists when correcting active state', async () => {
     vi.useFakeTimers()
     try {
       const { useMessageStream, MESSAGES_REFETCH_THROTTLE_MS } = await getHookModule()
       const wrapper = createWrapper()
+      const lists = seedSessionLists(wrapper.queryClient, true)
       const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
       renderHook(
         () => useMessageStream('session-1', 'agent-1'),
@@ -2494,7 +2531,8 @@ describe('useMessageStream', () => {
         MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: false })
       })
 
-      expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+      expect(lists.invalidated(lists.own)).toBe(true)
+      expect(lists.invalidated(lists.other)).toBe(false)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(MESSAGES_REFETCH_THROTTLE_MS)
       })

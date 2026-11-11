@@ -10,6 +10,7 @@ import {
   scheduledTasks,
   notifications,
   sessionUnreadMarks,
+  agentSessions,
   todos,
   connectedAccounts,
   userSettings,
@@ -37,6 +38,7 @@ import {
   apnsDevices,
   pushSubscriptions,
   pushVapidKeys,
+  teamDirectories,
 } from './schema'
 import { agentIntegrationRegistry } from '../agent-integrations/registry'
 
@@ -77,6 +79,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   agents,
   notifications,
   sessionUnreadMarks,
+  // the local agents' session indexes
+  agentSessions,
   // personal Todo board items (they point at agents and sessions)
   todos,
   scheduledTasks,
@@ -85,6 +89,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   integrationDeliveries,
   chatIntegrations,
   llmConnections,
+  // connected team directories (their people are only ever cached)
+  teamDirectories,
   // proxy rules point at connected accounts or remote MCP servers
   proxyRuleVersions,
   proxyRules,

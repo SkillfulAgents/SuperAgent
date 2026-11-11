@@ -1,10 +1,12 @@
 /**
  * Creating a session and sending it a message, under the NFS shim.
  *
- * The send path's cost is mostly serial file operations on the agent's
- * session-metadata document: every one is a network round trip on EFS-class
- * storage, and a message reaches the agent only after those ahead of the
- * container POST are done. Each send scenario pins two things:
+ * The send path's cost is serial file operations on the agent's workspace:
+ * every one is a network round trip on EFS-class storage, and a message
+ * reaches the agent only after those ahead of the container POST are done.
+ * What the app keeps about the session is in the agent's session index, so
+ * reading or changing it is no file operation at all. Each send scenario
+ * pins two things:
  *
  *   - "delivered": the operations (and wall-clock) up to the moment the
  *     container receives the message, i.e. the delay before the agent starts
@@ -22,7 +24,9 @@
  *
  * Recorded before SUP-1183 at 10 ms/op: an unchanged send took 20 operations
  * (184 ms) to reach the container and 29 (281 ms) to answer; a model switch
- * 19 (171 ms) and 28 (267 ms); a create 25.
+ * 19 (171 ms) and 28 (267 ms); a create 25. With the session metadata in a
+ * document of the workspace (before the session index) an unchanged send
+ * took 6, a model switch 13 and a create 22.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { bootPerfApp, expectWithinBudget, measure, type Measurement, type PerfApp } from './harness'
@@ -126,14 +130,14 @@ describe('session create + send — small profile', () => {
     await expect.poll(() => turns.has(sessionId)).toBe(true)
     await endTurn()
 
-    // Secrets and preferences for the container, the registration (with the
-    // container's slash commands in it), and the name the first message gives
-    // the session, written once the response is out. The stream's lifecycle
-    // comes from the registration, not a read of it.
+    // Secrets and preferences for the container. The registration and the
+    // name the first message gives the session are rows of the session
+    // index: no file is written for either.
+    // One readFile is the actor's first use of the index: a session-metadata.json still in the workspace is taken in.
     expectWithinBudget('small: create session', measurement, {
-      totalOps: 22,
-      ops: { readFile: 4, rename: 2 },
-      wallMs: 260,
+      totalOps: 7,
+      ops: { readFile: 3, rename: 0, 'handle.sync': 0 },
+      wallMs: 100,
     })
   })
 
@@ -144,9 +148,9 @@ describe('session create + send — small profile', () => {
     expect(result.status).toBe(201)
     expect(delivered).not.toBeNull()
     // One realpath for "is this the agent's session" (and one more for the
-    // workspace root, the first time this actor resolves a path), one read of
-    // the session's metadata, and no write: the send changes nothing.
-    const unchanged = { totalOps: 6, ops: { readFile: 1, rename: 0, 'handle.sync': 0 }, wallMs: 80 }
+    // workspace root, the first time this actor resolves a path), and no
+    // read or write of a file: the session's metadata is in its index.
+    const unchanged = { totalOps: 5, ops: { readFile: 0, rename: 0, 'handle.sync': 0 }, wallMs: 80 }
     expectWithinBudget('small: send, unchanged session (delivered)', delivered!, unchanged)
     expectWithinBudget('small: send, unchanged session (response)', measurement, unchanged)
     await endTurn()
@@ -162,12 +166,11 @@ describe('session create + send — small profile', () => {
     const { agentRegistry } = await import('@shared/lib/agent-actor')
     expect(await agentRegistry.get(slug).sessions.metadata(sessionId)).toMatchObject({ model: 'model-b', effort: 'high' })
 
-    // The read, then one atomic write (its locked re-read, temp file, fsync,
-    // rename, directory fsync) holding the new binding AND the effort. It has
-    // to land before the container has the message (the container's
+    // The new binding AND the effort are one row of the session index. It
+    // has to land before the container has the message (the container's
     // credential callback checks the stored binding), so nothing is left to
-    // write after the POST.
-    const switched = { totalOps: 13, ops: { readFile: 2, rename: 1, 'handle.sync': 2 }, wallMs: 230 }
+    // write after the POST, and nothing of it is a file operation.
+    const switched = { totalOps: 4, ops: { readFile: 0, rename: 0, 'handle.sync': 0 }, wallMs: 80 }
     expectWithinBudget('small: send, model switch (delivered)', delivered!, switched)
     expectWithinBudget('small: send, model switch (response)', measurement, switched)
     await endTurn()

@@ -517,14 +517,6 @@ export function getAgentEnvPath(slug: string): string {
 }
 
 /**
- * Get session metadata path
- * ~/.superagent/agents/{slug}/workspace/session-metadata.json
- */
-export function getAgentSessionMetadataPath(slug: string): string {
-  return path.join(getAgentWorkspaceDir(slug), 'session-metadata.json')
-}
-
-/**
  * Get agent preferences path
  * ~/.superagent/agents/{slug}/workspace/agent-preferences.json
  */

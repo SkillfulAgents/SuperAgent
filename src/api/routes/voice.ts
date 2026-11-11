@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { ttsSynthesisSchema } from '@shared/lib/voice/tts-types'
 import { VoiceProviderError } from '@shared/lib/voice/provider-error'
-import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
+import { liveSessions } from '@shared/lib/voice/live-sessions'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middleware/auth'
@@ -71,18 +71,6 @@ function ttsError(c: Context<LimitedJsonBodyEnv>, error: unknown, fallback: stri
   console.error(fallback, error)
   return c.json({ error: error instanceof VoiceProviderError ? error.message : fallback }, 502)
 }
-// Admission and handles live in AppState, so a release can reach any process;
-// each process keeps its own hangup retries and deadline hangups.
-const liveSessions = new LiveSessionRegistry(hangUpLiveSession)
-// A session is hung up through the provider that created it, with that
-// provider's key as configured now: AppState keeps no keys. A key replaced
-// while the session runs can make the hangup fail.
-async function hangUpLiveSession(providerId: VoiceProvider, providerSessionId: string): Promise<void> {
-  const provider = getVoiceProvider(providerId)
-  const conversation = provider.getLiveConversation()
-  if (!conversation) throw new Error(`${provider.name} cannot close Live sessions.`)
-  await conversation.closeLiveSession(providerSessionId, await provider.getEffectiveApiKey())
-}
 // `sessionId` lets the host look up where the conversation is taking place (a
 // meeting); it never carries instructions of its own.
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema, sessionId: z.string().min(1).max(200).optional() })
@@ -120,7 +108,7 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
       }
     }
     // Created with this request's settings read (key and summarizer); hung up
-    // later with the provider's key as configured then (hangUpLiveSession).
+    // later with the provider's key as configured then (`live-sessions.ts`).
     const answer = await conversation.createLiveSession(parsed.data.sdp, parsed.data.history, agentContext, { settings })
     // Hangs the session up itself when the reservation is gone by now.
     const started = await reservation.start(answer.session.id)

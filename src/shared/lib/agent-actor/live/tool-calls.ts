@@ -44,8 +44,9 @@ import type { RequestScriptRunInput } from '@shared/lib/tools/request-script-run
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
 import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
-import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
-import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
+import { getRequiredPermissionLevel } from '@shared/lib/computer-use/types'
+import { commandLineOf, computerUseMethodFromToolName, isComputerUseToolName } from '@shared/lib/computer-use/command-line'
+import { callTargets, capturesScreen, type CallTargets } from '@shared/lib/computer-use/commands'
 import { background } from '@shared/lib/background'
 import { MAIN_THREAD_ONLY_TOOLS, MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult, type LoginDecision } from '../host-port'
@@ -155,8 +156,19 @@ const USER_INPUT_REQUESTS: Record<
 
 const LAUNCH_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent'])
 const REVIEWED_LAUNCH_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent', 'Workflow'])
-const COMPUTER_USE_PREFIX = 'mcp__computer-use__'
+
 const DELIVER_FILE_TOOL = 'mcp__user-input__deliver_file'
+
+/** A computer-use call as read on arrival, before it is placed and checked. */
+interface ComputerUseCall {
+  method: string
+  params: Record<string, unknown>
+  permissionLevel: ReturnType<typeof getRequiredPermissionLevel>
+  /** The app or system target the call names, when it decides the grant. */
+  appName?: string
+  /** The machine places the call (its ref, window, point or the focused app). */
+  placedByMachine: boolean
+}
 
 export class ToolCalls {
   /**
@@ -202,6 +214,18 @@ export class ToolCalls {
    * reattach, like the checks.
    */
   private readonly hostRunChecks: Map<string, string | undefined>
+  /**
+   * The session's computer-use line (computerUse): the work holding it, if
+   * any, the calls already handled, and the parked calls holding it until
+   * they are decided (by the subagent call that made them, if any). Carried
+   * across a reattach, so a new attachment's calls still queue behind the
+   * old one's.
+   */
+  private readonly computerUseLine: {
+    tail: Promise<void> | null
+    readonly handled: Set<string>
+    readonly parked: Map<string, { parentToolUseId: string | undefined; release: () => void }>
+  }
 
   /** `prior`: the tool calls of the attachment this one replaces. */
   constructor(private readonly ctx: ToolCallContext, prior?: ToolCalls) {
@@ -209,6 +233,7 @@ export class ToolCalls {
     this.loginDecisions = prior?.loginDecisions ?? new Map()
     this.hostToolsRun = prior?.hostToolsRun ?? new Set()
     this.hostRunChecks = prior?.hostRunChecks ?? new Map()
+    this.computerUseLine = prior?.computerUseLine ?? { tail: null, handled: new Set(), parked: new Map() }
   }
 
   /** Stop waiting on the host's sign-in decisions: all of them, or those of the subagent call `parentToolId`. */
@@ -226,6 +251,11 @@ export class ToolCalls {
     for (const [toolUseId, parent] of this.hostRunChecks) {
       if (dropped(parent)) this.hostRunChecks.delete(toolUseId)
     }
+    // Their parked computer-use calls stop holding the session's line: a
+    // spared subagent's calls must not wait on a card nobody will answer.
+    for (const { parentToolUseId, release } of [...this.computerUseLine.parked.values()]) {
+      if (dropped(parentToolUseId)) release()
+    }
   }
 
   /** A tool call on the main agent's stream. */
@@ -240,7 +270,7 @@ export class ToolCalls {
     this.parkUserInput(toolUse)
     this.hostTool(toolUse)
     if (this.isScriptRun(name)) background(this.scriptRun(toolUse), { name: 'tool-calls.script-run' })
-    if (name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse), { name: 'tool-calls.computer-use' })
+    if (isComputerUseToolName(name)) background(this.computerUse(toolUse), { name: 'tool-calls.computer-use' })
     // Under a 'review' policy the container parks the launch on an approval;
     // the review itself checks the policy and the session's grants.
     if (REVIEWED_LAUNCH_TOOLS.has(name)) background(this.capabilityReview(toolUse), { name: 'tool-calls.capability-review' })
@@ -253,7 +283,7 @@ export class ToolCalls {
     this.parkUserInput(toolUse, parentToolId)
     this.hostTool(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) background(this.scriptRun(toolUse, parentToolId), { name: 'tool-calls.script-run' })
-    if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
+    if (isComputerUseToolName(toolUse.name)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
     // A nested launch parks on the same approval as a top-level one.
     if (REVIEWED_LAUNCH_TOOLS.has(toolUse.name)) background(this.capabilityReview(toolUse), { name: 'tool-calls.capability-review' })
@@ -265,7 +295,7 @@ export class ToolCalls {
     this.parkUserInput(toolUse, parentToolId)
     this.hostTool(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) background(this.scriptRun(toolUse, parentToolId), { name: 'tool-calls.script-run' })
-    if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
+    if (isComputerUseToolName(toolUse.name)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
   }
 
   /**
@@ -278,6 +308,7 @@ export class ToolCalls {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
       this.loginDecisions.delete(block.tool_use_id)
       this.hostRunChecks.delete(block.tool_use_id)
+      this.computerUseLine.parked.get(block.tool_use_id)?.release()
       // Its result is in: replaying it to a client that connects later would
       // resurrect a decided card.
       this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')
@@ -310,6 +341,7 @@ export class ToolCalls {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
       this.loginDecisions.delete(block.tool_use_id)
       this.hostRunChecks.delete(block.tool_use_id)
+      this.computerUseLine.parked.get(block.tool_use_id)?.release()
       if (!this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')) continue
       // Every other tab drops the card off this (the resolving tab already did).
       this.ctx.emit({ type: 'tool_result', toolUseId: block.tool_use_id, result: block.content, isError: block.is_error || false })
@@ -563,49 +595,121 @@ export class ToolCalls {
     })
   }
 
-  /** A computer-use command: run at once when a grant covers it, otherwise park on an approval. */
-  private async computerUse(toolUse: ToolUse, parentToolUseId?: string): Promise<void> {
+  /**
+   * A computer-use command: run when a grant covers it, otherwise park on an
+   * approval. The session's calls are handled one at a time in the order they
+   * arrive: calls sent together mean that order (click, then screenshot), and
+   * each one's preparation (placing it in an app, the grant check) takes its
+   * own time, so handling them side by side let a later call overtake an
+   * earlier one. A call holds the line while it is placed, checked and run,
+   * and while it is parked on an approval, until the user's decision has run
+   * (a later screenshot then shows what an approved click did). Each call's
+   * grant check is held in `hostRunChecks` from the moment it arrives, so a
+   * Stop drops a call still waiting its turn as well as one being checked,
+   * and releases its caller's parked calls.
+   */
+  private computerUse(toolUse: ToolUse, parentToolUseId?: string): Promise<void> {
+    const call = this.computerUseCall(toolUse)
+    if (!call || this.hostRunChecks.has(toolUse.id)) return Promise.resolve()
+    this.hostRunChecks.set(toolUse.id, parentToolUseId)
+    const line = this.computerUseLine
+    const turn = (line.tail ?? Promise.resolve()).then(() => this.decideComputerUse(toolUse, parentToolUseId, call))
+    const tail: Promise<void> = turn.catch(() => {}).then(() => {
+      if (line.tail === tail) line.tail = null
+    })
+    line.tail = tail
+    return turn
+  }
+
+  /**
+   * The command a computer-use call asks for, and how its app is found; none
+   * when the call was handled before (a subagent's arrives once streamed and
+   * again in its message), cannot be read, or was refused at once.
+   */
+  private computerUseCall(toolUse: ToolUse): ComputerUseCall | undefined {
+    if (this.computerUseLine.handled.has(toolUse.id)) return undefined
+    // mcp__agent-desktop__computer_set_value → set-value, with the tool's
+    // params as the command's arguments; agent_desktop names its command.
+    let params: Record<string, unknown>
     try {
-      // mcp__computer-use__computer_launch → launch. The input is the MCP
-      // tool's; tools like screenshot or apps take none.
-      let method = computerUseMethodFromToolName(toolUse.name)
-      let params: Record<string, unknown>
-      try {
-        params = toolUse.input.trim() ? JSON.parse(toolUse.input) : {}
-      } catch {
-        console.error('[LiveSession] Failed to parse computer use request:', toolUse.input)
-        return
-      }
-      // computer_run("clipboard_read", {...}) is a clipboard_read request: the
-      // permission level, the card and the executor all see that.
-      ;({ method, params } = unwrapComputerRun(method, params))
+      params = toolUse.input.trim() ? JSON.parse(toolUse.input) : {}
+    } catch {
+      console.error('[LiveSession] Failed to parse computer use request:', toolUse.input)
+      return undefined
+    }
+    this.computerUseLine.handled.add(toolUse.id)
+    // The permission level, the card and the executor all see the command line.
+    const { method, params: commandParams } = commandLineOf(computerUseMethodFromToolName(toolUse.name), params)
 
-      // macOS and Windows outside the Mac App Store edition (the mock E2E
-      // runtime drives no machine).
-      if (process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
-        this.autoReject(toolUse.id, `Computer use is not available on this machine (${process.platform}). It needs macOS or Windows, and is not in the Mac App Store edition.`)
-        return
-      }
+    // macOS and Windows outside the Mac App Store edition (the mock E2E
+    // runtime drives no machine).
+    if (process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
+      this.autoReject(toolUse.id, `Computer use is not available on this machine (${process.platform}). It needs macOS or Windows, and is not in the Mac App Store edition.`)
+      return undefined
+    }
 
-      const permissionLevel = getRequiredPermissionLevel(method)
-      let appName = resolveTargetApp(method, params, this.ctx.computerUse.grabbed())
-      await this.checkGrant(toolUse.id, parentToolUseId, async () => {
-        // Grab by window ref: the owning app, from the machine, before the
-        // permission check, so a failure here leaves nothing parked.
-        if (method === 'grab' && !appName && typeof params.ref === 'string' && params.ref) {
-          try {
-            appName = await this.ctx.host.call('computerUseWindowApp', { ref: params.ref })
-          } catch {
-            // Proceed without the app name.
-          }
+    const permissionLevel = getRequiredPermissionLevel(method, commandParams)
+    if (permissionLevel !== 'use_application') return { method, params: commandParams, permissionLevel, placedByMachine: false }
+    // The app the command acts in. A command that names only an app, or acts
+    // on something that is not an app (the clipboard, the whole screen), is
+    // judged by it at once; one that names a ref, a window or a point, or
+    // names no app but acts in whatever app has focus, is placed by the
+    // machine, which knows the snapshot or window it came from and what is
+    // on screen.
+    // A call no single approval can cover (a batch across apps, say) is
+    // refused here, as the executor would refuse it, before any card.
+    let targets: CallTargets
+    try {
+      targets = callTargets(method, commandParams)
+    } catch (error) {
+      this.autoReject(toolUse.id, error instanceof Error ? error.message : String(error))
+      return undefined
+    }
+    const placedByMachine = targets.snapshotIds.length > 0
+      || targets.windowIds.length > 0
+      || (targets.points?.length ?? 0) > 0
+      || targets.focused === true
+    return {
+      method,
+      params: commandParams,
+      permissionLevel,
+      placedByMachine,
+      ...(!placedByMachine && { appName: targets.app ?? targets.system }),
+    }
+  }
+
+  /**
+   * Place the call (when the machine must), check its grant, then run it or
+   * park it on an approval card; resolved when the line may move on (see
+   * computerUse). Placed before the check, so a failure here leaves nothing
+   * parked; unplaced, the check needs a grant for no app.
+   */
+  private async decideComputerUse(toolUse: ToolUse, parentToolUseId: string | undefined, call: ComputerUseCall): Promise<void> {
+    const { method, params, permissionLevel } = call
+    let appName = call.appName
+    let holding: Promise<void> | undefined
+    await this.checkHeldGrant(toolUse.id, async () => {
+      if (call.placedByMachine) {
+        try {
+          appName = await this.ctx.host.call('computerUseTargetApp', { method, params })
+        } catch {
+          // Proceed without the app name.
         }
-        return (await this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId)) === 'granted'
-      }, (granted, stillWanted) => {
-        const payload = { method, params, permissionLevel, appName }
-        if (granted) {
-          // Registered anyway, flagged so no projection reads it as a wait: the
-          // run claims the request it settles, as a decision in the app does.
-          this.register('computer_use', toolUse.id, payload, { parentToolUseId, autoApproved: true })
+      }
+      if ((await this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId)) !== 'granted') return false
+      // Unattended only with the macOS permissions it needs: without one, it
+      // waits on the user, whose approval asks for it.
+      const missing = await this.ctx.host.call('computerUsePermissions', { screenRecording: capturesScreen(method, params) }).catch(() => null)
+      return missing === null
+    }, (granted, stillWanted) => {
+      const payload = { method, params, permissionLevel, appName }
+      if (granted) {
+        // Registered anyway, flagged so no projection reads it as a wait: the
+        // run claims the request it settles, as a decision in the app does.
+        this.register('computer_use', toolUse.id, payload, { parentToolUseId, autoApproved: true })
+        // The session's next call waits for this run's machine work, not
+        // for its delivery to the container.
+        holding = new Promise<void>((machineDone) => {
           background(runAutoApproved(this.ctx.runs, this.ctx.host, {
             kind: 'computerUse',
             sessionId: this.ctx.sessionId,
@@ -614,17 +718,34 @@ export class ToolCalls {
             params,
             permissionLevel,
             appName,
-          }, { stillWanted }), { name: 'tool-calls.auto-run-computer-use' })
-          return
-        }
-        this.register('computer_use', toolUse.id, payload, { parentToolUseId })
-        // Parked on the user: a Stop cancels the registered request from here on.
-        stillWanted()
-        this.ctx.syncAwaiting()
-      })
-    } catch (error) {
-      console.error('[LiveSession] Error handling computer use request:', error)
-    }
+          }, { stillWanted, machineDone }).finally(machineDone), { name: 'tool-calls.auto-run-computer-use' })
+        })
+        return
+      }
+      this.register('computer_use', toolUse.id, payload, { parentToolUseId })
+      // Parked on the user: a Stop cancels the registered request from here on.
+      stillWanted()
+      this.ctx.syncAwaiting()
+      holding = this.holdWhileParked(toolUse.id, parentToolUseId)
+    })
+    await holding
+  }
+
+  /**
+   * A parked call's hold on the line: released once its request settles (the
+   * user's decision ran, or was a denial), its result comes in, a Stop drops
+   * its caller, or the next turn supersedes it.
+   */
+  private holdWhileParked(toolUseId: string, parentToolUseId: string | undefined): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const { parked } = this.computerUseLine
+      const release = () => {
+        if (parked.get(toolUseId)?.release === release) parked.delete(toolUseId)
+        resolve()
+      }
+      parked.set(toolUseId, { parentToolUseId, release })
+      this.ctx.requests.onSettled(toolUseId, release)
+    })
   }
 
   /**
@@ -700,6 +821,20 @@ export class ToolCalls {
   ): Promise<void> {
     if (this.hostRunChecks.has(toolUseId)) return
     this.hostRunChecks.set(toolUseId, parentToolUseId)
+    await this.checkHeldGrant(toolUseId, check, proceed)
+  }
+
+  /**
+   * `checkGrant` for a call whose entry in `hostRunChecks` was taken earlier
+   * (computerUse takes it as the call arrives); nothing when the entry was
+   * dropped meanwhile.
+   */
+  private async checkHeldGrant(
+    toolUseId: string,
+    check: () => Promise<boolean>,
+    proceed: (granted: boolean, stillWanted: () => boolean) => void,
+  ): Promise<void> {
+    if (!this.hostRunChecks.has(toolUseId)) return
     let granted: boolean
     try {
       granted = await check()

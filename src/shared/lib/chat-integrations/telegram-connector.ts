@@ -40,6 +40,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
+import { getFileExtension } from '../utils/mime'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -160,6 +161,11 @@ export function buildTelegramSystemPrompt(message: SystemPromptContext): string 
     where: `a live Telegram conversation: you are responding inside ${whereDetail}`,
     multiParty: isMultiPartyChatType(kind),
   })
+}
+
+/** Telegram refused a photo itself (its size, dimensions or format), so it can still go as a document. */
+export function isTelegramPhotoRefusal(errorCode: number, description: string): boolean {
+  return errorCode === 413 || (errorCode === 400 && /PHOTO|IMAGE/.test(description))
 }
 
 /** Rejects after `ms`; `promise` still settles on its own, unobserved. */
@@ -536,6 +542,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // Open cards stay with the installation, for the next connection.
     this.activeDrafts.clear()
     this.workingActivity.clear()
+    this.releaseAllAcknowledgements()
 
     // Relayed updates mid-handling finish before the next connection starts. A message the
     // manager no longer takes comes back as a retry; a button tap is lost, as when polling.
@@ -575,12 +582,26 @@ export class TelegramConnector extends ChatAgentIntegration {
     return lastMessageId
   }
 
-  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: { asImage?: boolean }): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
-    const { InputFile } = await import('grammy')
+    const { InputFile, GrammyError } = await import('grammy')
+    const file = () => new InputFile(new Uint8Array(fileData), filename)
+    if (options?.asImage) {
+      try {
+        // A GIF sent as a photo arrives frozen.
+        const sent = getFileExtension(filename) === 'gif'
+          ? await this.bot.api.sendAnimation(chatId, file())
+          : await this.bot.api.sendPhoto(chatId, file())
+        return String(sent.message_id)
+      } catch (err) {
+        // Only Telegram refusing the photo itself falls back; the file still arrives.
+        if (!(err instanceof GrammyError && isTelegramPhotoRefusal(err.error_code, err.description))) throw err
+        console.warn('[TelegramConnector] Telegram refused the photo, sending it as a document:', err.description)
+      }
+    }
     const result = await this.bot.api.sendDocument(
       chatId,
-      new InputFile(new Uint8Array(fileData), filename),
+      file(),
       caption ? { caption } : undefined,
     )
     return String(result.message_id)
@@ -658,6 +679,12 @@ export class TelegramConnector extends ChatAgentIntegration {
     }
   }
 
+  async retireStreamingMessage(chatId: string, messageId: string): Promise<void> {
+    // A DM draft is ephemeral: the next draft replaces it.
+    if (!this.bot || messageId.startsWith(RICH_DRAFT_SENTINEL_PREFIX)) return
+    await this.bot.api.deleteMessage(chatId, Number(messageId))
+  }
+
   private draftIdFor(chatId: string): number {
     let id = this.activeDrafts.get(chatId)
     if (id === undefined) {
@@ -698,6 +725,16 @@ export class TelegramConnector extends ChatAgentIntegration {
     this.workingActivity.delete(chatId)
     // The streaming response shares the draft_id and replaces the draft in place,
     // so the clear yields the surface — there is nothing else to tear down.
+  }
+
+  protected async addAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.bot) return
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [{ type: 'emoji', emoji: '👀' }])
+  }
+
+  protected async removeAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.bot) return
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [])
   }
 
   /** The native-draft label for a busy activity (`<tg-thinking>` inner HTML). */

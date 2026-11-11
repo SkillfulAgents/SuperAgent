@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Button } from '@renderer/components/ui/button'
 import { Plus, Settings2 } from 'lucide-react'
-import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
+import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
 import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
 import { useAgentConnectedAccounts, type ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
@@ -113,12 +113,13 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
   }, [accountsData, mcpsData])
 
   return (
-    <HomeCollapsible title="Connections" className={className}>
+    <HomeCollapsible id="connections" title="Connections" count={accountsData && mcpsData ? connections.length : undefined} className={className}>
       {connections.length > 0 ? (
-        <div className="mt-2 divide-y divide-border/50">
+        <div className="mt-2">
           {connections.map((conn) => (
             <IntegrationRow
               key={conn.id}
+              hoverFill={false}
               iconSlug={conn.iconSlug}
               iconFallback={conn.iconFallback}
               name={conn.name}
@@ -180,7 +181,6 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                   ) : activityPending ? (
                     <ActivitySparkChartSkeleton />
                   ) : null}
-                  <RowHoverChevron />
                 </>
               }
             />

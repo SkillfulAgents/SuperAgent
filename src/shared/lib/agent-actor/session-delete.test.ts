@@ -5,20 +5,24 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
+vi.mock('@shared/lib/agent-actor/db-session-index-storage', async () =>
+  (await import('@shared/lib/agent-actor/testing/in-memory-session-index-storage')).inMemorySessionIndexModule())
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
   getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'review' }),
   getModelCatalogSettings: () => ({}),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: vi.fn(),
-  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previous: null }),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
   revertSessionActivity: vi.fn(),
 }))
 
 import * as sessionService from '@shared/lib/services/session-service'
+import * as errorReporting from '@shared/lib/error-reporting'
+import * as transcripts from './local-transcript-ops'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
-import { CLI_TRANSCRIPTS_DIR } from './session-store'
+import { CLI_TRANSCRIPTS_DIR, sessionDirPath } from './session-store'
 import { createRecordingHostPort } from './testing/recording-host-port'
 
 const SESSION = '0b6f1d2e-3c4a-4b5c-8d6e-7f8091a2b3c4'
@@ -27,6 +31,21 @@ const THIRD = '2d8b3f40-5e6c-4d7e-af80-91a2b3c4d5e6'
 
 let workspace: string
 const transcriptFile = (id: string) => path.join(workspace, CLI_TRANSCRIPTS_DIR, `${id}.jsonl`)
+const sessionDirectory = (id: string) => path.join(workspace, CLI_TRANSCRIPTS_DIR, id)
+const derivedFiles = [
+  'subagents/agent-child.jsonl',
+  'workflows/run/journal.jsonl',
+  'workflows/run/agents/worker.jsonl',
+  'workflows/run/script.ts',
+  'media/image.png',
+]
+function seedDerivedFiles(id: string) {
+  for (const file of derivedFiles) {
+    const destination = path.join(sessionDirectory(id), file)
+    fs.mkdirSync(path.dirname(destination), { recursive: true })
+    fs.writeFileSync(destination, `contents of ${file}`)
+  }
+}
 const exitWrite = (id: string) =>
   fs.appendFileSync(transcriptFile(id), JSON.stringify({ type: 'last-prompt', lastPrompt: 'hi', sessionId: id }) + '\n')
 
@@ -60,6 +79,7 @@ const deps = () =>
     },
     host: createRecordingHostPort().port,
     sessionService,
+    transcripts,
     getAgentWorkspaceDir: () => workspace,
     recordSessionActivity: vi.fn(),
   }) as unknown as LocalActorDeps
@@ -92,6 +112,7 @@ describe('deleting a session', () => {
   it.each(['single', 'batch'])('keeps the resume record when %s file deletion fails', async (mode) => {
     const actor = new LocalAgentActor('agent', deps())
     await seed(actor, SESSION)
+    seedDerivedFiles(SESSION)
     vi.spyOn(actor.store.files, 'delete').mockRejectedValueOnce(new Error('EACCES'))
 
     if (mode === 'single') await expect(actor.sessions.delete(SESSION)).rejects.toThrow('EACCES')
@@ -100,6 +121,89 @@ describe('deleting a session', () => {
     expect(await listed(actor)).toEqual([SESSION])
     expect(client.releaseSession).toHaveBeenCalledWith(SESSION)
     expect(client.deleteSession).not.toHaveBeenCalled()
+    for (const file of derivedFiles) expect(fs.existsSync(path.join(sessionDirectory(SESSION), file))).toBe(true)
+  })
+
+  it.each(['single', 'batch'])('removes the derived directory on %s deletion, leaving a fork intact', async (mode) => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    await seed(actor, OTHER)
+    seedDerivedFiles(SESSION)
+    await actor.sessions.copyDerivedFiles(SESSION, OTHER)
+
+    if (mode === 'single') expect(await actor.sessions.delete(SESSION)).toBe(true)
+    else expect(await actor.sessions.deleteMany([SESSION])).toEqual([SESSION])
+
+    expect(fs.existsSync(transcriptFile(SESSION))).toBe(false)
+    expect(fs.existsSync(sessionDirectory(SESSION))).toBe(false)
+    expect(await listed(actor)).toEqual([OTHER])
+    expect(fs.existsSync(transcriptFile(OTHER))).toBe(true)
+    for (const file of derivedFiles) {
+      expect(fs.readFileSync(path.join(sessionDirectory(OTHER), file), 'utf8')).toBe(`contents of ${file}`)
+    }
+  })
+
+  it.each(['single', 'batch'])('cleans derived files without a transcript on %s deletion', async (mode) => {
+    const actor = new LocalAgentActor('agent', deps())
+    await sessionService.registerSession(actor.store, SESSION, 'No transcript')
+    seedDerivedFiles(SESSION)
+
+    if (mode === 'single') expect(await actor.sessions.delete(SESSION)).toBe(true)
+    else expect(await actor.sessions.deleteMany([SESSION])).toEqual([SESSION])
+
+    expect(fs.existsSync(sessionDirectory(SESSION))).toBe(false)
+    expect(await actor.sessions.metadata(SESSION)).toBeNull()
+    expect(await listed(actor)).toEqual([])
+  })
+
+  it.each(['single', 'batch'])('keeps a session deleted when %s directory cleanup partially fails', async (mode) => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    await seed(actor, OTHER)
+    seedDerivedFiles(SESSION)
+    const failure = new Error('EACCES removing directory')
+    const report = vi.spyOn(errorReporting, 'captureException')
+    const remove = actor.store.files.delete.bind(actor.store.files)
+    vi.spyOn(actor.store.files, 'delete').mockImplementation(async (file, options) => {
+      if (file === sessionDirPath(actor.store, SESSION)) {
+        expect(fs.existsSync(transcriptFile(SESSION))).toBe(false)
+        expect(options).toEqual({ recursive: true })
+        fs.unlinkSync(path.join(sessionDirectory(SESSION), derivedFiles[0]))
+        throw failure
+      }
+      return remove(file, options)
+    })
+
+    if (mode === 'single') expect(await actor.sessions.delete(SESSION)).toBe(true)
+    else expect(await actor.sessions.deleteMany([SESSION, OTHER])).toEqual([SESSION, OTHER])
+
+    expect(fs.existsSync(sessionDirectory(SESSION))).toBe(true)
+    expect(await actor.sessions.metadata(SESSION)).toBeNull()
+    expect(client.deleteSession).toHaveBeenCalledWith(SESSION)
+    expect(report).toHaveBeenCalledWith(failure, {
+      tags: { area: 'session-delete', op: 'remove-directory' },
+      extra: { agentSlug: 'agent', sessionId: SESSION },
+    })
+    // A new actor has no warm listing state; scanning the partial directory
+    // still cannot recreate the session from its nested JSONL files.
+    expect(await listed(new LocalAgentActor('agent', deps()))).toEqual(mode === 'single' ? [OTHER] : [])
+  })
+
+  it.each(['single', 'batch'])('unlinks a session directory symlink on %s deletion without following it', async (mode) => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    await seed(actor, OTHER)
+    seedDerivedFiles(OTHER)
+    fs.symlinkSync(sessionDirectory(OTHER), sessionDirectory(SESSION), 'junction')
+
+    if (mode === 'single') expect(await actor.sessions.delete(SESSION)).toBe(true)
+    else expect(await actor.sessions.deleteMany([SESSION])).toEqual([SESSION])
+
+    expect(fs.existsSync(sessionDirectory(SESSION))).toBe(false)
+    for (const file of derivedFiles) {
+      expect(fs.readFileSync(path.join(sessionDirectory(OTHER), file), 'utf8')).toBe(`contents of ${file}`)
+    }
+    expect(await listed(actor)).toEqual([OTHER])
   })
 
   it('keeps the resume record when the release response is lost', async () => {

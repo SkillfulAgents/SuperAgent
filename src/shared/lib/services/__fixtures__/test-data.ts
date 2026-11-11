@@ -51,7 +51,7 @@ URL="https://example.com?foo=bar#anchor"  # URL With Hash
 MULTILINE="line1\\nline2"  # Multiline Value
 `
 
-// Sample session-metadata.json content
+// Sample session metadata, by session id
 export const SAMPLE_SESSION_METADATA = {
   '519f8756-a16e-41ff-99de-9fe599dedae5': {
     name: 'Simple Math Question',

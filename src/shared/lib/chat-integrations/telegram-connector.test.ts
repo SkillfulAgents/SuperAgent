@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { TelegramConnector } from './telegram-connector'
+import { TelegramConnector, isTelegramPhotoRefusal } from './telegram-connector'
 import type { IncomingMessage } from './chat-agent-integration'
 import type { IntegrationResponseEvent } from '../agent-integrations/types'
 
@@ -21,6 +21,8 @@ vi.mock('grammy', () => ({
     start(opts: { onStart?: () => void }): Promise<void> { opts?.onStart?.(); return Promise.resolve() }
     async stop(): Promise<void> {}
   },
+  InputFile: class { constructor(readonly data: Uint8Array, readonly filename: string) {} },
+  GrammyError: class extends Error {},
 }))
 
 // ── Minimal ctx mock ──────────────────────────────────────────────────────────
@@ -312,6 +314,27 @@ describe('startWorking (dumb, no self-heartbeat)', () => {
     const { connector } = makeDmConnector()
     await connector.startWorking('999', 'working')
     await expect(connector.stopWorking('999')).resolves.toBeUndefined()
+  })
+})
+
+describe('TelegramConnector — received mark', () => {
+  it('reacts with eyes on arrival, skips /start, and clears the reaction on disconnect', async () => {
+    const connector = makeConnector()
+    const setMessageReaction = vi.fn().mockResolvedValue(true)
+    ;(connector as any).bot = { api: { setMessageReaction }, stop: vi.fn().mockResolvedValue(undefined) }
+    const acknowledge = (id: string, text: string) => connector.acknowledgeInput({
+      type: 'input', id, externalId: '-100', timestamp: new Date(),
+      payload: { externalMessageId: id, text, chatId: '-100', userId: '7', timestamp: new Date() },
+    })
+
+    await acknowledge('41', '/start')
+    await acknowledge('42', 'hi')
+    await connector.disconnect()
+
+    await vi.waitFor(() => expect(setMessageReaction.mock.calls).toEqual([
+      ['-100', 42, [{ type: 'emoji', emoji: '👀' }]],
+      ['-100', 42, []],
+    ]))
   })
 })
 
@@ -698,5 +721,27 @@ describe('TelegramConnector - unsupported-request session link', () => {
     const sent = JSON.stringify(fake.sent)
     expect(sent).toContain('superagent://agent/demo')
     expect(sent).not.toContain('/sessions/')
+  })
+})
+
+describe('isTelegramPhotoRefusal', () => {
+  it('takes only a refusal of the photo itself, not a chat that cannot be reached', () => {
+    expect(isTelegramPhotoRefusal(400, 'Bad Request: PHOTO_INVALID_DIMENSIONS')).toBe(true)
+    expect(isTelegramPhotoRefusal(400, 'Bad Request: IMAGE_PROCESS_FAILED')).toBe(true)
+    expect(isTelegramPhotoRefusal(413, 'Request Entity Too Large')).toBe(true)
+    expect(isTelegramPhotoRefusal(400, 'Bad Request: chat not found')).toBe(false)
+  })
+})
+
+describe('TelegramConnector.sendFile', () => {
+  it('sends a delivered image as the original file and only a reply image as a photo', async () => {
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' })
+    const sendDocument = vi.fn(async () => ({ message_id: 1 }))
+    const sendPhoto = vi.fn(async () => ({ message_id: 2 }))
+    ;(connector as any).bot = { api: { sendDocument, sendPhoto } }
+    expect(await connector.sendFile('123', Buffer.from('png'), 'chart.png', 'Q3 chart')).toBe('1')
+    expect(await connector.sendFile('123', Buffer.from('png'), 'chart.png', undefined, { asImage: true })).toBe('2')
+    expect(sendDocument).toHaveBeenCalledTimes(1)
+    expect(sendPhoto).toHaveBeenCalledTimes(1)
   })
 })

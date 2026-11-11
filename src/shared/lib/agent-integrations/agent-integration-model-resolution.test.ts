@@ -29,6 +29,11 @@ let mockContainerClient: InstanceType<typeof MockContainerClient>
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('../db', () => ({
   get db() { return testDb },
 }))
@@ -109,6 +114,9 @@ vi.mock('../chat-integrations/telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 

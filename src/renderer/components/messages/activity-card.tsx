@@ -9,6 +9,8 @@ import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
+import { AgentAvatar, type AvatarMotionState } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import type { ApiAgent } from '@shared/lib/types/api'
 import { ActivityOrb, type ActivityOrbState } from './activity-orb'
 
 /**
@@ -48,6 +50,11 @@ export interface ActivityComputerUse {
   app: string
   /** base64 PNG of the app icon; falls back to a generic monitor glyph. */
   iconBase64?: string | null
+  /**
+   * The agent's cursor colour, when cursors are shown: a dot in it ties this
+   * row to the cursor the user sees moving in the app.
+   */
+  cursorColor?: string | null
   revoking?: boolean
   revokeError?: boolean
   onRevoke: () => void
@@ -56,6 +63,8 @@ export interface ActivityComputerUse {
 export interface ActivityCardProps {
   statusText: string
   orbState: ActivityOrbState
+  /** Whose turn this is: its avatar replaces the thought orb when it has one. */
+  agent?: Pick<ApiAgent, 'slug' | 'avatar'> | null
   /** Preformatted elapsed time; omitted before the turn has a start anchor. */
   elapsed?: string | null
   /** Parked on a blocking request: the card detaches from the composer. */
@@ -73,9 +82,18 @@ export interface ActivityCardProps {
   onStopTask?: (taskId: string) => Promise<void>
 }
 
+/** The avatar rolls round its rim as the transcript scrolls. */
+const TRANSCRIPT_SCROLLER = '[data-transcript-scroller]'
+
+/** The avatar has fewer states than the orb: anything but waiting on the user is work. */
+function avatarMotionState(orbState: ActivityOrbState): AvatarMotionState {
+  return orbState === 'waiting' ? 'needs-input' : 'working'
+}
+
 export function ActivityCard({
   statusText,
   orbState,
+  agent,
   elapsed,
   isAwaitingInput = false,
   detached = false,
@@ -146,17 +164,27 @@ export function ActivityCard({
         )}
         data-testid="activity-indicator"
       >
-        {/* Header with the thought orb — its animation is the status cue. The
-            disclosure button is the row's last child rather than positioned over
-            it: items-center then centers it against the orb, and the gap keeps it
+        {/* Header with the agent's avatar (the thought orb when it has none) —
+            its animation is the status cue. The disclosure button is the row's
+            last child rather than positioned over it: items-center then
+            centers it against the avatar, and the gap keeps it
             off the summary, instead of a hand-tuned inset and a matching pr-* on
             the row that have to agree with the button's own size to stay right. */}
         <div
           className="flex min-w-0 items-center gap-2"
           data-testid="activity-indicator-header"
         >
-          <ActivityOrb state={orbState} size={24} />
-          <span className="min-w-0 truncate text-sm font-medium">{statusText}</span>
+          {agent?.avatar
+            ? (
+              <AgentAvatar
+                agent={agent}
+                state={avatarMotionState(orbState)}
+                size={24}
+                rollWithScroll={TRANSCRIPT_SCROLLER}
+              />
+            )
+            : <ActivityOrb state={orbState} size={24} />}
+          <span className="min-w-0 truncate text-sm font-medium text-muted-foreground">{statusText}</span>
           {elapsed && (
             <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{elapsed}</span>
           )}
@@ -467,7 +495,7 @@ function tracerRowStyle(index: number): CSSProperties {
 }
 
 /**
- * The app the turn currently has hold of, as a tree row.
+ * The app the turn is acting in, as a tree row.
  *
  * Deliberately kept at full strength rather than muted like a finished row: the
  * user granted this, it is still in force, and the row is the only place the UI
@@ -492,6 +520,15 @@ function ComputerUseRow({ computerUse, tracerRow }: {
           )}
         </RowMark>
         <span className="truncate">Computer use: {computerUse.app}</span>
+        {computerUse.cursorColor && (
+          <span
+            data-testid="computer-use-cursor-color"
+            className="h-2 w-2 shrink-0 rounded-full ring-1 ring-border"
+            style={{ backgroundColor: computerUse.cursorColor }}
+            title="This agent's cursor"
+            aria-label="This agent's cursor colour"
+          />
+        )}
         {/* Said out loud, not just implied by a red glyph and a tooltip — the
             hold is still in force and the user needs to know the release did
             not take. */}
@@ -508,7 +545,7 @@ function ComputerUseRow({ computerUse, tracerRow }: {
               ? 'text-destructive hover:bg-destructive/10'
               : 'text-muted-foreground hover:bg-muted hover:text-foreground',
           )}
-          title={computerUse.revokeError ? 'Failed to revoke — click to retry' : 'Release app and revoke permission'}
+          title={computerUse.revokeError ? 'Failed to revoke — click to retry' : 'Stop the agent using this app and revoke permission'}
           aria-label={computerUse.revokeError
             ? `Retry releasing ${computerUse.app} and revoking permission`
             : `Release ${computerUse.app} and revoke permission`}

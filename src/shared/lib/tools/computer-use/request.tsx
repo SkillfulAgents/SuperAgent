@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState } from 'react'
-import { Monitor, ShieldAlert, ExternalLink, ChevronDown } from 'lucide-react'
+import { Monitor, ShieldAlert, ExternalLink } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -10,13 +10,20 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@renderer/components/ui/dialog'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
 import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { PERMISSION_LEVEL_LABELS } from '@shared/lib/computer-use/types'
-import { DeclineButton } from '../requests/decline-button'
+import { SYSTEM_TARGETS } from '@shared/lib/computer-use/commands'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
+import { ApprovalActions } from '../requests/approval-actions'
+
+/** How the prompt names a target that is not an app. */
+const SYSTEM_TARGET_PHRASES: Record<string, string> = {
+  [SYSTEM_TARGETS.clipboard]: 'the clipboard',
+  [SYSTEM_TARGETS.screen]: 'the entire screen',
+  [SYSTEM_TARGETS.notifications]: 'your notifications',
+}
 
 interface ComputerUseRequestItemProps {
   toolUseId: string
@@ -34,14 +41,23 @@ type RequestStatus = 'pending' | 'submitting' | 'executed' | 'denied'
 
 const PERMISSION_LABELS: Record<string, string> = PERMISSION_LEVEL_LABELS
 
-function formatParams(params: Record<string, unknown>): string {
+/** An argument as a shell would need it written: quoted when it holds spaces or quotes. */
+function shellWord(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+/** The command as the user would type it: `agent-desktop click @s1:e5`. */
+function formatCommand(method: string, params: Record<string, unknown>): string {
+  if (Array.isArray(params.argv)) {
+    return ['agent-desktop', method, ...params.argv.map((word) => shellWord(String(word)))].join(' ')
+  }
   const parts: string[] = []
   for (const [key, val] of Object.entries(params)) {
     if (val !== undefined && val !== null && val !== '') {
       parts.push(`${key}: ${typeof val === 'string' ? val : JSON.stringify(val)}`)
     }
   }
-  return parts.join(', ')
+  return `${method}(${parts.join(', ')})`
 }
 
 export function ComputerUseRequestItem({
@@ -58,11 +74,10 @@ export function ComputerUseRequestItem({
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [missingPermissions, setMissingPermissions] = useState<{ accessibility: boolean; screen_recording: boolean } | null>(null)
-  const [pendingGrantType, setPendingGrantType] = useState<'once' | 'timed' | 'always' | null>(null)
-  const [allowMenuOpen, setAllowMenuOpen] = useState(false)
-  const paramStr = formatParams(params)
+  const [pendingGrantType, setPendingGrantType] = useState<'timed' | 'always' | null>(null)
+  const commandText = formatCommand(method, params)
 
-  const handleApprove = async (grantType: 'once' | 'timed' | 'always') => {
+  const handleApprove = async (grantType: 'timed' | 'always') => {
     setStatus('submitting')
     setError(null)
 
@@ -157,9 +172,13 @@ export function ComputerUseRequestItem({
 
   const isCompleted = status === 'executed' || status === 'denied'
 
-  const descriptionText = appName
-    ? `Allow the agent to use ${appName}?`
-    : `Allow the agent to ${PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')}?`
+  const levelText = PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')
+  // Only a use_application grant is limited to one app.
+  const appPhrase = appName ? SYSTEM_TARGET_PHRASES[appName] ?? appName : undefined
+  const grantScope = permissionLevel === 'use_application' && appPhrase ? `use ${appPhrase}` : levelText
+  const descriptionText = appPhrase
+    ? `Allow this agent to use ${appPhrase}?`
+    : `Allow this agent to ${levelText}?`
 
   const codeBlock = (
     <div className="pt-4">
@@ -169,7 +188,7 @@ export function ComputerUseRequestItem({
             <span className="mr-2 inline-flex h-6 items-center rounded-control bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
               {PERMISSION_LABELS[permissionLevel] || permissionLevel}
             </span>
-            {method}{paramStr ? `(${paramStr})` : '()'}
+            {commandText}
           </code>
         </pre>
       </div>
@@ -213,64 +232,14 @@ export function ComputerUseRequestItem({
       {codeBlock}
 
       <RequestItemActions>
-        <DeclineButton
-          onDecline={handleDeny}
+        <ApprovalActions
+          testIdPrefix="computer-use"
           disabled={status === 'submitting'}
-          label="Deny"
-          showIcon={false}
-          className="border-border text-foreground hover:bg-muted"
-          data-testid="computer-use-deny-btn"
+          onDeny={handleDeny}
+          allowLabel="Allow 15 min"
+          onAllow={() => handleApprove('timed')}
+          expanded={{ label: 'Always Allow', hint: `This agent can always ${grantScope} without asking`, onSelect: () => handleApprove('always') }}
         />
-
-        <div className="flex items-stretch">
-          <Button
-            onClick={() => handleApprove('timed')}
-            loading={status === 'submitting'}
-            size="xs"
-            className="min-w-28 rounded-r-none border-r-0 bg-orange-600 text-white hover:bg-orange-700"
-            data-testid="computer-use-allow-timed-btn"
-          >
-            Allow 15 min
-          </Button>
-          <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                disabled={status === 'submitting'}
-                size="xs"
-                className="rounded-l-none border-l border-l-orange-500 bg-orange-600 px-1.5 text-white hover:bg-orange-700"
-                data-testid="computer-use-allow-timed-btn-chevron"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-44 p-1">
-              <Button
-                onClick={() => {
-                  setAllowMenuOpen(false)
-                  handleApprove('once')
-                }}
-                variant="ghost"
-                size="xs"
-                className="w-full justify-start text-foreground hover:bg-muted"
-                data-testid="computer-use-allow-once-btn"
-              >
-                Allow Once
-              </Button>
-              <Button
-                onClick={() => {
-                  setAllowMenuOpen(false)
-                  handleApprove('always')
-                }}
-                variant="ghost"
-                size="xs"
-                className="w-full justify-start text-foreground hover:bg-muted"
-                data-testid="computer-use-allow-always-btn"
-              >
-                Always Allow
-              </Button>
-            </PopoverContent>
-          </Popover>
-        </div>
       </RequestItemActions>
 
       <Dialog open={!!missingPermissions} onOpenChange={(open) => { if (!open) setMissingPermissions(null) }}>
