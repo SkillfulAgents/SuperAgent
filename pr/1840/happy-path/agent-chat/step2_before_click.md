@@ -35,35 +35,35 @@
             - button "New agent in Your Agents" [ref=e115] [cursor=pointer]:
               - img [ref=e116]
             - list [ref=e118]:
-              - button "QA-20261106-035255-z0k5 , idle. Never active Options for QA-20261106-035255-z0k5 Open QA-20261106-035255-z0k5 New session with QA-20261106-035255-z0k5" [ref=e119] [cursor=pointer]:
+              - button "QA-20261111-231714-0q9c , idle. Never active Options for QA-20261111-231714-0q9c Open QA-20261111-231714-0q9c New session with QA-20261111-231714-0q9c" [ref=e119] [cursor=pointer]:
                 - generic [ref=e120]:
-                  - link "QA-20261106-035255-z0k5 , idle. Never active" [ref=e121]:
-                    - /url: /agents/qa-20261106-035255-z0k5-m0plpfomna
-                    - generic [ref=e122]: QA-20261106-035255-z0k5
+                  - link "QA-20261111-231714-0q9c , idle. Never active" [ref=e121]:
+                    - /url: /agents/qa-20261111-231714-0q9c-flczstrfne
+                    - generic [ref=e122]: QA-20261111-231714-0q9c
                     - generic [ref=e123]: ", idle."
                     - generic [ref=e124]: Never active
                   - generic:
-                    - button "Options for QA-20261106-035255-z0k5"
+                    - button "Options for QA-20261111-231714-0q9c"
                     - generic:
-                      - link "Open QA-20261106-035255-z0k5":
-                        - /url: /agents/qa-20261106-035255-z0k5-m0plpfomna
-                      - link "New session with QA-20261106-035255-z0k5":
-                        - /url: /agents/qa-20261106-035255-z0k5-m0plpfomna/sessions/new
+                      - link "Open QA-20261111-231714-0q9c":
+                        - /url: /agents/qa-20261111-231714-0q9c-flczstrfne
+                      - link "New session with QA-20261111-231714-0q9c":
+                        - /url: /agents/qa-20261111-231714-0q9c-flczstrfne/sessions/new
                         - img
-              - button "QA-20261106-035254-w94u , idle. Never active Options for QA-20261106-035254-w94u Open QA-20261106-035254-w94u New session with QA-20261106-035254-w94u" [ref=e125] [cursor=pointer]:
+              - button "QA-20261111-231713-z9em , idle. Never active Options for QA-20261111-231713-z9em Open QA-20261111-231713-z9em New session with QA-20261111-231713-z9em" [ref=e125] [cursor=pointer]:
                 - generic [ref=e126]:
-                  - link "QA-20261106-035254-w94u , idle. Never active" [ref=e127]:
-                    - /url: /agents/qa-20261106-035254-w94u-7begtdul36
-                    - generic [ref=e128]: QA-20261106-035254-w94u
+                  - link "QA-20261111-231713-z9em , idle. Never active" [ref=e127]:
+                    - /url: /agents/qa-20261111-231713-z9em-zqeus9jfi4
+                    - generic [ref=e128]: QA-20261111-231713-z9em
                     - generic [ref=e129]: ", idle."
                     - generic [ref=e130]: Never active
                   - generic:
-                    - button "Options for QA-20261106-035254-w94u"
+                    - button "Options for QA-20261111-231713-z9em"
                     - generic:
-                      - link "Open QA-20261106-035254-w94u":
-                        - /url: /agents/qa-20261106-035254-w94u-7begtdul36
-                      - link "New session with QA-20261106-035254-w94u":
-                        - /url: /agents/qa-20261106-035254-w94u-7begtdul36/sessions/new
+                      - link "Open QA-20261111-231713-z9em":
+                        - /url: /agents/qa-20261111-231713-z9em-zqeus9jfi4
+                      - link "New session with QA-20261111-231713-z9em":
+                        - /url: /agents/qa-20261111-231713-z9em-zqeus9jfi4/sessions/new
                         - img
           - status [ref=e131]
           - listitem [ref=e132]:
@@ -74,8 +74,8 @@
         - button "Settings" [ref=e51] [cursor=pointer]:
           - img [ref=e52]
           - generic [ref=e55]: Settings
-        - button "0.6.6-rc.1" [ref=e56] [cursor=pointer]:
-          - generic [ref=e57]: 0.6.6-rc.1
+        - button "0.6.10-rc.1" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]: 0.6.10-rc.1
       - button "Toggle Sidebar" [ref=e58]
     - main [ref=e59]:
       - generic [ref=e61]:
@@ -103,25 +103,25 @@
                 - img [ref=e95]
           - generic [ref=e137]:
             - generic [ref=e140]:
-              - link "Open QA-20261106-035255-z0k5" [ref=e141] [cursor=pointer]:
-                - /url: /agents/qa-20261106-035255-z0k5-m0plpfomna
+              - link "Open QA-20261111-231714-0q9c" [ref=e141] [cursor=pointer]:
+                - /url: /agents/qa-20261111-231714-0q9c-flczstrfne
               - generic [ref=e143]:
                 - generic [ref=e144]: Idle
                 - button "Stop agent" [ref=e145] [cursor=pointer]:
                   - img [ref=e146]
               - generic:
                 - generic:
-                  - generic: QA-20261106-035255-z0k5
+                  - generic: QA-20261111-231714-0q9c
                   - generic: Never active
             - generic [ref=e155]:
-              - link "Open QA-20261106-035254-w94u" [ref=e156] [cursor=pointer]:
-                - /url: /agents/qa-20261106-035254-w94u-7begtdul36
+              - link "Open QA-20261111-231713-z9em" [ref=e156] [cursor=pointer]:
+                - /url: /agents/qa-20261111-231713-z9em-zqeus9jfi4
               - generic [ref=e158]:
                 - generic [ref=e159]: Idle
                 - button "Stop agent" [ref=e160] [cursor=pointer]:
                   - img [ref=e161]
               - generic:
                 - generic:
-                  - generic: QA-20261106-035254-w94u
+                  - generic: QA-20261111-231713-z9em
                   - generic: Never active
   - region "Notifications alt+T"
