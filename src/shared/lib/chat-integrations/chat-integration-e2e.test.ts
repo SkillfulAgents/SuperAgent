@@ -646,8 +646,10 @@ describe('Chat integration E2E', () => {
       if (row.expect) expect(sent.event).toMatchObject(row.expect)
     })
 
-    it("a proxy review from the chat's session reaches chat as the Allow/Deny card", async () => {
+    it("a proxy review from the chat's session reaches chat as the Allow/Deny card, and takes the received mark off", async () => {
+      const removed = vi.spyOn(mockConnector as any, 'removeAcknowledgement')
       const sent = await cardFor('proxy review please scope=session')
+      await waitForCondition(() => removed.mock.calls.some(([chatId]) => chatId === 'chat-1'), 3000)
 
       expect(sent.event.type).toBe('question_request')
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId

@@ -1010,6 +1010,7 @@ export class SlackConnector extends ChatAgentIntegration {
     for (const [chatId, { anchor }] of this.status) {
       background(this.setStatus(chatId, anchor, '').catch(() => {}), { name: 'slack-connector.clear-status' })
     }
+    this.releaseAllAcknowledgements()
     this.status.clear()
     this.openToolGroups.clear()
     this.toolGroupClosedAt.clear()
@@ -1231,6 +1232,16 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel } = this.resolveChannel(chatId)
     await this.app.client.assistant.threads.setStatus({ channel_id: channel, thread_ts: anchor, status })
+  }
+
+  protected async addAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    await this.app.client.reactions.add({ channel: this.resolveChannel(chatId).channel, timestamp: messageId, name: 'eyes' })
+  }
+
+  protected async removeAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    await this.app.client.reactions.remove({ channel: this.resolveChannel(chatId).channel, timestamp: messageId, name: 'eyes' })
   }
 
   // ── User request cards ──────────────────────────────────────────────
