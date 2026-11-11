@@ -12,8 +12,10 @@ Videos: POST /api/v1/services/aigc/video-generation/video-synthesis with the ext
 Speech: POST /api/v1/services/audio/tts/SpeechSynthesizer with {"model":"qwen-audio-3.0-tts-plus","input":{"text":"Hello","voice":"longanhuan_v3.6","format":"mp3","sample_rate":24000}}. The response body is the audio file.
 Save each result under /workspace/media/ with a unique filename and an extension matching its bytes, print only the saved paths, and deliver them with the existing file-delivery tool. Reuse saved files instead of regenerating.`
 const QWEN_EFFORTS: EffortLevel[] = ['high']
-// Text models from Alibaba's Token Plan (Personal Edition) model list. Dated snapshots, `auto` and time-limited previews are left out.
+// Text models from Alibaba's Token Plan (Personal Edition) model list. Dated snapshots and `auto` are left out.
 const QWEN_MODELS: ModelDefinition[] = [
+  // Preview only until 2026-11-25 24:00 (UTC+8); Alibaba retires it after that, so remove this entry then.
+  { id: 'qwen4-max-preview', label: 'Qwen4 Max Preview', family: 'qwen', icon: 'qwen', supportsImageInput: true },
   { id: 'qwen3.8-max', label: 'Qwen3.8 Max', family: 'qwen', icon: 'qwen', supportsImageInput: true, isLatest: true, isDefault: true },
   { id: 'qwen3.8-flash', label: 'Qwen3.8 Flash', family: 'qwen', icon: 'qwen', supportsImageInput: true },
   { id: 'qwen3.7-max', label: 'Qwen3.7 Max', family: 'qwen', icon: 'qwen', supportsImageInput: false },
