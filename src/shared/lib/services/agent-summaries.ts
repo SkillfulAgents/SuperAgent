@@ -112,7 +112,8 @@ export async function readAgentSummaries(slugs: readonly AgentSlug[]): Promise<M
 function parseStored(stored: string): AgentSummary | null {
   try {
     const parsed = agentSummarySchema.safeParse(JSON.parse(stored))
-    return parsed.success ? (parsed.data as AgentSummary) : null
+    // The schema checks the shape; the container and listing types are narrower than it can say.
+    return parsed.success ? (parsed.data as unknown as AgentSummary) : null
   } catch {
     return null
   }
