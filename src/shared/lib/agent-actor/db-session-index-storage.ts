@@ -19,15 +19,15 @@ import type { AgentSlug } from './types'
 type SessionIndexDb = Pick<AppDatabase, 'select' | 'insert' | 'update' | 'delete'>
 type Row = typeof agentSessions.$inferSelect
 
-/** Rows per statement: Cloudflare D1 binds at most 100 parameters a query, so 16 rows of six columns (96). */
-const ROWS_PER_STATEMENT = 16
+/** Rows per statement: well inside SQLite's bound-parameter limit at six columns a row. */
+const DEFAULT_ROWS_PER_STATEMENT = 500
 
 /** A lost compare-and-set means another writer got in between; this many in a row means something else is wrong. */
 const MAX_UPDATE_ATTEMPTS = 20
 
-function chunks<T>(items: readonly T[]): T[][] {
+function chunks<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = []
-  for (let i = 0; i < items.length; i += ROWS_PER_STATEMENT) out.push(items.slice(i, i + ROWS_PER_STATEMENT))
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out
 }
 
@@ -59,7 +59,15 @@ function entryOf(row: Row): SessionIndexEntry {
   }
 }
 
-export function createDbSessionIndexStorage(slug: AgentSlug, given?: SessionIndexDb): SessionIndexStorage {
+export interface DbSessionIndexStorageOptions {
+  /** The handle to run on; unset, the app's own. */
+  db?: SessionIndexDb
+  /** Rows a fill or delete statement carries at most, for a driver with a lower bound-parameter limit. */
+  rowsPerStatement?: number
+}
+
+export function createDbSessionIndexStorage(slug: AgentSlug, options: DbSessionIndexStorageOptions = {}): SessionIndexStorage {
+  const { db: given, rowsPerStatement = DEFAULT_ROWS_PER_STATEMENT } = options
   // The app's handle is looked up per call: an actor outlives one open of the database.
   const database = (): SessionIndexDb => given ?? db
   // Built per call too: constructing a storage touches nothing.
@@ -110,7 +118,7 @@ export function createDbSessionIndexStorage(slug: AgentSlug, given?: SessionInde
     },
 
     fill: async (entries) => {
-      for (const chunk of chunks(entries)) {
+      for (const chunk of chunks(entries, rowsPerStatement)) {
         await database()
           .insert(agentSessions)
           .values(chunk.map(({ sessionId, meta, transcript }) => ({
@@ -154,7 +162,7 @@ export function createDbSessionIndexStorage(slug: AgentSlug, given?: SessionInde
     },
 
     delete: async (sessionIds) => {
-      for (const chunk of chunks(sessionIds)) {
+      for (const chunk of chunks(sessionIds, rowsPerStatement)) {
         await database().delete(agentSessions).where(and(ofAgent(), inArray(agentSessions.sessionId, chunk))).run()
       }
     },

@@ -7,9 +7,6 @@ import type { AppDatabase } from '@shared/lib/db'
 import { createDbSessionIndexStorage, dropDbSessionIndex } from './db-session-index-storage'
 import { describeSessionIndexStorageContract } from './testing/session-index-storage-contract'
 
-/** Cloudflare D1 binds at most 100 parameters a query. */
-const D1_MAX_BOUND_PARAMETERS = 100
-
 /** The app's handle, recording how many parameters each write it runs binds. */
 function countingBoundParameters(db: AppDatabase): { db: AppDatabase; counts: number[] } {
   const counts: number[] = []
@@ -58,7 +55,7 @@ describe('DbSessionIndexStorage', () => {
     // A data migration's handle: not the one the app publishes.
     const migrating = await createTestDatabase()
     try {
-      const storage = createDbSessionIndexStorage('agent-one', migrating.db)
+      const storage = createDbSessionIndexStorage('agent-one', { db: migrating.db })
       await storage.fill([{ sessionId: 's1', meta: { name: 'First' }, transcript: null }])
       await storage.update('s1', (current) => ({ ...current?.meta, starred: true }))
       await storage.touch(new Map([['s1', 5]]))
@@ -101,9 +98,9 @@ describe('DbSessionIndexStorage', () => {
     expect(await database.db.select().from(agentSessions).where(eq(agentSessions.agentSlug, 'agent-two')).all()).toHaveLength(1)
   })
 
-  it('keeps every statement within the bound parameters Cloudflare D1 allows', async () => {
+  it('puts at most the rows per statement it is given in a fill or delete statement', async () => {
     const { db, counts } = countingBoundParameters(database.db)
-    const storage = createDbSessionIndexStorage('agent-one', db)
+    const storage = createDbSessionIndexStorage('agent-one', { db, rowsPerStatement: 16 })
     const sessionIds = Array.from({ length: 120 }, (_, i) => `s${i}`)
 
     await storage.fill(sessionIds.map((sessionId) => ({ sessionId, meta: { name: sessionId }, transcript: { mtimeMs: 2, birthtimeMs: 1, size: 3 } })))
@@ -111,7 +108,17 @@ describe('DbSessionIndexStorage', () => {
     await storage.delete(sessionIds)
     expect(await storage.list()).toEqual([])
 
-    expect(counts.length).toBeGreaterThan(0)
-    expect(Math.max(...counts)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS)
+    // 8 fill and 8 delete statements; a fill row binds six parameters.
+    expect(counts).toHaveLength(16)
+    expect(Math.max(...counts)).toBeLessThanOrEqual(16 * 6)
+  })
+
+  it('fills in one statement by default', async () => {
+    const { db, counts } = countingBoundParameters(database.db)
+    const storage = createDbSessionIndexStorage('agent-one', { db })
+
+    await storage.fill(Array.from({ length: 120 }, (_, i) => ({ sessionId: `s${i}`, meta: null, transcript: null })))
+
+    expect(counts).toHaveLength(1)
   })
 })
