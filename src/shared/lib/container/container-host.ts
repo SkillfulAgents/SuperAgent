@@ -53,8 +53,8 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
   10
 ) * 1000
 
-/** Runner CLI calls (`inspect`, `stats`) at once, each its own process: enough to overlap them without crowding the VM. */
-const RUNNER_CLI_CONCURRENCY = 4
+/** Agents the status sync reads at once, one runner call each: enough to overlap them without crowding the VM. */
+const STATUS_SYNC_CONCURRENCY = 4
 
 export class ContainerHost {
   private runtimes: Map<string, ContainerRuntime> = new Map()
@@ -311,7 +311,7 @@ export class ContainerHost {
         }
       }
 
-      const limit = pLimit(RUNNER_CLI_CONCURRENCY)
+      const limit = pLimit(STATUS_SYNC_CONCURRENCY)
       await Promise.all(runtimes.map((runtime) => limit(async () => {
         // Skip agents currently being stopped
         if (runtime.isStopping()) return
@@ -390,14 +390,13 @@ export class ContainerHost {
     const runningIds = this.getRunningAgentIds()
     if (runningIds.length === 0) return
 
-    const limit = pLimit(RUNNER_CLI_CONCURRENCY)
-    await Promise.all(runningIds.map((slug) => limit(async () => {
+    for (const slug of runningIds) {
       try {
         await this.runtime(slug).runHealthCheck()
       } catch (error) {
         console.error(`[ContainerHost] Health check failed for ${slug}:`, error)
       }
-    })))
+    }
   }
 
   // Stop all containers (with per-container timeout to prevent blocking shutdown)

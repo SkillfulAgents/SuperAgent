@@ -2238,13 +2238,12 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const actor = agentRegistry.get(slug)
 
-    // One read of the settings for this session's start: limits, custom env,
-    // tab limit, models and the runtime below all come from it. Read while the
-    // container starts; the workspace files wait for it, since its boot
-    // repairs their permissions.
-    const [, settings] = await Promise.all([actor.container.start(), getSettings()])
+    await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(slug)
-    const launch = await resolveSessionDefaults(settings, slug)
+
+    // One read of the settings for this session's start: limits, custom env,
+    // tab limit, models and the runtime below all come from it.
+    const launch = await resolveSessionDefaults(await getSettings(), slug)
     const { agentLimits, customEnvVars, maxBrowserTabs, models } = launch
 
     // Server-generated uuid for the initial message (never client-supplied —

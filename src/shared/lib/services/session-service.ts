@@ -1773,22 +1773,20 @@ export async function deleteSessionsBatch(
 ): Promise<string[]> {
   if (sessionIds.length === 0) return []
 
-  // Sessions are deleted side by side; each one's transcript goes before its directory.
-  const limit = pLimit(8)
-  const results = await Promise.all(sessionIds.map((sessionId) => limit(async () => {
+  const deleted: string[] = []
+
+  for (const sessionId of sessionIds) {
     try {
       // An absent transcript is a no-op for the store, and counts as deleted:
       // its metadata entry is dangling and goes with the batch.
       await store.files.delete(transcriptPath(store, sessionId))
       await deleteSessionDirectory(store, sessionId)
-      return sessionId
+      deleted.push(sessionId)
     } catch (error: unknown) {
       // Keep this session's index entry: its transcript is still there.
       console.error(`Failed to delete session file ${sessionId}:`, error)
-      return null
     }
-  })))
-  const deleted = results.filter((sessionId): sessionId is string => sessionId !== null)
+  }
 
   // Only the sessions whose JSONL was actually removed leave the index.
   await store.index.delete(deleted)
