@@ -31,7 +31,6 @@ export const connectionConfigSchema = z.object({
     .object({
       anthropicApiKey: z.string().optional(),
       claudeSubscriptionToken: z.string().trim().optional(),
-      // Dedicated key of a plan-key subscription (Alibaba Token Plan, Volcengine Agent Plan).
       planApiKey: z.string().trim().optional(),
       openrouterApiKey: z.string().optional(),
       genericApiKey: z.string().optional(),

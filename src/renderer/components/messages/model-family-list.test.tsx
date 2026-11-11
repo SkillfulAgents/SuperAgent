@@ -15,6 +15,9 @@ import {
 } from './model-family-list'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
+import { QwenSubscriptionLlmProvider } from '@shared/lib/llm-provider/qwen-subscription-provider'
+
+vi.mock('@shared/lib/config/settings', () => ({ getSettings: async () => ({}) }))
 
 const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STD: EffortLevel[] = ['low', 'medium', 'high']
@@ -153,6 +156,30 @@ describe('findCatalogModel', () => {
 })
 
 describe('ModelFamilyList', () => {
+  it('shows the Qwen Token Plan generations newest-first and Max before other variants', async () => {
+    const catalog = new QwenSubscriptionLlmProvider().getBuiltinCatalog()
+    const onPick = vi.fn()
+    const { container } = render(<ModelFamilyList catalog={catalog} value="qwen4-max-preview" onPick={onPick} />)
+    const rows = testIds(container).filter(id => [
+      'model-pinned-qwen4-max-preview', 'model-family-qwen3.8',
+      'model-family-qwen3.7', 'model-pinned-qwen3.6-flash',
+    ].includes(id))
+    expect(rows).toEqual([
+      'model-pinned-qwen4-max-preview', 'model-family-qwen3.8',
+      'model-family-qwen3.7', 'model-pinned-qwen3.6-flash',
+    ])
+    expect(testIds(container).filter(id => /^model-pinned-qwen3\.[78]-/.test(id))).toEqual([
+      'model-pinned-qwen3.8-max', 'model-pinned-qwen3.8-flash',
+      'model-pinned-qwen3.7-max', 'model-pinned-qwen3.7-plus',
+    ])
+    expect(vendorDefault(catalog, 'qwen')?.id).toBe('qwen3.8-max')
+    expect(findCatalogModel('qwen', catalog)?.id).toBe('qwen3.8-max')
+    await userEvent.click(screen.getByTestId('model-family-qwen3.7'))
+    expect(onPick).toHaveBeenLastCalledWith('qwen3.7-max')
+    await userEvent.click(screen.getByTestId('model-pinned-qwen4-max-preview'))
+    expect(onPick).toHaveBeenLastCalledWith('qwen4-max-preview')
+  })
+
   it('collapses a lineage family to one row with version pin chips, newest-first', async () => {
     const onPick = vi.fn()
     const user = userEvent.setup()

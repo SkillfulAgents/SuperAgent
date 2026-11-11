@@ -6,7 +6,6 @@ export const LLM_PROVIDER_IDS = [
   'kimi-subscription',
   'minimax-subscription',
   'qwen-subscription',
-  'doubao-subscription',
   'openrouter',
   'bedrock',
   'platform',

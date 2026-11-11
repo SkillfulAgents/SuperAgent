@@ -130,7 +130,6 @@ function modelProviderIcon(model: string): string | undefined {
   if (id.startsWith('moonshot/') || id.includes('kimi')) return 'kimi'
   if (id.includes('minimax')) return 'minimax'
   if (id.includes('qwen')) return 'qwen'
-  if (id.includes('doubao')) return 'doubao'
   if (id.startsWith('z-ai/') || id.startsWith('zai/') || id.includes('glm')) return 'zai'
   if (id.startsWith('meta/') || id.includes('llama')) return 'meta'
   if (id.startsWith('google/') || id.includes('gemini')) return 'gemini'
