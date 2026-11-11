@@ -143,8 +143,7 @@ import {
   type TreeOperation,
 } from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useHasDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
@@ -1193,21 +1192,11 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
   const { data: agents, isLoading, error } = useListedAgents()
-  // Whether to offer Explore is two round trips deep — skillsets, and only then
-  // the discoverable agents they contain — so the item arrives after the rest of
-  // the nav and pushes it down on the way in. Remember the last answer for this
-  // Superagent and show that until the real one lands; `null` means "still
-  // asking", which is not the same as "no" and must not render as one.
-  const { data: skillsets } = useSkillsets()
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const marketplaceAnswer =
-    skillsets === undefined
-      ? null
-      : skillsets.length === 0
-        ? false // no skillsets, so the discoverable query never runs at all
-        : discoverableAgents === undefined
-          ? null
-          : discoverableAgents.length > 0
+  // Whether to offer Explore waits on the skillsets, so the item arrives after
+  // the rest of the nav and pushes it down on the way in. Remember the last
+  // answer for this Superagent and show that until the real one lands; `null`
+  // means "still asking", which is not the same as "no" and must not render as one.
+  const marketplaceAnswer = useHasDiscoverableAgents()
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const todoBoardEnabled = useExperiment('todo-board')
   const teamBrainEnabled = useExperiment('team-brain')

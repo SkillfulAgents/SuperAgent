@@ -51,7 +51,9 @@ export function useUnreadNotificationCount() {
       if (!res.ok) throw new Error('Failed to fetch unread count')
       return notificationCountsSchema.parse(await res.json())
     },
-    refetchInterval: 10000, // Poll more frequently for badge
+    // The notifications stream refreshes the counts as they change (os_notification,
+    // notifications_changed); the poll only catches an event that stream missed.
+    refetchInterval: 60_000,
     meta: { refetchWhenHidden: true },
   })
 }
