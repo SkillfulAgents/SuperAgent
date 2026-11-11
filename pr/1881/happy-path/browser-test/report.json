@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent successfully executed browser commands, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response in the UI.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with the sidebar showing available agents.",
+    "Step 2: Clicked on the \"QA-20261111-230750-6rlz\" agent in the sidebar — Successfully navigated to the agent's page, displaying the chat interface with input field and agent settings panel.",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in the textbox and sent by clicking the Send message button. Page URL changed to the session URL.",
+    "Step 4: Waited up to 3 minutes for response — Agent completed work in 4 seconds using 3 tool calls (browser_open, browser_navigate, browser_close). Response successfully appeared in the messages region before the 180-second timeout.",
+    "Step 5: Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: 'The page title is \"Example Domain\". The page at https://example.com loaded normally, and I closed the browser afterwards.' Screenshot saved showing the complete conversation and response. Agent status changed from \"working\" to \"idle\" indicating successful completion."
+  ],
+  "bugs": [],
+  "durationMs": 97080,
+  "sessionId": "db5549bf-0fb2-4195-a338-4620f682a0c3",
+  "cost": {
+    "inputTokens": 300,
+    "outputTokens": 7835,
+    "cacheCreationTokens": 58918,
+    "cacheReadTokens": 777801,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.190903
+  }
+}
