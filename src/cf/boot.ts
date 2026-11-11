@@ -193,6 +193,9 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
   // Through the agent's object, which knows whether its container runs and answers asleep when it does not:
   // the container status this isolate caches is only ever set in that object.
   const files = createCloudflareFileOps(async (path, init) => {
+    // Asleep in its own object: the saved workspace answers, and no container request is built (its client reads the settings).
+    const own = servingAgentObject(slug)
+    if (own && !(await own.agentRunning())) return null
     // The container's API takes the agent's host token, as the container client sends it.
     const auth = await (await containerHost.runtime(slug).getClient()).getHostAuthHeaders()
     const headers = new Headers(init?.headers)
