@@ -238,7 +238,7 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents } from '@shared/lib/services/session-unread-service'
 import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
@@ -787,14 +787,17 @@ async function getVisibleSessionExpansion(
  * agent — the list route hydrates every agent on every poll. Needs only the
  * slugs, so a caller can start it before it has the agents.
  */
-function readUnreadProjection(slugs: string[], userId: string) {
-  return Promise.all([
-    getUnreadNotificationsByAgents(slugs, userId),
+async function readUnreadProjection(slugs: string[], userId: string) {
+  const [previewsByAgent, markedUnreadByAgent, mentionsByAgent] = await Promise.all([
+    getUnreadNotificationPreviewsByAgents(slugs, userId),
     getSessionIdsMarkedUnreadByAgents(slugs, userId),
     // Only auth mode has people to mention.
     isAuthMode() ? getUnreadMentionsByAgents(slugs, userId) : new Map<string, Set<string>>(),
-    getUnreadNotificationPreviewsByAgents(slugs, userId),
   ])
+  // The previews are the unread rows themselves, so their sessions are the unread sessions: no second query.
+  const unreadByAgent = new Map<string, Set<string>>()
+  for (const [slug, previews] of previewsByAgent) unreadByAgent.set(slug, new Set(previews.map((preview) => preview.sessionId)))
+  return [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] as const
 }
 
 /**
@@ -1435,16 +1438,22 @@ agents.get('/', async (c) => {
     // admins for them to appear in the sidebar. This prevents admins from
     // seeing every agent in large deployments.
     let agentList: ApiAgent[]
+    let unreadProjection: UnreadProjection | undefined
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
       const rows = await db
         .select({ agentSlug: agentAcl.agentSlug })
         .from(agentAcl)
         .where(eq(agentAcl.userId, userId))
+      const slugs = rows.map((r) => r.agentSlug)
       // One catalog query for the visible slugs, newest first like the
       // non-auth listing, so a freshly created agent lands at the top of the
-      // sidebar (the client's applyAgentOrder floats new agents up).
-      agentList = await listAgentsWithStatus({ slugs: rows.map((r) => r.agentSlug) })
+      // sidebar (the client's applyAgentOrder floats new agents up). The
+      // unread projection needs only the slugs, so it runs beside it.
+      ;[agentList, unreadProjection] = await Promise.all([
+        listAgentsWithStatus({ slugs }),
+        readUnreadProjection(slugs, userId),
+      ])
     } else {
       agentList = await listAgentsWithStatus()
     }
@@ -1454,6 +1463,7 @@ agents.get('/', async (c) => {
         parsedQuery.data.includeLatestVisibleSessionTail === true,
       signal: c.req.raw.signal,
       userId: getCurrentUserId(c),
+      unreadProjection,
     }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)

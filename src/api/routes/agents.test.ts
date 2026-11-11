@@ -664,7 +664,6 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
   getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
-  getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationPreviewsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
   deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
@@ -927,7 +926,15 @@ function mockSessionSummary(summary: { sessionIds: string[]; sessionCount: numbe
     metadata: (await readSessionMetadata(store)) ?? {},
   }))
 }
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents, type UnreadNotificationPreview } from '@shared/lib/services/notification-service'
+
+/** The unread rows of these sessions, as the list route reads them: one preview a session. */
+function unreadPreviews(sessionsByAgent: Map<string, Set<string>>): Map<string, UnreadNotificationPreview[]> {
+  return new Map([...sessionsByAgent].map(([slug, sessionIds]) => [
+    slug,
+    [...sessionIds].map((sessionId) => ({ id: `notification-${sessionId}`, sessionId, type: 'session_complete' as const, text: '' })),
+  ]))
+}
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
@@ -7807,7 +7814,7 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(listSessions).mockResolvedValue([])
     vi.mocked(readSessionMetadata).mockResolvedValue({})
     vi.mocked(sessionExists).mockResolvedValue(true)
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map())
     mockLiveSessions.isActive.mockReturnValue(false)
     mockLiveSessions.isAwaitingInput.mockReturnValue(false)
@@ -7843,9 +7850,9 @@ describe('GET /api/agents (enriched summary)', () => {
   it('returns the latest tail and excludes attention on that session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessions).mockResolvedValue([sessionInfo('settled-visible')])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['settled-visible'])],
-    ]))
+    ])))
     mockLiveSessions.isActive.mockImplementation(
       (_agentSlug: string, id: string) => id === 'settled-visible',
     )
@@ -7946,9 +7953,9 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionInfo('latest-visible'),
       sessionInfo('older-visible'),
     ])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['older-visible'])],
-    ]))
+    ])))
     mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 'older-visible',
     )
@@ -7983,9 +7990,9 @@ describe('GET /api/agents (enriched summary)', () => {
         isScheduledExecution: true,
       },
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['hidden-scheduled'])],
-    ]))
+    ])))
     mockLiveSessions.isAwaitingInput.mockImplementation(
       (_agentSlug: string, id: string) => id === 'hidden-scheduled',
     )
@@ -8025,9 +8032,9 @@ describe('GET /api/agents (enriched summary)', () => {
         promotedToInteractive: true,
       },
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['promoted-scheduled'])],
-    ]))
+    ])))
     expect(userInputRequestManager.register({
       id: 'promoted-request',
       kind: 'question',
@@ -8059,9 +8066,9 @@ describe('GET /api/agents (enriched summary)', () => {
   it('counts unattributed unread and agent-scoped pending attention as outside', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
       ['agent-1', new Set(['unknown-session'])],
-    ]))
+    ])))
     expect(userInputRequestManager.register({
       id: 'agent-scoped-review',
       kind: 'proxy_review',
@@ -8093,7 +8100,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionInfo('latest-visible'),
       sessionInfo('older-marked'),
     ])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['older-marked'])]]),
     )
@@ -8114,7 +8121,7 @@ describe('GET /api/agents (enriched summary)', () => {
   it('carries a marked-unread flag on the latest visible session tail', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['latest-visible'])]]),
     )
@@ -8140,7 +8147,7 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'hidden-scheduled': { isScheduledExecution: true },
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['hidden-scheduled'])]]),
     )
@@ -8508,7 +8515,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([['agent-1', new Set(['sess-1'])]])))
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -8525,7 +8532,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([['agent-1', new Set(['sess-1'])]])))
     vi.mocked(getUnreadMentionsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
 
     const res = await getReq(app, '/api/agents')
@@ -8548,7 +8555,6 @@ describe('GET /api/agents (enriched summary)', () => {
         sessionCount: 2,
         lastActivityAt: new Date(),
       })
-      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting'])]]))
       vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map([['agent-1', previews]]))
     })
 
@@ -8566,7 +8572,6 @@ describe('GET /api/agents (enriched summary)', () => {
     })
 
     it('is absent with nothing unread', async () => {
-      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
       vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
       const body = await (await getReq(app, '/api/agents')).json()
       expect(body[0]).not.toHaveProperty('notificationPreview')
@@ -8588,9 +8593,9 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 3,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(
       new Map([['agent-1', new Set(['sess-chat', 'sess-cron', 'sess-x-agent'])]]),
-    )
+    ))
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-chat': { isChatIntegrationSession: true },
       'sess-cron': { isScheduledExecution: true },
@@ -8610,7 +8615,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-cron'])]]))
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([['agent-1', new Set(['sess-cron'])]])))
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-cron': { isScheduledExecution: true, promotedToInteractive: true },
     })
@@ -8628,7 +8633,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
       new Map([['agent-1', new Set(['sess-1'])]]),
     )
@@ -8649,7 +8654,7 @@ describe('GET /api/agents (enriched summary)', () => {
       sessionCount: 1,
       lastActivityAt: new Date(),
     })
-    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map()))
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-cron': { isScheduledExecution: true },
     })
