@@ -34,12 +34,14 @@ import {
   type OutgoingMessage,
   type SystemPromptContext,
   type ToolOutcome,
+  type SendFileOptions,
 } from './chat-agent-integration'
+import { NoImageError } from './chat-visuals'
 import { buildSessionContextPrompt } from './chat-session-context'
 import { SLACK_AGENT_INSTRUCTIONS } from './definitions'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
-import { isSlackBlocksRejection, isUnrecoverableSlackError } from './slack-error'
+import { isSlackBlocksRejection, isSlackFileNotReady, isUnrecoverableSlackError } from './slack-error'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -517,6 +519,10 @@ interface SlackInstallationState {
 
 const installations = new Map<string, SlackInstallationState>()
 const PENDING_QUESTIONS_TTL_MS = 24 * 60 * 60 * 1000
+// Slack processes an uploaded image for a few seconds before a block can show it.
+const IMAGE_READY_MS = 10_000
+const IMAGE_RETRY_MS = 500
+const MAX_ALT_TEXT_LENGTH = 2000
 const MAX_HANDLED_REQUESTS = 1000
 
 /** The installation's state; a connector without one keeps its own. */
@@ -1064,8 +1070,9 @@ export class SlackConnector extends ChatAgentIntegration {
     return lastTs
   }
 
-  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: SendFileOptions): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
+    if (options?.asImage) return this.postImage(chatId, fileData, filename, options)
 
     const { channel, threadTs } = this.resolveChannel(chatId)
     const result = await this.app.client.filesUploadV2({
@@ -1081,6 +1088,37 @@ export class SlackConnector extends ChatAgentIntegration {
     // filesUploadV2 returns files array; extract the message ts if available
     const file = (result as any).files?.[0]
     return file?.shares?.public?.[channel]?.[0]?.ts || file?.shares?.private?.[channel]?.[0]?.ts || ''
+  }
+
+  /**
+   * An image goes up unshared, then posts as an image block: a shared upload
+   * lands after text posted later, so it would break the reply's order.
+   */
+  private async postImage(chatId: string, fileData: Buffer, filename: string, { altText, alsoSendToChannel = false, deadline: sendDeadline = Infinity }: SendFileOptions): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    const upload = await this.app.client.filesUploadV2({ file: fileData, filename })
+    const id = upload.files[0]?.files?.[0]?.id
+    if (!id) throw new Error('Slack returned no file id for the upload')
+    const block: SlackTypes.ImageBlock = { type: 'image', slack_file: { id }, alt_text: (altText || filename).slice(0, MAX_ALT_TEXT_LENGTH) }
+    const deadline = Math.min(Date.now() + IMAGE_READY_MS, sendDeadline)
+    for (;;) {
+      try {
+        const result = await this.app.client.chat.postMessage(inThread({ channel, text: filename, blocks: [block] }, threadTs, alsoSendToChannel))
+        this.posted(chatId)
+        return result.ts || ''
+      } catch (err: unknown) {
+        if (!isSlackFileNotReady(err) || Date.now() >= deadline) {
+          // Slack refused the block, so the file was never shared and would only sit in the bot's files.
+          // A lost response may have posted it, so anything else keeps the file.
+          if (isSlackBlocksRejection(err)) await this.app.client.files.delete({ file: id }).catch(() => {})
+          // The send ran out of time, not Slack: expected, so the image goes out as its source unreported.
+          if (isSlackFileNotReady(err) && Date.now() >= sendDeadline) throw new NoImageError('Out of time while Slack processed the image')
+          throw err
+        }
+        await new Promise(resolve => setTimeout(resolve, IMAGE_RETRY_MS))
+      }
+    }
   }
 
   async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
@@ -1135,6 +1173,12 @@ export class SlackConnector extends ChatAgentIntegration {
     }
 
     this.posted(chatId)
+  }
+
+  async retireStreamingMessage(chatId: string, messageId: string): Promise<void> {
+    if (!this.app) return
+    this.convertedMessages.delete(messageId)
+    await this.app.client.chat.delete({ channel: this.resolveChannel(chatId).channel, ts: messageId })
   }
 
   /** Post standard markdown, or `converted` chunks of today's text when Slack refuses its blocks. Returns the last ts. */

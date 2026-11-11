@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, STREAM_FIRST_POST_CHARS, STREAM_UPDATE_MS, type ManagedConnector } from './chat-delivery'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, deliverMarkdown, UndeliveredMessageError, STREAM_FIRST_POST_CHARS, STREAM_UPDATE_MS, type ManagedConnector } from './chat-delivery'
 import { MockChatAgentIntegration } from './mock-connector'
 import { NO_REPLY_TOKEN } from './chat-session-context'
 import { createdEvent } from './user-request-fixtures'
@@ -1275,6 +1275,199 @@ describe('deliver_file delivery', () => {
     expect(mock.sentFiles.length).toBe(0)
     expect(mock.sentMessages.length).toBe(1)
     expect(mock.sentMessages[0].message.text).toContain('not-on-host.txt')
+  })
+})
+
+// ── Visuals in replies ────────────────────────────────────────────────────
+
+describe('workspace images in a reply', () => {
+  const IMAGE = '![chart](/workspace/chart.png)'
+  let managed: ManagedConnector
+  let workspaceDir: string
+  let prevDataDir: string | undefined
+
+  beforeEach(async () => {
+    const os = await import('os')
+    const fs = await import('fs')
+    const path = await import('path')
+    prevDataDir = process.env.SUPERAGENT_DATA_DIR
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-visuals-'))
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+    managed = createManagedConnector()
+    workspaceDir = path.join(dataDir, 'agents', managed.integration.agentSlug, 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
+  })
+
+  const writeImage = async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    fs.writeFileSync(path.join(workspaceDir, 'chart.png'), 'png-bytes')
+  }
+
+  it('sends text, the image, then text, cutting when the image settles', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const sendMessage = vi.spyOn(mock, 'sendMessage')
+    const sendFile = vi.spyOn(mock, 'sendFile')
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: `Before.\n\n${IMAGE}\n\n` })
+    expect(sendFile).not.toHaveBeenCalled()
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'After.' })
+    // Drawn mid-stream, before anything ends the turn.
+    expect(sendFile).toHaveBeenCalledTimes(1)
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['Before.\n\n', '\n\nAfter.'])
+    expect(mock.sentFiles.map((f) => f.filename)).toEqual(['chart.png'])
+    const [before, after] = sendMessage.mock.invocationCallOrder
+    expect(sendFile.mock.invocationCallOrder[0]).toBeGreaterThan(before)
+    expect(sendFile.mock.invocationCallOrder[0]).toBeLessThan(after)
+  })
+
+  it('keeps the draft and finalizes it to the source when the image does not go out', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const retire = vi.spyOn(mock, 'retireStreamingMessage')
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('upload failed'))
+    managed.streamingState.accumulatedText = IMAGE
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await finalizeStreaming(managed)
+
+    expect(retire).not.toHaveBeenCalled()
+    expect(mock.finalizedMessages.map((m) => [m.messageId, m.finalText])).toEqual([['draft-1', IMAGE]])
+  })
+
+  it('sends a channel-wide reply\'s image to the channel too, with its alt text', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `Before.\n\n${IMAGE}\n\nAfter.`, { alsoSendToChannel: true })
+
+    expect(mock.sentFiles.map((f) => f.options)).toEqual([{ asImage: true, alsoSendToChannel: true, altText: 'chart' }])
+    expect(mock.sentMessages.map((m) => m.message.alsoSendToChannel)).toEqual([true, true])
+  })
+
+  it('sends the rest as one text, visuals as their source, once the send\'s time is spent', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const text = `Before.\n\n${IMAGE}\n\nAfter.`
+
+    await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, text, { deadline: Date.now() })
+
+    expect(mock.sentFiles).toEqual([])
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual([text])
+  })
+
+  it('names what did not arrive when a proactive send fails after its first part', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+    const send = mock.sendMessage.bind(mock)
+    let calls = 0
+    vi.spyOn(mock, 'sendMessage').mockImplementation(async (chatId, message) => {
+      if (calls++ === 0) return send(chatId, message)
+      throw new Error('chat down')
+    })
+
+    const { undelivered, error } = await deliverMarkdown(mock, managed.integration.agentSlug, managed.chatId, `Before.\n\n${IMAGE}\n\nAfter.`, {})
+    const undeliveredError = new UndeliveredMessageError(undelivered, error)
+
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['Before.\n\n'])
+    expect(undeliveredError.undeliveredText).toBe(`${IMAGE}\n\nAfter.`)
+    // Errors are reported, so the agent's text stays out of the message, and the chat's own error is the cause.
+    expect(undeliveredError.message).not.toContain('After.')
+    expect(undeliveredError.cause).toEqual(new Error('chat down'))
+  })
+
+  it('keeps the draft for the retry when nothing of the reply went out', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+    vi.spyOn(mock, 'finalizeStreamingMessage').mockRejectedValue(new Error('chat down'))
+    vi.spyOn(mock, 'sendMessage').mockRejectedValue(new Error('chat down'))
+    // The blank line a reply resumes with after an earlier visual: skipped, so the draft is still unused.
+    managed.streamingState.accumulatedText = `\n\n${IMAGE}`
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await expect(finalizeStreaming(managed)).rejects.toThrow('chat down')
+
+    expect(managed.streamingState.currentMessageId).toBe('draft-1')
+  })
+
+  it('still finalizes the draft of a reply that is only whitespace', async () => {
+    managed.streamingState.accumulatedText = '  \n'
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await finalizeStreaming(managed)
+
+    expect(getMock(managed).finalizedMessages.map((m) => m.messageId)).toEqual(['draft-1'])
+  })
+
+  it('does not edit a draft whose text was delivered when the image after it failed', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+    vi.spyOn(mock, 'sendMessage').mockRejectedValue(new Error('chat down'))
+    const update = vi.spyOn(mock, 'sendStreamingUpdate')
+    managed.streamingState.accumulatedText = `Before.\n\n${IMAGE}`
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await expect(finalizeStreaming(managed)).rejects.toThrow('chat down')
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS) })
+
+    expect(mock.finalizedMessages.map((m) => m.messageId)).toEqual(['draft-1'])
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update.mock.calls[0][2]).toBeUndefined()
+  })
+
+  it('retires the draft when the reply opens with an image', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const retire = vi.spyOn(mock, 'retireStreamingMessage')
+    const sendFile = vi.spyOn(mock, 'sendFile')
+    managed.streamingState.accumulatedText = `${IMAGE}\n\nAfter.`
+    managed.streamingState.currentMessageId = 'draft-1'
+
+    await finalizeStreaming(managed)
+
+    expect(retire).toHaveBeenCalledWith('chat-123', 'draft-1')
+    // Retired only once the image is out, so a failed upload still has the draft to fall back on.
+    expect(retire.mock.invocationCallOrder[0]).toBeGreaterThan(sendFile.mock.invocationCallOrder[0])
+    expect(mock.finalizedMessages).toHaveLength(0)
+    expect(mock.sentFiles).toHaveLength(1)
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['\n\nAfter.'])
+  })
+
+  it('puts what was not delivered back in front of the text streamed after it, and delivers it once at idle', async () => {
+    await writeImage()
+    const mock = getMock(managed)
+    const sendMessage = vi.spyOn(mock, 'sendMessage').mockResolvedValueOnce('m1').mockRejectedValue(new Error('chat down'))
+    const sendFile = vi.spyOn(mock, 'sendFile').mockRejectedValue(new Error('chat down'))
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: `Before.\n\n${IMAGE}\n\n` })
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'After.' })
+    expect(managed.streamingState.accumulatedText).toBe(`${IMAGE}\n\nAfter.`)
+
+    // The next line does not cut the restored image again: the next finalize retries it.
+    await processSSEEvent(managed, { type: 'stream_delta', text: '\nMore.\n' })
+    expect(sendFile).toHaveBeenCalledTimes(1)
+
+    sendMessage.mockReset()
+    sendFile.mockReset()
+    await processSSEEvent(managed, { type: 'session_idle' })
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    expect(mock.sentFiles.map((f) => f.filename)).toEqual(['chart.png'])
+    expect(mock.sentMessages.map((m) => m.message.text)).toEqual(['\n\nAfter.\nMore.\n'])
+    expect(sendFile.mock.invocationCallOrder[0]).toBeLessThan(sendMessage.mock.invocationCallOrder[0])
+    expect(managed.streamingState.accumulatedText).toBe('')
   })
 })
 
