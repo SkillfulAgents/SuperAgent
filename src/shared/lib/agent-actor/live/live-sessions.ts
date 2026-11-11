@@ -507,6 +507,7 @@ export class LiveSessions {
           state.applyStreamPolicy({
             releaseStreamWhenIdle: isHiddenAutomatedSession(meta),
             retainStateOnStreamRelease: isAgentIntegrationSession(meta),
+            hiddenFromLists: isHiddenAutomatedSession(meta),
           })
           this.releaseIfIdle(sessionId)
         })
