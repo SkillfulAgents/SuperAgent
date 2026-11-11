@@ -1033,6 +1033,45 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       queries.unmount()
     })
 
+    it('keeps a status patch when a read from before the event lands after it', async () => {
+      const server = {
+        agents: [{ slug: 'agent-a', displaySlug: 'agent-a', hasActiveSessions: false }],
+        sessions: [{ id: 's1', agentSlug: 'agent-a', name: 'Weekly report', isActive: false, isAwaitingInput: false }],
+      }
+      const read = (key: QueryKey) => key[0] === 'sessions' ? server.sessions : key.length === 1 ? server.agents : server.agents[0]
+      // A slow host: the server answers with its state when the read starts,
+      // and the answer arrives a second later.
+      const keys: QueryKey[] = [['agents'], ['agents', 'agent-a'], ['sessions', 'agent-a']]
+      const unsubscribes = keys.map((queryKey) => new QueryObserver(queryClient, {
+        queryKey,
+        queryFn: async () => {
+          const answer = read(queryKey)
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+          return answer
+        },
+        staleTime: Infinity,
+      }).subscribe(() => {}))
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      await act(async () => {
+        // The last turn's refresh is still on its way when the next turn starts.
+        for (const queryKey of keys) void queryClient.invalidateQueries({ queryKey, exact: true })
+        await vi.advanceTimersByTimeAsync(0)
+        server.sessions = [{ ...server.sessions[0], isActive: true }]
+        server.agents = [{ ...server.agents[0], hasActiveSessions: true }]
+        simulateSSEMessage(getLatestEventSource(), { type: 'session_active', agentSlug: 'agent-a', sessionId: 's1' })
+        await vi.advanceTimersByTimeAsync(2000)
+      })
+      expect(queryClient.getQueryData<{ isActive?: boolean }[]>(['sessions', 'agent-a'])?.[0].isActive).toBe(true)
+      expect(queryClient.getQueryData<{ hasActiveSessions?: boolean }[]>(['agents'])?.[0].hasActiveSessions).toBe(true)
+      expect(queryClient.getQueryData<{ hasActiveSessions?: boolean }>(['agents', 'agent-a'])?.hasActiveSessions).toBe(true)
+      unsubscribes.forEach((unsubscribe) => unsubscribe())
+    })
+
     it('reads a new session from the server', async () => {
       const queries = mountQueries(
         [['agents'], ['agents', 'agent-a'], ['sessions', 'agent-a']],

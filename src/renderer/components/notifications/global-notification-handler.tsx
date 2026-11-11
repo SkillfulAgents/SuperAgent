@@ -17,7 +17,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, type QueryKey } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
@@ -271,6 +271,12 @@ export function GlobalNotificationHandler() {
       for (const key of agentDetailQueryKeys(queryClient, agentSlug)) confirmations.invalidate(key, { exact: true })
       confirmations.invalidate(['agents'], { exact: true })
     }
+    // A patch does not stop a read already in flight, and that read would land
+    // over it with the state from before the event. Refetching cancels it; a
+    // query at rest is left alone.
+    const refetchIfInFlight = (queryKey: QueryKey) => {
+      if (queryClient.isFetching({ queryKey, exact: true }) > 0) void queryClient.invalidateQueries({ queryKey, exact: true })
+    }
 
     es.onmessage = (event) => {
       try {
@@ -512,6 +518,7 @@ export function GlobalNotificationHandler() {
               // or take it out of a slice of live sessions after a clear.
               for (const list of lists) {
                 if (!list.holds || (!raise && !list.full)) queryClient.invalidateQueries({ queryKey: list.queryKey, exact: true })
+                else refetchIfInFlight(list.queryKey)
               }
             } else if (data.type === 'session_idle') {
               // A finished turn's completion notification follows and refreshes
@@ -521,7 +528,11 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: sessionsKey })
             }
             // Agent list + detail includes pre-aggregated session status (hasActiveSessions, etc.).
-            if (!(listed && raise)) confirmAgentSummaries(eventAgentSlug)
+            if (listed && raise && eventAgentSlug) {
+              for (const key of [['agents'], ...agentDetailQueryKeys(queryClient, eventAgentSlug)]) refetchIfInFlight(key)
+            } else {
+              confirmAgentSummaries(eventAgentSlug)
+            }
             // Todo board columns are live session state.
             confirmations.invalidate(TODOS_QUERY_KEY)
             // Artifacts can only change while the agent works: read that
