@@ -12,6 +12,7 @@ import { promisify } from 'util'
 import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
+import { Readable } from 'stream'
 import yaml from 'js-yaml'
 import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
@@ -31,6 +32,7 @@ import {
   type FileOps,
 } from '@shared/lib/agent-actor'
 import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
+import type { ZipSource } from '@shared/lib/utils/zip'
 import type {
   SkillsetIndex,
   SkillsetConfig,
@@ -2165,14 +2167,14 @@ function zipEntryWorkspacePath(skillDir: string, entryName: string): string | nu
 }
 
 /**
- * Validate a ZIP buffer as a skill package.
+ * Validate a ZIP as a skill package.
  * Checks for SKILL.md, file count, size limits, and path traversal.
  */
-export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidationResult> {
-  const { openZipFromBuffer, detectZipPrefix } = await import('@shared/lib/utils/zip')
-  let reader: Awaited<ReturnType<typeof openZipFromBuffer>> | undefined
+export async function validateSkillZip(zip: ZipSource): Promise<SkillValidationResult> {
+  const { openZipSource, detectZipPrefix } = await import('@shared/lib/utils/zip')
+  let reader: Awaited<ReturnType<typeof openZipSource>> | undefined
   try {
-    reader = await openZipFromBuffer(zipBuffer)
+    reader = await openZipSource(zip)
 
     const realEntries = reader.entries.filter((e) => !e.fileName.startsWith('__MACOSX/'))
 
@@ -2225,21 +2227,21 @@ export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidati
 }
 
 /**
- * Import a skill from a ZIP buffer into an agent's workspace.
+ * Import a skill from a ZIP into an agent's workspace.
  * Validates the ZIP upfront (file count, size, path traversal, SKILL.md presence)
  * then extracts into `.claude/skills/<dir>`.
  */
 export async function importSkillFromZip(
   agentSlug: string,
-  zipBuffer: Buffer,
+  zip: ZipSource,
 ): Promise<{ skillDir: string; skillName: string }> {
-  const validation = await validateSkillZip(zipBuffer)
+  const validation = await validateSkillZip(zip)
   if (!validation.valid) {
     throw new Error(validation.error || 'Invalid skill package')
   }
 
-  const { openZipFromBuffer } = await import('@shared/lib/utils/zip')
-  const reader = await openZipFromBuffer(zipBuffer)
+  const { openZipSource } = await import('@shared/lib/utils/zip')
+  const reader = await openZipSource(zip)
   try {
     const { stripPrefix } = validation
 
@@ -2296,9 +2298,9 @@ export async function importSkillFromZip(
       const destPath = zipEntryWorkspacePath(destDir, entryName)
       if (destPath === null) continue
 
-      const bytes = await reader.readEntry(entry.fileName, SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted)
-      await files.write(destPath, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength))
-      totalExtracted += bytes.byteLength
+      const entryStream = await reader.openEntryStream(entry.fileName, SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted)
+      const { size } = await files.write(destPath, Readable.toWeb(entryStream) as ReadableStream<Uint8Array>)
+      totalExtracted += size
     }
 
     return {

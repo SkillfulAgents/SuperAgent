@@ -1259,6 +1259,26 @@ describe('computeAgentTemplateHash', () => {
     expect(await computeAgentTemplateHash(workspaceDir)).toBe(await computeAgentTemplateHash(templateDir))
   })
 
+  it('keeps the whole-file digest for large files with multi-byte text split across reads', async () => {
+    // Over 1 MB, so the stream splits it; three-byte characters straddle the chunk edges.
+    const large = `\uFEFFstart ${'日本語テキスト '.repeat(200_000)} end`
+    const invalid = Buffer.from([0x61, 0xe6, 0x97, 0x62, 0xff])
+    const dir = createDir({ 'CLAUDE.md': MINIMAL_INSTRUCTIONS, 'data/large.txt': large })
+    fs.writeFileSync(path.join(dir, 'data', 'invalid.bin'), invalid)
+
+    // The digest as it was computed when every file was read whole.
+    const expected = crypto.createHash('sha256')
+    for (const [name, bytes] of [
+      ['CLAUDE.md', Buffer.from(MINIMAL_INSTRUCTIONS)],
+      ['data/invalid.bin', invalid],
+      ['data/large.txt', Buffer.from(large)],
+    ] as const) {
+      expected.update(name)
+      expected.update(bytes.toString('utf-8'))
+    }
+    expect(await computeAgentTemplateHash(dir)).toBe(expected.digest('hex'))
+  })
+
   it('returns a 64-character hex string (SHA-256)', async () => {
     const dir = createDir({ 'AGENTS.md': MINIMAL_INSTRUCTIONS })
     const hash = await computeAgentTemplateHash(dir)
