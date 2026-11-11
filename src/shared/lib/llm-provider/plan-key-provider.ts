@@ -14,10 +14,13 @@ export abstract class PlanKeyLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = []
 
   // The OpenAI translation rebuilds every tool, so `defer_loading` never reaches the endpoint.
-  override toolSearchEnv() { return this.format === 'messages' ? 'false' as const : 'true' as const }
+  override async toolSearchEnv() { return this.format === 'messages' ? 'false' as const : 'true' as const }
+
+  // The key comes only from the connection, never from global settings.
+  protected override async ambientSettings() { return undefined }
 
   private requireKey(): string {
-    const key = this.getEffectiveApiKey()
+    const key = this.effectiveApiKeyFrom(undefined)
     if (!key) throw new Error(`${this.planName} key not configured`)
     return key
   }
@@ -25,11 +28,11 @@ export abstract class PlanKeyLlmProvider extends BaseLlmProvider {
     return new Anthropic({ baseURL: this.baseUrl, authToken: apiKey,
       ...(this.format !== 'messages' ? { fetch: translatedMessagesFetch(this.baseUrl, apiKey, this.format) } : {}) })
   }
-  createClient(): Anthropic { return this.client(this.requireKey()) }
+  async createClientFrom(): Promise<Anthropic> { return this.client(this.requireKey()) }
 
   async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     if (this.format !== 'messages') return {}
-    return { ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: this.baseUrl, ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey() }
+    return { ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: this.baseUrl, ANTHROPIC_AUTH_TOKEN: this.effectiveApiKeyFrom(undefined) }
   }
   override async getContainerProxyConfig(): Promise<LlmProxyConfig | undefined> {
     if (this.format === 'messages') return undefined
@@ -37,7 +40,7 @@ export abstract class PlanKeyLlmProvider extends BaseLlmProvider {
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
-    const key = apiKey || this.getEffectiveApiKey()
+    const key = apiKey || this.effectiveApiKeyFrom(undefined)
     if (!key) return { valid: false, error: `Enter your ${this.planName} key` }
     const model = this.getBuiltinCatalog().find(entry => entry.isDefault)?.id
     if (!model) return { valid: false, error: `${this.planName} has no default model` }
@@ -49,7 +52,7 @@ export abstract class PlanKeyLlmProvider extends BaseLlmProvider {
     }
   }
 
-  protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
+  protected override async parseErrorResponseOverride(status: number | undefined, body: unknown) {
     const message = extractErrorMessage(body)
     const actual = status ?? inferErrorStatus(message)
     if (actual === 401) return { severity: 'error' as const, icon: 'info' as const, message: `**${this.planName} key was rejected.** Check the key in Settings → Model Providers.` }

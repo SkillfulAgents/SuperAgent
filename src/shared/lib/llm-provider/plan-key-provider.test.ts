@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { QwenSubscriptionLlmProvider } from './qwen-subscription-provider'
 import { DoubaoSubscriptionLlmProvider } from './doubao-subscription-provider'
 import { connectionConfigSchema } from './connection-schema'
-vi.mock('../config/settings', () => ({ getSettings: () => ({}), getModelCatalogSettings: () => ({}) }))
+vi.mock('../config/settings', () => ({ getSettings: async () => ({}) }))
 afterEach(() => vi.restoreAllMocks())
 const configuration = { apiKeys: { planApiKey: 'sk-sp-plan-key' }, env: {} }
 
@@ -14,7 +14,7 @@ it('sends the Qwen plan key to the Token Plan Anthropic endpoint', async () => {
     ANTHROPIC_AUTH_TOKEN: 'sk-sp-plan-key',
   })
   expect(await provider.getContainerProxyConfig()).toBeUndefined()
-  expect(provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+  expect(await provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
 })
 
 it('routes Doubao through the Agent Plan Responses endpoint', async () => {
@@ -30,7 +30,7 @@ it('routes Doubao through the Agent Plan Responses endpoint', async () => {
   expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk-sp-plan-key')
 })
 
-it('reports a missing plan key as not configured', () => {
-  expect(new QwenSubscriptionLlmProvider({ apiKeys: {}, env: {} }).getApiKeyStatus().isConfigured).toBe(false)
+it('reports a missing plan key as not configured', async () => {
+  expect((await new QwenSubscriptionLlmProvider({ apiKeys: {}, env: {} }).getApiKeyStatus()).isConfigured).toBe(false)
   expect(connectionConfigSchema.parse({ apiKeys: { planApiKey: ' sk-sp-plan-key ' } }).apiKeys.planApiKey).toBe('sk-sp-plan-key')
 })
