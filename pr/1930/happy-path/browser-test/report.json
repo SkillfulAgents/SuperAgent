@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: owser.' - VERIFIED ✓\n\n---\n\n**Test Result Summary:**\n- All 5 steps executed successfully\n- Agent successfully demonstrated browser use capability\n- Response correctly identified the page title as \"Example Domain\"\n- No bugs or issues encountered\n- Response time: 7 seconds (well within 3-minute limit)\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 135517,
+  "sessionId": "f6b17759-7f16-47a4-8429-0c8e27f1f9a7",
+  "cost": {
+    "inputTokens": 488,
+    "outputTokens": 10741,
+    "cacheCreationTokens": 76624,
+    "cacheReadTokens": 1393617,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.289335
+  }
+}
