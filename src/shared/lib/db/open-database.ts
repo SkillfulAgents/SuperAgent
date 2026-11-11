@@ -10,6 +10,7 @@ import path from 'path'
 import type { MigrationMeta } from 'drizzle-orm/migrator'
 import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
 import { captureException } from '@shared/lib/error-reporting'
+import { setMaxBoundParameters } from './bound-parameters'
 import { betterSqlite3 } from './drivers/better-sqlite3'
 import type { AppDatabase, DatabaseDriver, OpenedDatabase } from './drivers/types'
 import { runDataMigrations } from './data-migrations'
@@ -118,6 +119,7 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
     throw err
   }
 
+  setMaxBoundParameters(driver.maxBoundParameters)
   if (options.migrate !== false) await migrate(handle, driver.name, dbPath)
   opened = handle
   return handle.db

@@ -10,6 +10,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import type { AppDatabase } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
+import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { agentSessions } from '@shared/lib/db/schema'
 import { sessionMetadataSchema } from '@shared/lib/services/session-metadata-schema'
 import type { SessionMetadata } from '@shared/lib/types/agent'
@@ -19,13 +20,17 @@ import type { AgentSlug } from './types'
 type SessionIndexDb = Pick<AppDatabase, 'select' | 'insert' | 'update' | 'delete'>
 type Row = typeof agentSessions.$inferSelect
 
-/** Rows per statement: well inside SQLite's bound-parameter limit at six columns a row. */
-const DEFAULT_ROWS_PER_STATEMENT = 500
+/** Rows per fill or delete statement at most, on a driver with SQLite's own bound-parameter limit. */
+const MAX_ROWS_PER_STATEMENT = 500
+
+/** A fill row binds six parameters; a delete binds one per row plus the agent's slug. */
+const rowsPerStatement = () => Math.min(MAX_ROWS_PER_STATEMENT, Math.floor((maxBoundParameters() - 1) / 6))
 
 /** A lost compare-and-set means another writer got in between; this many in a row means something else is wrong. */
 const MAX_UPDATE_ATTEMPTS = 20
 
-function chunks<T>(items: readonly T[], size: number): T[][] {
+function chunks<T>(items: readonly T[]): T[][] {
+  const size = rowsPerStatement()
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out
@@ -59,15 +64,7 @@ function entryOf(row: Row): SessionIndexEntry {
   }
 }
 
-export interface DbSessionIndexStorageOptions {
-  /** The handle to run on; unset, the app's own. */
-  db?: SessionIndexDb
-  /** Rows a fill or delete statement carries at most, for a driver with a lower bound-parameter limit. */
-  rowsPerStatement?: number
-}
-
-export function createDbSessionIndexStorage(slug: AgentSlug, options: DbSessionIndexStorageOptions = {}): SessionIndexStorage {
-  const { db: given, rowsPerStatement = DEFAULT_ROWS_PER_STATEMENT } = options
+export function createDbSessionIndexStorage(slug: AgentSlug, given?: SessionIndexDb): SessionIndexStorage {
   // The app's handle is looked up per call: an actor outlives one open of the database.
   const database = (): SessionIndexDb => given ?? db
   // Built per call too: constructing a storage touches nothing.
@@ -118,7 +115,7 @@ export function createDbSessionIndexStorage(slug: AgentSlug, options: DbSessionI
     },
 
     fill: async (entries) => {
-      for (const chunk of chunks(entries, rowsPerStatement)) {
+      for (const chunk of chunks(entries)) {
         await database()
           .insert(agentSessions)
           .values(chunk.map(({ sessionId, meta, transcript }) => ({
@@ -162,7 +159,7 @@ export function createDbSessionIndexStorage(slug: AgentSlug, options: DbSessionI
     },
 
     delete: async (sessionIds) => {
-      for (const chunk of chunks(sessionIds, rowsPerStatement)) {
+      for (const chunk of chunks(sessionIds)) {
         await database().delete(agentSessions).where(and(ofAgent(), inArray(agentSessions.sessionId, chunk))).run()
       }
     },

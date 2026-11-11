@@ -31,7 +31,7 @@ export async function importSessionMetadata(db: DataMigrationDb): Promise<string
     try {
       // On the migration's handle: the app's own is not published yet.
       const store = createLocalSessionStore(slug, {
-        sessionIndexStorage: (agent) => createDbSessionIndexStorage(agent, { db }),
+        sessionIndexStorage: (agent) => createDbSessionIndexStorage(agent, db),
       })
       // A workspace with nothing in it is not "no file": its volume may not
       // be mounted yet. An agent's own always holds its instructions at least.
