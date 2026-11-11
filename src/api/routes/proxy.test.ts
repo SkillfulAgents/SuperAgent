@@ -889,7 +889,10 @@ describe('proxy route', () => {
           status: failure === 'local' ? 'expired' : 'active',
         } }])
         mockIsHostAllowed.mockReturnValue(true)
-        if (failure === 'remote') mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
+        if (failure === 'remote') {
+          mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status: 401 }))
+          mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
+        }
         if (failure === 'token') mockMakeApiCall.mockRejectedValueOnce(new Error('Failed to fetch token'))
         mockRequestReauth.mockResolvedValueOnce({ outcome: 'replaced', replacementId: 'replacement' })
 
@@ -901,7 +904,7 @@ describe('proxy route', () => {
           error: 'account_replaced', replacementAccountId: 'replacement',
           message: expect.stringContaining('Retry the request using account ID replacement'),
         })
-        expect(mockMakeApiCall).toHaveBeenCalledTimes(failure === 'token' ? 1 : 0)
+        expect(mockMakeApiCall).toHaveBeenCalledTimes(failure === 'local' ? 0 : 1)
 
         // The new credential must not inherit the old account's allow decision.
         mockMakeApiCall.mockClear()
@@ -994,8 +997,41 @@ describe('proxy route', () => {
       expect((await request).status).toBe(200)
     })
 
-    it('holds and resumes when remote status check returns non-ACTIVE', async () => {
+    /** The upstream refuses the first forward; later forwards go through. */
+    function refuseFirstForward(status: 401 | 403 = 401) {
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status }))
+    }
+
+    it('does not ask the provider for the status when the call goes through', async () => {
       setupSuccessPath()
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockGetConnection).not.toHaveBeenCalled()
+    })
+
+    it.each([401, 403] as const)('returns a %s from the upstream as it is when the remote status is ACTIVE', async (status) => {
+      setupSuccessPath({ upstreamStatus: status, upstreamBody: '{"error":"missing_scope"}' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(status)
+      expect(await res.json()).toEqual({ error: 'missing_scope' })
+      expect(mockGetConnection).toHaveBeenCalledOnce()
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).toHaveBeenCalledOnce()
+    })
+
+    it('holds and resumes when the upstream refuses the call and the remote status is non-ACTIVE', async () => {
+      setupSuccessPath()
+      refuseFirstForward()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
       const res = await makeRequest(
@@ -1007,11 +1043,36 @@ describe('proxy route', () => {
       expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
         accountStatus: 'expired',
       }), { waitId: expect.any(String) })
-      expect(mockMakeApiCall).toHaveBeenCalledOnce()
+      // The refused forward, then the status check, then the wait, then the forward again.
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
+      const [firstForward, secondForward] = mockMakeApiCall.mock.invocationCallOrder
+      const [statusCheck] = mockGetConnection.mock.invocationCallOrder
+      const [reauthWait] = mockRequestReauth.mock.invocationCallOrder
+      expect(firstForward).toBeLessThan(statusCheck)
+      expect(statusCheck).toBeLessThan(reauthWait)
+      expect(reauthWait).toBeLessThan(secondForward)
+    })
+
+    it('holds and resumes when the forward fails and the remote status is non-ACTIVE', async () => {
+      setupSuccessPath()
+      mockMakeApiCall.mockRejectedValueOnce(new Error('Composio API error: 400'))
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'INACTIVE' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
+        accountStatus: 'revoked',
+      }), { waitId: expect.any(String) })
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
     })
 
     it('updates DB status when remote returns EXPIRED', async () => {
       setupSuccessPath()
+      refuseFirstForward()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
       await makeRequest(
@@ -1026,6 +1087,7 @@ describe('proxy route', () => {
 
     it('updates DB status to revoked when remote returns FAILED', async () => {
       setupSuccessPath()
+      refuseFirstForward(403)
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
 
       await makeRequest(
@@ -1039,6 +1101,7 @@ describe('proxy route', () => {
 
     it('holds and resumes with revoked when remote status is FAILED', async () => {
       setupSuccessPath()
+      refuseFirstForward(403)
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
 
       const res = await makeRequest(
@@ -1052,8 +1115,8 @@ describe('proxy route', () => {
       }), { waitId: expect.any(String) })
     })
 
-    it('proceeds with request when remote status check fails (network error)', async () => {
-      setupSuccessPath()
+    it('returns the refused answer when remote status check fails (network error)', async () => {
+      setupSuccessPath({ upstreamStatus: 401 })
       mockGetConnection.mockRejectedValueOnce(new Error('Network error'))
 
       const res = await makeRequest(
@@ -1061,8 +1124,9 @@ describe('proxy route', () => {
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
 
-      expect(res.status).toBe(200)
-      expect(mockMakeApiCall).toHaveBeenCalled()
+      expect(res.status).toBe(401)
+      expect(mockRequestReauth).not.toHaveBeenCalled()
+      expect(mockMakeApiCall).toHaveBeenCalledOnce()
     })
 
     it('re-authenticates and retries once when token retrieval reports expiry', async () => {
@@ -1116,15 +1180,15 @@ describe('proxy route', () => {
       { headers: { Authorization: 'Bearer synth_valid' } },
     )
 
-    it('reads settings once for the status check and the forward, both under the owner built from that read', async () => {
-      setupSuccessPath()
+    it('reads settings once for the forward and the status check after it, both under the owner built from that read', async () => {
+      setupSuccessPath({ upstreamStatus: 401 })
 
-      expect((await request()).status).toBe(200)
+      expect((await request()).status).toBe(401)
 
       expect(mockGetSettings).toHaveBeenCalledTimes(1)
       expect(mockFromResourceCreator).toHaveBeenCalledTimes(1)
-      expect(mockGetConnection.mock.calls[0][2]).toEqual({ provider: 'composio', read: 1 })
       expect(mockMakeApiCall.mock.calls[0][0].credentials).toEqual({ provider: 'composio', read: 1 })
+      expect(mockGetConnection.mock.calls[0][2]).toEqual({ provider: 'composio', read: 1 })
       expect(attributedCalls).toEqual([{ owner: true, read: 1 }, { owner: true, read: 1 }])
     })
 
@@ -1138,12 +1202,13 @@ describe('proxy route', () => {
 
     it('reads again after waiting for re-authentication, and forwards with that read', async () => {
       setupSuccessPath()
+      mockMakeApiCall.mockResolvedValueOnce(new Response('{"error":"invalid_auth"}', { status: 401 }))
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
       expect((await request()).status).toBe(200)
 
       expect(mockGetSettings).toHaveBeenCalledTimes(2)
-      expect(mockMakeApiCall.mock.calls[0][0].credentials).toEqual({ provider: 'composio', read: 2 })
+      expect(mockMakeApiCall.mock.calls[1][0].credentials).toEqual({ provider: 'composio', read: 2 })
       expect(attributedCalls.at(-1)).toEqual({ owner: true, read: 2 })
     })
   })

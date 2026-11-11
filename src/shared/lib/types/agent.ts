@@ -65,15 +65,13 @@ export interface UpdateAgentInput {
 // Session Types
 // ============================================================================
 
-/**
- * Session metadata stored in session-metadata.json
- */
 /** The context's size as the CLI counts it, against the window it auto-compacts at. */
 export interface SessionUsage {
   totalTokens: number
   contextWindow: number
 }
 
+/** What the app keeps about a session, in the agent's session index. */
 export interface SessionMetadata {
   name?: string
   starred?: boolean

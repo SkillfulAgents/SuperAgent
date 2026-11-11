@@ -122,7 +122,6 @@ vi.mock('drizzle-orm', () => ({
 
 const mockSettingsState = {
   containerRunner: 'docker' as string,
-  chromeProfileId: undefined as string | undefined,
   hostBrowserProvider: undefined as string | undefined,
   containerBrowserHighDpi: false,
 }
@@ -131,7 +130,6 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({
     container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
     app: {
-      chromeProfileId: mockSettingsState.chromeProfileId,
       hostBrowserProvider: mockSettingsState.hostBrowserProvider,
       containerBrowserHighDpi: mockSettingsState.containerBrowserHighDpi,
     },
@@ -162,12 +160,6 @@ vi.mock('./health-monitor', () => ({
   healthMonitor: {
     checkAll: vi.fn().mockReturnValue([]),
   },
-}))
-
-const mockCopyChromeProfileData = vi.fn().mockResolvedValue(false)
-vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  PROFILE_SYNC_MANIFEST: '.superagent-profile-sync.json',
-  copyChromeProfileData: (...args: unknown[]) => mockCopyChromeProfileData(...args),
 }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
@@ -202,13 +194,13 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerHost } from './container-host'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 
 describe('ContainerRuntime.ensureRunning — env var construction', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // Clear internal state by dropping the runtime
     containerHost.dropRuntime('test-agent')
-    mockSettingsState.chromeProfileId = undefined
     mockSettingsState.hostBrowserProvider = undefined
     mockSettingsState.containerBrowserHighDpi = false
 
@@ -301,48 +293,23 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
   })
 
   describe('what a start takes from the agent workspace, through the attached access', () => {
-    const files = { stat: vi.fn(), getDoc: vi.fn(), putDoc: vi.fn(), mkdir: vi.fn() }
     const instructions = vi.fn<(slug: string) => Promise<string | null>>()
 
     beforeEach(() => {
-      mockCopyChromeProfileData.mockReset().mockResolvedValue(false)
       instructions.mockReset().mockResolvedValue(null)
-      containerHost.attachAgentWorkspaces({ files: () => files as never, instructions })
+      containerHost.attachAgentWorkspaces({ instructions })
     })
 
     afterEach(() => {
       containerHost.attachAgentWorkspaces(null)
     })
 
-    it('seeds the browser profile through the agent files and waits for it before starting', async () => {
+    it('points a workspace that uses the host browser at the host', async () => {
       setupAccountMocks([])
-      mockSettingsState.chromeProfileId = 'Default'
-      let finishProfileSync!: (copied: boolean) => void
-      mockCopyChromeProfileData.mockReturnValueOnce(new Promise<boolean>((resolve) => { finishProfileSync = resolve }))
-
-      const startPromise = containerHost.runtime('test-agent').ensureRunning()
-      await vi.waitFor(() => expect(mockCopyChromeProfileData).toHaveBeenCalledTimes(1))
-      const [profileId, destination] = mockCopyChromeProfileData.mock.calls[0] as [string, { hasFile(path: string): Promise<boolean> }]
-      expect(profileId).toBe('Default')
-      // The destination is the agent's workspace, not a host path.
-      files.stat.mockResolvedValueOnce({ kind: 'file' })
-      expect(await destination.hasFile('Cookies')).toBe(true)
-      expect(files.stat).toHaveBeenCalledWith('.browser-profile/Cookies')
-
-      expect(mockStart).not.toHaveBeenCalled()
-      finishProfileSync(true)
-      await startPromise
-      expect(mockStart).toHaveBeenCalledOnce()
-    })
-
-    it('does not copy a local profile into a workspace that uses the host browser', async () => {
-      setupAccountMocks([])
-      mockSettingsState.chromeProfileId = 'Default'
       mockSettingsState.hostBrowserProvider = 'chrome'
 
       await containerHost.runtime('test-agent').ensureRunning()
 
-      expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
       expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
     })
 
@@ -383,10 +350,8 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
 
     it('starts bare when no registry has attached the agent workspaces', async () => {
       setupAccountMocks([])
-      mockSettingsState.chromeProfileId = 'Default'
       containerHost.attachAgentWorkspaces(null)
       await containerHost.runtime('test-agent').ensureRunning()
-      expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
       expect(mockStart.mock.calls[0][0].agentName).toBeUndefined()
     })
   })
@@ -1496,6 +1461,33 @@ describe('ContainerRuntime.syncAgentStatus', () => {
     expect(globalFeed.publish).not.toHaveBeenCalled()
   })
 
+  it('syncs every agent with at most four runner calls at once', async () => {
+    const slugs = ['sync-1', 'sync-2', 'sync-3', 'sync-4', 'sync-5', 'sync-6']
+    for (const slug of slugs) await containerHost.runtime(slug).getClient()
+    let active = 0
+    let peak = 0
+    const waiting: Array<() => void> = []
+    mockGetInfoFromRuntime.mockImplementation(async () => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise<void>((resolve) => waiting.push(resolve))
+      active--
+      return { status: 'running', port: 4005 }
+    })
+
+    const sync = containerHost.syncAllStatuses()
+    await vi.waitFor(() => expect(waiting).toHaveLength(4))
+    while (waiting.length > 0) {
+      waiting.shift()!()
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    await sync
+
+    expect(peak).toBe(4)
+    expect(mockGetInfoFromRuntime).toHaveBeenCalledTimes(6)
+    for (const slug of slugs) expect(containerHost.runtime(slug).getCachedInfo()?.status).toBe('running')
+  })
+
   it('marks sessions inactive when container transitions to stopped', async () => {
     containerHost.runtime('sync-agent').getClient()
     containerHost.runtime('sync-agent').updateCachedStatus('running', 4005)
@@ -1882,5 +1874,94 @@ describe('ContainerHost stale agents', () => {
     containerHost.runtime('a').updateCachedStatus('stopped', null)
     containerHost.dropRuntime('b')
     expect(stale()).toEqual([false, false, true])
+  })
+})
+
+describe('ContainerHost periodic passes', () => {
+  const STATUS_SYNC_MS = 300_000
+  const HEALTH_CHECK_MS = 30_000
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    registerTasks(containerHost)
+  })
+
+  afterEach(() => {
+    containerHost.stopStatusSync()
+    containerHost.stopHealthMonitor()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('syncs statuses on its interval, with no sync at the start, until stopped', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS - 1)
+    expect(sync).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sync).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS)
+    expect(sync).toHaveBeenCalledTimes(2)
+
+    containerHost.stopStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS * 2)
+    expect(sync).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('can start the status sync again after it stopped', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.stopStatusSync()
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS)
+    expect(sync).toHaveBeenCalledTimes(1)
+  })
+
+  it('logs a failed status sync and goes on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockRejectedValue(new Error('runtime gone'))
+    containerHost.startStatusSync()
+    await vi.advanceTimersByTimeAsync(STATUS_SYNC_MS * 2)
+    expect(sync).toHaveBeenCalledTimes(2)
+    expect(error).toHaveBeenCalledWith('[ContainerHost] Periodic sync failed:', expect.objectContaining({ message: 'runtime gone' }))
+  })
+
+  it('checks health on its own interval, past a pass that hangs, until stopped', async () => {
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks')
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockResolvedValue(undefined)
+    containerHost.startHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS - 1)
+    expect(check).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(check).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 2)
+    expect(check).toHaveBeenCalledTimes(3)
+
+    containerHost.stopHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 3)
+    expect(check).toHaveBeenCalledTimes(3)
+  })
+
+  it('logs a failed health check and goes on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks').mockRejectedValue(new Error('runtime gone'))
+    containerHost.startHealthMonitor()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS * 2)
+    expect(check).toHaveBeenCalledTimes(2)
+    expect(error).toHaveBeenCalledWith('[ContainerHost] Health check failed:', expect.objectContaining({ message: 'runtime gone' }))
+  })
+
+  it('runs the status sync and the health check as separate jobs', async () => {
+    const sync = vi.spyOn(containerHost, 'syncAllStatuses').mockResolvedValue(undefined)
+    const check = vi.spyOn(containerHost as never as { runHealthChecks(): Promise<void> }, 'runHealthChecks').mockResolvedValue(undefined)
+    containerHost.startStatusSync()
+    containerHost.startHealthMonitor()
+    containerHost.stopStatusSync()
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_MS)
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(sync).not.toHaveBeenCalled()
   })
 })

@@ -153,6 +153,7 @@ import {
   getInstalledSkillMetadata,
   getSkillsetRepoDir,
   ensureSkillsetCached,
+  getSkillsetIndex,
   isCacheReady,
   isGitAvailable,
   deleteSkill,
@@ -1076,6 +1077,60 @@ Instructions here`
       // catches per-skillset so the overall call still resolves.
       await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
       expect(mockCaptureException).toHaveBeenCalled()
+    })
+  })
+
+  describe('packed skillset cache recovery', () => {
+    const ref = {
+      skillsetId: 'public-recovery-test',
+      skillsetUrl: 'https://github.com/TestOrg/skills',
+      provider: 'public' as const,
+    }
+
+    afterEach(() => vi.unstubAllGlobals())
+
+    async function serveArchive(files: Record<string, string>) {
+      const archive = await createZipBuffer(Object.fromEntries(
+        Object.entries(files).map(([name, contents]) => [`repo-head/${name}`, contents]),
+      ))
+      const fetch = vi.fn().mockResolvedValue(new Response(new Uint8Array(archive)))
+      vi.stubGlobal('fetch', fetch)
+      return fetch
+    }
+
+    it('rejects a refreshed archive without an index instead of restoring old files', async () => {
+      await serveArchive({
+        'index.json': JSON.stringify(buildIndex()),
+        'skills/old/SKILL.md': '# Old skill',
+      })
+      const repoDir = await ensureSkillsetCached(ref)
+      await serveArchive({ 'skills/new/SKILL.md': '# New skill' })
+
+      await expect(refreshSkillset(ref)).rejects.toThrow('index.json not found')
+
+      expect(fs.existsSync(path.join(repoDir, 'index.json'))).toBe(false)
+      expect(fs.existsSync(path.join(repoDir, 'skills/old/SKILL.md'))).toBe(false)
+      expect(await fs.promises.readFile(path.join(repoDir, 'skills/new/SKILL.md'), 'utf8')).toBe('# New skill')
+      await expect(getSkillsetIndex(ref)).resolves.toBeNull()
+    })
+
+    it('downloads again after a corrupt packed copy and stores the replacement', async () => {
+      await serveArchive({ 'index.json': JSON.stringify(buildIndex()) })
+      const repoDir = await ensureSkillsetCached(ref)
+      await fs.promises.rm(repoDir, { recursive: true })
+      // An interrupted overwrite leaves the previous version marker beside a truncated pack.
+      await fs.promises.writeFile(path.join(testDir, 'skillset-cache-packs', ref.skillsetId), '{')
+      const replacement = buildIndex({ version: '2.0.0' })
+      const download = await serveArchive({ 'index.json': JSON.stringify(replacement) })
+
+      await expect(ensureSkillsetCached(ref)).resolves.toBe(repoDir)
+      await expect(getSkillsetIndex(ref)).resolves.toEqual(replacement)
+      expect(download).toHaveBeenCalledTimes(1)
+
+      await fs.promises.rm(repoDir, { recursive: true })
+      await expect(ensureSkillsetCached(ref)).resolves.toBe(repoDir)
+      await expect(getSkillsetIndex(ref)).resolves.toEqual(replacement)
+      expect(download).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -3178,6 +3233,21 @@ metadata:
       for (const [name, content] of Object.entries(files)) {
         expect(fs.readFileSync(path.join(targetDir, name.slice('binary-skill/'.length)))).toEqual(content)
       }
+    })
+
+    it('imports from a ZIP file on disk, streaming a multi-MB entry intact', async () => {
+      const agentSlug = 'file-import-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+      const large = crypto.randomBytes(3 * 1024 * 1024)
+      const zipPath = path.join(testDir, 'skill.zip')
+      fs.writeFileSync(zipPath, await createZipBuffer({ 'SKILL.md': MINIMAL_SKILL_MD, 'assets/large.bin': large }))
+
+      const result = await importSkillFromZip(agentSlug, { filePath: zipPath })
+
+      const skillDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', result.skillDir)
+      expect(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8')).toBe(MINIMAL_SKILL_MD)
+      // A byte compare: toEqual walks a multi-MB Buffer element by element for seconds.
+      expect(fs.readFileSync(path.join(skillDir, 'assets', 'large.bin')).equals(large)).toBe(true)
     })
 
     it('export then import preserves files', async () => {

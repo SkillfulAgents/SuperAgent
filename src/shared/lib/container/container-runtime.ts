@@ -27,7 +27,6 @@ import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings, type AppSettings } from '@shared/lib/config/settings'
-import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
 import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { NO_LIVE_SESSIONS, type AgentSessionsAccess, type RuntimeSessions } from './agent-sessions-access'
@@ -74,9 +73,9 @@ interface CachedContainerStatus {
 /** What a runtime needs from the host it belongs to. */
 export interface RuntimeHost {
   /**
-   * The agents' workspaces, for what a start needs from them: the browser
-   * profile seeding and the display name. Null only before the agent
-   * registry attached it, which in the app is never.
+   * The agents' workspaces, for what a start needs from them: the display
+   * name. Null only before the agent registry attached it, which in the app
+   * is never.
    */
   readonly agentWorkspaces: AgentWorkspaceAccess | null
   /** The agents' live sessions. Null only before the agent registry attached it. */
@@ -742,15 +741,11 @@ export class ContainerRuntime {
     }
 
     // What the start needs from the agent's workspace goes through the
-    // agent's file operations, never a host path: the workspace is wherever
-    // the agent's actor says it is.
+    // agent's actor, never a host path: the workspace is wherever the actor
+    // says it is.
     let agentName: string | undefined
     const workspaces = this.host.agentWorkspaces
     if (workspaces) {
-      // Seed the built-in container browser from the selected Chrome profile.
-      // A profile this app may not read is skipped; any other failure fails
-      // the start, as a failed copy always did.
-      await seedBrowserProfileFromChrome(slug, workspaces.files(slug))
       // The display name is attribution only; a start without it is still a start.
       try {
         agentName = displayNameFromInstructions(await workspaces.instructions(slug))

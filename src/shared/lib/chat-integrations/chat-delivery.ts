@@ -9,6 +9,7 @@ import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 import { background } from '@shared/lib/background'
 import { NO_REPLY_TOKEN } from './chat-session-context'
+import { plainUserTags } from '@shared/lib/utils/mentions'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -54,6 +55,7 @@ export interface ManagedConnector {
  * clearIndicator call before finalizing, so this only commits text. Idempotent.
  */
 async function finalizeTurn(managed: ManagedConnector): Promise<void> {
+  const marks = managed.connector.acknowledgedMessages(managed.chatId)
   try {
     await finalizeStreaming(managed)
   } catch (err) {
@@ -61,6 +63,7 @@ async function finalizeTurn(managed: ManagedConnector): Promise<void> {
     reportError(err, 'finalize-turn', { integrationId: managed.integration.id, chatId: managed.chatId })
   }
   await resolvePendingToolMessages(managed)
+  managed.connector.releaseAcknowledgements(managed.chatId, marks)
 }
 
 /**
@@ -279,11 +282,14 @@ export async function processSSEEvent(
 
       const now = Date.now()
       const { currentMessageId, accumulatedText, lastUpdateTime } = managed.streamingState
-      if (now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)) {
+      const visibleText = now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)
+        ? plainUserTags(accumulatedText, { streaming: true })
+        : ''
+      if (visibleText) {
         try {
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
-            managed.streamingState.accumulatedText,
+            visibleText,
             managed.streamingState.currentMessageId ?? undefined,
           )
           managed.streamingState.currentMessageId = msgId
@@ -396,8 +402,10 @@ export async function processSSEEvent(
       // so the tick would clear within a tick anyway — this just makes it instant). The
       // tick then sleeps after the lull and re-checks activity at fire time.
       clearIndicator(managed)
+      const marks = managed.connector.acknowledgedMessages(managed.chatId)
       try {
         await managed.connector.sendUserRequestCard(managed.chatId, card, sessionId)
+        managed.connector.releaseAcknowledgements(managed.chatId, marks)
       } catch (err) {
         console.error(`[ChatAgentIntegration] Failed to send user request card (${request.kind}):`, err)
         reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType: card.type })
@@ -468,8 +476,9 @@ export async function resolvePendingToolMessages(managed: ManagedConnector): Pro
 }
 
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
-  const finalText = managed.streamingState.accumulatedText
-  if (!finalText) return
+  const streamedText = managed.streamingState.accumulatedText
+  if (!streamedText) return
+  const finalText = plainUserTags(streamedText)
   const messageId = managed.streamingState.currentMessageId
 
   // Claim the buffer synchronously, before the first await, so a concurrent
@@ -481,7 +490,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     accumulatedText: '',
     lastUpdateTime: 0,
   }
-  if (finalText.trim() === NO_REPLY_TOKEN) return
+  if (!finalText || finalText.trim() === NO_REPLY_TOKEN) return
 
   try {
     if (messageId) {
@@ -499,7 +508,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     // is still empty, so we never overwrite newer streamed text (a later stream_delta
     // repopulated it). Re-throw so callers log/handle the failure exactly as before.
     if (!managed.streamingState.accumulatedText) {
-      managed.streamingState = { currentMessageId: messageId, accumulatedText: finalText, lastUpdateTime: 0 }
+      managed.streamingState = { currentMessageId: messageId, accumulatedText: streamedText, lastUpdateTime: 0 }
     }
     throw err
   }

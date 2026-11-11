@@ -5,10 +5,9 @@
  * `GET /api/agents/:id/sessions` derive "latest visible session" and the
  * visible set from this listing. The route tests mock the service layer, so
  * these are the tests that hold the line on visibility, ownership, empty-file
- * and ordering rules when the listing's implementation changes (for example
- * to read from the session summary cache instead of statting every
- * transcript). Every case here must keep passing regardless of how the list
- * is produced.
+ * and ordering rules when the listing's implementation changes (as it did
+ * when it moved from statting every transcript to the session index). Every
+ * case here must keep passing regardless of how the list is produced.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
@@ -17,23 +16,22 @@ import * as os from 'os'
 import { SAMPLE_JSONL_ENTRIES, toJsonl } from './__fixtures__/test-data'
 import {
   listSessions,
-  listSessionsFromSummary,
   getSession,
   listSessionsByIds,
   getSessionMessagesPage,
 } from './session-service'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
-import { sessionMetadataMapSchema } from './session-metadata-schema'
 import type { SessionMetadata, SessionOrigin } from '@shared/lib/types/agent'
+import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
 
-// Both implementations must satisfy the same contract: listSessions stats
-// every transcript; listSessionsFromSummary reads the summary cache. Each
-// test seeds its own temp dir, so the cache starts cold and is built from the
-// same directory state the stat-based listing sees.
-describe.each([
-  ['listSessions', listSessions],
-  ['listSessionsFromSummary', listSessionsFromSummary],
-] as const)('%s visible-list contract', (_name, list) => {
+const database = perTestDatabase()
+vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
+
+// Each test seeds its own temp dir and database, so the index starts empty
+// and is built from the directory state the test wrote.
+describe('listSessions visible-list contract', () => {
+  const list = listSessions
+
   let testDir: string
   let originalEnv: string | undefined
 
@@ -75,11 +73,10 @@ describe.each([
   }
 
   async function writeMetadata(slug: string, metadata: Record<string, object>): Promise<void> {
-    await fs.promises.mkdir(workspaceDir(slug), { recursive: true })
-    await fs.promises.writeFile(
-      path.join(workspaceDir(slug), 'session-metadata.json'),
-      JSON.stringify(sessionMetadataMapSchema.parse(metadata)),
-    )
+    const { index } = createLocalSessionStore(slug)
+    for (const [sessionId, meta] of Object.entries(metadata)) {
+      await index.update(sessionId, () => meta)
+    }
   }
 
   const ids = (sessions: { id: string }[]) => sessions.map((s) => s.id)

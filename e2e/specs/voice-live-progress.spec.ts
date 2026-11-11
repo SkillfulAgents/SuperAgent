@@ -13,12 +13,14 @@ async function setup(page: Page, request: APIRequestContext) {
   } }))
   await page.route('**/api/voice/live/session/*', route => route.fulfill({ json: { closed: true } }))
   await page.route('**/api/voice/live/map', route => {
-    const input = route.request().postDataJSON() as { kind: string; transcript?: string; text?: string }
+    const input = route.request().postDataJSON() as { kind: string; userWords?: string; text?: string }
     if (input.kind === 'reply') return route.fulfill({ json: { text: input.text } })
-    const latest = input.transcript?.split('user:').at(-1) ?? ''
-    return route.fulfill({ json: latest.includes('Cancel')
-      ? { action: 'cancel', text: '' }
-      : { action: 'message', text: latest.includes('background') ? 'run background slowly' : latest.includes('slow') ? 'slow response' : 'Give me a short greeting' } })
+    // The rewrite pipe: the user's unsent words become one message, which always interrupts.
+    const words = input.userWords ?? ''
+    return route.fulfill({ json: {
+      text: words.includes('background') ? 'run background slowly' : words.includes('slow') ? 'slow response' : 'Give me a short greeting',
+      mode: 'interrupt',
+    } })
   })
   const agent = await createAgent(request, `Live Progress ${Date.now()}`)
   const session = await createSession(request, agent, 'Give me a short greeting')
@@ -57,17 +59,18 @@ test('Live streams two consecutive replies as thinking and completes each once',
   await page.getByTestId('voice-mode-exit').click()
 })
 
-test('Live cancels a running turn without its completion cue, then completes a replacement', async ({ page, request }) => {
-  const { ask, replies } = await setup(page, request)
+test('Live interrupts a running turn without its completion cue, then completes the replacement', async ({ page, request }) => {
+  const { ask, replies, agent, session } = await setup(page, request)
   await ask('Start a slow response.', 'slow-turn')
   await expect(page.getByTestId('voice-mode-composer')).toHaveAttribute('data-phase', 'thinking')
-  await ask('Cancel that work.', 'cancel-turn')
-  await expect.poll(async () => (await replies()).map(event => event.content).join(' ')).toContain('The running agent turn was stopped.')
-  expect((await replies()).filter(event => event.content === completionCue)).toHaveLength(0)
-  await ask('Give me a greeting instead.', 'replacement-turn')
+  // Stopping is not a separate action: the user's words interrupt the running turn as the next message.
+  await ask('Never mind, give me a greeting instead.', 'replacement-turn')
   await expect.poll(async () => (await replies()).filter(event => event.content === completionCue)).toHaveLength(1)
   await expect(page.getByTestId('voice-mode-composer')).toHaveAttribute('data-phase', 'listening')
+  await waitForSessionIdle(request, agent, session)
   const sent = await replies()
+  // The interrupted turn neither spoke its delayed reply nor announced a completion of its own.
+  expect(sent.filter(event => event.content === completionCue)).toHaveLength(1)
   expect(sent.filter(event => event.type === 'session.thinking.append').map(event => event.content).join('')).toBe('This is a mock response from the E2E test container.')
   await page.getByTestId('voice-mode-exit').click()
 })

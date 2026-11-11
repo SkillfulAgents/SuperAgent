@@ -23,7 +23,7 @@ import {
 } from './spotlight'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
-import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
+import { registerUpdateHandlers, initAutoUpdater, automaticUpdateChecks, startAutomaticUpdateChecks, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
@@ -52,6 +52,8 @@ import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oau
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { cancelWebAuthSession, isPlatformLoginUrl, runWebAuthSession } from './web-auth-session'
+import { getPlatformBaseUrl, getPlatformCallbackUri } from '@shared/lib/platform-auth/config'
 import { osNotificationOptions, reviewIdOf, reviewNotificationId } from './os-notification-options'
 import { areOsNotificationsBlocked } from './notification-authorization'
 import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
@@ -108,11 +110,12 @@ console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
 // Initialize error reporting as early as possible (after data dir is set)
 import { initErrorReporting, captureException, flushErrorReporting, attachErrorReportingIdentity } from '@shared/lib/error-reporting'
+import { createServerProvider } from '@shared/lib/error-reporting/sentry-provider'
 import { recordFatalError, reportCrashMarkerFromLastRun, toReportableError } from './crash-marker'
 
 // Only report errors in production builds — dev mode generates too much noise
 if (app.isPackaged) {
-  initErrorReporting({ environment: 'electron' })
+  initErrorReporting(createServerProvider({ environment: 'electron' }))
   // If the last session died in a fatal handler, its Sentry event may have
   // been lost (no offline transport) — deliver the on-disk record now.
   void reportCrashMarkerFromLastRun()
@@ -128,7 +131,9 @@ import api from '../api'
 import { openDatabase } from '@shared/lib/db'
 import { initializeLocalAppState } from '@shared/lib/app-state'
 import { installDesktopKeyManager } from './keys/install-desktop-key-manager'
-import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
+import { initializeBackgroundWork, serviceHost } from '@shared/lib/background-work'
+import { LocalTaskManager } from '@shared/lib/background-work/local-task-manager'
+import { afterBindInitialize, registerBackgroundWork, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -574,6 +579,39 @@ ipcMain.on('renderer-painted', (event) => {
 // above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
   await safeOpenExternalFromApp(url)
+})
+
+// The Gamut sign-in in a sheet on the app's window (ASWebAuthenticationSession),
+// which the Mac App Store build uses instead of the default browser. Only the
+// platform's own login page is opened this way. The page ends on the same
+// deep link the browser would open, handled the same way.
+ipcMain.handle('platform-sign-in-start', async (_event, url: unknown) => {
+  if (!isPlatformLoginUrl(url, getPlatformBaseUrl())) {
+    console.warn('[WebAuth] Refusing to open a sign-in session on a URL that is not the platform login')
+    return 'failed'
+  }
+  const result = await runWebAuthSession(url, PROTOCOL_SCHEME)
+  if (!result) {
+    await safeOpenExternalFromApp(url)
+    return 'browser'
+  }
+  if ('cancelled' in result) return 'cancelled'
+  // The login page ends on the platform-auth deep link and nothing else; any
+  // other link on the app's scheme is not this sign-in's to deliver.
+  if ('url' in result && result.url.startsWith(`${getPlatformCallbackUri(PROTOCOL_SCHEME)}?`)) {
+    handleDeepLinkUrl(result.url)
+    return 'completed'
+  }
+  console.error('[WebAuth] The sign-in session failed:', 'error' in result ? result.error : 'unexpected callback URL')
+  mainWindow?.webContents.send('platform-auth-callback', {
+    success: false,
+    error: 'Sign-in could not be completed. Please try again.',
+  })
+  return 'failed'
+})
+
+ipcMain.handle('platform-sign-in-cancel', async () => {
+  await cancelWebAuthSession()
 })
 
 // First-party, argument-free launcher for the exact Apple extension listing.
@@ -1607,6 +1645,11 @@ async function startApp() {
     console.error('Failed to set up key custody:', error)
     captureException(error, { tags: { component: 'keys', operation: 'install' } })
   }
+  // Then task dispatch: a request can schedule work as soon as the bind below lands.
+  await initializeBackgroundWork(new LocalTaskManager())
+  registerBackgroundWork()
+  serviceHost().register(automaticUpdateChecks)
+  startAutomaticUpdateChecks()
 
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the
@@ -2018,6 +2061,8 @@ app.on('before-quit', async (event) => {
   if (!isShuttingDown) {
     event.preventDefault()
     stopSpotlight()
+    // A sign-in sheet still up holds one of the worker threads until it ends.
+    void cancelWebAuthSession().catch(() => {})
 
     // Hard deadline: force-exit if graceful shutdown hangs (e.g., stuck Lima VM)
     // Covers bounded upload preparation plus the existing stop/kill/force chain.

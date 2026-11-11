@@ -1,7 +1,7 @@
 /**
  * The app's TanStack Query client + global error handling.
  *
- * Two cross-cutting concerns are handled once here instead of at every call site:
+ * Three cross-cutting concerns are handled once here instead of at every call site:
  *
  *  1. Reporting — EVERY mutation and (post-retry) query failure is reported to
  *     Sentry via the cache-level `onError`. This is the safety net that makes
@@ -15,14 +15,23 @@
  *     with `meta: { skipGlobalErrorToast: true }` — they are still reported to
  *     Sentry. A mutation may override the toast text with `meta.errorMessage`.
  *
+ *  3. Hidden tabs: an invalidation in a tab nobody can see only marks the
+ *     queries stale; they refetch when the tab is visible again. Every open tab
+ *     follows the same live events, so without this each hidden tab refetched
+ *     the sessions list, agent detail and artifacts on every session event.
+ *     A query whose data is used while hidden (the dock badge, a voice session
+ *     waiting on a request) sets `meta: { refetchWhenHidden: true }`.
+ *
  * Queries are SILENT by default (they retry and usually render inline/empty
  * states); a query opts INTO a toast with `meta: { showErrorToast: true }`.
  */
 import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstack/react-query'
-import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
+import type { InvalidateOptions, InvalidateQueryFilters, MutationMeta, QueryKey, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
 import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
+import { AgentRuntimeRequestError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
+import { PROVIDER_RECONNECT_REQUIRED } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.
@@ -46,6 +55,8 @@ declare module '@tanstack/react-query' {
       showErrorToast?: boolean
       /** Override the global error toast text for this query. */
       errorMessage?: string
+      /** Refetch on invalidation even while the tab is hidden. */
+      refetchWhenHidden?: boolean
     }
   }
 }
@@ -75,8 +86,31 @@ export function handleQueryError(error: unknown, meta?: QueryMeta): void {
   if (meta?.showErrorToast) toast.error(meta.errorMessage ?? messageFromError(error))
 }
 
+function isTabHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+}
+
+class AppQueryClient extends QueryClient {
+  // A caller that names a refetchType has asked for that refetch, so it is kept.
+  override invalidateQueries<TTaggedQueryKey extends QueryKey = QueryKey>(
+    filters?: InvalidateQueryFilters<TTaggedQueryKey>,
+    options?: InvalidateOptions,
+  ): Promise<void> {
+    if (filters?.refetchType === undefined && isTabHidden()) {
+      const marked = super.invalidateQueries({ ...filters, refetchType: 'none' }, options)
+      const live = this.refetchQueries({
+        ...filters,
+        type: 'active',
+        predicate: (query) => query.meta?.refetchWhenHidden === true && (filters?.predicate?.(query) ?? true),
+      }, options)
+      return Promise.all([marked, live]).then(() => undefined)
+    }
+    return super.invalidateQueries(filters, options)
+  }
+}
+
 export function createAppQueryClient(): QueryClient {
-  return new QueryClient({
+  const client: QueryClient = new AppQueryClient({
     defaultOptions: {
       queries: {
         staleTime: 5 * 1000,
@@ -85,11 +119,23 @@ export function createAppQueryClient(): QueryClient {
     },
     mutationCache: new MutationCache({
       // v5 signature: (error, variables, onMutateResult, mutation, context)
-      onError: (error, _variables, _onMutateResult, mutation) =>
-        handleMutationError(error, mutation.options.meta),
+      onError: (error, _variables, _onMutateResult, mutation) => {
+        handleMutationError(error, mutation.options.meta)
+        // The server just recorded the expired sign-in; show it in the provider lists.
+        if (error instanceof AgentRuntimeRequestError && error.code === PROVIDER_RECONNECT_REQUIRED) {
+          void client.invalidateQueries({ queryKey: ['settings'] })
+        }
+      },
     }),
     queryCache: new QueryCache({
       onError: (error, query) => handleQueryError(error, query.meta),
     }),
   })
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (isTabHidden()) return
+      void client.refetchQueries({ type: 'active', predicate: (query) => query.state.isInvalidated })
+    })
+  }
+  return client
 }

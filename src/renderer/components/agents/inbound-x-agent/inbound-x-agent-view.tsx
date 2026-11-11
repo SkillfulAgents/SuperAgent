@@ -24,7 +24,7 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
   const navigate = useNavigate()
   const { data, isLoading, error } = useInboundXAgentDetails(agentSlug)
   const setPermission = useSetInboundXAgentPermission(agentSlug)
-  const { isAuthMode, rolesReady, canAdminAgent } = useUser()
+  const { isAuthMode, rolesReady, canUseAgent } = useUser()
   const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
   const [decisionOverrides, setDecisionOverrides] = useState<Record<string, 'allow' | 'review'>>({})
   const [pendingCallers, setPendingCallers] = useState<Set<string>>(() => new Set())
@@ -112,13 +112,16 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
   const renderCallerRow = (caller: InboundXAgentCaller) => {
     const allowed = effectiveDecision(caller) === 'allow'
     const pending = pendingCallers.has(caller.slug)
-    const canManage = caller.canAccess && (!isAuthMode || (rolesReady && canAdminAgent(caller.slug)))
+    const usesCaller = canUseAgent(caller.slug)
+    const usesTarget = canUseAgent(agentSlug)
+    const canManage = caller.canAccess && (!isAuthMode || (rolesReady && usesCaller && usesTarget))
+    const lacking = [usesCaller ? null : caller.name || caller.displaySlug, usesTarget ? null : 'this agent'].filter(Boolean)
     const accessNote = !caller.canAccess
       ? 'No access'
       : isAuthMode && !rolesReady
         ? 'Checking permissions…'
-        : isAuthMode && !canAdminAgent(caller.slug)
-          ? 'Owner access required'
+        : isAuthMode && lacking.length > 0
+          ? `You need User access to ${lacking.join(' and ')} to change this.`
           : null
 
     return (
@@ -127,8 +130,9 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
         icon={null}
         name={caller.name}
         subtitle={(
-          <span className="min-w-0 truncate font-mono">
-            {caller.displaySlug}{accessNote ? ` · ${accessNote}` : ''}
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate font-mono">{caller.displaySlug}</span>
+            {accessNote && <span>{accessNote}</span>}
           </span>
         )}
         viewTransitionName={`inbound-xagent-${caller.slug}`}

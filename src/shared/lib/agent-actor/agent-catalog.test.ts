@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { eq } from 'drizzle-orm'
+import { eq, type SQL } from 'drizzle-orm'
 import * as schema from '@shared/lib/db/schema'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -169,6 +169,23 @@ describe('removing an agent', () => {
     expect(fs.existsSync(getAgentDir('gone'))).toBe(false)
   })
 
+  it('removes the agent\'s session index, so a later agent with the slug starts without sessions', async () => {
+    const sessionsOf = (slug: string) =>
+      testDb.select().from(schema.agentSessions).where(eq(schema.agentSessions.agentSlug, slug)).all()
+    await writeAgentDirectory('gone', '---\nname: Gone\n---\nBody')
+    await catalog.insert({ slug: 'gone', name: 'Gone', createdAt: new Date() })
+    await testDb.insert(schema.agentSessions).values([
+      { agentSlug: 'gone', sessionId: 's1', metadata: '{"name":"Its session"}' },
+      { agentSlug: 'gone', sessionId: 's2', metadata: null, transcriptMtimeMs: 1, transcriptBirthtimeMs: 0, transcriptSize: 1 },
+      { agentSlug: 'kept', sessionId: 's1', metadata: '{"name":"Another agent\'s"}' },
+    ]).run()
+
+    await catalog.remove('gone')
+
+    expect(await sessionsOf('gone')).toEqual([])
+    expect(await sessionsOf('kept')).toHaveLength(1)
+  })
+
   it('removes only the row of an agent placed elsewhere, and touches no directory', async () => {
     await testDb.insert(schema.agents).values({
       slug: 'remote', name: 'Remote', createdAt: new Date(), runtime: 'modal', workspaceHandle: 'superagent-remote',
@@ -206,5 +223,67 @@ describe('removing an agent', () => {
     await catalog.remove('stuck')
     expect(await rowFor('stuck')).toBeUndefined()
     expect(fs.existsSync(getAgentDir('stuck'))).toBe(false)
+  })
+})
+
+describe('reading rows', () => {
+  async function insertRow(slug: string, name: string) {
+    await testDb.insert(schema.agents).values({
+      slug, name, avatarColor: 'tonal-cobalt', avatarShape: 'circle', description: null,
+      createdAt: new Date('2026-11-02T12:00:00Z'), runtime: 'local', workspaceHandle: null,
+    }).run()
+  }
+
+  /** The next row read gets the row at once but answers only when `respond()` runs, like a slow network. */
+  function slowNextRead() {
+    let respond!: () => void
+    const answered = new Promise<void>((resolve) => { respond = resolve })
+    const select = testDb.select.bind(testDb)
+    vi.spyOn(testDb, 'select').mockImplementationOnce((() => ({
+      from: (table: typeof schema.agents) => ({
+        where: (filter: SQL) => ({
+          get: async () => {
+            const row = await select().from(table).where(filter).get()
+            await answered
+            return row
+          },
+        }),
+      }),
+    })) as never)
+    return respond
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('resolves a display slug with one query', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    const select = vi.spyOn(testDb, 'select')
+
+    expect(await catalog.resolveRecord('sales-a1b2c3d4e5')).toMatchObject({ slug: 'a1b2c3d4e5', name: 'Sales' })
+    expect(select).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves a legacy compound slug to itself when the agent its last segment names also exists', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    await insertRow('legacy-a1b2c3d4e5', 'Legacy sales')
+
+    expect(await catalog.resolve('legacy-a1b2c3d4e5')).toBe('legacy-a1b2c3d4e5')
+    expect(await catalog.resolve('sales-a1b2c3d4e5')).toBe('a1b2c3d4e5')
+  })
+
+  it('reads a rename made through another catalog while an older read is still answering', async () => {
+    await insertRow('f6g7h8i9j0', 'Research')
+    const otherIsolate = createAgentCatalog()
+    const respond = slowNextRead()
+
+    const before = catalog.get('f6g7h8i9j0')
+    await otherIsolate.update('f6g7h8i9j0', { name: 'Market research' })
+    const after = catalog.get('f6g7h8i9j0')
+
+    respond()
+    expect((await before)?.name).toBe('Research')
+    expect((await after)?.name).toBe('Market research')
   })
 })

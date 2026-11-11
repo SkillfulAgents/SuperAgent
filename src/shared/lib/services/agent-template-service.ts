@@ -15,15 +15,17 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import { Readable } from 'stream'
-import pLimit from 'p-limit'
+import { StringDecoder } from 'string_decoder'
 import archiver from 'archiver'
+import pLimit from 'p-limit'
 import {
-  openZipFromBuffer,
-  openZipFromFile,
+  openZipSource,
   detectZipPrefix,
   type ZipEntryMeta,
   type ZipReader,
+  type ZipSource,
 } from '@shared/lib/utils/zip'
+import { chunksOf } from '@shared/lib/agent-actor/jsonl-files'
 import {
   directoryExists,
   parseMarkdownWithFrontmatter,
@@ -40,6 +42,7 @@ import {
   type FileOps,
 } from '@shared/lib/agent-actor'
 import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
+import { SESSION_METADATA_FILE, SET_ASIDE_SESSION_METADATA_PREFIX } from './session-metadata-file'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import {
   readIndexJson,
@@ -49,6 +52,7 @@ import {
   getSkillsetRepoDir,
   refreshSkillset,
   BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS,
+  SKILLSET_PULL_CONCURRENCY,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
@@ -79,8 +83,8 @@ import type { SkillsetAuthContext } from '@shared/lib/skillset-provider/base-ski
 // Constants
 // ============================================================================
 
-const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
-export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
+const MAX_UNCOMPRESSED_SIZE = 2 * 1024 * 1024 * 1024 // 2GB
+export const MAX_COMPRESSED_SIZE = 2 * 1024 * 1024 * 1024 // 2GB
 const MAX_FILE_COUNT = 10_000
 export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
 
@@ -96,13 +100,19 @@ const TEMPLATE_EXCLUDE = new Set([
   '.DS_Store',
   'node_modules',
   '__pycache__',
-  'session-metadata.json',
+  SESSION_METADATA_FILE,
   '.slash-commands.json',
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
   'bookmarks.json',
   'agent-preferences.json',
 ])
+
+/** Whether a file or directory of this name is left out of templates, at any level. */
+function isExcludedFromTemplates(name: string): boolean {
+  // A set-aside session-metadata file holds every session's name and who started it.
+  return TEMPLATE_EXCLUDE.has(name) || name.startsWith(SET_ASIDE_SESSION_METADATA_PREFIX)
+}
 
 /** File extensions excluded from templates at any level */
 const TEMPLATE_EXCLUDE_EXTENSIONS = new Set([
@@ -138,7 +148,7 @@ const CLAUDE_DIR_ALLOWLIST = new Set([
 function isTemplateEntry(entryPath: string): boolean {
   const normalized = entryPath.replace(/^\.\//, '')
   const parts = normalized.split('/')
-  if (parts.some((part) => TEMPLATE_EXCLUDE.has(part))) return false
+  if (parts.some(isExcludedFromTemplates)) return false
   if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(normalized))) return false
   if (TEMPLATE_EXCLUDE_TOP_DIRS.has(parts[0])) return false
   // Session transcripts, subagents, workflows, and derived runtime state live
@@ -230,14 +240,14 @@ function agentTemplateRoot(agentPath: string): string {
 interface TemplateTree {
   /** Immediate children of a directory. Throws when it cannot be listed. */
   list(dir: string): Promise<Array<Pick<FileEntry, 'name' | 'kind'>>>
-  /** A whole file, or null when it cannot be read. */
-  read(relativePath: string): Promise<Uint8Array | null>
+  /** A file's bytes as a stream. Throws when it cannot be opened. */
+  read(relativePath: string): Promise<ReadableStream<Uint8Array>>
 }
 
 function workspaceTree(files: FileOps): TemplateTree {
   return {
     list: (dir) => files.list(dir),
-    read: (relativePath) => files.getDoc(relativePath),
+    read: (relativePath) => files.read(relativePath),
   }
 }
 
@@ -252,11 +262,9 @@ function hostTree(rootDir: string): TemplateTree {
       return entries.map((entry) => ({ name: entry.name, kind: entry.isDirectory() ? 'directory' : 'file' }))
     },
     async read(relativePath) {
-      try {
-        return new Uint8Array(await fs.promises.readFile(path.join(rootDir, relativePath)))
-      } catch {
-        return null
-      }
+      // Opened first, so a missing file throws here and not mid-stream.
+      const handle = await fs.promises.open(path.join(rootDir, relativePath))
+      return Readable.toWeb(handle.createReadStream()) as ReadableStream<Uint8Array>
     },
   }
 }
@@ -286,7 +294,7 @@ async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
       const relativePath = joinTreePath(dir, entry.name)
 
       // Skip excluded files at any level
-      if (TEMPLATE_EXCLUDE.has(entry.name)) continue
+      if (isExcludedFromTemplates(entry.name)) continue
 
       if (entry.kind === 'directory') {
         // Skip top-level excluded directories
@@ -317,7 +325,7 @@ async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
     }
 
     for (const entry of entries) {
-      if (TEMPLATE_EXCLUDE.has(entry.name)) continue
+      if (isExcludedFromTemplates(entry.name)) continue
 
       if (entry.kind === 'directory') {
         // Only recurse into allowlisted subdirectories of .claude/
@@ -415,10 +423,13 @@ const ZIP_APPEND_WINDOW = 4
 // and appends it. archiver starts reading a source the moment it is appended,
 // so `add` waits for the queue to drain below a small window before opening
 // the next file: a ten-thousand-file workspace never has ten thousand files
-// open at once.
+// open at once. `addBytes` appends an entry that is no file of the workspace.
 function createWorkspaceZipStream(
   files: FileOps,
-  addFiles: (add: (workspacePath: string, entryName?: string) => Promise<void>) => Promise<void>,
+  addFiles: (
+    add: (workspacePath: string, entryName?: string) => Promise<void>,
+    addBytes: (entryName: string, bytes: string) => void,
+  ) => Promise<void>,
   signal: AbortSignal | undefined,
   zlibLevel: number,
 ): Readable {
@@ -540,6 +551,12 @@ function createWorkspaceZipStream(
     })
   }
 
+  const addBytes = (entryName: string, bytes: string): void => {
+    if (stopped || signal?.aborted) return
+    inFlight += 1
+    archive.append(bytes, { name: entryName })
+  }
+
   const onAbort = () => {
     release()
     stopArchive()
@@ -552,7 +569,7 @@ function createWorkspaceZipStream(
         onAbort()
         return
       }
-      await addFiles(add)
+      await addFiles(add, addBytes)
       if (signal?.aborted || archive.destroyed) return
       await archive.finalize()
     } catch (err) {
@@ -594,11 +611,22 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
       throw new Error('Agent workspace not found')
     }
 
-    const { files } = agentRegistry.get(agentSlug)
+    const { files, sessions } = agentRegistry.get(agentSlug)
+    // A file the actor did not find when it first used the index (its
+    // volume came back since) would otherwise be skipped below, not exported.
+    await sessions.ingestMetadataFile()
     const rootFiles = (await files.list('')).map((entry) => entry.path)
+    // The session index is not a file of the workspace: the archive carries
+    // it in its portable form, which an import takes back in.
+    const sessionMetadata = JSON.stringify(await sessions.exportMetadata(), null, 2)
     return createWorkspaceZipStream(
       files,
-      (add) => walkFullExportFiles(files, (workspacePath) => add(workspacePath, templatePathOf(workspacePath, rootFiles)), signal),
+      async (add, addBytes) => {
+        addBytes(SESSION_METADATA_FILE, sessionMetadata)
+        await walkFullExportFiles(files, async (workspacePath) => {
+          if (workspacePath !== SESSION_METADATA_FILE) await add(workspacePath, templatePathOf(workspacePath, rootFiles))
+        }, signal)
+      },
       signal,
       1, // large workspaces — level 9 pegs 0.5 vCPU hosts
     )
@@ -608,18 +636,6 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
 // ============================================================================
 // ZIP Validation
 // ============================================================================
-
-/**
- * ZIP input for validation/import: either raw bytes, or a path to a ZIP
- * already on disk. Prefer the file form when available — it reads entries on
- * demand instead of pinning the whole (up to 500MB) buffer in memory for the
- * entire extraction.
- */
-export type TemplateZipSource = Buffer | { filePath: string }
-
-function openZipSource(zip: TemplateZipSource): Promise<ZipReader> {
-  return Buffer.isBuffer(zip) ? openZipFromBuffer(zip) : openZipFromFile(zip.filePath)
-}
 
 export interface TemplateValidationResult {
   valid: boolean
@@ -679,7 +695,7 @@ export function validateTemplateEntries(
  * In 'full' mode, only __MACOSX entries are filtered — all other entries count
  * toward size/count limits and are checked for path traversal.
  */
-export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
+export async function validateAgentTemplate(zip: ZipSource, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
   let reader: ZipReader | undefined
   try {
     reader = await openZipSource(zip)
@@ -715,7 +731,7 @@ export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'templ
  * Creates a new agent with the template contents.
  */
 export async function importAgentFromTemplate(
-  zip: TemplateZipSource,
+  zip: ZipSource,
   nameOverride?: string,
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
@@ -776,6 +792,8 @@ export async function importAgentFromTemplate(
     await normalizeTemplateInstructions(actor.files, reader.entries.map((entry) =>
       (stripPrefix ? entry.fileName.replace(stripPrefix, '') : entry.fileName).replace(/^\.\//, ''),
     ))
+    // A full archive carries the sessions' names in `session-metadata.json`.
+    await actor.sessions.ingestMetadataFile()
     // The template instructions replaced the defaults the agent was created with:
     // take the name (unless overridden) and description it carries, and
     // write the identity back into it.
@@ -914,7 +932,7 @@ export async function updateAgentFromSkillset(
 
   const actor = agentRegistry.get(agentSlug)
 
-  // Walk the template source and copy files, preserving .env/session-metadata
+  // Walk the template source and copy files, preserving the agent's own .env
   await copyTemplateFiles(agentDirInRepo, actor.files)
   // The template instructions replaced the projection; the agent keeps its name.
   await writeAgentIdentityProjection(agentSlug)
@@ -1041,7 +1059,7 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<{
     if (!stat || stat.kind !== 'file') return { hasOnboarding: false }
     if (stat.size === 0) return { hasOnboarding: true }
 
-    // Frontmatter is at the top. Do not load a 500MB skill body into the heap:
+    // Frontmatter is at the top. Do not load a huge skill body into the heap:
     // read only the leading bytes.
     const readLen = Math.min(stat.size, ONBOARDING_SKILL_READ_LIMIT)
     const head = await readStreamToBuffer(await files.read(ONBOARDING_SKILL_PATH, { start: 0, end: readLen - 1 }))
@@ -1175,29 +1193,35 @@ export async function computeWorkspaceTemplateHash(files: FileOps): Promise<stri
   return computeTemplateHash(workspaceTree(files))
 }
 
+const TEMPLATE_HASH_READ_AHEAD = 8
+
 async function computeTemplateHash(tree: TemplateTree): Promise<string> {
   const files = await walkTemplateFiles(tree)
   // Hash names are a persisted compatibility format, independent of export names.
   const nameOf = new Map(files.map((file) => [file, templateHashPathOf(file, files)]))
   files.sort((a, b) => (nameOf.get(a)! < nameOf.get(b)! ? -1 : nameOf.get(a)! > nameOf.get(b)! ? 1 : 0))
 
-  const limit = pLimit(8)
-  const contents = new Map<string, string>()
-  await Promise.all(files.map((relativePath) => limit(async () => {
-    try {
-      const bytes = await tree.read(relativePath)
-      if (bytes !== null) contents.set(relativePath, bytesToUtf8(bytes))
-    } catch {
-      // Skip unreadable files
-    }
-  })))
-
+  // Files are opened a few ahead but read in hash order, one at a time, so
+  // memory stays at a few stream buffers however large the files are. Each
+  // file is hashed as its UTF-8 text, as the whole-file read did.
+  const opened: Array<Promise<ReadableStream<Uint8Array> | null> | undefined> = []
+  const open = (index: number): void => {
+    opened[index] ??= tree.read(files[index]).catch(() => null) // Skip unreadable files
+  }
   const hash = crypto.createHash('sha256')
-  for (const relativePath of files) {
-    const content = contents.get(relativePath)
-    if (content === undefined) continue
-    hash.update(nameOf.get(relativePath)!)
-    hash.update(content)
+  try {
+    for (let index = 0; index < files.length; index++) {
+      for (let ahead = index; ahead < Math.min(files.length, index + TEMPLATE_HASH_READ_AHEAD); ahead++) open(ahead)
+      const stream = await opened[index]
+      opened[index] = undefined
+      if (stream === null || stream === undefined) continue
+      hash.update(nameOf.get(files[index])!)
+      const decoder = new StringDecoder('utf8')
+      for await (const chunk of chunksOf(stream)) hash.update(decoder.write(chunk))
+      hash.update(decoder.end())
+    }
+  } finally {
+    await Promise.all(opened.map((pending) => pending?.then((stream) => stream?.cancel()).catch(() => {})))
   }
 
   return hash.digest('hex')
@@ -1307,14 +1331,15 @@ export async function refreshAgentTemplates(
   options: { background?: boolean } = {},
 ): Promise<void> {
   const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
-  for (const ss of skillsets) {
+  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
+  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
     try {
       await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       captureException(error, { tags: { area: 'template-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
     }
-  }
+  })))
 
   const agents = await listAgents()
 
@@ -1324,8 +1349,10 @@ export async function refreshAgentTemplates(
   const pendingByProvider = new Map<SkillProvider, string[]>()
   // One settings read screens every agent's template metadata.
   const screen = await readSkillsetAuthScreen()
-  for (const agent of agents) {
-    const meta = await getInstalledAgentMetadata(agent.slug, screen)
+  const readLimit = pLimit(8)
+  const metas = await Promise.all(agents.map((agent) => readLimit(() => getInstalledAgentMetadata(agent.slug, screen))))
+  for (const [index, agent] of agents.entries()) {
+    const meta = metas[index]
     if (!meta) continue
     metaByAgent.set(agent.slug, meta)
     if (meta.pendingQueueItemId) {

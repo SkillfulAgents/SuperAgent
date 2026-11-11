@@ -11,7 +11,6 @@ import type {
 } from './settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from './capability-policy-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
-import { teamBrainRecordSchema } from './team-brain-schema'
 import { validateFaviconDataUrl } from './favicon'
 import { isValidAccelerator } from './shortcuts'
 import {
@@ -87,7 +86,6 @@ export const appSettingsPatchSchema = z.object({
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
   hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
-  chromeProfileId: z.string(),
   chromeHeadless: z.boolean(),
   allowPrereleaseUpdates: z.boolean(),
   theme: z.enum(['system', 'light', 'dark']),
@@ -215,7 +213,6 @@ export const generalSettingsPatchSchema = z.object({
   enableToolSearch: z.boolean(),
   agentCapabilities: agentCapabilitySettingsPatchSchema.strict(),
   globalInstructions: globalInstructionsSchema,
-  teamBrain: teamBrainRecordSchema,
 }).partial().strict()
 
 /** The complete, allowlisted patch accepted by PUT /api/settings. */
@@ -508,17 +505,10 @@ export const generalSettingsComponent = {
         patch.globalInstructions !== undefined
           ? patch.globalInstructions
           : before.globalInstructions,
-      teamBrain: patch.teamBrain !== undefined ? patch.teamBrain : before.teamBrain,
     }
   },
 
-  validate({ before, patch }: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
-    // One Team Brain per workspace: a set-up that lost the race to another admin's is refused; a retry of the same record is not.
-    const current = before.teamBrain
-    const next = patch?.teamBrain
-    if (current && next && (current.agentSlug !== next.agentSlug || current.volumeId !== next.volumeId)) {
-      return [{ status: 409, message: 'Team Brain is already set up' }]
-    }
+  validate(_args: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
     return []
   },
 } satisfies SettingsComponent<typeof generalSettingsPatchSchema>
@@ -548,7 +538,6 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     enableToolSearch: patch.enableToolSearch,
     agentCapabilities: patch.agentCapabilities,
     globalInstructions: patch.globalInstructions,
-    teamBrain: patch.teamBrain,
   }
 }
 

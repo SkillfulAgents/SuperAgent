@@ -3,6 +3,7 @@ import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { useMessages, useStopBackgroundTask } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { useAgent } from '@renderer/hooks/use-agents'
 import { usePendingUserRequests } from '@shared/lib/tools/requests/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
@@ -10,7 +11,6 @@ import { resolveProviderError } from '@renderer/components/provider-error/provid
 import { isProviderFacingError } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { useCallback, useMemo, useState } from 'react'
-import { useAgent } from '@renderer/hooks/use-agents'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { agentAvatarAccent } from '@shared/lib/types/agent-avatar-orbs'
 import { computerUsePreferences, type ComputerUseSettings } from '@shared/lib/computer-use/types'
@@ -34,8 +34,8 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     'completedSubagents', 'apiRetry', 'computerUseApp', 'computerUseAppIcon', 'backgroundTasks', 'isThinking',
   ])
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
+  const { data: agent } = useAgent(agentSlug)
   // The agent's cursor colour, shown beside the app while cursors are on.
-  const { data: agent } = useAgent(computerUseApp ? agentSlug : null)
   const { data: settings } = useSettings()
   const cursorColor = computerUseApp && agent?.avatar
     && computerUsePreferences(settings?.computerUse as ComputerUseSettings | undefined).showCursor
@@ -255,6 +255,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     <ActivityCard
       statusText={statusText}
       orbState={orbState}
+      agent={agent}
       elapsed={elapsed}
       isAwaitingInput={isAwaitingInput}
       detached={voiceModeActive}

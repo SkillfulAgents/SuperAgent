@@ -126,6 +126,38 @@ describe('processSSEEvent', () => {
       expect(managed.streamingState.accumulatedText).toBe('')
     })
 
+    it('clears the turn\'s received marks after the reply commits, again after a late add lands, and keeps one that arrives meanwhile', async () => {
+      managed.streamingState.accumulatedText = 'Final text'
+      managed.streamingState.currentMessageId = 'msg-1'
+      const mock = getMock(managed)
+      const log: string[] = []
+      let landFirstAdd: (() => void) | undefined
+      vi.spyOn(mock as any, 'addAcknowledgement').mockImplementationOnce(() => new Promise<void>(resolve => { landFirstAdd = () => { log.push('added m1'); resolve() } }))
+      vi.spyOn(mock as any, 'removeAcknowledgement').mockImplementation(async (_chatId, messageId) => {
+        log.push(`removed ${messageId}`)
+        if (log.length > 1) throw new Error('no_reaction')
+      })
+      let commit: (() => void) | undefined
+      vi.spyOn(mock, 'finalizeStreamingMessage').mockImplementation(() => new Promise<void>(resolve => { commit = resolve }))
+      const acknowledge = (id: string) => mock.acknowledgeInput({
+        type: 'input', id, externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: id, text: 'hi', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+
+      const first = acknowledge('m1')
+      const idle = processSSEEvent(managed, { type: 'session_idle' })
+      await vi.waitFor(() => expect(commit).toBeDefined())
+      await acknowledge('m2')
+      expect(log).toEqual([])
+      commit!()
+      await idle
+      await vi.waitFor(() => expect(log).toEqual(['removed m1']))
+      landFirstAdd!()
+      await first
+
+      expect(log).toEqual(['removed m1', 'added m1', 'removed m1'])
+    })
+
     it('sends as new message if no streaming message existed', async () => {
       managed.streamingState.accumulatedText = 'Short response'
       managed.streamingState.currentMessageId = null
@@ -135,6 +167,19 @@ describe('processSSEEvent', () => {
       const mock = getMock(managed)
       expect(mock.sentMessages.length).toBe(1)
       expect(mock.sentMessages[0].message.text).toBe('Short response')
+    })
+
+    it("shows an agent's tag as a plain @Name in the chat, holding back one still streaming in", async () => {
+      const text = 'x'.repeat(STREAM_FIRST_POST_CHARS)
+      await processEvents(managed, [
+        { type: 'stream_delta', text: `${text} [@Mike Sm` },
+        { type: 'stream_delta', text: 'ith](user:u_mike1), please decide' },
+        { type: 'session_idle' },
+      ])
+
+      const mock = getMock(managed)
+      expect(mock.streamUpdates.map(u => u.text)).toEqual([`${text} `])
+      expect(mock.finalizedMessages.map(m => m.finalText)).toEqual([`${text} @Mike Smith, please decide`])
     })
 
     it('does nothing on session_idle with no accumulated text', async () => {
@@ -326,6 +371,21 @@ describe('processSSEEvent', () => {
         toolUseId: 'tu-1',
         questions: [{ question: 'Which DB?' }],
       })
+    })
+
+    it('clears the received marks once the question card is posted', async () => {
+      const mock = getMock(managed)
+      const log: string[] = []
+      vi.spyOn(mock as any, 'removeAcknowledgement').mockImplementation(async (_chatId, messageId) => { log.push(`removed ${messageId}`) })
+      vi.spyOn(mock, 'sendUserRequestCard').mockImplementation(async () => { log.push('card'); return 'card-1' })
+      await mock.acknowledgeInput({
+        type: 'input', id: 'm1', externalId: 'chat-123', timestamp: new Date(),
+        payload: { externalMessageId: 'm1', text: 'hi', chatId: 'chat-123', userId: 'u1', timestamp: new Date() },
+      })
+
+      await processSSEEvent(managed, createdEvent('question', { questions: [{ question: 'Which DB?' }] }))
+
+      await vi.waitFor(() => expect(log).toEqual(['card', 'removed m1']))
     })
 
     it('forwards a secret request to sendUserRequestCard', async () => {

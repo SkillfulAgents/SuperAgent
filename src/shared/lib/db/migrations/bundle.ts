@@ -728,5 +728,46 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1793840639365,
     "hash": "773815730f63f226f64dd501cff54a9a75589b604f237b97f210d3a108d5faa5"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `team_directories` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`provider` text NOT NULL,\n\t`tenant_id` text NOT NULL,\n\t`tenant_name` text NOT NULL,\n\t`credentials` text NOT NULL,\n\t`revision` integer DEFAULT 1 NOT NULL,\n\t`status` text DEFAULT 'active' NOT NULL,\n\t`error_message` text,\n\t`created_by_user_id` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`created_by_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE UNIQUE INDEX `team_directories_provider_tenant_unique` ON `team_directories` (`provider`,`tenant_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794169367052,
+    "hash": "dd3f35ee6a917dce7b6bf20edbada511911eaca7a2bd40917a23f3e3c7b90ab5"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `user` ADD `status` text DEFAULT 'active' NOT NULL;",
+      "\nALTER TABLE `user` ADD `invited_by_user_id` text;",
+      "\nALTER TABLE `user` ADD `directory_provider` text;",
+      "\nALTER TABLE `user` ADD `directory_tenant_id` text;",
+      "\nALTER TABLE `user` ADD `directory_remote_id` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794181010721,
+    "hash": "60f97691dde6e559399e2e3d2f0db962c3d13672349219e264aa7a3489727339"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `team_directories` ADD `provisioning_credentials` text;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_revision` integer DEFAULT 0 NOT NULL;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_status` text;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_error` text;",
+      "\nALTER TABLE `team_directories` ADD `directory_app` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794182726903,
+    "hash": "4a2c26f37c2e6aee059d42d42d98e38f4513afa1fdefee3f9600896ec4151401"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_sessions` (\n\t`agent_slug` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`metadata` text,\n\t`transcript_mtime_ms` real,\n\t`transcript_birthtime_ms` real,\n\t`transcript_size` integer,\n\tPRIMARY KEY(`agent_slug`, `session_id`)\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1794261056427,
+    "hash": "00ee07e7ef2c3cfc242f056c6d8da8fd74ad5f00a0809ec22bf057f0b283710a"
   }
 ]

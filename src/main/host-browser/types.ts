@@ -1,5 +1,3 @@
-import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
-
 export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
 
 export interface BrowserConnectionInfo {
@@ -22,8 +20,6 @@ export interface HostBrowserProviderStatus {
   name: string
   available: boolean
   reason?: string
-  /** Chrome-specific: detected browser profiles */
-  profiles?: ChromeProfile[]
 }
 
 export interface HostBrowserProvider {

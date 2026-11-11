@@ -1,4 +1,4 @@
-import type { QueryClient } from '@tanstack/react-query'
+import type { QueryClient, QueryKey } from '@tanstack/react-query'
 import type { ApiAgent, ApiAgentWidget, ApiSession } from '@shared/lib/types/api'
 import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
@@ -71,6 +71,11 @@ function agentSlugAliases(queryClient: QueryClient, slug: string): Set<string> {
   return aliases
 }
 
+/** The keys one agent's detail may be cached under: its canonical id and decorative route aliases. */
+export function agentDetailQueryKeys(queryClient: QueryClient, slug: string): QueryKey[] {
+  return [...agentSlugAliases(queryClient, slug)].map((alias) => ['agents', alias])
+}
+
 /** Invalidate artifact queries for one agent, including decorative route aliases. */
 export function invalidateAgentArtifacts(queryClient: QueryClient, slug: string): void {
   const aliases = agentSlugAliases(queryClient, slug)
@@ -134,6 +139,46 @@ function isAgentSessionListKey(queryKey: readonly unknown[], aliases: Set<string
   return queryKey[0] === 'sessions'
     && typeof queryKey[1] === 'string'
     && aliases.has(queryKey[1])
+}
+
+/** One cached session list of an agent, and whether it holds a given session. */
+export interface SessionListMembership {
+  queryKey: QueryKey
+  /** The agent's full list, not a slice of it. */
+  full: boolean
+  holds: boolean
+}
+
+/**
+ * Every cached session list of one agent (all route keys and slices), and
+ * whether each holds this session. A status event can patch a row in place;
+ * only a refetch can add one.
+ */
+export function sessionListMembership(queryClient: QueryClient, agentSlug: string, sessionId: string): SessionListMembership[] {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  return queryClient
+    .getQueriesData<unknown>({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+    .flatMap(([queryKey, data]) => Array.isArray(data)
+      ? [{ queryKey, full: queryKey.length === 2, holds: data.some((entry) => (entry as ApiSession | null)?.id === sessionId) }]
+      : [])
+}
+
+/**
+ * Invalidate the agent's session lists that can hold a hidden automated
+ * session. The full list and the notable slice (`useNotableSessions`) come
+ * from the sessions route, which leaves those sessions out.
+ */
+export function invalidateAutomationSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({
+    predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) && query.queryKey.length > 2 && query.queryKey[2] !== 'notable',
+  })
+}
+
+/** Invalidate every cached session list of one agent (all route keys and slices), and no other agent's. */
+export function invalidateAgentSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
 }
 
 /**

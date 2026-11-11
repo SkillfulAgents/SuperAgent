@@ -49,6 +49,8 @@ it('forwards structured email fields and identifies acceptance without claiming 
   const email = { to: ['a@example.com'], subject: 'Hello', idempotency_key: 'hello-test' }
   const result = await tool.execute({ integration_id: 'email', message: 'Hello, world!', email })
   expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({ email, message: 'Hello, world!', session_id: 'caller-session' })
+  await tool.execute({ integration_id: 'slack', message: 'Takeaway', also_send_to_channel: true })
+  expect(JSON.parse(vi.mocked(fetch).mock.calls[1][1]!.body as string)).toMatchObject({ also_send_to_channel: true })
   expect(result.content[0].text).toContain('Status: queued')
   expect(result.content[0].text).not.toContain('delivered')
 })

@@ -315,6 +315,27 @@ describe('startWorking (dumb, no self-heartbeat)', () => {
   })
 })
 
+describe('TelegramConnector — received mark', () => {
+  it('reacts with eyes on arrival, skips /start, and clears the reaction on disconnect', async () => {
+    const connector = makeConnector()
+    const setMessageReaction = vi.fn().mockResolvedValue(true)
+    ;(connector as any).bot = { api: { setMessageReaction }, stop: vi.fn().mockResolvedValue(undefined) }
+    const acknowledge = (id: string, text: string) => connector.acknowledgeInput({
+      type: 'input', id, externalId: '-100', timestamp: new Date(),
+      payload: { externalMessageId: id, text, chatId: '-100', userId: '7', timestamp: new Date() },
+    })
+
+    await acknowledge('41', '/start')
+    await acknowledge('42', 'hi')
+    await connector.disconnect()
+
+    await vi.waitFor(() => expect(setMessageReaction.mock.calls).toEqual([
+      ['-100', 42, [{ type: 'emoji', emoji: '👀' }]],
+      ['-100', 42, []],
+    ]))
+  })
+})
+
 describe('TelegramConnector — AskUserQuestion multi-select', () => {
   let connector: TelegramConnector
   let sent: any[]

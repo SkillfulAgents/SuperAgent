@@ -224,6 +224,15 @@ describe('ClaudeCodeProcess CLI feature opt-outs', () => {
     expect((options.env as Record<string, string>).CLAUDE_CODE_DISABLE_ARTIFACT).toBe('1')
   })
 
+  // Empty attribution is what stops the CLI adding its commit/PR attribution
+  // system-reminder to the first turn. See createQuery.
+  it('sets commit and PR attribution to empty', async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'attribution', workingDirectory: '/tmp' })
+    await process.start()
+
+    expect(calls[0].options.settings).toMatchObject({ attribution: { commit: '', pr: '' } })
+  })
+
   it('turns off the CLI request-replay transcript lines, even against custom env vars', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'request-replay',

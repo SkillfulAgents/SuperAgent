@@ -86,9 +86,10 @@ it, the renderer hides it, and the agents are never told about it.
 | --- | --- | --- |
 | Computer use | `supportsComputerUse()` | the container's tools and prompt (`HOST_COMPUTER_USE`), the tool call, the Computer Use tab (`offersComputerUseSettings()`), the dispatch launcher's computer-use toggle (`offersLauncherComputerUse()`) and the session create that asks for it |
 | Host scripts | `runsHostScripts()`; the container's script tool follows `HOST_COMPUTER_USE` | the tool call |
-| The person's Chrome: CDP launch, profile copy, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the profile seed, the Apple Passwords runtime |
+| The person's Chrome: CDP launch, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the Apple Passwords runtime |
 | A folder by its path alone: copying a dropped folder in, or a drive of one | `readsHostFolders()`, `usesHostFolderPaths()` | the upload-folder routes, the mount offer on a drop (the folder uploads its files instead), and `prepareLocalVolume()` for a folder without its pick's bookmark |
 | Private skillsets, publishing to GitHub | `runsHostGit()`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
+| Telling a stopped Ollama from a missing one (it looks for the app and the binary) | `findsHostApps()` | `getOllamaStatus()`, which says "not found" instead of "stopped" |
 | Keep Awake, Add to Dock, recent files, music control | `keepsMacAwake()`, `addsToDock()`, `listsRecentFiles()`, `userMusicSupported()` | the settings and menus that offer them, and main's handlers |
 
 Local drives stay. The Store build's folder picker returns a security-scoped
@@ -116,6 +117,38 @@ To see the Store build's UI without one, run the mock web server with
 `E2E_MOCK=true SUPERAGENT_FAKE_DISTRIBUTION=mac-app-store`. Only server facts
 change, so this shows what the server withholds and the Settings notice, not
 the desktop app's own integrations.
+
+## What the Mac App Store build does differently
+
+App Review also decides how a few things are done, not only whether they are.
+
+**Signing in to the Gamut account happens in a sheet on the app's window**
+(`signsInWithAuthSession()`), not in the default browser. Guideline 4 rejects an
+app that sends the person to their browser to sign in or register, unless it
+goes through `ASWebAuthenticationSession`. Electron has no API for it, so
+`native/macos/WebAuthBridge.swift` (built by
+`scripts/build-spotlight-bridge.sh`, loaded through koffi by
+`src/main/web-auth-session.ts`) runs one in the main process:
+
+- `usePlatformConnect` opens its login window as a sheet
+  (`useLoginWindow({ authSession })` → `prepareAuthSession` → the
+  `platform-sign-in-start` IPC). Main opens only the platform's own login page
+  this way (`isPlatformLoginUrl`).
+- The session watches for the deep-link scheme the login page ends on, and
+  main hands that URL to `handleDeepLinkUrl`, exactly as if macOS had opened
+  it. Nothing after that differs from the browser flow.
+- Closing the sheet ends the attempt quietly; a session that fails reports on
+  the usual `platform-auth-callback`. Without the bridge (a dev checkout that
+  never built it) the URL goes to the browser.
+
+Only this sign-in is moved. Connecting a third-party account (Composio, MCP,
+Slack, Linear, GitHub) still opens the browser, in every build, and the direct
+build keeps the browser for the Gamut sign-in too: the person is usually signed
+in there already.
+
+**The Account tab offers "Request account deletion"** in every build, which
+guideline 5.1.1(v) requires of an app that lets people create an account. See
+[account-deletion.md](account-deletion.md).
 
 ## Adding a fact
 

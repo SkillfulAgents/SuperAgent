@@ -4,12 +4,13 @@
  * Container-to-host endpoints for cross-agent operations (create / list /
  * invoke / read sessions). Mounted under /api/x-agent (separate from /api/agents
  * to avoid the /:id middleware that requires an existing agent slug in the URL).
+ * Also serves the caller's own members.
  *
  * Auth: every request must carry the calling agent's proxy token via Authorization:
- * Bearer <token>. The route resolves the caller's agent slug from that token and
- * applies xAgentPolicies + ACLs accordingly.
+ * Bearer <token>. The route resolves the caller's agent slug from that token, and
+ * the cross-agent routes apply xAgentPolicies + ACLs accordingly.
  */
-import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -36,6 +37,7 @@ import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { ContainerSession } from '@shared/lib/container/types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
+import { listAgentMembers } from '@shared/lib/services/agent-members-service'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
@@ -57,13 +59,9 @@ import {
   xAgentAttachmentsSchema,
   xAgentDownloadFileBodySchema,
 } from '@shared/lib/services/x-agent-attachment-schema'
-import {
-  collectDeliveredFiles,
-  compactMessage,
-  findDeliveredFile,
-  pageTranscript,
-} from './x-agent-transcript-view'
+import { compactMessage } from '@shared/lib/services/x-agent-transcript-view'
 import { awaitReview } from '@shared/lib/proxy/review-request'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -226,19 +224,19 @@ async function checkAgentPolicy(
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
+    if (decision === 'allow') return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
 
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+    const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
     ))
-    if (userDecision === 'deny') {
-      return { allowed: false, reason: 'Denied by user' }
+    if (review.decision === 'deny') {
+      return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }
     // A Block set while the card was open beats the approval.
     if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
@@ -277,6 +275,23 @@ xAgent.post('/list', async (c) => {
       description: a.description,
     }))
   return c.json({ agents: filtered })
+})
+
+// ----------------------------------------------------------------------------
+// POST /api/x-agent/members - the caller's own members. Not reviewed: every
+// member of the agent can already read this roster.
+// ----------------------------------------------------------------------------
+
+// Bounds the agent's context, as chat directory listings do.
+const MAX_LISTED_MEMBERS = 500
+
+xAgent.post('/members', async (c) => {
+  if (!isAuthMode()) return c.json({ truncated: false, members: [] })
+  const members = await listAgentMembers(getCallerSlug(c))
+  return c.json({
+    truncated: members.length > MAX_LISTED_MEMBERS,
+    members: members.slice(0, MAX_LISTED_MEMBERS).map(({ id, name, email, role, invited }) => ({ id, name, email, role, invited })),
+  })
 })
 
 // ----------------------------------------------------------------------------
@@ -630,9 +645,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       ? 'running'
       : 'idle'
 
-  const entries = await actor.messages.withCompact(sessionId)
-  const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
-  const deliveredFiles = collectDeliveredFiles(entries)
+  const { messages, total, deliveredFiles } = await actor.messages.transcriptView(sessionId, { fullTranscript, limit })
 
   return c.json({ status, messages, total, deliveredFiles })
 })
@@ -662,8 +675,7 @@ xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), 
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  const entries = await actor.messages.withCompact(sessionId)
-  const delivery = findDeliveredFile(entries, deliveryId)
+  const delivery = await actor.messages.findDeliveredFile(sessionId, deliveryId)
   if (!delivery) return c.json({ error: 'Delivered file not found' }, 404)
   const policy = await checkAgentPolicy(
     callerSlug,

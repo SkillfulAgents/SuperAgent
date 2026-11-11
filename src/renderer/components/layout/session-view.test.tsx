@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   session: {} as Record<string, unknown>,
   canUseAgent: true,
   commentsEnabled: [] as Array<boolean | undefined>,
+  integrationId: null as string | null,
+  integration: undefined as Record<string, unknown> | undefined,
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -30,6 +32,11 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   // notification read-marking below.
   useSetSessionMarkedUnread: () => ({ mutate: mocks.setMarkedUnread }),
   useClearSessionUnread: () => mocks.clearUnread,
+}))
+
+vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useSessionAgentIntegrationId: (_slug: string, sessionId: string | null) => ({ data: sessionId ? mocks.integrationId : undefined }),
+  useAgentIntegration: (id: string | null) => ({ data: id ? mocks.integration : undefined }),
 }))
 
 vi.mock('@renderer/hooks/use-notifications', () => ({
@@ -148,6 +155,41 @@ describe('SessionView widget repair provenance', () => {
       to: '/agents/$slug/called-from-agents',
       params: { slug: 'target-agent' },
     })
+  })
+})
+
+describe('SessionView agent integration provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = { id: 'int-session', agentSlug: 'target-agent', name: 'Dana' }
+    mocks.integrationId = 'int-1'
+    mocks.integration = { id: 'int-1', provider: 'slack', name: 'Support bot' }
+  })
+
+  it('names the integration and returns to its open conversation', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="int-session" />)
+
+    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from Slack integration "Support bot"')
+    fireEvent.click(screen.getByTestId('integration-session-back-button'))
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/chat/$integrationId',
+      params: { slug: 'target-agent', integrationId: 'int-1' },
+      search: { session: 'int-session' },
+    })
+  })
+
+  it('still offers the way back before the integration loads', () => {
+    mocks.integration = undefined
+    render(<SessionView agentSlug="target-agent" sessionId="int-session" />)
+
+    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from agent integration')
+  })
+
+  it('draws no integration bar for an ordinary session', () => {
+    mocks.integrationId = null
+    render(<SessionView agentSlug="target-agent" sessionId="s1" />)
+
+    expect(screen.queryByTestId('integration-session-banner')).toBeNull()
   })
 })
 

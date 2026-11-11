@@ -372,7 +372,8 @@ describe('generateSystemPrompt rendering', () => {
       for (const match of source.matchAll(/\/opt\/gamut\/bin\/([\w.-]+)/g)) referenced.add(match[1])
     }
 
-    const shipped = readdirSync(join(__dirname, '..', 'bin'))
+    // gamut_host.py is the module the helpers import to reach the app, not a command.
+    const shipped = readdirSync(join(__dirname, '..', 'bin')).filter((name) => name !== 'gamut_host.py')
     expect([...referenced].sort()).toEqual(shipped.sort())
   })
 

@@ -1,23 +1,23 @@
 import { listAgents } from '@shared/lib/services/agent-service'
 import { readStoredAgentPreferences } from '@shared/lib/services/agent-preferences-service'
-import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
-import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
-import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
+import { deleteSessionRecords } from '@shared/lib/services/session-deletion'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 import { background } from '@shared/lib/background'
-import { db } from '@shared/lib/db'
-import { messageAuthor } from '@shared/lib/db/schema'
-import { inArray } from 'drizzle-orm'
+import { PassTask, taskManager, type Service } from '@shared/lib/background-work'
 
-class SessionAutoDeleteMonitor {
-  private intervalId: NodeJS.Timeout | null = null
-  private startupTimeoutId: NodeJS.Timeout | null = null
+class SessionAutoDeleteMonitor implements Service {
+  readonly id = 'session-auto-delete'
+  readonly phase = 'background' as const
   private isRunning = false
   private isProcessing = false
   private pollIntervalMs = 4 * 60 * 60 * 1000 // Every 4 hours
   private startupDelayMs = 30_000 // 30 seconds after startup
+  private readonly cleanupTask = new PassTask('sessions.auto-delete', () => this.cleanupAllAgents().catch((error) => {
+    console.error('[SessionAutoDeleteMonitor] Error in cleanup cycle:', error)
+  }))
+  readonly tasks = [this.cleanupTask]
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -28,18 +28,10 @@ class SessionAutoDeleteMonitor {
     this.isRunning = true
     console.log('[SessionAutoDeleteMonitor] Starting monitor...')
 
-    this.startupTimeoutId = setTimeout(() => {
-      this.startupTimeoutId = null
-      background(this.cleanupAllAgents().catch((error) => {
-        console.error('[SessionAutoDeleteMonitor] Error in initial cleanup:', error)
-      }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
-
-      this.intervalId = setInterval(() => {
-        background(this.cleanupAllAgents().catch((error) => {
-          console.error('[SessionAutoDeleteMonitor] Error in cleanup cycle:', error)
-        }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
-      }, this.pollIntervalMs)
-    }, this.startupDelayMs)
+    await taskManager().ensureEvery(this.cleanupTask.type, this.cleanupTask.spec, {
+      intervalMs: this.pollIntervalMs,
+      initialDelayMs: this.startupDelayMs,
+    })
 
     console.log(
       `[SessionAutoDeleteMonitor] Monitor started, first run in ${this.startupDelayMs / 1000}s, then every ${this.pollIntervalMs / 3_600_000}h`
@@ -47,14 +39,7 @@ class SessionAutoDeleteMonitor {
   }
 
   stop(): void {
-    if (this.startupTimeoutId) {
-      clearTimeout(this.startupTimeoutId)
-      this.startupTimeoutId = null
-    }
-    if (this.intervalId) {
-      clearInterval(this.intervalId)
-      this.intervalId = null
-    }
+    background(taskManager().cancel(this.cleanupTask.type), { name: 'session-auto-delete-monitor.cancel-cleanup' })
     this.isRunning = false
     console.log('[SessionAutoDeleteMonitor] Monitor stopped')
   }
@@ -116,33 +101,14 @@ class SessionAutoDeleteMonitor {
     // Lets go of each deleted session's stream too.
     const deletedIds = await actor.sessions.deleteMany(toDelete)
 
-    // People (auth mode) and integrations (every mode) author messages.
-    if (deletedIds.length > 0) {
-      try {
-        await db
-          .delete(messageAuthor)
-          .where(inArray(messageAuthor.sessionId, deletedIds))
-      } catch (error) {
-        console.error(
-          `[SessionAutoDeleteMonitor] Failed to clean messageAuthor records for ${agentSlug}:`,
-          error
-        )
-      }
-    }
-
-    // Remove notification rows for the deleted sessions. Notifications exist in
-    // both auth and non-auth modes (userId is nullable), so this runs
-    // unconditionally. Use `deletedIds` (not `toDelete`) so failed filesystem
-    // deletions never wipe DB state for a session that still exists on disk.
+    // What the host keeps about them, as a single delete removes it. Of
+    // `deletedIds`, not `toDelete`: a session whose delete failed still
+    // exists, and keeps its records.
     try {
-      await deleteNotificationsBySessionIds(deletedIds)
-      // Same rule for "mark as unread" marks — see deleteSessionUnreadMarks.
-      await deleteSessionUnreadMarks(agentSlug, deletedIds)
-      // And Todo board items started in them.
-      await unlinkTodosFromSessions(agentSlug, deletedIds)
+      await deleteSessionRecords(agentSlug, deletedIds)
     } catch (error) {
       console.error(
-        `[SessionAutoDeleteMonitor] Failed to clean notification records for ${agentSlug}:`,
+        `[SessionAutoDeleteMonitor] Failed to clean the records of deleted sessions for ${agentSlug}:`,
         error
       )
     }

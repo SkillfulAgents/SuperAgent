@@ -1,3 +1,8 @@
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { mockChatIntegration } from '@shared/lib/chat-integrations/test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -54,11 +59,11 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   DuplicateIntegrationIdentityError: MockDuplicateIntegrationIdentityError,
 }))
 
-const mockListAgentIntegrationSessions = vi.fn()
+const mockListActiveAgentIntegrationSessions = vi.fn()
 const mockGetAgentIntegrationSessionBySessionId = vi.fn()
 
 vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
-  listAgentIntegrationSessions: (...args: unknown[]) => mockListAgentIntegrationSessions(...args),
+  listActiveAgentIntegrationSessions: (...args: unknown[]) => mockListActiveAgentIntegrationSessions(...args),
   getAgentIntegrationSessionBySessionId: (...args: unknown[]) => mockGetAgentIntegrationSessionBySessionId(...args),
 }))
 
@@ -119,6 +124,7 @@ vi.mock('fs', () => ({
 }))
 
 import xAgentChat from './x-agent-chat'
+import { chatDefinitions } from '@shared/lib/chat-integrations/definitions'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 
 const FIXED_TIME = new Date('2026-11-03T12:00:00Z')
@@ -183,7 +189,7 @@ describe('x-agent chat route', () => {
     mockValidateProxyToken.mockResolvedValue('agent-one')
     mockGetChatIntegration.mockReturnValue(createIntegration())
     mockListChatIntegrations.mockReturnValue([createIntegration()])
-    mockListAgentIntegrationSessions.mockReturnValue([
+    mockListActiveAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'chat-1', displayName: 'General', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
     ])
     mockGetAgentIntegrationSessionBySessionId.mockReturnValue(null)
@@ -256,11 +262,6 @@ describe('x-agent chat route', () => {
   })
 
   it('lists integrations with only active chat sessions', async () => {
-    mockListAgentIntegrationSessions.mockReturnValue([
-      { externalChatId: 'chat-1', displayName: 'General', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
-      { externalChatId: 'chat-archived', displayName: 'Old thread', archivedAt: '2026-01-01T00:00:00.000Z' },
-    ])
-
     const res = await app.request('http://localhost/api/x-agent/chat/list', {
       method: 'POST',
       headers: { Authorization: 'Bearer good-token' },
@@ -278,13 +279,15 @@ describe('x-agent chat route', () => {
       }],
     })
     expect(mockListChatIntegrations).toHaveBeenCalledWith('agent-one')
+    // Archived rows are left out by the query, not by the route.
+    expect(mockListActiveAgentIntegrationSessions).toHaveBeenCalledWith('integration-1')
   })
 
   it('labels chats and advertises capabilities from the connector class statics', async () => {
     mockGetConnectorClass.mockResolvedValue({
       capabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
     })
-    mockListAgentIntegrationSessions.mockReturnValue([
+    mockListActiveAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
       { externalChatId: 'C0BBB222|123.456', displayName: '#office — Nov 2, 3:04 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
       { externalChatId: 'C0BBB222|123.789', displayName: '#office — Nov 2, 3:09 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
@@ -308,7 +311,7 @@ describe('x-agent chat route', () => {
   })
 
   it('sends without a chat_id to the one channel whose threads are the only active chats', async () => {
-    mockListAgentIntegrationSessions.mockReturnValue([
+    mockListActiveAgentIntegrationSessions.mockReturnValue([
       { externalChatId: 'C0DEALS|1000.001', displayName: '#deals — Nov 2, 3:04 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
       { externalChatId: 'C0DEALS|1000.002', displayName: '#deals — Nov 2, 3:09 PM', archivedAt: null, updatedAt: FIXED_TIME, createdAt: FIXED_TIME },
     ])
@@ -471,6 +474,51 @@ describe('x-agent chat route', () => {
 
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toContain('post it twice')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('lets a thread session also send a takeaway to its own thread or another thread', async () => {
+    immediateTimeout()
+    mockGetConnectorClass.mockResolvedValue(chatDefinitions.slack)
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'C1|100.1', displayName: null, archivedAt: null,
+    })
+
+    for (const chat_id of [undefined, 'C1|100.1', 'C1|200.2']) {
+      const res = await sendRequest({ message: 'Decision: we pass on Acme.', chat_id, also_send_to_channel: true, session_id: 'caller-session' })
+      expect(res.status).toBe(200)
+    }
+
+    expect(connector.sendMessage.mock.calls).toEqual([
+      ['C1|100.1', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+      ['C1|100.1', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+      ['C1|200.2', { text: 'Decision: we pass on Acme.', alsoSendToChannel: true }],
+    ])
+    expect(mockEnsureSession.mock.calls.map(([, chatId]) => chatId)).toEqual(['C1|200.2'])
+  })
+
+  it('refuses also_send_to_channel outside a thread', async () => {
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['thread_broadcast'] })
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'D1', displayName: null, archivedAt: null,
+    })
+
+    for (const target of [{}, { chat_id: 'C1' }, { chat_id: 'C1|' }, { user_id: 'U1' }]) {
+      const res = await sendRequest({ ...target, also_send_to_channel: true, session_id: 'caller-session' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('only for a thread in a channel')
+    }
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('refuses also_send_to_channel on providers without thread_broadcast, without touching the connector', async () => {
+    mockGetConnector.mockReturnValue(undefined)
+
+    const res = await sendRequest({ chat_id: 'C1|100.1', also_send_to_channel: true })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('does not support also_send_to_channel')
+    expect(mockAddIntegration).not.toHaveBeenCalled()
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 

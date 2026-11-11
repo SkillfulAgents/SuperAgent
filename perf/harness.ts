@@ -37,8 +37,11 @@ export interface PerfApp {
   seeded: SeededData
   profile: SeedProfile
   request(url: string): Promise<Response>
-  /** Drop the per-agent session summary caches so the next read is cold. */
-  invalidateSummaryCaches(): Promise<void>
+  /**
+   * Drop every agent's actor, and with it what its session index holds in
+   * memory: the next read is the first one after a restart of the app.
+   */
+  restartActors(): Promise<void>
   dispose(): Promise<void>
 }
 
@@ -65,6 +68,9 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   await openDatabase()
   const { initializeLocalAppState } = await import('@shared/lib/app-state')
   await initializeLocalAppState()
+  const { initializeBackgroundWork } = await import('@shared/lib/background-work')
+  const { LocalTaskManager } = await import('@shared/lib/background-work/local-task-manager')
+  await initializeBackgroundWork(new LocalTaskManager())
   // This harness skips the full service startup, but container discovery needs
   // the same provider registry. Registration is local and stays outside measurements.
   const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
@@ -76,30 +82,32 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   const app = new HonoCtor()
   app.route('/api/agents', agentsRouter)
 
-  // The summary cache is the actor's: dropping the actor drops it, and the
-  // next request builds a fresh handle (no I/O) and a cold cache.
-  const invalidateSummaryCaches = async () => {
+  // What a session index knows of its transcripts directory is the actor's:
+  // dropping the actor drops it, and the next request builds a fresh handle
+  // (no I/O) that has to look at the directory again.
+  const restartActors = async () => {
     await Promise.all(seeded.agentSlugs.map((slug) => agentRegistry.evict(slug)))
   }
 
   // One throwaway request, unmeasured: pays Hono's first-request setup and
   // the JIT, and loads the process-lifetime caches that are not part of any
   // route's cost, so that op counts do not depend on which scenario happens
-  // to run first. The summary caches it warms are dropped again so "cold"
-  // scenarios stay cold.
+  // to run first. It is also the first read of every agent's sessions, the
+  // one that stats each transcript, once: no scenario pays that again. The
+  // actors it built are dropped so "after a restart" scenarios start there.
   disableNfsShim()
   const warmup = await app.request('http://localhost/api/agents')
   if (warmup.status !== 200) {
     throw new Error(`perf harness: warm-up request failed with ${warmup.status}`)
   }
-  await invalidateSummaryCaches()
+  await restartActors()
 
   return {
     app,
     seeded,
     profile,
     request: async (url) => app.request(`http://localhost${url}`),
-    invalidateSummaryCaches,
+    restartActors,
     dispose: async () => {
       disableNfsShim()
       clock.mockRestore()

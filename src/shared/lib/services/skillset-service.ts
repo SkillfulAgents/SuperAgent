@@ -7,10 +7,12 @@
  */
 
 import { execFile } from 'child_process'
+import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
 import { promisify } from 'util'
 import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
+import { Readable } from 'stream'
 import yaml from 'js-yaml'
 import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
@@ -30,6 +32,7 @@ import {
   type FileOps,
 } from '@shared/lib/agent-actor'
 import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
+import type { ZipSource } from '@shared/lib/utils/zip'
 import type {
   SkillsetIndex,
   SkillsetConfig,
@@ -725,7 +728,10 @@ async function isGitRepo(dir: string): Promise<boolean> {
 
 export async function isCacheReady(dir: string, provider?: SkillProvider): Promise<boolean> {
   const p = getSkillsetProvider(provider)
-  return p.usesGitCache ? isGitRepo(dir) : p.isCacheReady(dir)
+  if (p.usesGitCache) return isGitRepo(dir)
+  if (await p.isCacheReady(dir)) return true
+  // A process that started with an empty data dir restores the stored copy (see skillset-cache-blob).
+  return (await restoreSkillsetCache(dir)) && p.isCacheReady(dir)
 }
 
 /**
@@ -808,7 +814,9 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
 
   const populate = (async () => {
     if (await isCacheReady(repoDir, ref.provider)) return repoDir
-    return populateSkillsetCache(ref, hostingProvider, repoDir)
+    const populated = await populateSkillsetCache(ref, hostingProvider, repoDir)
+    await storeSkillsetCache(hostingProvider, populated)
+    return populated
   })()
   activeSkillsetPopulates.set(repoDir, populate)
   try {
@@ -818,6 +826,13 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
       activeSkillsetPopulates.delete(repoDir)
     }
   }
+}
+
+/** A git cache is cloned again rather than restored (see isCacheReady), so it is never stored. */
+async function storeSkillsetCache(hostingProvider: ReturnType<typeof getSkillsetProvider>, repoDir: string): Promise<void> {
+  if (hostingProvider.usesGitCache) return
+  // A failed save only costs a download in the next process that starts empty.
+  await saveSkillsetCache(repoDir).catch((error) => console.warn(`[skillsets] Could not store the cache of ${repoDir}:`, error))
 }
 
 async function populateSkillsetCache(
@@ -853,7 +868,8 @@ async function populateSkillsetCache(
  */
 export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
   const indexPath = path.join(repoDir, 'index.json')
-  const content = await readFileOrNull(indexPath)
+  let content = await readFileOrNull(indexPath)
+  if (!content && (await restoreSkillsetCache(repoDir))) content = await readFileOrNull(indexPath)
   if (!content) {
     throw new Error(`index.json not found in skillset repository at ${indexPath}`)
   }
@@ -948,6 +964,10 @@ export async function validateSkillsetUrl(
 // Each public-skillset refresh spends one of GitHub's 60 unauthenticated API
 // calls per hour, shared by everyone behind the same IP.
 export const BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS = 15 * 60_000
+/** Skillsets refreshed at once: a platform skillset holds its whole archive in memory while it downloads. */
+export const SKILLSET_PULL_CONCURRENCY = 2
+/** Installed skills read at once; each reads up to 8 of its files at a time. */
+const SKILL_READ_CONCURRENCY = 4
 const lastSkillsetRefreshAt = new Map<string, number>()
 
 /**
@@ -969,7 +989,8 @@ export async function refreshSkillset(
   const inFlight = activeSkillsetRefreshes.get(repoDir)
   if (inFlight) return inFlight
 
-  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then((index) => {
+  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then(async (index) => {
+    await storeSkillsetCache(hostingProvider, repoDir)
     lastSkillsetRefreshAt.set(repoDir, Date.now())
     return index
   })
@@ -1081,6 +1102,7 @@ export async function getSkillsetIndex(
 export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
   const repoDir = getSkillsetRepoDirForRef(ref)
   lastSkillsetRefreshAt.delete(repoDir)
+  await deleteSkillsetCache(repoDir)
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
@@ -1277,19 +1299,19 @@ export async function getAgentSkillsWithStatus(
     meta: InstalledSkillMetadata | null
     skillMdContent: string | null
   }
-  const prepared: Prepared[] = []
   const pendingIdsByProvider = new Map<SkillProvider, string[]>()
-
-  for (const entry of entries) {
-    if (entry.kind !== 'directory') continue
-
+  // Each skill reads only its own directory.
+  const limit = pLimit(SKILL_READ_CONCURRENCY)
+  const prepared = (await Promise.all(entries.map((entry) => limit(async (): Promise<Prepared | null> => {
+    if (entry.kind !== 'directory') return null
     const skillPath = entry.path
     const skillMdContent = await readWorkspaceText(files, joinWorkspacePath(skillPath, 'SKILL.md'))
-    if (!skillMdContent) continue
-
+    if (!skillMdContent) return null
     const meta = await getInstalledSkillMetadata(agentSlug, entry.name, screen)
-    prepared.push({ entryName: entry.name, skillPath, meta, skillMdContent })
+    return { entryName: entry.name, skillPath, meta, skillMdContent }
+  })))).filter((entry): entry is Prepared => entry !== null)
 
+  for (const { meta } of prepared) {
     if (meta?.pendingQueueItemId) {
       const p = (meta.provider ?? 'github') as SkillProvider
       const list = pendingIdsByProvider.get(p) ?? []
@@ -1310,9 +1332,7 @@ export async function getAgentSkillsWithStatus(
     }
   }))
 
-  const skills: SkillWithStatus[] = []
-
-  for (const { entryName, skillPath, meta, skillMdContent } of prepared) {
+  const skills = await Promise.all(prepared.map(({ entryName, skillPath, meta, skillMdContent }) => limit(async (): Promise<SkillWithStatus> => {
     const description = parseDescription(skillMdContent!)
     const frontmatter = parseSkillFrontmatter(skillMdContent!)
 
@@ -1379,13 +1399,13 @@ export async function getAgentSkillsWithStatus(
       }
     }
 
-    skills.push({
+    return {
       name: meta?.skillName || frontmatter.name || getDisplayName(entryName),
       description,
       path: entryName,
       status,
-    })
-  }
+    }
+  })))
 
   return skills.sort((a, b) => a.name.localeCompare(b.name))
 }
@@ -1405,7 +1425,8 @@ export async function refreshAgentSkills(
   for (const ss of skillsets) configMap.set(ss.id, ss)
   const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
 
-  for (const ss of skillsets) {
+  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
+  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
     try {
       await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
     } catch (error) {
@@ -1415,7 +1436,7 @@ export async function refreshAgentSkills(
         captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
       }
     }
-  }
+  })))
 
   const files = agentFiles(agentSlug)
   const skillsDir = skillWorkspacePath()
@@ -2149,14 +2170,14 @@ function zipEntryWorkspacePath(skillDir: string, entryName: string): string | nu
 }
 
 /**
- * Validate a ZIP buffer as a skill package.
+ * Validate a ZIP as a skill package.
  * Checks for SKILL.md, file count, size limits, and path traversal.
  */
-export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidationResult> {
-  const { openZipFromBuffer, detectZipPrefix } = await import('@shared/lib/utils/zip')
-  let reader: Awaited<ReturnType<typeof openZipFromBuffer>> | undefined
+export async function validateSkillZip(zip: ZipSource): Promise<SkillValidationResult> {
+  const { openZipSource, detectZipPrefix } = await import('@shared/lib/utils/zip')
+  let reader: Awaited<ReturnType<typeof openZipSource>> | undefined
   try {
-    reader = await openZipFromBuffer(zipBuffer)
+    reader = await openZipSource(zip)
 
     const realEntries = reader.entries.filter((e) => !e.fileName.startsWith('__MACOSX/'))
 
@@ -2209,21 +2230,21 @@ export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidati
 }
 
 /**
- * Import a skill from a ZIP buffer into an agent's workspace.
+ * Import a skill from a ZIP into an agent's workspace.
  * Validates the ZIP upfront (file count, size, path traversal, SKILL.md presence)
  * then extracts into `.claude/skills/<dir>`.
  */
 export async function importSkillFromZip(
   agentSlug: string,
-  zipBuffer: Buffer,
+  zip: ZipSource,
 ): Promise<{ skillDir: string; skillName: string }> {
-  const validation = await validateSkillZip(zipBuffer)
+  const validation = await validateSkillZip(zip)
   if (!validation.valid) {
     throw new Error(validation.error || 'Invalid skill package')
   }
 
-  const { openZipFromBuffer } = await import('@shared/lib/utils/zip')
-  const reader = await openZipFromBuffer(zipBuffer)
+  const { openZipSource } = await import('@shared/lib/utils/zip')
+  const reader = await openZipSource(zip)
   try {
     const { stripPrefix } = validation
 
@@ -2280,9 +2301,9 @@ export async function importSkillFromZip(
       const destPath = zipEntryWorkspacePath(destDir, entryName)
       if (destPath === null) continue
 
-      const bytes = await reader.readEntry(entry.fileName, SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted)
-      await files.write(destPath, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength))
-      totalExtracted += bytes.byteLength
+      const entryStream = await reader.openEntryStream(entry.fileName, SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted)
+      const { size } = await files.write(destPath, Readable.toWeb(entryStream) as ReadableStream<Uint8Array>)
+      totalExtracted += size
     }
 
     return {

@@ -24,6 +24,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { LOCAL_RUNTIME } from './agent-directories'
+import { dropDbSessionIndex } from './db-session-index-storage'
 import type { AgentCatalog, AgentIdentityChanges, AgentRecord, AgentSlug } from './types'
 
 // Built on first use rather than at import: suites that stub file-storage
@@ -65,6 +66,17 @@ function toRecord(row: AgentRow): AgentRecord {
 export function createAgentCatalog(): AgentCatalog {
   const rowFor = async (slug: AgentSlug): Promise<AgentRow | undefined> =>
     db.select().from(agents).where(eq(agents.slug, slug)).get()
+
+  // An exact match is a bare minted slug or a legacy compound folder name. Otherwise the slug is the
+  // final hyphen-delimited segment (minted slugs have no hyphen); the prefix is decorative. A display
+  // slug looks up both forms in one query, and the exact match wins.
+  const resolveRow = async (input: string): Promise<AgentRow | undefined> => {
+    if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return undefined
+    const candidate = input.slice(input.lastIndexOf('-') + 1)
+    if (candidate === input || !isMintedSlug(candidate)) return rowFor(input)
+    const rows = await db.select().from(agents).where(inArray(agents.slug, [input, candidate])).all()
+    return rows.find((row) => row.slug === input) ?? rows.find((row) => row.slug === candidate)
+  }
 
   const records = async (): Promise<AgentRecord[]> =>
     (await db.select().from(agents).orderBy(desc(agents.createdAt), agents.slug).all()).map(toRecord)
@@ -132,17 +144,10 @@ export function createAgentCatalog(): AgentCatalog {
       const row = await rowFor(slug)
       return row === undefined ? null : toRecord(row)
     },
-    resolve: async (input) => {
-      if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return null
-      // Exact match handles a bare minted slug and a legacy compound folder name.
-      if ((await rowFor(input)) !== undefined) return input
-      // Otherwise the slug is the final hyphen-delimited segment (minted slugs
-      // have no hyphen); the prefix is decorative and ignored.
-      const dash = input.lastIndexOf('-')
-      if (dash === -1) return null
-      const candidate = input.slice(dash + 1)
-      if (isMintedSlug(candidate) && (await rowFor(candidate)) !== undefined) return candidate
-      return null
+    resolve: async (input) => (await resolveRow(input))?.slug ?? null,
+    resolveRecord: async (input) => {
+      const row = await resolveRow(input)
+      return row === undefined ? null : toRecord(row)
     },
     remove: async (slug) => {
       const row = await rowFor(slug)
@@ -155,6 +160,9 @@ export function createAgentCatalog(): AgentCatalog {
         assertPathWithinDir(getAgentsDir(), dir)
         await removeDirectory(dir)
       }
+      // Its session index goes with it: a later agent that is given the
+      // slug must not inherit the sessions.
+      await dropDbSessionIndex(slug)
       await db.delete(agents).where(eq(agents.slug, slug)).run()
     },
   }

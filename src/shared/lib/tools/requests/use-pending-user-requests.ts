@@ -44,5 +44,7 @@ export function usePendingUserRequests(agentSlug: string, sessionId?: string | n
     // Null is an unsent session; undefined deliberately queries agent-wide requests.
     enabled: sessionId !== null,
     refetchInterval: 30000,
+    // Voice mode pauses on a new request while the app is in the background.
+    meta: { refetchWhenHidden: true },
   })
 }

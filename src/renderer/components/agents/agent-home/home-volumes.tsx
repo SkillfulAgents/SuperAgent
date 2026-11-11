@@ -26,7 +26,6 @@ import {
   Plus,
   Loader2,
   RefreshCw,
-  ChevronDown,
 } from 'lucide-react'
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
@@ -56,9 +55,9 @@ export function HomeVolumes({ agentSlug, hiddenVolumeId, className }: HomeVolume
   if (!volumes.canAddMount && mounts.length === 0 && !volumes.operationError) return null
 
   return (
-    <HomeCollapsible title="Drives" className={className}>
+    <HomeCollapsible id="drives" title="Drives" count={volumes.isLoading ? undefined : mounts.length} className={className}>
       {mounts.length > 0 ? (
-        <div className="mt-2 divide-y divide-border/50">
+        <div className="mt-2">
           {mounts.map((mount) => (
             <VolumeRow
               key={mount.id}
@@ -108,7 +107,7 @@ export function HomeVolumes({ agentSlug, hiddenVolumeId, className }: HomeVolume
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" disabled={volumes.isAddingMount || volumes.isLoading} data-testid="add-mount-menu">
                     {volumes.isAddingMount ? <Loader2 className="animate-spin" /> : <Plus />}
-                    Add Drive <ChevronDown />
+                    Add Drive
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-72">
@@ -208,7 +207,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
     <>
       <div
         {...(canOpen ? { ...openableProps(openSettings), 'aria-label': `Open ${mount.volumeName} drive settings` } : {})}
-        className={`group relative py-3 px-4 transition-colors ${canOpen ? 'hover:bg-muted/50 cursor-pointer' : ''}`}
+        className={`group relative py-3 px-4 ${canOpen ? 'cursor-pointer' : ''}`}
       >
         <div className="flex items-center gap-2">
           <VolumeIcon type={mount.type} className="h-3.5 w-3.5 text-muted-foreground shrink-0" />

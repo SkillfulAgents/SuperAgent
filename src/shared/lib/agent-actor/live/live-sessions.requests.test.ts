@@ -32,7 +32,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: vi.fn(),
   recordProvisionalSessionActivity: vi.fn(() => ({ recordedAtMs: 0, previous: null })),
   revertSessionActivity: vi.fn(),

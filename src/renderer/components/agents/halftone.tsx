@@ -39,6 +39,8 @@ interface HalftoneProps {
   dim?: number
   /** Per-card phase offset so cards aren't all animating in sync. */
   seed?: number
+  /** Whether dots near the pointer swell (the cards do). Off for a backdrop. */
+  followPointer?: boolean
   className?: string
 }
 
@@ -92,6 +94,7 @@ export function Halftone({
   speedScale = 1,
   dim,
   seed = 0,
+  followPointer = true,
   className,
 }: HalftoneProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -157,7 +160,6 @@ export function Halftone({
       ctx!.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
       renderer.resize(W, H)
       ready = true
-      lastDrawTime = 0
       return true
     }
 
@@ -203,7 +205,10 @@ export function Halftone({
       const elapsed = lastDrawTime === 0 ? frameInterval : now - lastDrawTime
       if (elapsed >= frameInterval - frameTolerance) {
         const frameScale = elapsed / (1000 / 60)
-        draw(frameScale)
+        // Layout can change before ResizeObserver runs later in this frame.
+        // It will resize and repaint synchronously; skip the old-size bitmap
+        // that would immediately be discarded, but advance time as usual.
+        if (wrap!.clientWidth === W && wrap!.clientHeight === H) draw(frameScale)
         // Preserve the original 60fps phase velocity while drawing half as
         // often, substantially reducing per-card field math and Canvas2D paths.
         t += speed * frameScale
@@ -214,7 +219,7 @@ export function Halftone({
 
     const syncAnimation = () => {
       const active = ready && !reduce && intersecting && !document.hidden && !stopped
-      setPointerListening(active)
+      setPointerListening(active && followPointer)
       if (active && raf === 0) {
         lastDrawTime = 0
         raf = requestAnimationFrame(frame)
@@ -226,7 +231,9 @@ export function Halftone({
 
     const ro = new ResizeObserver(() => {
       const measured = setup()
-      if (measured && reduce && intersecting) draw()
+      // Resizing clears the bitmap after RAF callbacks have run. Repaint before
+      // the browser presents it, without advancing the animation or cursor easing.
+      if (measured && intersecting && !document.hidden) draw(0)
       syncAnimation()
     })
     ro.observe(wrap)
@@ -268,7 +275,7 @@ export function Halftone({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       setPointerListening(false)
     }
-  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed])
+  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed, followPointer])
 
   return (
     <div ref={wrapRef} className={cn('h-full w-full', className)} aria-hidden>

@@ -11,8 +11,9 @@
  * Working indicator via Slack's status line under the user's message (assistant.threads.setStatus).
  */
 
-import { App as SlackApp, SocketModeReceiver, type Receiver, type types as SlackTypes } from '@slack/bolt'
+import { App as SlackApp, SocketModeReceiver, type BlockAction, type Receiver, type types as SlackTypes } from '@slack/bolt'
 import { z } from 'zod'
+import { Marked, type Token, type Tokens } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
@@ -20,7 +21,7 @@ import type { IntegrationRelayAttachment, IntegrationRelayBinding } from '../age
 import { relayAcceptResult } from '../agent-integrations/relay-transport'
 import type { RelayAcceptResult, RelayEvent } from '../webhook-relay'
 import type { SlackConfig as StoredSlackConfig } from './config-schema'
-import { checkSlackWebhook, recordSlackWebhookStatus, slackRequestKey } from './slack-webhooks'
+import { checkSlackWebhook, recordSlackAppId, recordSlackWebhookStatus, slackRequestKey } from './slack-webhooks'
 import {
   ChatAgentIntegration,
   isMultiPartyChatType,
@@ -29,11 +30,13 @@ import {
   type ChatDirectoryPage,
   type ChatDirectoryUser,
   type ChatClassifyContext,
+  type IncomingMessage,
   type OutgoingMessage,
   type SystemPromptContext,
   type ToolOutcome,
 } from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
+import { SLACK_AGENT_INSTRUCTIONS } from './definitions'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { isSlackBlocksRejection, isUnrecoverableSlackError } from './slack-error'
@@ -48,7 +51,9 @@ export type SlackConfig = StoredSlackConfig
 // ── Slack limits ────────────────────────────────────────────────────────
 
 const MAX_MESSAGE_LENGTH = 3000 // Slack's mrkdwn rendering gets unreliable past ~4000; be conservative
-const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown_text limit
+const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown block limit
+const SLACK_TABLE_MAX_ROWS = 100 // header included; Slack drops the rest silently
+const SLACK_TABLE_MAX_COLUMNS = 20
 
 // ── Markdown → Slack mrkdwn ─────────────────────────────────────────────
 
@@ -142,7 +147,23 @@ function tablesToMonospace(md: string): string {
   )
 }
 
+const slackMarked = new Marked({ async: false, gfm: true })
+const isTable = (token: Token): token is Tokens.Table => token.type === 'table'
+
+/** Markdown with each table Slack would cut turned monospace. Tables it draws whole stay as markdown. */
+export function fitSlackTables(markdown: string): string {
+  // The lexer's tokens partition its (newline-normalized) input, so their raw text joins back to it.
+  return slackMarked.lexer(markdown.replace(/\r\n?/g, '\n'))
+    .map(token => isTable(token) && (token.rows.length >= SLACK_TABLE_MAX_ROWS || token.header.length > SLACK_TABLE_MAX_COLUMNS)
+      // Every row gets outer pipes first: the monospace pass only matches piped rows.
+      ? tablesToMonospace(token.raw.replace(/^[ \t]*\|?(.*?)\|?[ \t]*$/gm, (line, cells: string) => cells.trim() ? `| ${cells} |` : line))
+      : token.raw)
+    .join('')
+}
+
 // ── Session system prompt ───────────────────────────────────────────────
+
+const SLACK_PROVIDER_RULES = `- ${SLACK_AGENT_INSTRUCTIONS}`
 
 /**
  * Session-level context for Slack conversations, built per session so it names
@@ -162,22 +183,23 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
       : kind === 'channel' || kind === 'group'
         ? `a channel (id ${baseChannelId})`
         : 'a Slack conversation'
-  return buildSessionContextPrompt({
+  const shared = buildSessionContextPrompt({
     surface: 'chat',
     where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId})`,
     multiParty: isMultiPartyChatType(kind),
   })
+  return `${shared}\n${SLACK_PROVIDER_RULES}`
 }
 
 // ── Chat id classification ──────────────────────────────────────────────
 
 /**
  * Classify a Slack (effective) chat id by shape: `channel|threadTs` composites
- * are threads, and top-level conversation ids encode their type in the prefix
+ * of a channel are threads, and top-level conversation ids encode their type in the prefix
  * (D* = DM, G* = private group/mpim, C* = channel).
  */
 export function classifySlackChatId(chatId: string): ChatConversationType | undefined {
-  if (chatId.indexOf('|') > 0) return 'thread'
+  if (/^[CG][^|]*\|\d+\.\d+$/.test(chatId)) return 'thread'
   if (chatId.startsWith('D')) return 'dm'
   if (chatId.startsWith('G')) return 'group'
   if (chatId.startsWith('C')) return 'channel'
@@ -233,6 +255,37 @@ export function slackLinks(workspaceUrl: string | undefined, channel: string, ts
     return { messageUrl: message.toString(), conversationUrl: conversation.toString() }
   } catch {
     return {}
+  }
+}
+
+interface SlackFileLike { name?: string; mimetype?: string; url_private_download?: string; url_private?: string; permalink?: string }
+interface SlackAttachmentLike { is_share?: boolean; is_msg_unfurl?: boolean; text?: string; fallback?: string; author_name?: string; from_url?: string; files?: SlackFileLike[] }
+
+/**
+ * A message's text and files with the Slack messages shared into it: a forward
+ * (is_share) brings its text and files, a pasted message link (is_msg_unfurl)
+ * its text only. Website previews carry neither flag and stay out.
+ */
+export function slackMessageContent(msg: { text?: string; files?: SlackFileLike[]; attachments?: SlackAttachmentLike[] }): {
+  text: string
+  files: NonNullable<IncomingMessage['files']>
+} {
+  const shared = (msg.attachments ?? []).filter(a => a.is_share || a.is_msg_unfurl)
+  const quotes = shared.map(a => {
+    // A `]` or line break in the name would end the label early, as in formatSenderPrefix.
+    const author = a.author_name?.replace(/[\]\r\n]/g, ' ').trim()
+    const header = `[Shared message${author ? ` from ${author}` : ''}${a.from_url ? `: ${a.from_url}` : ''}]`
+    const body = a.text || a.fallback
+    return body ? `${header}\n${body.split('\n').map(line => `> ${line}`).join('\n')}` : header
+  })
+  const files = [...(msg.files ?? []), ...shared.filter(a => a.is_share).flatMap(a => a.files ?? [])]
+  return {
+    text: [msg.text, ...quotes].filter(Boolean).join('\n\n'),
+    files: files.map(f => ({
+      name: f.name || 'file',
+      url: f.url_private_download || f.url_private || f.permalink || '',
+      mimeType: f.mimetype,
+    })),
   }
 }
 
@@ -392,7 +445,10 @@ export function statusNeedsSend(status: SlackStatus | undefined, label: string, 
 const slackAnswerSchema = z.object({ t: z.string().min(1), c: z.string(), q: z.string(), a: z.string(), n: z.number().int().positive() })
 export type SlackAnswer = z.infer<typeof slackAnswerSchema>
 
-const ANSWER_ACTION = /^answer_\d+$/
+const ANSWER_ACTION = /^answer_/
+const OTHER_ACTION = 'answer_other'
+const PICK_ACTION = 'answer_pick'
+const SUBMIT_ACTION = 'answer_submit'
 const MAX_BUTTON_VALUE = 2000
 
 /** A button value, within Slack's limit: a question too long to fit is shortened. */
@@ -413,6 +469,37 @@ export function decodeSlackAnswer(value: unknown): SlackAnswer | null {
   } catch {
     return null
   }
+}
+
+type SlackStateValues = NonNullable<BlockAction['state']>['values']
+
+/** An approval card stays Allow or Deny: typed text would decide it. */
+const isApproval = (requestId: string) => requestId.startsWith('review:')
+
+/**
+ * The answer an action on a question card gives, or null when it gives none
+ * yet (a box ticked, an empty field). As in the app, typed text wins over
+ * ticked boxes. A typed answer takes the card's identity from an option button
+ * on the same message: a text field has no value of its own.
+ */
+export function slackAnswerFromAction(
+  action: { action_id?: string; value?: string | null },
+  blocks: Array<{ type: string; elements?: Array<{ value?: string }> }>,
+  state: SlackStateValues = {},
+): SlackAnswer | null {
+  const field = (actionId: string) => Object.values(state).map((block) => block[actionId]).find(Boolean)
+  if (action.action_id === OTHER_ACTION) {
+    const card = blocks.flatMap((b) => (b.type === 'actions' ? b.elements ?? [] : [])).map((e) => decodeSlackAnswer(e.value)).find(Boolean)
+    const typed = action.value?.trim()
+    return card && typed && !isApproval(card.t) ? { ...card, a: typed } : null
+  }
+  const answer = decodeSlackAnswer(action.value)
+  if (!answer || action.action_id !== SUBMIT_ACTION) return answer
+  if (isApproval(answer.t)) return null
+  const typed = field(OTHER_ACTION)?.value?.trim()
+  const picked = field(PICK_ACTION)?.selected_options?.map((o) => o.value).join(', ')
+  const a = typed || picked
+  return a ? { ...answer, a } : null
 }
 
 // ── Installation state ──────────────────────────────────────────────────
@@ -452,6 +539,16 @@ function relayOnlyReceiver(): Receiver {
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
+
+/** Standard markdown as a block, with mrkdwn text for notifications: Slack's own text for a markdown message drops its tables. */
+function markdownMessage(md: string): { blocks: SlackTypes.MarkdownBlock[]; text: string } {
+  return { blocks: [{ type: 'markdown', text: md }], text: splitChatMessage(markdownToSlackMrkdwn(md), MARKDOWN_TEXT_LENGTH)[0] }
+}
+
+function inThread<T extends object>(args: T, threadTs: string | undefined, alsoSendToChannel: boolean) {
+  if (!threadTs) return args
+  return alsoSendToChannel ? { ...args, thread_ts: threadTs, reply_broadcast: true } : { ...args, thread_ts: threadTs }
+}
 
 export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
@@ -663,8 +760,9 @@ export class SlackConnector extends ChatAgentIntegration {
       const userName = await this.resolveUserName(userId)
       const chatName = await this.resolveChannelName(chatId)
 
+      const content = slackMessageContent(msg)
       // Resolve <@U123>, <#C123|name>, links, and special mentions in the text
-      let text = await this.resolveMentionsInText(rawText)
+      let text = await this.resolveMentionsInText(content.text)
       const requestText = text
 
       // When joining a thread mid-conversation, fetch earlier messages as context.
@@ -674,13 +772,6 @@ export class SlackConnector extends ChatAgentIntegration {
         if (history) text = history + '\n\n' + text
       }
 
-      // Handle file uploads
-      const files = msg.files?.map((f: any) => ({
-        name: f.name || 'file',
-        url: f.url_private_download || f.url_private || f.permalink || '',
-        mimeType: f.mimetype,
-      }))
-
       const input = this.emitMessage({
         externalMessageId: ts,
         text,
@@ -688,7 +779,7 @@ export class SlackConnector extends ChatAgentIntegration {
         userId,
         userName,
         chatName,
-        files: files?.length ? files : undefined,
+        files: content.files.length ? content.files : undefined,
         timestamp: new Date(Number(ts) * 1000),
         display: {
           requestText,
@@ -704,10 +795,10 @@ export class SlackConnector extends ChatAgentIntegration {
     // Buttons on cards from before answers rode in the button: their requests are gone.
     app.action(/^cb_\d+$/, async ({ ack }: { ack: any }) => { await ack() })
 
-    // Answer buttons on request cards
+    // Answers from request cards. A checkbox tick is acknowledged and gives none.
     app.action(ANSWER_ACTION, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
       await ack()
-      const answer = decodeSlackAnswer(action?.value)
+      const answer = slackAnswerFromAction(action ?? {}, body?.message?.blocks ?? [], body?.state?.values)
       if (!answer) return
 
       // Update the message to show the selected answer
@@ -716,14 +807,15 @@ export class SlackConnector extends ChatAgentIntegration {
         const messageTs = body?.message?.ts
         if (channel && messageTs) {
           const originalText = body.message.text || ''
-          // Preserve non-action blocks, only remove the buttons
+          // Keep the question, replace the controls with the answer
           const existingBlocks = (body.message.blocks || []) as Array<{ type: string }>
-          const preserved = existingBlocks.filter((b) => b.type !== 'actions')
+          const preserved = existingBlocks.filter((b) => b.type !== 'actions' && b.type !== 'input')
+          const shown = isApproval(answer.t) ? answer.a : `✅ ${answer.a}`
           await app.client.chat.update({
             channel,
             ts: messageTs,
-            text: `${originalText}\n\n:white_check_mark: *${answer.a}*`,
-            blocks: preserved,
+            text: `${originalText}\n\n${shown}`,
+            blocks: [...preserved, { type: 'section', text: { type: 'plain_text', text: shown } }],
           })
         }
       } catch {
@@ -757,6 +849,15 @@ export class SlackConnector extends ChatAgentIntegration {
       this.botUserId = authResult.user_id || null
       this.workspace = { name: authResult.team || undefined, url: authResult.url || undefined }
       console.log(`[SlackConnector] Authenticated as ${authResult.user} in workspace ${authResult.team}`)
+      // Which Slack app this is, for a link to its settings (renaming an app made by hand happens there).
+      if (authResult.bot_id && !this.config.appId && this.integration) {
+        const integrationId = this.integration.id
+        const botId = authResult.bot_id
+        background(app.client.bots.info({ bot: botId })
+          .then((info) => info.bot?.app_id ? recordSlackAppId(integrationId, info.bot.app_id) : undefined)
+          .catch((error: unknown) => console.warn('[SlackConnector] Could not read the app id:', error instanceof Error ? error.message : error)),
+        { name: 'slack-connector.record-app-id' })
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack bot token invalid: ${msg}`)
@@ -909,6 +1010,7 @@ export class SlackConnector extends ChatAgentIntegration {
     for (const [chatId, { anchor }] of this.status) {
       background(this.setStatus(chatId, anchor, '').catch(() => {}), { name: 'slack-connector.clear-status' })
     }
+    this.releaseAllAcknowledgements()
     this.status.clear()
     this.openToolGroups.clear()
     this.toolGroupClosedAt.clear()
@@ -955,8 +1057,8 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
 
     let lastTs = ''
-    for (const chunk of splitChatMessage(tablesToMonospace(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
-      lastTs = await this.postText(chatId, chunk)
+    for (const chunk of splitChatMessage(fitSlackTables(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
+      lastTs = await this.postText(chatId, chunk, message.alsoSendToChannel)
     }
 
     return lastTs
@@ -985,18 +1087,20 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
 
     const { channel } = this.resolveChannel(chatId)
-    const md = tablesToMonospace(text)
+    const md = fitSlackTables(text)
     const draft = (limit: number) => (md.length > limit
       ? md.slice(0, limit - 60) + '\n\n... (full response will appear when done)'
       : md) || ':hourglass_flowing_sand: Thinking...'
+    // Kept tables are padded only on conversion, so bound the converted draft too.
+    const converted = () => splitChatMessage(markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)), MAX_MESSAGE_LENGTH)[0]
 
     if (!existingMessageId) {
-      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), () => [markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH))])
+      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), false, () => [converted()])
     }
 
     // Edit existing message
     try {
-      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), () => markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)))
+      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), converted)
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       // Slack returns this when text hasn't changed
@@ -1011,7 +1115,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) return
 
     const { channel } = this.resolveChannel(chatId)
-    const md = tablesToMonospace(finalText || '(empty response)')
+    const md = fitSlackTables(finalText || '(empty response)')
 
     try {
       const [first, ...rest] = splitChatMessage(md, MARKDOWN_TEXT_LENGTH)
@@ -1037,30 +1141,31 @@ export class SlackConnector extends ChatAgentIntegration {
   private async postText(
     chatId: string,
     md: string,
+    alsoSendToChannel = false,
     converted = () => splitChatMessage(markdownToSlackMrkdwn(md), MAX_MESSAGE_LENGTH),
   ): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     try {
-      const result = await this.app.client.chat.postMessage({ channel, markdown_text: md, ...(threadTs ? { thread_ts: threadTs } : {}) })
+      const result = await this.app.client.chat.postMessage(inThread({ channel, ...markdownMessage(md) }, threadTs, alsoSendToChannel))
       this.posted(chatId)
       return result.ts || ''
     } catch (err: unknown) {
       if (!isSlackBlocksRejection(err)) throw err
       console.warn('[SlackConnector] Slack refused the markdown blocks, sending converted text')
-      const ts = await this.postConverted(chatId, converted())
+      const ts = await this.postConverted(chatId, converted(), alsoSendToChannel)
       this.convertedMessages.add(ts)
       return ts
     }
   }
 
   /** Post chunks of today's converted text. Returns the last ts. */
-  private async postConverted(chatId: string, chunks: string[]): Promise<string> {
+  private async postConverted(chatId: string, chunks: string[], alsoSendToChannel = false): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel, threadTs } = this.resolveChannel(chatId)
     let ts = ''
     for (const chunk of chunks) {
-      ts = (await this.app.client.chat.postMessage({ channel, text: chunk, mrkdwn: true, ...(threadTs ? { thread_ts: threadTs } : {}) })).ts || ''
+      ts = (await this.app.client.chat.postMessage(inThread({ channel, text: chunk, mrkdwn: true }, threadTs, alsoSendToChannel))).ts || ''
       this.posted(chatId)
     }
     return ts
@@ -1071,7 +1176,7 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
     if (!this.convertedMessages.has(ts)) {
       try {
-        await this.app.client.chat.update({ channel, ts, markdown_text: md })
+        await this.app.client.chat.update({ channel, ts, ...markdownMessage(md) })
         return
       } catch (err: unknown) {
         if (!isSlackBlocksRejection(err)) throw err
@@ -1127,6 +1232,16 @@ export class SlackConnector extends ChatAgentIntegration {
     if (!this.app) throw new Error('Slack app not connected')
     const { channel } = this.resolveChannel(chatId)
     await this.app.client.assistant.threads.setStatus({ channel_id: channel, thread_ts: anchor, status })
+  }
+
+  protected async addAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    await this.app.client.reactions.add({ channel: this.resolveChannel(chatId).channel, timestamp: messageId, name: 'eyes' })
+  }
+
+  protected async removeAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    await this.app.client.reactions.remove({ channel: this.resolveChannel(chatId).channel, timestamp: messageId, name: 'eyes' })
   }
 
   // ── User request cards ──────────────────────────────────────────────
@@ -1234,17 +1349,34 @@ export class SlackConnector extends ChatAgentIntegration {
             text: { type: 'mrkdwn', text: q.question },
           })
 
+          const answer = (a: string) => encodeSlackAnswer({ t: event.toolUseId, c: chatId, q: q.question, a, n: event.questions.length })
           if (q.options && q.options.length > 0) {
-            const buttons = q.options.map((opt, i) => ({
-              type: 'button' as const,
-              text: { type: 'plain_text' as const, text: opt.label },
-              action_id: `answer_${i}`,
-              value: encodeSlackAnswer({ t: event.toolUseId, c: chatId, q: q.question, a: opt.label, n: event.questions.length }),
-            }))
+            const options = q.multiSelect
+              ? [{ type: 'checkboxes', action_id: PICK_ACTION, options: q.options.map((opt) => ({ text: { type: 'plain_text', text: opt.label }, value: opt.label })) }]
+              : q.options.map((opt, i) => ({
+                type: 'button' as const,
+                text: { type: 'plain_text' as const, text: opt.label },
+                action_id: `answer_${i}`,
+                value: answer(opt.label),
+              }))
             blocks.push({
               type: 'actions',
-              elements: buttons,
+              elements: options,
             })
+            if (!isApproval(event.toolUseId)) {
+              blocks.push({
+                type: 'input',
+                dispatch_action: !q.multiSelect,
+                label: { type: 'plain_text', text: 'Other' },
+                element: { type: 'plain_text_input', action_id: OTHER_ACTION, max_length: 2000, placeholder: { type: 'plain_text', text: 'Type something else' } },
+              })
+            }
+            if (q.multiSelect) {
+              blocks.push({
+                type: 'actions',
+                elements: [{ type: 'button', action_id: SUBMIT_ACTION, style: 'primary', text: { type: 'plain_text', text: 'Submit' }, value: answer('') }],
+              })
+            }
           }
 
           const result = await this.app.client.chat.postMessage({
@@ -1411,7 +1543,8 @@ export class SlackConnector extends ChatAgentIntegration {
       const lines: string[] = []
       for (const m of previous) {
         const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
-        const text = m.text ? await this.resolveMentionsInText(m.text) : ''
+        const content = slackMessageContent(m).text
+        const text = content ? await this.resolveMentionsInText(content) : ''
         if (text) lines.push(`${name}: ${text}`)
       }
       if (lines.length === 0) return null

@@ -27,6 +27,11 @@ let mockContainerClient: any
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('../db', () => ({
   get db() { return testDb },
 }))
@@ -126,6 +131,9 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
@@ -638,8 +646,10 @@ describe('Chat integration E2E', () => {
       if (row.expect) expect(sent.event).toMatchObject(row.expect)
     })
 
-    it("a proxy review from the chat's session reaches chat as the Allow/Deny card", async () => {
+    it("a proxy review from the chat's session reaches chat as the Allow/Deny card, and takes the received mark off", async () => {
+      const removed = vi.spyOn(mockConnector as any, 'removeAcknowledgement')
       const sent = await cardFor('proxy review please scope=session')
+      await waitForCondition(() => removed.mock.calls.some(([chatId]) => chatId === 'chat-1'), 3000)
 
       expect(sent.event.type).toBe('question_request')
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId

@@ -536,6 +536,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // Open cards stay with the installation, for the next connection.
     this.activeDrafts.clear()
     this.workingActivity.clear()
+    this.releaseAllAcknowledgements()
 
     // Relayed updates mid-handling finish before the next connection starts. A message the
     // manager no longer takes comes back as a retry; a button tap is lost, as when polling.
@@ -698,6 +699,16 @@ export class TelegramConnector extends ChatAgentIntegration {
     this.workingActivity.delete(chatId)
     // The streaming response shares the draft_id and replaces the draft in place,
     // so the clear yields the surface — there is nothing else to tear down.
+  }
+
+  protected async addAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.bot) return
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [{ type: 'emoji', emoji: '👀' }])
+  }
+
+  protected async removeAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.bot) return
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [])
   }
 
   /** The native-draft label for a busy activity (`<tg-thinking>` inner HTML). */

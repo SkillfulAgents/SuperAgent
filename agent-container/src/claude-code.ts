@@ -1206,6 +1206,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         // a session the host already counts as settled. Auto-compaction still
         // runs when the context actually fills.
         idleCompaction: false,
+        // No commit/PR attribution lines. Left at the default, the CLI adds a
+        // "remote_session_change" system-reminder to the first turn of every
+        // session ("Attribution for git commits and pull requests you create
+        // from here on ... End git commit messages with: Co-Authored-By:
+        // Claude Code ..."). It lands in the messages, not the system prompt,
+        // so replacing the prompt doesn't remove it. Small models read it as
+        // the task: one answered "Hey!" by writing both lines into AGENTS.md.
+        // It also credits "Claude Code" for whatever model the agent runs on.
+        // With both lines empty the CLI skips the reminder entirely.
+        attribution: { commit: '', pr: '' },
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the

@@ -60,4 +60,25 @@ describe('downloadBlob', () => {
 
     expect(fakeAnchor.download).toBe('100%.txt')
   })
+
+  it('streams the body and reports cumulative bytes when given onProgress', async () => {
+    const { fakeAnchor, clickSpy } = setup()
+    const res = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(3))
+        controller.enqueue(new Uint8Array(5))
+        controller.close()
+      },
+    }))
+    const progress: number[] = []
+    let saved: Blob | undefined
+    vi.mocked(URL.createObjectURL).mockImplementation((b) => { saved = b as Blob; return 'blob:x' })
+
+    await downloadBlob(res, 'agent.agent', (n) => progress.push(n))
+
+    expect(progress).toEqual([3, 8])
+    expect(saved?.size).toBe(8)
+    expect(fakeAnchor.download).toBe('agent.agent')
+    expect(clickSpy).toHaveBeenCalledOnce()
+  })
 })

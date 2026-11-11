@@ -1,5 +1,7 @@
 import { betterAuth } from 'better-auth'
+import { createAuthMiddleware, isAPIError } from 'better-auth/api'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
+import { setCookieCache } from 'better-auth/cookies'
 import { admin, bearer } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
@@ -110,6 +112,9 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
     session: {
       expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
       updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
+      ...((authSettings.sessionCookieCacheSeconds ?? 0) > 0
+        ? { cookieCache: { enabled: true, maxAge: authSettings.sessionCookieCacheSeconds } }
+        : {}),
       additionalFields: {
         // Persisted so the answer survives the request that created the
         // session: the concurrent-session cap has to recognize an installed
@@ -141,6 +146,14 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
           defaultValue: false,
           input: false, // users cannot set this on self-registration
         },
+        // 'invited': a row made for a team-directory person before they joined
+        // (claim-invited-user.ts). Declared so admin list-users can filter on it.
+        status: {
+          type: 'string',
+          required: false,
+          defaultValue: 'active',
+          input: false,
+        },
       },
     },
     plugins: [
@@ -164,6 +177,20 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
           const origin = request?.headers.get('origin')
           return origin ? [origin] : []
         },
+    hooks: {
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== '/change-password' || !ctx.context.options.session?.cookieCache?.enabled || isAPIError(ctx.context.returned)) return
+        // The account hook clears mustChangePassword in the database, while
+        // change-password caches the user it read before that write. Refresh
+        // only after success, using the replacement session when it rotated.
+        const session = ctx.context.newSession ?? ctx.context.session
+        if (!session) return
+        const user = await ctx.context.internalAdapter.findUserById(session.user.id)
+        if (!user) return
+        const dontRememberMe = await ctx.getSignedCookie(ctx.context.authCookies.dontRememberToken.name, ctx.context.secret)
+        await setCookieCache(ctx, { session: session.session, user }, !!dontRememberMe)
+      }),
+    },
     databaseHooks: {
       user: {
         delete: {
@@ -188,6 +215,9 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
             return role ? { data: { ...newUser, role } } : undefined
           },
           after: async (createdUser) => {
+            // Invited rows are made outside Better Auth and join when claimed
+            // (claim-invited-user.ts), which does what this hook does for them.
+            if ((createdUser as { status?: unknown }).status === 'invited') return
             try {
               // Atomic: only promote if this is the sole user in the table.
               // Platform-controlled deployments skip it, since members join
@@ -227,6 +257,15 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         },
       },
       account: {
+        create: {
+          // An invited user's first account is them joining. Linking a login to
+          // an existing row fires no user.create, so their claim runs here; on
+          // a Platform sign-in it is still inside the request's role context.
+          after: async (account) => {
+            const { claimInvitedUser } = await import('./claim-invited-user')
+            await claimInvitedUser(account.userId)
+          },
+        },
         delete: {
           // Remove-user deletes the account rows before the user row, so keep the
           // Platform member id now for the revoke in user.delete.before.

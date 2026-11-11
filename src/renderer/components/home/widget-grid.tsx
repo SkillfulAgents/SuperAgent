@@ -323,11 +323,13 @@ export function WidgetBoard({
   return (
     <div
       ref={wrapRef}
+      // Keep the origin and every drop column fixed, including on sparse boards.
       className="relative w-full transition-[height] duration-200 ease-out"
       style={{ height: Math.max(boardH, unitY) }}
     >
       {drag && (
         <div
+          data-testid="widget-drop-preview"
           className="absolute rounded-card bg-muted/40 transition-[left,top] duration-100"
           style={{
             left: drag.target.x * unitX,

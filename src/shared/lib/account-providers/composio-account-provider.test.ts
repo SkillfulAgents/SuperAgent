@@ -107,3 +107,39 @@ describe('Composio credentials for one proxied request', () => {
     expect(proxy).toHaveBeenCalledWith(expect.anything(), taken)
   })
 })
+
+describe('Composio token reads', () => {
+  const call = { ...base, method: 'GET', headers: new Headers(), body: null }
+
+  it('shares one token fetch between calls that miss the cache together', async () => {
+    token.mockResolvedValue({ accessToken: 'shared-token' })
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response('ok')))
+    const provider = new ComposioAccountProvider()
+
+    await Promise.all([provider.makeApiCall(call), provider.makeApiCall(call), provider.makeApiCall(call)])
+
+    expect(token).toHaveBeenCalledOnce()
+  })
+
+  it('shares one redacted-token answer and uses the Composio proxy for all calls', async () => {
+    const provider = new ComposioAccountProvider()
+
+    await Promise.all([provider.makeApiCall(call), provider.makeApiCall(call)])
+
+    expect(token).toHaveBeenCalledOnce()
+    expect(proxy).toHaveBeenCalledTimes(2)
+  })
+
+  it('fetches again after a shared fetch fails', async () => {
+    token.mockRejectedValueOnce(new Error('No access token: the connected account is EXPIRED'))
+    token.mockResolvedValue({ accessToken: 'token-after-reconnect' })
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response('ok'))
+    vi.stubGlobal('fetch', fetch)
+    const provider = new ComposioAccountProvider()
+
+    await expect(provider.makeApiCall(call)).rejects.toThrow('EXPIRED')
+    expect(fetch).not.toHaveBeenCalled()
+    expect((await provider.makeApiCall(call)).status).toBe(200)
+    expect(token).toHaveBeenCalledTimes(2)
+  })
+})

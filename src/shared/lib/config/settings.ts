@@ -19,7 +19,7 @@ import {
 import { InvalidAppRecordError } from '@shared/lib/app-records/errors'
 import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { globalInstructionsSchema } from './global-instructions-schema'
-import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
+import { readyTeamBrain, teamBrainStoredSchema, type TeamBrainRecord, type TeamBrainStored } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT, LEGACY_GLOBAL_DISPATCH_SHORTCUTS } from './shortcuts'
@@ -130,7 +130,6 @@ export interface AppPreferences {
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
-  chromeProfileId?: string
   chromeHeadless?: boolean
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
@@ -188,6 +187,13 @@ export interface AuthSettings {
   maxConcurrentSessions?: number
   /** Sliding lifetime (days) of the mobile device refresh credential. */
   mobileDeviceLifetimeDays?: number
+  /**
+   * How long (seconds) a browser session is read from its signed cookie instead of the database.
+   * Unset or 0: every request reads it from the database. A signed-out, revoked or banned session
+   * keeps working for up to this long, and a changed role takes up to this long to apply, so only a
+   * deployment whose database round trip is costly sets it.
+   */
+  sessionCookieCacheSeconds?: number
 
   // Lockout
   accountLockoutThreshold?: number
@@ -345,8 +351,8 @@ export interface AppSettings {
    * section). Admin-edited; readable by every signed-in user.
    */
   globalInstructions?: string
-  /** The workspace's one Team Brain (team-brain experiment). Admin-written; readable by every signed-in user. */
-  teamBrain?: TeamBrainRecord
+  /** The workspace's one Team Brain (team-brain experiment), or its set-up in progress. Written by the Team Brain set-up routes. */
+  teamBrain?: TeamBrainStored
   /**
    * Desktop-only: whether the UI drives this machine or the org's cloud
    * workspace. Main-owned rather than per-renderer so the main window and the
@@ -371,7 +377,6 @@ export interface ApiKeyStatus {
 // Note: This creates a type-only dependency, avoiding circular imports
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RuntimeReadiness } from '@shared/lib/container/types'
-import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
 // Canonical provider-info type (catalog + defaultModels) lives with the
 // provider layer; import it (type-only, no runtime cycle) so the two never drift.
 import type { LlmProviderInfo } from '../llm-provider'
@@ -381,7 +386,6 @@ export interface HostBrowserProviderInfo {
   name: string
   available: boolean
   reason?: string
-  profiles?: ChromeProfile[]
 }
 
 export interface HostBrowserStatus {
@@ -438,7 +442,6 @@ export interface GlobalSettingsResponse {
   shareErrorReports: boolean
   enableToolSearch: boolean
   agentCapabilities: AgentCapabilitySettings
-  teamBrain?: TeamBrainRecord
 }
 
 /**
@@ -674,7 +677,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     })(),
     teamBrain: (() => {
       if (loaded.teamBrain === undefined) return undefined
-      const parsed = teamBrainRecordSchema.safeParse(loaded.teamBrain)
+      const parsed = teamBrainStoredSchema.safeParse(loaded.teamBrain)
       if (parsed.success) return parsed.data
       console.warn('Invalid teamBrain in settings; ignoring it')
       return undefined
@@ -1081,9 +1084,9 @@ export async function getGlobalInstructions(): Promise<string> {
   return (await getSettings()).globalInstructions ?? ''
 }
 
-/** The workspace's Team Brain, or null before one is set up. */
+/** The workspace's Team Brain, or null before one is set up and while its set-up runs. */
 export async function getTeamBrain(): Promise<TeamBrainRecord | null> {
-  return (await getSettings()).teamBrain ?? null
+  return readyTeamBrain((await getSettings()).teamBrain)
 }
 
 export { DEFAULT_SETTINGS }

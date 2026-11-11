@@ -31,9 +31,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
       onSpeech: (piece) => { if (!this.closed) this.events.onSpeech?.(piece) },
       onRequest: async (request) => {
         if (this.closed || this.paused) return false
-        if (request.action !== 'message' && request.action !== 'cancel') return false
-        const result = await this.events.onCommand(request.action === 'cancel'
-          ? { type: 'cancel' } : { type: 'submit', text: request.text })
+        const result = await this.events.onCommand({ type: 'submit', text: request.text, queue: request.mode === 'queue' })
         return result.accepted
       },
     }, context.history, context.agentSlug, context.sessionId)

@@ -41,6 +41,8 @@ describe('the Mac App Store build config', () => {
     const leftOut = ['mediaremote-adapter', 'spotlight-bridge', 'agent-desktop/agent-desktop', 'agent-desktop/agent-desktop-macos-helper']
     const shipped = loadConfig().mac.extraResources.map((resource) => resource.to)
     for (const to of leftOut) expect(shipped).not.toContain(to)
+    // The Store build signs in through this bridge (App Review guideline 4).
+    expect(shipped).toContain('web-auth-bridge')
     expect(shipped).toEqual(
       regular.build.mac.extraResources.map((resource) => resource.to).filter((to) => !leftOut.includes(to)),
     )

@@ -71,6 +71,9 @@ vi.mock('@shared/lib/webhook-relay', async (importOriginal) => {
 import type { RelayEvent } from '@shared/lib/webhook-relay'
 import { PlatformWebhookRelayService } from '@shared/lib/webhook-relay/platform-webhook-relay-service'
 import { triggerManager } from './trigger-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(triggerManager))
 
 let pending: RelayEvent[]
 let acked: string[]
@@ -112,6 +115,7 @@ beforeEach(() => {
     },
     detach: (fn) => fn(),
   })
+  registerTasks(relay)
   relayHolder.relay = relay
   relay.start()
   mockGetDistinctMemberIds.mockReturnValue([])

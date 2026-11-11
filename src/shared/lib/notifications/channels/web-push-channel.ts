@@ -1,7 +1,7 @@
 import webPush from 'web-push'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
+import { getPushableAgentSlugs } from '@shared/lib/services/notification-service'
 import {
   listPushSubscriptions,
   deletePushSubscriptionById,
@@ -125,7 +125,7 @@ export class WebPushChannel implements NotificationChannel {
       }
       let access = accessCache.get(subscription.userId)
       if (!access) {
-        access = getAccessibleAgentSlugs(subscription.userId)
+        access = getPushableAgentSlugs(subscription.userId)
         accessCache.set(subscription.userId, access)
       }
       if (!(await access).includes(event.agentSlug)) {

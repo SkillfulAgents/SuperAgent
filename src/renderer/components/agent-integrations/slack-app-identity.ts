@@ -1,16 +1,12 @@
 import type { SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { hexMix, type OrbAppearance } from '@shared/lib/types/agent-avatar-orbs'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
-import { orbSvg, svgToPng } from '@renderer/components/agents/agent-avatar/orb-image'
+import { agentAppIcon } from './agent-app-icon'
 
 export const DEFAULT_SLACK_APP_NAME = 'Gamut Bot'
 
 export type SlackAppAgent = Pick<ApiAgent, 'slug' | 'name' | 'description' | 'avatar'>
-
-/** Slack's icon bounds are 512–2000px square. */
-const ICON_SIZE = 1024
 
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map(i => {
@@ -41,14 +37,7 @@ export function slackAppIdentity(agent: SlackAppAgent | undefined, name?: string
   }
 }
 
-/**
- * The agent's avatar as a Slack app icon: the orb at rest on a pale wash of
- * its rim, so every colourway (the black one too) stands off Slack's
- * background. A manifest can't carry an icon, so it is uploaded by hand.
- */
-export async function slackAppIcon(agent: SlackAppAgent): Promise<Blob> {
-  if (!agent.avatar) throw new Error('This agent has no avatar')
-  const { orb, shape } = avatarSource(agent.avatar)
-  const svg = orbSvg({ orb, shape, restingPhi: orbRestingPhi(agent.slug), size: ICON_SIZE, fill: 0.7, background: hexMix(orb.rim, '#FFFFFF', 0.85) })
-  return svgToPng(svg, ICON_SIZE)
+/** The agent's avatar as a Slack app icon. A manifest can't carry an icon, so for an app made by hand it is uploaded by hand. */
+export function slackAppIcon(agent: SlackAppAgent): Promise<Blob> {
+  return agentAppIcon(agent)
 }

@@ -6,6 +6,15 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 import { HomeTriggers } from './home-triggers'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 
+// These tests cover the section's content; the collapsed-by-default row itself
+// is covered in home-collapsible.test.tsx, so here it always renders open.
+vi.mock('./home-collapsible', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./home-collapsible')>()),
+  HomeCollapsible: ({ title, children }: { title: string; children: import('react').ReactNode }) => (
+    <div><span>{title}</span>{children}</div>
+  ),
+}))
+
 const mockUseAgentActivityStats = vi.fn()
 const mockUseCompletedOneTimeSessions = vi.fn()
 vi.mock('@renderer/hooks/use-activity-stats', () => ({

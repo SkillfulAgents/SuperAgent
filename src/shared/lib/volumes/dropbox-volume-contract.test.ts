@@ -19,10 +19,11 @@ function fixture(): VolumeContractFixture {
   const calls: { kind: string; path: string }[] = []
   const sessions = new Map<string, Uint8Array[]>()
   const revision = (entry: MemoryEntry) => `${entry.id}@${entry.version}`
-  const metadata = (entry: MemoryEntry) => ({
-    '.tag': entry.bytes ? 'file' : 'folder', id: entry.id, name: entry.path.split('/').at(-1) || 'Team',
+  const fields = (entry: MemoryEntry) => ({
+    id: entry.id, name: entry.path.split('/').at(-1) || 'Team',
     ...(entry.bytes ? { rev: revision(entry), size: entry.bytes.length, server_modified: new Date(1_700_000_000_000 + entry.version * 1000).toISOString() } : {}),
   })
+  const metadata = (entry: MemoryEntry) => ({ '.tag': entry.bytes ? 'file' : 'folder', ...fields(entry) })
   const error = (tag: string, status = 409) => Response.json({ error_summary: `path/${tag}/` }, { status })
   lookup.mockImplementation(async () => ({ id, toolkitSlug: 'dropbox', status: active ? 'active' : 'expired', userId: null, providerName: 'composio', providerConnectionId: id }))
   forward.mockImplementation(async ({ targetUrl, headers, body }: { targetUrl: string; headers: Headers; body: ArrayBuffer | null }) => {
@@ -63,11 +64,11 @@ function fixture(): VolumeContractFixture {
       if ((commit.mode === 'add' && current) || (commit.mode !== 'add' && (!current || revision(current) !== commit.mode.update))) return error('conflict')
       const content = endpoint === 'upload' ? new Uint8Array(body ?? new ArrayBuffer(0)) : new Uint8Array(Buffer.concat(sessions.get(args.cursor.session_id)!))
       onCommit(); onCommit = () => {}
-      return Response.json(metadata(tree.put(target, content)))
+      return Response.json(fields(tree.put(target, content)))
     }
     if (endpoint === 'create_folder_v2') {
       if (tree.get(path)) return error('conflict')
-      return Response.json({ metadata: metadata(tree.mkdir(path)) })
+      return Response.json({ metadata: fields(tree.mkdir(path)) })
     }
     if (endpoint === 'delete_v2') {
       const entry = tree.get(path)

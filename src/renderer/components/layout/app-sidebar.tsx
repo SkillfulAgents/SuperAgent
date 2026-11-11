@@ -1,5 +1,5 @@
 
-import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
+import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, Loader2, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
 import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
@@ -143,8 +143,7 @@ import {
   type TreeOperation,
 } from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useHasDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
@@ -169,8 +168,8 @@ function VersionBehindDot({
   )
 }
 
-// 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
-// agents-list group; pull out as a constant so the call site stays readable.
+// 4px-wide thin scrollbar with a muted-foreground/20 thumb, for the sidebar's
+// scrolling content; a constant so the call site stays readable.
 const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
@@ -1193,21 +1192,11 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
   const { data: agents, isLoading, error } = useListedAgents()
-  // Whether to offer Explore is two round trips deep — skillsets, and only then
-  // the discoverable agents they contain — so the item arrives after the rest of
-  // the nav and pushes it down on the way in. Remember the last answer for this
-  // Superagent and show that until the real one lands; `null` means "still
-  // asking", which is not the same as "no" and must not render as one.
-  const { data: skillsets } = useSkillsets()
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const marketplaceAnswer =
-    skillsets === undefined
-      ? null
-      : skillsets.length === 0
-        ? false // no skillsets, so the discoverable query never runs at all
-        : discoverableAgents === undefined
-          ? null
-          : discoverableAgents.length > 0
+  // Whether to offer Explore waits on the skillsets, so the item arrives after
+  // the rest of the nav and pushes it down on the way in. Remember the last
+  // answer for this Superagent and show that until the real one lands; `null`
+  // means "still asking", which is not the same as "no" and must not render as one.
+  const marketplaceAnswer = useHasDiscoverableAgents()
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const todoBoardEnabled = useExperiment('todo-board')
   const teamBrainEnabled = useExperiment('team-brain')
@@ -1823,7 +1812,13 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="gap-0 overflow-visible">
+        {/* Everything between the title bar and the footer scrolls as one:
+            the nav rows travel with the agent list rather than pinning above
+            it, so a short window gives the list the full height. */}
+        <SidebarContent
+          className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
+          data-testid="agent-list-scroll"
+        >
           <SidebarGroup className="shrink-0 p-0">
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
@@ -1907,17 +1902,16 @@ export function AppSidebar() {
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
-                    <AnimatedNavIcon name="plus" className="h-4 w-4" />
+                    {isCreatingAgent
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <AnimatedNavIcon name="plus" className="h-4 w-4" />}
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup
-            className={cn('group/agents-group flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}
-            data-testid="agent-list-scroll"
-          >
+          <SidebarGroup className="group/agents-group shrink-0 p-0">
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (

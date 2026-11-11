@@ -29,11 +29,12 @@ import {
   revokeChatAccess,
 } from '@shared/lib/services/chat-integration-access-service'
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
-import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
+import { listAgentIntegrationSessions, archiveAgentIntegrationSession, getAgentIntegrationSessionById, getAgentIntegrationSessionBySessionId, deleteAgentIntegrationSessionsByIntegration } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { cleanupIntegrationResource } from '@shared/lib/agent-integrations/cleanup'
 import { listAgentIntegrationsHandler } from './agent-integration-list'
-import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
+import { assertIntegrationAvailable, decodeIcon, getIntegrationSetup, integrationSetupContext, prepareIntegrationSetup, testIntegrationCredentials, setupError } from '@shared/lib/agent-integrations/setup'
+import { completeAgentAppInstall, findProvisioner, provisionedAppOf, startAgentAppInstall, updateAgentApp } from '@shared/lib/team-directory/provisioning'
 import { integrationSetupQuerySchema, integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/setup-schema'
 import { supportedTransports } from '@shared/lib/agent-integrations/transport'
 import { toPublicAgentIntegration, publicIntegrationStatus } from '@shared/lib/agent-integrations/serialization'
@@ -56,10 +57,14 @@ const agentIntegrationsRouter = new Hono()
 async function completeAuthorization(c: Context) {
   c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer')
   try {
-    const callback = getIntegrationSetup(c.req.param('provider') ?? '').callback
+    const provider = c.req.param('provider') ?? ''
+    const callback = getIntegrationSetup(provider).callback
     const state = c.req.query('state')
-    if (!callback || !state) return c.html('<h1>Authorization unavailable</h1><p>Return to Gamut to try again.</p>', 400)
-    const result = await callback({ state, code: c.req.query('code'), error: c.req.query('error'), parameters: c.req.query() })
+    if (!state) return c.html('<h1>Authorization unavailable</h1><p>Return to Gamut to try again.</p>', 400)
+    // An app a team directory created is installed by the host, for any provider.
+    const result = await completeAgentAppInstall(provider, { state, code: c.req.query('code'), error: c.req.query('error') })
+      ?? (callback ? await callback({ state, code: c.req.query('code'), error: c.req.query('error'), parameters: c.req.query() }) : null)
+    if (!result) return c.html('<h1>Authorization expired</h1><p>Return to Gamut to try again.</p>', 400)
     if (result.redirectUrl) return c.redirect(result.redirectUrl)
     if (result.cancelled || !result.integrationId) return c.html('<h1>Authorization cancelled</h1><p>Return to Gamut to try again.</p>', 400)
     const installed = await getAgentIntegration(result.integrationId)
@@ -109,6 +114,17 @@ agentIntegrationsRouter.get('/providers', async c => {
   return c.json(await agentIntegrationRegistry.listAvailableDefinitions())
 })
 agentIntegrationsRouter.get('/agents/:id', ResolveAgent(), AgentRead(), listAgentIntegrationsHandler)
+
+// GET /api/agent-integrations/agents/:id/sessions/:sessionId - Which integration (if any) owns an agent session
+agentIntegrationsRouter.get('/agents/:id/sessions/:sessionId', ResolveAgent(), AgentRead(), async (c) => {
+  try {
+    const mapping = await getAgentIntegrationSessionBySessionId(getAgentId(c), c.req.param('sessionId'))
+    return c.json({ integrationId: mapping?.integrationId ?? null })
+  } catch (error) {
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'session-integration' }, extra: { sessionId: c.req.param('sessionId') } })
+    return c.json({ error: 'Failed to resolve session integration' }, 500)
+  }
+})
 
 const IntegrationAgentRole = EntityAgentRole({
   paramName: 'integrationId',
@@ -182,7 +198,9 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
     const context = await integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
     const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
-    return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
+    // A connected team directory that can create this provider's apps; they receive through webhooks.
+    const provisioning = transports.includes('relay') ? await findProvisioner(provider) : null
+    return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports, ...(provisioning ? { provisioning } : {}) }))
   } catch (error) {
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
@@ -289,10 +307,17 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
   const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
   try {
     await assertIntegrationAvailable(row.provider)
+    const context = await integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c))
+    // An app a team directory created installs through the host, whatever the provider.
+    const provisioned = provisionedAppOf(row.config)
+    if (provisioned) {
+      if (provisioned.installed) return c.json({ error: 'This app is already installed' }, 409)
+      return c.json(await startAgentAppInstall(row, context.callbackUrl))
+    }
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())
-    const result = await authorization.run(row, input, await integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
+    const result = await authorization.run(row, input, context)
     // Validation, credential lookup and attempt persistence may fail. Keep the
     // current account running until the provider has a usable authorization URL.
     await agentIntegrationManager.pauseIntegration(row.id)
@@ -302,6 +327,29 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'agent-integration', operation: 'authorize' } })
     return c.json({ error: 'Could not authorize integration' }, 500)
+  }
+})
+
+// POST /api/agent-integrations/:integrationId/app - Rename the app a team
+// directory created for this installation (name and handle) and/or give it a
+// new icon (`icon`: the agent's avatar as a square PNG, base64).
+const appUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  icon: z.string().max(4_000_000).optional(),
+}).refine((input) => input.name || input.icon, 'Give a name or an icon')
+agentIntegrationsRouter.post('/:integrationId/app', IntegrationAgentRole('user'), RequireProviderManagement, async c => {
+  const row = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
+  try {
+    const input = appUpdateSchema.parse(await c.req.json())
+    await updateAgentApp(row.id, row.config, { ...(input.name ? { name: input.name } : {}), ...(input.icon ? { icon: decodeIcon(input.icon) } : {}) })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: row.id, action: 'updated', details: { app: { renamed: !!input.name, icon: !!input.icon } } })
+    const updated = await getAgentIntegration(row.id)
+    return c.json(updated ? toPublicAgentIntegration(updated) : { ok: true })
+  } catch (error) {
+    const failure = setupError(error)
+    if (failure) return c.json({ error: failure.error }, failure.status)
+    captureException(error, { tags: { component: 'agent-integration', operation: 'update-app' } })
+    return c.json({ error: 'Could not update the app' }, 500)
   }
 })
 

@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
       notifyWhenUnfocused: false,
     },
   })),
-  getAccessibleAgentSlugs: vi.fn(async (_userId: string): Promise<string[]> => []),
+  getPushableAgentSlugs: vi.fn(async (_userId: string): Promise<string[]> => []),
   getSessionMetadata: vi.fn(async (): Promise<Record<string, unknown> | null> => null),
 }))
 
@@ -39,7 +39,7 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
 }))
 vi.mock('@shared/lib/services/notification-service', () => ({
-  getAccessibleAgentSlugs: mocks.getAccessibleAgentSlugs,
+  getPushableAgentSlugs: mocks.getPushableAgentSlugs,
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: mocks.getSessionMetadata,
@@ -105,7 +105,7 @@ beforeEach(() => {
   mocks.getApnsRelayConfig.mockReturnValue({ url: 'https://relay.example', enabled: true })
   mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice()])
   mocks.getSessionMetadata.mockResolvedValue(null)
-  mocks.getAccessibleAgentSlugs.mockResolvedValue([])
+  mocks.getPushableAgentSlugs.mockResolvedValue([])
   mocks.getUserSettings.mockReturnValue({
     notifications: {
       enabled: true,
@@ -293,7 +293,7 @@ describe('owner settings gate', () => {
     expect(mocks.getUserSettings).toHaveBeenCalledWith('local')
 
     mocks.isAuthMode.mockReturnValue(true)
-    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
     mocks.listDeliverableApnsDevices.mockReturnValue([makeDevice({ userId: 'user-a' })])
     await channel.deliver(makeEvent())
     expect(mocks.getUserSettings).toHaveBeenCalledWith('user-a')
@@ -310,7 +310,7 @@ describe('auth-mode agent access gate', () => {
       makeDevice({ userId: 'user-a' }),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
     ])
-    mocks.getAccessibleAgentSlugs.mockImplementation(async (userId: string) =>
+    mocks.getPushableAgentSlugs.mockImplementation(async (userId: string) =>
       userId === 'user-a' ? ['agent-x'] : ['agent-other']
     )
 
@@ -334,7 +334,7 @@ describe('auth-mode agent access gate', () => {
       makeDevice({ userId: 'user-a' }),
       makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
     ])
-    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
     // user-a's phone started the session; the mention is for user-b.
     mocks.getSessionMetadata.mockResolvedValue({ createdByDeviceId: 'family-1' })
 

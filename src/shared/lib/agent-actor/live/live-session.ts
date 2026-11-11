@@ -35,6 +35,8 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { parseUserTags } from '@shared/lib/utils/mentions'
+import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { finalizeAutomationStatus, recordErrorProvider, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -43,7 +45,7 @@ import {
   recordSessionActivity,
   revertSessionActivity,
   type SessionActivityMark,
-} from '@shared/lib/services/session-summary-cache'
+} from '@shared/lib/services/session-activity'
 import { randomUUID } from 'crypto'
 import { transcriptPath, type SessionStore } from '../session-store'
 import type { HostPort } from '../host-port'
@@ -228,7 +230,7 @@ export class LiveSession {
   lastResultCleanSuccess: boolean
   /** The SDK's error code from the latest assistant message (authentication_failed, rate_limit, …). */
   lastApiErrorCode: string | null = null
-  /** The summary-cache write a send made ahead of the container confirming it; undone if the send fails. */
+  /** The activity a send recorded ahead of the container confirming it; undone if the send fails. */
   provisionalActivity: SessionActivityMark | null
   // Generations a failed send's rollback compares, so it never undoes what a
   // later send, a runtime result or real output did meanwhile.
@@ -267,6 +269,8 @@ export class LiveSession {
   retainStateOnStreamRelease: boolean
   /** Promoted to interactive: set synchronously, so a slower metadata read cannot undo it. */
   promotedToInteractive: boolean
+  /** An unpromoted automation, which no session list shows: its global events say so. */
+  hiddenFromLists: boolean
   /** Not a cron/webhook session: the automation-status write is skipped from then on. */
   private notAutomation = false
 
@@ -309,6 +313,7 @@ export class LiveSession {
     this.releaseStreamWhenIdle = prior?.releaseStreamWhenIdle ?? false
     this.retainStateOnStreamRelease = prior?.retainStateOnStreamRelease ?? false
     this.promotedToInteractive = prior?.promotedToInteractive ?? false
+    this.hiddenFromLists = prior?.hiddenFromLists ?? false
     this.slashCommands = prior?.slashCommands ?? []
     this.settledInputRequests = prior?.settledInputRequests ?? new Map()
     this.pendingError = prior?.pendingError ?? null
@@ -471,7 +476,7 @@ export class LiveSession {
 
     // The CLI appends the user's message as the turn starts, but the SDK
     // doesn't echo it, so the first frame here can be tens of seconds out.
-    // Session lists rank by the summary cache, so the session moves up now;
+    // Session lists rank by recorded activity, so the session moves up now;
     // provisionally, until the container answers (markIdle undoes it).
     this.provisionalActivity = recordProvisionalSessionActivity(this.ctx.store, this.ctx.sessionId, Date.now())
 
@@ -1064,8 +1069,9 @@ export class LiveSession {
     }
 
     // Complete top-level frames are durable transcript writes: the session's
-    // summary entry moves. Replayed catch-up frames don't (their arrival time
-    // is not when they happened; the TTL reconciliation repairs a missed end).
+    // index entry moves. Replayed catch-up frames don't (their arrival time
+    // is not when they happened; a missed end is repaired from the
+    // transcript's mtime, see refreshActivityFromTranscript).
     if (!content.replayed && ['assistant', 'user', 'result'].includes(content.type)) {
       recordSessionActivity(this.ctx.store, this.ctx.sessionId, message.timestamp)
       // The turn is real: the send's provisional mark no longer needs undoing.
@@ -1145,6 +1151,7 @@ export class LiveSession {
     // output: hidden in the transcript, so neither an answer nor a refetch.
     if (isSyntheticPlaceholderMessage(content)) return
     const text = this.response.assistantFrame(content)
+    if (text && !content.error) this.notifyTagged(content, text)
     // Email and chat deliver only stream_delta: a finished answer that
     // streamed no deltas would show in the transcript and never be sent.
     if (text !== null && !content.error && this.stream.currentText.length === 0 && text) {
@@ -1685,9 +1692,25 @@ export class LiveSession {
   // Side effects
   // ===========================================================================
 
-  /** An event about this session for the global feed. */
+  /** An event about this session for the global feed. A hidden session's tells clients that no session list holds it. */
   private publish({ type, ...fields }: { type: string; [key: string]: unknown }): void {
-    this.ctx.host.send('global', { type, sessionId: this.ctx.sessionId, agentSlug: this.ctx.agentSlug, ...fields })
+    this.ctx.host.send('global', {
+      type, sessionId: this.ctx.sessionId, agentSlug: this.ctx.agentSlug, ...(this.hiddenFromLists ? { hidden: true } : {}), ...fields,
+    })
+  }
+
+  /** A message that tags people with `[@Name](user:<id>)`. The host decides who hears. */
+  private notifyTagged(content: FrameContent, text: string): void {
+    // Once per person per message: a message's text can arrive as several frames.
+    const messageId = typeof content.message?.id === 'string' ? content.message.id : content.uuid
+    const userIds = parseUserTags(text).mentions.map((mention) => mention.id).filter((id) => !this.response.toldInMessage.has(`${messageId}\0${id}`))
+    if (userIds.length === 0 || typeof content.uuid !== 'string' || !content.uuid) return
+    for (const id of userIds) {
+      this.response.toldInMessage.add(`${messageId}\0${id}`)
+      this.response.taggedUserIds.add(id)
+    }
+    const { agentSlug, sessionId } = this.ctx
+    this.ctx.host.send('notification', { kind: 'message_mentions', agentSlug, sessionId, messageUuid: content.uuid, userIds, text: stripMarkdownPreview(text) })
   }
 
   /**
@@ -1698,6 +1721,7 @@ export class LiveSession {
   private notifyCompleted(): void {
     const { agentSlug, sessionId, store } = this.ctx
     const responseText = this.response.answer
+    const taggedUserIds = [...this.response.taggedUserIds]
     let timer: ReturnType<typeof setTimeout> | undefined
     const tooSlow = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), TRANSCRIPT_END_WAIT_MS)
@@ -1709,7 +1733,7 @@ export class LiveSession {
     // Read at the turn's end, announced in turn order: a later turn whose
     // read finishes first waits for this one.
     this.ctx.completions().after(Promise.race([transcriptEnd, tooSlow]).finally(() => clearTimeout(timer)), (responseTranscriptEndOffset) => {
-      this.ctx.host.send('notification', { kind: 'session_complete', agentSlug, sessionId, responseText, responseTranscriptEndOffset })
+      this.ctx.host.send('notification', { kind: 'session_complete', agentSlug, sessionId, responseText, responseTranscriptEndOffset, taggedUserIds })
     })
   }
 
@@ -1729,7 +1753,7 @@ export class LiveSession {
     )
   }
 
-  /** Refresh the session's summary entry from its transcript's real mtime (a missed turn end). */
+  /** Refresh the session's index entry from its transcript's real mtime (a missed turn end). */
   private refreshActivityFromTranscript(): void {
     const { store, sessionId } = this.ctx
     background(
@@ -1739,24 +1763,26 @@ export class LiveSession {
           if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
         })
         .catch(() => {
-          // Missing or unreadable: the TTL reconciliation repairs it.
+          // Missing or unreadable: the next recorded write moves the entry.
         }),
       { name: 'live-session.refresh-activity-from-transcript' },
     )
   }
 
-  /** The automation stream policy, from the session's metadata. */
-  applyStreamPolicy(policy: { releaseStreamWhenIdle: boolean; retainStateOnStreamRelease: boolean }): void {
+  /** The automation stream policy and list visibility, from the session's metadata. */
+  applyStreamPolicy(policy: { releaseStreamWhenIdle: boolean; retainStateOnStreamRelease: boolean; hiddenFromLists: boolean }): void {
     // A promotion wins: it is set synchronously, and this read may be stale.
     if (this.promotedToInteractive) return
     this.releaseStreamWhenIdle = policy.releaseStreamWhenIdle
     this.retainStateOnStreamRelease = policy.retainStateOnStreamRelease
+    this.hiddenFromLists = policy.hiddenFromLists
   }
 
-  /** Promoted to interactive: the stream stays across settles, like any interactive session's. */
+  /** Promoted to interactive: the stream stays across settles, like any interactive session's, and session lists show it. */
   promoted(): void {
     this.promotedToInteractive = true
     this.releaseStreamWhenIdle = false
+    this.hiddenFromLists = false
   }
 }
 

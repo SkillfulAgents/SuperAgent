@@ -36,9 +36,8 @@ export async function notificationReadState(slugs: string[], viewerId?: string):
   const limit = pLimit(5)
   const agents = await Promise.all(slugs.map(slug => limit(async () => {
     const actor = agentRegistry.get(slug)
-    const [summary, metadata, live] = await Promise.all([
-      actor.sessions.summary(), actor.sessions.readMetadata(), actor.live(),
-    ])
+    const [summary, live] = await Promise.all([actor.sessions.summary(), actor.live()])
+    const { metadata } = summary
     const markedIds = marked.get(slug) ?? new Set<string>()
     const unreadIds = new Set([...(unread.get(slug) ?? []), ...markedIds])
     const mentionIds = mentioned.get(slug) ?? new Set<string>()

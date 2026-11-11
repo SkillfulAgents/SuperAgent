@@ -6,7 +6,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import * as sessionService from '@shared/lib/services/session-service'
 import { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import { recordSessionActivity } from '@shared/lib/services/session-activity'
 import * as transcriptOps from './local-transcript-ops'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
@@ -93,7 +93,6 @@ export function createAgentRegistry(
   // this is where it gets the way in. Wired here, by the package that owns
   // the actors, so no entry point has to remember to.
   deps.containerHost.attachAgentWorkspaces({
-    files: (slug) => get(slug).files,
     instructions: (slug) => get(slug).config.get('instructions'),
   })
   // A runtime marks and recovers only sessions that are live, and a live

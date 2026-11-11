@@ -38,6 +38,13 @@ import userEvent from '@testing-library/user-event'
 import { HomeVolumes } from './home-volumes'
 import { HomeCardLookContext } from './home-collapsible'
 
+// Keep Agent Home's Drives section open while exercising the real collapsible;
+// other surfaces still use their own context's default.
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { agentHomeSectionsOpen: { drives: true } } }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+}))
+
 /**
  * Local folder picking/revealing needs this computer. Saved volumes belong to
  * the selected API target and can also be attached from browsers/cloud windows.
