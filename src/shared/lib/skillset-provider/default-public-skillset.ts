@@ -17,10 +17,12 @@ export const DEFAULT_PUBLIC_SKILLSET: SkillsetConfig = {
  * The built-in library's name and description belong to the app, not to the
  * install: settings.json saves whatever they were when the install was created,
  * so without this a rename (Super Agent → Gamut → Library) never reaches anyone
- * who already has it. Other libraries are named by their owners and pass through.
+ * who already has it. Other libraries are named by their owners and pass through
+ * — including one saved under the built-in id but pointing at another repo
+ * (the e2e seed does this), since then it isn't the built-in library at all.
  */
 export function withCurrentDefaultLabels(skillset: SkillsetConfig): SkillsetConfig {
-  if (skillset.id !== DEFAULT_PUBLIC_SKILLSET.id) return skillset
+  if (skillset.id !== DEFAULT_PUBLIC_SKILLSET.id || skillset.url !== DEFAULT_PUBLIC_SKILLSET.url) return skillset
   return {
     ...skillset,
     name: DEFAULT_PUBLIC_SKILLSET.name,
