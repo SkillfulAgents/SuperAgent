@@ -307,6 +307,13 @@ export class NangoAccountProvider extends BaseAccountProvider {
         api_key?: string
         expires_at?: string
       }
+      errors?: Array<{ type: string }>
+    }
+
+    // A connection with errors is not active (see getConnection) and has no
+    // token to use, whatever the response still carries.
+    if (Array.isArray(response.errors) && response.errors.length > 0) {
+      throw new NangoApiError(`No access token: Nango connection ${connectionId} is not active`, 409)
     }
 
     const creds = response.credentials

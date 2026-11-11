@@ -1,11 +1,11 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
-const { token, withToken, proxy, resolveAuth, AUTH } = vi.hoisted(() => ({
-  token: vi.fn(), withToken: vi.fn(), proxy: vi.fn(), resolveAuth: vi.fn(),
+const { token, proxy, resolveAuth, AUTH } = vi.hoisted(() => ({
+  token: vi.fn(), proxy: vi.fn(), resolveAuth: vi.fn(),
   /** What a settings read resolves the Composio credentials to. */
   AUTH: { localApiKey: 'local-key', platformToken: null, userId: 'user' },
 }))
 vi.mock('@shared/lib/composio/client', () => ({
-  getConnectionToken: token, getConnectionWithToken: withToken, proxyExecute: proxy,
+  getConnectionToken: token, proxyExecute: proxy,
   resolveComposioAuth: resolveAuth,
   composioAuthFrom: () => ({ localApiKey: 'from-settings', platformToken: null, userId: null }),
   ComposioRedactedTokenError: class extends Error {},
@@ -108,36 +108,8 @@ describe('Composio credentials for one proxied request', () => {
   })
 })
 
-describe('Composio account reads', () => {
+describe('Composio token reads', () => {
   const call = { ...base, method: 'GET', headers: new Headers(), body: null }
-
-  it('reuses the token from the status check, so a cold cache fetches the account once', async () => {
-    withToken.mockResolvedValue({ connection: { id: 'connection', status: 'ACTIVE' }, token: () => ({ accessToken: 'status-token' }) })
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('ok'))
-    vi.stubGlobal('fetch', fetch)
-    const provider = new ComposioAccountProvider()
-
-    expect((await provider.getConnection('connection')).status).toBe('ACTIVE')
-    await provider.makeApiCall(call)
-
-    expect(withToken).toHaveBeenCalledOnce()
-    expect(token).not.toHaveBeenCalled()
-    expect(new Headers(fetch.mock.calls[0][1]!.headers).get('Authorization')).toBe('Bearer status-token')
-  })
-
-  it('leaves the token to the call when the account is not active', async () => {
-    withToken.mockResolvedValue({ connection: { id: 'connection', status: 'EXPIRED' }, token: () => ({ accessToken: 'stale-token' }) })
-    token.mockResolvedValue({ accessToken: 'fresh-token' })
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('ok'))
-    vi.stubGlobal('fetch', fetch)
-    const provider = new ComposioAccountProvider()
-
-    await provider.getConnection('connection')
-    await provider.makeApiCall(call)
-
-    expect(token).toHaveBeenCalledOnce()
-    expect(new Headers(fetch.mock.calls[0][1]!.headers).get('Authorization')).toBe('Bearer fresh-token')
-  })
 
   it('shares one token fetch between calls that miss the cache together', async () => {
     token.mockResolvedValue({ accessToken: 'shared-token' })
@@ -156,5 +128,18 @@ describe('Composio account reads', () => {
 
     expect(token).toHaveBeenCalledOnce()
     expect(proxy).toHaveBeenCalledTimes(2)
+  })
+
+  it('fetches again after a shared fetch fails', async () => {
+    token.mockRejectedValueOnce(new Error('No access token: the connected account is EXPIRED'))
+    token.mockResolvedValue({ accessToken: 'token-after-reconnect' })
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response('ok'))
+    vi.stubGlobal('fetch', fetch)
+    const provider = new ComposioAccountProvider()
+
+    await expect(provider.makeApiCall(call)).rejects.toThrow('EXPIRED')
+    expect(fetch).not.toHaveBeenCalled()
+    expect((await provider.makeApiCall(call)).status).toBe(200)
+    expect(token).toHaveBeenCalledTimes(2)
   })
 })

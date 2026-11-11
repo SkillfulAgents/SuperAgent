@@ -11,7 +11,7 @@ import { getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catal
 import {
   getOrCreateAuthConfig,
   initiateConnection as composioInitiateConnection,
-  getConnectionWithToken,
+  getConnection as composioGetConnection,
   deleteConnection as composioDeleteConnection,
   listConnections as composioListConnections,
   getConnectionToken,
@@ -20,7 +20,7 @@ import {
   resolveComposioAuth,
   ComposioRedactedTokenError,
 } from '@shared/lib/composio/client'
-import type { ComposioAuth, ConnectionTokenResponse, ProxyExecuteParams } from '@shared/lib/composio/client'
+import type { ComposioAuth, ProxyExecuteParams } from '@shared/lib/composio/client'
 import {
   buildProxyParameters,
   envelopeToResponse,
@@ -81,18 +81,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
   }
 
   async getConnection(connectionId: string, _toolkitSlug?: string, credentials?: ProviderCredentials): Promise<ProviderConnection> {
-    const { connection, token } = await getConnectionWithToken(connectionId, composioAuthOf(credentials))
-    // The status read carries the token too: keep it, so the call that follows
-    // does not fetch the same account again. A token that fails to read is left
-    // for that call, which fails as before.
-    if (connection.status === 'ACTIVE' && !this.freshMode(connectionId) && !this.pendingModes.has(connectionId)) {
-      try {
-        this.storeMode(connectionId, token)
-      } catch {
-        // Read again by makeApiCall.
-      }
-    }
-    return connection
+    return composioGetConnection(connectionId, composioAuthOf(credentials))
   }
 
   async deleteConnection(connectionId: string): Promise<void> {
@@ -140,32 +129,25 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     connectionId: string,
     auth: () => Promise<ComposioAuth>,
   ): Promise<ConnectionMode> {
-    const cached = this.freshMode(connectionId)
-    if (cached) return cached
+    const cached = this.connectionModeCache.get(connectionId)
+    if (cached && cached.cacheExpiresAt > Date.now()) {
+      return cached
+    }
 
     let pending = this.pendingModes.get(connectionId)
     if (!pending) {
-      pending = (async () => {
-        // A redacted token is an answer too (use the proxy), so the error goes to storeMode.
-        const readToken = await getConnectionToken(connectionId, await auth())
-          .then(token => () => token, (error: unknown) => () => { throw error })
-        return this.storeMode(connectionId, readToken)
-      })().finally(() => this.pendingModes.delete(connectionId))
+      pending = this.readConnectionMode(connectionId, auth).finally(() => this.pendingModes.delete(connectionId))
       this.pendingModes.set(connectionId, pending)
     }
     return pending
   }
 
-  private freshMode(connectionId: string): ConnectionMode | undefined {
-    const cached = this.connectionModeCache.get(connectionId)
-    return cached && cached.cacheExpiresAt > Date.now() ? cached : undefined
-  }
-
-  /** Caches the mode `readToken` gives: a token, or the Composio proxy when the token is redacted. */
-  private storeMode(connectionId: string, readToken: () => ConnectionTokenResponse): ConnectionMode {
-    let mode: ConnectionMode
+  private async readConnectionMode(
+    connectionId: string,
+    auth: () => Promise<ComposioAuth>,
+  ): Promise<ConnectionMode> {
     try {
-      const { accessToken, expiresAt } = readToken()
+      const { accessToken, expiresAt } = await getConnectionToken(connectionId, await auth())
 
       let ttl = DEFAULT_CACHE_TTL_MS
       if (expiresAt) {
@@ -174,13 +156,24 @@ export class ComposioAccountProvider extends BaseAccountProvider {
       }
       ttl = Math.max(ttl, 30_000)
 
-      mode = { kind: 'token', accessToken, cacheExpiresAt: Date.now() + ttl }
+      const mode: ConnectionMode = {
+        kind: 'token',
+        accessToken,
+        cacheExpiresAt: Date.now() + ttl,
+      }
+      this.connectionModeCache.set(connectionId, mode)
+      return mode
     } catch (err) {
-      if (!(err instanceof ComposioRedactedTokenError)) throw err
-      mode = { kind: 'use-proxy', cacheExpiresAt: Date.now() + DEFAULT_CACHE_TTL_MS }
+      if (err instanceof ComposioRedactedTokenError) {
+        const mode: ConnectionMode = {
+          kind: 'use-proxy',
+          cacheExpiresAt: Date.now() + DEFAULT_CACHE_TTL_MS,
+        }
+        this.connectionModeCache.set(connectionId, mode)
+        return mode
+      }
+      throw err
     }
-    this.connectionModeCache.set(connectionId, mode)
-    return mode
   }
 
   private async directForward(
