@@ -78,7 +78,20 @@ export async function startTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'
   await env.TASK_MANAGER.getByName(OBJECT_NAME).wake()
 }
 
+/**
+ * Resolves once the org's database is at this deploy's schema and data. The task manager object
+ * migrates it once per deploy; every isolate waits here before it opens the database.
+ */
+export async function ensureMigrated(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
+  // The object's own boot: a call through its stub would come back to it.
+  const own = servingTaskManager()
+  if (own) return own.migrate()
+  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+  await env.TASK_MANAGER.getByName(OBJECT_NAME).migrate()
+}
+
 export class TaskManagerDurableObject extends DurableObject<Env> {
+  private migrated: Promise<void> | undefined
   private readonly runs = new Map<string, Run>()
   private started: Promise<void> | undefined
   private stopped = false
@@ -89,10 +102,29 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     const sql = ctx.storage.sql
     sql.exec('CREATE TABLE IF NOT EXISTS job (id TEXT PRIMARY KEY, gen TEXT NOT NULL, task_type TEXT NOT NULL, payload TEXT NOT NULL, interval_ms INTEGER, jitter_ratio REAL, wake_at INTEGER, tick_at INTEGER, execution_id TEXT, attempt INTEGER NOT NULL DEFAULT 0)')
     sql.exec('CREATE TABLE IF NOT EXISTS live_check (id INTEGER PRIMARY KEY CHECK (id = 1), checked_at INTEGER NOT NULL)')
+    sql.exec('CREATE TABLE IF NOT EXISTS migrated (version TEXT PRIMARY KEY)')
   }
 
   checkVersion(callerVersion: string): boolean {
     return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
+  }
+
+  /** Migrates the org's database unless this deploy already did. A failed migration is tried again by the next call. */
+  migrate(): Promise<void> {
+    this.migrated ??= this.migrateOnce().catch((error: unknown) => {
+      this.migrated = undefined
+      throw error
+    })
+    return this.migrated
+  }
+
+  private async migrateOnce(): Promise<void> {
+    const version = this.env.VERSION?.id
+    const sql = this.ctx.storage.sql
+    if (version && sql.exec('SELECT 1 FROM migrated WHERE version = ?', version).toArray().length > 0) return
+    const app = await import('./boot')
+    await app.migrateDatabase(this.env)
+    if (version) sql.exec('INSERT OR IGNORE INTO migrated (version) VALUES (?)', version)
   }
 
   /** Starts the background services unless they already run here. Each isolate of the org calls it once. */

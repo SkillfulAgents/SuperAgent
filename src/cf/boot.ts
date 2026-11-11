@@ -8,7 +8,9 @@
 import { mkdirSync } from 'node:fs'
 import api from '../api'
 import { openDatabase } from '@shared/lib/db/open-database'
-import { d1 } from '@shared/lib/db/drivers/d1'
+import { d1, migrateD1 } from '@shared/lib/db/drivers/d1'
+import { migrationBundle } from '@shared/lib/db/migrations/bundle'
+import { runDataMigrations } from '@shared/lib/db/data-migrations'
 import { initializeAppState, isAppStateInitialized } from '@shared/lib/app-state'
 import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
@@ -32,7 +34,7 @@ import { getAgentDir } from '@shared/lib/utils/file-storage'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
-import { CloudflareTaskManager } from './cloudflare-task-manager'
+import { CloudflareTaskManager, ensureMigrated } from './cloudflare-task-manager'
 import { withAgentObject, routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
 import { createCloudflareFileOps } from './cloudflare-file-ops'
 import { ownedHere, servingAgentObject } from './agent-objects'
@@ -115,11 +117,21 @@ export function stopBackgroundServices(): Promise<void> {
   return shutdownServices()
 }
 
+/** The schema and data migrations, for the one object that runs them (TaskManagerDurableObject.migrate). */
+export async function migrateDatabase(env: Env): Promise<void> {
+  // As a boot does before it opens the database: the data migrations reach agents through this wiring.
+  wireAgents(env)
+  await migrateD1(env.DB, migrationBundle)
+  await runDataMigrations(d1(env.DB).open().db)
+}
+
 async function start(env: Env): Promise<void> {
   // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
   routeContainerFetch(env.AGENT, env.VERSION?.timestamp)
   wireAgents(env)
-  await openDatabase({ driver: d1(env.DB) })
+  // The org's task manager object migrates the database once per deploy; no other isolate does.
+  await ensureMigrated(env)
+  await openDatabase({ driver: d1(env.DB), migrate: false })
   // A boot retried after a later step failed finds AppState installed.
   if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE, { version: env.VERSION?.timestamp }))
   await ensureKeyManager(() => new CloudflareKeyManager({ env, probes: appKeyProbes }))
