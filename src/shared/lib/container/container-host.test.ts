@@ -1497,6 +1497,33 @@ describe('ContainerRuntime.syncAgentStatus', () => {
     expect(globalFeed.publish).not.toHaveBeenCalled()
   })
 
+  it('syncs every agent with at most four runner calls at once', async () => {
+    const slugs = ['sync-1', 'sync-2', 'sync-3', 'sync-4', 'sync-5', 'sync-6']
+    for (const slug of slugs) await containerHost.runtime(slug).getClient()
+    let active = 0
+    let peak = 0
+    const waiting: Array<() => void> = []
+    mockGetInfoFromRuntime.mockImplementation(async () => {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise<void>((resolve) => waiting.push(resolve))
+      active--
+      return { status: 'running', port: 4005 }
+    })
+
+    const sync = containerHost.syncAllStatuses()
+    await vi.waitFor(() => expect(waiting).toHaveLength(4))
+    while (waiting.length > 0) {
+      waiting.shift()!()
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    await sync
+
+    expect(peak).toBe(4)
+    expect(mockGetInfoFromRuntime).toHaveBeenCalledTimes(6)
+    for (const slug of slugs) expect(containerHost.runtime(slug).getCachedInfo()?.status).toBe('running')
+  })
+
   it('marks sessions inactive when container transitions to stopped', async () => {
     containerHost.runtime('sync-agent').getClient()
     containerHost.runtime('sync-agent').updateCachedStatus('running', 4005)

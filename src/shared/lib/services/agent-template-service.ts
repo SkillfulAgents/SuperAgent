@@ -50,6 +50,7 @@ import {
   getSkillsetRepoDir,
   refreshSkillset,
   BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS,
+  SKILLSET_PULL_CONCURRENCY,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
@@ -1336,14 +1337,15 @@ export async function refreshAgentTemplates(
   options: { background?: boolean } = {},
 ): Promise<void> {
   const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
-  for (const ss of skillsets) {
+  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
+  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
     try {
       await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       captureException(error, { tags: { area: 'template-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
     }
-  }
+  })))
 
   const agents = await listAgents()
 
@@ -1353,8 +1355,10 @@ export async function refreshAgentTemplates(
   const pendingByProvider = new Map<SkillProvider, string[]>()
   // One settings read screens every agent's template metadata.
   const screen = await readSkillsetAuthScreen()
-  for (const agent of agents) {
-    const meta = await getInstalledAgentMetadata(agent.slug, screen)
+  const readLimit = pLimit(8)
+  const metas = await Promise.all(agents.map((agent) => readLimit(() => getInstalledAgentMetadata(agent.slug, screen))))
+  for (const [index, agent] of agents.entries()) {
+    const meta = metas[index]
     if (!meta) continue
     metaByAgent.set(agent.slug, meta)
     if (meta.pendingQueueItemId) {

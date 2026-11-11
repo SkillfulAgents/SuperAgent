@@ -110,6 +110,21 @@ describe('IMessageConnector', () => {
       expect(result.cleanText).toBe('Hello world')
     })
 
+    it('keeps one emoji, including flags and keycaps, and drops text around an emoji', () => {
+      expect(extract('[[reaction:🇺🇸]]').reactions).toEqual(['🇺🇸'])
+      expect(extract('[[reaction:1️⃣]]').reactions).toEqual(['1️⃣'])
+      expect(extract('[[reaction:hello🔍]]').reactions).toEqual([])
+      expect(extract('[[reaction:👍👍]]').reactions).toEqual([])
+      expect(extract('[[reaction:a\u20E3]]').reactions).toEqual([])
+      expect(extract('[[reaction:🇺]]').reactions).toEqual([])
+    })
+
+    it('keeps an emoji as itself, for a custom tapback', () => {
+      const result = extract('[[reaction:✍️]] Drafting it now')
+      expect(result.reactions).toEqual(['✍️'])
+      expect(result.cleanText).toBe('Drafting it now')
+    })
+
     it('ignores unknown reaction names (no mapping)', () => {
       const result = extract('[[reaction:unknown]]')
       expect(result.reactions).toEqual([])
@@ -601,7 +616,7 @@ describe('IMessageConnector', () => {
       expect(msg.files).toBeUndefined()
     })
 
-    it('tracks lastReceivedMessageId', async () => {
+    it('tracks each chat\'s newest message', async () => {
       const handler = vi.fn()
       connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
@@ -613,12 +628,13 @@ describe('IMessageConnector', () => {
       })
       await Promise.resolve()
 
-      expect((connector as any).lastReceivedMessageId).toBe('msg-abc')
+      expect((connector as any).latestMessages.get('chat-1')?.id).toBe('msg-abc')
     })
 
-    it('sends mark_read on receiving a message', async () => {
+    it('sends mark_read once the host accepts the message, not on receipt', async () => {
       const ws = (connector as any).ws as MockWs
-      connector.onEvent(vi.fn())
+      const handler = vi.fn()
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-6',
@@ -627,9 +643,10 @@ describe('IMessageConnector', () => {
         parts: [{ type: 'text', value: 'hi' }],
       })
       await Promise.resolve()
+      expect(parseSent(ws).some((m) => m.type === 'mark_read')).toBe(false)
 
-      const messages = parseSent(ws)
-      expect(messages.some((m) => m.type === 'mark_read')).toBe(true)
+      await connector.acknowledgeInput(handler.mock.calls[0][0])
+      expect(parseSent(ws)).toContainEqual({ type: 'mark_read', data: { chatId: 'chat-1' } })
     })
   })
 
@@ -668,8 +685,7 @@ describe('IMessageConnector', () => {
     })
 
     it('sends reaction-only without a text message', async () => {
-      // Set up lastReceivedMessageId so reactions can be sent
-      ;(connector as any).lastReceivedMessageId = 'incoming-msg-1'
+      ;(connector as any).latestMessages.set('chat-1', { id: 'incoming-msg-1', at: 0 })
 
       const id = await connector.sendMessage('chat-1', { text: '[[reaction:heart]]' })
 
@@ -682,7 +698,7 @@ describe('IMessageConnector', () => {
     })
 
     it('sends reaction + text message for mixed content', async () => {
-      ;(connector as any).lastReceivedMessageId = 'incoming-msg-2'
+      ;(connector as any).latestMessages.set('chat-1', { id: 'incoming-msg-2', at: 0 })
 
       await connector.sendMessage('chat-1', { text: '[[reaction:thumbs_up]] Nice work!' })
 
@@ -694,8 +710,8 @@ describe('IMessageConnector', () => {
       expect((messages[1].data as any).parts[0].value).toBe('Nice work!')
     })
 
-    it('does not send reaction when there is no lastReceivedMessageId', async () => {
-      // lastReceivedMessageId is null by default
+    it('does not send reaction when the chat has no message yet', async () => {
+      ;(connector as any).latestMessages.set('chat-2', { id: 'other-chat-msg', at: 0 })
       await connector.sendMessage('chat-1', { text: '[[reaction:heart]] Hello' })
 
       const messages = parseSent(ws)
@@ -706,7 +722,7 @@ describe('IMessageConnector', () => {
     })
 
     it('sends multiple reactions', async () => {
-      ;(connector as any).lastReceivedMessageId = 'incoming-msg-3'
+      ;(connector as any).latestMessages.set('chat-1', { id: 'incoming-msg-3', at: 0 })
 
       await connector.sendMessage('chat-1', { text: '[[reaction:heart]][[reaction:haha]]' })
 

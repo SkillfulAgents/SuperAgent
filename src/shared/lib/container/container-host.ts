@@ -35,6 +35,7 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings, type AppSettings } from '@shared/lib/config/settings'
 import path from 'path'
+import pLimit from 'p-limit'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -51,6 +52,9 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
   process.env.CONTAINER_HEALTH_CHECK_INTERVAL_SECONDS || '30',
   10
 ) * 1000
+
+/** Agents the status sync reads at once, one runner call each: enough to overlap them without crowding the VM. */
+const STATUS_SYNC_CONCURRENCY = 4
 
 export class ContainerHost {
   private runtimes: Map<string, ContainerRuntime> = new Map()
@@ -307,9 +311,10 @@ export class ContainerHost {
         }
       }
 
-      for (const runtime of runtimes) {
+      const limit = pLimit(STATUS_SYNC_CONCURRENCY)
+      await Promise.all(runtimes.map((runtime) => limit(async () => {
         // Skip agents currently being stopped
-        if (runtime.isStopping()) continue
+        if (runtime.isStopping()) return
 
         try {
           await runtime.syncAgentStatus({ idleTimeoutMs })
@@ -318,7 +323,7 @@ export class ContainerHost {
           // Mark as stopped on error
           runtime.markAsStopped()
         }
-      }
+      })))
 
       console.log(`[ContainerHost] Synced ${runtimes.length} container statuses`)
     } finally {

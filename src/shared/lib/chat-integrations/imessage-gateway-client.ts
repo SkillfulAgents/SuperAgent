@@ -111,7 +111,7 @@ export async function sendGatewayMessage(config: GatewayCredentials, message: { 
   }
 }
 
-export async function sendGatewayReaction(config: GatewayCredentials, reaction: { messageId: string; reactionType: string; partIndex: number }): Promise<void> {
+export async function sendGatewayReaction(config: GatewayCredentials, reaction: { messageId: string; reactionType: string; customEmoji?: string; partIndex: number }): Promise<void> {
   await gatewayRequest(config, 'POST', '/reactions', { ...reaction, operation: 'add' })
 }
 

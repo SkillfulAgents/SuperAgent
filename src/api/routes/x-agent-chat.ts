@@ -15,7 +15,7 @@ import {
   DuplicateIntegrationIdentityError,
 } from '@shared/lib/services/agent-integration-service'
 import {
-  listAgentIntegrationSessions,
+  listActiveAgentIntegrationSessions,
   getAgentIntegrationSessionBySessionId,
 } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
@@ -61,9 +61,9 @@ xAgentChat.post('/list', async (c) => {
       // type where the provider's ids encode one, and advertise discovery
       // capabilities so agents know which discovery tools apply here.
       const connectorClass = await agentIntegrationManager.getDefinition(i.provider)
-      const sessions = await listAgentIntegrationSessions(i.id)
+      const sessions = await listActiveAgentIntegrationSessions(i.id)
       const asChat = ({ externalId, displayName, type }: { externalId: string; displayName: string | null; type?: string }) => ({ chatId: externalId, displayName, ...(type ? { type } : {}) })
-      const activeChats = (await agentIntegrationRegistry.conversations(i, sessions.filter((s) => !s.archivedAt), { threads: true }))
+      const activeChats = (await agentIntegrationRegistry.conversations(i, sessions, { threads: true }))
         .map(({ threads, ...chat }) => ({ ...asChat(chat), ...(threads ? { threads: threads.map(asChat) } : {}) }))
       return {
         id: i.id,
@@ -263,7 +263,7 @@ xAgentChat.post('/send', async (c) => {
       }
     }
 
-    const active = (await listAgentIntegrationSessions(integration_id)).filter((s) => !s.archivedAt)
+    const active = await listActiveAgentIntegrationSessions(integration_id)
     const activeChats = await agentIntegrationRegistry.conversations(integration, active)
 
     // No explicit target: fall back to the integration's single active chat

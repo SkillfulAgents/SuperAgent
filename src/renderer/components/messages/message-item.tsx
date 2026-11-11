@@ -1,6 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useCallback, useRef, useMemo, memo, type ReactNode } from 'react'
-import { Link2 } from 'lucide-react'
+import { AtSign, Link2 } from 'lucide-react'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
@@ -429,13 +429,15 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 dir="auto"
                 // Assistant bubbles opt into table breakout and must not clip it.
                 data-allow-table-breakout={isAssistant ? '' : undefined}
-                // A notify-only message (it opened on a teammate). Drawn as any other;
-                // marked for tests and anything that needs to tell.
+                // A notify-only message (it opened on a teammate): the agent did not
+                // run for it, so its bubble is dashed violet and says who it reached.
                 data-notify-only={silentMention ? '' : undefined}
                 className={cn(
                   'rounded-card max-w-full text-foreground',
                   !isAssistant && 'overflow-hidden',
-                  isUser && 'px-4 py-2 bg-zinc-100 dark:bg-zinc-800/70',
+                  isUser && 'px-4 py-2',
+                  isUser && !silentMention && 'bg-zinc-100 dark:bg-zinc-800/70',
+                  silentMention && 'border border-dashed border-violet-300 bg-violet-50/60 dark:border-violet-400/40 dark:bg-violet-400/10',
                   // Relative for the read-aloud controls, which overlay the
                   // gap under the bubble rather than adding a row to it.
                   isAssistant && 'relative py-1'
@@ -559,6 +561,18 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           )}
         </SenderAvatarGroup>
 
+        {/* Who a notify-only message reached: the agent did not run for it. Under
+            the bubble's edge, outside the group so the avatar stays beside the bubble. */}
+        {silentMention && (
+          <span
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+            style={avatarSender ? { marginRight: SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP } : undefined}
+            data-testid="mention-notified"
+          >
+            <AtSign className="h-3 w-3 text-violet-500" aria-hidden />
+            Notified {userParts!.mentions.flatMap((mention) => mention.kind === 'user' ? [mention.name] : []).join(', ')}
+          </span>
+        )}
 
         {/* What a dashboard comment told the agent beside the comment, folded */}
         {isUser && userParts?.dashboardContext && (

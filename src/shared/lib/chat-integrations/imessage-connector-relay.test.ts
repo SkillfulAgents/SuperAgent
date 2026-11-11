@@ -148,16 +148,80 @@ describe('IMessageConnector through webhooks', () => {
     expect(relay.consumers.has(CONSUMER)).toBe(false)
   })
 
-  it('hands a relayed message to the host, keyed by its message id, and marks the chat read once', async () => {
-    await connectWebhooks()
+  it('hands a relayed message to the host, keyed by its message id, and marks the chat read once the host accepts it', async () => {
+    const instance = await connectWebhooks()
+    inputResult = () => 'rejected'
+    await deliver(messageEvent('evt_0', 'msg_0'))
+    inputResult = () => 'accepted'
 
     const results = await deliver(messageEvent('evt_1', 'msg_1'), messageEvent('evt_2', 'msg_2'))
 
     expect(results).toEqual(new Map([['whe_evt_1', 'accepted'], ['whe_evt_2', 'accepted']]))
-    expect(inputs.map(input => input.type === 'input' && input.id)).toEqual(['msg_1', 'msg_2'])
-    expect(inputs[0]).toMatchObject({ externalId: 'chat_1', payload: { text: 'text of msg_1', userId: PHONE } })
+    expect(inputs.map(input => input.type === 'input' && input.id)).toEqual(['msg_0', 'msg_1', 'msg_2'])
+    expect(inputs[1]).toMatchObject({ externalId: 'chat_1', payload: { text: 'text of msg_1', userId: PHONE } })
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    expect(markGatewayChatRead).not.toHaveBeenCalled()
+
+    for (const input of inputs.slice(1)) if (input.type === 'input') await instance.acknowledgeInput(input)
     await vi.waitFor(() => expect(markGatewayChatRead).toHaveBeenCalledWith(config, 'chat_1'), { timeout: 2_000 })
     expect(markGatewayChatRead).toHaveBeenCalledTimes(1)
+    expect(sendGatewayReaction).not.toHaveBeenCalled()
+  })
+
+  it('marks an accepted group burst once with 👀 on its newest message, since groups show no read receipts', async () => {
+    const instance = await connectWebhooks()
+    await deliver(messageEvent('evt_1', 'msg_1', { chatName: 'Team' }), messageEvent('evt_2', 'msg_2', { chatName: 'Team' }))
+
+    for (const input of inputs) if (input.type === 'input') await instance.acknowledgeInput(input)
+    await vi.waitFor(() => expect(sendGatewayReaction).toHaveBeenCalled(), { timeout: 2_000 })
+    expect(sendGatewayReaction).toHaveBeenCalledTimes(1)
+    expect(sendGatewayReaction).toHaveBeenCalledWith(config, { messageId: 'msg_2', reactionType: 'custom', customEmoji: '👀', partIndex: 0 })
+    expect(markGatewayChatRead).not.toHaveBeenCalled()
+  })
+
+  it('gives a group 👀 only to an accepted message, and drops it once the agent reacts first', async () => {
+    const instance = await connectWebhooks()
+    await deliver(messageEvent('evt_1', 'msg_1', { chatName: 'Team' }))
+    inputResult = () => 'rejected'
+    await deliver(messageEvent('evt_2', 'msg_2', { chatName: 'Team', sentAt: '2026-10-13T12:01:00.000Z' }))
+    if (inputs[0].type === 'input') await instance.acknowledgeInput(inputs[0])
+    await vi.waitFor(() => expect(sendGatewayReaction).toHaveBeenCalledWith(config, { messageId: 'msg_1', reactionType: 'custom', customEmoji: '👀', partIndex: 0 }), { timeout: 2_000 })
+
+    vi.mocked(sendGatewayReaction).mockClear()
+    inputResult = () => 'accepted'
+    await deliver(messageEvent('evt_3', 'msg_3', { chatName: 'Team', sentAt: '2026-10-13T12:02:00.000Z' }))
+    if (inputs[2].type === 'input') await instance.acknowledgeInput(inputs[2])
+    await instance.sendMessage('chat_1', { text: '[[reaction:🔍]]' })
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    expect(vi.mocked(sendGatewayReaction).mock.calls.map(([, reaction]) => reaction.customEmoji)).toEqual(['🔍'])
+  })
+
+  it('keeps a burst\'s 👀 on its newest message when an older one is replayed inside it', async () => {
+    const instance = await connectWebhooks()
+    await deliver(messageEvent('evt_2', 'msg_new', { chatName: 'Team', sentAt: '2026-10-13T12:05:00.000Z' }),
+      messageEvent('evt_1', 'msg_old', { chatName: 'Team', sentAt: '2026-10-13T12:00:00.000Z' }))
+
+    for (const input of inputs) if (input.type === 'input') await instance.acknowledgeInput(input)
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    expect(vi.mocked(sendGatewayReaction).mock.calls.map(([, reaction]) => reaction.messageId)).toEqual(['msg_new'])
+  })
+
+  it('drops a pending group 👀 when /clear follows, since no turn will start', async () => {
+    const instance = await connectWebhooks()
+    await deliver(messageEvent('evt_1', 'msg_1', { chatName: 'Team' }),
+      messageEvent('evt_2', 'msg_clear', { chatName: 'Team', sentAt: '2026-10-13T12:01:00.000Z', parts: [{ type: 'text', value: '/clear' }] }))
+
+    for (const input of inputs) if (input.type === 'input') await instance.acknowledgeInput(input)
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    expect(sendGatewayReaction).not.toHaveBeenCalled()
+  })
+
+  it('reacts in the chat it replies to, not the chat that wrote last', async () => {
+    const instance = await connectWebhooks()
+    await deliver(messageEvent('evt_1', 'msg_a', { chatId: 'chat_a' }), messageEvent('evt_2', 'msg_b', { chatId: 'chat_b', sentAt: '2026-10-13T12:01:00.000Z' }))
+
+    await instance.sendMessage('chat_a', { text: '[[reaction:🔍]]' })
+    expect(sendGatewayReaction).toHaveBeenCalledWith(config, { messageId: 'msg_a', reactionType: 'custom', customEmoji: '🔍', partIndex: 0 })
   })
 
   it('maps the host’s answer to what the relay acknowledges', async () => {
@@ -198,6 +262,7 @@ describe('IMessageConnector through webhooks', () => {
 
     expect(responses).toHaveLength(1)
     expect(inputs).toHaveLength(0)
+    await vi.waitFor(() => expect(markGatewayChatRead).toHaveBeenCalledWith(config, 'chat_1'), { timeout: 2_000 })
   })
 
   it('answers an approval only by a reaction on its own message', async () => {
@@ -227,6 +292,8 @@ describe('IMessageConnector through webhooks', () => {
     expect(await instance.sendMessage('chat_1', { text: '[[reaction:heart]] Hello' })).toBe('msg_out')
     expect(sendGatewayReaction).toHaveBeenCalledWith(config, { messageId: 'msg_1', reactionType: 'love', partIndex: 0 })
     expect(sendGatewayMessage).toHaveBeenLastCalledWith(config, { chatId: 'chat_1', parts: [{ type: 'text', value: 'Hello' }] })
+    expect(await instance.sendMessage('chat_1', { text: '[[reaction:🔍]]' })).toMatch(/^reaction-only-/)
+    expect(sendGatewayReaction).toHaveBeenLastCalledWith(config, { messageId: 'msg_1', reactionType: 'custom', customEmoji: '🔍', partIndex: 0 })
 
     await instance.startWorking('chat_1', 'working')
     expect(startGatewayTyping).toHaveBeenCalledWith(config, 'chat_1')
@@ -295,7 +362,7 @@ describe('IMessageConnector through webhooks', () => {
     await deliver(messageEvent('evt_1', 'msg_old', { sentAt: '2026-10-13T12:00:00.000Z' }))
 
     expect(inputs.map(input => input.type === 'input' && input.id)).toEqual(['msg_new', 'msg_old'])
-    expect((instance as any).lastReceivedMessageId).toBe('msg_new')
+    expect((instance as any).latestMessages.get('chat_1')?.id).toBe('msg_new')
   })
 })
 
@@ -310,6 +377,15 @@ describe('IMessageConnector over the socket', () => {
     await instance.sendMessage('chat_1', { text: 'Hello' })
     expect(socket.sent).toContainEqual({ type: 'send_message', data: { chatId: 'chat_1', parts: [{ type: 'text', value: 'Hello' }] } })
     expect(sendGatewayMessage).not.toHaveBeenCalled()
+  })
+
+  it('sends an emoji reaction over the socket as a custom tapback', async () => {
+    const { connector: instance, socket } = await connectSocket()
+    socket.receive(messageEvent('evt_1', 'msg_1'))
+    await vi.waitFor(() => expect(inputs).toHaveLength(1))
+
+    await instance.sendMessage('chat_1', { text: '[[reaction:🔍]]' })
+    expect(socket.sent).toContainEqual({ type: 'send_reaction', data: { messageId: 'msg_1', operation: 'add', reactionType: 'custom', customEmoji: '🔍', partIndex: 0 } })
   })
 
   it('acks an event once the host has stored it, and leaves a retry or a failure unacked', async () => {

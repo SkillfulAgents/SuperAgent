@@ -13,13 +13,14 @@
  * imessage-webhooks.ts and imessage-gateway-client.ts.
  */
 
-import type { AgentIntegrationRecord, IntegrationInputResult } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationInputResult } from '../agent-integrations/types'
 import type { IntegrationRelayAttachment, IntegrationRelayHost } from '../agent-integrations/transport'
 import { relayAcceptResult } from '../agent-integrations/relay-transport'
 import { IntegrationSetupError } from '../agent-integrations/setup-types'
 import type { RelayAcceptResult, RelayEvent } from '../webhook-relay'
 import type { IMessageConfig } from './config-schema'
 import { IMESSAGE_WEBHOOK_EVENTS, checkIMessageWebhook, ensureIMessageWebhook } from './imessage-webhooks'
+import { incomingMessageSchema } from './message-schema'
 import {
   markGatewayChatRead, registerGatewayWebhook, requestGatewayUpload, sendGatewayMessage, sendGatewayReaction, startGatewayTyping,
   GatewayRequestError, type GatewayMessagePart, type GatewayTextDecoration, type GatewayUpload,
@@ -73,7 +74,14 @@ const MAX_HANDLED_EVENTS = 1000
 
 // ── Reaction tag parsing ────────────────────────────────────────────────
 
-const REACTION_TAG_RE = /\[\[reaction:(\w+)\]\]/g
+const REACTION_TAG_RE = /\[\[reaction:([^\]\s]+)\]\]/g
+const EMOJI_START_RE = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}{2}|[0-9#*]\uFE0F?\u20E3)/u
+const GRAPHEMES = new Intl.Segmenter()
+
+/** Whether a reaction tag holds exactly one emoji, which goes out as a custom tapback. */
+function isSingleEmoji(text: string): boolean {
+  return EMOJI_START_RE.test(text) && [...GRAPHEMES.segment(text)].length === 1
+}
 
 const REACTION_NAME_TO_TYPE: Record<string, string> = {
   heart: 'love',
@@ -232,7 +240,8 @@ export function classifyIMessageChat(chat: ChatClassifyContext): ChatConversatio
 }
 
 const IMESSAGE_PROVIDER_RULES = `- Prefer asking questions directly in natural language rather than using the ask questions tool.
-- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
+
+- Before your first tool call, write [[reaction:<emoji>]] for what you're about to do, using the object for the action: 👀 starting, 🔍 searching, 📖 reading, ✍️ writing, ✉️ email, 📅 calendar, ⏰ reminder, 🛒 buying, ✋ need your OK, 👍 done, 🚧 couldn't. React again when the kind of work changes. Each reaction replaces your last one on the user's latest message. A reaction alone can be the whole answer. When you finish an action and nothing else needs saying, end on its object instead of a text.
 - The user may send voice notes which are automatically transcribed.
 - Each https link in your reply arrives as its own message after your text, where iMessage shows it as a preview card. Give a link a label, like [the menu](https://example.com), so your sentence keeps its words. A bare address is taken out of the sentence.`
 
@@ -279,7 +288,8 @@ export class IMessageConnector extends ChatAgentIntegration {
   private static readonly PING_INTERVAL_MS = 30_000
   private static readonly PONG_TIMEOUT_MS = 10_000
 
-  private lastReceivedMessageId: string | null = null
+  /** Each chat's newest message, which reactions in that chat go to. */
+  private readonly latestMessages = new Map<string, { id: string; at: number }>()
   private lastChatId: string | null = null
   // Chats currently showing the typing bubble. The manager's tick calls startWorking
   // every ~1s for keep-alive; iMessage's bubble self-expires, so we send start_typing
@@ -301,6 +311,8 @@ export class IMessageConnector extends ChatAgentIntegration {
   private relayAttachment?: IntegrationRelayAttachment
   /** Read receipts waiting to go out over HTTP, one per chat however many messages arrive. */
   private readonly readReceipts = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Per group chat, the newest accepted message waiting for its 👀, until the agent reacts first. */
+  private readonly groupAcks = new Map<string, { messageId: string; at: number; timer: ReturnType<typeof setTimeout> }>()
   private static readonly READ_RECEIPT_DELAY_MS = 1_000
   /** One event at a time, in arrival order, whichever path it came on. */
   private processing: Promise<unknown> = Promise.resolve()
@@ -442,6 +454,8 @@ export class IMessageConnector extends ChatAgentIntegration {
     this.relayAttachment = undefined
     for (const timer of this.readReceipts.values()) clearTimeout(timer)
     this.readReceipts.clear()
+    for (const ack of this.groupAcks.values()) clearTimeout(ack.timer)
+    this.groupAcks.clear()
 
     this.stopPingLoop()
 
@@ -483,9 +497,11 @@ export class IMessageConnector extends ChatAgentIntegration {
     // Parse and handle reaction tags
     const { cleanText, reactions } = this.extractReactions(text)
 
-    // Send reactions to the user's last message
-    if (reactions.length > 0 && this.lastReceivedMessageId) {
-      for (const reactionType of reactions) this.react(this.lastReceivedMessageId, reactionType)
+    // Send reactions to the user's last message in this chat
+    const latest = targetChatId && this.latestMessages.get(targetChatId)
+    if (latest && reactions.length > 0) {
+      this.cancelGroupAck(targetChatId)
+      for (const reaction of reactions) this.react(latest.id, reaction)
     }
 
     // Previews need an existing chat (a chat's first message can't be a link) and sends that
@@ -795,14 +811,11 @@ export class IMessageConnector extends ChatAgentIntegration {
     const sentAt = data.sentAt ? new Date(data.sentAt) : new Date()
 
     // Reactions go to the newest message, which relayed backlog may not be.
+    if (!(sentAt.getTime() < (this.latestMessages.get(chatId)?.at ?? 0))) this.latestMessages.set(chatId, { id: messageId, at: sentAt.getTime() })
     if (!(sentAt.getTime() < this.lastReceivedAt)) {
-      this.lastReceivedMessageId = messageId
       this.lastChatId = chatId
       this.lastReceivedAt = sentAt.getTime()
     }
-
-    // Send read receipt immediately
-    this.markRead(chatId)
 
     // Extract text and files from parts
     let text = ''
@@ -822,6 +835,7 @@ export class IMessageConnector extends ChatAgentIntegration {
 
     // Check if there's a pending question — resolve it with this message
     if (this.pendingQuestions.size > 0) {
+      this.markRead(chatId)
       this.resolveNextQuestion(text)
       // Don't emit as a regular message — it's an answer to a question
       return 'accepted'
@@ -967,7 +981,7 @@ export class IMessageConnector extends ChatAgentIntegration {
   private extractReactions(text: string): { cleanText: string; reactions: string[] } {
     const reactions: string[] = []
     const cleanText = text.replace(REACTION_TAG_RE, (_, name: string) => {
-      const mapped = REACTION_NAME_TO_TYPE[name.toLowerCase()]
+      const mapped = REACTION_NAME_TO_TYPE[name.toLowerCase()] ?? (isSingleEmoji(name) ? name : undefined)
       if (mapped) reactions.push(mapped)
       return ''
     })
@@ -1025,12 +1039,14 @@ export class IMessageConnector extends ChatAgentIntegration {
     return null
   }
 
-  private react(messageId: string, reactionType: string): void {
+  /** A tapback name, or one emoji, sent as a custom tapback. */
+  private react(messageId: string, reaction: string): void {
+    const tapback = isSingleEmoji(reaction) ? { reactionType: 'custom', customEmoji: reaction } : { reactionType: reaction }
     if (this.mode !== 'webhooks') {
-      this.send({ type: 'send_reaction', data: { messageId, operation: 'add', reactionType, partIndex: 0 } })
+      this.send({ type: 'send_reaction', data: { messageId, operation: 'add', ...tapback, partIndex: 0 } })
       return
     }
-    background(sendGatewayReaction(this.config, { messageId, reactionType, partIndex: 0 })
+    background(sendGatewayReaction(this.config, { messageId, ...tapback, partIndex: 0 })
       .catch(error => console.warn('[IMessageConnector] Reaction not sent:', error)), { name: 'imessage-connector.send-reaction' })
   }
 
@@ -1040,6 +1056,35 @@ export class IMessageConnector extends ChatAgentIntegration {
       return
     }
     background(startGatewayTyping(this.config, chatId).catch(error => console.warn('[IMessageConnector] Typing indicator not shown:', error)), { name: 'imessage-connector.start-typing' })
+  }
+
+  /** Once the host accepts a message: "Read" in a 1:1 chat, 👀 in a group, where iMessage shows no read receipts. */
+  override async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {
+    const message = incomingMessageSchema.parse(event.payload)
+    const chatId = message.chatId
+    if (classifyIMessageChat(message) !== 'group') { this.markRead(chatId); return }
+    // 👀 says the agent will start on it, so a command that starts no turn (/clear) gets none.
+    if (this.resolveRoute(event).action !== 'run') { this.cancelGroupAck(chatId); return }
+    // One 👀 per burst (like a backlog), on the newest accepted message, within the gateway's rate limit.
+    const at = message.timestamp.getTime()
+    const pending = this.groupAcks.get(chatId)
+    if (pending) {
+      if (!(at < pending.at)) Object.assign(pending, { messageId: message.externalMessageId, at })
+      return
+    }
+    const ack = { messageId: message.externalMessageId, at, timer: setTimeout(() => {
+      this.groupAcks.delete(chatId)
+      this.react(ack.messageId, '👀')
+    }, IMessageConnector.READ_RECEIPT_DELAY_MS) }
+    this.groupAcks.set(chatId, ack)
+  }
+
+  /** The agent's own reaction replaces the received mark, so a pending 👀 must not land after it. */
+  private cancelGroupAck(chatId: string): void {
+    const pending = this.groupAcks.get(chatId)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    this.groupAcks.delete(chatId)
   }
 
   /** Over HTTP, one receipt per chat for a burst of messages (like a backlog), within the gateway's rate limit. */

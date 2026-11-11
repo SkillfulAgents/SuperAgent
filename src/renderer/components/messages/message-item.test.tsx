@@ -161,6 +161,7 @@ describe('MessageItem', () => {
       expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
       expect(screen.getByTestId('user-mention').previousSibling?.textContent).toBe(', then ping ')
       expect(screen.getByTestId('message-user').querySelector('[data-notify-only]')).toBeNull()
+      expect(screen.queryByTestId('mention-notified')).toBeNull()
     })
 
     it('leaves a name inside code as typed', () => {
@@ -175,11 +176,11 @@ describe('MessageItem', () => {
       const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
       render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
 
-      // Drawn like any message: no dashed bubble, no separate "Notified" line.
+      // A dashed bubble, and under it who was notified in place of a reply.
       const bubble = screen.getByTestId('user-mention').closest('[data-notify-only]')
       expect(bubble).not.toBeNull()
-      expect(bubble).not.toHaveClass('border-dashed')
-      expect(screen.queryByText(/Notified/)).toBeNull()
+      expect(bubble).toHaveClass('border-dashed')
+      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Notified Mike Smith')
     })
   })
 

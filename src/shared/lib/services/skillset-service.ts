@@ -962,6 +962,10 @@ export async function validateSkillsetUrl(
 // Each public-skillset refresh spends one of GitHub's 60 unauthenticated API
 // calls per hour, shared by everyone behind the same IP.
 export const BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS = 15 * 60_000
+/** Skillsets refreshed at once: a platform skillset holds its whole archive in memory while it downloads. */
+export const SKILLSET_PULL_CONCURRENCY = 2
+/** Installed skills read at once; each reads up to 8 of its files at a time. */
+const SKILL_READ_CONCURRENCY = 4
 const lastSkillsetRefreshAt = new Map<string, number>()
 
 /**
@@ -1293,19 +1297,19 @@ export async function getAgentSkillsWithStatus(
     meta: InstalledSkillMetadata | null
     skillMdContent: string | null
   }
-  const prepared: Prepared[] = []
   const pendingIdsByProvider = new Map<SkillProvider, string[]>()
-
-  for (const entry of entries) {
-    if (entry.kind !== 'directory') continue
-
+  // Each skill reads only its own directory.
+  const limit = pLimit(SKILL_READ_CONCURRENCY)
+  const prepared = (await Promise.all(entries.map((entry) => limit(async (): Promise<Prepared | null> => {
+    if (entry.kind !== 'directory') return null
     const skillPath = entry.path
     const skillMdContent = await readWorkspaceText(files, joinWorkspacePath(skillPath, 'SKILL.md'))
-    if (!skillMdContent) continue
-
+    if (!skillMdContent) return null
     const meta = await getInstalledSkillMetadata(agentSlug, entry.name, screen)
-    prepared.push({ entryName: entry.name, skillPath, meta, skillMdContent })
+    return { entryName: entry.name, skillPath, meta, skillMdContent }
+  })))).filter((entry): entry is Prepared => entry !== null)
 
+  for (const { meta } of prepared) {
     if (meta?.pendingQueueItemId) {
       const p = (meta.provider ?? 'github') as SkillProvider
       const list = pendingIdsByProvider.get(p) ?? []
@@ -1326,9 +1330,7 @@ export async function getAgentSkillsWithStatus(
     }
   }))
 
-  const skills: SkillWithStatus[] = []
-
-  for (const { entryName, skillPath, meta, skillMdContent } of prepared) {
+  const skills = await Promise.all(prepared.map(({ entryName, skillPath, meta, skillMdContent }) => limit(async (): Promise<SkillWithStatus> => {
     const description = parseDescription(skillMdContent!)
     const frontmatter = parseSkillFrontmatter(skillMdContent!)
 
@@ -1395,13 +1397,13 @@ export async function getAgentSkillsWithStatus(
       }
     }
 
-    skills.push({
+    return {
       name: meta?.skillName || frontmatter.name || getDisplayName(entryName),
       description,
       path: entryName,
       status,
-    })
-  }
+    }
+  })))
 
   return skills.sort((a, b) => a.name.localeCompare(b.name))
 }
@@ -1421,7 +1423,8 @@ export async function refreshAgentSkills(
   for (const ss of skillsets) configMap.set(ss.id, ss)
   const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
 
-  for (const ss of skillsets) {
+  const pullLimit = pLimit(SKILLSET_PULL_CONCURRENCY)
+  await Promise.all(skillsets.map((ss) => pullLimit(async () => {
     try {
       await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
     } catch (error) {
@@ -1431,7 +1434,7 @@ export async function refreshAgentSkills(
         captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
       }
     }
-  }
+  })))
 
   const files = agentFiles(agentSlug)
   const skillsDir = skillWorkspacePath()
