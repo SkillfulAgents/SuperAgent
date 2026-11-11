@@ -6423,6 +6423,9 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), uploadRequestBodyLimit, asyn
     if (error instanceof UploadTooLargeError) {
       return c.json({ error: error.message }, 413)
     }
+    if (error instanceof UploadConflictError) {
+      return c.json({ error: error.message }, 409)
+    }
     const message = error instanceof Error ? error.message : 'Failed to import skill'
     console.error('Failed to import skill:', error)
     return c.json({ error: message }, 500)
