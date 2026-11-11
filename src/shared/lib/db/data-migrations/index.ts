@@ -25,6 +25,7 @@ import { normalizeCobaltAvatarColor } from './0007-normalize-cobalt-avatar-color
 import { moveSessionSlashCommandsMigration } from './0008-move-session-slash-commands'
 import { importHostRecords } from './0009-import-host-records'
 import { importSessionMetadataMigration } from './0010-import-session-metadata'
+import { removeChromeProfileImport } from './0011-remove-chrome-profile-import-copies'
 
 /** The query surface a migration gets. Await every statement: the driver may answer asynchronously. */
 export type DataMigrationDb = Pick<AppDatabase, 'select' | 'insert' | 'update' | 'delete'>
@@ -46,7 +47,7 @@ export interface DataMigration {
 }
 
 /** Every data migration, in the order they are applied. */
-export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories, globalModelPricing, importLlmConnections, renameDefaultConnections, renameClaudeMdToAgentsMd, importVolumeDefinitions, normalizeCobaltAvatarColor, moveSessionSlashCommandsMigration, importHostRecords, importSessionMetadataMigration]
+export const DATA_MIGRATIONS: readonly DataMigration[] = [importAgentsFromDirectories, globalModelPricing, importLlmConnections, renameDefaultConnections, renameClaudeMdToAgentsMd, importVolumeDefinitions, normalizeCobaltAvatarColor, moveSessionSlashCommandsMigration, importHostRecords, importSessionMetadataMigration, removeChromeProfileImport]
 
 /**
  * Apply every migration in `migrations` the ledger does not list, in id

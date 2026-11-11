@@ -554,8 +554,8 @@ it.
 | `mobile-tab.tsx` | Pairing links out to `{deploymentUrl}/settings/mobile` instead of minting. The proxy's session is a `token-exchange` one, and `POST /api/auth/mobile/pairing-token` admits only `password`/`oidc` sessions, so a minted credential can't fan out into device credentials. The URL is `ResolvedApiTarget.deploymentUrl` (`getRemoteDeploymentUrl()`) |
 
 **Not gated at all, deliberately.** Where the answer comes from the *server* it
-already comes from the machine that owns it: the host-browser providers and their
-Chrome profiles (`detectAllProviders()`), STT availability
+already comes from the machine that owns it: the host-browser providers
+(`detectAllProviders()`), STT availability
 (`/api/voice/configured`), and runtime readiness all describe whichever Superagent
 is being driven. The runtime banner in the sidebar keeps reporting an unavailable
 cloud runtime — that is true wherever it comes from; only the offer to fix it

@@ -93,7 +93,6 @@ export function createAgentRegistry(
   // this is where it gets the way in. Wired here, by the package that owns
   // the actors, so no entry point has to remember to.
   deps.containerHost.attachAgentWorkspaces({
-    files: (slug) => get(slug).files,
     instructions: (slug) => get(slug).config.get('instructions'),
   })
   // A runtime marks and recovers only sessions that are live, and a live

@@ -130,7 +130,6 @@ export interface AppPreferences {
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
-  chromeProfileId?: string
   chromeHeadless?: boolean
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
@@ -378,7 +377,6 @@ export interface ApiKeyStatus {
 // Note: This creates a type-only dependency, avoiding circular imports
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RuntimeReadiness } from '@shared/lib/container/types'
-import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
 // Canonical provider-info type (catalog + defaultModels) lives with the
 // provider layer; import it (type-only, no runtime cycle) so the two never drift.
 import type { LlmProviderInfo } from '../llm-provider'
@@ -388,7 +386,6 @@ export interface HostBrowserProviderInfo {
   name: string
   available: boolean
   reason?: string
-  profiles?: ChromeProfile[]
 }
 
 export interface HostBrowserStatus {
