@@ -1593,6 +1593,12 @@ function releaseEventSource(sessionId: string): void {
   }
 }
 
+/** Whether this session's stream is open, so its events keep the session's caches current. */
+export function isSessionStreamOpen(sessionId: string): boolean {
+  const es = eventSources.get(sessionId)
+  return es !== undefined && es.readyState === EventSource.OPEN
+}
+
 // Remove a peer user message once its persisted copy is visible in fetched messages
 // Consume a discarded-command uuid once MessageList has acted on it (rescued
 // the ghost's text or dropped a peer ghost). Leftover uuids are harmless —
