@@ -124,6 +124,19 @@ describe('AgentDurableObject stop', () => {
     await expect(object.stopAgent()).rejects.toThrow('Saving the workspace of agent sales agent failed')
     expect(calls).toEqual(['save'])
   })
+
+  it('stops an agent whose container never started without signalling it', async () => {
+    const { object } = agent(true)
+    delete object.stop
+    const signal = vi.fn(() => {
+      throw new Error('signal() cannot be called on a container that is not running')
+    })
+    ;(object.ctx as Record<string, unknown>).container = { running: false, signal }
+
+    await object.stopAgent()
+
+    expect(signal).not.toHaveBeenCalled()
+  })
 })
 
 /** The object's SQLite in memory, with the tables its constructor makes. */
