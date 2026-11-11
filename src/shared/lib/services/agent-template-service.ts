@@ -17,6 +17,7 @@ import fs from 'fs'
 import { Readable } from 'stream'
 import { StringDecoder } from 'string_decoder'
 import archiver from 'archiver'
+import pLimit from 'p-limit'
 import {
   openZipSource,
   detectZipPrefix,
