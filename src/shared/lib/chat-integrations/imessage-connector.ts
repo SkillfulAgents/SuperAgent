@@ -23,7 +23,7 @@ import { IMESSAGE_WEBHOOK_EVENTS, checkIMessageWebhook, ensureIMessageWebhook } 
 import { incomingMessageSchema } from './message-schema'
 import {
   markGatewayChatRead, registerGatewayWebhook, requestGatewayUpload, sendGatewayMessage, sendGatewayReaction, startGatewayTyping,
-  type GatewayMessagePart, type GatewayUpload,
+  type GatewayMessagePart, type GatewayTextDecoration, type GatewayUpload,
 } from './imessage-gateway-client'
 import { getAgentRecord } from '../services/agent-service'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
@@ -31,6 +31,7 @@ import { displaySlug } from '../utils/file-storage'
 import { sanitizeUploadFilename } from '../utils/path-safety'
 
 import WebSocket from 'ws'
+import { Marked, type Token, type Tokens } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
@@ -96,6 +97,96 @@ const REACTION_NAME_TO_TYPE: Record<string, string> = {
   question: 'question',
   '!!': 'emphasize',
   '?': 'question',
+}
+
+// ── Markdown → iMessage text ────────────────────────────────────────────
+
+const imessageMarked = new Marked({ async: false, gfm: true })
+const isList = (token: Token): token is Tokens.List => token.type === 'list'
+const isTable = (token: Token): token is Tokens.Table => token.type === 'table'
+/** Past about one phone line, an item wraps to the bubble's left edge, so its list needs a blank line between items to read. */
+const LONG_LIST_ITEM = 50
+
+/**
+ * Markdown as iMessage shows it: plain text, with bold, italic and
+ * strikethrough as decorations over ranges of that text. Linq sends text
+ * as-is, so markdown syntax would otherwise arrive as literal characters.
+ */
+export function markdownToIMessage(md: string): { text: string; decorations: GatewayTextDecoration[] } {
+  let text = ''
+  const decorations: GatewayTextDecoration[] = []
+
+  const styled = (type: GatewayTextDecoration['type'], tokens: Token[]) => {
+    const start = text.length
+    inline(tokens)
+    if (text.length > start) decorations.push({ type, range: { start, length: text.length - start } })
+  }
+
+  const inline = (tokens: Token[]) => {
+    for (const token of tokens) {
+      switch (token.type) {
+        case 'strong': styled('bold', token.tokens ?? []); break
+        case 'em': styled('italic', token.tokens ?? []); break
+        case 'del': styled('strikethrough', token.tokens ?? []); break
+        case 'link':
+          inline(token.tokens ?? [])
+          if (!token.autolink && token.href !== token.text) text += ` (${token.href})`
+          break
+        case 'image': text += token.text ? `${token.text} (${token.href})` : token.href; break
+        case 'checkbox': text += token.checked ? '☑ ' : '☐ '; break
+        case 'br': text += '\n'; break
+        case 'text': if (token.tokens) inline(token.tokens); else text += token.text; break
+        case 'codespan':
+        case 'escape':
+        case 'html': text += token.text; break
+        default: text += token.raw
+      }
+    }
+  }
+
+  const blocks = (tokens: Token[], indent: string) => {
+    let first = true
+    const startBlock = () => { if (!first) text += '\n\n'; first = false }
+    for (const token of tokens) {
+      switch (token.type) {
+        case 'space':
+        case 'hr':
+        case 'def': break
+        case 'paragraph':
+        case 'text': startBlock(); inline(token.tokens ?? [token]); break
+        case 'heading': startBlock(); styled('bold', token.tokens ?? []); break
+        case 'code': startBlock(); text += token.text; break
+        case 'blockquote': startBlock(); blocks(token.tokens ?? [], indent); break
+        default:
+          startBlock()
+          if (isList(token)) list(token, indent)
+          else if (isTable(token)) {
+            for (const [i, row] of [token.header, ...token.rows].entries()) {
+              if (i > 0) text += '\n'
+              row.forEach((cell, j) => { if (j > 0) text += ' · '; inline(cell.tokens) })
+            }
+          } else text += token.raw.trim()
+      }
+    }
+  }
+
+  const list = (token: Tokens.List, indent: string) => {
+    // An item's own line as shown: nested lists below it and link addresses inside it don't count.
+    const shownLength = (item: Tokens.ListItem) => item.text.split('\n')[0].replace(/\]\([^)]*\)/g, ']').length
+    const gap = token.items.some(item => shownLength(item) > LONG_LIST_ITEM) ? '\n\n' : '\n'
+    token.items.forEach((item, i) => {
+      if (i > 0) text += gap
+      text += indent + (token.ordered ? `${Number(token.start) + i}. ` : '• ')
+      item.tokens.forEach((child, j) => {
+        if (isList(child)) { text += '\n'; list(child, indent + '  ') }
+        else if (child.type === 'checkbox') inline([child])
+        else { if (j > 0 && item.tokens[j - 1].type !== 'checkbox') text += '\n'; blocks([child], indent) }
+      })
+    })
+  }
+
+  blocks(imessageMarked.lexer(md), '')
+  return { text, decorations }
 }
 
 // Map incoming gateway reaction types to approval decisions
@@ -390,12 +481,16 @@ export class IMessageConnector extends ChatAgentIntegration {
       for (const reaction of reactions) this.react(latest.id, reaction)
     }
 
+    const { text: converted, decorations } = markdownToIMessage(cleanText)
+    // Text that converts to nothing (a lone rule or link definition) still goes out as written.
+    const body = converted.trim() ? converted : cleanText.trim()
+
     // If only reactions, no text to send
-    if (!cleanText.trim()) {
+    if (!body.trim()) {
       return `reaction-only-${Date.now()}`
     }
 
-    return await this.postMessage(targetChatId, [{ type: 'text', value: cleanText }]) ?? `msg-${Date.now()}`
+    return await this.postMessage(targetChatId, [{ type: 'text', value: body }], decorations) ?? `msg-${Date.now()}`
   }
 
   async sendStreamingUpdate(_chatId: string, _text: string, existingMessageId?: string): Promise<string> {
@@ -427,6 +522,7 @@ export class IMessageConnector extends ChatAgentIntegration {
   async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
     const targetChatId = chatId || this.lastChatId || undefined
     const mimeType = guessMimeType(filename)
+    const { text: captionText, decorations } = markdownToIMessage(caption ?? '')
 
     try {
       // 1. Request upload URL
@@ -449,17 +545,17 @@ export class IMessageConnector extends ChatAgentIntegration {
       const parts: GatewayMessagePart[] = [
         { type: 'media', attachmentId: uploadInfo.attachmentId },
       ]
-      if (caption) {
-        parts.push({ type: 'text', value: caption })
+      if (captionText) {
+        parts.push({ type: 'text', value: captionText })
       }
 
-      await this.postMessage(targetChatId, parts)
+      await this.postMessage(targetChatId, parts, decorations)
       return `file-${Date.now()}`
     } catch (err) {
       console.error('[IMessageConnector] Failed to send file:', err)
       captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-send-file' } })
       // Fall back to a text message about the file
-      await this.postMessage(targetChatId, [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }])
+      await this.postMessage(targetChatId, [{ type: 'text', value: `[File: ${filename}]${captionText ? ` — ${captionText}` : ''}` }])
       return `file-fallback-${Date.now()}`
     }
   }
@@ -882,9 +978,10 @@ export class IMessageConnector extends ChatAgentIntegration {
   // ── Gateway commands: over HTTP with webhooks, over the socket otherwise ──
 
   /** Resolves to Linq's id for the message when the gateway says, which it does over HTTP. */
-  private async postMessage(chatId: string | undefined, parts: GatewayMessagePart[]): Promise<string | null> {
-    if (this.mode === 'webhooks') return (await sendGatewayMessage(this.config, { chatId, parts })).messageId
-    this.send({ type: 'send_message', data: { chatId, parts } })
+  private async postMessage(chatId: string | undefined, parts: GatewayMessagePart[], decorations: GatewayTextDecoration[] = []): Promise<string | null> {
+    const message = { chatId, parts, ...(decorations.length > 0 && { textDecorations: decorations }) }
+    if (this.mode === 'webhooks') return (await sendGatewayMessage(this.config, message)).messageId
+    this.send({ type: 'send_message', data: message })
     return null
   }
 
