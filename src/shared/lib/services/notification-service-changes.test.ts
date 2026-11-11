@@ -35,7 +35,7 @@ describe('notification mutation feed', () => {
       else if (operation === 'single delete') {
         await deleteNotification(shared)
         await deleteNotification(mention)
-      } else if (operation === 'session cleanup') await deleteNotificationsBySessionIds(['s'])
+      } else if (operation === 'session cleanup') await deleteNotificationsBySessionIds('a', ['s'])
       else {
         await handle.db.update(notifications).set({ createdAt: new Date(0) })
         await deleteOldNotifications()
@@ -62,7 +62,7 @@ describe('notification mutation feed', () => {
     try {
       expect(await markAllAsRead()).toBe(3)
       expect(await markAllAsRead()).toBe(0)
-      expect(await deleteNotificationsBySessionIds([])).toBe(0)
+      expect(await deleteNotificationsBySessionIds('a', [])).toBe(0)
       expect(await deleteNotification('missing')).toBe(false)
       await backgroundSettled()
       expect(received).toHaveBeenCalledTimes(1)

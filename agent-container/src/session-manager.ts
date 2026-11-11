@@ -219,8 +219,7 @@ export class SessionManager extends EventEmitter {
    * CLAUDE_CONFIG_DIR (`/workspace/.claude`), NOT from `~/.claude`, so the
    * image-baked settings.json under /home/claude/.claude is never consulted.
    * Without this, the CLI's default ~30-day cleanup deletes old session JSONL
-   * files on startup — they then linger in session-metadata.json (so they show
-   * in the nav) but fail to load because the transcript is gone.
+   * files on startup, and the sessions go from the app's list with them.
    *
    * Merges into any existing settings.json rather than clobbering it, so other
    * settings written by the CLI or a skill are preserved.

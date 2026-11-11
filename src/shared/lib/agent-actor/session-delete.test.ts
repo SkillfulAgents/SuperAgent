@@ -5,14 +5,16 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
+vi.mock('@shared/lib/agent-actor/db-session-index-storage', async () =>
+  (await import('@shared/lib/agent-actor/testing/in-memory-session-index-storage')).inMemorySessionIndexModule())
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
   getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'review' }),
   getModelCatalogSettings: () => ({}),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: vi.fn(),
-  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previous: null }),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
   revertSessionActivity: vi.fn(),
 }))
 

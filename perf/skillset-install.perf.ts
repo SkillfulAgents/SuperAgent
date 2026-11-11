@@ -104,7 +104,9 @@ describe('skillset install', () => {
       // before attempting a restore.
       // Legacy templates additionally read, write and remove CLAUDE.md.
       // Each atomic write counts its data write and its two fsyncs.
-      totalOps: instructionsFile === 'AGENTS.md' ? 125 : 132,
+      // One readFile is the new agent's actor first using its session index:
+      // a session-metadata.json still in the workspace is taken in.
+      totalOps: instructionsFile === 'AGENTS.md' ? 126 : 133,
       // Recorded 430–490 ms on an idle machine; ~2× that, as the home
       // profiles are budgeted, so runner load cannot trip it while a
       // serialised copy path still would.

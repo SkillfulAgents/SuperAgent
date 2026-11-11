@@ -43,7 +43,7 @@ import {
   recordSessionActivity,
   revertSessionActivity,
   type SessionActivityMark,
-} from '@shared/lib/services/session-summary-cache'
+} from '@shared/lib/services/session-activity'
 import { randomUUID } from 'crypto'
 import { transcriptPath, type SessionStore } from '../session-store'
 import type { HostPort } from '../host-port'
@@ -228,7 +228,7 @@ export class LiveSession {
   lastResultCleanSuccess: boolean
   /** The SDK's error code from the latest assistant message (authentication_failed, rate_limit, …). */
   lastApiErrorCode: string | null = null
-  /** The summary-cache write a send made ahead of the container confirming it; undone if the send fails. */
+  /** The activity a send recorded ahead of the container confirming it; undone if the send fails. */
   provisionalActivity: SessionActivityMark | null
   // Generations a failed send's rollback compares, so it never undoes what a
   // later send, a runtime result or real output did meanwhile.
@@ -474,7 +474,7 @@ export class LiveSession {
 
     // The CLI appends the user's message as the turn starts, but the SDK
     // doesn't echo it, so the first frame here can be tens of seconds out.
-    // Session lists rank by the summary cache, so the session moves up now;
+    // Session lists rank by recorded activity, so the session moves up now;
     // provisionally, until the container answers (markIdle undoes it).
     this.provisionalActivity = recordProvisionalSessionActivity(this.ctx.store, this.ctx.sessionId, Date.now())
 
@@ -1067,8 +1067,9 @@ export class LiveSession {
     }
 
     // Complete top-level frames are durable transcript writes: the session's
-    // summary entry moves. Replayed catch-up frames don't (their arrival time
-    // is not when they happened; the TTL reconciliation repairs a missed end).
+    // index entry moves. Replayed catch-up frames don't (their arrival time
+    // is not when they happened; a missed end is repaired from the
+    // transcript's mtime, see refreshActivityFromTranscript).
     if (!content.replayed && ['assistant', 'user', 'result'].includes(content.type)) {
       recordSessionActivity(this.ctx.store, this.ctx.sessionId, message.timestamp)
       // The turn is real: the send's provisional mark no longer needs undoing.
@@ -1734,7 +1735,7 @@ export class LiveSession {
     )
   }
 
-  /** Refresh the session's summary entry from its transcript's real mtime (a missed turn end). */
+  /** Refresh the session's index entry from its transcript's real mtime (a missed turn end). */
   private refreshActivityFromTranscript(): void {
     const { store, sessionId } = this.ctx
     background(
@@ -1744,7 +1745,7 @@ export class LiveSession {
           if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
         })
         .catch(() => {
-          // Missing or unreadable: the TTL reconciliation repairs it.
+          // Missing or unreadable: the next recorded write moves the entry.
         }),
       { name: 'live-session.refresh-activity-from-transcript' },
     )

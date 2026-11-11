@@ -458,12 +458,12 @@ export async function deleteNotification(notificationId: string): Promise<boolea
  *
  * No-op (returns 0) when the input list is empty.
  */
-export async function deleteNotificationsBySessionIds(sessionIds: string[]): Promise<number> {
+export async function deleteNotificationsBySessionIds(agentSlug: string, sessionIds: string[]): Promise<number> {
   if (sessionIds.length === 0) return 0
 
   const result = await db
     .delete(notifications)
-    .where(inArray(notifications.sessionId, sessionIds))
+    .where(and(eq(notifications.agentSlug, agentSlug), inArray(notifications.sessionId, sessionIds)))
     .returning(changeAudience())
 
   publishChanges(result)

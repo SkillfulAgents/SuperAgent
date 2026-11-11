@@ -10,6 +10,7 @@ import {
   scheduledTasks,
   notifications,
   sessionUnreadMarks,
+  agentSessions,
   todos,
   connectedAccounts,
   userSettings,
@@ -78,6 +79,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   agents,
   notifications,
   sessionUnreadMarks,
+  // the local agents' session indexes
+  agentSessions,
   // personal Todo board items (they point at agents and sessions)
   todos,
   scheduledTasks,

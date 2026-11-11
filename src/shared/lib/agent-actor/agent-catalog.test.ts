@@ -169,6 +169,23 @@ describe('removing an agent', () => {
     expect(fs.existsSync(getAgentDir('gone'))).toBe(false)
   })
 
+  it('removes the agent\'s session index, so a later agent with the slug starts without sessions', async () => {
+    const sessionsOf = (slug: string) =>
+      testDb.select().from(schema.agentSessions).where(eq(schema.agentSessions.agentSlug, slug)).all()
+    await writeAgentDirectory('gone', '---\nname: Gone\n---\nBody')
+    await catalog.insert({ slug: 'gone', name: 'Gone', createdAt: new Date() })
+    await testDb.insert(schema.agentSessions).values([
+      { agentSlug: 'gone', sessionId: 's1', metadata: '{"name":"Its session"}' },
+      { agentSlug: 'gone', sessionId: 's2', metadata: null, transcriptMtimeMs: 1, transcriptBirthtimeMs: 0, transcriptSize: 1 },
+      { agentSlug: 'kept', sessionId: 's1', metadata: '{"name":"Another agent\'s"}' },
+    ]).run()
+
+    await catalog.remove('gone')
+
+    expect(await sessionsOf('gone')).toEqual([])
+    expect(await sessionsOf('kept')).toHaveLength(1)
+  })
+
   it('removes only the row of an agent placed elsewhere, and touches no directory', async () => {
     await testDb.insert(schema.agents).values({
       slug: 'remote', name: 'Remote', createdAt: new Date(), runtime: 'modal', workspaceHandle: 'superagent-remote',

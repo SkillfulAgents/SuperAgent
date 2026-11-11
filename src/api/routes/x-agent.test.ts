@@ -1533,8 +1533,8 @@ describe('/invoke', () => {
     expect(body.error).toMatch(/never became active/)
   })
 
-  it('proceeds with invoke when getSessionMetadata returns null (no metadata file yet)', async () => {
-    // Brand-new caller sessions may not have a persisted metadata file. The
+  it('proceeds with invoke when getSessionMetadata returns null (no metadata yet)', async () => {
+    // Brand-new caller sessions may not have persisted metadata. The
     // one-hop check should treat absent metadata as "not invoked by anyone".
     reviewDecisions.push('allow')
     mockGetSessionMetadata.mockResolvedValueOnce(null)

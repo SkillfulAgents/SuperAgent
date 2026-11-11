@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/tools/requests/request-schema'
-import { getSessionSummaryCacheSlot } from '@shared/lib/services/session-summary-cache'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { ReviewManager } from '@shared/lib/proxy/review-manager'
 import { AccountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
@@ -29,8 +28,8 @@ vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(),
   appendAssistantEntry: vi.fn(),
 }))
-vi.mock('@shared/lib/services/session-summary-cache', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@shared/lib/services/session-summary-cache')>()),
+vi.mock('@shared/lib/services/session-activity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-activity')>()),
   recordSessionActivity: vi.fn(),
 }))
 vi.mock('./local-transcript-ops', () => ({
@@ -583,7 +582,7 @@ describe('createAgentRegistry', () => {
       scopeDescriptions: {},
     }
 
-    it('settles every open request, rejects every parked call, and forgets the grants and the summary', async () => {
+    it('settles every open request, rejects every parked call, and forgets the grants and what its index learned', async () => {
       const registry = createAgentRegistry(fake.deps)
       const actor = registry.get('a') as LocalAgentActor
 
@@ -594,7 +593,6 @@ describe('createAgentRegistry', () => {
       const mcp = actor.inputs.mcpReauth.request({ mcpId: 'm1', mcpName: 'Cal', authType: 'oauth' }, { waitId: 'wait-2' })
       await actor.inputs.computerUse.grant('use_host_shell', 'once')
       await actor.inputs.computerUse.setGrabbedApp('Calculator')
-      getSessionSummaryCacheSlot(actor.store).revision = 7
       expect((await actor.live()).openRequests).toHaveLength(4)
       fake.transitions.mockClear()
       const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
@@ -632,7 +630,7 @@ describe('createAgentRegistry', () => {
       expect(await fresh.state.computerUse.activeGrants()).toEqual([])
       expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
       expect(fresh.state.mcpReauth.openEntryIds()).toEqual([])
-      expect(getSessionSummaryCacheSlot(fresh.store).revision).toBe(0)
+      expect(fresh.store.index).not.toBe(actor.store.index)
       // And the old handle holds nothing either.
       expect((await actor.live()).openRequests).toEqual([])
       expect(actor.state.reviews.settlerIds()).toEqual([])

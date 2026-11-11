@@ -43,6 +43,10 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   writeAgentIdentityProjection: vi.fn(),
 }))
 
+// No database here: each agent's session index is kept in memory.
+vi.mock('@shared/lib/agent-actor/db-session-index-storage', async () =>
+  (await import('@shared/lib/agent-actor/testing/in-memory-session-index-storage')).inMemorySessionIndexModule())
+
 // This suite writes agent workspaces straight to the temp data dir; those
 // directories are the agents that exist.
 vi.mock('@shared/lib/agent-actor/agent-catalog', async () => {
@@ -97,6 +101,9 @@ import {
   publishAgentToSkillset,
   createAgentPR,
 } from './agent-template-service'
+import { listSessions, readSessionMetadata, registerSession, updateSessionMetadata } from './session-service'
+import { recordSessionActivity } from './session-activity'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import { adoptAgentIdentityFromWorkspace, createAgentFromExistingWorkspace, getAgentWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { getSkillsetIndex, readIndexJson } from '@shared/lib/services/skillset-service'
 
@@ -1003,6 +1010,15 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     const buf = await exportAgentTemplate('test-agent')
     const entries = await getZipEntries(buf)
     expect(entries.some((e) => e.includes('.DS_Store'))).toBe(false)
+  })
+
+  it('excludes a session-metadata file set aside because it did not fit', async () => {
+    createWorkspace('test-agent', {
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
+      'session-metadata.corrupt-0123456789abcdef.json': '{"s1":{"name":"Private session","createdByUserId":"user-42"}}',
+    })
+    const entries = await getZipEntries(await exportAgentTemplate('test-agent'))
+    expect(entries).toEqual(['AGENTS.md'])
   })
 
   it('excludes session-metadata.json', async () => {
@@ -2275,18 +2291,79 @@ describe('exportAgentFull', () => {
     expect(entryNames).toContain('.env')
   })
 
-  it('includes session-metadata.json in the export', async () => {
+  /** The archive's `session-metadata.json`, and how many entries carry that name. */
+  async function exportedSessionMetadata(slug: string): Promise<{ metadata: unknown; entries: number }> {
+    const reader = await openZipFromBuffer(await exportAgentFull(slug))
+    try {
+      return {
+        metadata: JSON.parse((await reader.readEntry('session-metadata.json')).toString('utf-8')),
+        entries: reader.entries.filter((e) => e.fileName === 'session-metadata.json').length,
+      }
+    } finally {
+      reader.close()
+    }
+  }
+
+  function writeTranscript(workspaceDir: string, sessionId: string, activityAt: string): void {
+    const sessionsDir = path.join(workspaceDir, '.claude', 'projects', '-workspace')
+    fs.mkdirSync(sessionsDir, { recursive: true })
+    fs.writeFileSync(path.join(sessionsDir, `${sessionId}.jsonl`), '{"type":"user"}\n')
+    fs.utimesSync(path.join(sessionsDir, `${sessionId}.jsonl`), new Date(activityAt), new Date(activityAt))
+  }
+
+  it('carries an empty session-metadata.json for an agent with no sessions', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
     fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
-    fs.writeFileSync(path.join(workspaceDir, 'session-metadata.json'), '{}')
 
-    const zipBuffer = await exportAgentFull('full-agent')
-    const reader = await openZipFromBuffer(zipBuffer)
-    const entryNames = reader.entries.map((e) => e.fileName)
-    reader.close()
+    expect(await exportedSessionMetadata('full-agent')).toEqual({ metadata: {}, entries: 1 })
+  })
 
-    expect(entryNames).toContain('session-metadata.json')
+  it('carries the session index as session-metadata.json, with each transcript\'s last activity', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
+    writeTranscript(workspaceDir, 'named', '2026-03-01T00:00:00.000Z')
+    writeTranscript(workspaceDir, 'recorded', '2026-03-02T00:00:00.000Z')
+    writeTranscript(workspaceDir, 'unregistered', '2026-03-03T00:00:00.000Z')
+    const store = createLocalSessionStore('full-agent')
+    await registerSession(store, 'named', 'Quarterly numbers')
+    await updateSessionMetadata(store, 'named', { starred: true })
+    await registerSession(store, 'recorded', 'Still talking')
+    await registerSession(store, 'pending', 'Not started')
+    await listSessions(store)
+    // A write the host saw, later than the file's own time.
+    recordSessionActivity(store, 'recorded', new Date('2026-03-09T00:00:00.000Z'))
+
+    const { metadata, entries } = await exportedSessionMetadata('full-agent')
+
+    expect(entries).toBe(1)
+    expect(metadata).toEqual({
+      named: { name: 'Quarterly numbers', starred: true, createdAt: expect.any(String), lastActivityAt: '2026-03-01T00:00:00.000Z' },
+      recorded: { name: 'Still talking', createdAt: expect.any(String), lastActivityAt: '2026-03-09T00:00:00.000Z' },
+      pending: { name: 'Not started', createdAt: expect.any(String) },
+    })
+    // Nothing was written into the workspace to produce it.
+    expect(fs.existsSync(path.join(workspaceDir, 'session-metadata.json'))).toBe(false)
+  })
+
+  it('takes in a session-metadata.json that appeared after the actor first used its index, and exports one file', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
+    // Through the agent's actor, as every write is: its index is the only
+    // writer of its entries, and holds on to what it last read of them.
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    await agentRegistry.get('full-agent').sessions.register('current', 'From the index')
+    // The file the actor did not find then: a volume mounted since, say.
+    fs.writeFileSync(path.join(workspaceDir, 'session-metadata.json'), '{"older":{"name":"From the file"}}')
+
+    const { metadata, entries } = await exportedSessionMetadata('full-agent')
+
+    expect(entries).toBe(1)
+    expect(Object.keys(metadata as object).sort()).toEqual(['current', 'older'])
+    expect((metadata as Record<string, { name: string }>).older.name).toBe('From the file')
+    expect(fs.existsSync(path.join(workspaceDir, 'session-metadata.json'))).toBe(false)
   })
 
   it('excludes node_modules from the export', async () => {
@@ -2647,7 +2724,9 @@ describe('importAgentFromTemplate (full mode)', () => {
     }
     expect(fs.existsSync(path.join(workspaceDir, 'CLAUDE.md'))).toBe(false)
     for (const [name, content] of Object.entries(history)) {
-      if (mode === 'full') expect(fs.readFileSync(path.join(workspaceDir, name), 'utf8')).toBe(content)
+      // A full import takes the session metadata into the index: it is no file of the workspace.
+      const kept = mode === 'full' && name !== 'session-metadata.json'
+      if (kept) expect(fs.readFileSync(path.join(workspaceDir, name), 'utf8')).toBe(content)
       else expect(fs.existsSync(path.join(workspaceDir, name))).toBe(false)
     }
     if (mode !== 'full') expect(fs.existsSync(path.join(workspaceDir, '.claude', 'projects'))).toBe(false)
@@ -2666,17 +2745,98 @@ describe('importAgentFromTemplate (full mode)', () => {
     expect(fs.existsSync(envPath)).toBe(false)
   })
 
-  it('imports session-metadata.json in full mode', async () => {
+  const transcriptEntry = (sessionId: string) => `.claude/projects/-workspace/${sessionId}.jsonl`
+
+  it('takes session-metadata.json into the session index in full mode, and removes the file', async () => {
     const workspaceDir = setupAgentMock('import-session-agent')
     const zipBuffer = await makeZip({
       'AGENTS.md': MINIMAL_INSTRUCTIONS,
+      'session-metadata.json': JSON.stringify({
+        named: { name: 'Restored', starred: true, createdAt: '2026-02-01T00:00:00.000Z', lastActivityAt: '2026-03-01T00:00:00.000Z' },
+        'no-date': { name: 'From an older export', createdAt: '2026-02-02T00:00:00.000Z' },
+        'no-transcript': { name: 'Its transcript did not travel', createdAt: '2026-02-03T00:00:00.000Z', lastActivityAt: '2026-03-05T00:00:00.000Z' },
+      }),
+      [transcriptEntry('named')]: '{"type":"user"}\n',
+      [transcriptEntry('no-date')]: '{"type":"user"}\n',
+      [transcriptEntry('unregistered')]: '{"type":"user"}\n',
+    })
+    const importedAt = Date.now()
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    expect(fs.existsSync(path.join(workspaceDir, 'session-metadata.json'))).toBe(false)
+    const store = createLocalSessionStore('import-session-agent')
+    const sessions = Object.fromEntries((await listSessions(store)).map((s) => [s.id, s]))
+    expect(Object.keys(sessions).sort()).toEqual(['named', 'no-date', 'unregistered'])
+    // The archive says when the session was last active; the extracted
+    // file's own time is the time of the import.
+    expect(sessions.named).toMatchObject({
+      name: 'Restored',
+      createdAt: new Date('2026-02-01T00:00:00.000Z'),
+      lastActivityAt: new Date('2026-03-01T00:00:00.000Z'),
+    })
+    expect(sessions['no-date'].name).toBe('From an older export')
+    expect(sessions['no-date'].lastActivityAt.getTime()).toBeGreaterThanOrEqual(importedAt - 2000)
+    expect(sessions.unregistered.name).toBe('New Session')
+    // The date is the index's to keep, not part of what the app knows of the session.
+    const metadata = await readSessionMetadata(store)
+    expect(metadata.named).toEqual({ name: 'Restored', starred: true, createdAt: '2026-02-01T00:00:00.000Z' })
+    // An entry whose transcript is not in the archive is not a session.
+    expect(Object.keys(metadata).sort()).toEqual(['named', 'no-date'])
+  })
+
+  it('sets a session-metadata.json it cannot parse aside, and still lists the transcripts', async () => {
+    const workspaceDir = setupAgentMock('import-corrupt-agent')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const zipBuffer = await makeZip({
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
       'session-metadata.json': '{"sessions":[]}',
+      [transcriptEntry('kept')]: '{"type":"user"}\n',
     })
 
     await importAgentFromTemplate(zipBuffer, undefined, 'full')
 
-    const sessionPath = path.join(workspaceDir, 'session-metadata.json')
-    expect(fs.existsSync(sessionPath)).toBe(true)
+    const left = fs.readdirSync(workspaceDir).filter((name) => name.startsWith('session-metadata'))
+    expect(left).toEqual([expect.stringMatching(/^session-metadata\.corrupt-[0-9a-f]{16}\.json$/)])
+    expect(fs.readFileSync(path.join(workspaceDir, left[0]), 'utf-8')).toBe('{"sessions":[]}')
+    expect((await listSessions(createLocalSessionStore('import-corrupt-agent'))).map((s) => s.id)).toEqual(['kept'])
+  })
+
+  it('brings sessions through a full export and import with their names, stars and dates', async () => {
+    const workspace = setupAgentMock('sessions-source')
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), MINIMAL_INSTRUCTIONS)
+    const sessionsDir = path.join(workspace, '.claude', 'projects', '-workspace')
+    fs.mkdirSync(sessionsDir, { recursive: true })
+    for (const [id, at] of [['older', '2026-03-01T00:00:00.000Z'], ['newer', '2026-03-02T00:00:00.000Z']]) {
+      fs.writeFileSync(path.join(sessionsDir, `${id}.jsonl`), '{"type":"user"}\n')
+      fs.utimesSync(path.join(sessionsDir, `${id}.jsonl`), new Date(at), new Date(at))
+    }
+    const source = createLocalSessionStore('sessions-source')
+    await registerSession(source, 'older', 'Older session', { isScheduledExecution: true, scheduledTaskId: 'task-1' })
+    await registerSession(source, 'newer', 'Newer session')
+    await updateSessionMetadata(source, 'newer', { starred: true })
+    const before = await listSessions(source)
+    const zip = await exportAgentFull('sessions-source')
+
+    setupAgentMock('sessions-copy')
+    await importAgentFromTemplate(zip, undefined, 'full')
+
+    const copy = createLocalSessionStore('sessions-copy')
+    expect(await listSessions(copy)).toEqual(before.map((session) => ({ ...session, agentSlug: 'sessions-copy' })))
+    expect(await readSessionMetadata(copy)).toEqual(await readSessionMetadata(source))
+  })
+
+  it('takes no session metadata from a template import', async () => {
+    const workspaceDir = setupAgentMock('import-template-sessions')
+    const zipBuffer = await makeZip({
+      'AGENTS.md': MINIMAL_INSTRUCTIONS,
+      'session-metadata.json': JSON.stringify({ leaked: { name: 'Someone else\'s session', createdAt: new Date().toISOString() } }),
+    })
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'template')
+
+    expect(fs.existsSync(path.join(workspaceDir, 'session-metadata.json'))).toBe(false)
+    expect(await readSessionMetadata(createLocalSessionStore('import-template-sessions'))).toEqual({})
   })
 
   it('still blocks path traversal in full mode', async () => {
