@@ -448,7 +448,8 @@ export class AgentDurableObject extends DurableObject<Env> {
 
   /** Asks the container to stop (SIGTERM); its snapshot server saves the last changes, then exits. */
   private async stop(): Promise<void> {
-    this.container.signal(15)
+    // An agent that never started has no container to signal, and Cloudflare throws on one that is not running.
+    if (this.container.running) this.container.signal(15)
   }
 
   private async destroy(): Promise<void> {
