@@ -175,6 +175,12 @@ export function invalidateAutomationSessionLists(queryClient: QueryClient, agent
   })
 }
 
+/** Invalidate every cached session list of one agent (all route keys and slices), and no other agent's. */
+export function invalidateAgentSessionLists(queryClient: QueryClient, agentSlug: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.invalidateQueries({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+}
+
 /**
  * Patch one session's entry in every cached projection: each list under
  * ['sessions', <alias>] (the full list, the notable slice, automation slices)
