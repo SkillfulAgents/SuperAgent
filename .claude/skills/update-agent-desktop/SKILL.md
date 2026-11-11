@@ -24,10 +24,12 @@ Look for, and fix in the same change:
 ## 3. Install and regenerate
 
 ```bash
-npm install agent-desktop@<version> --save-exact
+npm install agent-desktop@<version> --save-dev --save-exact
 npm run docs:computer-use        # from the binary's `skills get` + each command's --help
 git diff --stat agent-container/docs/ src/shared/lib/computer-use/agent-desktop-tools.ts agent-container/src/tools/agent-desktop-tools.ts
 ```
+
+It stays a dev dependency: no bundle imports it. The packaged app runs the copy `extraResources` puts in the bundle, and a run from source finds the package's binaries in `node_modules`. In `dependencies` it fails `npm run check:runtime-deps`, which allows only packages a shipped bundle imports.
 
 The generator falls back to the release tag on GitHub when the binary cannot run here; that source has no `--help`, so `computer-use/flags.md` is left out and the guides keep pointing at `--help`. Regenerate from the binary before merging.
 

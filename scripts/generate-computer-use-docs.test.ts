@@ -22,8 +22,8 @@ const ROOT = path.resolve(__dirname, '..')
 const DOCS_DIR = path.join(ROOT, 'agent-container', 'docs')
 
 function pinnedVersion(): string {
-  const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
-  return pkg.dependencies['agent-desktop']
+  const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { devDependencies: Record<string, string> }
+  return pkg.devDependencies['agent-desktop']
 }
 
 describe('generated computer-use guides', () => {
