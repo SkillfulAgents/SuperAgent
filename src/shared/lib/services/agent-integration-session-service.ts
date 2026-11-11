@@ -72,9 +72,10 @@ export async function listAgentIntegrationSessions(integrationId: string): Promi
  * List only the ACTIVE (non-archived) sessions for an integration.
  *
  * Used by the reconnect/restore path so archived/cleared/timed-out sessions are
- * not re-subscribed for SSE forwarding (SUP-233). `listAgentIntegrationSessions`
- * intentionally returns archived rows too — the UI/x-agent surfaces filter at
- * the call site — so it is left unchanged.
+ * not re-subscribed for SSE forwarding (SUP-233), and by the x-agent chat routes
+ * and the integration inventory, which show active chats only.
+ * `listAgentIntegrationSessions` returns archived rows too, for the callers
+ * that need every row (the sessions route of the UI).
  */
 export async function listActiveAgentIntegrationSessions(integrationId: string): Promise<AgentIntegrationSession[]> {
   return db.select().from(chatIntegrationSessions)
@@ -181,7 +182,7 @@ export async function getLastDisplayName(integrationId: string, externalId: stri
       isNotNull(chatIntegrationSessions.displayName),
       ne(chatIntegrationSessions.displayName, ''),
     ))
-    .orderBy(desc(chatIntegrationSessions.updatedAt))
+    .orderBy(desc(chatIntegrationSessions.updatedAt), desc(chatIntegrationSessions.createdAt))
     .limit(1)
     .all()
   return latest?.displayName ?? undefined
