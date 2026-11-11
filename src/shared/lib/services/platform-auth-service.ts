@@ -477,7 +477,7 @@ function normalizeOrgIconUrl(value: string | null): string | null {
 const ENRICHED_ACCOUNT_TTL_MS = 5 * 60 * 1000
 const enrichedAccountCache = new Map<
   string,
-  { account: EnrichedEnvAccount | null; expiresAt: number }
+  { account: Promise<EnrichedEnvAccount | null>; expiresAt: number }
 >()
 
 async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvAccount | null> {
@@ -528,14 +528,19 @@ export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<Pl
 
   let entry = enrichedAccountCache.get(userId)
   if (!entry || entry.expiresAt <= Date.now()) {
-    entry = {
-      account: await introspectEnvManagedAccount(userId),
+    // The promise is cached, so callers that miss together share one request.
+    const created = {
+      account: introspectEnvManagedAccount(userId),
       expiresAt: Date.now() + ENRICHED_ACCOUNT_TTL_MS,
     }
-    enrichedAccountCache.set(userId, entry)
+    enrichedAccountCache.set(userId, created)
+    created.account.catch(() => {
+      if (enrichedAccountCache.get(userId) === created) enrichedAccountCache.delete(userId)
+    })
+    entry = created
   }
 
-  const { account } = entry
+  const account = await entry.account
   if (!account) return base
 
   return {
