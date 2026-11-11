@@ -85,7 +85,7 @@ export function useAddRemoteMcp() {
   return useMutation<
     { server: RemoteMcpServer },
     Error,
-    { name: string; url: string; authType?: string; accessToken?: string }
+    { name: string; url: string; authType?: string; accessToken?: string; authHeaderName?: string }
   >({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {

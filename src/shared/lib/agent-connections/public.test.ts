@@ -47,6 +47,7 @@ function mcp(overrides: Partial<RemoteMcpServer> = {}): RemoteMcpServer {
     userId: 'owner-1',
     authType: 'bearer',
     accessToken: 'secret-access-token',
+    authHeaderName: null,
     refreshToken: 'secret-refresh-token',
     tokenExpiresAt: updatedAt,
     oauthTokenEndpoint: 'https://private.example.test/token',

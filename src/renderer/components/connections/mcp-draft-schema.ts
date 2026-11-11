@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { parseAuthHeaderName } from '@shared/lib/mcp/auth-header'
 
 export const mcpAuthTypeSchema = z.enum(['none', 'oauth', 'bearer'])
 export type McpAuthType = z.infer<typeof mcpAuthTypeSchema>
@@ -27,6 +28,7 @@ export const mcpDraftSchema = z
       }, 'URL must be https:// (http:// is allowed only for localhost)'),
     authType: mcpAuthTypeSchema,
     token: z.string().default(''),
+    headerName: z.string().default(''),
     clientName: z.string().default(''),
     clientId: z.string().default(''),
     clientSecret: z.string().default(''),
@@ -37,6 +39,14 @@ export const mcpDraftSchema = z
         code: z.ZodIssueCode.custom,
         message: 'Bearer token is required',
         path: ['token'],
+      })
+    }
+    const headerName = parseAuthHeaderName(draft.headerName)
+    if (draft.authType === 'bearer' && !headerName.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: headerName.error,
+        path: ['headerName'],
       })
     }
     if (

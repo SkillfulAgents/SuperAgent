@@ -373,9 +373,10 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
 
 // --- MCPs panel ---
 
-type DraftState = Omit<McpDraft, 'authType' | 'token' | 'clientName' | 'clientId' | 'clientSecret'> & {
+type DraftState = Omit<McpDraft, 'authType' | 'token' | 'headerName' | 'clientName' | 'clientId' | 'clientSecret'> & {
   authType: McpAuthType
   token: string
+  headerName: string
   clientName: string
   clientId: string
   clientSecret: string
@@ -443,6 +444,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
       url: server.url,
       authType: server.authType,
       token: '',
+      headerName: '',
       clientName: '',
       clientId: '',
       clientSecret: '',
@@ -451,7 +453,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
 
   const handlePickCustom = () => {
     setError(null)
-    setDraft({ sourceSlug: 'custom', name: '', url: '', authType: 'none', token: '', clientName: '', clientId: '', clientSecret: '' })
+    setDraft({ sourceSlug: 'custom', name: '', url: '', authType: 'none', token: '', headerName: '', clientName: '', clientId: '', clientSecret: '' })
   }
 
   const cancelDraft = () => {
@@ -500,6 +502,7 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           url: valid.url,
           authType: valid.authType,
           accessToken: valid.authType === 'bearer' ? valid.token.trim() : undefined,
+          authHeaderName: valid.authType === 'bearer' ? valid.headerName.trim() || undefined : undefined,
         })
         setDraft(null)
         handleMcpReady(result.server)
@@ -566,6 +569,18 @@ function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
               placeholder="Enter bearer token"
               className="mt-1"
               data-testid="mcp-form-token"
+            />
+          </div>
+        )}
+        {draft.authType === 'bearer' && (
+          <div>
+            <Label className="text-xs font-normal text-muted-foreground/70">Header Name</Label>
+            <Input
+              value={draft.headerName}
+              onChange={(e) => setDraft({ ...draft, headerName: e.target.value })}
+              placeholder="Optional, e.g. X-Api-Key (default: Authorization: Bearer)"
+              className="mt-1"
+              data-testid="mcp-form-header-name"
             />
           </div>
         )}

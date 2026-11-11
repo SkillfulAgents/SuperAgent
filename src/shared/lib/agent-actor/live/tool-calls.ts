@@ -126,8 +126,8 @@ const USER_INPUT_REQUESTS: Record<
   remote_mcp: {
     label: 'remote MCP request',
     payload: (input) => {
-      const { url, name, reason, authHint, clientId, clientName } = input as RequestRemoteMcpInput
-      return url ? { url, name, reason, authHint, clientId, clientName } : 'missing url'
+      const { url, name, reason, authHint, clientId, clientName, authHeaderName } = input as RequestRemoteMcpInput
+      return url ? { url, name, reason, authHint, clientId, clientName, authHeaderName } : 'missing url'
     },
   },
   login: {

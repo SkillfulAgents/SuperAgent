@@ -115,6 +115,7 @@ export type UserRequestEvent =
       authHint?: 'oauth' | 'bearer'
       clientId?: string
       clientName?: string
+      authHeaderName?: string
       agentSlug?: string
     }
   | {

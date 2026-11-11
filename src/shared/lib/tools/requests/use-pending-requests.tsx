@@ -26,7 +26,7 @@ type PendingRequestBuckets = {
   connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[]
   questionRequests: { toolUseId: string; questions: Question[] }[]
   fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
-  remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string }[]
+  remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string; authHeaderName?: string }[]
   browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[]
   loginRequests: { toolUseId: string; message: string; fields: LoginFieldSummary[]; vault?: LoginVaultPayload }[]
   scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[]
@@ -145,6 +145,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         authHint: input.authHint === 'oauth' || input.authHint === 'bearer' ? input.authHint : undefined,
         clientId: typeof input.clientId === 'string' ? input.clientId : undefined,
         clientName: typeof input.clientName === 'string' ? input.clientName : undefined,
+        authHeaderName: typeof input.authHeaderName === 'string' ? input.authHeaderName : undefined,
       })
     }
   } else if (kind === 'file') {
@@ -449,6 +450,7 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
             authHint: payload.authHint === 'oauth' || payload.authHint === 'bearer' ? payload.authHint : undefined,
             clientId: typeof payload.clientId === 'string' ? payload.clientId : undefined,
             clientName: typeof payload.clientName === 'string' ? payload.clientName : undefined,
+            authHeaderName: typeof payload.authHeaderName === 'string' ? payload.authHeaderName : undefined,
           })
         }
         break
@@ -856,6 +858,7 @@ export function usePendingRequests({
         authHint: r.authHint,
         clientId: r.clientId,
         clientName: r.clientName,
+        authHeaderName: r.authHeaderName,
         onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }

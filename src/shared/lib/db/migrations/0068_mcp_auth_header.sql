@@ -1,0 +1,1 @@
+ALTER TABLE `remote_mcp_servers` ADD `auth_header_name` text;

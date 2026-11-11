@@ -32,7 +32,7 @@ export type McpAccessResult =
   | ({ ok: false; reason: 'blocked' | 'denied' | 'review_timeout' | 'rules_unavailable'; rules?: ReportedRule[]; denyReason?: string } & McpRuleAudit)
 
 export type McpAuthorization =
-  | { ok: true; accessToken: string | null }
+  | { ok: true; accessToken: string | null; authHeaderName?: string | null }
   // Credentials could not be refreshed; the connection now requires recovery.
   | { ok: false }
 

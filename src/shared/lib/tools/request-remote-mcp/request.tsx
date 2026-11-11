@@ -38,6 +38,8 @@ interface RemoteMcpRequestItemProps {
   /** Prefill for the Advanced section, supplied by the agent. */
   clientId?: string
   clientName?: string
+  /** Header the server reads its key from, supplied by the agent. */
+  authHeaderName?: string
   agentSlug: string
   readOnly?: boolean
   onComplete: () => void
@@ -58,6 +60,7 @@ export function RemoteMcpRequestItem({
   authHint,
   clientId,
   clientName,
+  authHeaderName,
   sessionId,
   agentSlug,
   readOnly,
@@ -82,6 +85,7 @@ export function RemoteMcpRequestItem({
   const [advClientName, setAdvClientName] = useState(clientName || '')
   const [advClientSecret, setAdvClientSecret] = useState('')
   const [bearerToken, setBearerToken] = useState('')
+  const [tokenHeaderName, setTokenHeaderName] = useState(authHeaderName || '')
   // Bearer-server re-auth: which stale server is getting a replacement token
   const [reauthMcpId, setReauthMcpId] = useState<string | null>(null)
   const [reauthToken, setReauthToken] = useState('')
@@ -304,6 +308,7 @@ export function RemoteMcpRequestItem({
             url: connectionUrl,
             authType: bearerToken ? 'bearer' : 'none',
             accessToken: bearerToken || undefined,
+            authHeaderName: bearerToken ? tokenHeaderName.trim() || undefined : undefined,
           }),
         })
         const responseData = await response.json()
@@ -767,14 +772,24 @@ export function RemoteMcpRequestItem({
             />
             </div>
             {showTokenInput && (
-              <Input
-                type="password"
-                value={bearerToken}
-                onChange={(e) => setBearerToken(e.target.value)}
-                placeholder="Bearer token"
-                className="h-8 text-sm"
-                disabled={busy}
-              />
+              <>
+                <Input
+                  type="password"
+                  value={bearerToken}
+                  onChange={(e) => setBearerToken(e.target.value)}
+                  placeholder="Bearer token"
+                  className="h-8 text-sm"
+                  disabled={busy}
+                />
+                <Input
+                  value={tokenHeaderName}
+                  onChange={(e) => setTokenHeaderName(e.target.value)}
+                  placeholder="Header name (optional, e.g. X-Api-Key)"
+                  className="h-8 text-sm"
+                  disabled={busy}
+                  data-testid="mcp-request-header-name"
+                />
+              </>
             )}
             {authHint !== 'bearer' && (
               <McpAdvancedClientFields

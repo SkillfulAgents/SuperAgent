@@ -1,5 +1,6 @@
 import type { McpToolInfo } from './types'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
+import { mcpAuthHeader } from './auth-header'
 import { captureMessage } from '@shared/lib/error-reporting'
 
 export class McpDiscoveryError extends Error {
@@ -39,13 +40,14 @@ export async function parseMcpResponse(res: Response): Promise<unknown> {
  * /api/remote-mcps connect route and by tooling that needs to verify a server
  * speaks MCP. Kept in @shared so the two cannot drift.
  */
-export async function discoverTools(url: string, accessToken?: string | null, signal?: AbortSignal): Promise<McpToolInfo[]> {
+export async function discoverTools(url: string, accessToken?: string | null, signal?: AbortSignal, authHeaderName?: string | null): Promise<McpToolInfo[]> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/json, text/event-stream',
   }
   if (accessToken) {
-    headers['Authorization'] = `Bearer ${accessToken}`
+    const [name, value] = mcpAuthHeader(accessToken, authHeaderName)
+    headers[name] = value
   }
 
   const initRes = await mcpSafeFetch(url, {
