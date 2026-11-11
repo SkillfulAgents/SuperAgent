@@ -9,7 +9,7 @@ import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
 import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
-import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
+import { applySessionActivityStatus, invalidateAgentSessionLists } from '@renderer/lib/agent-cache'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import {
@@ -654,7 +654,6 @@ function getOrCreateEventSource(
             apiRetry: null,
           }),
         })
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
       else if (data.type === 'session_idle') {
         // Session became idle - query completed or interrupted
@@ -700,7 +699,9 @@ function getOrCreateEventSource(
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         invalidateMessagesThrottled(queryClient, sessionId)
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        // The global stream refetches the session lists for this event. Echo the
+        // flip from here too, for the reason session_active does.
+        applySessionActivityStatus(queryClient, agentSlug, sessionId, { isActive: false, isAwaitingInput: false })
         // The immediate invalidate above can refetch before the final assistant
         // line is durably readable in the JSONL transcript. Beat that race with a
         // short bounded reconcile so the turn's "Worked for Xs" line appears
@@ -773,7 +774,8 @@ function getOrCreateEventSource(
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         invalidateMessagesThrottled(queryClient, sessionId)
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        // As in session_idle: the global stream refetches the lists, this stream echoes.
+        applySessionActivityStatus(queryClient, agentSlug, sessionId, { isActive: false, isAwaitingInput: false })
       }
       // Per-command lifecycle (runtime >= CLI 2.1.206). A started command
       // drives queued-ghost reconciliation; 'discarded' names a message that
@@ -1038,7 +1040,7 @@ function getOrCreateEventSource(
         if (isBlockingUserInputToolName(data.toolName)) {
           // The request-specific SSE event can be missed under load while the
           // streaming fallback still renders the card. Keep status sidebars in sync.
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+          invalidateAgentSessionLists(queryClient, agentSlug)
           queryClient.invalidateQueries({ queryKey: ['agents'] })
         }
       }
@@ -1289,11 +1291,6 @@ function getOrCreateEventSource(
           })
         }
       }
-      else if (data.type === 'session_updated') {
-        // Session metadata changed (e.g., name) - invalidate session caches
-        queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
-      }
       else if (data.type === 'scheduled_task_created' || data.type === 'scheduled_task_cancelled' || data.type === 'scheduled_task_updated') {
         // A scheduled task was created, cancelled, or updated - invalidate scheduled tasks cache
         const taskAgentSlug = (data as { agentSlug?: string }).agentSlug
@@ -1500,10 +1497,12 @@ function getOrCreateEventSource(
             activeStartTime: null,
           })
           invalidateMessagesThrottled(queryClient, sessionId)
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+          invalidateAgentSessionLists(queryClient, agentSlug)
         }
       }
-      // Note: os_notification events are handled by GlobalNotificationHandler, not here
+      // Note: os_notification events are handled by GlobalNotificationHandler, not here.
+      // So is session_updated: the server sends it to that stream too, and the
+      // handler there refreshes this session and its agent's lists.
 
       // Replay only the outcome and its text. Working indicators continue to
       // use the existing session_active/session_idle/background-task handlers.

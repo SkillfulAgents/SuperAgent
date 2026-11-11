@@ -45,7 +45,8 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
       return res.json()
     },
     enabled: !!resolvedSlug,
-    staleTime: options?.staleTime,
+    // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
+    ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
 }
 
@@ -67,7 +68,8 @@ export function useNotableSessions(agentSlug: string | null, options?: { limit?:
       return res.json()
     },
     enabled: !!resolvedSlug,
-    staleTime: options?.staleTime,
+    // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
+    ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
 }
 
