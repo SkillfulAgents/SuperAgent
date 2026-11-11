@@ -90,8 +90,19 @@ export async function ensureMigrated(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>)
   await env.TASK_MANAGER.getByName(OBJECT_NAME).migrate()
 }
 
+/**
+ * Resolves once the org's once-per-deploy setup has run (prepareOrg in boot.ts). Every isolate
+ * waits here at the end of its boot instead of running that setup itself.
+ */
+export async function ensureOrgPrepared(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
+  const own = servingTaskManager()
+  if (own) return own.prepareOrg()
+  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+  await env.TASK_MANAGER.getByName(OBJECT_NAME).prepareOrg()
+}
+
 export class TaskManagerDurableObject extends DurableObject<Env> {
-  private migrated: Promise<void> | undefined
+  private readonly steps = new Map<string, Promise<void>>()
   private readonly runs = new Map<string, Run>()
   private started: Promise<void> | undefined
   private stopped = false
@@ -102,7 +113,7 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     const sql = ctx.storage.sql
     sql.exec('CREATE TABLE IF NOT EXISTS job (id TEXT PRIMARY KEY, gen TEXT NOT NULL, task_type TEXT NOT NULL, payload TEXT NOT NULL, interval_ms INTEGER, jitter_ratio REAL, wake_at INTEGER, tick_at INTEGER, execution_id TEXT, attempt INTEGER NOT NULL DEFAULT 0)')
     sql.exec('CREATE TABLE IF NOT EXISTS live_check (id INTEGER PRIMARY KEY CHECK (id = 1), checked_at INTEGER NOT NULL)')
-    sql.exec('CREATE TABLE IF NOT EXISTS migrated (version TEXT PRIMARY KEY)')
+    sql.exec('CREATE TABLE IF NOT EXISTS deploy_step (step TEXT NOT NULL, version TEXT NOT NULL, PRIMARY KEY (step, version))')
   }
 
   checkVersion(callerVersion: string): boolean {
@@ -111,20 +122,36 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
 
   /** Migrates the org's database unless this deploy already did. A failed migration is tried again by the next call. */
   migrate(): Promise<void> {
-    this.migrated ??= this.migrateOnce().catch((error: unknown) => {
-      this.migrated = undefined
-      throw error
-    })
-    return this.migrated
+    return this.oncePerDeploy('migrate', async () => (await import('./boot')).migrateDatabase(this.env))
   }
 
-  private async migrateOnce(): Promise<void> {
+  /** Runs the org's setup unless this deploy already did, on a boot of this isolate that does not wait for it. */
+  prepareOrg(): Promise<void> {
+    return this.oncePerDeploy('prepare-org', async () => {
+      const app = await import('./boot')
+      await app.bootIsolate(this.env)
+      await app.prepareOrg(this.env)
+    })
+  }
+
+  private oncePerDeploy(step: string, run: () => Promise<void>): Promise<void> {
+    let done = this.steps.get(step)
+    if (!done) {
+      done = this.runStep(step, run).catch((error: unknown) => {
+        this.steps.delete(step)
+        throw error
+      })
+      this.steps.set(step, done)
+    }
+    return done
+  }
+
+  private async runStep(step: string, run: () => Promise<void>): Promise<void> {
     const version = this.env.VERSION?.id
     const sql = this.ctx.storage.sql
-    if (version && sql.exec('SELECT 1 FROM migrated WHERE version = ?', version).toArray().length > 0) return
-    const app = await import('./boot')
-    await app.migrateDatabase(this.env)
-    if (version) sql.exec('INSERT OR IGNORE INTO migrated (version) VALUES (?)', version)
+    if (version && sql.exec('SELECT 1 FROM deploy_step WHERE step = ? AND version = ?', step, version).toArray().length > 0) return
+    await run()
+    if (version) sql.exec('INSERT OR IGNORE INTO deploy_step (step, version) VALUES (?, ?)', step, version)
   }
 
   /** Starts the background services unless they already run here. Each isolate of the org calls it once. */

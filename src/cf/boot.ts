@@ -16,7 +16,17 @@ import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { runWithBackground } from '@shared/lib/background'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import { initializeServices, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
+import { initializeServices, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
+import { registerAllAccountProviders } from '@shared/lib/account-providers/register'
+import { setServerAnalyticsVersion } from '@shared/lib/analytics/server-analytics'
+import { APP_VERSION } from '@shared/lib/config/version'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { validateAuthModeStartup } from '@shared/lib/auth/startup-validation'
+import { ensureManagedPlatformConnection } from '@shared/lib/llm-provider/connection-settings'
+import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
+import { installPlatformFetchInterceptor } from '@shared/lib/platform-attribution/install-fetch-interceptor'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { captureException } from '@shared/lib/error-reporting'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { setActorTransport, setSessionStore } from '@shared/lib/agent-actor/registry'
@@ -34,7 +44,7 @@ import { getAgentDir } from '@shared/lib/utils/file-storage'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
-import { CloudflareTaskManager, ensureMigrated } from './cloudflare-task-manager'
+import { CloudflareTaskManager, ensureMigrated, ensureOrgPrepared } from './cloudflare-task-manager'
 import { withAgentObject, routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
 import { createCloudflareFileOps } from './cloudflare-file-ops'
 import { ownedHere, servingAgentObject } from './agent-objects'
@@ -46,11 +56,46 @@ let tasks: CloudflareTaskManager | undefined
 let fetchWrapped = false
 /** Boots SuperAgent in this isolate once; a failed boot is tried again by the next call. */
 export function boot(env: Env): Promise<void> {
-  booted ??= start(env).catch((error: unknown) => {
+  booted ??= bootIsolate(env).then(() => ensureOrgPrepared(env)).then(prepareIsolate).catch((error: unknown) => {
     booted = undefined
     throw error
   })
   return booted
+}
+
+let isolateBooted: Promise<void> | undefined
+/**
+ * A boot without the org's once-per-deploy setup and what follows it: the task manager object
+ * runs that setup on top of this (TaskManagerDurableObject.prepareOrg), so it must not wait for it.
+ */
+export function bootIsolate(env: Env): Promise<void> {
+  isolateBooted ??= start(env).catch((error: unknown) => {
+    isolateBooted = undefined
+    throw error
+  })
+  return isolateBooted
+}
+
+/**
+ * The part of the process setup (prepareProcess in startup.ts) that writes or checks the org's
+ * data, plus the first-boot settings: once per deploy, in the task manager object.
+ */
+export async function prepareOrg(env: Env): Promise<void> {
+  await seedSettings(env.APP_ORIGIN)
+  if (isAuthMode()) await validateAuthModeStartup()
+  await ensureManagedPlatformConnection()
+}
+
+/** The part of the process setup that lives in this isolate's memory. */
+async function prepareIsolate(): Promise<void> {
+  setServerAnalyticsVersion(APP_VERSION)
+  registerAllAccountProviders()
+  try {
+    const platformToken = await getPlatformAccessToken()
+    if (platformToken && decodeOrgIdFromToken(platformToken) !== null) installPlatformFetchInterceptor()
+  } catch (error) {
+    captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
+  }
 }
 
 /** One API request; the work it leaves running keeps the invocation alive until it settles. */
@@ -142,9 +187,6 @@ async function start(env: Env): Promise<void> {
     await initializeBackgroundWork(tasks)
   }
   registerBackgroundWork({ localContainers: false })
-  await seedSettings(env.APP_ORIGIN)
-
-  await prepareProcess()
   if (!fetchWrapped) {
     // Outermost: the wrappers inside (platform attribution) can build a Request, which refuses redirect: 'error' on Workers.
     globalThis.fetch = errorOnRedirect(globalThis.fetch)
