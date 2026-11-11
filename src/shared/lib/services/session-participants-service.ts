@@ -1,10 +1,11 @@
 import { and, asc, eq, inArray, isNotNull, min } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { getUserSummaries } from '@shared/lib/services/user-profile-service'
 
-// Keeps each IN (…) list well under every driver's bound-parameter limit.
-const SESSION_ID_CHUNK = 500
+/** Session ids per statement at most, on a driver with SQLite's own bound-parameter limit. */
+const MAX_SESSION_IDS_PER_STATEMENT = 500
 
 export type SessionParticipant = Awaited<ReturnType<typeof getUserSummaries>> extends Map<string, infer P> ? P : never
 
@@ -20,8 +21,10 @@ export async function getSessionParticipants(
 ): Promise<Map<string, SessionParticipant[]>> {
   const ids = [...new Set(sessionIds)]
   const rows: { sessionId: string; userId: string }[] = []
-  for (let i = 0; i < ids.length; i += SESSION_ID_CHUNK) {
-    const chunk = ids.slice(i, i + SESSION_ID_CHUNK)
+  // The agent's slug is the one other parameter.
+  const perStatement = Math.min(MAX_SESSION_IDS_PER_STATEMENT, maxBoundParameters() - 1)
+  for (let i = 0; i < ids.length; i += perStatement) {
+    const chunk = ids.slice(i, i + perStatement)
     const firstAt = min(messageAuthor.createdAt)
     const found = await db
       .select({ sessionId: messageAuthor.sessionId, userId: messageAuthor.userId, firstAt })
