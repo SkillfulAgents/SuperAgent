@@ -23,6 +23,7 @@ import { db } from '@shared/lib/db'
 import { changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentAcl, authAccount, user } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { resolveAuthSettings } from './auth-settings'
 import { platformJoinRole } from './platform-role'
 import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
@@ -49,6 +50,7 @@ export async function claimInvitedUser(userId: string, options: { emailVerified?
   }).where(and(eq(user.id, userId), eq(user.status, 'invited'))).run()) > 0
   if (!claimed) return false
   console.log(`[Auth] Invited user ${userId} joined${pendingApproval ? ', pending admin approval' : ''}`)
+  trackServerEvent('invited_user_joined', { email_verified: options.emailVerified ?? true, pending_approval: pendingApproval })
 
   const { addTeamBrainUser, notifyAgentMembersChanged } = await import('@shared/lib/services/agent-members-service')
   await addTeamBrainUser(userId).catch((error) => console.error('Failed to give a joined member the Team Brain:', error))
