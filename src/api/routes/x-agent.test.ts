@@ -518,6 +518,53 @@ describe('/list', () => {
 })
 
 // ============================================================================
+// /members
+// ============================================================================
+
+describe('/members', () => {
+  async function addMember(agentSlug: string, userId: string, role: 'owner' | 'user' | 'viewer') {
+    await testDb.insert(schema.agentAcl).values({ id: randomUUID(), userId, agentSlug, role, createdAt: new Date() })
+  }
+
+  it('returns the caller agent\'s members with no avatar', async () => {
+    authModeEnabled = true
+    await testDb.insert(schema.user).values({ id: 'user-invited', name: 'Invited', email: 'invited@test', emailVerified: false, image: 'https://img.test/a.png', status: 'invited' })
+    await addMember(CALLER_SLUG, 'user-invited', 'viewer')
+    const res = await authedFetch('/x-agent/members', {})
+    expect(res.status).toBe(200)
+    const { members } = await res.json() as { members: unknown[] }
+    expect(members).toHaveLength(2)
+    expect(members).toEqual(expect.arrayContaining([
+      { id: OWNER_USER_ID, name: 'Owner', email: 'owner@test', role: 'owner' },
+      { id: 'user-invited', name: 'Invited', email: 'invited@test', role: 'viewer', invited: true },
+    ]))
+  })
+
+  it('reads the token\'s agent, never a slug from the body', async () => {
+    authModeEnabled = true
+    await addMember(TARGET_SLUG, OTHER_USER_ID, 'owner')
+    const res = await authedFetch('/x-agent/members', { slug: TARGET_SLUG, agentSlug: TARGET_SLUG })
+    const body = await res.json() as { members: { id: string }[] }
+    expect(body.members.map((m) => m.id)).toEqual([OWNER_USER_ID])
+  })
+
+  it('caps a very large roster and says so', async () => {
+    authModeEnabled = true
+    const ids = Array.from({ length: 500 }, (_, i) => `user-${i}`)
+    await testDb.insert(schema.user).values(ids.map((id) => ({ id, name: id, email: `${id}@test`, emailVerified: false })))
+    await testDb.insert(schema.agentAcl).values(ids.map((userId) => ({ id: randomUUID(), userId, agentSlug: CALLER_SLUG, role: 'user' as const, createdAt: new Date() })))
+    const body = await (await authedFetch('/x-agent/members', {})).json() as { members: unknown[]; truncated: boolean }
+    expect(body.members).toHaveLength(500)
+    expect(body.truncated).toBe(true)
+  })
+
+  it('lists no one without sign-in', async () => {
+    const res = await authedFetch('/x-agent/members', {})
+    expect(await res.json()).toEqual({ truncated: false, members: [] })
+  })
+})
+
+// ============================================================================
 // /create
 // ============================================================================
 

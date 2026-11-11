@@ -12,6 +12,17 @@ export const listAgentsResultSchema = z.object({
   })),
 })
 
+export const listAgentMembersResultSchema = z.object({
+  truncated: z.boolean(),
+  members: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    email: z.string(),
+    role: z.string(),
+    invited: z.literal(true).optional(),
+  })),
+})
+
 export const createAgentResultSchema = z.object({
   slug: z.string(),
   name: z.string(),

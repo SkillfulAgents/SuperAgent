@@ -169,6 +169,19 @@ describe('processSSEEvent', () => {
       expect(mock.sentMessages[0].message.text).toBe('Short response')
     })
 
+    it("shows an agent's tag as a plain @Name in the chat, holding back one still streaming in", async () => {
+      const text = 'x'.repeat(STREAM_FIRST_POST_CHARS)
+      await processEvents(managed, [
+        { type: 'stream_delta', text: `${text} [@Mike Sm` },
+        { type: 'stream_delta', text: 'ith](user:u_mike1), please decide' },
+        { type: 'session_idle' },
+      ])
+
+      const mock = getMock(managed)
+      expect(mock.streamUpdates.map(u => u.text)).toEqual([`${text} `])
+      expect(mock.finalizedMessages.map(m => m.finalText)).toEqual([`${text} @Mike Smith, please decide`])
+    })
+
     it('does nothing on session_idle with no accumulated text', async () => {
       await processSSEEvent(managed, { type: 'session_idle' })
 

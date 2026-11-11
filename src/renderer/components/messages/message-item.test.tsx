@@ -164,6 +164,22 @@ describe('MessageItem', () => {
       expect(screen.queryByTestId('mention-notified')).toBeNull()
     })
 
+    it("draws an agent's [@Name](user:<id>) tag as a person's chip", () => {
+      render(<MessageItem message={createAssistantMessage({ content: { text: '[@Mike Smith](user:mike-id), please decide' } })} agentSlug="support01x" />)
+      expect(screen.getByTestId('user-mention')).toHaveTextContent(/^@Mike Smith$/)
+      expect(screen.getByTestId('message-assistant')).not.toHaveTextContent('user:')
+    })
+
+    it('draws no chip for a user: link the server would not read as a tag, or in a person\'s message', () => {
+      for (const text of ['see [Mike](user:mike-id)', '[@](user:mike-id)', '[**@Mike**](user:mike-id)', '[@Mike](user:mike-id "title")']) {
+        const { unmount } = render(<MessageItem message={createAssistantMessage({ content: { text } })} />)
+        expect(screen.queryByTestId('user-mention')).toBeNull()
+        unmount()
+      }
+      render(<MessageItem message={createUserMessage({ content: { text: '[@Mike](user:mike-id)' } })} />)
+      expect(screen.queryByTestId('user-mention')).toBeNull()
+    })
+
     it('leaves a name inside code as typed', () => {
       const text = appendMentions('run `@Mike Smith` as is', [mike])
       render(<MessageItem message={createUserMessage({ content: { text } })} />)

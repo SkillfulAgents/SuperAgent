@@ -187,6 +187,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
         responseTranscriptEndOffset: null,
+        taggedUserIds: [],
       },
     )
 
@@ -220,6 +221,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
         responseTranscriptEndOffset: null,
+        taggedUserIds: [],
       },
     )
 
