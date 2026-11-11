@@ -106,7 +106,9 @@ describe('skillset install', () => {
       // Each atomic write counts its data write and its two fsyncs.
       // One readFile is the new agent's actor first using its session index:
       // a session-metadata.json still in the workspace is taken in.
-      totalOps: instructionsFile === 'AGENTS.md' ? 126 : 133,
+      // The template hash streams each file: a stat and a read stream where a
+      // whole-file read was one op.
+      totalOps: instructionsFile === 'AGENTS.md' ? 167 : 174,
       // Recorded 430–490 ms on an idle machine; ~2× that, as the home
       // profiles are budgeted, so runner load cannot trip it while a
       // serialised copy path still would.

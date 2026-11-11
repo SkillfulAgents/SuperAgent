@@ -1203,7 +1203,9 @@ async function computeTemplateHash(tree: TemplateTree): Promise<string> {
   // memory stays at a few stream buffers however large the files are. Each
   // file is hashed as its UTF-8 text, as the whole-file read did.
   const opened: Array<Promise<ReadableStream<Uint8Array> | null> | undefined> = []
-  const open = (index: number) => opened[index] ??= tree.read(files[index]).catch(() => null) // Skip unreadable files
+  const open = (index: number): void => {
+    opened[index] ??= tree.read(files[index]).catch(() => null) // Skip unreadable files
+  }
   const hash = crypto.createHash('sha256')
   try {
     for (let index = 0; index < files.length; index++) {
@@ -1217,7 +1219,7 @@ async function computeTemplateHash(tree: TemplateTree): Promise<string> {
       hash.update(decoder.end())
     }
   } finally {
-    for (const pending of opened) void pending?.then((stream) => stream?.cancel().catch(() => {}))
+    await Promise.all(opened.map((pending) => pending?.then((stream) => stream?.cancel()).catch(() => {})))
   }
 
   return hash.digest('hex')

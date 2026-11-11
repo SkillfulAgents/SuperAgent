@@ -3246,7 +3246,8 @@ metadata:
 
       const skillDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', result.skillDir)
       expect(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8')).toBe(MINIMAL_SKILL_MD)
-      expect(fs.readFileSync(path.join(skillDir, 'assets', 'large.bin'))).toEqual(large)
+      // A byte compare: toEqual walks a multi-MB Buffer element by element for seconds.
+      expect(fs.readFileSync(path.join(skillDir, 'assets', 'large.bin')).equals(large)).toBe(true)
     })
 
     it('export then import preserves files', async () => {
