@@ -1,0 +1,51 @@
+// SuperAgent for one org as three Cloudflare Workers, so each Durable Object's isolate loads only
+// its own code: this one (the UI, the API and the task manager object), wrangler.agent.jsonc (the
+// agents' objects) and wrangler.app-state.jsonc (the AppState object). ../wrangler.jsonc runs the
+// same org as one Worker. From the repository root, after `AUTH_MODE=true npm run build:web` and
+// the database, bucket and secrets of ../wrangler.jsonc (the secrets go on this Worker and on the
+// agents' one):
+//   npx wrangler deploy --config src/cf/split/wrangler.app-state.jsonc
+//   npx wrangler deploy --config src/cf/split/wrangler.agent.jsonc
+//   npx wrangler deploy --config src/cf/split/wrangler.main.jsonc
+// This Worker and the agents' one bind each other. The very first time, deploy the agents' Worker
+// without the two bindings marked there, then this one, then the agents' Worker again with them.
+{
+  "name": "superagent",
+  "main": "main.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat", "durable_object_io_tasks_prevent_eviction"],
+  "minify": true,
+  "alias": {
+    "ws": "../workers-shims/ws.ts",
+    "express": "../workers-shims/node-only.ts",
+    "raw-body": "../workers-shims/node-only.ts",
+    "undici": "../workers-shims/node-only.ts",
+    "@skillful-agents/agent-computer": "../workers-shims/node-only.ts"
+  },
+  "vars": {
+    "AUTH_MODE": "true",
+    "APP_ORIGIN": "https://superagent.example.com",
+    // One release of the three Workers carries one VERSION: the same id and time in all three
+    // configs. An object restarts when a caller's time is newer (object-version.ts), and the
+    // Workers' own deploy times differ, so they cannot stand in for it.
+    "VERSION": { "id": "1", "timestamp": "2026-01-01T00:00:00.000Z" }
+  },
+  "secrets": { "required": ["SUPERAGENT_VAULT_KEY", "BETTER_AUTH_SECRET", "AUTH_PROVIDERS_JSON", "PLATFORM_TOKEN"] },
+  "assets": {
+    "directory": "../../../dist/renderer",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/*", "!/assets/*", "!/model-icons/*", "!/provider-icons/*", "!/service-icons/*"]
+  },
+  "d1_databases": [{ "binding": "DB", "database_name": "superagent", "database_id": "00000000-0000-0000-0000-000000000000" }],
+  "r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "superagent-workspaces" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "TASK_MANAGER", "class_name": "TaskManagerDurableObject" },
+      { "name": "APP_STATE", "class_name": "AppStateDurableObject", "script_name": "superagent-app-state" },
+      { "name": "AGENT", "class_name": "AgentDurableObject", "script_name": "superagent-agent" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TaskManagerDurableObject"] }],
+  "observability": { "enabled": true }
+}

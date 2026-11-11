@@ -20,7 +20,8 @@ const app = vi.hoisted(() => {
 vi.mock('./boot', () => app)
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
-import { CloudflareTaskManager, TaskManagerDurableObject, ensureMigrated, ensureOrgPrepared } from './cloudflare-task-manager'
+import { CloudflareTaskManager, ensureMigrated, ensureOrgPrepared } from './cloudflare-task-manager'
+import { TaskManagerDurableObject } from './cloudflare-task-manager-object'
 import type { Env } from './index'
 
 const T0 = Date.UTC(2026, 10, 6, 12)

@@ -14,7 +14,10 @@ export interface VersionedObject {
   checkVersion(callerVersion: string): boolean
 }
 
-/** The deploy this code belongs to, from the Worker's `version_metadata` binding. */
+/**
+ * The deploy this code belongs to: the Worker's `version_metadata` binding, or the VERSION an org's
+ * Workers share when it runs as several (split/wrangler.main.jsonc).
+ */
 export interface VersionMetadata {
   readonly id: string
   readonly timestamp: string

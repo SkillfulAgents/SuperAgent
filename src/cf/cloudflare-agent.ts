@@ -13,7 +13,7 @@
  * image. A running container keeps its image until it stops; the next start uses the new one.
  *
  * The agent's actor runs here too: its ops come from the rest of the org as RPC calls
- * (`cloudflareAgentActor`), and this object boots SuperAgent to serve them. Calls the actor makes back to
+ * (`cloudflareAgentActor`), and this object boots SuperAgent to serve them (boot-agent.ts). Calls the actor makes back to
  * the host stay in this isolate, which shares the org's database and AppState. The agent's idle
  * check runs on this object's alarm, which outlives the isolate.
  */
@@ -101,17 +101,14 @@ export async function serveWorkspaceRequest(request: Request, env: Env, objectId
   return env.AGENT.get(env.AGENT.idFromString(objectId)).workspaceRequest(request)
 }
 
-/** The container's calls to the host (proxy, host tools, bootstrap): the API, in the Worker. */
-async function serveHostRequest(request: Request, env: Env): Promise<Response> {
-  const app = await import('./boot')
-  await app.boot(env)
-  return app.serveContainerRequest(request, env)
-}
-
-/** A container's call to one of this deploy's hosts (AgentContainerOutbound, in the Worker). */
-export function serveContainerCall(request: Request, env: Env, containerId: string): Promise<Response> {
+/**
+ * A container's call to one of this deploy's hosts (AgentContainerOutbound, a Worker entrypoint).
+ * `serveHost` answers its calls to the host (proxy, host tools, bootstrap) with the API, which the
+ * entrypoint's script reaches its own way: this module does not load it.
+ */
+export function serveContainerCall(request: Request, env: Env, containerId: string, serveHost: (request: Request) => Promise<Response>): Promise<Response> {
   const { hostname } = new URL(request.url)
-  if (hostname === HOST) return serveHostRequest(request, env)
+  if (hostname === HOST) return serveHost(request)
   if (hostname === WORKSPACE) return serveWorkspaceRequest(request, env, containerId)
   return Promise.resolve(new Response(null, { status: 404 }))
 }
@@ -174,13 +171,13 @@ export class AgentDurableObject extends DurableObject<Env> {
     return this.containerFetch(request, CONTAINER_INTERNAL_PORT)
   }
 
-  /** SuperAgent's idle check for this agent (checkIdle in boot.ts): sleeps it if idle, else schedules the next check. */
+  /** SuperAgent's idle check for this agent (checkIdle in boot-agent.ts): sleeps it if idle, else schedules the next check. */
   async checkIdle(): Promise<void> {
     const slug = this.agentName()
     let next: number | null
     try {
       next = await runAsAgentObject(slug, this, async () => {
-        const app = await import('./boot')
+        const app = await import('./boot-agent')
         await app.boot(this.env)
         await this.syncStatus(app, slug)
         return app.checkIdle(slug)
@@ -211,14 +208,14 @@ export class AgentDurableObject extends DurableObject<Env> {
   actorCall(path: string, args: unknown[]): Promise<ActorOutcome> {
     const slug = this.agentName()
     return runAsAgentObject(slug, this, async () => {
-      const app = await import('./boot')
+      const app = await import('./boot-agent')
       await app.boot(this.env)
       await this.syncStatus(app, slug)
       return app.runAgentActorOp(slug, path, args)
     })
   }
 
-  private syncStatus(app: typeof import('./boot'), slug: string): Promise<void> {
+  private syncStatus(app: typeof import('./boot-agent'), slug: string): Promise<void> {
     return (this.statusSynced ??= app.syncAgentStatus(slug).catch((error: unknown) => {
       this.statusSynced = undefined
       console.error(`[AgentDurableObject ${slug}] syncing the container status failed:`, error)

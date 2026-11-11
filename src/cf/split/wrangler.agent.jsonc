@@ -1,0 +1,40 @@
+// The agents' objects of an org that runs as three Workers (wrangler.main.jsonc has the steps):
+// each agent's object, its actor and its container, without the API.
+{
+  "name": "superagent-agent",
+  "main": "agent.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat", "durable_object_io_tasks_prevent_eviction"],
+  "minify": true,
+  "workers_dev": false,
+  "alias": {
+    "ws": "../workers-shims/ws.ts",
+    "express": "../workers-shims/node-only.ts",
+    "raw-body": "../workers-shims/node-only.ts",
+    "undici": "../workers-shims/node-only.ts",
+    "@skillful-agents/agent-computer": "../workers-shims/node-only.ts"
+  },
+  // The same vars and secrets as the main Worker: the actor reads the org's settings the same way.
+  "vars": {
+    "AUTH_MODE": "true",
+    "APP_ORIGIN": "https://superagent.example.com",
+    "VERSION": { "id": "1", "timestamp": "2026-01-01T00:00:00.000Z" }
+  },
+  "secrets": { "required": ["SUPERAGENT_VAULT_KEY", "BETTER_AUTH_SECRET", "AUTH_PROVIDERS_JSON", "PLATFORM_TOKEN"] },
+  "d1_databases": [{ "binding": "DB", "database_name": "superagent", "database_id": "00000000-0000-0000-0000-000000000000" }],
+  "r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "superagent-workspaces" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "AGENT", "class_name": "AgentDurableObject" },
+      { "name": "APP_STATE", "class_name": "AppStateDurableObject", "script_name": "superagent-app-state" },
+      // Left out of the very first deploy, with HOST below: the main Worker does not exist yet.
+      { "name": "TASK_MANAGER", "class_name": "TaskManagerDurableObject", "script_name": "superagent" }
+    ]
+  },
+  // A container's calls to http://host.internal: the API, in the main Worker (AgentHostCalls in main.ts).
+  "services": [{ "binding": "HOST", "service": "superagent", "entrypoint": "AgentHostCalls" }],
+  // As in ../wrangler.jsonc: a deploy never rolls a running container onto the new image.
+  "containers": [{ "name": "superagent-agent", "class_name": "AgentDurableObject", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "../../../agent-container/Dockerfile" } } }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentDurableObject"] }],
+  "observability": { "enabled": true }
+}

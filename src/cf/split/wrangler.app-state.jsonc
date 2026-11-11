@@ -1,0 +1,13 @@
+// The AppState object of an org that runs as three Workers (wrangler.main.jsonc has the steps).
+{
+  "name": "superagent-app-state",
+  "main": "app-state.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat", "durable_object_io_tasks_prevent_eviction"],
+  "minify": true,
+  "workers_dev": false,
+  "vars": { "VERSION": { "id": "1", "timestamp": "2026-01-01T00:00:00.000Z" } },
+  "durable_objects": { "bindings": [{ "name": "APP_STATE", "class_name": "AppStateDurableObject" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject"] }],
+  "observability": { "enabled": true }
+}

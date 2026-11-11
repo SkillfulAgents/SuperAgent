@@ -9,12 +9,13 @@ import { getServerFacts, withServerFacts, withServerFactsRevision } from '@share
 import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './cloudflare-app-state'
 import { serveContainerCall, type AgentDurableObject } from './cloudflare-agent'
-import { startTaskManager, type TaskManagerDurableObject } from './cloudflare-task-manager'
+import { startTaskManager } from './cloudflare-task-manager'
+import type { TaskManagerDurableObject } from './cloudflare-task-manager-object'
 import { logErrorsAsText } from './error-logs'
 import type { VersionMetadata } from './object-version'
 
 export { AppStateDurableObject } from './cloudflare-app-state'
-export { TaskManagerDurableObject } from './cloudflare-task-manager'
+export { TaskManagerDurableObject } from './cloudflare-task-manager-object'
 export { AgentDurableObject } from './cloudflare-agent'
 
 /**
@@ -24,8 +25,15 @@ export { AgentDurableObject } from './cloudflare-agent'
  */
 export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string }> {
   fetch(request: Request): Promise<Response> {
-    return runWithBackground(this.ctx, () => serveContainerCall(request, this.env, this.ctx.props.containerId))
+    return runWithBackground(this.ctx, () => serveContainerCall(request, this.env, this.ctx.props.containerId, (call) => serveHostCall(call, this.env)))
   }
+}
+
+/** A container's call to the host (proxy, host tools, bootstrap): the API, in this Worker. */
+export async function serveHostCall(request: Request, env: Env): Promise<Response> {
+  const app = await import('./boot')
+  await app.boot(env)
+  return app.serveContainerRequest(request, env)
 }
 
 export interface Env {
