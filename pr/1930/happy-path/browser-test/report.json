@@ -1,17 +1,23 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: owser.' - VERIFIED ✓\n\n---\n\n**Test Result Summary:**\n- All 5 steps executed successfully\n- Agent successfully demonstrated browser use capability\n- Response correctly identified the page title as \"Example Domain\"\n- No bugs or issues encountered\n- Response time: 7 seconds (well within 3-minute limit)\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Browser functionality test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat interface.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the Gamut application with title \"Gamut\"",
+    "Step 2 - Found and clicked agent \"QA-20261111-200237-gxvf\" in the sidebar - Successfully navigated to the agent page at URL /agents/qa-20261111-200237-gxvf-xt5aud7xis",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully submitted, agent transitioned to \"working\" status, new session created with URL containing session ID 5b0a2106-222a-4d7b-b817-fcb712a247a0",
+    "Step 4 - Waited for response (up to 3 minutes) - Response received in approximately 9 seconds; agent executed 3 tool calls using 160,069 tokens",
+    "Step 5 - Verified response mentions \"Example Domain\" - CONFIRMED: Agent responded \"The page title is \"Example Domain\". I've closed the browser.\""
+  ],
   "bugs": [],
-  "durationMs": 135517,
-  "sessionId": "f6b17759-7f16-47a4-8429-0c8e27f1f9a7",
+  "durationMs": 143691,
+  "sessionId": "4471b638-fe46-4227-9d83-d343cfeffca9",
   "cost": {
-    "inputTokens": 488,
-    "outputTokens": 10741,
-    "cacheCreationTokens": 76624,
-    "cacheReadTokens": 1393617,
+    "inputTokens": 568,
+    "outputTokens": 13239,
+    "cacheCreationTokens": 80139,
+    "cacheReadTokens": 1624741,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.289335
+    "totalCostUsd": 0.329411
   }
 }
