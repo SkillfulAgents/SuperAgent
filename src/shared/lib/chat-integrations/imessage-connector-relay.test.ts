@@ -308,6 +308,30 @@ describe('IMessageConnector through webhooks', () => {
     expect(sockets).toHaveLength(0)
   })
 
+  it('sends each https link after the text as its own preview, and the rest as text once one is refused', async () => {
+    const instance = await connectWebhooks()
+    vi.mocked(sendGatewayMessage)
+      .mockResolvedValueOnce({ messageId: 'msg_text', chatId: 'chat_1' })
+      .mockRejectedValueOnce(new GatewayRequestError('HTTP 400', 400))
+
+    expect(await instance.sendMessage('chat_1', { text: 'Booked, see [the menu](https://a.com).\n\nhttps://b.com' })).toBe('msg_text')
+    expect(vi.mocked(sendGatewayMessage).mock.calls.map(([, message]) => message.parts)).toEqual([
+      [{ type: 'text', value: 'Booked, see the menu.' }],
+      [{ type: 'link', value: 'https://a.com' }],
+      [{ type: 'text', value: 'https://a.com\nhttps://b.com' }],
+    ])
+  })
+
+  it('keeps a delivered reply and resends nothing when a preview may have arrived', async () => {
+    const instance = await connectWebhooks()
+    vi.mocked(sendGatewayMessage)
+      .mockResolvedValueOnce({ messageId: null, chatId: 'chat_1' })
+      .mockRejectedValue(new GatewayRequestError('iMessage gateway unreachable', null))
+
+    await expect(instance.sendMessage('chat_1', { text: 'See https://a.com and https://b.com' })).resolves.toMatch(/^msg-/)
+    expect(sendGatewayMessage).toHaveBeenCalledTimes(2)
+  })
+
   it('fails a reply the gateway couldn’t send', async () => {
     vi.mocked(sendGatewayMessage).mockRejectedValueOnce(new GatewayRequestError('HTTP 502: Linq unavailable', 502))
     const instance = await connectWebhooks()
