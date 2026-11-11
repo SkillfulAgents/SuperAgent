@@ -19,8 +19,8 @@ import type { AgentSlug } from './types'
 type SessionIndexDb = Pick<AppDatabase, 'select' | 'insert' | 'update' | 'delete'>
 type Row = typeof agentSessions.$inferSelect
 
-/** Rows per statement: well inside SQLite's bound-parameter limit at six columns a row. */
-const ROWS_PER_STATEMENT = 500
+/** Rows per statement: Cloudflare D1 binds at most 100 parameters a query, so 16 rows of six columns (96). */
+const ROWS_PER_STATEMENT = 16
 
 /** A lost compare-and-set means another writer got in between; this many in a row means something else is wrong. */
 const MAX_UPDATE_ATTEMPTS = 20

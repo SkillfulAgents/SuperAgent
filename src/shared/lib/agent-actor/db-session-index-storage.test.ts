@@ -3,8 +3,41 @@ import { eq } from 'drizzle-orm'
 import { agentSessions } from '@shared/lib/db/schema'
 import { createTestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+import type { AppDatabase } from '@shared/lib/db'
 import { createDbSessionIndexStorage, dropDbSessionIndex } from './db-session-index-storage'
 import { describeSessionIndexStorageContract } from './testing/session-index-storage-contract'
+
+/** Cloudflare D1 binds at most 100 parameters a query. */
+const D1_MAX_BOUND_PARAMETERS = 100
+
+/** The app's handle, recording how many parameters each write it runs binds. */
+function countingBoundParameters(db: AppDatabase): { db: AppDatabase; counts: number[] } {
+  const counts: number[] = []
+  const track = <T extends object>(builder: T): T => new Proxy(builder, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (typeof value !== 'function') return value
+      if (prop === 'run') {
+        return (...args: unknown[]) => {
+          counts.push((target as unknown as { toSQL(): { params: unknown[] } }).toSQL().params.length)
+          return value.apply(target, args)
+        }
+      }
+      return (...args: unknown[]) => {
+        const next = value.apply(target, args)
+        return next && typeof next === 'object' && 'toSQL' in next ? track(next) : next
+      }
+    },
+  })
+  const counting = new Proxy(db, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (prop !== 'insert' && prop !== 'delete') return value
+      return (...args: unknown[]) => track(value.apply(target, args))
+    },
+  })
+  return { db: counting, counts }
+}
 
 const database = perTestDatabase()
 vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
@@ -66,5 +99,19 @@ describe('DbSessionIndexStorage', () => {
 
     expect(await one.list()).toEqual([])
     expect(await database.db.select().from(agentSessions).where(eq(agentSessions.agentSlug, 'agent-two')).all()).toHaveLength(1)
+  })
+
+  it('keeps every statement within the bound parameters Cloudflare D1 allows', async () => {
+    const { db, counts } = countingBoundParameters(database.db)
+    const storage = createDbSessionIndexStorage('agent-one', db)
+    const sessionIds = Array.from({ length: 120 }, (_, i) => `s${i}`)
+
+    await storage.fill(sessionIds.map((sessionId) => ({ sessionId, meta: { name: sessionId }, transcript: { mtimeMs: 2, birthtimeMs: 1, size: 3 } })))
+    expect(await storage.list()).toHaveLength(120)
+    await storage.delete(sessionIds)
+    expect(await storage.list()).toEqual([])
+
+    expect(counts.length).toBeGreaterThan(0)
+    expect(Math.max(...counts)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS)
   })
 })
