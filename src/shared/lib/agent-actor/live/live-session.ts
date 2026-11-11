@@ -267,6 +267,8 @@ export class LiveSession {
   retainStateOnStreamRelease: boolean
   /** Promoted to interactive: set synchronously, so a slower metadata read cannot undo it. */
   promotedToInteractive: boolean
+  /** An unpromoted automation, which no session list shows: its global events say so. */
+  hiddenFromLists: boolean
   /** Not a cron/webhook session: the automation-status write is skipped from then on. */
   private notAutomation = false
 
@@ -309,6 +311,7 @@ export class LiveSession {
     this.releaseStreamWhenIdle = prior?.releaseStreamWhenIdle ?? false
     this.retainStateOnStreamRelease = prior?.retainStateOnStreamRelease ?? false
     this.promotedToInteractive = prior?.promotedToInteractive ?? false
+    this.hiddenFromLists = prior?.hiddenFromLists ?? false
     this.slashCommands = prior?.slashCommands ?? []
     this.settledInputRequests = prior?.settledInputRequests ?? new Map()
     this.pendingError = prior?.pendingError ?? null
@@ -1686,9 +1689,11 @@ export class LiveSession {
   // Side effects
   // ===========================================================================
 
-  /** An event about this session for the global feed. */
+  /** An event about this session for the global feed. A hidden session's tells clients that no session list holds it. */
   private publish({ type, ...fields }: { type: string; [key: string]: unknown }): void {
-    this.ctx.host.send('global', { type, sessionId: this.ctx.sessionId, agentSlug: this.ctx.agentSlug, ...fields })
+    this.ctx.host.send('global', {
+      type, sessionId: this.ctx.sessionId, agentSlug: this.ctx.agentSlug, ...(this.hiddenFromLists ? { hidden: true } : {}), ...fields,
+    })
   }
 
   /**
@@ -1746,18 +1751,20 @@ export class LiveSession {
     )
   }
 
-  /** The automation stream policy, from the session's metadata. */
-  applyStreamPolicy(policy: { releaseStreamWhenIdle: boolean; retainStateOnStreamRelease: boolean }): void {
+  /** The automation stream policy and list visibility, from the session's metadata. */
+  applyStreamPolicy(policy: { releaseStreamWhenIdle: boolean; retainStateOnStreamRelease: boolean; hiddenFromLists: boolean }): void {
     // A promotion wins: it is set synchronously, and this read may be stale.
     if (this.promotedToInteractive) return
     this.releaseStreamWhenIdle = policy.releaseStreamWhenIdle
     this.retainStateOnStreamRelease = policy.retainStateOnStreamRelease
+    this.hiddenFromLists = policy.hiddenFromLists
   }
 
-  /** Promoted to interactive: the stream stays across settles, like any interactive session's. */
+  /** Promoted to interactive: the stream stays across settles, like any interactive session's, and session lists show it. */
   promoted(): void {
     this.promotedToInteractive = true
     this.releaseStreamWhenIdle = false
+    this.hiddenFromLists = false
   }
 }
 

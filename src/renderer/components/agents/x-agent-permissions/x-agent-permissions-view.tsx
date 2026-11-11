@@ -68,8 +68,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const queryClient = useQueryClient()
-  const { isAuthMode, rolesReady, canAdminAgent } = useUser()
-  const canManage = !isAuthMode || (rolesReady && canAdminAgent(agentSlug))
+  const { isAuthMode, rolesReady, canUseAgent } = useUser()
+  const canManage = !isAuthMode || (rolesReady && canUseAgent(agentSlug))
   const [filter, setFilter] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -277,6 +277,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
     const connected = isConnected(slug)
     const blocked = effectiveInvoke(slug) === 'block'
     const pending = isSwitchPending(slug)
+    // A link needs someone who uses both agents; the page already checked this one.
+    const canChange = !isAuthMode || canUseAgent(slug)
     return (
       <div key={slug} data-testid={`x-agent-policy-row-${slug}`}>
         <IntegrationRow
@@ -289,7 +291,12 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
               </span>
             ) : undefined
           }
-          subtitle={<span className="font-mono truncate">{agent.displaySlug}</span>}
+          subtitle={(
+            <span className="flex min-w-0 flex-col">
+              <span className="font-mono truncate">{agent.displaySlug}</span>
+              {!canChange && <span>You need User access to {agent.name} to change this.</span>}
+            </span>
+          )}
           viewTransitionName={`xagent-${slug}`}
           right={
             <>
@@ -317,7 +324,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                       <PolicyDecisionDropdown
                         value={getDecision('read', slug)}
                         onChange={handleChange('read', slug)}
-                        disabled={pendingKeys.has(policyKey('read', slug))}
+                        disabled={!canChange || pendingKeys.has(policyKey('read', slug))}
                       />
                     </div>
                     <div className="flex items-center justify-between gap-3">
@@ -325,7 +332,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                       <PolicyDecisionDropdown
                         value={getDecision('invoke', slug)}
                         onChange={handleChange('invoke', slug)}
-                        disabled={pendingKeys.has(policyKey('invoke', slug))}
+                        disabled={!canChange || pendingKeys.has(policyKey('invoke', slug))}
                       />
                     </div>
                     {isRowSaving(slug) && (
@@ -343,6 +350,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
               ) : (
                 <Switch
                   checked={connected}
+                  disabled={!canChange}
                   onCheckedChange={(next) => handleToggle(slug, next)}
                   aria-label={`${connected ? 'Disconnect' : 'Connect'} ${agent.name}`}
                   data-testid={`x-agent-connect-switch-${slug}`}
@@ -374,9 +382,9 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
         <p className="text-sm text-muted-foreground">Checking permissions...</p>
       ) : !canManage ? (
         <div className="rounded-card border bg-background px-6 py-10 text-center" data-testid="x-agent-permissions-no-permission">
-          <p className="text-sm font-medium">Owner access required</p>
+          <p className="text-sm font-medium">User access required</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-            Only agent owners can view and manage agent-to-agent connections.
+            Only people who use this agent can view and manage its connections.
           </p>
         </div>
       ) : policiesQuery.isLoading || agentsQuery.isLoading ? (

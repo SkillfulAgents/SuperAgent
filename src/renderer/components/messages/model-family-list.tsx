@@ -78,7 +78,7 @@ export function vendorDefault(
  */
 const LINEAGE_FAMILIES = new Set([
   'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor',
-  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-argon',
+  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-carbon', 'gemini-argon',
 ])
 
 /**

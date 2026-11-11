@@ -11,6 +11,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import Database from 'better-sqlite3'
+import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
@@ -49,10 +50,12 @@ vi.mock('../middleware/auth', async (importOriginal) => {
   return {
     // The real ACL check, against the in-memory database.
     canUseAgent: actual.canUseAgent,
+    getReadableAgentIds: actual.getReadableAgentIds,
     Authenticated: passthrough,
     AgentRead: passthrough,
-    AgentUser: passthrough,
-    AgentAdmin: passthrough,
+    // The real role gates, so a test of who may write a link runs them.
+    AgentUser: actual.AgentUser,
+    AgentAdmin: actual.AgentAdmin,
     ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
     getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
     EntityAgentRole: () => () => passthrough(),
@@ -536,23 +539,78 @@ describe('atomic single invoke policy endpoints', () => {
     expect((await getPolicy(CALLER, 'invoke', TARGET_B))).toBeNull()
   })
 
-  it('in auth mode, PUT toward a visible target succeeds', async () => {
-    authModeEnabled = true
-    currentUserId = 'user-viewer'
-    await testDb.insert(schema.user).values([
-      { id: 'user-viewer', name: 'V', email: 'v@t', emailVerified: false },
-    ])
-    await testDb.insert(schema.agentAcl).values([
-      { id: 'acl-c', userId: 'user-viewer', agentSlug: CALLER, role: 'owner', createdAt: new Date() },
-      { id: 'acl-t', userId: 'user-viewer', agentSlug: TARGET_A, role: 'viewer', createdAt: new Date() },
-    ])
-    const res = await app.request(invokeUrl(CALLER, TARGET_A), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision: 'allow' }),
+  describe('in auth mode, every link write needs a User or Owner of both agents', () => {
+    async function seed(targetRole: 'user' | 'viewer') {
+      authModeEnabled = true
+      currentUserId = 'user-1'
+      await testDb.insert(schema.user).values([{ id: 'user-1', name: 'U', email: 'u@t', emailVerified: false }])
+      await testDb.insert(schema.agentAcl).values([
+        { id: 'acl-c', userId: 'user-1', agentSlug: CALLER, role: 'user', createdAt: new Date() },
+        { id: 'acl-t', userId: 'user-1', agentSlug: TARGET_A, role: targetRole, createdAt: new Date() },
+      ])
+    }
+    const json = { 'Content-Type': 'application/json' }
+    const writes = {
+      PATCH: () => app.request(`/api/agents/${CALLER}/x-agent-policies`, { method: 'PATCH', headers: json, body: JSON.stringify({ operation: 'invoke', targetSlug: TARGET_A, decision: 'allow' }) }),
+      'PUT one': () => app.request(invokeUrl(CALLER, TARGET_A), { method: 'PUT', headers: json, body: JSON.stringify({ decision: 'allow' }) }),
+      'DELETE one': () => app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' }),
+    }
+
+    it.each(Object.keys(writes) as Array<keyof typeof writes>)('refuses %s from someone who only views the target', async (name) => {
+      await seed('viewer')
+      await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+      const res = await writes[name]()
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: 'Only a User or Owner of both agents can change this connection.' })
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
     })
-    expect(res.status).toBe(200)
-    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+
+    it('refuses DELETE one from someone with no role on the target', async () => {
+      await seed('viewer')
+      await testDb.delete(schema.agentAcl).where(eq(schema.agentAcl.id, 'acl-t'))
+      await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+      expect((await writes['DELETE one']()).status).toBe(403)
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+    })
+
+    it.each([
+      ['adds a link to', () => setPolicy(CALLER, 'list', null, 'allow'), [{ operation: 'invoke', targetSlug: TARGET_A, decision: 'allow' }]],
+      ['removes a link to', () => setPolicy(CALLER, 'invoke', TARGET_A, 'block'), []],
+    ] as const)('refuses a batch replace that %s an agent they only view', async (_name, existing, policies) => {
+      await seed('viewer')
+      await testDb.update(schema.agentAcl).set({ role: 'owner' }).where(eq(schema.agentAcl.id, 'acl-c'))
+      await existing()
+      const before = await listPoliciesForCaller(CALLER)
+      const res = await app.request(`/api/agents/${CALLER}/x-agent-policies`, { method: 'PUT', headers: json, body: JSON.stringify({ policies }) })
+      expect(res.status).toBe(403)
+      expect(await listPoliciesForCaller(CALLER)).toEqual(before)
+    })
+
+    it('lets a workspace admin with no role on the target add a link, as on the request card', async () => {
+      await seed('viewer')
+      await testDb.delete(schema.agentAcl).where(eq(schema.agentAcl.id, 'acl-t'))
+      currentGlobalRole = 'admin'
+      expect((await writes['PUT one']()).status).toBe(200)
+      expect((await writes.PATCH()).status).toBe(200)
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+      const { policies } = await (await app.request(`/api/agents/${CALLER}/x-agent-policies`)).json() as { policies: Array<{ targetAgentSlug: string | null }> }
+      expect(policies.map((p) => p.targetAgentSlug)).toContain(TARGET_A)
+    })
+
+    it('lets a User, not an Owner, of both agents add and remove a link', async () => {
+      await seed('user')
+      expect((await writes['PUT one']()).status).toBe(200)
+      expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+      expect((await writes['DELETE one']()).status).toBe(200)
+      expect(await getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+    })
+
+    it('lets a User of the agent change its every-agent setting', async () => {
+      await seed('viewer')
+      const res = await app.request(`/api/agents/${CALLER}/x-agent-policies`, { method: 'PATCH', headers: json, body: JSON.stringify({ operation: 'read', targetSlug: null, decision: 'allow' }) })
+      expect(res.status).toBe(200)
+      expect((await getPolicy(CALLER, 'read', null))?.decision).toBe('allow')
+    })
   })
 })
 

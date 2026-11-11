@@ -10,7 +10,21 @@ const mocks = vi.hoisted(() => ({
   useDetails: vi.fn(),
   mutatePermission: vi.fn(),
   startViewTransition: vi.fn((callback: () => void) => callback()),
+  usesOnly: null as string[] | null,
 }))
+
+vi.mock('@renderer/context/user-context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/context/user-context')>()
+  return {
+    ...actual,
+    useUser: () => ({
+      ...actual.useUser(),
+      isAuthMode: mocks.usesOnly !== null,
+      rolesReady: true,
+      canUseAgent: (slug: string) => mocks.usesOnly === null || mocks.usesOnly.includes(slug),
+    }),
+  }
+})
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mocks.navigate,
@@ -28,6 +42,7 @@ vi.mock('@renderer/lib/view-transition', () => ({
 describe('InboundXAgentView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.usesOnly = null
     mocks.mutatePermission.mockResolvedValue(undefined)
     mocks.useDetails.mockReturnValue({
       data: {
@@ -77,6 +92,26 @@ describe('InboundXAgentView', () => {
     // The section rows live directly in the one outer card; there is no nested
     // rounded/bordered IntegrationList box.
     expect(card.querySelectorAll('.rounded-card.border')).toHaveLength(0)
+  })
+
+  it.each([
+    [['target'], 'Caller A'],
+    [['caller-a'], 'this agent'],
+  ])('disables a caller for someone who uses only %j, and names %s', (uses, lacking) => {
+    mocks.usesOnly = uses
+    renderWithProviders(<InboundXAgentView agentSlug="target" />)
+
+    expect(screen.getByTestId('inbound-x-agent-toggle-caller-a')).toBeDisabled()
+    expect(screen.getByText(`You need User access to ${lacking} to change this.`)).toBeInTheDocument()
+  })
+
+  it('lets someone who uses both agents change a caller', async () => {
+    mocks.usesOnly = ['target', 'caller-a']
+    renderWithProviders(<InboundXAgentView agentSlug="target" />)
+
+    fireEvent.click(screen.getByTestId('inbound-x-agent-toggle-caller-a'))
+    await waitFor(() => expect(mocks.mutatePermission).toHaveBeenCalled())
+    expect(screen.queryByText(/You need User access/)).not.toBeInTheDocument()
   })
 
   it('opens the selected run', () => {

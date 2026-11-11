@@ -39,7 +39,8 @@ import { dropboxHealthCache } from '@shared/lib/volumes/dropbox-health-cache'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 const app = new Hono().route('/api/volume-types', types).route('/api/volume-definitions', definitions).route('/api/volumes', volumes)
 const folder = { '.tag': 'folder', name: 'Team', id: 'id:team' }
-const file = { '.tag': 'file', name: 'notes.txt', id: 'id:notes', size: 11, rev: 'abc123', server_modified: '2026-10-07T12:00:00Z' }
+const uploaded = { name: 'notes.txt', id: 'id:notes', size: 11, rev: 'abc123', server_modified: '2026-10-07T12:00:00Z' }
+const file = { '.tag': 'file', ...uploaded }
 const config = { accountId: 'dropbox', path: '/Team' }
 
 function create(caller = 'alice', body: unknown = { type: 'dropbox', config, name: 'Team' }) {
@@ -70,8 +71,8 @@ beforeEach(async () => {
     if (targetUrl.endsWith('get_metadata')) return Response.json(args.path.endsWith('.txt') ? file : folder)
     if (targetUrl.endsWith('list_folder')) return Response.json({ entries: [folder, file], cursor: 'cursor', has_more: false })
     if (targetUrl.endsWith('download')) return new Response('hello world')
-    if (targetUrl.endsWith('/upload') || targetUrl.endsWith('/upload_session/finish')) return Response.json(file)
-    if (targetUrl.endsWith('/create_folder_v2')) return Response.json({ metadata: folder })
+    if (targetUrl.endsWith('/upload') || targetUrl.endsWith('/upload_session/finish')) return Response.json(uploaded)
+    if (targetUrl.endsWith('/create_folder_v2')) return Response.json({ metadata: { name: args.path.split('/').at(-1), id: 'id:new' } })
     if (targetUrl.endsWith('upload_session/start')) return Response.json({ session_id: 'session' })
     return Response.json(null)
   })
@@ -120,6 +121,16 @@ describe('Dropbox volume access and transport', () => {
     const rows = await handle.db.select().from(volumeDefinitions).all()
     expect(rows).toMatchObject([{ userId: 'alice', type: 'dropbox' }])
     expect(JSON.parse(rows[0].config)).toEqual(config)
+  })
+
+  it('makes a picker folder only in the caller\'s own account, including for admins', async () => {
+    const makeFolder = (caller: string) => app.request('/api/volume-types/dropbox/folders', {
+      method: 'POST', headers: { 'Test-User': caller, 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: 'dropbox', path: '', name: 'Scratch' }),
+    })
+    for (const caller of ['bob', 'admin']) expect((await makeFolder(caller)).status).toBe(404)
+    expect(forward).not.toHaveBeenCalled()
+    expect(await (await makeFolder('alice')).json()).toEqual({ folder: { id: '/Scratch', name: 'Scratch' } })
+    expect(forward.mock.calls.at(-1)?.[0].targetUrl).toMatch(/create_folder_v2$/)
   })
 
   it('grants only attached agents scoped WebDAV access and audits the actual agent without account policies', async () => {

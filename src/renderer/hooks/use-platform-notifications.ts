@@ -54,6 +54,7 @@ export function usePlatformUnreadCount() {
     },
     staleTime: 15000,
     refetchInterval: 30000,
+    meta: { refetchWhenHidden: true },
   })
 }
 

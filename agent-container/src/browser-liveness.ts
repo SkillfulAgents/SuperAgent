@@ -53,6 +53,18 @@ export async function readTabSources<Target, DaemonTab>(
 }
 
 /**
+ * Chrome answers Target.closeTarget before its target list drops the tab, so a
+ * list read right after the close can still show it. Leave the closed tab out,
+ * which also keeps the daemon from being asked when it was the last page.
+ */
+export function listPageTargetsExcept<Target extends { id: string }>(
+  listPageTargets: () => Promise<Target[]>,
+  closedTargetId: string,
+): () => Promise<Target[]> {
+  return async () => (await listPageTargets()).filter((target) => target.id !== closedTargetId);
+}
+
+/**
  * Only Chrome itself can testify that it has no pages left.
  *
  * The lenient target lookups above swallow every network failure into "no

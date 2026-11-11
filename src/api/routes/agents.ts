@@ -44,7 +44,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -105,13 +105,16 @@ import {
   accountView,
   answerLoginRequest,
   fillLoginInContainer,
+  isFirstSignInPage,
   noteUsername,
   fieldsWentIn,
   partsFrom,
   readLoginContext,
+  restoresHere,
   saveHeldParts,
   usableHeld,
   valuesFor,
+  watchesStep,
 } from '@shared/lib/browser-vault/login-host'
 import {
   claimHeldParts,
@@ -125,6 +128,7 @@ import {
   type HeldClaim,
 } from '@shared/lib/browser-vault/held-values'
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
+import { beginSignInStep, restoreSavedSession, sessionBaseline, watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
 import { partKeyOf } from '@shared/lib/browser-vault/vault-schemas'
 import {
@@ -4104,6 +4108,9 @@ agents.post(
       url,
     )
     const credential = retrieved.credential
+    // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
+    const filledSite = siteOfOrigin(retrieved.expectedOrigin)
+    if (filledSite) beginSignInStep(agentSlug, { site: filledSite, username: credential.username || null, accountId: null })
 
     const actor = agentRegistry.get(agentSlug)
     const fillResponse = await actor.container.fetch('/browser/fill-credential', {
@@ -4345,6 +4352,32 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     if (body.save && !identity) return c.json({ error: 'Enter the username of this account to save it' }, 400)
     if (body.save && identity && identity.length > MAX_USERNAME) return c.json({ error: 'That username is too long to save' }, 400)
     const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
+    // A saved account picked as it is, on a sign-in that has not begun for it:
+    // its saved session signs the agent in, as when the agent names it. With
+    // none for this browser, or one the browser already held, the values fill.
+    if (account && !body.values.some(Boolean) && !heldValues.some(Boolean) && await restoresHere({ agentSlug, sessionId, account, context, held })) {
+      if (grantsAccount) {
+        const refused = await sharedAgentRefusal(c, agentSlug, body.sharedAgentAcknowledged)
+        if (refused) return refused
+      }
+      const claim = await actor.inputs.claim(body.toolUseId)
+      if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+      claimed = { id: body.toolUseId, token: claim.token }
+      const picked = account
+      const restored = await restoreSavedSession({
+        agentSlug,
+        sessionId,
+        account: picked,
+        picked: { userId: viewer, ...(grantsAccount ? { grant: () => grantToAgent(viewer, agentSlug, picked.id) } : {}) },
+      })
+      if (restored) {
+        if (!(await answerLoginRequest(agentSlug, body.toolUseId, restored))) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+        await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+        claimed = null
+        trackServerEvent('login_request_session', { restored: restored.restored, from: 'form' })
+        return c.json({ success: true, session: { restored: restored.restored, username: picked.username } })
+      }
+    }
     const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
     const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
     const values = body.values.map((value, index) => value || fallback[index])
@@ -4368,9 +4401,12 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       if (refused) return refused
     }
 
-    const claim = await actor.inputs.claim(body.toolUseId)
-    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
-    claimed = { id: body.toolUseId, token: claim.token }
+    // Already held when a saved session was tried first.
+    if (!claimed) {
+      const claim = await actor.inputs.claim(body.toolUseId)
+      if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+      claimed = { id: body.toolUseId, token: claim.token }
+    }
 
     const heldParts = partsFrom(context.held, heldValues)
     const heldLabels = context.held.filter((field, index) => heldValues[index] && heldParts[partKeyOf(field) ?? '']).map((field) => field.label)
@@ -4391,6 +4427,11 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const sent = body.values.map((value, index) => value || claimedFallback[index])
 
     const shown = noteUsername(identity)
+    // The site as it is before the step, for the watch after it: only when the
+    // step can be an account's, from where it signs that account in.
+    const watched = (account !== null || saving) && await watchesStep({ agentSlug, sessionId, site, context, username: identity })
+    beginSignInStep(agentSlug, { site, username: identity, accountId: account?.id ?? null })
+    const baseline = watched ? await sessionBaseline({ agentSlug, sessionId, scope: { site, origin: account?.origin ?? context.origin } }) : null
     let filled: Awaited<ReturnType<typeof fillLoginInContainer>>
     try {
       filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, sent, {
@@ -4495,6 +4536,13 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     if (usedAccount && wentIn.some(Boolean)) {
       await recordAccountUse({ agentSlug, accountId: usedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
     }
+    // Its session, as the sign-in leaves it: saved to that account, and only
+    // when it is the one that signed in. The user may have typed another, or
+    // an account not saved: then nothing the site holds next is saved, to
+    // this account or one before it (beginSignInStep, above).
+    if (wentIn.some(Boolean) && usedAccount && (!identity || usernameKey(identity) === usernameKey(usedAccount.username))) {
+      watchSignIn({ agentSlug, sessionId, account: usedAccount, baseline })
+    }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
@@ -4580,6 +4628,22 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     if (await grantAccount({ accountId: account.id, agentSlug, grantedBy: viewer })) {
       await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: 'assigned', details: { agentSlug } })
     }
+    // A saved account, on a sign-in that has not begun for it: its saved
+    // session signs the agent in, and the provider is not needed.
+    const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, account.username), context.origin)
+    if (existing && await restoresHere({ agentSlug, sessionId, account, context, held })) {
+      const restored = await restoreSavedSession({ agentSlug, sessionId, account, picked: { userId: viewer } })
+      if (restored) {
+        if (!(await answerLoginRequest(agentSlug, body.toolUseId, restored))) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+        await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+        claimed = null
+        trackServerEvent('login_request_session', { restored: restored.restored, from: 'via' })
+        return c.json({ success: true, session: { restored: restored.restored, username: account.username } })
+      }
+    }
+    // The site before the agent goes to the provider, from a sign-in's first page only (session-host).
+    beginSignInStep(agentSlug, { site, username: account.username, accountId: account.id })
+    const baseline = isFirstSignInPage(context) ? await sessionBaseline({ agentSlug, sessionId, scope: account }) : null
     const answered = await answerLoginRequest(agentSlug, body.toolUseId, {
       type: 'via',
       site,
@@ -4590,6 +4654,8 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
     await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
     claimed = null
+    // The site's own session, once the provider sends the agent back signed in.
+    watchSignIn({ agentSlug, sessionId, account, baseline })
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
@@ -4650,6 +4716,8 @@ agents.post(
     const saving = Boolean(body.save && site && identity && credential.password)
     const shown = noteUsername(identity)
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
+    // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
+    if (site) beginSignInStep(agentSlug, { site, username: credential.username || null, accountId: null })
     const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, site
       ? { ...(shown ? { username: shown } : {}), site, source: 'user', saved: saving, held: [] }
       : undefined)
@@ -4762,6 +4830,9 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
 
     await actor.inputs.complete(sessionId, body.toolUseId, body.action === 'manual' ? 'answered' : 'declined')
     claimed = null
+    // The user had the browser while the card was open (session-host): signed
+    // in by hand, it is as a hand-over done there; declined, done nowhere.
+    watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: body.action === 'manual' ? site : null })
     if (body.action === 'decline') {
       // As with a browser hand-off: stop the turn so the user can talk to the agent.
       await actor.messages.stop(sessionId, { scope: 'turn' })
@@ -4824,6 +4895,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 
       const sessionId = c.req.param('sessionId')
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, toolUseId, 'declined')
+      watchAfterHandOver({ agentSlug, sessionId, viewer: getViewerUserId(c), site: null })
 
       // Stop the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
@@ -4856,6 +4928,9 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     }
 
     await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    // A step the user did by hand may have finished a sign-in (a passkey, a phone prompt): on the page it was asked on.
+    const handedOver = claim.request.kind === 'browser_input' ? claim.request.payload.browserContext?.url : undefined
+    watchAfterHandOver({ agentSlug, sessionId: c.req.param('sessionId'), viewer: getViewerUserId(c), site: handedOver ? siteOfOrigin(handedOver) : null })
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
@@ -8056,6 +8131,8 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 // =============================================================================
 
 const ALLOW_NEEDS_BOTH = 'Only a User or Owner of both agents can allow this request.'
+/** Every route that saves a link checks the other agent with this, after its gate checked the calling agent. */
+const LINK_NEEDS_BOTH = 'Only a User or Owner of both agents can change this connection.'
 
 /** Allowing a request to read or message another agent needs someone who uses both. List and create requests name no other agent. */
 async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview | undefined): Promise<boolean> {
@@ -8134,7 +8211,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
   }
   if (body.reviewType === 'xagent' && body.xAgent?.targetSlug != null && !(await canUseAgent(c, body.xAgent.targetSlug))) {
-    return c.json({ error: 'Only a User or Owner of both agents can change this connection.' }, 403)
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
   // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
   const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
@@ -8322,26 +8399,6 @@ agents.get('/:id/inbound-x-agent', AgentRead(), async (c) => {
   }
 })
 
-/**
- * Agents the caller may see: their agentAcl entries in auth mode, everything
- * in non-auth mode (null = no restriction). One query, reused by the policy
- * read + write paths so their visibility rules can't drift.
- */
-async function callerVisibleAgents(c: Context): Promise<Set<string> | null> {
-  if (!isAuthMode()) return null
-  const userId = getCurrentUserId(c)
-  const aclRows = await db
-    .select({ agentSlug: agentAcl.agentSlug })
-    .from(agentAcl)
-    .where(eq(agentAcl.userId, userId))
-  return new Set(aclRows.map((r) => r.agentSlug))
-}
-
-async function callerCanSeeAgent(c: Context, agentSlug: string): Promise<boolean> {
-  const visible = await callerVisibleAgents(c)
-  return visible === null || visible.has(agentSlug)
-}
-
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
 agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const slug = getAgentId(c)
@@ -8354,17 +8411,17 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   // In auth mode, hide policies whose target the viewer can't see — otherwise
   // the policy editor leaks workspace topology (target slugs the user has no ACL on).
   // null targets ('list' policy) are always visible.
-  const visibleTargets = await callerVisibleAgents(c)
+  const visibleTargets = await getReadableAgentIds(c, targetSlugs)
 
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
-    if (visibleTargets && !visibleTargets.has(targetSlug)) continue
+    if (!visibleTargets.has(targetSlug)) continue
     const target = await getAgentRecord(targetSlug)
     if (target) nameMap.set(targetSlug, target.name)
   }
   return c.json({
     policies: rows
-      .filter((r) => r.targetAgentSlug === null || !visibleTargets || visibleTargets.has(r.targetAgentSlug))
+      .filter((r) => r.targetAgentSlug === null || visibleTargets.has(r.targetAgentSlug))
       .map((r) => ({
         id: r.id,
         operation: r.operation,
@@ -8379,7 +8436,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
 // PATCH /api/agents/:id/x-agent-policies - Atomically update or clear one
 // policy. The editor sends independent controls through this route so rapid
 // edits never race through the whole-list replacement endpoint below.
-agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
+agents.patch('/:id/x-agent-policies', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
@@ -8405,8 +8462,11 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   }
   if (targetSlug !== null) {
     const targetAgent = await getAgentRecord(targetSlug)
-    if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+    if (!targetAgent || !(await getReadableAgentIds(c, [targetSlug])).has(targetSlug)) {
       return c.json({ error: 'Agent not found' }, 404)
+    }
+    if (!(await canUseAgent(c, targetSlug))) {
+      return c.json({ error: LINK_NEEDS_BOTH }, 403)
     }
   }
 
@@ -8438,6 +8498,14 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
       return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
     }
   }
+  // A replace adds the new links and removes the old ones, so each agent on either side needs the same check.
+  const existing = await listPoliciesForCaller(slug)
+  const targets = new Set([...parsed.data.policies.map((p) => p.targetSlug), ...existing.map((p) => p.targetAgentSlug)].filter((t) => t !== null))
+  for (const target of targets) {
+    if (!(await canUseAgent(c, target))) {
+      return c.json({ error: LINK_NEEDS_BOTH }, 403)
+    }
+  }
   await replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
@@ -8448,7 +8516,7 @@ const targetedOperationSchema = z.enum(['invoke', 'read'])
 // targeted policy atomically. The batch PUT above is a whole-form replace: concurrent
 // single-edge edits through it read-modify-write the full list and the last
 // writer silently drops the other's change. Graph edge edits go through here.
-agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
+agents.put('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
   if (!operation.success) {
@@ -8458,14 +8526,17 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) =
   if (targetSlug === slug) {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
-  // AgentAdmin checks role but not existence; assert both ends so a typo'd
+  // AgentUser checks role but not existence; assert both ends so a typo'd
   // slug doesn't write phantom rows that nothing references. In auth mode the
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
   // the GET route enforces) — and an invisible target returns the SAME 404 as
   // a nonexistent one, so this can't be used as an agent-existence oracle.
   const [callerAgent, targetAgent] = await Promise.all([getAgentRecord(slug), getAgentRecord(targetSlug)])
-  if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+  if (!callerAgent || !targetAgent || !(await getReadableAgentIds(c, [targetSlug])).has(targetSlug)) {
     return c.json({ error: 'Agent not found' }, 404)
+  }
+  if (!(await canUseAgent(c, targetSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
   const body = await c.req.json().catch(() => ({}))
   const parsed = z.object({ decision: xAgentDecisionSchema.default('allow') }).safeParse(body)
@@ -8480,13 +8551,16 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) =
 // grant for one target atomically. Preserves 'block' rows: deleting a drawn
 // graph edge revokes a grant, and lifting an explicit block here would
 // silently escalate (effective decision falls back to a global allow).
-agents.delete('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
+agents.delete('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
   if (!operation.success) {
     return c.json({ error: 'Unknown operation' }, 400)
   }
   const targetSlug = c.req.param('target')
+  if (!(await canUseAgent(c, targetSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
+  }
   const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
   return c.json({ ok: true, removed })
 })

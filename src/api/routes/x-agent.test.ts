@@ -98,6 +98,9 @@ const mockSessionIsKnown = vi.fn(async (..._args: unknown[]) => true)
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: (...args: unknown[]) => mockListSessions(...args),
   getSessionMessagesWithCompact: (...args: unknown[]) => mockGetTranscript(...args),
+  streamSessionMessagesWithCompact: async function* (...args: unknown[]) {
+    yield* ((await mockGetTranscript(...args)) ?? []) as unknown[]
+  },
   // Backed by the same transcript fixture so tests control both read paths.
   findLastSessionEntry: async (
     slug: unknown,

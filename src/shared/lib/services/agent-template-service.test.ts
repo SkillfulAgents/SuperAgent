@@ -491,42 +491,36 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('total size limits', () => {
-    it('rejects template exceeding 500MB uncompressed', () => {
-      const tenMB = 10 * 1024 * 1024
-      const result = validateTemplateEntries(templateEntriesWithSizes(Array(51).fill(tenMB)), 'template')
+    const LIMIT = 2 * 1024 * 1024 * 1024
+    const hundredMB = 100 * 1024 * 1024
+    const instructionsSize = Buffer.byteLength(MINIMAL_INSTRUCTIONS, 'utf-8')
+    const remaining = LIMIT - 20 * hundredMB - instructionsSize
+
+    it('rejects template exceeding 2GB uncompressed', () => {
+      const result = validateTemplateEntries(templateEntriesWithSizes(Array(21).fill(hundredMB)), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-      expect(result.error).toContain('500MB')
+      expect(result.error).toContain('2048MB')
+    })
+
+    it('accepts template above the previous 500MB limit', () => {
+      const result = validateTemplateEntries(templateEntriesWithSizes(Array(10).fill(hundredMB)), 'template')
+      expect(result.valid).toBe(true)
     })
 
     it('accepts template at exactly the uncompressed size limit', () => {
-      const tenMB = 10 * 1024 * 1024
-      // Fill the remaining budget: 500MB - 49*10MB - AGENTS.md size
-      const instructionsSize = Buffer.byteLength(MINIMAL_INSTRUCTIONS, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * tenMB - instructionsSize
       const result = validateTemplateEntries(templateEntriesWithSizes([
-        ...Array(49).fill(tenMB),
+        ...Array(20).fill(hundredMB),
         remaining,
       ]), 'template')
       expect(result.valid).toBe(true)
     })
 
     it('rejects template at exactly one byte over the limit', () => {
-      const tenMB = 10 * 1024 * 1024
-      const instructionsSize = Buffer.byteLength(MINIMAL_INSTRUCTIONS, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * tenMB - instructionsSize
       const result = validateTemplateEntries(templateEntriesWithSizes([
-        ...Array(49).fill(tenMB),
+        ...Array(20).fill(hundredMB),
         remaining + 1,
       ]), 'template')
-      expect(result.valid).toBe(false)
-      expect(result.error).toContain('too large')
-    })
-
-    it('rejects when multiple small files sum to over the limit', () => {
-      // 51 files × 10MB each = 510MB > 500MB
-      const tenMB = 10 * 1024 * 1024
-      const result = validateTemplateEntries(templateEntriesWithSizes(Array(51).fill(tenMB)), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
     })
@@ -728,15 +722,12 @@ describe('validateAgentTemplate (full mode)', () => {
     expect(result.error).toContain('Too many files')
   })
 
-  it('enforces size limit including excluded files in full mode', async () => {
-    const largeEnv = 'x'.repeat(10 * 1024 * 1024)
-    const files: Record<string, string> = {
-      'AGENTS.md': MINIMAL_INSTRUCTIONS,
-    }
-    for (let i = 0; i < 51; i++) {
-      files[`data/large-${i}.env`] = largeEnv
-    }
-    const result = await validateAgentTemplate(await makeZip(files), 'full')
+  it('enforces size limit including excluded files in full mode', () => {
+    const hundredMB = 100 * 1024 * 1024
+    const result = validateTemplateEntries([
+      zipEntry('AGENTS.md', Buffer.byteLength(MINIMAL_INSTRUCTIONS, 'utf-8')),
+      ...Array.from({ length: 21 }, (_, i) => zipEntry(`data/large-${i}.env`, hundredMB)),
+    ], 'full')
     expect(result.valid).toBe(false)
     expect(result.error).toContain('too large')
   })

@@ -90,6 +90,11 @@ export const loginBrowserClosedSchema = z.object({
   kept: z.object({ how: z.enum(['saved', 'picked', 'vault', 'held']), username: z.string().nullable() }).optional(),
 })
 
+/** The account picked in the form signed in with its saved session instead: nothing was filled. `restored` false: tried, and it did not. */
+export const loginSessionAnswerSchema = z.object({
+  session: z.object({ restored: z.boolean(), username: z.string().nullable() }),
+})
+
 const loginValue = z.string().max(4096)
 
 /**

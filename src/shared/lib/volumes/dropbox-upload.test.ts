@@ -53,7 +53,7 @@ describe('Dropbox uploads through the managed Composio transport', () => {
           if (args.path === '/Team') return result({ '.tag': 'folder', name: 'Team', id: 'id:team' })
           return result({ error_summary: 'path/not_found/' }, 409)
         }
-        const metadata = { '.tag': 'file', name: 'test.bin', id: 'id:test', size, rev: 'new', server_modified: '2026-10-07T12:00:00Z' }
+        const metadata = { name: 'test.bin', id: 'id:test', size, rev: 'new', server_modified: '2026-10-07T12:00:00Z' }
         if (p.endpoint.endsWith('/upload')) { committed = bytes; return result(metadata) }
         if (p.endpoint.endsWith('/upload_session/start')) {
           staged.push(bytes)
