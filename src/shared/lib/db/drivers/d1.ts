@@ -22,6 +22,8 @@ interface D1Statement {
 export function d1(binding: D1Binding): DatabaseDriver {
   return {
     name: 'd1',
+    // Cloudflare's documented limit for one D1 query.
+    maxBoundParameters: 100,
     open: () => ({ db: drizzle(binding as Parameters<typeof drizzle>[0], { schema }), close: () => {} }),
     migrateSchema: (_db, migrations) => migrateD1(binding, migrations),
   }

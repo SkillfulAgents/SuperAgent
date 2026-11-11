@@ -269,8 +269,7 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
       files,
       transcriptsDir: CLI_TRANSCRIPTS_DIR,
       key: () => key,
-      // D1 binds at most 100 parameters a query; a fill row binds six.
-      storage: createDbSessionIndexStorage(slug, { rowsPerStatement: 16 }),
+      storage: createDbSessionIndexStorage(slug),
       beforeFirstUse: () => ingestSessionMetadataFile(store).catch((error: unknown) => {
         console.warn(`Could not take in the session metadata file of agent ${slug}:`, error)
       }),
