@@ -392,6 +392,21 @@ describe('agent-integration-session-service', () => {
       expect((await getLastDisplayName(integrationId, 'chat-1'))).toBe('Named Session')
     })
 
+    it('takes the name from an archived session too', async () => {
+      const archivedId = await createAgentIntegrationSession({
+        integrationId,
+        externalChatId: 'chat-1',
+        sessionId: 'session-1',
+        displayName: 'Archived Name',
+      })
+      await testDb.update(schema.chatIntegrationSessions)
+        .set({ archivedAt: new Date() })
+        .where(eq(schema.chatIntegrationSessions.id, archivedId))
+        .run()
+
+      expect((await getLastDisplayName(integrationId, 'chat-1'))).toBe('Archived Name')
+    })
+
     it('does not return display names from other chats', async () => {
       await createAgentIntegrationSession({
         integrationId,

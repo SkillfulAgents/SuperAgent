@@ -63,7 +63,9 @@ const mockListAgentIntegrationSessions = vi.fn()
 const mockGetAgentIntegrationSessionBySessionId = vi.fn()
 
 vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
-  listAgentIntegrationSessions: (...args: unknown[]) => mockListAgentIntegrationSessions(...args),
+  // The stored rows, filtered as the real query's WHERE does.
+  listActiveAgentIntegrationSessions: async (...args: unknown[]) =>
+    ((await mockListAgentIntegrationSessions(...args)) as Array<{ archivedAt: unknown }>).filter((s) => !s.archivedAt),
   getAgentIntegrationSessionBySessionId: (...args: unknown[]) => mockGetAgentIntegrationSessionBySessionId(...args),
 }))
 

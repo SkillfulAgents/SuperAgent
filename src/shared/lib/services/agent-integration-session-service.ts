@@ -5,7 +5,7 @@
  * externalChatId field names are retained for storage and API compatibility.
  */
 
-import { eq, and, isNull, desc } from 'drizzle-orm'
+import { eq, and, isNull, isNotNull, ne, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { chatIntegrationSessions, chatIntegrations } from '@shared/lib/db/schema'
@@ -173,11 +173,18 @@ function isSessionTimedOut(
  * Falls back to undefined if no prior sessions exist.
  */
 export async function getLastDisplayName(integrationId: string, externalId: string): Promise<string | undefined> {
-  const allSessions = await listAgentIntegrationSessions(integrationId)
-  return allSessions
-    .filter((s) => s.externalChatId === externalId && s.displayName)
-    .sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0]
-    ?.displayName ?? undefined
+  const [latest] = await db.select({ displayName: chatIntegrationSessions.displayName })
+    .from(chatIntegrationSessions)
+    .where(and(
+      eq(chatIntegrationSessions.integrationId, integrationId),
+      eq(chatIntegrationSessions.externalChatId, externalId),
+      isNotNull(chatIntegrationSessions.displayName),
+      ne(chatIntegrationSessions.displayName, ''),
+    ))
+    .orderBy(desc(chatIntegrationSessions.updatedAt))
+    .limit(1)
+    .all()
+  return latest?.displayName ?? undefined
 }
 
 // ── Archive ────────────────────────────────────────────────────────────
