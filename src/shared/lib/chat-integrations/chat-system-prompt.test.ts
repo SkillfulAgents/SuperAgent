@@ -266,10 +266,11 @@ describe('buildTelegramSystemPrompt', () => {
 })
 
 describe('buildIMessageSystemPrompt', () => {
-  it('keeps reaction-tag and voice-note lines', async () => {
+  it('keeps reaction-tag, voice-note and link-preview lines', async () => {
     const prompt = buildIMessageSystemPrompt({ chatId: '+15559876543', userName: 'Iddo Gino' })
     expect(prompt).toContain('[[reaction:heart]]')
     expect(prompt).toContain('voice notes which are automatically transcribed')
+    expect(prompt).toContain('arrives as its own message after your text')
   })
 
   it('omits attribution when chatName is absent (fail-closed with classify)', async () => {

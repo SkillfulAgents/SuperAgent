@@ -22,7 +22,7 @@ import type { IMessageConfig } from './config-schema'
 import { IMESSAGE_WEBHOOK_EVENTS, checkIMessageWebhook, ensureIMessageWebhook } from './imessage-webhooks'
 import {
   markGatewayChatRead, registerGatewayWebhook, requestGatewayUpload, sendGatewayMessage, sendGatewayReaction, startGatewayTyping,
-  type GatewayMessagePart, type GatewayTextDecoration, type GatewayUpload,
+  GatewayRequestError, type GatewayMessagePart, type GatewayTextDecoration, type GatewayUpload,
 } from './imessage-gateway-client'
 import { getAgentRecord } from '../services/agent-service'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
@@ -103,15 +103,18 @@ const LONG_LIST_ITEM = 50
  * Markdown as iMessage shows it: plain text, with bold, italic and
  * strikethrough as decorations over ranges of that text. Linq sends text
  * as-is, so markdown syntax would otherwise arrive as literal characters.
+ * With `previews`, https links leave the text for `links`, each to be sent
+ * as its own message so iMessage draws a preview card.
  */
-export function markdownToIMessage(md: string): { text: string; decorations: GatewayTextDecoration[] } {
+export function markdownToIMessage(md: string, { previews = false } = {}): { text: string; decorations: GatewayTextDecoration[]; links: string[] } {
   let text = ''
   const decorations: GatewayTextDecoration[] = []
+  const links: string[] = []
 
   const styled = (type: GatewayTextDecoration['type'], tokens: Token[]) => {
     const start = text.length
     inline(tokens)
-    if (text.length > start) decorations.push({ type, range: { start, length: text.length - start } })
+    if (text.slice(start).trim()) decorations.push({ type, range: { start, length: text.length - start } })
   }
 
   const inline = (tokens: Token[]) => {
@@ -120,10 +123,17 @@ export function markdownToIMessage(md: string): { text: string; decorations: Gat
         case 'strong': styled('bold', token.tokens ?? []); break
         case 'em': styled('italic', token.tokens ?? []); break
         case 'del': styled('strikethrough', token.tokens ?? []); break
-        case 'link':
+        case 'link': {
+          const bare = token.autolink || token.href === token.text
+          if (previews && /^https:\/\//i.test(token.href)) {
+            if (!links.includes(token.href)) links.push(token.href)
+            if (!bare) inline(token.tokens ?? [])
+            break
+          }
           inline(token.tokens ?? [])
-          if (!token.autolink && token.href !== token.text) text += ` (${token.href})`
+          if (!bare) text += ` (${token.href})`
           break
+        }
         case 'image': text += token.text ? `${token.text} (${token.href})` : token.href; break
         case 'checkbox': text += token.checked ? '☑ ' : '☐ '; break
         case 'br': text += '\n'; break
@@ -140,6 +150,8 @@ export function markdownToIMessage(md: string): { text: string; decorations: Gat
     let first = true
     const startBlock = () => { if (!first) text += '\n\n'; first = false }
     for (const token of tokens) {
+      const before = text.length
+      const wasFirst: boolean = first
       switch (token.type) {
         case 'space':
         case 'hr':
@@ -159,6 +171,8 @@ export function markdownToIMessage(md: string): { text: string; decorations: Gat
             }
           } else text += token.raw.trim()
       }
+      // A block that was only a moved-out link leaves no empty paragraph behind.
+      if (previews && !text.slice(before).trim()) { text = text.slice(0, before); first = wasFirst }
     }
   }
 
@@ -166,19 +180,26 @@ export function markdownToIMessage(md: string): { text: string; decorations: Gat
     // An item's own line as shown: nested lists below it and link addresses inside it don't count.
     const shownLength = (item: Tokens.ListItem) => item.text.split('\n')[0].replace(/\]\([^)]*\)/g, ']').length
     const gap = token.items.some(item => shownLength(item) > LONG_LIST_ITEM) ? '\n\n' : '\n'
-    token.items.forEach((item, i) => {
-      if (i > 0) text += gap
-      text += indent + (token.ordered ? `${Number(token.start) + i}. ` : '• ')
+    let shown = 0
+    for (const item of token.items) {
+      const before = text.length
+      if (shown > 0) text += gap
+      text += indent + (token.ordered ? `${Number(token.start) + shown}. ` : '• ')
+      const content = text.length
       item.tokens.forEach((child, j) => {
         if (isList(child)) { text += '\n'; list(child, indent + '  ') }
         else if (child.type === 'checkbox') inline([child])
         else { if (j > 0 && item.tokens[j - 1].type !== 'checkbox') text += '\n'; blocks([child], indent) }
       })
-    })
+      // A nested list or paragraph left empty by moved-out links leaves no blank line in the item.
+      if (previews) text = text.slice(0, content) + text.slice(content).replace(/\n+$/, '')
+      if (!previews || text.slice(content).trim()) shown++
+      else text = text.slice(0, before)
+    }
   }
 
   blocks(imessageMarked.lexer(md), '')
-  return { text, decorations }
+  return { text, decorations, links }
 }
 
 // Map incoming gateway reaction types to approval decisions
@@ -212,7 +233,8 @@ export function classifyIMessageChat(chat: ChatClassifyContext): ChatConversatio
 
 const IMESSAGE_PROVIDER_RULES = `- Prefer asking questions directly in natural language rather than using the ask questions tool.
 - You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
-- The user may send voice notes which are automatically transcribed.`
+- The user may send voice notes which are automatically transcribed.
+- Each https link in your reply arrives as its own message after your text, where iMessage shows it as a preview card. Give a link a label, like [the menu](https://example.com), so your sentence keeps its words. A bare address is taken out of the sentence.`
 
 export function buildIMessageSystemPrompt(message: SystemPromptContext): string {
   const kind = classifyIMessageChat(message)
@@ -466,16 +488,47 @@ export class IMessageConnector extends ChatAgentIntegration {
       for (const reactionType of reactions) this.react(this.lastReceivedMessageId, reactionType)
     }
 
-    const { text: converted, decorations } = markdownToIMessage(cleanText)
+    // Previews need an existing chat (a chat's first message can't be a link) and sends that
+    // complete in order, which only the HTTP path awaits.
+    const previews = !!targetChatId && this.mode === 'webhooks'
+    const { text: converted, decorations, links } = markdownToIMessage(cleanText, { previews })
     // Text that converts to nothing (a lone rule or link definition) still goes out as written.
-    const body = converted.trim() ? converted : cleanText.trim()
+    const body = converted.trim() ? converted : links.length > 0 ? '' : cleanText.trim()
 
     // If only reactions, no text to send
-    if (!body.trim()) {
+    if (!body && links.length === 0) {
       return `reaction-only-${Date.now()}`
     }
 
-    return await this.postMessage(targetChatId, [{ type: 'text', value: body }], decorations) ?? `msg-${Date.now()}`
+    // The reply's id is its text message's, or its first preview's when it has no text.
+    let replyId = body ? await this.postMessage(targetChatId, [{ type: 'text', value: body }], decorations) : null
+    // Once part of the reply is out, a failure must not fail the reply: delivery would resend it all.
+    let delivered = !!body
+    for (const [i, url] of links.entries()) {
+      try {
+        const linkId = await this.postMessage(targetChatId, [{ type: 'link', value: url }])
+        replyId ??= linkId
+        delivered = true
+      } catch (err) {
+        // Only a preview the gateway answered as refused is known unsent. Its address and the
+        // rest still go out, as text. Otherwise it may have arrived, so nothing is resent.
+        const statusOf = (e: unknown) => e instanceof GatewayRequestError ? e.status : 'error'
+        console.warn('[IMessageConnector] Link preview not sent:', statusOf(err))
+        if (!(err instanceof GatewayRequestError && err.status !== null && !err.retryable)) {
+          if (!delivered) throw err
+          break
+        }
+        try {
+          const fallbackId = await this.postMessage(targetChatId, [{ type: 'text', value: links.slice(i).join('\n') }])
+          replyId ??= fallbackId
+        } catch (fallbackErr) {
+          if (!delivered) throw fallbackErr
+          console.warn('[IMessageConnector] Link addresses not sent:', statusOf(fallbackErr))
+        }
+        break
+      }
+    }
+    return replyId ?? `msg-${Date.now()}`
   }
 
   async sendStreamingUpdate(_chatId: string, _text: string, existingMessageId?: string): Promise<string> {

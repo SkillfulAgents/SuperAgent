@@ -661,6 +661,12 @@ describe('IMessageConnector', () => {
       expect(data.textDecorations).toEqual([{ type: 'bold', range: { start: 5, length: 5 } }])
     })
 
+    it('keeps links in the text over the socket, whose sends are not awaited', async () => {
+      await connector.sendMessage('chat-1', { text: 'See [the menu](https://a.com)' })
+
+      expect(parseSent(ws).map(m => (m.data as any).parts)).toEqual([[{ type: 'text', value: 'See the menu (https://a.com)' }]])
+    })
+
     it('sends reaction-only without a text message', async () => {
       // Set up lastReceivedMessageId so reactions can be sent
       ;(connector as any).lastReceivedMessageId = 'incoming-msg-1'
@@ -728,6 +734,17 @@ describe('IMessageConnector', () => {
       const long = 'Zuni Cafe is a classic on Market St, known for the roast chicken'
       expect(markdownToIMessage(`- ${long}\n- Nopa`).text).toBe(`• ${long}\n\n• Nopa`)
       expect(markdownToIMessage('- Table for 2\n- Patio').text).toBe('• Table for 2\n• Patio')
+    })
+
+    it('moves https links out once each and leaves no empty lines or bullets', () => {
+      const md = 'See [the guide](HTTPS://a.com) and https://b.com\n\n*https://d.com*\n\nSources:\n\n1. https://c.com\n2. **Old**: http://plain.com'
+      expect(markdownToIMessage(md, { previews: true })).toEqual({
+        text: 'See the guide and \n\nSources:\n\n1. Old: http://plain.com',
+        decorations: [{ type: 'bold', range: { start: 33, length: 3 } }],
+        links: ['HTTPS://a.com', 'https://b.com', 'https://d.com', 'https://c.com'],
+      })
+      expect(markdownToIMessage('- Sources:\n  - https://e.com\n- next', { previews: true }).text).toBe('• Sources:\n• next')
+      expect(markdownToIMessage('- **see https://e.com**', { previews: true })).toMatchObject({ text: '• see ', decorations: [{ type: 'bold', range: { start: 2, length: 4 } }] })
     })
 
     it('keeps task boxes on their line, link addresses unless autolinked, image alt text, and drops link definitions', () => {
