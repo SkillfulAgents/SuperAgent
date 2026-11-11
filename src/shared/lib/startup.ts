@@ -1,5 +1,5 @@
 import type { ServerType } from '@hono/node-server'
-import { agentRegistry, containerHost } from './agent-actor'
+import { agentCatalog, agentRegistry, containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
@@ -20,6 +20,9 @@ import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents } from './services/agent-service'
+import { startAgentSummaryWriter } from './services/agent-summary-writer'
+import { summarizeAgent } from './services/summarize-agent'
+import { globalFeed } from './notifications/global-feed'
 import { isAuthMode } from './auth/mode'
 import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
 import { validateAuthModeStartup } from './auth/startup-validation'
@@ -281,6 +284,11 @@ async function initializeServicesInner() {
   markBoot('dbReady')
 
   discoveredAgentSlugs = agents.map((a) => a.slug)
+  // Before any service raises an agent's event: every one of them updates the agent's stored summary.
+  stopAgentSummaryWriter ??= startAgentSummaryWriter({
+    feed: globalFeed,
+    summarize: async (slug) => ((await agentCatalog.get(slug)) ? summarizeAgent(slug) : null),
+  })
   await serviceHost().start('eager')
 
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
@@ -313,7 +321,11 @@ export function setupServerHandlers(server: ServerType): void {
  * - web/server.ts: standalone web server shutdown
  * - vite.config.ts: Vite dev server close
  */
+let stopAgentSummaryWriter: (() => void) | undefined
+
 export async function shutdownServices() {
+  stopAgentSummaryWriter?.()
+  stopAgentSummaryWriter = undefined
   stopStaleUploadCleanup()
   stopBrowserProfileCleanup()
   await stopBackgroundWork()

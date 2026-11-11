@@ -478,6 +478,12 @@ vi.mock('@shared/lib/auth/config', () => ({
 
 // Agent service
 const mockAgentExists = vi.fn().mockResolvedValue(true)
+vi.mock('@shared/lib/services/agent-summaries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/agent-summaries')>()),
+  readAgentSummaries: vi.fn(async () => new Map()),
+  storeAgentSummary: vi.fn(async () => true),
+}))
+
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgentsWithStatus: vi.fn(),
   createAgent: vi.fn(),
@@ -915,6 +921,7 @@ import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent, updateScheduleExpression } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
+import { readAgentSummaries, storeAgentSummary, type AgentSummary } from '@shared/lib/services/agent-summaries'
 
 /**
  * The summary a test describes, with every session's metadata beside it as
@@ -7842,6 +7849,7 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
     vi.mocked(listArtifactsAndWidgets).mockResolvedValue({ dashboards: [], widgets: [] })
+    vi.mocked(readAgentSummaries).mockResolvedValue(new Map())
   })
 
   it.each([
@@ -8444,7 +8452,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body).toHaveLength(1)
     expect(body[0].slug).toBe('agent-1')
-    expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['agent-1'] })
+    expect(listAgentsWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slugs: ['agent-1'] }))
     expect(listSessions).toHaveBeenCalledTimes(1)
     expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
@@ -8769,6 +8777,101 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].dashboards).toEqual([{ slug: 'unnamed-dash', name: 'unnamed-dash' }])
   })
 
+  describe('from stored summaries', () => {
+    const stored = (overrides: Partial<AgentSummary> = {}): AgentSummary => ({
+      container: { status: 'stopped', port: null, healthWarnings: [], stale: false },
+      hasActiveSessions: false,
+      hasSessionsAwaitingInput: false,
+      awaitingSessionIds: [],
+      sessionCount: 2,
+      lastActivityAt: '2026-11-06T12:00:00.000Z',
+      visibleSessionIds: ['sess-1', 'sess-2'],
+      dashboards: [{ slug: 'board', name: 'Board' }],
+      widgets: [],
+      ...overrides,
+    })
+    const secondAgent = { ...baseAgent, slug: 'agent-2', displaySlug: 'agent-two-agent-2', name: 'Agent Two' }
+
+    /** As the real listing: it asks for the containers it may use, then lists. */
+    const listing = (agents: Array<typeof baseAgent>) => {
+      vi.mocked(listAgentsWithStatus).mockImplementation(async (options) => {
+        await options?.containers?.(agents.map((agent) => agent.slug))
+        return agents
+      })
+    }
+
+    it('answers for an agent with a stored summary without asking the agent', async () => {
+      listing([baseAgent, secondAgent])
+      vi.mocked(readAgentSummaries).mockResolvedValue(new Map([
+        ['agent-1', stored({ hasSessionsAwaitingInput: true, awaitingSessionIds: ['sess-2'] })],
+        ['agent-2', stored({ sessionCount: 0, visibleSessionIds: [], lastActivityAt: null, dashboards: [] })],
+      ]))
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(unreadPreviews(new Map([
+        ['agent-1', new Set(['sess-1'])],
+        // A session the list does not show.
+        ['agent-2', new Set(['sess-hidden'])],
+      ])))
+
+      const res = await getReq(app, '/api/agents')
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(listArtifactsAndWidgets).not.toHaveBeenCalled()
+      expect(storeAgentSummary).not.toHaveBeenCalled()
+      expect(body[0]).toMatchObject({
+        slug: 'agent-1',
+        sessionCount: 2,
+        lastActivityAt: '2026-11-06T12:00:00.000Z',
+        hasSessionsAwaitingInput: true,
+        hasUnreadNotifications: true,
+        dashboards: [{ slug: 'board', name: 'Board' }],
+      })
+      expect(body[1]).toMatchObject({ slug: 'agent-2', sessionCount: 0, lastActivityAt: null, hasUnreadNotifications: false })
+    })
+
+    it('asks an agent that has no stored summary, and stores what it answers', async () => {
+      listing([baseAgent, secondAgent])
+      vi.mocked(readAgentSummaries).mockResolvedValue(new Map([['agent-1', stored()]]))
+
+      const res = await getReq(app, '/api/agents')
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.map((agent: { slug: string }) => agent.slug)).toEqual(['agent-1', 'agent-2'])
+      // Only the agent without a summary was asked.
+      expect(vi.mocked(listArtifactsAndWidgets).mock.calls).toEqual([['agent-2']])
+      await vi.waitFor(() => expect(storeAgentSummary).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(storeAgentSummary).mock.calls[0][0]).toBe('agent-2')
+      expect(vi.mocked(storeAgentSummary).mock.calls[0][1]).toMatchObject({ sessionCount: 0, visibleSessionIds: [], dashboards: [] })
+    })
+
+    it('asks the agent when the page wants the transcript tail, which no summary holds', async () => {
+      listing([baseAgent])
+      vi.mocked(readAgentSummaries).mockResolvedValue(new Map([['agent-1', stored()]]))
+
+      const res = await getReq(app, '/api/agents?include_latest_visible_session_tail=true')
+
+      expect(res.status).toBe(200)
+      expect(vi.mocked(listArtifactsAndWidgets).mock.calls).toEqual([['agent-1']])
+    })
+
+    it('reads the summaries of the agents the viewer may see, and no others', async () => {
+      mockIsAuthMode.mockReturnValue(true)
+      mockDbSelectFrom.mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ agentSlug: 'agent-1' }]),
+      })
+      listing([baseAgent])
+      vi.mocked(readAgentSummaries).mockResolvedValue(new Map([['agent-1', stored()]]))
+
+      const res = await getReq(app, '/api/agents')
+
+      expect(res.status).toBe(200)
+      expect(readAgentSummaries).toHaveBeenCalledTimes(1)
+      expect(readAgentSummaries).toHaveBeenCalledWith(['agent-1'])
+      expect((await res.json()).map((agent: { slug: string }) => agent.slug)).toEqual(['agent-1'])
+    })
+  })
+
   it('enriches agents in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
     // DB select().from() needs to return a chainable that ends with .where() resolving
@@ -8786,7 +8889,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0]).toHaveProperty('hasActiveSessions')
     expect(body[0]).toHaveProperty('dashboards')
     // One listing restricted to the ACL rows, not a lookup per agent
-    expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['agent-1'] })
+    expect(listAgentsWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slugs: ['agent-1'] }))
   })
 
   it('loads a single agent without a redundant service summary pass', async () => {
@@ -8831,7 +8934,7 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     expect(res.status).toBe(200)
 
-    expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['aaaaaaaaaa', 'mmmmmmmmmm', 'zzzzzzzzzz'] })
+    expect(listAgentsWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slugs: ['aaaaaaaaaa', 'mmmmmmmmmm', 'zzzzzzzzzz'] }))
     const body = await res.json()
     expect(body.map((a: { slug: string }) => a.slug)).toEqual([
       'mmmmmmmmmm', // 2026-01-03 newest

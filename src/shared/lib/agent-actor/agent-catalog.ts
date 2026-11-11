@@ -12,7 +12,7 @@
  */
 import { desc, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agents, type AgentRow } from '@shared/lib/db/schema'
+import { agents, agentSummaries, type AgentRow } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { randomAgentAvatar } from './agent-avatar'
 import {
@@ -163,6 +163,8 @@ export function createAgentCatalog(): AgentCatalog {
       // Its session index goes with it: a later agent that is given the
       // slug must not inherit the sessions.
       await dropDbSessionIndex(slug)
+      // And its summary: no list shows the agent after this.
+      await db.delete(agentSummaries).where(eq(agentSummaries.agentSlug, slug)).run()
       await db.delete(agents).where(eq(agents.slug, slug)).run()
     },
   }

@@ -1,4 +1,6 @@
-import { agentNotificationPreview } from '@shared/lib/notifications/agent-notification-preview'
+import { agentNotificationPreview, agentNotificationPreviewAmong } from '@shared/lib/notifications/agent-notification-preview'
+import { agentSummaryOf, nextSummaryRevision, readAgentSummaries, storeAgentSummary, type AgentSummary } from '@shared/lib/services/agent-summaries'
+import { apiDashboardsOf } from '@shared/lib/services/summarize-agent'
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
@@ -47,6 +49,7 @@ import { waitForClientGone } from '../lib/wait-for-client-gone'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 import {
   listAgentsWithStatus,
+  type AgentContainers,
   createAgent,
   getAgentWithStatus,
   getAgent,
@@ -238,7 +241,7 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents, type UnreadNotificationPreview } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents } from '@shared/lib/services/session-unread-service'
 import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
@@ -593,6 +596,12 @@ interface AgentSummaryOptions {
   userId: string
   /** The unread projection for exactly these agents, when the caller already started it. */
   unreadProjection?: UnreadProjection
+  /**
+   * The stored summaries of these agents. An agent that has one is not asked;
+   * an agent that has none is, and what it answers is stored. Left out, every
+   * agent is asked and nothing is stored.
+   */
+  summaries?: ReadonlyMap<string, AgentSummary>
 }
 
 type UnreadProjection = Awaited<ReturnType<typeof readUnreadProjection>>
@@ -805,6 +814,39 @@ async function readUnreadProjection(slugs: string[], userId: string) {
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
  */
+/** One agent of a list from its stored summary and the viewer's unread state: no actor is reached. */
+function agentFromSummary(
+  agent: ApiAgent,
+  summary: AgentSummary,
+  unread: { unreadSessionIds: Set<string>; markedIds: Set<string>; mentionedIds: Set<string>; previews: UnreadNotificationPreview[] },
+): ApiAgent {
+  const visible = new Set(summary.visibleSessionIds)
+  let hasUnreadNotifications = false
+  let hasUnreadMention = false
+  for (const sessionId of summary.visibleSessionIds) {
+    if (unread.unreadSessionIds.has(sessionId)) {
+      hasUnreadNotifications = true
+      if (unread.mentionedIds.has(sessionId)) hasUnreadMention = true
+    }
+  }
+  return {
+    ...agent,
+    hasActiveSessions: summary.hasActiveSessions,
+    hasSessionsAwaitingInput: summary.hasSessionsAwaitingInput,
+    hasUnreadNotifications,
+    hasUnreadMention,
+    ...agentNotificationPreviewAmong(
+      unread.previews, unread.unreadSessionIds, (sessionId) => visible.has(sessionId),
+      summary.awaitingSessionIds, summary.hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
+    ),
+    markedUnreadSessionIds: summary.visibleSessionIds.filter((id) => unread.markedIds.has(id)),
+    sessionCount: summary.sessionCount,
+    lastActivityAt: summary.lastActivityAt === null ? null : new Date(summary.lastActivityAt),
+    dashboards: summary.dashboards,
+    widgets: summary.widgets,
+  }
+}
+
 async function enrichAgentsWithSummary(
   agents: ApiAgent[],
   options: AgentSummaryOptions,
@@ -822,6 +864,13 @@ async function enrichAgentsWithSummary(
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
+      // The transcript tail is not in a summary: a page that wants it asks the agent.
+      const stored = options.includeLatestVisibleSessionTail ? undefined : options.summaries?.get(agent.slug)
+      if (stored) {
+        return agentFromSummary(agent, stored, { unreadSessionIds, markedIds, mentionedIds, previews: previewsByAgent.get(agent.slug) ?? [] })
+      }
+      // Taken before the agent is asked: an event it raises meanwhile stores a later summary, which this one must not replace.
+      const revision = nextSummaryRevision()
       const actor = agentRegistry.get(agent.slug)
       // One read of the agent's index answers both.
       const sessionSummaryPromise = actor.sessions.summary()
@@ -881,6 +930,18 @@ async function enrichAgentsWithSummary(
         live.awaitingSessionIds, hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
       )
 
+      const dashboards = apiDashboardsOf(artifacts)
+      const decoratedWidgets = await widgetRefreshService.decorate(agent.slug, widgets)
+      if (options.summaries) {
+        // The agent had no stored summary: the next page finds this one.
+        const summary = agentSummaryOf(live, sessionSummary, {
+          visibleSessionIds: sessionSummary.sessionIds.filter((id) => !isHiddenAutomatedSession(sessionMetadata[id])),
+          dashboards,
+          widgets: decoratedWidgets,
+        })
+        background(storeAgentSummary(agent.slug, summary, revision), { name: 'agent-summaries.repair' })
+      }
+
       return {
         ...agent,
         hasActiveSessions,
@@ -891,12 +952,8 @@ async function enrichAgentsWithSummary(
         markedUnreadSessionIds: sessionSummary.sessionIds.filter(id => markedIds.has(id) && !isHiddenAutomatedSession(sessionMetadata[id])),
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
-        dashboards: artifacts.map((a) => ({
-          slug: a.slug,
-          name: a.name || a.slug,
-          ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
-        })),
-        widgets: await widgetRefreshService.decorate(agent.slug, widgets),
+        dashboards,
+        widgets: decoratedWidgets,
         ...(options.includeLatestVisibleSessionTail
           ? {
               latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
@@ -1457,6 +1514,13 @@ agents.get('/', async (c) => {
     // seeing every agent in large deployments.
     let agentList: ApiAgent[]
     let unreadProjection: UnreadProjection | undefined
+    // What `agent_summaries` holds for the listed agents: those agents are not asked for anything below.
+    const summaries = new Map<string, AgentSummary>()
+    let storedSummaries: Promise<Map<string, AgentSummary>> | undefined
+    const containers: AgentContainers = async (listed) => {
+      for (const [slug, summary] of await (storedSummaries ?? readAgentSummaries(listed))) summaries.set(slug, summary)
+      return new Map([...summaries].map(([slug, summary]) => [slug, summary.container]))
+    }
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
       const rows = await db
@@ -1468,12 +1532,14 @@ agents.get('/', async (c) => {
       // non-auth listing, so a freshly created agent lands at the top of the
       // sidebar (the client's applyAgentOrder floats new agents up). The
       // unread projection needs only the slugs, so it runs beside it.
+      // The summaries need only the slugs too.
+      storedSummaries = readAgentSummaries(slugs)
       ;[agentList, unreadProjection] = await Promise.all([
-        listAgentsWithStatus({ slugs }),
+        listAgentsWithStatus({ slugs, containers }),
         readUnreadProjection(slugs, userId),
       ])
     } else {
-      agentList = await listAgentsWithStatus()
+      agentList = await listAgentsWithStatus({ containers })
     }
 
     return c.json(await enrichAgentsWithSummary(agentList, {
@@ -1482,6 +1548,7 @@ agents.get('/', async (c) => {
       signal: c.req.raw.signal,
       userId: getCurrentUserId(c),
       unreadProjection,
+      summaries,
     }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)

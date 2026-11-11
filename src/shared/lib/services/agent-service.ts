@@ -245,16 +245,25 @@ export async function listAgents(): Promise<AgentRecord[]> {
  * `slugs` restricts the listing to those agents, for the ACL-scoped list.
  * Uses cached container status to avoid spawning docker processes.
  */
-export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
+export async function listAgentsWithStatus(options: { slugs?: string[]; containers?: AgentContainers } = {}): Promise<ApiAgent[]> {
   // Two independent reads, so neither waits for the other.
   const [records, teamBrain] = await Promise.all([
     options.slugs ? agentCatalog.getMany(options.slugs) : agentCatalog.records(),
     teamBrainOf(),
   ])
+  const containers = options.containers ? await options.containers(records.map((record) => record.slug)) : new Map<string, AgentContainer>()
 
   // The cached container statuses: no docker process is spawned.
-  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container, teamBrain)))
+  return Promise.all(records.map(async (record) => toApiAgent(
+    record,
+    containers.get(record.slug) ?? (await agentRegistry.get(record.slug).live()).container,
+    teamBrain,
+  )))
 }
+
+type AgentContainer = Pick<AgentLiveSummary['container'], 'status' | 'port' | 'healthWarnings' | 'stale'>
+/** The container states a caller already has for some of these agents; the actors of the others are asked. */
+export type AgentContainers = (slugs: string[]) => Promise<Map<string, AgentContainer>>
 
 // ============================================================================
 // Write Operations

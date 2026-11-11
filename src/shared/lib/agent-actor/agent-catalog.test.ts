@@ -186,6 +186,22 @@ describe('removing an agent', () => {
     expect(await sessionsOf('kept')).toHaveLength(1)
   })
 
+  it('removes the agent\'s stored summary, and leaves the other agents\' alone', async () => {
+    const summariesOf = (slug: string) =>
+      testDb.select().from(schema.agentSummaries).where(eq(schema.agentSummaries.agentSlug, slug)).all()
+    await writeAgentDirectory('gone', '---\nname: Gone\n---\nBody')
+    await catalog.insert({ slug: 'gone', name: 'Gone', createdAt: new Date() })
+    await testDb.insert(schema.agentSummaries).values([
+      { agentSlug: 'gone', summary: '{}', revision: 5, updatedAt: new Date() },
+      { agentSlug: 'kept', summary: '{}', revision: 5, updatedAt: new Date() },
+    ]).run()
+
+    await catalog.remove('gone')
+
+    expect(await summariesOf('gone')).toEqual([])
+    expect(await summariesOf('kept')).toHaveLength(1)
+  })
+
   it('removes only the row of an agent placed elsewhere, and touches no directory', async () => {
     await testDb.insert(schema.agents).values({
       slug: 'remote', name: 'Remote', createdAt: new Date(), runtime: 'modal', workspaceHandle: 'superagent-remote',

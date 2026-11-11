@@ -87,8 +87,23 @@ function installedAppState(): AppState | null {
 }
 
 export class GlobalFeed {
+  private readonly publishedHooks = new Set<GlobalFeedListener>()
+
   /** `state` is looked up at each use; a test passes another process's client. */
   constructor(private readonly state: () => AppState | null = installedAppState) {}
+
+  /**
+   * Work this process must do because of an event it raises itself. The hook
+   * runs inside `publish`, in the publishing process only, before the event is
+   * handed to AppState: it does not depend on delivery, as a subscriber does.
+   * It must not throw and must start anything slow in the background.
+   */
+  onPublished(hook: GlobalFeedListener): () => void {
+    this.publishedHooks.add(hook)
+    return () => {
+      this.publishedHooks.delete(hook)
+    }
+  }
 
   /**
    * Hand the event to AppState for its channel and return at once. The
@@ -96,6 +111,13 @@ export class GlobalFeed {
    * the publisher.
    */
   publish(event: GlobalFeedEvent): void {
+    for (const hook of this.publishedHooks) {
+      try {
+        hook(event)
+      } catch (error) {
+        console.error('[GlobalFeed] A published hook failed:', error)
+      }
+    }
     this.send([feedChannelOf(event)], event)
   }
 

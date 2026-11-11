@@ -224,3 +224,34 @@ describe('GlobalFeed delivery', () => {
     await expect(globalFeed.subscribe([tenantFeedChannel()], vi.fn())).rejects.toThrow(/AppState/)
   })
 })
+
+describe('GlobalFeed published hooks', () => {
+  it('runs a hook inside publish, in the publishing process, whether or not anything is delivered', () => {
+    // No AppState: nothing can be delivered.
+    const feed = new GlobalFeed(() => null)
+    const seen: string[] = []
+    const stop = feed.onPublished((event) => seen.push(event.type))
+
+    feed.publish({ type: 'session_idle', agentSlug: 'agent-1' })
+    expect(seen).toEqual(['session_idle'])
+
+    stop()
+    feed.publish({ type: 'session_active', agentSlug: 'agent-1' })
+    expect(seen).toEqual(['session_idle'])
+  })
+
+  it('still publishes, and runs the other hooks, when a hook throws', () => {
+    const feed = new GlobalFeed(() => null)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const seen: string[] = []
+    feed.onPublished(() => {
+      throw new Error('a hook failed')
+    })
+    feed.onPublished((event) => seen.push(event.type))
+
+    expect(() => feed.publish({ type: 'session_idle', agentSlug: 'agent-1' })).not.toThrow()
+    expect(seen).toEqual(['session_idle'])
+    errors.mockRestore()
+  })
+})
+

@@ -12,8 +12,24 @@ export function agentNotificationPreview(
   hasUnreadMention: boolean,
   hasUnreadNotifications: boolean,
 ) {
+  return agentNotificationPreviewAmong(
+    previews, unreadSessionIds, (sessionId) => !isHiddenAutomatedSession(sessionMetadata[sessionId]),
+    awaitingSessionIds, hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
+  )
+}
+
+/** The same choice for a caller that already knows which sessions a list shows. */
+export function agentNotificationPreviewAmong(
+  previews: UnreadNotificationPreview[],
+  unreadSessionIds: Set<string>,
+  isVisible: (sessionId: string) => boolean,
+  awaitingSessionIds: string[],
+  hasSessionsAwaitingInput: boolean,
+  hasUnreadMention: boolean,
+  hasUnreadNotifications: boolean,
+) {
   const awaiting = new Set(awaitingSessionIds)
-  const visibleUnread = (sessionId: string) => unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])
+  const visibleUnread = (sessionId: string) => unreadSessionIds.has(sessionId) && isVisible(sessionId)
   const preview = hasSessionsAwaitingInput
     ? previews.find(p => p.type === 'session_waiting' && awaiting.has(p.sessionId))
     : hasUnreadMention
