@@ -491,7 +491,8 @@ export async function getConnectionToken(
   )
 
   // A connection that is not active has no token to use, whatever the response
-  // still carries (an expired one can keep its last token).
+  // still carries (an expired one can keep its last token). The message names
+  // the token on purpose: the proxy takes a token error as a reason to reconnect.
   if (response.status !== 'ACTIVE') {
     throw new ComposioApiError(`No access token: the connected account is ${response.status}`, 409)
   }

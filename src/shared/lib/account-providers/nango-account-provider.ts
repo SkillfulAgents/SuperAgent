@@ -311,7 +311,8 @@ export class NangoAccountProvider extends BaseAccountProvider {
     }
 
     // A connection with errors is not active (see getConnection) and has no
-    // token to use, whatever the response still carries.
+    // token to use, whatever the response still carries. The message names the
+    // token on purpose: the proxy takes a token error as a reason to reconnect.
     if (Array.isArray(response.errors) && response.errors.length > 0) {
       throw new NangoApiError(`No access token: Nango connection ${connectionId} is not active`, 409)
     }
