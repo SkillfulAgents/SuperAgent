@@ -64,8 +64,13 @@ export function useDiscoverableAgents(options?: { enabled?: boolean }) {
         queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'pending')
         refreshPromise = apiFetch('/api/agents/discoverable-agents?refresh=true')
           // Read the catalog again rather than writing this response: a skillset change made while the refresh ran is newer.
-          .then((refreshRes) => {
-            if (refreshRes.ok) return queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
+          // The skillsets too: their template counts come from the indexes this refreshed, and decide whether Explore is offered.
+          .then(async (refreshRes) => {
+            if (!refreshRes.ok) return
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] }),
+              queryClient.invalidateQueries({ queryKey: ['skillsets'] }),
+            ])
           })
           .catch(() => { /* ignore background refresh failures */ })
           .finally(() => {

@@ -55,6 +55,22 @@ it('answers no when no skillset ships an agent template', async () => {
   client.clear()
 })
 
+it('re-reads the skillsets after the catalog refresh, so a skillset that gained its first template is seen', async () => {
+  skillsets = [docs]
+  vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+    if (url === '/api/skillsets') return new Response(JSON.stringify(skillsets))
+    // The refresh pulls the skillsets: Agents' templates arrive with it.
+    if (url === '/api/agents/discoverable-agents?refresh=true') skillsets = [docs, agents]
+    return new Response(JSON.stringify({ agents: [] }))
+  })
+  const { result, client } = await mount((hooks) => {
+    hooks.useDiscoverableAgents()
+    return hooks.useHasDiscoverableAgents()
+  })
+  await waitFor(() => expect(result.current).toBe(true))
+  client.clear()
+})
+
 it('reads nothing from the catalog while disabled, and reads it once enabled', async () => {
   let enabled = false
   const { result, rerender, client } = await mount((hooks) => hooks.useDiscoverableAgents({ enabled }))
