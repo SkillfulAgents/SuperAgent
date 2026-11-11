@@ -504,6 +504,73 @@ describe('discoverTools (via POST /)', () => {
     expect(initHeaders['Authorization']).toBe('Bearer my-secret-bearer-token')
   })
 
+  it('sends the key in the named header and stores the header name', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: 2 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+
+    mockInsertValues.mockResolvedValue(undefined)
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        id: 'mcp-api-key',
+        name: 'API Key Test',
+        url: 'https://mcp.example.com',
+        toolsJson: '[]',
+        accessToken: null,
+        refreshToken: null,
+        oauthClientSecret: null,
+      },
+    ])
+
+    const res = await app.request('http://localhost/api/remote-mcps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'API Key Test',
+        url: 'https://mcp.example.com',
+        authType: 'bearer',
+        accessToken: 'dp_example_key',
+        authHeaderName: ' X-Api-Key ',
+      }),
+    })
+
+    expect(res.status).toBe(201)
+    for (const [, init] of mockFetch.mock.calls) {
+      expect(init.headers['X-Api-Key']).toBe('dp_example_key')
+      expect(init.headers['Authorization']).toBeUndefined()
+    }
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ authHeaderName: 'X-Api-Key' }))
+  })
+
+  it('rejects a header name the transport owns', async () => {
+    const res = await app.request('http://localhost/api/remote-mcps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'API Key Test',
+        url: 'https://mcp.example.com',
+        authType: 'bearer',
+        accessToken: 'dp_example_key',
+        authHeaderName: 'Mcp-Session-Id',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
   it('returns 502 when initialize call fails', async () => {
     mockFetch.mockResolvedValueOnce(
       new Response('Internal Server Error', { status: 500 })

@@ -113,7 +113,7 @@ class AccountMcpConnection implements McpConnection {
         return { ok: false }
       }
     }
-    return this.credential = { ok: true, accessToken }
+    return this.credential = { ok: true, accessToken, authHeaderName: this.row.authHeaderName }
   }
 
   async markAuthRequired(message: string): Promise<void> {

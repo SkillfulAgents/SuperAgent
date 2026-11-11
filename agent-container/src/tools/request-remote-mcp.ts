@@ -56,7 +56,11 @@ Never ask the user to paste a client secret into the chat. If they want you to l
     authHint: z
       .enum(['oauth', 'bearer'])
       .optional()
-      .describe('Authentication type hint if known (e.g., from reading the MCP server docs). Use "oauth" for servers requiring OAuth authorization, "bearer" for servers requiring a bearer token.'),
+      .describe('Authentication type hint if known (e.g., from reading the MCP server docs). Use "oauth" for servers requiring OAuth authorization, "bearer" for servers requiring a bearer token or API key.'),
+    authHeaderName: z
+      .string()
+      .optional()
+      .describe('With authHint "bearer": the header the server reads the key from, when its docs name one other than Authorization (e.g. "X-Api-Key"). The key is sent in it as is. Omit for Authorization: Bearer.'),
     clientId: z
       .string()
       .optional()
@@ -104,6 +108,7 @@ Never ask the user to paste a client secret into the chat. If they want you to l
           authHint: args.authHint,
           clientId: args.clientId,
           clientName: args.clientName,
+          authHeaderName: args.authHeaderName,
         }
       )
       const remoteMcpIds = Array.isArray(resolvedRemoteMcpIds) ? resolvedRemoteMcpIds : [resolvedRemoteMcpIds]

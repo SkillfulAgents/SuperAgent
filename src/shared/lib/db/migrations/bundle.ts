@@ -769,5 +769,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1794261056427,
     "hash": "00ee07e7ef2c3cfc242f056c6d8da8fd74ad5f00a0809ec22bf057f0b283710a"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `remote_mcp_servers` ADD `auth_header_name` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794418139124,
+    "hash": "ebf8718c35b74029578f8eb0d384aa58995126ba9749cda01ae1e67ace3ffee1"
   }
 ]

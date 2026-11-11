@@ -977,6 +977,21 @@ describe('mcp-proxy route', () => {
   // 4. Header filtering
   // =========================================================================
   describe('request header filtering', () => {
+    it('sends the key in the server\'s named header instead of Authorization', async () => {
+      setupSuccessPath({
+        mcpOverrides: { authType: 'bearer', accessToken: 'dp_example_key', authHeaderName: 'X-Api-Key', tokenExpiresAt: null, refreshToken: null },
+      })
+
+      await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
+        headers: { Authorization: 'Bearer synth_valid' },
+      })
+
+      const [, init] = mockFetch.mock.calls[0]
+      const headers = init.headers as Headers
+      expect(headers.get('X-Api-Key')).toBe('dp_example_key')
+      expect(headers.has('authorization')).toBe(false)
+    })
+
     it('strips host header from forwarded request', async () => {
       setupSuccessPath()
 

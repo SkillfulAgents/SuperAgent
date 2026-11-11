@@ -22,6 +22,7 @@ import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { discoverTools } from '@shared/lib/mcp/discover-tools'
+import { mcpAuthHeader, parseAuthHeaderName } from '@shared/lib/mcp/auth-header'
 import {
   findAgentsAssignedRemoteMcp,
   resumeMcpReauthWaits,
@@ -226,6 +227,7 @@ remoteMcps.post('/', async (c) => {
     url: string
     authType?: 'none' | 'oauth' | 'bearer'
     accessToken?: string
+    authHeaderName?: string
   }>()
 
   if (!body.name?.trim() || !body.url?.trim()) {
@@ -244,10 +246,14 @@ remoteMcps.post('/', async (c) => {
     return c.json({ error: 'OAuth servers must be added via /initiate-oauth' }, 400)
   }
 
+  const authHeader = parseAuthHeaderName(body.authHeaderName)
+  if (!authHeader.ok) return c.json({ error: authHeader.error }, 400)
+  const authHeaderName = body.accessToken ? authHeader.value : null
+
   // Verify connection and discover tools before saving
   let tools: McpToolInfo[] = []
   try {
-    tools = await discoverTools(body.url.trim(), body.accessToken || null)
+    tools = await discoverTools(body.url.trim(), body.accessToken || null, undefined, authHeaderName)
   } catch (error: any) {
     // 401 means either auth is needed or the supplied token was rejected.
     if (error.message?.includes('401')) {
@@ -261,7 +267,9 @@ remoteMcps.post('/', async (c) => {
           }, 401)
         }
         return c.json({
-          error: 'The bearer token was rejected by this MCP server (401). Verify it is valid and has access to this server.',
+          error: authHeaderName
+            ? `The ${authHeaderName} key was rejected by this MCP server (401). Verify it is valid and has access to this server.`
+            : 'The bearer token was rejected by this MCP server (401). Verify it is valid, or set the header name if the server reads the key from another header (for example X-Api-Key).',
           tokenRejected: true,
         }, 401)
       }
@@ -283,6 +291,7 @@ remoteMcps.post('/', async (c) => {
     userId: getViewerUserId(c),
     authType,
     accessToken: body.accessToken || null,
+    authHeaderName,
     toolsJson: JSON.stringify(tools),
     toolsDiscoveredAt: now,
     status: 'active',
@@ -559,6 +568,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     url?: string
     authType?: 'none' | 'oauth' | 'bearer'
     accessToken?: string
+    authHeaderName?: string | null
     status?: 'active' | 'error' | 'auth_required'
   }>()
 
@@ -585,6 +595,11 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
   if (body.url !== undefined) updates.url = body.url.trim()
   if (body.authType !== undefined) updates.authType = body.authType
   if (body.accessToken !== undefined) updates.accessToken = body.accessToken
+  if (body.authHeaderName !== undefined) {
+    const authHeader = parseAuthHeaderName(body.authHeaderName)
+    if (!authHeader.ok) return c.json({ error: authHeader.error }, 400)
+    updates.authHeaderName = authHeader.value
+  }
   if (body.status !== undefined) updates.status = body.status
 
   await db
@@ -654,7 +669,7 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
   }
 
   try {
-    const tools = await discoverTools(server.url, server.accessToken)
+    const tools = await discoverTools(server.url, server.accessToken, undefined, server.authHeaderName)
 
     const now = new Date()
     await db
@@ -709,7 +724,8 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       'Accept': 'application/json, text/event-stream',
     }
     if (server.accessToken) {
-      headers['Authorization'] = `Bearer ${server.accessToken}`
+      const [name, value] = mcpAuthHeader(server.accessToken, server.authHeaderName)
+      headers[name] = value
     }
 
     const res = await mcpSafeFetch(server.url, {

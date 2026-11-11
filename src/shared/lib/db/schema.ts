@@ -539,6 +539,8 @@ export const remoteMcpServers = sqliteTable('remote_mcp_servers', {
 
   // Auth tokens
   accessToken: text('access_token'),
+  // Header that carries accessToken as is; null sends `Authorization: Bearer`.
+  authHeaderName: text('auth_header_name'),
   refreshToken: text('refresh_token'),
   tokenExpiresAt: integer('token_expires_at', { mode: 'timestamp_ms' }),
 

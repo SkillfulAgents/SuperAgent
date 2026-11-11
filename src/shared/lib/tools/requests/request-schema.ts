@@ -94,6 +94,7 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       // and stays user-entered only, so it never lands in a persisted transcript.
       clientId: lenientString,
       clientName: lenientString,
+      authHeaderName: lenientString,
     }),
   }),
   baseRequest.extend({

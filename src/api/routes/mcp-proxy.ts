@@ -7,6 +7,7 @@ import { mcpAuditLog } from '@shared/lib/db/schema'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { background } from '@shared/lib/background'
 import { parseMcpResponse } from '@shared/lib/mcp/discover-tools'
+import { mcpAuthHeader } from '@shared/lib/mcp/auth-header'
 import { resolveMcpConnection } from '@shared/lib/mcp/connections'
 import type { McpAuthorization, McpRecoveryResult } from '@shared/lib/mcp/connection-types'
 import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
@@ -55,10 +56,11 @@ async function upstreamSessionFor(options: {
   protocolVersion: string
   targetUrl: string
   accessToken: string | null
+  authHeaderName?: string | null
   headers: Headers
   signal?: AbortSignal
 }): Promise<{ upstreamSessionId: string | null; handshake: boolean }> {
-  const { actor, mcpId, sessionId, targetUrl, accessToken } = options
+  const { actor, mcpId, sessionId, targetUrl, accessToken, authHeaderName } = options
   const current = await actor.mcpSessions.get(mcpId, sessionId)
   if (current && current.upstreamSessionId !== undefined) return { upstreamSessionId: current.upstreamSessionId, handshake: false }
 
@@ -73,7 +75,7 @@ async function upstreamSessionFor(options: {
     headers.delete('Mcp-Session-Id')
     headers.set('Content-Type', 'application/json')
     headers.set('Accept', 'application/json, text/event-stream')
-    if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+    if (accessToken) headers.set(...mcpAuthHeader(accessToken, authHeaderName))
 
     const initializeResponse = await mcpSafeFetch(targetUrl, {
       signal: options.signal,
@@ -490,10 +492,11 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   const forwardRequest = async (authorization: Extract<McpAuthorization, { ok: true }>) => {
     let accessToken = authorization.accessToken
+    const { authHeaderName } = authorization
     const targetUrl = `${mcp.descriptor.url.replace(/\/$/, '')}${targetPath}${queryString}`
 
     const headers = new Headers(forwardHeaders)
-    if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+    if (accessToken) headers.set(...mcpAuthHeader(accessToken, authHeaderName))
     if (syntheticSession && clientMcpSessionId) {
       const { upstreamSessionId, handshake } = await requestUpstream(() => upstreamSessionFor({
         actor,
@@ -502,6 +505,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         protocolVersion: syntheticSession.protocolVersion,
         targetUrl,
         accessToken,
+        authHeaderName,
         headers,
         signal: c.req.raw.signal,
       }))
@@ -514,8 +518,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         const refreshed = await mcp.authorization()
         if (!refreshed.ok) throw new Error('MCP authorization unavailable after handshake')
         accessToken = refreshed.accessToken
-        headers.delete('Authorization')
-        if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+        if (accessToken) headers.set(...mcpAuthHeader(accessToken, authHeaderName))
+        else headers.delete(authHeaderName ?? 'Authorization')
       }
     }
     const init: RequestInit = { method, headers, signal: c.req.raw.signal }
