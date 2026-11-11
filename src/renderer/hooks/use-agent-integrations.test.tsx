@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { makeChatIntegration } from '@renderer/components/agent-integrations/test-factories'
@@ -12,6 +12,7 @@ import {
   useDeleteAgentIntegration,
   useSetRequireApproval,
   useAuthorizeAgentIntegration,
+  useAvailableAgentIntegrationProviders,
 } from './use-agent-integrations'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
@@ -137,6 +138,37 @@ describe('integration authorization errors', () => {
         await expect(result.current.mutateAsync({ id: 'integration', agentSlug: 'agent', config: {} })).resolves.toEqual(payload)
       })
       for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true)
+    } finally { unmount(); client.clear() }
+  })
+})
+
+describe('available providers', () => {
+  it('reads the providers once, after the platform and relay answers that key it', async () => {
+    let releaseRelay!: () => void
+    const relayAnswer = new Promise<void>((resolve) => { releaseRelay = resolve })
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockImplementation(async (url) => {
+      if (url === '/api/platform-auth') return Response.json({ connected: false })
+      if (url === '/api/webhook-relay') {
+        await relayAnswer
+        return Response.json({ available: true })
+      }
+      if (url === '/api/agent-integrations/providers') return Response.json([{ provider: 'telegram' }])
+      throw new Error(`Unexpected request: ${String(url)}`)
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result, unmount } = renderHook(() => useAvailableAgentIntegrationProviders(), {
+      wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+    const providerReads = () => vi.mocked(apiFetch).mock.calls.filter(([url]) => url === '/api/agent-integrations/providers').length
+    try {
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/webhook-relay'))
+      expect(providerReads()).toBe(0)
+
+      releaseRelay()
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(providerReads()).toBe(1)
     } finally { unmount(); client.clear() }
   })
 })

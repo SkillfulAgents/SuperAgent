@@ -51,8 +51,8 @@ export const agentIntegrationKeys = {
 
 /** Host owns the decision; capability changes only invalidate discovery. */
 export function useAvailableAgentIntegrationProviders() {
-  const { data: platform } = usePlatformAuthStatus()
-  const { data: relay } = useWebhookRelay()
+  const { data: platform, isLoading: platformLoading } = usePlatformAuthStatus()
+  const { data: relay, isLoading: relayLoading } = useWebhookRelay()
   return useQuery<AgentIntegrationDefinition[]>({
     queryKey: ['agent-integration-providers', platform?.connected, relay?.available],
     queryFn: async () => {
@@ -60,6 +60,8 @@ export function useAvailableAgentIntegrationProviders() {
       if (!response.ok) throw new Error('Failed to fetch available integrations')
       return response.json()
     },
+    // Both answers are in the key, so a read before they arrive is read again right after.
+    enabled: !platformLoading && !relayLoading,
   })
 }
 

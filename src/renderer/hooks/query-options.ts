@@ -22,7 +22,17 @@ import type { ApiAgent } from '@shared/lib/types/api'
 export const agentQuery = (slug: string) =>
   queryOptions({
     queryKey: ['agents', slug],
-    queryFn: () => apiJson<ApiAgent>(`/api/agents/${slug}`),
+    queryFn: async ({ client }) => {
+      const agent = await apiJson<ApiAgent>(`/api/agents/${slug}`)
+      // The route loader reads the agent by its display slug and the shell by its
+      // id: fill the other key when it is empty, so one read serves both.
+      for (const alias of [agent.slug, agent.displaySlug]) {
+        if (alias && alias !== slug && client.getQueryData(['agents', alias]) === undefined) {
+          client.setQueryData(['agents', alias], agent)
+        }
+      }
+      return agent
+    },
     // Loader fetch: a 403/404 is definitive (don't retry → the route resolves to
     // notFound immediately); a transient 5xx surfaces on the errorComponent,
     // which offers a manual retry. The component's own useAgent observer keeps
