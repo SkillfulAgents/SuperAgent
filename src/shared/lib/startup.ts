@@ -21,7 +21,7 @@ import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents } from './services/agent-service'
 import { startAgentSummaryWriter } from './services/agent-summary-writer'
-import { summarizeAgent } from './services/summarize-agent'
+import { summarizeAgent, summarizeAndStoreAgent } from './services/summarize-agent'
 import { globalFeed } from './notifications/global-feed'
 import { isAuthMode } from './auth/mode'
 import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
@@ -290,6 +290,9 @@ async function initializeServicesInner() {
     summarize: async (slug) => ((await agentCatalog.get(slug)) ? summarizeAgent(slug) : null),
   })
   await serviceHost().start('eager')
+  // A summary stored by a process that stopped can be behind (a container it recorded as running
+  // is gone). Each agent is summarized once now, so no row waits for the agent's next event.
+  background(refreshAgentSummaries(discoveredAgentSlugs), { name: 'startup.refresh-agent-summaries' })
 
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
   // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the
@@ -322,6 +325,16 @@ export function setupServerHandlers(server: ServerType): void {
  * - vite.config.ts: Vite dev server close
  */
 let stopAgentSummaryWriter: (() => void) | undefined
+
+async function refreshAgentSummaries(slugs: readonly string[]): Promise<void> {
+  for (const slug of slugs) {
+    try {
+      await summarizeAndStoreAgent(slug)
+    } catch (error) {
+      console.error(`[AgentSummaries] Could not refresh the summary of ${slug}:`, error)
+    }
+  }
+}
 
 export async function shutdownServices() {
   stopAgentSummaryWriter?.()
