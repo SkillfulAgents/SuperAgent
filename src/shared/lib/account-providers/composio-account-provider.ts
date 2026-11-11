@@ -49,6 +49,8 @@ export class ComposioAccountProvider extends BaseAccountProvider {
   readonly name = 'composio' as const
 
   private connectionModeCache = new Map<string, ConnectionMode>()
+  /** Token reads in flight, shared by the calls that miss the cache together. */
+  private pendingModes = new Map<string, Promise<ConnectionMode>>()
 
   credentialsFrom(settings: AccountProviderSettings): ProviderCredentials {
     const credentials: ComposioCredentials = { provider: 'composio', auth: composioAuthFrom(settings) }
@@ -132,6 +134,18 @@ export class ComposioAccountProvider extends BaseAccountProvider {
       return cached
     }
 
+    let pending = this.pendingModes.get(connectionId)
+    if (!pending) {
+      pending = this.readConnectionMode(connectionId, auth).finally(() => this.pendingModes.delete(connectionId))
+      this.pendingModes.set(connectionId, pending)
+    }
+    return pending
+  }
+
+  private async readConnectionMode(
+    connectionId: string,
+    auth: () => Promise<ComposioAuth>,
+  ): Promise<ConnectionMode> {
     try {
       const { accessToken, expiresAt } = await getConnectionToken(connectionId, await auth())
 
