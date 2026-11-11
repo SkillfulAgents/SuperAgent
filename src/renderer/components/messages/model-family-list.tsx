@@ -28,6 +28,7 @@ const VENDOR_LABELS: Record<string, string> = {
   kimi: 'Moonshot AI',
   deepseek: 'DeepSeek',
   gemini: 'Google',
+  qwen: 'Alibaba',
 }
 
 // Tab order: frontier labs first, open-weight labs after, so the overflow
