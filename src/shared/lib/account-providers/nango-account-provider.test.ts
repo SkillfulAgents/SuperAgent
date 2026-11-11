@@ -83,6 +83,35 @@ describe('NangoAccountProvider', () => {
   })
 })
 
+describe('NangoAccountProvider token fetches', () => {
+  it('shares one token fetch between calls that miss the cache together', async () => {
+    fetchMock.mockImplementation(async (url) => String(url).startsWith('https://api.nango.dev')
+      ? connection('token-1')
+      : new Response('ok'))
+    const provider = new NangoAccountProvider()
+    const call = { providerConnectionId: 'conn', toolkitSlug: 'github', targetUrl: 'https://api.github.com/user', method: 'GET', headers: new Headers(), body: null }
+
+    await Promise.all([provider.makeApiCall(call), provider.makeApiCall(call), provider.makeApiCall(call)])
+
+    const tokenFetches = fetchMock.mock.calls.filter(([url]) => String(url).startsWith('https://api.nango.dev/connections/conn?'))
+    expect(tokenFetches).toHaveLength(1)
+    const upstream = bearers().filter((_, index) => String(fetchMock.mock.calls[index][0]).startsWith('https://api.github.com'))
+    expect(upstream).toEqual(['Bearer token-1', 'Bearer token-1', 'Bearer token-1'])
+  })
+
+  it('fetches again after a shared fetch fails', async () => {
+    fetchMock.mockImplementationOnce(async () => new Response('down', { status: 500 }))
+    fetchMock.mockImplementation(async (url) => String(url).startsWith('https://api.nango.dev')
+      ? connection('token-2')
+      : new Response('ok'))
+    const provider = new NangoAccountProvider()
+    const call = { providerConnectionId: 'conn', toolkitSlug: 'github', targetUrl: 'https://api.github.com/user', method: 'GET', headers: new Headers(), body: null }
+
+    await expect(provider.makeApiCall(call)).rejects.toThrow()
+    expect((await provider.makeApiCall(call)).status).toBe(200)
+  })
+})
+
 describe('NangoAccountProvider across a key change', () => {
   it('never caches a token fetched under the previous key once the new key was seen', async () => {
     const isTokenFetch = (url: unknown) => String(url).startsWith('https://api.nango.dev/connections/conn?')

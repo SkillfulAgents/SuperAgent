@@ -410,12 +410,32 @@ export async function getConnection(
   connectionId: string,
   auth?: ComposioAuth,
 ): Promise<ComposioConnection> {
-  const response = await composioFetch<ConnectedAccountGetResponse>(
+  return connectionFrom(await fetchConnectedAccount(connectionId, auth))
+}
+
+/**
+ * The connection and a reader for its access token, from one fetch: the
+ * account response carries both. `token()` throws as
+ * {@link getConnectionToken} would.
+ */
+export async function getConnectionWithToken(
+  connectionId: string,
+  auth?: ComposioAuth,
+): Promise<{ connection: ComposioConnection; token: () => ConnectionTokenResponse }> {
+  const response = await fetchConnectedAccount(connectionId, auth)
+  return { connection: connectionFrom(response), token: () => tokenFrom(connectionId, response) }
+}
+
+function fetchConnectedAccount(connectionId: string, auth?: ComposioAuth): Promise<ConnectedAccountWithTokenResponse> {
+  return composioFetch<ConnectedAccountWithTokenResponse>(
     `/connected_accounts/${connectionId}`,
     {},
     'v3',
     auth,
   )
+}
+
+function connectionFrom(response: ConnectedAccountGetResponse): ComposioConnection {
   return {
     id: response.id,
     status: response.status as ComposioConnection['status'],
@@ -435,7 +455,7 @@ export async function deleteConnection(connectionId: string): Promise<void> {
 // Access Tokens
 // ============================================================================
 
-interface ConnectionTokenResponse {
+export interface ConnectionTokenResponse {
   accessToken: string
   expiresAt?: string
 }
@@ -483,13 +503,10 @@ export async function getConnectionToken(
   connectionId: string,
   auth?: ComposioAuth,
 ): Promise<ConnectionTokenResponse> {
-  const response = await composioFetch<ConnectedAccountWithTokenResponse>(
-    `/connected_accounts/${connectionId}`,
-    {},
-    'v3',
-    auth,
-  )
+  return tokenFrom(connectionId, await fetchConnectedAccount(connectionId, auth))
+}
 
+function tokenFrom(connectionId: string, response: ConnectedAccountWithTokenResponse): ConnectionTokenResponse {
   const authScheme = response.state?.authScheme
   const stateVal = response.state?.val
 

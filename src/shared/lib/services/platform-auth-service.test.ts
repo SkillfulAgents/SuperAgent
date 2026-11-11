@@ -730,6 +730,27 @@ describe('platform-auth-service', () => {
     expect(second).toMatchObject({ email: 'owner@example.com', orgName: 'Acme Inc', role: 'owner' })
   })
 
+  it('shares one introspection between reads that miss the cache together', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async () => Response.json({
+      memberId: 'sub_member_1',
+      orgId: 'org_env',
+      orgName: 'Acme Inc',
+      role: 'owner',
+      userId: 'user_1',
+      email: 'owner@example.com',
+    }))
+
+    const statuses = await Promise.all([getEnrichedPlatformAuthStatus('ba-user'), getEnrichedPlatformAuthStatus('ba-user')])
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(statuses[1]).toMatchObject({ email: 'owner@example.com', orgName: 'Acme Inc', role: 'owner' })
+  })
+
   it('caches a failed introspection so it is not retried within the TTL', async () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')

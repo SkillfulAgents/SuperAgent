@@ -33,6 +33,12 @@ interface CachedToken {
   expiresAt: number
 }
 
+interface TokenCache {
+  secretKey: string
+  tokens: Map<string, CachedToken>
+  pending: Map<string, Promise<CachedToken>>
+}
+
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
 
 interface NangoCredentials extends ProviderCredentials {
@@ -66,9 +72,10 @@ export class NangoAccountProvider extends BaseAccountProvider {
   /**
    * Connection tokens, cached per secret key (one Nango account): a key
    * change starts a new cache, and a token fetch still in flight under the
-   * old key lands in the old one, which nothing reads any more.
+   * old key lands in the old one, which nothing reads any more. `pending`
+   * holds the fetches in flight, shared by the calls that miss together.
    */
-  private tokenCache: { secretKey: string; tokens: Map<string, CachedToken> } | null = null
+  private tokenCache: TokenCache | null = null
 
   constructor(opts: { secretKey?: () => Promise<string | undefined> } = {}) {
     super()
@@ -89,10 +96,10 @@ export class NangoAccountProvider extends BaseAccountProvider {
    * and the tokens cached under it; throws when none is saved. Tokens cached
    * under a different key (another Nango account) are dropped.
    */
-  private async credentials(source: SecretKeySource = null): Promise<{ secretKey: string; tokens: Map<string, CachedToken> }> {
+  private async credentials(source: SecretKeySource = null): Promise<TokenCache> {
     const key = source ? source.secretKey : await this.readSecretKey()
     if (!key) throw new NangoApiError('Nango is not configured. Add a Nango secret key in Settings.', 400)
-    if (this.tokenCache?.secretKey !== key) this.tokenCache = { secretKey: key, tokens: new Map() }
+    if (this.tokenCache?.secretKey !== key) this.tokenCache = { secretKey: key, tokens: new Map(), pending: new Map() }
     return this.tokenCache
   }
 
@@ -266,12 +273,24 @@ export class NangoAccountProvider extends BaseAccountProvider {
   ): Promise<{ accessToken: string; providerConfigKey: string }> {
     // Before the cache: a removed or changed key must not keep serving tokens.
     // The key is read once here, and used for the fetch below too.
-    const { secretKey, tokens } = await this.credentials(source)
+    const { secretKey, tokens, pending } = await this.credentials(source)
     const cached = tokens.get(connectionId)
     if (cached && cached.expiresAt > Date.now()) {
       return { accessToken: cached.accessToken, providerConfigKey: cached.providerConfigKey }
     }
 
+    let request = pending.get(connectionId)
+    if (!request) {
+      request = this.fetchToken(connectionId, toolkitSlug, secretKey)
+        .then((token) => { tokens.set(connectionId, token); return token })
+        .finally(() => pending.delete(connectionId))
+      pending.set(connectionId, request)
+    }
+    const { accessToken, providerConfigKey } = await request
+    return { accessToken, providerConfigKey }
+  }
+
+  private async fetchToken(connectionId: string, toolkitSlug: string, secretKey: string): Promise<CachedToken> {
     const nangoSlug = getProviderSlug(toolkitSlug, 'nango')
     // Fetched with the key whose cache it goes into, so the token and the
     // cache it lands in always belong to the same account.
@@ -304,13 +323,11 @@ export class NangoAccountProvider extends BaseAccountProvider {
     }
     ttl = Math.max(ttl, 30_000)
 
-    tokens.set(connectionId, {
+    return {
       accessToken,
       providerConfigKey: response.provider_config_key,
       expiresAt: Date.now() + ttl,
-    })
-
-    return { accessToken, providerConfigKey: response.provider_config_key }
+    }
   }
 
   /** `source`: the key to sign with; the current one by default. */
