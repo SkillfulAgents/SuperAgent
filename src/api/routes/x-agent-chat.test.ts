@@ -377,7 +377,7 @@ describe('x-agent chat route', () => {
     )
   })
 
-  it('reports why a send failed without the message, and tells the agent what was not sent', async () => {
+  it('reports why a send failed without the message, and tells the agent why and what was not sent', async () => {
     const notInChannel = new Error('An API error occurred: not_in_channel')
     connector.sendMessage.mockRejectedValue(notInChannel)
 
@@ -388,7 +388,7 @@ describe('x-agent chat route', () => {
     })
 
     expect(res.status).toBe(500)
-    expect(await res.json()).toEqual({ error: 'Not sent: Ship the update' })
+    expect(await res.json()).toEqual({ error: 'Not sent (An API error occurred: not_in_channel): Ship the update' })
     expect(mockCaptureException).toHaveBeenCalledWith(notInChannel, expect.anything())
   })
 

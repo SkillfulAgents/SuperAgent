@@ -321,7 +321,9 @@ xAgentChat.post('/send', async (c) => {
     if (error instanceof EmailPolicyError) return c.json({ error: error.message }, 403)
     if (error instanceof UndeliveredMessageError) {
       captureException(error.cause, { tags: { component: 'x-agent-chat', operation: 'send' } })
-      return c.json({ error: `Not sent: ${error.undeliveredText}` }, 500)
+      // The chat's own reason (Slack's not_in_channel, Telegram's chat not found) lets the agent act on it.
+      const reason = (error.cause instanceof Error ? error.cause.message : String(error.cause ?? '')).trim().slice(0, 300)
+      return c.json({ error: `Not sent${reason ? ` (${reason})` : ''}: ${error.undeliveredText}` }, 500)
     }
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'send' } })
     return c.json({ error: 'Failed to send chat message' }, 500)
