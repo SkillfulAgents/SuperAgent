@@ -196,9 +196,9 @@ test.describe('Policy Settings', () => {
     await blockToggle.click()
     await expect(blockToggle).toHaveAttribute('data-active', 'false')
 
-    // All toggles should be inactive (= default)
+    // Nothing of its own: the row shows what it inherits (the global default, Review), faded.
     await expect(chatWrite.locator('[data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'false')
-    await expect(chatWrite.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
+    await expect(chatWrite.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-inherited', 'true')
     await expect(chatWrite.locator('[data-testid="policy-toggle-block"]')).toHaveAttribute('data-active', 'false')
 
     // Save and verify the per-scope row is gone from the persisted policies

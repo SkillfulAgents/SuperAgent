@@ -21,6 +21,12 @@ type Operation = 'list' | 'read' | 'invoke'
 type Decision = 'allow' | 'review' | 'block'
 type DecisionOrDefault = Decision | 'default'
 
+const globalDefault = { inheritedValue: 'review', inheritedLabel: 'default' } as const
+/** What a per-agent row falls back to: the Global row, else Review. */
+function inheritedFrom(global: DecisionOrDefault) {
+  return global !== 'default' ? { inheritedValue: global, inheritedLabel: 'from Global' } : globalDefault
+}
+
 interface PolicyRow {
   id: string
   operation: Operation
@@ -135,8 +141,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   /** Effective send decision: explicit row, else the global default, else review. */
   const effectiveInvoke = (slug: string): Decision => {
     const explicit = getDecision('invoke', slug)
-    if (explicit !== 'default') return explicit
-    return globalInvoke !== 'default' ? globalInvoke : 'review'
+    return explicit !== 'default' ? explicit : inheritedFrom(globalInvoke).inheritedValue
   }
 
   /** "Connected" = this agent may send messages to the target without a prompt. */
@@ -315,7 +320,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                   </PopoverTrigger>
                   <PopoverContent
                     align="end"
-                    className="w-72 p-3 space-y-2.5"
+                    className="w-[27rem] max-w-[calc(100vw-2rem)] p-3 space-y-2.5"
                     onOpenAutoFocus={(e) => e.preventDefault()}
                     data-testid={`x-agent-permissions-popover-${slug}`}
                   >
@@ -323,6 +328,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                       <span className="whitespace-nowrap text-xs font-medium">Read sessions and files</span>
                       <PolicyDecisionDropdown
                         value={getDecision('read', slug)}
+                        {...inheritedFrom(globalRead)}
+                        className="w-60"
                         onChange={handleChange('read', slug)}
                         disabled={!canChange || pendingKeys.has(policyKey('read', slug))}
                       />
@@ -331,6 +338,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                       <span className="whitespace-nowrap text-xs font-medium">Send messages and files</span>
                       <PolicyDecisionDropdown
                         value={getDecision('invoke', slug)}
+                        {...inheritedFrom(globalInvoke)}
+                        className="w-60"
                         onChange={handleChange('invoke', slug)}
                         disabled={!canChange || pendingKeys.has(policyKey('invoke', slug))}
                       />
@@ -410,6 +419,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 </span>
                 <PolicyDecisionDropdown
                   value={getDecision('list', null)}
+                  {...globalDefault}
+                  className="w-60"
                   onChange={handleChange('list', null)}
                   disabled={pendingKeys.has(policyKey('list', null))}
                 />
@@ -422,6 +433,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 </span>
                 <PolicyDecisionDropdown
                   value={globalRead}
+                  {...globalDefault}
+                  className="w-60"
                   onChange={handleChange('read', null)}
                   disabled={pendingKeys.has(policyKey('read', null))}
                 />
@@ -434,6 +447,8 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                 </span>
                 <PolicyDecisionDropdown
                   value={globalInvoke}
+                  {...globalDefault}
+                  className="w-60"
                   onChange={handleChange('invoke', null)}
                   disabled={pendingKeys.has(policyKey('invoke', null))}
                 />
