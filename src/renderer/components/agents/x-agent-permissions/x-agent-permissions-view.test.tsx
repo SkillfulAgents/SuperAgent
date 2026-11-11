@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   track: vi.fn(),
   apiFetch: vi.fn(),
-  canAdmin: true,
+  usesOnly: null as string[] | null,
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -24,7 +24,7 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     isAuthMode: true,
     rolesReady: true,
-    canAdminAgent: () => mocks.canAdmin,
+    canUseAgent: (slug: string) => mocks.usesOnly === null || mocks.usesOnly.includes(slug),
   }),
 }))
 
@@ -75,7 +75,7 @@ function lastPatchBody() {
 describe('XAgentPermissionsView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.canAdmin = true
+    mocks.usesOnly = null
     policies = [policy('invoke', 'target', 'allow'), policy('read', 'target', 'allow')]
     mocks.apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === '/api/agents/caller/x-agent-policies' && (!init || !init.method)) {
@@ -259,13 +259,26 @@ describe('XAgentPermissionsView', () => {
     })
   })
 
-  it('shows owner gate and does not fetch for a non-owner', () => {
-    mocks.canAdmin = false
+  it('shows the User gate and does not fetch for someone who does not use the agent', () => {
+    mocks.usesOnly = []
     renderView()
 
     expect(screen.getByTestId('x-agent-permissions-no-permission')).toBeInTheDocument()
-    expect(screen.getByText('Owner access required')).toBeInTheDocument()
+    expect(screen.getByText('User access required')).toBeInTheDocument()
     expect(mocks.apiFetch).not.toHaveBeenCalled()
+  })
+
+  it('disables a row whose agent the person does not use, and says why', async () => {
+    mocks.usesOnly = ['caller', 'target']
+    renderView()
+
+    expect(await screen.findByTestId('x-agent-connect-switch-helper')).toBeDisabled()
+    expect(screen.getByText(/You need User access to Helper to change this/)).toBeInTheDocument()
+    expect(screen.getByTestId('x-agent-connect-switch-target')).not.toBeDisabled()
+    fireEvent.click(screen.getByTestId('x-agent-permissions-trigger-helper'))
+    for (const dropdown of within(screen.getByTestId('x-agent-permissions-popover-helper')).getAllByTestId('policy-dropdown-trigger')) {
+      expect(dropdown).toBeDisabled()
+    }
   })
 
   it('navigates back to the agent home', async () => {

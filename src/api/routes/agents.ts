@@ -44,7 +44,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -8152,6 +8152,8 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 // =============================================================================
 
 const ALLOW_NEEDS_BOTH = 'Only a User or Owner of both agents can allow this request.'
+/** Every route that saves a link checks the other agent with this, after its gate checked the calling agent. */
+const LINK_NEEDS_BOTH = 'Only a User or Owner of both agents can change this connection.'
 
 /** Allowing a request to read or message another agent needs someone who uses both. List and create requests name no other agent. */
 async function canAllowXAgentCard(c: Context, slug: string, review: XAgentReview | undefined): Promise<boolean> {
@@ -8230,7 +8232,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
     return c.json({ error: ALLOW_NEEDS_BOTH }, 403)
   }
   if (body.reviewType === 'xagent' && body.xAgent?.targetSlug != null && !(await canUseAgent(c, body.xAgent.targetSlug))) {
-    return c.json({ error: 'Only a User or Owner of both agents can change this connection.' }, 403)
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
   // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
   const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
@@ -8418,26 +8420,6 @@ agents.get('/:id/inbound-x-agent', AgentRead(), async (c) => {
   }
 })
 
-/**
- * Agents the caller may see: their agentAcl entries in auth mode, everything
- * in non-auth mode (null = no restriction). One query, reused by the policy
- * read + write paths so their visibility rules can't drift.
- */
-async function callerVisibleAgents(c: Context): Promise<Set<string> | null> {
-  if (!isAuthMode()) return null
-  const userId = getCurrentUserId(c)
-  const aclRows = await db
-    .select({ agentSlug: agentAcl.agentSlug })
-    .from(agentAcl)
-    .where(eq(agentAcl.userId, userId))
-  return new Set(aclRows.map((r) => r.agentSlug))
-}
-
-async function callerCanSeeAgent(c: Context, agentSlug: string): Promise<boolean> {
-  const visible = await callerVisibleAgents(c)
-  return visible === null || visible.has(agentSlug)
-}
-
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
 agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const slug = getAgentId(c)
@@ -8450,17 +8432,17 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   // In auth mode, hide policies whose target the viewer can't see — otherwise
   // the policy editor leaks workspace topology (target slugs the user has no ACL on).
   // null targets ('list' policy) are always visible.
-  const visibleTargets = await callerVisibleAgents(c)
+  const visibleTargets = await getReadableAgentIds(c, targetSlugs)
 
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
-    if (visibleTargets && !visibleTargets.has(targetSlug)) continue
+    if (!visibleTargets.has(targetSlug)) continue
     const target = await getAgentRecord(targetSlug)
     if (target) nameMap.set(targetSlug, target.name)
   }
   return c.json({
     policies: rows
-      .filter((r) => r.targetAgentSlug === null || !visibleTargets || visibleTargets.has(r.targetAgentSlug))
+      .filter((r) => r.targetAgentSlug === null || visibleTargets.has(r.targetAgentSlug))
       .map((r) => ({
         id: r.id,
         operation: r.operation,
@@ -8475,7 +8457,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
 // PATCH /api/agents/:id/x-agent-policies - Atomically update or clear one
 // policy. The editor sends independent controls through this route so rapid
 // edits never race through the whole-list replacement endpoint below.
-agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
+agents.patch('/:id/x-agent-policies', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
@@ -8501,8 +8483,11 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   }
   if (targetSlug !== null) {
     const targetAgent = await getAgentRecord(targetSlug)
-    if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+    if (!targetAgent || !(await getReadableAgentIds(c, [targetSlug])).has(targetSlug)) {
       return c.json({ error: 'Agent not found' }, 404)
+    }
+    if (!(await canUseAgent(c, targetSlug))) {
+      return c.json({ error: LINK_NEEDS_BOTH }, 403)
     }
   }
 
@@ -8534,6 +8519,14 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
       return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
     }
   }
+  // A replace adds the new links and removes the old ones, so each agent on either side needs the same check.
+  const existing = await listPoliciesForCaller(slug)
+  const targets = new Set([...parsed.data.policies.map((p) => p.targetSlug), ...existing.map((p) => p.targetAgentSlug)].filter((t) => t !== null))
+  for (const target of targets) {
+    if (!(await canUseAgent(c, target))) {
+      return c.json({ error: LINK_NEEDS_BOTH }, 403)
+    }
+  }
   await replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
@@ -8544,7 +8537,7 @@ const targetedOperationSchema = z.enum(['invoke', 'read'])
 // targeted policy atomically. The batch PUT above is a whole-form replace: concurrent
 // single-edge edits through it read-modify-write the full list and the last
 // writer silently drops the other's change. Graph edge edits go through here.
-agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
+agents.put('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
   if (!operation.success) {
@@ -8554,14 +8547,17 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) =
   if (targetSlug === slug) {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
-  // AgentAdmin checks role but not existence; assert both ends so a typo'd
+  // AgentUser checks role but not existence; assert both ends so a typo'd
   // slug doesn't write phantom rows that nothing references. In auth mode the
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
   // the GET route enforces) — and an invisible target returns the SAME 404 as
   // a nonexistent one, so this can't be used as an agent-existence oracle.
   const [callerAgent, targetAgent] = await Promise.all([getAgentRecord(slug), getAgentRecord(targetSlug)])
-  if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+  if (!callerAgent || !targetAgent || !(await getReadableAgentIds(c, [targetSlug])).has(targetSlug)) {
     return c.json({ error: 'Agent not found' }, 404)
+  }
+  if (!(await canUseAgent(c, targetSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
   const body = await c.req.json().catch(() => ({}))
   const parsed = z.object({ decision: xAgentDecisionSchema.default('allow') }).safeParse(body)
@@ -8576,13 +8572,16 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) =
 // grant for one target atomically. Preserves 'block' rows: deleting a drawn
 // graph edge revokes a grant, and lifting an explicit block here would
 // silently escalate (effective decision falls back to a global allow).
-agents.delete('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
+agents.delete('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
   if (!operation.success) {
     return c.json({ error: 'Unknown operation' }, 400)
   }
   const targetSlug = c.req.param('target')
+  if (!(await canUseAgent(c, targetSlug))) {
+    return c.json({ error: LINK_NEEDS_BOTH }, 403)
+  }
   const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
   return c.json({ ok: true, removed })
 })
