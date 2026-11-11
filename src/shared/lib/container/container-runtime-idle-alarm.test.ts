@@ -90,10 +90,6 @@ vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
 
-vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  copyChromeProfileData: vi.fn().mockReturnValue(false),
-}))
-
 vi.mock('@shared/lib/computer-use/executor', () => ({ ungrabAC: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
   computerUsePermissionManager: { getGrabbedApp: () => null, clearGrabbedApp: vi.fn() },

@@ -85,7 +85,6 @@ export const appSettingsPatchSchema = z.object({
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
   hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
-  chromeProfileId: z.string(),
   chromeHeadless: z.boolean(),
   allowPrereleaseUpdates: z.boolean(),
   theme: z.enum(['system', 'light', 'dark']),

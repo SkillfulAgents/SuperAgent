@@ -226,12 +226,8 @@ describe('createAgentRegistry', () => {
     const registry = createAgentRegistry(fake.deps)
     expect(fake.containerHost.attachAgentWorkspaces).toHaveBeenCalledTimes(1)
     const access = fake.containerHost.attachAgentWorkspaces.mock.calls[0][0] as {
-      files: (slug: string) => unknown
       instructions: (slug: string) => Promise<string | null>
     }
-    // The same file operations the actor hands out, for the same agent.
-    expect(access.files('a')).toBe(registry.get('a').files)
-    expect(access.files('b')).not.toBe(registry.get('a').files)
     // Instructions are the actor's config document.
     const getDoc = vi.spyOn(registry.get('a').config, 'get').mockResolvedValue('---\nname: A\n---\n')
     expect(await access.instructions('a')).toBe('---\nname: A\n---\n')

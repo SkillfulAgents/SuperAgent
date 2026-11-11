@@ -17,7 +17,6 @@ import { apiFetch } from '@renderer/lib/api'
 import { Check, Loader2, Lock } from 'lucide-react'
 import { RequestError } from '@shared/lib/tools/requests/request-error'
 import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/config/settings'
-import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import { PasswordManagersSettings } from './password-managers-settings'
 
@@ -31,8 +30,8 @@ const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 const HOST_DESCRIPTIONS: Record<string, ReactNode> = {
-  [CONTAINER_VALUE]: 'Built-in headless browser. No stored passwords or cookies — agents need you to log in to sites.',
-  chrome: "Your agents can use sites you're already logged into Chrome.",
+  [CONTAINER_VALUE]: 'Built-in headless browser that runs inside each agent’s container.',
+  chrome: 'Google Chrome on this computer, with a separate profile for each agent. Nothing from your own Chrome profiles is shared.',
   browserbase: (
     <>
       Remote cloud browser that reduces bot detection and supports persistent sessions.
@@ -170,18 +169,14 @@ export function BrowserTab() {
 
   // Optimistic local state
   const [hostProvider, setHostProvider] = useState<string | null>(null)
-  const [chromeProfileId, setChromeProfileId] = useState<string | null>(null)
   const [browserbaseApiKey, setBrowserbaseApiKey] = useState('')
   const [browserbaseProjectId, setBrowserbaseProjectId] = useState('')
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
 
   const effectiveProvider = hostProvider ?? settings?.app?.hostBrowserProvider ?? CONTAINER_VALUE
-  const effectiveChromeProfileId = chromeProfileId ?? settings?.app?.chromeProfileId ?? ''
 
   const providers = settings?.hostBrowserStatus?.providers ?? []
-  const chromeProvider = providers.find((p) => p.id === 'chrome')
-  const chromeProfiles = chromeProvider?.profiles ?? []
 
   // Values stored by the old free-form input (1–20) may fall outside the presets;
   // surface them so the trigger doesn't render empty.
@@ -305,45 +300,21 @@ export function BrowserTab() {
                 onSelect={() => handleSelectProvider(provider.id)}
               >
                 {provider.id === 'chrome' ? (
-                  <div className="space-y-4">
-                    {chromeProfiles.length > 0 && (
-                      <FieldRow
-                        name="Chrome Profile"
-                        subtitle="Browse with an existing profile's logins and cookies"
-                        htmlFor="chrome-profile-select"
-                        stack
-                        right={
-                          <div className="w-full md:w-[260px]">
-                            <ChromeProfileSelect
-                              profiles={chromeProfiles}
-                              value={effectiveChromeProfileId}
-                              onValueChange={(profileId) => {
-                                setChromeProfileId(profileId)
-                                updateSettings.mutate({ app: { chromeProfileId: profileId } })
-                              }}
-                              idPrefix="chrome-profile"
-                              disabled={isLoading}
-                            />
-                          </div>
-                        }
+                  <FieldRow
+                    name="Headless Mode"
+                    subtitle="Run Chrome without a visible window. Prevents Chrome from stealing focus."
+                    htmlFor="chrome-headless"
+                    right={
+                      <Switch
+                        id="chrome-headless"
+                        checked={settings?.app?.chromeHeadless ?? false}
+                        onCheckedChange={(checked) => {
+                          updateSettings.mutate({ app: { chromeHeadless: checked } })
+                        }}
+                        disabled={isLoading}
                       />
-                    )}
-                    <FieldRow
-                      name="Headless Mode"
-                      subtitle="Run Chrome without a visible window. Prevents Chrome from stealing focus."
-                      htmlFor="chrome-headless"
-                      right={
-                        <Switch
-                          id="chrome-headless"
-                          checked={settings?.app?.chromeHeadless ?? false}
-                          onCheckedChange={(checked) => {
-                            updateSettings.mutate({ app: { chromeHeadless: checked } })
-                          }}
-                          disabled={isLoading}
-                        />
-                      }
-                    />
-                  </div>
+                    }
+                  />
                 ) : provider.id === 'browserbase' ? (
                   <div className="space-y-4">
                     <BrowserbaseSettings

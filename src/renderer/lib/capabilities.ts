@@ -30,7 +30,7 @@ import { clientFacts, serverFacts } from './facts'
  *
  * Note what is deliberately NOT gated on this. Where the answer comes from the
  * *server*, it already comes from the machine that owns it and needs no gate:
- * the host-browser providers and their Chrome profiles (`detectAllProviders()`),
+ * the host-browser providers (`detectAllProviders()`),
  * STT availability (`/api/voice/configured`), and runtime readiness all describe
  * whichever Superagent is being driven.
  *

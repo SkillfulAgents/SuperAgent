@@ -54,9 +54,6 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
 
     const settings = await getSettings()
     const options: Record<string, string> = {}
-    if (settings.app?.chromeProfileId) {
-      options.chromeProfileId = settings.app.chromeProfileId
-    }
     if (settings.app?.chromeHeadless) {
       options.chromeHeadless = 'true'
     }
