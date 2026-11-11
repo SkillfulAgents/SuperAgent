@@ -2360,6 +2360,18 @@ describe('POST /api/agents/import-template (chunked)', () => {
     }, expect.any(Function))
   })
 
+  it('rejects a request whose Content-Length exceeds the per-request cap without reading the body', async () => {
+    const res = await app.request('http://localhost/api/agents/import-template', {
+      method: 'POST',
+      body: 'tiny',
+      headers: { 'content-length': String(65 * 1024 * 1024) },
+    })
+    expect(res.status).toBe(413)
+    expect((await res.json()).error).toContain('use chunked upload')
+    expect(mockStoreUploadChunk).not.toHaveBeenCalled()
+    expect(importAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
   it('assembles and processes on final chunk', async () => {
     const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
     mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
@@ -9804,7 +9816,55 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
     expect(res.status).toBe(400)
 
     const body = await res.json()
-    expect(body.error).toBe('No file provided')
+    expect(body.error).toBe('No file or chunk provided')
+  })
+
+  it('imports the assembled upload from disk on the final chunk', async () => {
+    vi.mocked(importSkillFromZip).mockResolvedValue({ skillDir: 'imported-skill', skillName: 'Imported Skill' })
+    const assembledPath = '/mock/tmp/uploads/44444444-4444-4444-4444-444444444444.assembled'
+    mockStoreUploadChunk.mockImplementation(assembleTo(assembledPath))
+
+    const form = new FormData()
+    form.append('chunk', new File(['data-part-1'], 'chunk.bin', { type: 'application/octet-stream' }))
+    form.append('uploadId', '44444444-4444-4444-4444-444444444444')
+    form.append('chunkIndex', '1')
+    form.append('totalChunks', '2')
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(201)
+    expect(mockStoreUploadChunk).toHaveBeenCalledWith(expect.objectContaining({
+      target: 'skill-import:my-agent',
+      chunkIndex: 1,
+      totalChunks: 2,
+      maxTotalBytes: 100 * 1024 * 1024,
+    }), expect.any(Function))
+    expect(importSkillFromZip).toHaveBeenCalledWith('my-agent', { filePath: assembledPath })
+  })
+
+  it('returns 409 with what to do when a chunk is refused', async () => {
+    mockStoreUploadChunk.mockRejectedValue(new UploadConflictError('This chunk is out of order for this upload. Start a new upload to send the file again.'))
+
+    const form = new FormData()
+    form.append('chunk', new File(['data-part-1'], 'chunk.bin', { type: 'application/octet-stream' }))
+    form.append('uploadId', '44444444-4444-4444-4444-444444444444')
+    form.append('chunkIndex', '1')
+    form.append('totalChunks', '2')
+
+    const res = await postFormData(app, '/api/agents/my-agent/skills/import-zip', form)
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('Start a new upload')
+    expect(importSkillFromZip).not.toHaveBeenCalled()
+  })
+
+  it('rejects a request whose Content-Length exceeds the per-request cap without reading the body', async () => {
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/import-zip', {
+      method: 'POST',
+      body: 'tiny',
+      headers: { 'content-length': String(65 * 1024 * 1024) },
+    })
+    expect(res.status).toBe(413)
+    expect((await res.json()).error).toContain('use chunked upload')
+    expect(importSkillFromZip).not.toHaveBeenCalled()
   })
 
   it('returns 413 when file.size exceeds SKILL_MAX_COMPRESSED_SIZE before reading', async () => {

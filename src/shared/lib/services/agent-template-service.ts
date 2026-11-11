@@ -15,15 +15,16 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import { Readable } from 'stream'
-import pLimit from 'p-limit'
+import { StringDecoder } from 'string_decoder'
 import archiver from 'archiver'
 import {
-  openZipFromBuffer,
-  openZipFromFile,
+  openZipSource,
   detectZipPrefix,
   type ZipEntryMeta,
   type ZipReader,
+  type ZipSource,
 } from '@shared/lib/utils/zip'
+import { chunksOf } from '@shared/lib/agent-actor/jsonl-files'
 import {
   directoryExists,
   parseMarkdownWithFrontmatter,
@@ -238,14 +239,14 @@ function agentTemplateRoot(agentPath: string): string {
 interface TemplateTree {
   /** Immediate children of a directory. Throws when it cannot be listed. */
   list(dir: string): Promise<Array<Pick<FileEntry, 'name' | 'kind'>>>
-  /** A whole file, or null when it cannot be read. */
-  read(relativePath: string): Promise<Uint8Array | null>
+  /** A file's bytes as a stream. Throws when it cannot be opened. */
+  read(relativePath: string): Promise<ReadableStream<Uint8Array>>
 }
 
 function workspaceTree(files: FileOps): TemplateTree {
   return {
     list: (dir) => files.list(dir),
-    read: (relativePath) => files.getDoc(relativePath),
+    read: (relativePath) => files.read(relativePath),
   }
 }
 
@@ -260,11 +261,9 @@ function hostTree(rootDir: string): TemplateTree {
       return entries.map((entry) => ({ name: entry.name, kind: entry.isDirectory() ? 'directory' : 'file' }))
     },
     async read(relativePath) {
-      try {
-        return new Uint8Array(await fs.promises.readFile(path.join(rootDir, relativePath)))
-      } catch {
-        return null
-      }
+      // Opened first, so a missing file throws here and not mid-stream.
+      const handle = await fs.promises.open(path.join(rootDir, relativePath))
+      return Readable.toWeb(handle.createReadStream()) as ReadableStream<Uint8Array>
     },
   }
 }
@@ -637,18 +636,6 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
 // ZIP Validation
 // ============================================================================
 
-/**
- * ZIP input for validation/import: either raw bytes, or a path to a ZIP
- * already on disk. Prefer the file form when available — it reads entries on
- * demand instead of pinning the whole (up to 2GB) buffer in memory for the
- * entire extraction.
- */
-export type TemplateZipSource = Buffer | { filePath: string }
-
-function openZipSource(zip: TemplateZipSource): Promise<ZipReader> {
-  return Buffer.isBuffer(zip) ? openZipFromBuffer(zip) : openZipFromFile(zip.filePath)
-}
-
 export interface TemplateValidationResult {
   valid: boolean
   error?: string
@@ -707,7 +694,7 @@ export function validateTemplateEntries(
  * In 'full' mode, only __MACOSX entries are filtered — all other entries count
  * toward size/count limits and are checked for path traversal.
  */
-export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
+export async function validateAgentTemplate(zip: ZipSource, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
   let reader: ZipReader | undefined
   try {
     reader = await openZipSource(zip)
@@ -743,7 +730,7 @@ export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'templ
  * Creates a new agent with the template contents.
  */
 export async function importAgentFromTemplate(
-  zip: TemplateZipSource,
+  zip: ZipSource,
   nameOverride?: string,
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
@@ -1205,29 +1192,35 @@ export async function computeWorkspaceTemplateHash(files: FileOps): Promise<stri
   return computeTemplateHash(workspaceTree(files))
 }
 
+const TEMPLATE_HASH_READ_AHEAD = 8
+
 async function computeTemplateHash(tree: TemplateTree): Promise<string> {
   const files = await walkTemplateFiles(tree)
   // Hash names are a persisted compatibility format, independent of export names.
   const nameOf = new Map(files.map((file) => [file, templateHashPathOf(file, files)]))
   files.sort((a, b) => (nameOf.get(a)! < nameOf.get(b)! ? -1 : nameOf.get(a)! > nameOf.get(b)! ? 1 : 0))
 
-  const limit = pLimit(8)
-  const contents = new Map<string, string>()
-  await Promise.all(files.map((relativePath) => limit(async () => {
-    try {
-      const bytes = await tree.read(relativePath)
-      if (bytes !== null) contents.set(relativePath, bytesToUtf8(bytes))
-    } catch {
-      // Skip unreadable files
-    }
-  })))
-
+  // Files are opened a few ahead but read in hash order, one at a time, so
+  // memory stays at a few stream buffers however large the files are. Each
+  // file is hashed as its UTF-8 text, as the whole-file read did.
+  const opened: Array<Promise<ReadableStream<Uint8Array> | null> | undefined> = []
+  const open = (index: number): void => {
+    opened[index] ??= tree.read(files[index]).catch(() => null) // Skip unreadable files
+  }
   const hash = crypto.createHash('sha256')
-  for (const relativePath of files) {
-    const content = contents.get(relativePath)
-    if (content === undefined) continue
-    hash.update(nameOf.get(relativePath)!)
-    hash.update(content)
+  try {
+    for (let index = 0; index < files.length; index++) {
+      for (let ahead = index; ahead < Math.min(files.length, index + TEMPLATE_HASH_READ_AHEAD); ahead++) open(ahead)
+      const stream = await opened[index]
+      opened[index] = undefined
+      if (stream === null || stream === undefined) continue
+      hash.update(nameOf.get(files[index])!)
+      const decoder = new StringDecoder('utf8')
+      for await (const chunk of chunksOf(stream)) hash.update(decoder.write(chunk))
+      hash.update(decoder.end())
+    }
+  } finally {
+    await Promise.all(opened.map((pending) => pending?.then((stream) => stream?.cancel()).catch(() => {})))
   }
 
   return hash.digest('hex')
