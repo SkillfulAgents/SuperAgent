@@ -87,7 +87,7 @@ accountDeletion.post('/', async (c) => {
   } catch (error) {
     if (!(error instanceof AccountDeletionDeliveryError)) throw error
     console.warn('[AccountDeletion] Delivery was not confirmed:', error.message)
-    trackServerEvent('account_deletion_request_result', { outcome: 'failed', reason: error.reason })
+    trackServerEvent('account_deletion_request_result', { outcome: 'failed', reason_code: error.reason })
     return c.json(
       {
         error: "We couldn't confirm delivery of your request. Please try again. Retrying uses the same request ID.",
