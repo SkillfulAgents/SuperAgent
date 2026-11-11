@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { Authenticated, IsAdmin } from '../middleware/auth'
-import { containerHost } from '@shared/lib/agent-actor'
+import { agentCatalog, agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath } from '@shared/lib/container/base-container-client'
@@ -187,6 +187,16 @@ debug.get('/app-info', (c) => {
     electronVersion: process.versions.electron || null,
     terminalCommand,
   })
+})
+
+// GET /api/debug/agents/:id/session-metadata — what the app keeps about each
+// of an agent's sessions (names, stars, how each was started). It lives in
+// the agent's session index, not in a file one can open, so this is where a
+// person, or the E2E suite, reads it.
+debug.get('/agents/:id/session-metadata', async (c) => {
+  const slug = await agentCatalog.resolve(c.req.param('id'))
+  if (!slug) return c.json({ error: 'Agent not found' }, 404)
+  return c.json(await agentRegistry.get(slug).sessions.readMetadata())
 })
 
 export default debug

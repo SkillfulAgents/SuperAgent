@@ -72,13 +72,15 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
-  messageAuthor: { sessionId: 'message_author_session_id' },
-  notifications: { sessionId: 'notifications_session_id' },
+  messageAuthor: { sessionId: 'message_author_session_id', agentSlug: 'message_author_agent_slug' },
+  notifications: { sessionId: 'notifications_session_id', agentSlug: 'notifications_agent_slug' },
   agentAcl: { agentSlug: 'agent_acl_slug', userId: 'agent_acl_user_id' },
 }))
 
 vi.mock('drizzle-orm', () => ({
   inArray: vi.fn(),
+  eq: vi.fn(),
+  and: vi.fn(),
 }))
 
 // Import after mocks are set up
@@ -380,7 +382,7 @@ describe('SessionAutoDeleteMonitor', () => {
     // Both are unconditional: notifications exist in both modes, and an
     // integration's message_author rows exist without auth.
     const deletedTables = mockDbDelete.mock.calls.map((call) => call[0])
-    expect(deletedTables).toContainEqual({ sessionId: 'notifications_session_id' })
+    expect(deletedTables).toContainEqual(expect.objectContaining({ sessionId: 'notifications_session_id' }))
     expect(deletedTables).toContainEqual(expect.objectContaining({ sessionId: 'message_author_session_id' }))
   })
 

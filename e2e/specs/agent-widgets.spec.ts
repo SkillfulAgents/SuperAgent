@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createAgent, createSession, listSessions, uniqueName, waitForSessionIdle } from '../helpers/agents'
 import { openHomeSection, openHomeSidePanel } from '../helpers/agent-home'
+import { readSessionMetadata } from '../helpers/session-metadata'
 
 /**
  * Agent widgets: an artifact that exposes a widget (a `gamut.widget` block +
@@ -36,12 +37,8 @@ function artifactsDir(agentSlug: string): string {
 }
 
 /** Session metadata is where automated provenance lands; repair sessions live here. */
-function readSessionMetadata(agentSlug: string): Record<string, Record<string, unknown>> {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(workspaceDir(agentSlug), 'session-metadata.json'), 'utf-8'))
-  } catch {
-    return {}
-  }
+async function repairSessions(request: APIRequestContext, agentSlug: string) {
+  return Object.entries(await readSessionMetadata(request, agentSlug)).filter(([, meta]) => meta.isWidgetRepair === true)
 }
 
 const WIDGET_HTML = `<!DOCTYPE html><html><head><style>
@@ -331,14 +328,8 @@ test.describe('agent widgets', () => {
 
     // The script is the agent's own code and no turn would notice it broke, so
     // the platform opens an automated session asking the agent to fix it.
-    await expect
-      .poll(() => Object.values(readSessionMetadata(agent.slug)).filter((m) => m.isWidgetRepair === true).length, {
-        timeout: 30_000,
-      })
-      .toBe(1)
-    const [repairSessionId, repairMeta] = Object.entries(readSessionMetadata(agent.slug)).find(
-      ([, meta]) => meta.isWidgetRepair === true,
-    )!
+    await expect.poll(async () => (await repairSessions(request, agent.slug)).length, { timeout: 30_000 }).toBe(1)
+    const [[repairSessionId, repairMeta]] = await repairSessions(request, agent.slug)
     expect(repairMeta).toMatchObject({ widgetRepairSlug: 'broken', name: 'Invoked to fix widget' })
 
     // Automated: hidden from the session list like a cron or webhook run.
@@ -347,11 +338,7 @@ test.describe('agent widgets', () => {
 
     // A widget that stays broken must not open a session per refresh.
     await request.post(`/api/agents/${agent.slug}/artifacts/broken/widget/refresh`)
-    await expect
-      .poll(() => Object.values(readSessionMetadata(agent.slug)).filter((m) => m.isWidgetRepair === true).length, {
-        timeout: 10_000,
-      })
-      .toBe(1)
+    await expect.poll(async () => (await repairSessions(request, agent.slug)).length, { timeout: 10_000 }).toBe(1)
 
     // Even an agent with no x-agent calls exposes repairs through the history
     // entry, without a reload or adding them to the normal session list.

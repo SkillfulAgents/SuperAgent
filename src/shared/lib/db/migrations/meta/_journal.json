@@ -470,6 +470,13 @@
       "when": 1794182726903,
       "tag": "0066_team_directory_provisioning",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "6",
+      "when": 1794261056427,
+      "tag": "0067_agent_sessions",
+      "breakpoints": true
     }
   ]
 }

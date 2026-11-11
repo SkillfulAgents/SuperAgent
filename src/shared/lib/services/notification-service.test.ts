@@ -153,7 +153,7 @@ describe('notification-service', () => {
       await createNotification({ type: 'session_complete', sessionId: 's3', agentSlug: 'a', title: 't', body: 'b' })
 
       // s3 simulates a session whose filesystem delete failed — it must survive.
-      const deleted = await deleteNotificationsBySessionIds(['s1', 's2'])
+      const deleted = await deleteNotificationsBySessionIds('a', ['s1', 's2'])
       expect(deleted).toBe(2)
 
       const remaining = await listNotifications(50)
@@ -161,10 +161,19 @@ describe('notification-service', () => {
       expect(sessionIds).toEqual(['s3'])
     })
 
+    it('leaves another agent\'s notifications alone, even for a session with the same id', async () => {
+      await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'a', title: 't', body: 'b' })
+      await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'b', title: 't', body: 'b' })
+
+      expect(await deleteNotificationsBySessionIds('a', ['s1'])).toBe(1)
+
+      expect((await listNotifications(50)).map((n) => n.agentSlug)).toEqual(['b'])
+    })
+
     it('removes every notification type for a session (not just actionable ones)', async () => {
       await seedOneOfEachType('a', 'sess')
       // sessionIds are `sess-<type>`; delete two of them.
-      const deleted = await deleteNotificationsBySessionIds([
+      const deleted = await deleteNotificationsBySessionIds('a', [
         'sess-session_complete',
         'sess-session_webhook',
       ])
@@ -179,7 +188,7 @@ describe('notification-service', () => {
 
     it('is a no-op on an empty list (returns 0, deletes nothing)', async () => {
       await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'a', title: 't', body: 'b' })
-      const deleted = await deleteNotificationsBySessionIds([])
+      const deleted = await deleteNotificationsBySessionIds('a', [])
       expect(deleted).toBe(0)
       expect((await listNotifications(50)).length).toBe(1)
     })

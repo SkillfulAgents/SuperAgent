@@ -20,7 +20,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 const mockRecordSessionActivity = vi.fn()
 const mockRevertSessionActivity = vi.fn()
-vi.mock('@shared/lib/services/session-summary-cache', () => ({
+vi.mock('@shared/lib/services/session-activity', () => ({
   recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
   recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({
     recordedAtMs: at,

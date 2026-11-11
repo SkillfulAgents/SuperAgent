@@ -635,6 +635,30 @@ export const agents = sqliteTable('agents', {
   workspaceHandle: text('workspace_handle'),
 })
 
+// Agent sessions - the session index of an agent whose actor runs in this
+// process: one row per session, holding what the app keeps about it (name,
+// star, how it was started; null for a transcript nobody registered) and its
+// transcript as last seen (null until one appears). It is the local actor's
+// own storage, behind `SessionIndexStorage`: an actor that runs elsewhere
+// keeps its index elsewhere, so nothing but
+// `agent-actor/db-session-index-storage.ts` reads or writes this table (the
+// factory reset empties it with every other one), and no other table refers
+// to it. No FK to `agents`: a rebuild of that table
+// would cascade into every session's name.
+export const agentSessions = sqliteTable('agent_sessions', {
+  agentSlug: text('agent_slug').notNull(),
+  sessionId: text('session_id').notNull(),
+  // JSON, validated by `sessionMetadataSchema` on every read and write.
+  metadata: text('metadata'),
+  // File times keep their sub-millisecond part, hence `real`.
+  transcriptMtimeMs: real('transcript_mtime_ms'),
+  transcriptBirthtimeMs: real('transcript_birthtime_ms'),
+  transcriptSize: integer('transcript_size'),
+}, (table) => ({
+  // A session id is unique only within its agent.
+  pk: primaryKey({ columns: [table.agentSlug, table.sessionId] }),
+}))
+
 // Reusable sources. A NULL owner makes a volume available to every user.
 export const volumeDefinitions = sqliteTable('volume_definitions', {
   id: text('id').primaryKey(),
