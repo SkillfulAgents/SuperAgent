@@ -179,7 +179,7 @@ xAgentChat.post('/send', async (c) => {
       const client = clientFor(integration)
       if (currentSession && !currentSession.archivedAt && currentSession.integrationId === integration.id && email.reply_to_message_id) {
         const parent = await client.message(config.mailboxId, email.reply_to_message_id)
-        if (await emailThreadRoute(integration, parent.threadId) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
+        if (await emailThreadRoute(integration, parent) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
       }
       const connector = await resolveLiveConnector(integration.id, integration.status)
       const tool = connector?.getTools({ integration, externalId: '' }).find(tool => tool.name === 'send_email')
