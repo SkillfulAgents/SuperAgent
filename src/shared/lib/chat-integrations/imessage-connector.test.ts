@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { IMessageConnector } from './imessage-connector'
+import { IMessageConnector, markdownToIMessage } from './imessage-connector'
 
 vi.mock('ws', () => {
   const MockWebSocket = vi.fn() as any
@@ -653,6 +653,14 @@ describe('IMessageConnector', () => {
       expect((messages[0].data as any).parts[0].value).toBe('Hello there')
     })
 
+    it('sends markdown as plain text with its styles as decorations', async () => {
+      await connector.sendMessage('chat-1', { text: 'Ship **today**' })
+
+      const data = parseSent(ws)[0].data as any
+      expect(data.parts).toEqual([{ type: 'text', value: 'Ship today' }])
+      expect(data.textDecorations).toEqual([{ type: 'bold', range: { start: 5, length: 5 } }])
+    })
+
     it('sends reaction-only without a text message', async () => {
       // Set up lastReceivedMessageId so reactions can be sent
       ;(connector as any).lastReceivedMessageId = 'incoming-msg-1'
@@ -702,6 +710,29 @@ describe('IMessageConnector', () => {
       expect((messages[0].data as any).reactionType).toBe('love')
       expect(messages[1].type).toBe('send_reaction')
       expect((messages[1].data as any).reactionType).toBe('laugh')
+    })
+  })
+
+  describe('markdownToIMessage', () => {
+    it('drops markdown syntax and styles ranges in UTF-16 offsets', () => {
+      const md = '# Plan\n\nHi 👋 **Ana**, read *this*:\n\n- one\n- see [docs](https://e.com) or https://x.com\n  - nested\n\n1. a\n2. ~~b~~\n\n| A | B |\n|---|---|\n| `1` | 2 |'
+      const { text, decorations } = markdownToIMessage(md)
+
+      expect(text).toBe('Plan\n\nHi 👋 Ana, read this:\n\n• one\n• see docs (https://e.com) or https://x.com\n  • nested\n\n1. a\n2. b\n\nA · B\n1 · 2')
+      expect(decorations.map(d => [d.type, text.slice(d.range.start, d.range.start + d.range.length)])).toEqual([
+        ['bold', 'Plan'], ['bold', 'Ana'], ['italic', 'this'], ['strikethrough', 'b'],
+      ])
+    })
+
+    it('spaces a list with a blank line between items once any item runs past a phone line', () => {
+      const long = 'Zuni Cafe is a classic on Market St, known for the roast chicken'
+      expect(markdownToIMessage(`- ${long}\n- Nopa`).text).toBe(`• ${long}\n\n• Nopa`)
+      expect(markdownToIMessage('- Table for 2\n- Patio').text).toBe('• Table for 2\n• Patio')
+    })
+
+    it('keeps task boxes on their line, link addresses unless autolinked, image alt text, and drops link definitions', () => {
+      const md = '- [x] done\n- [ ] todo\n\n0. zero\n\n- [x] loose\n\n- [ ] list\n\nMail ana@example.com, read [docs](https://e.com/docs) ![chart](https://e.com/c.png) ![](https://e.com/e.png)\n\n[d]: https://e.com'
+      expect(markdownToIMessage(md).text).toBe('• ☑ done\n• ☐ todo\n\n0. zero\n\n• ☑ loose\n• ☐ list\n\nMail ana@example.com, read docs (https://e.com/docs) chart (https://e.com/c.png) https://e.com/e.png')
     })
   })
 

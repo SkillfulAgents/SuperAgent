@@ -16,6 +16,12 @@ export interface GatewayMessagePart {
   attachmentId?: string
 }
 
+/** Styles `range` of the message's text, counted in UTF-16 code units (JavaScript string offsets). */
+export interface GatewayTextDecoration {
+  type: 'bold' | 'italic' | 'strikethrough'
+  range: { start: number; length: number }
+}
+
 export class GatewayRequestError extends Error {
   constructor(message: string, readonly status: number | null) {
     super(message)
@@ -92,7 +98,7 @@ export const SEND_RETRY_DELAYS_MS = [1_000, 3_000]
  * carry. Repeated under one idempotency key while the gateway or Linq is
  * unavailable, so it is sent at most once.
  */
-export async function sendGatewayMessage(config: GatewayCredentials, message: { chatId?: string; parts: GatewayMessagePart[] }): Promise<GatewaySentMessage> {
+export async function sendGatewayMessage(config: GatewayCredentials, message: { chatId?: string; parts: GatewayMessagePart[]; textDecorations?: GatewayTextDecoration[] }): Promise<GatewaySentMessage> {
   const body = { ...message, idempotencyKey: randomUUID() }
   for (let attempt = 0; ; attempt++) {
     try {
