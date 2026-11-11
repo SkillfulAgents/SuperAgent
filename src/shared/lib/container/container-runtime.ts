@@ -32,7 +32,7 @@ import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { NO_LIVE_SESSIONS, type AgentSessionsAccess, type RuntimeSessions } from './agent-sessions-access'
 import type { RuntimeFatalKind } from './runtime-death'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
+import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -505,11 +505,9 @@ export class ContainerRuntime {
         // Mark all sessions for this agent as inactive
         this.sessions().markAllInactive({ settleRecovering: true })
 
-        // If this agent had grabbed a window, ungrab it so the halo disappears
-        if (computerUsePermissionManager.getGrabbedApp(slug)) {
-          computerUsePermissionManager.clearGrabbedApp(slug)
-          background(ungrabAC().catch(() => {}), { name: 'container-runtime.ungrab-computer-use' })  // Best-effort, non-blocking
-        }
+        // The agent's computer-use sessions end with it, and their cursors with them.
+        computerUsePermissionManager.clearActiveApp(slug)
+        background(endComputerUseSessions({ agentSlug: slug }).catch(() => {}), { name: 'container-runtime.end-computer-use' })  // Best-effort, non-blocking
 
         // Broadcast status change so UI updates
         globalFeed.publish({

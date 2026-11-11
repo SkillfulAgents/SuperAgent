@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyGrammar, gazeToward, nearestAngle, ORB_SHAPES, orbShape, reach, shapePath } from './orb-shapes'
+import { applyGrammar, gazeToward, nearestAngle, ORB_SHAPES, orbShape, reach, shapePath } from './agent-avatar-shapes'
 
 const direction = (phi: number) => ((phi % 360) + 360) % 360
 

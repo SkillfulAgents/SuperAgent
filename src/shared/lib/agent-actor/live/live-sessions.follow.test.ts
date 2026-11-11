@@ -152,13 +152,13 @@ describe('LiveSessions.follow', () => {
 
     it('is told the app the agent has grabbed, with its icon, after the snapshot and without an id', async () => {
       live.host.answer('computerUseAppIcon', 'ICON')
-      live.agents.get(AGENT).computerUse.setGrabbed('Safari')
+      live.agents.get(AGENT).computerUse.setActiveApp(SESSION, 'Safari')
       const v = viewer()
       await sessions().follow(SESSION, undefined, v.onFrame)
 
       expect(v.frames[1]).toEqual({
         id: undefined,
-        data: '{"type":"computer_use_grab_changed","app":"Safari","appIcon":"ICON"}',
+        data: '{"type":"computer_use_app_changed","app":"Safari","appIcon":"ICON"}',
       })
       expect(v.lastId()).toBe(v.frames[0].id)
     })
@@ -168,7 +168,7 @@ describe('LiveSessions.follow', () => {
       live.host.answer('computerUseAppIcon', () => new Promise<string | null>((resolve) => {
         answerIcon = resolve
       }))
-      live.agents.get(AGENT).computerUse.setGrabbed('Safari')
+      live.agents.get(AGENT).computerUse.setActiveApp(SESSION, 'Safari')
       const v = viewer()
       const attached = sessions().follow(SESSION, undefined, v.onFrame)
       await vi.waitFor(() => expect(answerIcon).toBeDefined())
@@ -176,24 +176,24 @@ describe('LiveSessions.follow', () => {
       answerIcon('ICON')
       await attached
 
-      expect(v.types()).toEqual(['connected', 'session_active', 'stream_start', 'computer_use_grab_changed'])
+      expect(v.types()).toEqual(['connected', 'session_active', 'stream_start', 'computer_use_app_changed'])
 
       // A grab that changed during the read went out on its own; the stale one is dropped.
       const w = viewer()
       const second = sessions().follow(SESSION, undefined, w.onFrame)
       await vi.waitFor(() => expect(live.host.calls.filter(([name]) => name === 'computerUseAppIcon')).toHaveLength(2))
-      live.agents.get(AGENT).computerUse.setGrabbed('Notes')
+      live.agents.get(AGENT).computerUse.setActiveApp(SESSION, 'Notes')
       answerIcon('ICON')
       await second
-      expect(w.types()).not.toContain('computer_use_grab_changed')
+      expect(w.types()).not.toContain('computer_use_app_changed')
     })
 
     it('leaves nothing attached when telling the viewer about the grab fails', async () => {
       live.host.answer('computerUseAppIcon', 'ICON')
-      live.agents.get(AGENT).computerUse.setGrabbed('Safari')
+      live.agents.get(AGENT).computerUse.setActiveApp(SESSION, 'Safari')
       const frames: string[] = []
       const onFrame = vi.fn((frame: WireFrame) => {
-        if (JSON.parse(frame.data).type === 'computer_use_grab_changed') throw new Error('write failed')
+        if (JSON.parse(frame.data).type === 'computer_use_app_changed') throw new Error('write failed')
         frames.push(frame.data)
       })
 
@@ -203,14 +203,23 @@ describe('LiveSessions.follow', () => {
       expect(frames).toHaveLength(1)
     })
 
-    it('is told the grabbed app without an icon when the host has none to give', async () => {
-      vi.spyOn(console, 'error').mockImplementation(() => {})
-      live.host.answer('computerUseAppIcon', () => Promise.reject(new Error('no icon service')))
-      live.agents.get(AGENT).computerUse.setGrabbed('Safari')
+    it('is told only its own session\'s app, not one another session of the agent acts in', async () => {
+      live.host.answer('computerUseAppIcon', 'ICON')
+      live.agents.get(AGENT).computerUse.setActiveApp('another-session', 'Mail')
       const v = viewer()
       await sessions().follow(SESSION, undefined, v.onFrame)
 
-      expect(v.events()[1]).toEqual({ type: 'computer_use_grab_changed', app: 'Safari' })
+      expect(v.types()).not.toContain('computer_use_app_changed')
+    })
+
+    it('is told the grabbed app without an icon when the host has none to give', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      live.host.answer('computerUseAppIcon', () => Promise.reject(new Error('no icon service')))
+      live.agents.get(AGENT).computerUse.setActiveApp(SESSION, 'Safari')
+      const v = viewer()
+      await sessions().follow(SESSION, undefined, v.onFrame)
+
+      expect(v.events()[1]).toEqual({ type: 'computer_use_app_changed', app: 'Safari' })
     })
 
     it('misses nothing that happens while its snapshot is being prepared, and hears it only once', async () => {

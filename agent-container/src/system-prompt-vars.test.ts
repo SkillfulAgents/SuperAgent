@@ -352,7 +352,9 @@ describe('generateSystemPrompt rendering', () => {
     }
     const shipped = readdirSync(join(__dirname, '..', 'docs'))
       .filter(name => name.endsWith('.md') && name !== 'README.md')
-    expect([...referenced].sort()).toEqual(shipped.sort())
+    // Every top-level guide is reachable from the prompt; a guide's own
+    // references (computer-use/macos.md) may be named too, and exist (above).
+    expect([...referenced].filter(path => !path.includes('/')).sort()).toEqual(shipped.sort())
   })
 
   // Same failure as a missing guide, one step worse: the agent runs the command

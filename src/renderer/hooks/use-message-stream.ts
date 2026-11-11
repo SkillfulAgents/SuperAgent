@@ -67,8 +67,8 @@ interface StreamState {
   /** Provider-authored copy for the error, computed server-side by the active provider. */
   errorPresentation: ProviderErrorPresentation | null
   browserActive: boolean // Whether browser is running for this session
-  computerUseApp: string | null // Name of the app currently grabbed for computer use
-  computerUseAppIcon: string | null // Base64 PNG icon of the grabbed app
+  computerUseApp: string | null // Name of the app the agent's computer use last acted in
+  computerUseAppIcon: string | null // Base64 PNG icon of that app
   activeStartTime: number | null // Timestamp when session became active (for elapsed timer)
   isCompacting: boolean // True while context compaction is in progress
   contextUsage: SessionUsage | null // Latest context window usage data
@@ -1281,8 +1281,8 @@ function getOrCreateEventSource(
           })
         }
       }
-      else if (data.type === 'computer_use_grab_changed') {
-        // Computer use grab state changed (icon may arrive in a follow-up event)
+      else if (data.type === 'computer_use_app_changed') {
+        // The app the agent's computer use acts in changed (icon may arrive in a follow-up event)
         if (current) {
           streamStates.set(sessionId, {
             ...current,

@@ -13,9 +13,17 @@ import {
 import { cn } from '@shared/lib/utils/cn'
 import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { PERMISSION_LEVEL_LABELS } from '@shared/lib/computer-use/types'
+import { SYSTEM_TARGETS } from '@shared/lib/computer-use/commands'
 import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { ApprovalActions } from '../requests/approval-actions'
+
+/** How the prompt names a target that is not an app. */
+const SYSTEM_TARGET_PHRASES: Record<string, string> = {
+  [SYSTEM_TARGETS.clipboard]: 'the clipboard',
+  [SYSTEM_TARGETS.screen]: 'the entire screen',
+  [SYSTEM_TARGETS.notifications]: 'your notifications',
+}
 
 interface ComputerUseRequestItemProps {
   toolUseId: string
@@ -33,14 +41,23 @@ type RequestStatus = 'pending' | 'submitting' | 'executed' | 'denied'
 
 const PERMISSION_LABELS: Record<string, string> = PERMISSION_LEVEL_LABELS
 
-function formatParams(params: Record<string, unknown>): string {
+/** An argument as a shell would need it written: quoted when it holds spaces or quotes. */
+function shellWord(word: string): string {
+  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+/** The command as the user would type it: `agent-desktop click @s1:e5`. */
+function formatCommand(method: string, params: Record<string, unknown>): string {
+  if (Array.isArray(params.argv)) {
+    return ['agent-desktop', method, ...params.argv.map((word) => shellWord(String(word)))].join(' ')
+  }
   const parts: string[] = []
   for (const [key, val] of Object.entries(params)) {
     if (val !== undefined && val !== null && val !== '') {
       parts.push(`${key}: ${typeof val === 'string' ? val : JSON.stringify(val)}`)
     }
   }
-  return parts.join(', ')
+  return `${method}(${parts.join(', ')})`
 }
 
 export function ComputerUseRequestItem({
@@ -58,7 +75,7 @@ export function ComputerUseRequestItem({
   const [error, setError] = useState<string | null>(null)
   const [missingPermissions, setMissingPermissions] = useState<{ accessibility: boolean; screen_recording: boolean } | null>(null)
   const [pendingGrantType, setPendingGrantType] = useState<'timed' | 'always' | null>(null)
-  const paramStr = formatParams(params)
+  const commandText = formatCommand(method, params)
 
   const handleApprove = async (grantType: 'timed' | 'always') => {
     setStatus('submitting')
@@ -157,9 +174,10 @@ export function ComputerUseRequestItem({
 
   const levelText = PERMISSION_LABELS[permissionLevel]?.toLowerCase() || permissionLevel.replace(/_/g, ' ')
   // Only a use_application grant is limited to one app.
-  const grantScope = permissionLevel === 'use_application' && appName ? `use ${appName}` : levelText
-  const descriptionText = appName
-    ? `Allow this agent to use ${appName}?`
+  const appPhrase = appName ? SYSTEM_TARGET_PHRASES[appName] ?? appName : undefined
+  const grantScope = permissionLevel === 'use_application' && appPhrase ? `use ${appPhrase}` : levelText
+  const descriptionText = appPhrase
+    ? `Allow this agent to use ${appPhrase}?`
     : `Allow this agent to ${levelText}?`
 
   const codeBlock = (
@@ -170,7 +188,7 @@ export function ComputerUseRequestItem({
             <span className="mr-2 inline-flex h-6 items-center rounded-control bg-muted px-2 text-xs font-medium text-foreground/80 not-italic">
               {PERMISSION_LABELS[permissionLevel] || permissionLevel}
             </span>
-            {method}{paramStr ? `(${paramStr})` : '()'}
+            {commandText}
           </code>
         </pre>
       </div>

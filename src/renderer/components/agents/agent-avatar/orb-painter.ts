@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
-import type { OrbAppearance } from './avatar-orbs'
-import { shapePath, shapePose, type OrbShape } from './orb-shapes'
+import type { OrbAppearance } from '@shared/lib/types/agent-avatar-orbs'
+import { shapePath, shapePose, type OrbShape } from '@shared/lib/types/agent-avatar-shapes'
 import { sameFrame, type OrbFrame } from './orb-states'
 
 type Layer = RefObject<HTMLSpanElement>

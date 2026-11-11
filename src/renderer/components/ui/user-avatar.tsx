@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from 'react'
 import { cn } from '@shared/lib/utils'
 import { getUserImage, type UserSummary } from '@shared/lib/user-profile-schema'
 import { getApiBaseUrl } from '@renderer/lib/env'
-import { DEFAULT_ORBS, hexMix } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { DEFAULT_ORBS, hexMix } from '@shared/lib/types/agent-avatar-orbs'
 
 // People without a photo take the agent palette's hues, so faces and orbs
 // read as one set: each colourway's rim, lifted 20% toward its core at the

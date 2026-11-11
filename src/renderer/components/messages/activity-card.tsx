@@ -50,6 +50,11 @@ export interface ActivityComputerUse {
   app: string
   /** base64 PNG of the app icon; falls back to a generic monitor glyph. */
   iconBase64?: string | null
+  /**
+   * The agent's cursor colour, when cursors are shown: a dot in it ties this
+   * row to the cursor the user sees moving in the app.
+   */
+  cursorColor?: string | null
   revoking?: boolean
   revokeError?: boolean
   onRevoke: () => void
@@ -490,7 +495,7 @@ function tracerRowStyle(index: number): CSSProperties {
 }
 
 /**
- * The app the turn currently has hold of, as a tree row.
+ * The app the turn is acting in, as a tree row.
  *
  * Deliberately kept at full strength rather than muted like a finished row: the
  * user granted this, it is still in force, and the row is the only place the UI
@@ -515,6 +520,15 @@ function ComputerUseRow({ computerUse, tracerRow }: {
           )}
         </RowMark>
         <span className="truncate">Computer use: {computerUse.app}</span>
+        {computerUse.cursorColor && (
+          <span
+            data-testid="computer-use-cursor-color"
+            className="h-2 w-2 shrink-0 rounded-full ring-1 ring-border"
+            style={{ backgroundColor: computerUse.cursorColor }}
+            title="This agent's cursor"
+            aria-label="This agent's cursor colour"
+          />
+        )}
         {/* Said out loud, not just implied by a red glyph and a tooltip — the
             hold is still in force and the user needs to know the release did
             not take. */}
@@ -531,7 +545,7 @@ function ComputerUseRow({ computerUse, tracerRow }: {
               ? 'text-destructive hover:bg-destructive/10'
               : 'text-muted-foreground hover:bg-muted hover:text-foreground',
           )}
-          title={computerUse.revokeError ? 'Failed to revoke — click to retry' : 'Release app and revoke permission'}
+          title={computerUse.revokeError ? 'Failed to revoke — click to retry' : 'Stop the agent using this app and revoke permission'}
           aria-label={computerUse.revokeError
             ? `Retry releasing ${computerUse.app} and revoking permission`
             : `Release ${computerUse.app} and revoke permission`}

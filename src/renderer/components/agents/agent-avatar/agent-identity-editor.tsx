@@ -9,8 +9,8 @@ import { useUpdateAgent, useUpdateAgentAvatar } from '@renderer/hooks/use-agents
 
 import { AvatarView, orbRestingPhi, type AvatarMotionState } from './agent-avatar'
 import { avatarSource } from './avatar-source'
-import { OFFERED_ORBS } from './avatar-orbs'
-import { ORB_SHAPES } from './orb-shapes'
+import { OFFERED_ORBS } from '@shared/lib/types/agent-avatar-orbs'
+import { ORB_SHAPES } from '@shared/lib/types/agent-avatar-shapes'
 
 // Picker options, px across.
 const OPTION_SIZE = 37

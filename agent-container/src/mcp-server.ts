@@ -42,7 +42,7 @@ import { requestBrowserInputTool } from './tools/request-browser-input'
 import { createRequestLoginTool } from './tools/request-login'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { createBrowserTools } from './tools/browser'
-import { computerUseTools } from './tools/computer-use'
+import { COMPUTER_USE_SERVER, computerUseTools } from './tools/computer-use'
 import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
@@ -133,7 +133,7 @@ export function createBrowserMcpServer(tools: ReturnType<typeof createBrowserToo
  */
 export function createComputerUseMcpServer(options: { alwaysLoad?: boolean } = {}) {
   return createSdkMcpServer({
-    name: 'computer-use',
+    name: COMPUTER_USE_SERVER,
     version: '1.0.0',
     tools: computerUseTools,
     ...(options.alwaysLoad ? { alwaysLoad: true } : {}),

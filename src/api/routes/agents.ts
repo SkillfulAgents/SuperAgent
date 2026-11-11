@@ -291,7 +291,7 @@ import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_S
 import { readyTeamBrain } from '@shared/lib/config/team-brain-schema'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
+import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
@@ -5117,7 +5117,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
   }
 })
 
-// POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Ungrab window and revoke permission for the app
+// POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Take back the app the agent is acting in and revoke its permission
 agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
@@ -5127,11 +5127,13 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // Forgets the grab, revokes use_application for the app and tells the
-    // session's viewers. Before the ungrab: the app revoked is the one the
-    // user saw, not one grabbed while the ungrab ran.
-    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseGrab(sessionId)
-    await ungrabAC()
+    // Forgets the active app, revokes use_application for it and tells the
+    // session's viewers. Before the session ends: the app revoked is the one
+    // the user saw, not one a command reached while the session ended.
+    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseApp(sessionId)
+    // Ending the session's agent-desktop session takes its cursor away; the
+    // next command starts a new one, under whatever permission it then has.
+    await endComputerUseSessions({ sessionId })
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {

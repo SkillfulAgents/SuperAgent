@@ -21,7 +21,7 @@ test.describe('Computer Use requests', () => {
   })
 
   test('computer use request: allow for 15 minutes', async () => {
-    // "use computer" triggers UserInputRequestScenario with mcp__computer-use__computer_apps
+    // "use computer" triggers UserInputRequestScenario with mcp__agent-desktop__computer_list_apps
     await sessionPage.sendMessage('use computer')
 
     // Wait for the computer use request UI to appear

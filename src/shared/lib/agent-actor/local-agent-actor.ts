@@ -491,18 +491,18 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
 function createComputerUseOps(state: AgentState, deps: LocalActorDeps): ComputerUseOps {
   const computerUse = state.computerUse
   return {
-    releaseGrab: async (sessionId) => {
-      const appName = computerUse.grabbed()
-      computerUse.clearGrabbed()
+    releaseApp: async (sessionId) => {
+      const appName = computerUse.activeApp(sessionId)
+      computerUse.clearActiveApp(sessionId)
       if (appName) await computerUse.revoke('use_application', appName)
       // Taking the app back ends the session's any-app grant too: its next
       // app asks again.
       computerUse.revokeSession(sessionId)
-      state.sessions.emit(sessionId, { type: 'computer_use_grab_changed', app: null })
+      state.sessions.emit(sessionId, { type: 'computer_use_app_changed', app: null })
       return { appName }
     },
-    setGrabbedApp: async (appName) => computerUse.setGrabbed(appName),
-    clearGrabbedApp: async () => computerUse.clearGrabbed(),
+    setActiveApp: async (sessionId, appName) => computerUse.setActiveApp(sessionId, appName),
+    clearActiveApp: async (sessionId) => computerUse.clearActiveApp(sessionId),
     grant: async (...args) => computerUse.grant(...args),
     consumeOnce: async (...args) => computerUse.consumeOnce(...args),
     clearPending: async (...args) => state.sessions.clearComputerUseRequest(...args),

@@ -1,5 +1,6 @@
 /**
- * Agent orb colourways. Each is usable on any orb shape (see orb-shapes.ts):
+ * Agent orb colourways. Each is usable on any orb shape (see
+ * agent-avatar-shapes.ts):
  * the rim colours the body, the core its glow, and the two face colours the
  * face's gradient.
  *
@@ -110,3 +111,8 @@ export const GHOST_ORB = colourway('ghost', 'Ghost', '#E4E4E7', '#A1A1AA', 34)
 
 /** Every colour on offer, as the picker shows them: the palette, then the duos as the last two rows. */
 export const OFFERED_ORBS: readonly AvatarOrb[] = [...DEFAULT_ORBS, ...PAIRED_DUOS]
+
+/** The one colour that stands for an agent outside its orb (its computer-use cursor): its colourway's rim. */
+export function agentAvatarAccent(color: AgentAvatarColor): string {
+  return (OFFERED_ORBS.find(orb => orb.name === color) ?? GHOST_ORB).rim
+}

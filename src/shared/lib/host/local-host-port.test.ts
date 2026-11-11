@@ -58,3 +58,24 @@ describe('the local host port: an actor\'s feed events', () => {
     expect(mocks.afterSessionSettled).not.toHaveBeenCalled()
   })
 })
+
+describe('the local host port: computer use under the mock E2E runtime', () => {
+  beforeEach(() => {
+    vi.stubEnv('E2E_MOCK', 'true')
+  })
+
+  it('places a call by the app its command line names, as the machine would', async () => {
+    expect(await localHostPort.call('computerUseTargetApp', { method: 'snapshot', params: { argv: ['--app=Safari'] } })).toBe('Safari')
+    expect(await localHostPort.call('computerUseTargetApp', { method: 'snapshot', params: { app: 'Notes' } })).toBe('Notes')
+    expect(await localHostPort.call('computerUseTargetApp', { method: 'clipboard-get', params: { argv: [] } })).toBe('Clipboard')
+    expect(await localHostPort.call('computerUseTargetApp', { method: 'click', params: { argv: ['--', '@s1:e1'] } })).toBeUndefined()
+  })
+
+  it('reports the app a mock run acted in: the one it was approved for, else the one it names', async () => {
+    const caller = { sessionId: 's', agentSlug: 'a' }
+    expect(await localHostPort.call('computerUse', { method: 'snapshot', params: { argv: ['--app=Safari'] }, caller }))
+      .toEqual({ output: '[mock] snapshot executed successfully', app: 'Safari' })
+    expect(await localHostPort.call('computerUse', { method: 'click', params: { argv: ['--', '@s1:e1'] }, caller, app: 'Notes' }))
+      .toEqual({ output: '[mock] click executed successfully', app: 'Notes' })
+  })
+})

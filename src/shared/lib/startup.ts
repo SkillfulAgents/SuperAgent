@@ -34,7 +34,7 @@ import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
 import { setupMeetingFramesSocket } from '../../main/meeting-frames-socket'
 import { setServerAnalyticsVersion } from './analytics/server-analytics'
 import { APP_VERSION } from './config/version'
-import { shutdownAC } from './computer-use/executor'
+import { shutdownComputerUse } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { attachErrorReportingIdentity, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
@@ -106,7 +106,7 @@ class ContainerImageService implements Service {
 function backgroundServices(): Service[] {
   return [
     // Nothing to start, and released last, after everything that uses them.
-    new ReleasedAtShutdown('computer-use', () => shutdownAC()),
+    new ReleasedAtShutdown('computer-use', () => shutdownComputerUse()),
     new ReleasedAtShutdown('active-runner', () => shutdownActiveRunner()),
     // After the containers, whose runtimes the host still needed: every agent
     // lets go of what it holds, its parked reviews and re-auth waits included.

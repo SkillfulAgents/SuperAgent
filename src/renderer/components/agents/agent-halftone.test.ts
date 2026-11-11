@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_ORBS } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { DEFAULT_ORBS } from '@shared/lib/types/agent-avatar-orbs'
 import { avatarHalftoneInk } from './agent-halftone'
 
 const orb = (name: string) => DEFAULT_ORBS.find((o) => o.name === name)!

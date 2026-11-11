@@ -1,6 +1,7 @@
 import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
 import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
 import { VOICE_PROVIDERS } from '../voice/provider-types'
+import { COMPUTER_USE_INPUT_MODES } from '../computer-use/types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -190,6 +191,8 @@ const computerUseSettingsPatchSchema = z.object({
     z.string(),
     z.object({ grants: z.array(computerUseGrantSchema) }).strict(),
   ),
+  showCursor: z.boolean(),
+  inputMode: z.enum(COMPUTER_USE_INPUT_MODES),
 }).partial().strict()
 
 const analyticsTargetSchema = z.object({
