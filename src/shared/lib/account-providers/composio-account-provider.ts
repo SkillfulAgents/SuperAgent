@@ -45,6 +45,13 @@ function composioAuthOf(credentials?: ProviderCredentials): ComposioAuth | undef
   return credentials?.provider === 'composio' ? (credentials as ComposioCredentials).auth : undefined
 }
 
+/** A Google Drive resumable upload session link, which carries its own authorization. */
+function isDriveUploadSession(toolkitSlug: string, method: string, targetUrl: string): boolean {
+  const url = URL.parse(targetUrl)
+  return toolkitSlug === 'googledrive' && method === 'PUT' && url?.protocol === 'https:' && url.hostname === 'www.googleapis.com'
+    && url.pathname.startsWith('/upload/drive/') && !!url.searchParams.get('upload_id')
+}
+
 export class ComposioAccountProvider extends BaseAccountProvider {
   readonly name = 'composio' as const
 
@@ -107,6 +114,10 @@ export class ComposioAccountProvider extends BaseAccountProvider {
 
     if (mode.kind === 'token') {
       return this.directForward(mode.accessToken, params)
+    }
+    // The link authorizes its own upload, so its bytes skip the proxy and its body limit.
+    if (isDriveUploadSession(params.toolkitSlug, params.method, params.targetUrl)) {
+      return this.directForward(null, params)
     }
 
     return this.proxyForward(params, auth)
@@ -176,8 +187,9 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     }
   }
 
+  /** Without a token the target authorizes itself: cookies stay behind and a redirect is returned, never followed. */
   private async directForward(
-    accessToken: string,
+    accessToken: string | null,
     params: {
       targetUrl: string
       method: string
@@ -187,13 +199,13 @@ export class ComposioAccountProvider extends BaseAccountProvider {
   ): Promise<Response> {
     const forwardHeaders = new Headers()
     params.headers.forEach((value, key) => {
-      if (!PROXY_SKIP_REQUEST_HEADERS.has(key.toLowerCase())) {
+      if (!PROXY_SKIP_REQUEST_HEADERS.has(key.toLowerCase()) && (accessToken || key.toLowerCase() !== 'cookie')) {
         forwardHeaders.set(key, value)
       }
     })
-    forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
+    if (accessToken) forwardHeaders.set('Authorization', `Bearer ${accessToken}`)
 
-    const init: RequestInit = { method: params.method, headers: forwardHeaders }
+    const init: RequestInit = { method: params.method, headers: forwardHeaders, redirect: accessToken ? 'follow' : 'manual' }
     if (params.method !== 'GET' && params.method !== 'HEAD' && params.body) {
       init.body = params.body
     }

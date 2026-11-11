@@ -85,6 +85,7 @@ describe('buildProxyParameters', () => {
       'authorization',
       'connection',
       'content-length',
+      'expect',
       'host',
       'transfer-encoding',
     ])
