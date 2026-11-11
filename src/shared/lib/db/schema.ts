@@ -659,6 +659,21 @@ export const agentSessions = sqliteTable('agent_sessions', {
   pk: primaryKey({ columns: [table.agentSlug, table.sessionId] }),
 }))
 
+/**
+ * What pages that show many agents need of each one (agent lists), kept as a
+ * row per agent so such a page reads this table and reaches no actor. Written
+ * only by `agent-summaries.ts`; the agent's actor stays the owner of the state
+ * it is derived from.
+ */
+export const agentSummaries = sqliteTable('agent_summaries', {
+  agentSlug: text('agent_slug').primaryKey(),
+  // JSON, validated by `agentSummarySchema` on every read and write.
+  summary: text('summary').notNull(),
+  // When the state behind the summary was read, as epoch ms: a write with an older one loses.
+  revision: integer('revision').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+})
+
 // Reusable sources. A NULL owner makes a volume available to every user.
 export const volumeDefinitions = sqliteTable('volume_definitions', {
   id: text('id').primaryKey(),
