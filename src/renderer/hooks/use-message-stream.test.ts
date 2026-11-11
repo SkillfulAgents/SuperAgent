@@ -888,6 +888,20 @@ describe('useMessageStream', () => {
 
   // ---- Additional request event types ----
 
+  it('reports a session stream as open only while its connection is open', async () => {
+    const { useMessageStream, isSessionStreamOpen } = await getHookModule()
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+
+    expect(isSessionStreamOpen('session-1')).toBe(true)
+    expect(isSessionStreamOpen('session-2')).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].close()
+    })
+
+    expect(isSessionStreamOpen('session-1')).toBe(false)
+  })
+
   // ---- Query invalidation ----
 
   it('invalidates sessions query on session_active', async () => {

@@ -143,7 +143,10 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
     setTimeout(() => textareaRef.current?.focus(), 0)
   }, [])
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
-  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
+  // The catalog only resolves a handoff's template slug: read it while one is armed.
+  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents({
+    enabled: handoffTemplateSlug !== null,
+  })
 
   const activeProvider = modelSettings?.llmProvider
   const catalog = useMemo(

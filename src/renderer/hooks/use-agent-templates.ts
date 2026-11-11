@@ -43,15 +43,16 @@ export function isWaitingOnDiscoverableRefresh(
  * The queryFn returns cached data first (fast). On the first call app-wide,
  * a single background refresh is kicked off; when it resolves with new data
  * the query cache is updated so every consumer re-renders.
+ * `enabled: false` reads nothing, for a caller that needs the catalog only sometimes.
  */
-export function useDiscoverableAgents() {
+export function useDiscoverableAgents(options?: { enabled?: boolean }) {
   const queryClient = useQueryClient()
   const { data: skillsets, isLoading: skillsetsLoading } = useSkillsets()
   const hasSkillsets = !!(skillsets && skillsets.length > 0)
 
   const query = useQuery<ApiDiscoverableAgent[]>({
     queryKey: ['discoverable-agents'],
-    enabled: hasSkillsets,
+    enabled: hasSkillsets && options?.enabled !== false,
     queryFn: async () => {
       const res = await apiFetch('/api/agents/discoverable-agents')
       if (!res.ok) throw new Error('Failed to fetch discoverable agents')
@@ -93,6 +94,16 @@ export function useDiscoverableAgents() {
     // Skillsets gate this query, so their fetch is part of the catalog's load.
     isLoading: skillsetsLoading || query.isLoading || waitingOnRefresh,
   }
+}
+
+/**
+ * Whether any configured skillset offers an agent template, or null while the
+ * skillsets load. Each skillset reports its template count, so this answers
+ * without reading the catalog itself.
+ */
+export function useHasDiscoverableAgents(): boolean | null {
+  const { data: skillsets } = useSkillsets()
+  return skillsets === undefined ? null : skillsets.some((skillset) => skillset.agentCount > 0)
 }
 
 export function useHostExportStatus(enabled = true) {
