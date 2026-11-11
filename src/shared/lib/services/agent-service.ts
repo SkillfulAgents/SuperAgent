@@ -246,10 +246,13 @@ export async function listAgents(): Promise<AgentRecord[]> {
  * Uses cached container status to avoid spawning docker processes.
  */
 export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
-  const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
+  // Two independent reads, so neither waits for the other.
+  const [records, teamBrain] = await Promise.all([
+    options.slugs ? agentCatalog.getMany(options.slugs) : agentCatalog.records(),
+    teamBrainOf(),
+  ])
 
   // The cached container statuses: no docker process is spawned.
-  const teamBrain = await teamBrainOf()
   return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container, teamBrain)))
 }
 
