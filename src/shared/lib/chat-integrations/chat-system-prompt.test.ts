@@ -266,9 +266,9 @@ describe('buildTelegramSystemPrompt', () => {
 })
 
 describe('buildIMessageSystemPrompt', () => {
-  it('keeps reaction-tag and voice-note lines', async () => {
+  it('keeps the reaction and voice-note lines', async () => {
     const prompt = buildIMessageSystemPrompt({ chatId: '+15559876543', userName: 'Iddo Gino' })
-    expect(prompt).toContain('[[reaction:heart]]')
+    expect(prompt).toContain('[[reaction:<emoji>]]')
     expect(prompt).toContain('voice notes which are automatically transcribed')
   })
 
@@ -412,7 +412,7 @@ describe('chat session system prompt wiring', () => {
     })
     expect(args.systemPrompt).toContain('live iMessage conversation')
     expect(args.systemPrompt).not.toContain('[Jane Doe]')
-    expect(args.systemPrompt).toContain('[[reaction:heart]]')
+    expect(args.systemPrompt).toContain('[[reaction:<emoji>]]')
     expect(args.systemPrompt).toContain(NORMAL_CAPABILITIES)
     expect(args.message).toBe('hey')
   })
