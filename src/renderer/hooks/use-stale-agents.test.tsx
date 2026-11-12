@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import type { ApiAgent } from '@shared/lib/types/api'
 
@@ -13,6 +13,7 @@ vi.mock('./use-agents', () => ({
 
 const user = vi.hoisted(() => ({ isAdmin: false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAdmin: user.isAdmin, canUseAgent: (slug: string) => slug !== 'v' }) }))
+afterEach(() => { user.isAdmin = false })
 
 import { useStaleAgents } from './use-stale-agents'
 
@@ -40,6 +41,5 @@ describe('useStaleAgents', () => {
     user.isAdmin = true
     const { result } = renderHook(() => useStaleAgents())
     expect(result.current.rows.map((r) => r.slug)).toEqual(['a', 'b', 'v'])
-    user.isAdmin = false
   })
 })

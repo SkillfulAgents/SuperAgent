@@ -50,7 +50,7 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
  * the selected API target and can also be attached from browsers/cloud windows.
  */
 
-const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', volumeName: 'code', type: 'local', hostPath: '/Users/joe/code' }
+const MOUNT = { id: 'm1', volumeId: 'v1', name: 'code', volumeName: 'code', type: 'local', hostPath: '/Users/joe/code', health: 'ok' }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -87,15 +87,27 @@ describe('driving this computer', () => {
 })
 
 describe('a volume with no local folder', () => {
-  it('lists it by name, with no path, open or copy action', async () => {
-    volumes.mounts = [{ id: 'd1', name: 'drive', volumeName: 'drive', type: 'gdrive', hostPath: null }]
+  it('lists it with the agent\'s folder to copy, and nothing to open', async () => {
+    volumes.mounts = [{ id: 'd1', name: 'drive', volumeName: 'drive', type: 'gdrive', hostPath: null, health: 'ok' }]
     render(<HomeVolumes agentSlug="a1" />)
 
-    expect(screen.getByText('drive')).toBeInTheDocument()
+    expect(screen.getByText('/mounts/drive')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /copy folder path/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /copy folder path/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /remove from agent/i })).toBeInTheDocument()
+  })
+})
+
+describe('a drive the agent has not mounted', () => {
+  it('shows where it comes from, with no agent folder to copy', async () => {
+    volumes.mounts = [{ ...MOUNT, health: 'missing' }]
+    render(<HomeVolumes agentSlug="a1" />)
+
+    expect(screen.getByText('/Users/joe/code')).toBeInTheDocument()
+    expect(screen.queryByText('/mounts/code')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
+    expect(screen.queryByRole('button', { name: /copy folder path/i })).not.toBeInTheDocument()
   })
 })
 
@@ -130,12 +142,14 @@ describe('driving a cloud workspace', () => {
   })
 
   it('drops the open-in-file-manager action', async () => {
+    const user = userEvent.setup()
     render(<HomeVolumes agentSlug="a1" />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
+    await user.click(screen.getByRole('button', { name: 'Drive actions' }))
 
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /copy folder path/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /copy folder path/i }))
+    expect(await navigator.clipboard.readText()).toBe('/mounts/code')
   })
 
   it('opens the drive settings from the row, back to this agent', async () => {

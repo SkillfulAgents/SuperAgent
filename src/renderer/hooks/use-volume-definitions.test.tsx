@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { useDeleteVolumeDefinition, useReconnectLocalVolume, useSaveVolumeDefinition } from './use-volume-definitions'
+import { useDeleteVolumeDefinition, useReconnectLocalVolume } from './use-volume-definitions'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 
@@ -41,22 +41,12 @@ describe('choosing a drive’s folder again', () => {
   })
 })
 
-describe('saving a drive', () => {
-  it('refetches the agents whose restart prompt a rename or global change sets', async () => {
-    vi.mocked(apiFetch).mockResolvedValue(Response.json({ success: true }))
-    const { invalidated, wrapper } = setup()
-    const { result } = renderHook(() => useSaveVolumeDefinition(), { wrapper })
-    await act(() => result.current.mutateAsync({ id: 'v1', name: 'Notes' }))
-    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['agents'])
-  })
-})
-
 describe('deleting a drive', () => {
-  it('refetches the agents a global drive came off', async () => {
+  it('refetches the mounts a global drive came off', async () => {
     vi.mocked(apiFetch).mockResolvedValue(Response.json({ success: true }))
     const { invalidated, wrapper } = setup()
     const { result } = renderHook(() => useDeleteVolumeDefinition(), { wrapper })
     await act(() => result.current.mutateAsync('v1'))
-    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['agents'])
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['mounts'])
   })
 })

@@ -181,7 +181,9 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   // file manager only works when that machine is this one; against a cloud
   // workspace it either fails or, worse, opens a same-named folder of yours.
   const { hostPath } = mount
-  const agentPath = mountPathOf(mount.name)
+  // Only a mounted drive has its folder in the agent. Until then the row shows where it comes from.
+  const agentPath = mount.health === 'ok' ? mountPathOf(mount.name) : null
+  const subtitle = agentPath ?? mount.sourceLabel ?? hostPath
   const canOpenInFileManager = canUseHostFeatures() && hostPath !== null
 
   const handleOpenInFinder = () => {
@@ -190,7 +192,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   }
 
   const handleCopyPath = () => {
-    if (hostPath) void navigator.clipboard.writeText(hostPath)
+    if (agentPath) void navigator.clipboard.writeText(agentPath)
   }
 
   const canOpen = definition !== undefined && !isRenaming
@@ -240,9 +242,11 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             {mount.global && <span className="inline-flex items-center text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">Global</span>}
           </>}
         </div>
-        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={agentPath}>
-          {agentPath}
-        </div>
+        {subtitle && (
+          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={subtitle}>
+            {subtitle}
+          </div>
+        )}
         <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100 transition-opacity">
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
@@ -271,7 +275,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                   Open in {fileManagerLabel}
                 </button>
               )}
-              {hostPath && (
+              {agentPath && (
                 <button
                   className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => {
