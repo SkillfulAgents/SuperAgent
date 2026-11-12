@@ -2,7 +2,7 @@ import { SessionInputNotAcceptedError } from './session-creation-error';
 import { connectionRuntimeSchema, rememberConnectionRuntime, cachedConnectionRuntime, runtimeFingerprint, resolvePrewarmRuntime, type ConnectionRuntime } from './connection-runtime';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
-import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
+import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession, getSessionInfo as sdkGetSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { globalInstructionsSchema } from './global-instructions';
@@ -22,6 +22,7 @@ import {
 } from './warm-profile';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 import { knownPreloadToolsets } from './preload-toolsets';
+import { transcriptStore } from './transcript-store';
 
 interface SessionData {
   session: Session;
@@ -705,7 +706,7 @@ export class SessionManager extends EventEmitter {
     }
     // A successful host delete may outlive its final cleanup request. Never
     // recreate its transcript from a retained resume record.
-    if (!this.retainedTranscriptExists(sessionId)) return undefined;
+    if (!(await this.retainedTranscriptExists(sessionId))) return undefined;
 
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
@@ -834,7 +835,7 @@ export class SessionManager extends EventEmitter {
   async getSession(sessionId: string): Promise<Session | null> {
     const releasing = this.releasing.get(sessionId);
     if (releasing) await releasing;
-    if (!this.retainedTranscriptExists(sessionId)) return null;
+    if (!(await this.retainedTranscriptExists(sessionId))) return null;
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
@@ -906,9 +907,14 @@ export class SessionManager extends EventEmitter {
     return existed;
   }
 
-  private retainedTranscriptExists(sessionId: string): boolean {
+  private async retainedTranscriptExists(sessionId: string): Promise<boolean> {
     const persisted = this.persistence.getSession(sessionId);
     if (!persisted?.releasedForDeletion) return true;
+    // With a transcript store the local file is only a working copy: ask the store.
+    const sessionStore = transcriptStore();
+    if (sessionStore) {
+      return (await sdkGetSessionInfo(persisted.claudeSessionId, { dir: persisted.workingDirectory, sessionStore })) !== undefined;
+    }
     const project = persisted.workingDirectory.replace(/[/\\]+/g, '-');
     return fs.existsSync(`${this.baseWorkingDirectory}/.claude/projects/${project}/${persisted.claudeSessionId}.jsonl`);
   }
@@ -936,13 +942,16 @@ export class SessionManager extends EventEmitter {
     // CLAUDE_CONFIG_DIR=/workspace/.claude + dir '/workspace' resolves to the
     // same projects dir the source lives in; the fork lands beside it.
     // A listing that survived CLI cleanup with no JSONL is gone: skip the SDK.
-    if (this.sourceTranscriptReaped(source.workingDirectory, source.claudeSessionId)) {
+    // With a transcript store the source may have no local file; the SDK reads the store.
+    const sessionStore = transcriptStore();
+    if (!sessionStore && this.sourceTranscriptReaped(source.workingDirectory, source.claudeSessionId)) {
       return null;
     }
+    const sdkOptions = { dir: source.workingDirectory, ...(sessionStore && { sessionStore }) };
 
     let newId: string;
     try {
-      ({ sessionId: newId } = await sdkForkSession(source.claudeSessionId, { dir: source.workingDirectory }));
+      ({ sessionId: newId } = await sdkForkSession(source.claudeSessionId, sdkOptions));
     } catch (error) {
       if (isSdkSessionNotFound(error)) return null;
       throw error;
@@ -969,7 +978,7 @@ export class SessionManager extends EventEmitter {
     } catch (error) {
       // Leave nothing on disk: the record did not persist, so the SDK file
       // would be an unowned transcript nobody lists.
-      await sdkDeleteSession(newId, { dir: source.workingDirectory }).catch((e) =>
+      await sdkDeleteSession(newId, sdkOptions).catch((e) =>
         console.error(`forkSession: cleanup of ${newId} failed`, e),
       );
       throw error;
@@ -998,7 +1007,7 @@ export class SessionManager extends EventEmitter {
   ): Promise<void> {
     const releasing = this.releasing.get(sessionId);
     if (releasing) await releasing;
-    if (!this.retainedTranscriptExists(sessionId)) throw new Error(`Session ${sessionId} not found`);
+    if (!(await this.retainedTranscriptExists(sessionId))) throw new Error(`Session ${sessionId} not found`);
     let sessionData = this.sessions.get(sessionId);
 
     // Try to resume if not in memory
