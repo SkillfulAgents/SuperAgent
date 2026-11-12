@@ -16,10 +16,11 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq, isNotNull } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
+import { agentAcl } from '@shared/lib/db/schema'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
+import { getLatestMessageAuthorUserId } from '@shared/lib/services/session-participants-service'
 import { userExists } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
@@ -114,23 +115,12 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
  * In shared sessions this can differ from the session creator, so invocation
  * attribution must prefer the latest per-message author record.
  */
-async function getLatestMessageAuthorUserId(
+async function getTriggeringMessageAuthorUserId(
   agentSlug: string,
   sessionId: string,
 ): Promise<string | undefined> {
   try {
-    const rows = await db
-      .select({ userId: messageAuthor.userId })
-      .from(messageAuthor)
-      .where(and(
-        eq(messageAuthor.agentSlug, agentSlug),
-        eq(messageAuthor.sessionId, sessionId),
-        // An integration-delivered message has no user author.
-        isNotNull(messageAuthor.userId),
-      ))
-      .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
-      .limit(1)
-    return rows[0]?.userId ?? undefined
+    return await getLatestMessageAuthorUserId(agentSlug, sessionId)
   } catch (error) {
     // Attribution is optional. A DB/read failure must never block the invoke.
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
@@ -780,7 +770,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   // This remains a best-effort "latest author" heuristic until the container
   // can pass the exact driving message UUID.
   const triggeringUserId = isAuthMode() && _callerSessionId
-    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    ? await getTriggeringMessageAuthorUserId(callerSlug, _callerSessionId)
     : undefined
 
   const target = await getAgentRecord(targetSlug)

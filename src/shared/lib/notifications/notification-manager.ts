@@ -24,6 +24,7 @@ import {
 } from '@shared/lib/services/notification-service'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getUserSummaries } from '@shared/lib/services/user-profile-service'
+import { getLatestMessageAuthorUserId } from '@shared/lib/services/session-participants-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
@@ -291,12 +292,14 @@ class NotificationManager {
 
   /**
    * Who a waiting session waits on. With sign-in every member with access
-   * reads the same row, so it names the person who started the session; a
-   * session nobody started (scheduled, webhook) keeps "you".
+   * reads the same row, so it names the person who sent the latest message,
+   * or else who started the session; a session no person wrote in or started
+   * (scheduled, webhook) keeps "you".
    */
   private async getSessionAudience(agentSlug: string, sessionId: string): Promise<RequestAudience> {
     if (!isAuthMode()) return READER
-    const userId = (await agentRegistry.get(agentSlug).sessions.metadata(sessionId))?.createdByUserId
+    const userId = await getLatestMessageAuthorUserId(agentSlug, sessionId)
+      ?? (await agentRegistry.get(agentSlug).sessions.metadata(sessionId))?.createdByUserId
     const name = userId ? (await getUserSummaries([userId])).get(userId)?.name : undefined
     return name ? namedAudience(name) : READER
   }

@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   captureException: vi.fn(),
   getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
   getUserSummaries: vi.fn(async (_userIds: readonly string[]) => new Map<string, { name: string }>()),
+  getLatestMessageAuthorUserId: vi.fn(async (_agentSlug: string, _sessionId: string): Promise<string | undefined> => undefined),
 }))
 
 const notifyInvitedUser = vi.hoisted(() => vi.fn(async () => 'not-invited'))
@@ -51,6 +52,9 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
 }))
 vi.mock('@shared/lib/services/user-profile-service', () => ({
   getUserSummaries: mocks.getUserSummaries,
+}))
+vi.mock('@shared/lib/services/session-participants-service', () => ({
+  getLatestMessageAuthorUserId: mocks.getLatestMessageAuthorUserId,
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: mocks.isAuthMode,
@@ -102,6 +106,7 @@ beforeEach(() => {
     },
   })
   mockGetSessionMetadata.mockResolvedValue(null)
+  mocks.getLatestMessageAuthorUserId.mockResolvedValue(undefined)
   mocks.createSummarizerText.mockResolvedValue('A concise completion summary.')
 })
 
@@ -432,7 +437,21 @@ describe('triggerSessionWaitingInput — NOT gated by automated-session flag', (
     )
   })
 
-  it('names the person who started the session with sign-in, where every member reads the same row', async () => {
+  it('names the person who sent the latest message with sign-in, not who started the session', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mockGetSessionMetadata.mockResolvedValue({ createdByUserId: 'user-dana' })
+    mocks.getLatestMessageAuthorUserId.mockResolvedValue('user-sam')
+    mocks.getUserSummaries.mockImplementation(async (userIds) => new Map(
+      [['user-dana', { name: 'Dana' }], ['user-sam', { name: 'Sam' }]].filter(([id]) => userIds.includes(id as string)) as [string, { name: string }][],
+    ))
+
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
+    expect(mockCreateNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: 'Demo Agent has a question for Sam' })
+    )
+  })
+
+  it('names the person who started the session when no message has an author', async () => {
     mocks.isAuthMode.mockReturnValue(true)
     mockGetSessionMetadata.mockResolvedValue({ createdByUserId: 'user-dana' })
     mocks.getUserSummaries.mockResolvedValue(new Map([['user-dana', { name: 'Dana' }]]))
@@ -448,7 +467,7 @@ describe('triggerSessionWaitingInput — NOT gated by automated-session flag', (
     )
   })
 
-  it('keeps "you" with sign-in for a session nobody started', async () => {
+  it('keeps "you" with sign-in for a session no person wrote in or started', async () => {
     mocks.isAuthMode.mockReturnValue(true)
     mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
