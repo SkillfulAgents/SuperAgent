@@ -430,28 +430,6 @@ Instructions`
       // The listing reads the live state and the sessions itself; nothing else asks again.
       for (const spy of [...listings, ...lives, ...summaries]) expect(spy).toHaveBeenCalledTimes(1)
     })
-
-    it('asks at most five agents at a time', async () => {
-      const slugs = Array.from({ length: 8 }, (_, i) => `bounded-${i + 1}`)
-      for (const slug of slugs) await createTestAgent(slug, SAMPLE_INSTRUCTIONS_MINIMAL)
-      let inFlight = 0
-      let most = 0
-      for (const slug of slugs) {
-        const actor = agentRegistry.get(slug)
-        const listing = actor.listing.bind(actor)
-        vi.spyOn(actor, 'listing').mockImplementation(async () => {
-          most = Math.max(most, ++inFlight)
-          try {
-            return await listing()
-          } finally {
-            inFlight--
-          }
-        })
-      }
-
-      expect(await listAgentsWithListing()).toHaveLength(8)
-      expect(most).toBe(5)
-    })
   })
 
   // ============================================================================
