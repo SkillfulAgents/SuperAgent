@@ -58,6 +58,7 @@ const mockResolveRecord = vi.fn(async (input: string) =>
   input.endsWith('-a1b2c3d4e5') ? { slug: 'a1b2c3d4e5', name: 'Sales' } : null)
 vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({
   agentCatalog: { resolveRecord: (input: string) => mockResolveRecord(input) },
+  namesMintedAgent: (input: string) => /(?:^|-)[a-z0-9]{10}$/.test(input),
 }))
 
 // Import after mocks
@@ -79,6 +80,7 @@ import {
   getAuthorizedAgentRole,
   getRequestDeviceId,
   ResolveAgent,
+  ResolveAgentEarly,
   getAgentId,
   getResolvedAgent,
 } from './auth'
@@ -294,6 +296,57 @@ describe('Auth Middleware', () => {
       expect(res.status).toBe(200)
       expect(getCaptured()).toBeNull()
       expect(mockGetSession).not.toHaveBeenCalled()
+    })
+  })
+
+  // =========================================================================
+  // ResolveAgentEarly()
+  // =========================================================================
+
+  describe('ResolveAgentEarly()', () => {
+    function agentApp() {
+      const app = new Hono()
+      app.use('/:id/*', ResolveAgentEarly())
+      app.use('*', Authenticated())
+      app.get('/my-roles', (c) => c.json({ fixed: true }))
+      app.get('/:id', ResolveAgent(), (c) => c.json({ agent: getResolvedAgent(c).slug }))
+      return app
+    }
+
+    it('reads the agent beside the session, and once', async () => {
+      const order: string[] = []
+      let finishSession!: () => void
+      mockGetSession.mockImplementation(() => {
+        order.push('session read starts')
+        return new Promise((resolve) => {
+          finishSession = () => resolve({ response: { user: { id: 'user-1' }, session: { id: 's-1', userId: 'user-1' } }, headers: new Headers() })
+        })
+      })
+      mockResolveRecord.mockImplementationOnce(async (input: string) => {
+        order.push('agent read starts')
+        return input.endsWith('a1b2c3d4e5') ? { slug: 'a1b2c3d4e5', name: 'Sales' } : null
+      })
+
+      const response = request(agentApp(), '/sales-a1b2c3d4e5')
+      await vi.waitFor(() => expect(order).toEqual(['agent read starts', 'session read starts']))
+      finishSession()
+
+      expect(await (await response).json()).toEqual({ agent: 'a1b2c3d4e5' })
+      expect(mockResolveRecord).toHaveBeenCalledTimes(1)
+    })
+
+    it('starts no read for a fixed path', async () => {
+      mockSession({ user: { id: 'user-1' }, session: { id: 's-1', userId: 'user-1' } })
+
+      expect(await (await request(agentApp(), '/my-roles')).json()).toEqual({ fixed: true })
+      expect(mockResolveRecord).not.toHaveBeenCalled()
+    })
+
+    it('answers 401 without a session, and the failed agent read is not left unhandled', async () => {
+      mockSession(null)
+      mockResolveRecord.mockRejectedValueOnce(new Error('database is down'))
+
+      expect((await request(agentApp(), '/sales-a1b2c3d4e5')).status).toBe(401)
     })
   })
 

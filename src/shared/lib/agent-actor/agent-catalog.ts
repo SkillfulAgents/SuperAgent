@@ -43,6 +43,11 @@ function isMintedSlug(value: string): boolean {
  */
 const SAFE_AGENT_INPUT_RE = /^[a-z0-9-]+$/
 
+/** Whether a route param has the shape of a minted agent's id or display slug (`sales-a1b2c3d4e5`). */
+export function namesMintedAgent(input: string): boolean {
+  return SAFE_AGENT_INPUT_RE.test(input) && isMintedSlug(input.slice(input.lastIndexOf('-') + 1))
+}
+
 function randomSlug(length: number): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
   let result = ''
