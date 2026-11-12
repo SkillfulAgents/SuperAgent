@@ -394,12 +394,15 @@ export interface HostBrowserStatus {
 
 export type { LlmProviderInfo }
 
+/** The web icon itself is served by /api/favicon, so settings reads say only whether one is set. */
+export type AppPreferencesResponse = Omit<AppPreferences, 'faviconDataUrl'> & { hasCustomFavicon: boolean }
+
 export interface GlobalSettingsResponse {
   dataDir: string
   /** Host machine's total physical memory — lets the UI warn about oversized VM memory picks. */
   hostTotalMemoryBytes?: number
   container: ContainerSettings
-  app: AppPreferences
+  app: AppPreferencesResponse
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
   llmProvider: LlmProviderId

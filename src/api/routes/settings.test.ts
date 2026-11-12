@@ -1830,6 +1830,24 @@ describe('settings route', () => {
 
       vi.useRealTimers()
     })
+
+    it('says whether a custom favicon is set instead of returning its data URL', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: { showMenuBarIcon: true, faviconDataUrl: pngDataUrl, faviconUpdatedAt: '2026-06-20T01:02:03.000Z' },
+      })
+
+      const getBody = await (await app.request('http://localhost/api/settings')).json()
+      expect(getBody.app).toEqual({ showMenuBarIcon: true, faviconUpdatedAt: '2026-06-20T01:02:03.000Z', hasCustomFavicon: true })
+
+      const putBody = await (await putSettings({ app: { faviconDataUrl: pngDataUrl } })).json()
+      expect(putBody.app.faviconDataUrl).toBeUndefined()
+      expect(putBody.app.hasCustomFavicon).toBe(true)
+
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), app: { showMenuBarIcon: true } })
+      const plainBody = await (await app.request('http://localhost/api/settings')).json()
+      expect(plainBody.app.hasCustomFavicon).toBe(false)
+    })
   })
 
   // =========================================================================
