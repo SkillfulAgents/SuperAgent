@@ -34,6 +34,14 @@ describe('cloudflareAgentActor', () => {
     expect(summary.byDay.get('2026-11-06')).toBe(3)
   })
 
+  it("reaches the agent's listing, an op of the actor itself", async () => {
+    const listing = vi.fn(async () => ({ refreshingWidgets: ['next-meeting'] }))
+    const { client, calls } = overRpc({ listing })
+
+    expect(await client.listing()).toEqual({ refreshingWidgets: ['next-meeting'] })
+    expect(calls[0].path).toBe('listing')
+  })
+
   it('reaches ops in nested groups', async () => {
     const pending = vi.fn(async () => ['review-1'])
     const { client, calls } = overRpc({ inputs: { reviews: { pending } } })

@@ -17,8 +17,9 @@
  * the host stay in this isolate, which shares the org's database and AppState. The agent's idle
  * check runs on this object's alarm, which outlives the isolate.
  */
-import { DurableObject, type Container, type DurableObjectState, type WorkerWebSocket } from 'cloudflare:workers'
-import { ASLEEP_HEADER, type ByteRange, type StoredEntry } from './cloudflare-container-control'
+import { DurableObject, type Container, type DurableObjectState, type SqlStorage, type WorkerWebSocket } from 'cloudflare:workers'
+import type { AgentListing, AgentLiveSummary } from '@shared/lib/agent-actor/types'
+import { ASLEEP_HEADER, type ByteRange, type SleepingStore, type StoredEntry } from './cloudflare-container-control'
 import { runAsAgentObject } from './agent-objects'
 import type { ActorOutcome } from './cloudflare-agent-actor'
 import { restartIfOlder } from './object-version'
@@ -36,6 +37,14 @@ const PORT_WAIT_MS = 120_000
 // The runtime stops the container once this object has been quiet this long; SuperAgent's own idle check sleeps the agent sooner.
 const INACTIVITY_TIMEOUT_MS = 30 * 60_000
 const INSTANCE = 'standard-1'
+// A sleeping agent as its actor would report it: a stopped container, nothing running or waiting.
+const ASLEEP_LIVE: AgentLiveSummary = {
+  container: { status: 'stopped', port: null, healthWarnings: [], stale: false, idleSince: null },
+  activeSessionIds: [],
+  awaitingSessionIds: [],
+  openRequests: [],
+  pendingReviews: [],
+}
 // The hosts the container calls this deploy on: the API, and the saved workspace's bytes.
 const HOST = 'host.internal'
 const WORKSPACE = 'workspace.internal'
@@ -210,12 +219,56 @@ export class AgentDurableObject extends DurableObject<Env> {
   /** One op on this agent's actor, for the rest of the org (cloudflareAgentActor). */
   actorCall(path: string, args: unknown[]): Promise<ActorOutcome> {
     const slug = this.agentName()
+    if (path === 'listing' && this.asleep()) return this.sleepingListing(slug).then((value) => ({ value }), (error: unknown) => {
+      console.error(`[AgentDurableObject ${slug}] the sleeping agent's listing failed:`, error)
+      return this.bootedCall(slug, path, args)
+    })
+    return this.bootedCall(slug, path, args)
+  }
+
+  private bootedCall(slug: string, path: string, args: unknown[]): Promise<ActorOutcome> {
     return runAsAgentObject(slug, this, async () => {
       const app = await import('./boot')
       await app.boot(this.env)
       await this.syncStatus(app, slug)
       return app.runAgentActorOp(slug, path, args)
     })
+  }
+
+  // No container, and none starting or stopping: nothing about the agent is live.
+  private asleep(): boolean {
+    return !this.ctx.container?.running && !this.starting && !this.stopping
+  }
+
+  /**
+   * What the agent list shows about a sleeping agent, from what this object keeps (the saved
+   * files and the session index) without booting SuperAgent: the same reads the actor's
+   * `listing()` makes, on the saved workspace.
+   */
+  private async sleepingListing(slug: string): Promise<AgentListing> {
+    const [{ scanArtifactsIn }, { summarizeSessions }, { createObjectSessionIndexStorage }, { createCloudflareFileOps }] = await Promise.all([
+      import('@shared/lib/services/artifact-scan'),
+      import('@shared/lib/agent-actor/session-summary'),
+      import('./object-session-index-storage'),
+      import('./cloudflare-file-ops'),
+    ])
+    const saved: SleepingStore = {
+      entry: (path) => this.storedEntry(path),
+      read: (path, range) => this.storedRead(path, range),
+      write: (path, bytes) => this.storedWrite(path, bytes),
+      remove: (path) => this.storedRemove(path),
+    }
+    const files = createCloudflareFileOps(async () => null, saved)
+    const [entries, artifacts] = await Promise.all([
+      createObjectSessionIndexStorage(() => this.ctx.storage.sql).list(),
+      scanArtifactsIn(files, { includeWidgets: true, agentSlug: slug }),
+    ])
+    return { live: ASLEEP_LIVE, sessions: summarizeSessions(entries), artifacts, refreshingWidgets: [] }
+  }
+
+  /** This object's SQLite, where the agent's session index is kept (object-session-index-storage.ts). */
+  sessionIndexSql(): SqlStorage {
+    return this.ctx.storage.sql
   }
 
   private syncStatus(app: typeof import('./boot'), slug: string): Promise<void> {
@@ -440,8 +493,10 @@ export class AgentDurableObject extends DurableObject<Env> {
         cursor = page.truncated ? page.cursor : undefined
       } while (cursor)
       const sql = this.ctx.storage.sql
+      const { dropObjectSessionIndex } = await import('./object-session-index-storage')
       this.ctx.storage.transactionSync(() => {
         for (const table of ['workspace_file', 'workspace_meta', 'workspace_pending']) sql.exec(`DELETE FROM ${table}`)
+        dropObjectSessionIndex(sql)
       })
     })
   }

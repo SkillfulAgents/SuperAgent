@@ -33,6 +33,7 @@ declare module 'cloudflare:workers' {
   export interface SqlStorageCursor<T> {
     toArray(): T[]
     one(): T
+    readonly rowsWritten: number
   }
 
   export interface SqlStorage {
