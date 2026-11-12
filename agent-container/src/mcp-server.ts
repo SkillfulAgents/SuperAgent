@@ -35,7 +35,7 @@ import {
   updateWebhookEndpointTool,
   inspectWebhookEventsTool,
 } from './tools/webhook-triggers'
-import { deliverFileTool } from './tools/deliver-file'
+import { makeDeliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
@@ -98,7 +98,7 @@ export function createUserInputMcpServer(
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
-      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      makeDeliverFileTool(getSessionId), deliverSessionTool, requestFileTool, requestBrowserInputTool,
       createRequestLoginTool(getSessionId),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),

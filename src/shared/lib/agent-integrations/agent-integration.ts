@@ -7,6 +7,11 @@ import type {
 } from './types'
 import type { IntegrationTransport } from './transport'
 
+/** A file the agent delivered, as its workspace path. */
+export interface DeliveredFile { filePath: string; description?: string }
+/** What happened to it, as the words the agent reads after the file's name. */
+export interface FileDelivery { delivered: boolean; text: string }
+
 /** Application-facing lifecycle, input, and output contract for every integration. */
 export abstract class AgentIntegration {
   /** Whether this host can offer new installations. Existing rows remain manageable. */
@@ -45,6 +50,8 @@ export abstract class AgentIntegration {
 
   async consumeInput(_event: IntegrationInputEvent, _context: IntegrationInputContext, _input: PreparedIntegrationInput): Promise<boolean> { return false }
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] { return [] }
+  /** Send a file the agent delivered, and say what happened in words the agent reads after the file's name. */
+  deliverFile?(context: IntegrationSessionContext, file: DeliveredFile): Promise<FileDelivery>
   shouldUpdateDisplayName(current: string | null | undefined): boolean { return !current }
   /**
    * Whether `observeSession` reads `context.activity`. Only then is the

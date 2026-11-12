@@ -137,7 +137,7 @@ describe('deliver_file tool_result_ready', () => {
 
     mockClient.emit({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'delivered' }] },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'File "report.pdf" (5 bytes) has been delivered to the user. They can now download it from the chat.' }] },
     })
 
     const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
@@ -148,7 +148,7 @@ describe('deliver_file tool_result_ready', () => {
     expect(ready[0].isError).toBe(false)
   })
 
-  it('marks tool_result_ready as an error when the in-container tool failed', () => {
+  it('does not broadcast tool_result_ready when the in-container tool failed', () => {
     streamDeliverFileToolUse('/workspace/missing.txt')
     sseEvents.length = 0
 
@@ -157,9 +157,7 @@ describe('deliver_file tool_result_ready', () => {
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'not found', is_error: true }] },
     })
 
-    const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
-    expect(ready).toHaveLength(1)
-    expect(ready[0].isError).toBe(true)
+    expect(sseEvents.filter(e => e.type === 'tool_result_ready')).toHaveLength(0)
   })
 
   it('does not broadcast tool_result_ready for an untracked tool_result', () => {
@@ -177,7 +175,7 @@ describe('deliver_file tool_result_ready', () => {
 
     const sendResult = () => mockClient.emit({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'delivered' }] },
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'File "report.pdf" (5 bytes) has been delivered to the user. They can now download it from the chat.' }] },
     })
 
     sseEvents.length = 0

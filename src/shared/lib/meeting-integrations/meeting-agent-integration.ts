@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentIntegration } from '../agent-integrations/agent-integration'
+import { AgentIntegration, type DeliveredFile, type FileDelivery } from '../agent-integrations/agent-integration'
 import { IntegrationPolicyError } from '../agent-integrations/errors'
 import type {
   AgentIntegrationRecord, IntegrationInputContext, IntegrationInputEvent, IntegrationOutput,
@@ -45,7 +45,7 @@ const runtimeTextEventSchema = z.discriminatedUnion('type', [
 const MAX_WRITTEN_REPLY_CHARS = 16_000
 const MAX_CHAT_MESSAGE_CHARS = 4096
 
-const deliveredFileEventSchema = z.object({
+const olderSandboxFileSchema = z.object({
   type: z.literal('tool_result_ready'),
   toolName: z.literal('mcp__user-input__deliver_file'),
   filePath: z.string().min(1),
@@ -122,9 +122,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   /**
    * The participant page follows the session stream itself, so spoken replies
-   * need no relay. Files are the exception: the bot cannot drop bytes into the
-   * call, so every file the agent delivers is posted into the meeting chat as a
-   * link (the page shows images on the camera on its own).
+   * need no relay.
    */
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void> {
     const meeting = await getMeeting(context.externalId)
@@ -132,16 +130,32 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     // A listening bot gives the call nothing; the person reads the session in the app.
     if (meeting.mode === 'listen') return
     if (meeting.mode === 'silent') await this.deliverWrittenReply(meeting, output)
-    if (output.type !== 'runtime') return
-    const delivered = deliveredFileEventSchema.safeParse(output.event)
-    if (!delivered.success || delivered.data.isError) return
+    // A sandbox from before deliver_file asked the host still announces files here.
+    const file = output.type === 'runtime' ? olderSandboxFileSchema.safeParse(output.event) : null
+    if (file?.success && !file.data.isError) await this.deliverFile(context, file.data)
+  }
+
+  /**
+   * The bot cannot drop bytes into the call, so a file the agent delivers is
+   * posted into the meeting chat as a link (the page shows images on the
+   * camera on its own).
+   */
+  override async deliverFile(context: IntegrationSessionContext, { filePath, description }: DeliveredFile): Promise<FileDelivery> {
+    const notPosted = (reason: string) => ({ delivered: false, text: `was not posted in the meeting chat: ${reason}.` })
+    const meeting = await getMeeting(context.externalId)
+    // A listening bot gives the call nothing; the person reads the session in the app.
+    if (!meeting) return notPosted('the meeting is over')
+    if (meeting.mode === 'listen') return notPosted('the bot only listens in this call')
     const baseUrl = resolveInternetAppBaseUrl()
-    if (!meeting.botId || meeting.status !== 'in_call' || !baseUrl) return
-    const { filePath, description } = delivered.data
+    if (!meeting.botId || meeting.status !== 'in_call') return notPosted('the bot is not in the call')
+    if (!baseUrl) return notPosted('the app has no public address to link to')
     const line = `${description?.trim() || workspaceBasename(filePath)}: ${publicWorkspaceFileUrl(baseUrl, context.integration.agentSlug, filePath)}`
-    try { await this.bots.sendChatMessage(meeting.botId, line) }
-    catch (error) {
-      captureException(error, { tags: { component: 'meeting-integration', operation: 'share-file' }, extra: { meetingId: meeting.id, filePath } })
+    try {
+      await this.bots.sendChatMessage(meeting.botId, line)
+      return { delivered: true, text: 'was posted as a link in the meeting chat.' }
+    } catch (error) {
+      captureException(error, { tags: { component: 'meeting-integration', operation: 'share-file' }, extra: { meetingId: meeting.id } })
+      return notPosted('the meeting chat refused the link')
     }
   }
 

@@ -12,7 +12,7 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
 
 import { IntegrationAuthorizationWatch, type IntegrationAuthorizationEvent } from './authorization-events'
 import { containerPendingInputsSchema, integrationRequestEventSchema } from './runtime-schema'
-import type { AgentIntegration } from './agent-integration'
+import type { AgentIntegration, DeliveredFile, FileDelivery } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
 import { integrationRelays } from './relay-transport'
@@ -971,6 +971,33 @@ export class AgentIntegrationManager implements Service {
     if (!current()) return
     if (session.recovered) session.recoveryClears = clears
     return this.currentObservation(session)
+  }
+
+  /**
+   * Hand a file the agent delivered to the integration whose chat this
+   * session is, behind the chat's queued output so it lands after the text
+   * before it. Null when the session belongs to no chat.
+   */
+  async deliverFile(agentSlug: string, sessionId: string, file: DeliveredFile): Promise<FileDelivery | null> {
+    const row = await getIntegrationSessionBySessionId(agentSlug, sessionId)
+    if (!row || row.archivedAt) return null
+    // A family that takes no files (a task manager) leaves the file in the app, as before.
+    const connector = this.getConnector(row.integrationId)
+    if (connector && !connector.deliverFile) return null
+    const notSent = (reason: string): FileDelivery => ({ delivered: false, text: `was not sent to the chat: ${reason}.` })
+    const queueKey = `sse:${row.integrationId}:${row.externalId}`
+    // Checked when its turn comes, as an event is: the chat can be cleared or revoked meanwhile.
+    const delivery = (this.messageQueues.get(queueKey) ?? Promise.resolve()).then(async () => {
+      const session = this.chatSessions.get(this.getChatSessionKey(row.integrationId, row.externalId))
+      const deliver = session?.connector.deliverFile?.bind(session.connector)
+      if (!session || !deliver || !this.isCurrentSession(row.integrationId, row.externalId, session, sessionId)) return notSent('the chat is not connected right now')
+      if (!(await this.isAllowed(row.integrationId, row.externalId))) return notSent('this conversation is not approved')
+      return deliver(routing(session.context, { sessionId }), file)
+    })
+    const settled = delivery.then(() => {}, () => {})
+    this.messageQueues.set(queueKey, settled)
+    this.scheduleQueueEviction(queueKey, settled)
+    return delivery
   }
 
   // `observe` is the chat session to mark live before the event is handled.
