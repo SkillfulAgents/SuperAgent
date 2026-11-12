@@ -167,7 +167,7 @@ export async function migrateDatabase(env: Env): Promise<void> {
   // As a boot does before it opens the database: the data migrations reach agents through this wiring.
   wireAgents(env)
   await migrateD1(env.DB, migrationBundle)
-  await runDataMigrations(d1(env.DB).open().db)
+  await runDataMigrations((await d1(env.DB).open()).db)
 }
 
 async function start(env: Env): Promise<void> {
