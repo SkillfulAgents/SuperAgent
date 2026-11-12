@@ -816,6 +816,20 @@ describe('ReviewManager', () => {
       expect(await promise).toEqual({ decision: 'deny' })
     })
 
+    it('an "all agents" allow sweep decides a rechecking agent review again, and leaves it open on review', async () => {
+      const reviews = agents.get('caller').reviews
+      const reevaluate = vi.fn(async () => 'review' as const)
+      const decision = awaitReview(reviews, (options) => reviews.requestXAgent({ targetAgentSlug: 'target', targetAgentName: 'Target', operation: 'read' }, options), { reevaluate })
+      await vi.waitFor(() => expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(1))
+
+      manager.resolveMatchingXAgentByOperation('caller', 'read', 'allow')
+
+      await vi.waitFor(() => expect(reevaluate).toHaveBeenCalledOnce())
+      expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(1)
+      manager.submitDecision('caller', manager.getPendingReviewsForAgent('caller')[0].id, 'deny')
+      await expect(decision).resolves.toEqual({ decision: 'deny' })
+    })
+
     it('message-policy allow sweeps settle attachment reviews', async () => {
       const plain = manager.requestXAgentReview('caller', 'target', 'Target', 'invoke', 'plain message')
       const attachment = manager.requestXAgentReview(

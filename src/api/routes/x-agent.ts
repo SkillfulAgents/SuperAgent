@@ -234,7 +234,14 @@ async function checkAgentPolicy(
     const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
-    ))
+    ), operation === 'create' ? {} : {
+      // When an "always" decision on another card changes the policy, this
+      // request is decided again rather than released.
+      reevaluate: async () => {
+        const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+        return decision === 'block' ? 'deny' : decision
+      },
+    })
     if (review.decision === 'deny') {
       return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }

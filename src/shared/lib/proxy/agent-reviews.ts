@@ -403,7 +403,7 @@ export class AgentReviews {
       const xAgent = detailsOf(entry).xAgent
       if (xAgent?.operation !== operation) continue
       if (decision === 'allow' && requiresOneTimeXAgentReview(xAgent)) continue
-      this.settleDecided(entry, decision)
+      this.settleSwept(entry, decision)
     }
     this.shadowSettlerCheck('resolveMatchingXAgentByOperation')
     this.syncAwaiting()
