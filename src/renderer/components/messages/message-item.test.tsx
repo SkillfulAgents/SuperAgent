@@ -192,11 +192,13 @@ describe('MessageItem', () => {
       const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
       render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
 
-      // A dashed bubble, and under it who was notified in place of a reply.
+      // The bubble is drawn like any other; the line under it says the agent
+      // did not run, with who was notified as its tooltip.
       const bubble = screen.getByTestId('user-mention').closest('[data-notify-only]')
       expect(bubble).not.toBeNull()
-      expect(bubble).toHaveClass('border-dashed')
-      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Notified Mike Smith')
+      expect(bubble).not.toHaveClass('border-dashed')
+      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Message ignored by agent')
+      expect(screen.getByTitle('Only notifies Mike Smith')).toBeInTheDocument()
     })
   })
 
