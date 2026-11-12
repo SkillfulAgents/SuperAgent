@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PNG } from 'pngjs'
 import type { AgentDesktopEnvelope } from './agent-desktop'
 import type { ScreenWindow, ScreenWindows } from './screen-windows'
+import type { WindowHit } from './windows-hit-test'
 
 // Every agent-desktop run goes through this mock: the test answers by
 // command, with an envelope or, for text output such as --help, a string.
@@ -50,7 +51,10 @@ vi.mock('./windows-start-menu', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./windows-start-menu')>()
   return {
     ...actual,
-    startMenuApps: async () => [{ name: 'Calculator', appId: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' }],
+    startMenuApps: async () => [
+      { name: 'Calculator', appId: 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App' },
+      { name: 'Google Chrome', appId: 'Chrome' },
+    ],
     activateStartMenuApp: (app: { appId: string }) => { activated.push(app.appId) },
   }
 })
@@ -62,6 +66,23 @@ const keepAlive = {
   letCursorRest: vi.fn(),
 }
 vi.mock('./cursor-keep-alive', () => keepAlive)
+
+// Windows' hit test is not asked unless a test says what it answers: the
+// Windows tests below otherwise place points from the window list alone.
+const windowsAtPoints = vi.fn<(points: readonly { x: number; y: number }[]) => Promise<WindowHit[] | null>>(async () => null)
+vi.mock('./windows-hit-test', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./windows-hit-test')>()),
+  windowsAtPoints: (points: readonly { x: number; y: number }[]) => windowsAtPoints(points),
+  prepareWindowsHitTest: async () => false,
+}))
+
+// No cursor image is drawn unless a test gives the app a renderer.
+let cursorRenderer = false
+vi.mock('./cursor-image', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./cursor-image')>()),
+  hasCursorImageRenderer: () => cursorRenderer,
+  cursorImageFile: async () => (cursorRenderer ? { path: '/cursors/cursor-abc.png', hotspot: { x: 4.5, y: 4.5 } } : null),
+}))
 
 let computerUseSettings: Record<string, unknown> | undefined
 vi.mock('@shared/lib/config/settings', () => ({
@@ -109,10 +130,13 @@ beforeEach(async () => {
   })
   run.mockClear()
   for (const spy of Object.values(keepAlive)) spy.mockClear()
+  cursorRenderer = false
   computerUseSettings = undefined
   answer = defaultAnswer
   readScreenWindows.mockReset()
   readScreenWindows.mockResolvedValue(null)
+  windowsAtPoints.mockReset()
+  windowsAtPoints.mockResolvedValue(null)
 })
 
 describe('executeComputerUseCommand', () => {
@@ -126,6 +150,29 @@ describe('executeComputerUseCommand', () => {
     expect(runs).toContainEqual(['--session', 'ads-1', 'cursor-overlay', 'enable', '--label=Invoice Bot', '--max-words=6', '--accent=#2B79FA'])
     const snapshots = runs.filter((args) => commandOf(args) === 'snapshot')
     expect(snapshots.every((args) => args[0] === '--session' && args[1] === 'ads-1')).toBe(true)
+  })
+
+  it('draws the agent\'s own cursor image where it can render one, at its size in points on each OS', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    cursorRenderer = true
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+      await executeComputerUseCommand('snapshot', { app: 'Finder' }, caller('session-mac'))
+      expect(runs).toContainEqual(['--session', 'ads-1', 'cursor-overlay', 'enable', '--image=/cursors/cursor-abc.png', '--hotspot=4.5,4.5', '--accent=#2B79FA'])
+
+      // Windows draws one PNG pixel per physical pixel and takes the hotspot
+      // in PNG pixels: at 150%, the 2x image is drawn at three quarters. With
+      // an image it shows no greeting ("Hey, let's play with this computer!").
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+      answer = (args) => commandOf(args) === 'list-displays'
+        ? ok('list-displays', [{ bounds: { x: 0, y: 0, width: 2304, height: 1536 }, is_primary: true, scale: 1.5 }])
+        : defaultAnswer(args)
+      await executeComputerUseCommand('snapshot', { app: 'notepad.exe' }, caller('session-win'))
+      expect(runs).toContainEqual(['--session', 'ads-2', 'cursor-overlay', 'enable', '--image=/cursors/cursor-abc.png', '--hotspot=9,9', '--size=0.75', '--accent=#2B79FA'])
+      expect(runs.some((args) => args.some((arg) => arg.startsWith('--label=')))).toBe(false)
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+    }
   })
 
   it('keeps sessions apart, so one session never resolves another\'s refs', async () => {
@@ -276,9 +323,17 @@ describe('executeComputerUseCommand', () => {
   })
 })
 
+// The window-list tests below are macOS's (or Linux's) unless they say
+// otherwise, whatever this machine runs: Windows lists windows front to back
+// and captures them without a shadow.
+const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform')!
+const onPlatform = (platform: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+
 describe('screenshots', () => {
   // Safari's window: 400 × 300 points at (738, 30), captured at 2× inside its shadow.
   const bounds = { x: 738, y: 30, width: 400, height: 300 }
+  beforeEach(() => onPlatform('darwin'))
+  afterEach(() => { Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM) })
 
   function capture(): string {
     const margins = { left: 112, top: 78, right: 112, bottom: 150 }
@@ -373,9 +428,33 @@ describe('screenshots', () => {
 
     expect(limits).toEqual([2000, 2000])
   })
+
+  it('on Windows, says which screen points a window capture shows, its invisible borders left out', async () => {
+    onPlatform('win32')
+    // Measured at 150% scaling: the capture is the visible frame in physical
+    // pixels (scale_factor 1.5 is the DPI setting), and the bounds take in 9
+    // pixels of resize border left, right and below.
+    const chrome = { x: -9, y: 0, width: 1119, height: 1473 }
+    const png = new PNG({ width: 1101, height: 1464, fill: true })
+    png.data.fill(255)
+    answer = (args) => {
+      if (args[0] === 'session') return defaultAnswer(args)
+      const command = commandOf(args)
+      if (command === 'screenshot') return ok('screenshot', { data: PNG.sync.write(png).toString('base64'), format: 'png', width: 1101, height: 1464, scale_factor: 1.5 })
+      if (command === 'list-windows') return ok('list-windows', [{ id: 'w-921266', app_name: 'chrome.exe', bounds: chrome }])
+      return defaultAnswer(args)
+    }
+
+    const shot = JSON.parse((await executeComputerUseCommand('screenshot', { app: 'chrome.exe' }, caller())).output)
+
+    expect(shot.note).toMatch(/^This image is \d+×\d+ pixels and shows window w-921266 \(chrome\.exe\), at screen points x 0–1101, y 0–1464: the pixel \(px, py\) is the screen point \(0 \+ px × [\d.]+, 0 \+ py × [\d.]+\)\.$/)
+  })
 })
 
 describe('what a call acts on', () => {
+  beforeEach(() => onPlatform('darwin'))
+  afterEach(() => { Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM) })
+
   it('reads a snapshot that names no app from the focused app, and pins it there', async () => {
     answer = (args) => commandOf(args) === 'list-windows'
       ? ok('list-windows', [{ id: 'w-1', app_name: 'Notes', is_focused: false }, { id: 'w-2', app_name: 'Mail', is_focused: true }])
@@ -418,6 +497,79 @@ describe('what a call acts on', () => {
     expect(await resolveComputerUseTargetApp('mouse-wheel', { argv: ['--x=100', '--y=10'] })).toBe('Notes')
   })
 
+  it('on Windows, places a point in the front-most window there, the list being front to back', async () => {
+    onPlatform('win32')
+    // The desktop the click on Chrome was asked about: this app focused on the
+    // right, Chrome on the left, and Slack maximized behind them both.
+    answer = (args) => commandOf(args) === 'list-windows'
+      ? ok('list-windows', [
+        { id: 'w-1', app_name: 'Gamut.exe', pid: 33216, is_focused: true, bounds: { x: 1092, y: 0, width: 1221, height: 1473 } },
+        { id: 'w-2', app_name: 'chrome.exe', pid: 3352, bounds: { x: -9, y: 0, width: 1119, height: 1473 } },
+        { id: 'w-3', app_name: 'Slack.exe', pid: 24932, bounds: { x: -11, y: -11, width: 2326, height: 1486 } },
+        { id: 'w-4', app_name: 'Notepad.exe', pid: 12424, minimized: true, bounds: { x: -32000, y: -32000, width: 237, height: 39 } },
+      ])
+      : defaultAnswer(args)
+
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '525,418', headed: true })).toBe('chrome.exe')
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '1500,400', headed: true })).toBe('Gamut.exe')
+    // Off every window: still nowhere.
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '100,1500', headed: true })).toBeUndefined()
+  })
+
+  it('on Windows, places a point by Windows\' own hit test, naming the window as the list does', async () => {
+    onPlatform('win32')
+    answer = (args) => commandOf(args) === 'list-windows'
+      ? ok('list-windows', [
+        { id: 'w-100', app_name: 'chrome.exe', pid: 3352, bounds: { x: -9, y: 0, width: 1119, height: 1473 } },
+        { id: 'w-200', app_name: 'CalculatorApp.exe', pid: 7000, bounds: { x: 600, y: 300, width: 400, height: 600 } },
+        { id: 'w-300', app_name: 'explorer.exe', pid: 10844, bounds: { x: 499, y: 696, width: 1709, height: 962 } },
+        { id: 'w-400', app_name: 'Notepad.exe', pid: 12424, minimized: true, bounds: { x: -32000, y: -32000, width: 237, height: 39 } },
+      ])
+      : defaultAnswer(args)
+    const hitAt = (hit: Partial<WindowHit>) => windowsAtPoints.mockResolvedValueOnce([{ x: 1, y: 1, hwnd: 0, pid: 0, className: '', ...hit }])
+
+    // A listed window, by its id, whatever process hosts it (a Store app's frame host).
+    hitAt({ hwnd: 100, pid: 3352, className: 'Chrome_WidgetWin_1' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '525,418', headed: true })).toBe('chrome.exe')
+    hitAt({ hwnd: 200, pid: 9100, className: 'ApplicationFrameWindow' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '700,400', headed: true })).toBe('CalculatorApp.exe')
+    // A popup or menu the list leaves out: the app whose process drew it.
+    hitAt({ hwnd: 101, pid: 3352, className: 'Chrome_WidgetWin_2' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '530,430', headed: true })).toBe('chrome.exe')
+    // The taskbar over File Explorer's window: the shell, no app, though explorer.exe draws both.
+    hitAt({ hwnd: 500, pid: 10844, className: 'Shell_TrayWnd' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '900,1500', headed: true })).toBeUndefined()
+    // Another of the shell's popups, in explorer.exe's process: not File Explorer's.
+    hitAt({ hwnd: 501, pid: 10844, className: '#32768' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '900,1000', headed: true })).toBeUndefined()
+    // Start, a notification, or a window no app is listed for: nowhere.
+    hitAt({ hwnd: 600, pid: 8800, className: 'Windows.UI.Core.CoreWindow' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '1000,1000', headed: true })).toBeUndefined()
+    hitAt({ hwnd: 700, pid: 9900, className: 'SomeToast' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '2000,1300', headed: true })).toBeUndefined()
+    // A minimized window cannot be where a click lands, whatever answered.
+    hitAt({ hwnd: 400, pid: 12424, className: 'Notepad' })
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '10,10', headed: true })).toBeUndefined()
+  })
+
+  it('on Windows, keeps the window list when the hit test cannot answer', async () => {
+    onPlatform('win32')
+    answer = (args) => commandOf(args) === 'list-windows'
+      ? ok('list-windows', [{ id: 'w-100', app_name: 'chrome.exe', pid: 3352, bounds: { x: 0, y: 0, width: 1000, height: 1000 } }])
+      : defaultAnswer(args)
+    windowsAtPoints.mockResolvedValueOnce(null)
+    expect(await resolveComputerUseTargetApp('mouse-click', { xy: '500,500', headed: true })).toBe('chrome.exe')
+    expect(windowsAtPoints).toHaveBeenCalledWith([{ x: 500, y: 500 }])
+  })
+
+  it('never asks Windows\' hit test on macOS', async () => {
+    answer = (args) => commandOf(args) === 'list-windows'
+      ? ok('list-windows', [{ id: 'w-1', app_name: 'Notes', bounds: { x: 0, y: 0, width: 500, height: 500 } }])
+      : defaultAnswer(args)
+    expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=100,10'] })).toBe('Notes')
+    expect(windowsAtPoints).not.toHaveBeenCalled()
+  })
+
   it('reads a shell surface without pinning it to the focused app', async () => {
     await executeComputerUseCommand('snapshot', { surface: 'dock' }, caller())
 
@@ -432,8 +584,10 @@ describe('what a call acts on', () => {
       : defaultAnswer(args)
 
     expect(await resolveComputerUseTargetApp('snapshot', {})).toBeUndefined()
-    await expect(executeComputerUseCommand('snapshot', {}, caller())).rejects.toThrow(/this app's own window/)
-    await expect(executeComputerUseCommand('mouse-click', { xy: '10,10', headed: true }, caller())).rejects.toThrow(/this app's own window/)
+    await expect(executeComputerUseCommand('snapshot', {}, caller())).rejects.toThrow(/this app's own window.*Name the app to act in/)
+    // At a point, naming an app changes nothing: it says what is there instead.
+    await expect(executeComputerUseCommand('mouse-click', { xy: '10,10', headed: true }, caller()))
+      .rejects.toThrow("mouse-click would land on this app's own window, which is at that point on screen; agents do not act in it. Nothing was sent.")
     expect(runs.some((args) => ['snapshot', 'mouse-click'].includes(commandOf(args)))).toBe(false)
   })
 
@@ -728,6 +882,36 @@ describe('a Store app on Windows', () => {
     const result = await executeComputerUseCommand('launch', { app: 'Calculator', activate: true }, caller())
     expect(activated).toEqual(['Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'])
     expect(JSON.parse(result.output)).toMatchObject({ ok: true, command: 'launch', data: { app: 'CalculatorApp.exe', window: { id: 'w-calc' }, start_menu: { name: 'Calculator' } } })
+  })
+
+  it('answers a launch of an app already running with its windows, starting nothing and raising nothing', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    // The session's own: Gmail in one Chrome window, a second one minimized.
+    answer = (args) => {
+      const command = commandOf(args)
+      if (command === 'launch') return notFound('launch')
+      if (command === 'list-windows') {
+        return ok('list-windows', [
+          { id: 'w-921266', title: 'Inbox - Gmail - Google Chrome', app_name: 'chrome.exe', pid: 3352 },
+          { id: 'w-5', title: 'New Tab - Google Chrome', app_name: 'chrome.exe', pid: 3352, minimized: true },
+          { id: 'w-9', title: 'Notes', app_name: 'Notepad.exe', pid: 12 },
+        ])
+      }
+      return defaultAnswer(args)
+    }
+    const result = await executeComputerUseCommand('launch', { app: 'Chrome' }, caller())
+    expect(activated).toEqual([])
+    expect(JSON.parse(result.output)).toMatchObject({
+      ok: true,
+      command: 'launch',
+      data: {
+        app: 'chrome.exe',
+        window: { id: 'w-921266' },
+        windows: [{ id: 'w-921266' }, { id: 'w-5', minimized: true }],
+        already_running: true,
+        note: 'chrome.exe was already running, with these 2 windows; no new instance was started and no window was brought forward.',
+      },
+    })
   })
 
   it('leaves a name the Start menu does not have, and every launch off Windows, as agent-desktop answered', async () => {
