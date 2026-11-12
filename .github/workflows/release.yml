@@ -12,8 +12,17 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Two-person release: nothing below runs until someone other than the person
+  # who pushed the tag approves this job (the "release" environment).
+  release-approval:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - run: echo "Release $GITHUB_REF_NAME approved"
+
   # Extract version + update channel from tag
   prepare:
+    needs: release-approval
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -117,6 +126,7 @@ jobs:
 
   # The built-in Lima runtime's VM image, which the macOS build bundles
   lima-image:
+    needs: release-approval
     uses: ./.github/workflows/lima-image.yml
 
   # Build macOS Electron app (signed + notarized)
