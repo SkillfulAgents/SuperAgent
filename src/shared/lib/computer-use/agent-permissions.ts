@@ -31,19 +31,6 @@ function coversSomething(grants: readonly PersistedGrant[]): PersistedGrant[] {
   return grants.filter((g) => !(g.level === 'use_application' && !g.appName))
 }
 
-/**
- * Drop a deleted agent's persisted "always" grants, so a later agent that gets
- * the same slug does not inherit them.
- */
-export async function forgetPersistedGrants(slug: AgentSlug): Promise<void> {
-  await mutateSettings((settings) => {
-    if (!settings.computerUse?.agentPermissions?.[slug]) return false
-    const agentPermissions = { ...settings.computerUse.agentPermissions }
-    delete agentPermissions[slug]
-    settings.computerUse = { ...settings.computerUse, agentPermissions }
-  })
-}
-
 export class AgentComputerUse {
   /** The in-memory grants: "once" and "timed" ("always" ones live in settings). */
   private grants: PermissionGrant[] = []
