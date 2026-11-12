@@ -34,6 +34,7 @@ import {
   agentRegistry,
   identityFromInstructions,
   type AgentIdentityChanges,
+  type AgentListing,
   type AgentLiveSummary,
   type AgentRecord,
 } from '@shared/lib/agent-actor'
@@ -251,6 +252,37 @@ export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): 
   // The cached container statuses: no docker process is spawned.
   const teamBrain = await teamBrainOf()
   return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container, teamBrain)))
+}
+
+/** An agent as the agent list shows it, with what its actor reported in one `listing()` call. */
+export interface ListedAgent {
+  agent: ApiAgent
+  listing: AgentListing
+}
+
+/**
+ * The agents the list shows, newest first, each with its actor's `listing()`.
+ * `slugs` restricts the listing to those agents, for the ACL-scoped list.
+ */
+export async function listAgentsWithListing(options: { slugs?: string[] } = {}): Promise<ListedAgent[]> {
+  const [records, teamBrain] = await Promise.all([
+    options.slugs ? agentCatalog.getMany(options.slugs) : agentCatalog.records(),
+    teamBrainOf(),
+  ])
+  return Promise.all(records.map(async (record) => {
+    const listing = await agentRegistry.get(record.slug).listing()
+    return { agent: toApiAgent(record, listing.live.container, teamBrain), listing }
+  }))
+}
+
+/** One agent as the agent list shows it, with its instructions (the agent's own page). */
+export async function getAgentWithListing(record: AgentRecord): Promise<ListedAgent> {
+  const [document, listing, teamBrain] = await Promise.all([
+    readInstructionsDocument(record.slug),
+    agentRegistry.get(record.slug).listing(),
+    teamBrainOf(),
+  ])
+  return { agent: toApiAgent(record, listing.live.container, teamBrain, document?.body ?? ''), listing }
 }
 
 // ============================================================================

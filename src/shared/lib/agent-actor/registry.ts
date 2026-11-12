@@ -11,6 +11,7 @@ import * as transcriptOps from './local-transcript-ops'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
+import { listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import { serializingActor } from './serializing-actor'
@@ -218,6 +219,9 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
   get loadSessionUsageTotals() {
     return loadSessionUsageTotals
+  },
+  get listArtifactsAndWidgets() {
+    return listArtifactsAndWidgets
   },
   get host() {
     return localHostPort
