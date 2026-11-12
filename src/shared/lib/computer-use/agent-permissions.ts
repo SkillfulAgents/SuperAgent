@@ -6,6 +6,10 @@
  * - "timed": in-memory with 15-min expiry
  * - "always": persisted to settings only
  *
+ * A `use_any_application` grant (timed or always) covers every call but a
+ * host shell script: any app, the read-only level, and a call whose app could
+ * not be told.
+ *
  * Besides those, a session the user started with computer use on (the
  * dispatch launcher's toggle) may list and use any app without asking. That
  * grant is the session's alone and lives in memory only; host shell scripts
@@ -20,7 +24,7 @@
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import type { ComputerUsePermissionLevel, ComputerUseSettings, PermissionGrant, PermissionGrantType } from './types'
-import { TIMED_GRANT_DURATION_MS } from './types'
+import { ANY_APPLICATION_LEVEL, TIMED_GRANT_DURATION_MS } from './types'
 import { sameApp } from './app-identity'
 
 /** An "always" grant as settings store it. */
@@ -54,13 +58,13 @@ export class AgentComputerUse {
     if (sessionId && level !== 'use_host_shell' && this.appAccessSessions.has(sessionId)) return 'granted'
     const now = Date.now()
     for (const grant of this.grants) {
-      if (!this.grantMatches(grant, level, appName)) continue
+      if (!this.grantCovers(grant, level, appName)) continue
       // Check expiry for timed grants
       if (grant.grantType === 'timed' && grant.expiresAt && grant.expiresAt < now) continue
       return 'granted'
     }
     for (const grant of await this.readPersisted()) {
-      if (this.grantMatches(grant, level, appName)) return 'granted'
+      if (this.grantCovers(grant, level, appName)) return 'granted'
     }
     return 'prompt_needed'
   }
@@ -133,6 +137,8 @@ export class AgentComputerUse {
   async revoke(level: ComputerUsePermissionLevel, appName?: string): Promise<void> {
     console.log(`[ComputerUsePermissions] Revoking ${level}${appName ? ` for ${appName}` : ''} from ${this.slug}`)
     this.removeMatchingGrants(level, appName)
+    // Settings are written only when they hold such a grant: taking an app back is far more common than having one saved.
+    if (!(await this.readPersisted()).some((g) => this.grantMatches(g, level, appName))) return
     await this.writePersisted((grants) => grants.filter((g) => !this.grantMatches(g, level, appName)))
   }
 
@@ -224,6 +230,16 @@ export class AgentComputerUse {
       return appName !== undefined && grant.appName !== undefined && sameApp(grant.appName, appName)
     }
     return true
+  }
+
+  /** Whether a grant lets a request through: its own level (and app), or the any-app grant for anything but a host shell script. */
+  private grantCovers(
+    grant: Pick<PermissionGrant, 'level' | 'appName'>,
+    level: ComputerUsePermissionLevel,
+    appName?: string,
+  ): boolean {
+    if (grant.level === ANY_APPLICATION_LEVEL && level !== 'use_host_shell') return true
+    return this.grantMatches(grant, level, appName)
   }
 
   private removeMatchingGrants(level: ComputerUsePermissionLevel, appName?: string): void {

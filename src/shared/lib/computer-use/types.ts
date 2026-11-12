@@ -8,18 +8,27 @@ import { permissionLevelOf } from './commands'
  * - list_apps_windows: read-only (list-apps, list-windows, list-displays, status)
  * - use_application: interact with a specific app (snapshot, click, type, launch, ...)
  * - use_host_shell: shell commands / AppleScript (replaces old hostShellUse toggle)
+ *
+ * A fourth is only ever granted, never what a command asks for:
+ * - use_any_application: every app and target, the read-only level, and a
+ *   call whose app could not be told. It does not cover use_host_shell.
  */
 
 export type ComputerUsePermissionLevel =
   | 'list_apps_windows'
   | 'use_application'
+  | 'use_any_application'
   | 'use_host_shell'
+
+/** The grant that covers every computer-use call except host shell scripts. */
+export const ANY_APPLICATION_LEVEL = 'use_any_application' as const satisfies ComputerUsePermissionLevel
 
 /** User-facing names for the permission levels, shared by the settings tab and
     the in-chat approval card. Written to be self-explanatory without a legend. */
 export const PERMISSION_LEVEL_LABELS: Record<ComputerUsePermissionLevel, string> = {
   list_apps_windows: 'List Apps & Windows (read-only)',
   use_application: 'Use Application',
+  use_any_application: 'Use Any Application',
   use_host_shell: 'Run Shell Commands & Scripts',
 }
 

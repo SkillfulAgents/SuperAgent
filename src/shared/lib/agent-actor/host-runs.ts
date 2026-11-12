@@ -14,7 +14,7 @@
 import type { HostCalls, HostPort, HostScriptOutput, ComputerUsePermissionStatus } from './host-port'
 import type { ComputerUseOps, ContainerOps, InputOps, MessageOps } from './types'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
-import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
+import { ANY_APPLICATION_LEVEL, type ComputerUsePermissionLevel, type PermissionGrantType } from '@shared/lib/computer-use/types'
 import { capturesScreen, isSystemTarget } from '@shared/lib/computer-use/commands'
 import { background } from '@shared/lib/background'
 
@@ -38,6 +38,8 @@ export interface ComputerUseRun {
   appName?: string
   /** What the user granted with this approval; absent when a grant the agent holds covered it. */
   grantType?: PermissionGrantType
+  /** The approval grants every app (`use_any_application`), not just what this call needs. */
+  grantAnyApp?: boolean
   /**
    * The latest time (epoch ms) the command may start. One still queued behind
    * the session's earlier commands by then is dropped unrun, so the agent can
@@ -82,7 +84,7 @@ export type HostRunOutcome =
   | { status: 'undeliverable'; detail: string }
 
 export async function runComputerUse(actor: HostRunActor, host: HostPort, run: ComputerUseRun, guard: HostRunGuard = {}): Promise<HostRunOutcome> {
-  const { sessionId, toolUseId, method, params, permissionLevel, appName, grantType, startBy } = run
+  const { sessionId, toolUseId, method, params, permissionLevel, appName, grantType, grantAnyApp, startBy } = run
   const { computerUse } = actor.inputs
   return withClaim(actor, toolUseId, async () => {
     const needs = { screenRecording: capturesScreen(method, params) }
@@ -91,7 +93,11 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
 
     // "Once" approves this call alone, which the run does not check again: kept
     // as a grant, it would cover the agent's other calls while this one runs.
-    if (grantType && grantType !== 'once') await computerUse.grant(permissionLevel, grantType, appName)
+    if (grantType && grantType !== 'once') {
+      // The any-app grant never covers a host shell script, so it is not what approving one grants.
+      if (grantAnyApp && permissionLevel !== 'use_host_shell') await computerUse.grant(ANY_APPLICATION_LEVEL, grantType)
+      else await computerUse.grant(permissionLevel, grantType, appName)
+    }
 
     let result: HostCalls['computerUse']['response']
     try {

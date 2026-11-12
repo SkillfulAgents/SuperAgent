@@ -53,6 +53,7 @@ import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
 import { computerUsePreferences } from './types'
 import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
 import { sameApp } from './app-identity'
+import { appAtPoint, frontmostApp, readScreenWindows, type ScreenWindows } from './screen-windows'
 import { activateStartMenuApp, findStartMenuApp, startMenuApps, waitForActivatedWindow } from './windows-start-menu'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import * as path from 'path'
@@ -223,6 +224,24 @@ const FOCUSED_APP_COMMANDS: ReadonlySet<string> = new Set(['snapshot', 'find'])
 /** The name a window of this app itself is placed under: agents do not act in it. */
 const THIS_APP = 'this app'
 
+/**
+ * The last read of the screen, kept briefly: a call is placed when its grant
+ * is checked and again when it runs, moments apart for one a grant covers,
+ * and the second need not ask again. Dropped once any command has run, which
+ * may have changed what is on screen; a call the user approves runs long
+ * after this has lapsed, so it is placed afresh.
+ */
+const SCREEN_REUSE_MS = 1_000
+let recentScreen: { points: string; at: number; read: Promise<ScreenWindows | null> } | null = null
+
+function screenFor(points: CallTargets['points']): Promise<ScreenWindows | null> {
+  const asked = JSON.stringify(points ?? [])
+  if (recentScreen && recentScreen.points === asked && Date.now() - recentScreen.at < SCREEN_REUSE_MS) return recentScreen.read
+  const read = readScreenWindows(points)
+  recentScreen = { points: asked, at: Date.now(), read }
+  return read
+}
+
 /** What placing a call found: the apps it acts in, and whether some of it could not be placed. */
 interface Placement {
   apps: Set<string>
@@ -251,15 +270,33 @@ async function placeCall(method: string, targets: CallTargets, reread = false): 
     const app = windowApps.get(id) ?? (await lookUpWindowApp(id))
     if (app) add(app)
   }
-  const windows = targets.points?.length || targets.focused ? await listWindows() : []
+  const hasPoints = (targets.points?.length ?? 0) > 0
+  // On macOS the system itself says whose UI is at a point and which app has
+  // focus (screen-windows). The window list is read only where that is not
+  // available: it has no stacking order, and fails while the frontmost app is
+  // slow to answer.
+  const screen = hasPoints || targets.focused ? await screenFor(targets.points) : null
+  const windows = !screen && (hasPoints || targets.focused) ? await listWindows() : []
+  const observes = OBSERVATION_COMMANDS.has(method)
   for (const point of targets.points ?? []) {
-    const app = appAt(point, windows, OBSERVATION_COMMANDS.has(method))
+    let app: string | undefined
+    if (screen) {
+      const placed = appAtPoint(point, screen)
+      // Where it cannot tell: the whole screen for a command that only looks,
+      // nowhere for one that sends input.
+      app = placed ? (placed.pid === process.pid ? THIS_APP : placed.name) : (observes ? SYSTEM_TARGETS.screen : undefined)
+    } else {
+      app = appAt(point, windows, observes)
+    }
     if (app) add(app)
     else unplaced = true
   }
   if (targets.focused) {
-    const focused = windows.find((window) => window.is_focused)
-    if (focused) add(ownerOf(focused))
+    const frontmost = screen && frontmostApp(screen)
+    const focused = screen
+      ? frontmost && (frontmost.pid === process.pid ? THIS_APP : frontmost.name)
+      : (() => { const window = windows.find((entry) => entry.is_focused); return window && ownerOf(window) })()
+    if (focused) add(focused)
     else unplaced = true
   }
   if (apps.size > 1 && !reread && targets.windowIds.length > 0) {
@@ -335,7 +372,8 @@ async function listWindows(): Promise<WindowEntry[]> {
 }
 
 /**
- * The app whose window is on top at a screen point. The window list is not in
+ * The app whose window is on top at a screen point, from the window list:
+ * where the window server cannot be asked (see placeCall). The list is not in
  * stacking order, so: the focused window when it covers the point (it is in
  * front of every other), else the one app whose shown windows cover it. A
  * point no one app covers is the whole screen for a command that only looks,
@@ -692,7 +730,7 @@ async function runCommand(
   // two reads are then as close in time as they can be.
   const placeScreenshot = (args: readonly string[]) => screenshotTarget(args).catch(() => ({ target: null, reason: 'the window list could not be read' }))
   let placing = method === 'screenshot' ? placeScreenshot(commandArgs) : null
-  let { stdout, envelope } = await runInBudget(session, commandArgs, signal)
+  let { stdout, envelope } = await runInBudget(session, commandArgs, signal).finally(() => { recentScreen = null })
   if (process.platform === 'win32' && envelope?.error?.code === 'APP_NOT_FOUND') {
     if (method === 'launch') {
       const launched = await launchFromStartMenu(commandArgs, envelope, signal)
@@ -801,6 +839,7 @@ function withFocusedApp(method: string, commandArgs: string[], targets: CallTarg
  * queued from before is dropped unrun.
  */
 export async function endComputerUseSessions(filter: { agentSlug?: string; sessionId?: string } = {}): Promise<void> {
+  recentScreen = null
   for (const [sessionId, work] of sessionWork) {
     if (filter.sessionId && filter.sessionId !== sessionId) continue
     if (filter.agentSlug && filter.agentSlug !== work.agentSlug) continue

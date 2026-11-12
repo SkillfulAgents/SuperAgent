@@ -293,6 +293,7 @@ import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabil
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
+import { computerUseDecisionSchema } from '@shared/lib/computer-use/decision-schema'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
@@ -5075,12 +5076,11 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
-    const body = await c.req.json()
-    const { toolUseId, method, params, permissionLevel, appName, grantType, decline, declineReason } = body
-
-    if (!toolUseId) {
+    const body = computerUseDecisionSchema.safeParse(await c.req.json())
+    if (!body.success) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+    const { toolUseId, method, params, permissionLevel, appName, grantType, grantAnyApp, decline, declineReason } = body.data
 
     const gated = await gateRequestDecision(c, toolUseId, 'computer_use')
     if (gated) return gated
@@ -5108,7 +5108,8 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       params: params || {},
       permissionLevel: permissionLevel || 'use_application',
       appName,
-      grantType: grantTypeOf(grantType),
+      grantType,
+      ...(grantAnyApp && { grantAnyApp: true }),
     })
     return hostRunResponse(c, outcome, 'computer use')
   } catch (error) {

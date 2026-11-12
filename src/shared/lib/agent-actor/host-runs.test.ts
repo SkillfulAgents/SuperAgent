@@ -129,6 +129,33 @@ describe('runComputerUse', () => {
     expect(grants.grant).toHaveBeenCalledWith('use_application', 'timed', 'Calculator')
   })
 
+  it('records an any-app grant instead when the user chose one, for a call in a named app or in none', async () => {
+    const named = fakeActor()
+    named.park('cu-1', 'computer_use')
+    await runComputerUse(named.actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', appName: 'Calculator', grantType: 'always', grantAnyApp: true }))
+    expect(named.grants.grant.mock.calls).toEqual([['use_any_application', 'always']])
+
+    const unplaced = fakeActor()
+    unplaced.park('cu-1', 'computer_use')
+    await runComputerUse(unplaced.actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', grantType: 'timed', grantAnyApp: true }))
+    expect(unplaced.grants.grant.mock.calls).toEqual([['use_any_application', 'timed']])
+  })
+
+  // The any-app grant never covers a shell script, whatever the request asks for.
+  it('records the shell grant, not an any-app one, for a shell-level call', async () => {
+    const { actor, park, grants } = fakeActor()
+    park('cu-1', 'computer_use')
+    await runComputerUse(actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_host_shell', grantType: 'always', grantAnyApp: true }))
+    expect(grants.grant.mock.calls).toEqual([['use_host_shell', 'always', undefined]])
+  })
+
+  it('records no any-app grant for a call approved once', async () => {
+    const { actor, park, grants } = fakeActor()
+    park('cu-1', 'computer_use')
+    await runComputerUse(actor, fakeHost().port, computerUseRun({ permissionLevel: 'use_application', grantType: 'once', grantAnyApp: true }))
+    expect(grants.grant).not.toHaveBeenCalled()
+  })
+
   // A once-grant held while the command waited in the session's queue would
   // have approved the agent's other calls in that app.
   it('runs a call approved once without recording a grant that could cover another call', async () => {
