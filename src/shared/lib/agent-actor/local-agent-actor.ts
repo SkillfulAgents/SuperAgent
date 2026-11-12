@@ -12,6 +12,7 @@ import type * as transcriptOps from './local-transcript-ops'
 import type { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import type { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
+import type { listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import type { HostPort } from './host-port'
 import { runComputerUse, runScript } from './host-runs'
 import type { SessionsRuntime } from './live/live-sessions'
@@ -32,6 +33,7 @@ import type { UserInputRequestOutcome } from '@shared/lib/tools/requests/request
 import type {
   AccountReauthOps,
   AgentActor,
+  AgentListing,
   AgentLiveSummary,
   AgentSlug,
   ComputerUseOps,
@@ -79,6 +81,7 @@ export interface LocalActorDeps {
   readonly syncAgentConnectionEnvironment: typeof syncAgentConnectionEnvironment
   readonly loadDailyUsageData: typeof loadDailyUsageData
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
+  readonly listArtifactsAndWidgets: typeof listArtifactsAndWidgets
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
 }
@@ -98,6 +101,7 @@ const subagentCapture = SubagentCapture.fromEnv()
  */
 export class LocalAgentActor implements AgentActor {
   readonly live: () => Promise<AgentLiveSummary>
+  readonly listing: () => Promise<AgentListing>
   readonly container: ContainerOps
   readonly sessions: SessionOps
   readonly messages: MessageOps
@@ -156,6 +160,15 @@ export class LocalAgentActor implements AgentActor {
     this.widgets = createWidgetOps(this.state)
     this.mcpSessions = createMcpSessionOps(this.state)
     this.volumeUploads = createVolumeUploadOps(this.state)
+    this.listing = async () => {
+      const [live, sessions, artifacts, refreshingWidgets] = await Promise.all([
+        this.live(),
+        this.sessions.summary(),
+        deps.listArtifactsAndWidgets(slug),
+        this.widgets.refreshing(),
+      ])
+      return { live, sessions, artifacts, refreshingWidgets }
+    }
   }
 
   /** The registry is dropping this handle: release everything it owns. */

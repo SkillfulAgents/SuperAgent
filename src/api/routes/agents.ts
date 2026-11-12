@@ -46,7 +46,9 @@ import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 import {
-  listAgentsWithStatus,
+  listAgentsWithListing,
+  getAgentWithListing,
+  type ListedAgent,
   createAgent,
   getAgentWithStatus,
   getAgent,
@@ -224,7 +226,7 @@ import {
   importSkillFromZip,
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
-import { type ArtifactInfo, listArtifactsFromFilesystem, listArtifactsAndWidgets, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import {
   WIDGET_HTML_CSP,
   renderWidgetDocument,
@@ -716,18 +718,16 @@ interface AgentVisibleSessionExpansion {
 async function getVisibleSessionExpansion(
   agentSlug: string,
   unreadSessionIds: Set<string>,
-  sessionMetadataPromise: Promise<SessionMetadataMap>,
+  sessionMetadata: SessionMetadataMap,
   signal?: AbortSignal,
 ): Promise<AgentVisibleSessionExpansion> {
   let visibleSessions: SessionInfo[]
-  let sessionMetadata: SessionMetadataMap
   try {
     // Keep the complete visibility-filtered snapshot: its first item selects
     // latest, while the remaining metadata-only items answer the two attention
     // booleans without loading older transcripts. Listed from the agent's
     // session index, so a warm poll costs one directory stat per agent
     // instead of one stat per transcript.
-    sessionMetadata = await sessionMetadataPromise
     visibleSessions = await agentRegistry.get(agentSlug).sessions.list({
       excludeAutomated: true,
       sortBy: 'last_activity_at',
@@ -804,18 +804,18 @@ async function readUnreadProjection(slugs: string[], userId: string) {
 /**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
- * Batch notification lookup upfront, then parallelize per-agent FS operations.
+ * Batch notification lookup upfront; each agent's state is its one `listing()`.
  */
 async function enrichAgentsWithSummary(
-  agents: ApiAgent[],
+  agents: ListedAgent[],
   options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
   const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] =
-    options.unreadProjection ?? await readUnreadProjection(agents.map(a => a.slug), options.userId)
+    options.unreadProjection ?? await readUnreadProjection(agents.map(({ agent }) => agent.slug), options.userId)
 
   const limit = pLimit(5)
   return Promise.all(
-    agents.map((agent) => limit(async () => {
+    agents.map(({ agent, listing }) => limit(async () => {
       // Union of the two sources, so every projection below sees one set.
       const notifiedIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
       const markedIds = markedUnreadByAgent.get(agent.slug) ?? new Set<string>()
@@ -823,30 +823,11 @@ async function enrichAgentsWithSummary(
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
-      const actor = agentRegistry.get(agent.slug)
-      // One read of the agent's index answers both.
-      const sessionSummaryPromise = actor.sessions.summary()
-      const sessionMetadataPromise = sessionSummaryPromise.then((summary) => summary.metadata)
-      const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
-        ? getVisibleSessionExpansion(
-            agent.slug,
-            unreadSessionIds,
-            sessionMetadataPromise,
-            options.signal,
-          )
-        : Promise.resolve(undefined)
-
-      // Only FS operations remain per-agent (parallelized and bounded by the
-      // outer p-limit).
-      const [sessionSummary, { dashboards: artifacts, widgets }, sessionMetadata, visibleSessionExpansion] =
-        await Promise.all([
-          sessionSummaryPromise,
-          // Dashboards and widgets are two halves of the same artifacts, read
-          // in one scan: listing them separately doubled the manifest reads.
-          listArtifactsAndWidgets(agent.slug),
-          sessionMetadataPromise,
-          visibleSessionExpansionPromise,
-        ])
+      const { live, sessions: sessionSummary, artifacts: { dashboards: artifacts, widgets } } = listing
+      const sessionMetadata = sessionSummary.metadata
+      const visibleSessionExpansion = options.includeLatestVisibleSessionTail
+        ? await getVisibleSessionExpansion(agent.slug, unreadSessionIds, sessionMetadata, options.signal)
+        : undefined
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -869,7 +850,6 @@ async function enrichAgentsWithSummary(
       // session whose .jsonl is not written yet). Pending proxy reviews raise
       // the flag regardless of session state: dashboard-triggered reviews have
       // no session but still need the user.
-      const live = await agentRegistry.get(agent.slug).live()
       const hasActiveSessions = live.activeSessionIds.length > 0
       const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
 
@@ -897,7 +877,7 @@ async function enrichAgentsWithSummary(
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
-        widgets: await widgetRefreshService.decorate(agent.slug, widgets),
+        widgets: widgets.map((widget) => ({ ...widget, refreshing: listing.refreshingWidgets.includes(widget.slug) })),
         ...(options.includeLatestVisibleSessionTail
           ? {
               latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
@@ -1456,7 +1436,7 @@ agents.get('/', async (c) => {
     // agent routes (via middleware), but agents must be explicitly shared with
     // admins for them to appear in the sidebar. This prevents admins from
     // seeing every agent in large deployments.
-    let agentList: ApiAgent[]
+    let agentList: ListedAgent[]
     let unreadProjection: UnreadProjection | undefined
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
@@ -1470,11 +1450,11 @@ agents.get('/', async (c) => {
       // sidebar (the client's applyAgentOrder floats new agents up). The
       // unread projection needs only the slugs, so it runs beside it.
       ;[agentList, unreadProjection] = await Promise.all([
-        listAgentsWithStatus({ slugs }),
+        listAgentsWithListing({ slugs }),
         readUnreadProjection(slugs, userId),
       ])
     } else {
-      agentList = await listAgentsWithStatus()
+      agentList = await listAgentsWithListing()
     }
 
     return c.json(await enrichAgentsWithSummary(agentList, {
@@ -1521,16 +1501,12 @@ agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
     const resolved = getResolvedAgent(c)
     const userId = getCurrentUserId(c)
     // Needs only the slug, so it runs in parallel with the status read.
-    const [agent, unreadProjection] = await Promise.all([
-      getAgentWithStatus(resolved, { includeSummary: false }),
+    const [listed, unreadProjection] = await Promise.all([
+      getAgentWithListing(resolved),
       readUnreadProjection([resolved.slug], userId),
     ])
 
-    if (!agent) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
-
-    const [enriched] = await enrichAgentsWithSummary([agent], { userId, unreadProjection })
+    const [enriched] = await enrichAgentsWithSummary([listed], { userId, unreadProjection })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)

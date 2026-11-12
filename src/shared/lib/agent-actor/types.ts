@@ -51,6 +51,7 @@ import type {
   SessionMetadataMap,
 } from '@shared/lib/types/agent'
 import type { MediaRef } from '@shared/lib/services/session-media'
+import type { ArtifactListing } from '@shared/lib/services/artifact-service'
 import type { PortableSessionMetadataMap } from '@shared/lib/services/session-metadata-schema'
 import type { ResolvedDeliveredAgentFile, TranscriptView } from '@shared/lib/services/x-agent-transcript-view'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
@@ -118,6 +119,8 @@ export interface AgentActor {
   readonly slug: AgentSlug
   /** What the agent is doing as of now: its container, busy sessions, open asks. */
   live(): Promise<AgentLiveSummary>
+  /** What the agent list shows about the agent, read in one call. */
+  listing(): Promise<AgentListing>
   readonly container: ContainerOps
   readonly sessions: SessionOps
   readonly messages: MessageOps
@@ -338,7 +341,7 @@ export interface SessionOps {
   /** `getSession` */
   get(sessionId: string, already?: { metadata: SessionMetadata | null }): Promise<SessionInfo | null>
   /** `getSessionSummary` */
-  summary(): Promise<{ sessionIds: string[]; sessionCount: number; lastActivityAt: Date | null; metadata: SessionMetadataMap }>
+  summary(): Promise<SessionSummary>
   /** `sessionExists` */
   exists(sessionId: string): Promise<boolean>
   /** `sessionIsKnown` */
@@ -512,6 +515,24 @@ export interface AgentLiveSummary {
   openRequests: Array<Pick<PendingUserInputRequest, 'id' | 'kind' | 'blocking' | 'autoApproved'> & { sessionId?: string }>
   /** Proxy reviews waiting on the user, sessions or not. */
   pendingReviews: Array<{ id: string; displayText: string }>
+}
+
+/** The agent's sessions at a glance (`sessions.summary()`). */
+export interface SessionSummary {
+  sessionIds: string[]
+  sessionCount: number
+  lastActivityAt: Date | null
+  metadata: SessionMetadataMap
+}
+
+/** What the agent list shows about the agent (`actor.listing()`). */
+export interface AgentListing {
+  live: AgentLiveSummary
+  sessions: SessionSummary
+  /** The agent's dashboards and widgets, as its artifacts directory has them. */
+  artifacts: ArtifactListing
+  /** The widgets with a refresh in flight. */
+  refreshingWidgets: string[]
 }
 
 /** One session's live state as of one moment (`sessions.live()`). */
