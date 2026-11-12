@@ -769,5 +769,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1794261056427,
     "hash": "00ee07e7ef2c3cfc242f056c6d8da8fd74ad5f00a0809ec22bf057f0b283710a"
+  },
+  {
+    "sql": [
+      "CREATE INDEX `chat_integration_sessions_session_id_idx` ON `chat_integration_sessions` (`session_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794451767741,
+    "hash": "2c87583b4f97fb0437d89d54aaecc08d1d02381685edfc04c15ebaebde39e8c3"
   }
 ]
