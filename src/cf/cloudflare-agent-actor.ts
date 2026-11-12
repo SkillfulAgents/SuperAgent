@@ -83,7 +83,7 @@ export function cloudflareAgentActor(slug: AgentSlug, reach: (run: (agent: Actor
       ? (path: string, init?: RequestInit) => call(CONTAINER_FETCH, [path, init && new Request('http://container', { ...init, signal: undefined })])
       : Reflect.get(target, key, receiver),
   })
-  return { slug, ...groups, live: () => call('live', []) } as unknown as AgentActor
+  return { slug, ...groups, live: () => call('live', []), listing: () => call('listing', []) } as unknown as AgentActor
 }
 
 /** Runs one op from `cloudflareAgentActor` on the actor in this object. */
@@ -110,7 +110,7 @@ function initOf(request: Request): RequestInit {
 function lookupOp(actor: AgentActor, path: string): { owner: object; fn: (...args: unknown[]) => unknown } | null {
   const segments = path.split('.')
   if (segments.some((segment) => !OP_SEGMENT.test(segment) || segment === 'constructor')) return null
-  if (path === 'live') return { owner: actor, fn: actor.live as (...args: unknown[]) => unknown }
+  if (path === 'live' || path === 'listing') return { owner: actor, fn: actor[path] as (...args: unknown[]) => unknown }
   const [group, ...rest] = segments
   if (!(ACTOR_GROUPS as readonly string[]).includes(group) || rest.length === 0 || rest.length > 2) return null
   if (rest.length === 2 && !(NESTED_GROUPS[group] ?? []).includes(rest[0])) return null

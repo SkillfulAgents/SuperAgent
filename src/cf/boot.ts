@@ -34,14 +34,14 @@ import { createConfigOps } from '@shared/lib/agent-actor/config-ops'
 import { CLI_TRANSCRIPTS_DIR, type SessionStore } from '@shared/lib/agent-actor/session-store'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import { SessionIndex } from '@shared/lib/agent-actor/session-index'
-import { createDbSessionIndexStorage } from '@shared/lib/agent-actor/db-session-index-storage'
+import { createObjectSessionIndexStorage } from './object-session-index-storage'
 import { ingestSessionMetadataFile } from '@shared/lib/services/session-metadata-file'
 // eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the agent's object schedules its idle check from the same timeout the alarm reads
 import { autoSleepTimeoutMsFrom } from '@shared/lib/container/container-runtime'
 import { IDLE_ALARM_RETRY_MS } from '@shared/lib/container/idle-alarm'
 // eslint-disable-next-line local-rules/no-agent-internals-outside-actor -- the delete route's folder must exist on Workers (see serve)
 import { getAgentDir } from '@shared/lib/utils/file-storage'
-import type { ExecutionContext } from 'cloudflare:workers'
+import type { ExecutionContext, SqlStorage } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager, ensureMigrated, ensureOrgPrepared } from './cloudflare-task-manager'
@@ -269,7 +269,7 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
       files,
       transcriptsDir: CLI_TRANSCRIPTS_DIR,
       key: () => key,
-      storage: createDbSessionIndexStorage(slug),
+      storage: createObjectSessionIndexStorage(() => agentObjectSql(slug)),
       beforeFirstUse: () => ingestSessionMetadataFile(store).catch((error: unknown) => {
         console.warn(`Could not take in the session metadata file of agent ${slug}:`, error)
       }),
@@ -277,6 +277,13 @@ function cloudflareSessionStore(env: Env, slug: AgentSlug, hooks: Pick<SessionSt
     onActivity: hooks.onActivity,
   }
   return store
+}
+
+/** The agent's object's SQLite, where its session index is: the actor runs only in that object. */
+function agentObjectSql(slug: AgentSlug): SqlStorage {
+  const own = servingAgentObject(slug)
+  if (!own) throw new Error(`The session index of agent ${slug} is read only in the agent's own object`)
+  return own.sessionIndexSql()
 }
 
 /** The saved workspace: from the agent's own object directly, from anywhere else through its stub. */

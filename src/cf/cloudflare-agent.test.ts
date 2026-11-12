@@ -1,7 +1,12 @@
 import Database from 'better-sqlite3'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentDurableObject, serveWorkspaceRequest, workspaceBlobKey } from './cloudflare-agent'
+import { createObjectSessionIndexStorage } from './object-session-index-storage'
 import type { Env } from './index'
+
+// The listing of a sleeping agent must not boot SuperAgent.
+const { boot } = vi.hoisted(() => ({ boot: vi.fn(async () => { throw new Error('SuperAgent booted') }) }))
+vi.mock('./boot', () => ({ boot }))
 
 // Workers' FixedLengthStream, which Node lacks: here a pass-through.
 beforeAll(() => {
@@ -153,8 +158,11 @@ function storage() {
   const sql = {
     exec: (query: string, ...bindings: unknown[]) => {
       const statement = db.prepare(query)
-      const rows = statement.reader ? statement.all(...bindings) : (statement.run(...bindings), [])
-      return { toArray: () => rows }
+      if (statement.reader) {
+        const rows = statement.all(...bindings)
+        return { toArray: () => rows, rowsWritten: 0 }
+      }
+      return { toArray: () => [], rowsWritten: statement.run(...bindings).changes }
     },
   }
   return { sql, transactionSync: <T>(run: () => T) => db.transaction(run)() }
@@ -272,5 +280,37 @@ describe("AgentDurableObject saving the container's changes", () => {
 
     expect((await agent.send([file('notes/leads.md', H1)])).status).toBe(409)
     expect(agent.saved()).toEqual([])
+  })
+})
+
+describe('AgentDurableObject listing a sleeping agent', () => {
+  it('answers from its saved files and session index without booting SuperAgent', async () => {
+    const { object, ctx, r2 } = runningAgent(false)
+    Object.assign(ctx, { container: { running: false } })
+    const files = {
+      'artifacts/sales/package.json': JSON.stringify({ name: 'Sales', scripts: { start: 'bun run server.ts' } }),
+      'artifacts/sales/screenshot.png': 'png',
+    }
+    for (const [path, bytes] of Object.entries(files)) {
+      const hash = path === 'artifacts/sales/package.json' ? H1 : H2
+      ctx.storage.sql.exec("INSERT INTO workspace_file (path, hash, size, mode, mtime, kind) VALUES (?, ?, ?, 420, 1, 'file')", path, hash, bytes.length)
+      r2.set(workspaceBlobKey(OBJECT, hash), bytes)
+    }
+    Object.assign(object.env as object, { WORKSPACES: { get: async (key: string) => (r2.has(key) ? { body: new Response(r2.get(key)).body } : null) } })
+    await createObjectSessionIndexStorage(() => ctx.storage.sql as never).fill([
+      { sessionId: 'weekly-report', meta: null, transcript: { mtimeMs: Date.parse('2026-11-12T09:30:00Z'), birthtimeMs: 1, size: 200 } },
+    ])
+
+    const outcome = await object.actorCall('listing', [])
+
+    expect(boot).not.toHaveBeenCalled()
+    expect(outcome).toMatchObject({
+      value: {
+        live: { container: { status: 'stopped' }, activeSessionIds: [], awaitingSessionIds: [] },
+        sessions: { sessionIds: ['weekly-report'], sessionCount: 1, lastActivityAt: new Date('2026-11-12T09:30:00Z') },
+        artifacts: { dashboards: [{ slug: 'sales', name: 'Sales', hasScreenshot: true, firstRun: true }], widgets: [] },
+        refreshingWidgets: [],
+      },
+    })
   })
 })
