@@ -18,7 +18,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient, type QueryKey } from '@tanstack/react-query'
-import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
+import { isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
 import { useRouteLocation } from '@renderer/router/use-route-location'
@@ -64,6 +64,7 @@ import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+import { notificationStreamUrl, takePreopenedNotificationStream } from './notification-stream'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
 // refetched wholesale each time the stream says `connected`.
@@ -266,10 +267,9 @@ export function GlobalNotificationHandler() {
   }, [])
 
   useEffect(() => {
-    const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}/api/notifications/stream`
-    const es = new EventSource(url)
-    let streamRequestedAt = Date.now()
+    const preopened = takePreopenedNotificationStream()
+    const es = preopened?.es ?? new EventSource(notificationStreamUrl())
+    let streamRequestedAt = preopened?.requestedAt ?? Date.now()
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
     // One agent's session changed: its detail under every route key and the
@@ -291,7 +291,7 @@ export function GlobalNotificationHandler() {
       if (queryClient.isFetching({ queryKey, exact: true }) > 0) void queryClient.invalidateQueries({ queryKey, exact: true })
     }
 
-    es.onmessage = (event) => {
+    const handleFrame = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
 
@@ -766,6 +766,8 @@ export function GlobalNotificationHandler() {
         // Ignore parse errors for ping/connected messages
       }
     }
+    es.onmessage = handleFrame
+    preopened?.frames.forEach(handleFrame)
 
     // Opening is not the time to refetch: the server may still be setting up
     // what the stream follows. `connected` is (see above).

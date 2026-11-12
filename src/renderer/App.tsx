@@ -10,6 +10,7 @@ import { Toaster } from './components/ui/sonner'
 import { ErrorBoundary } from './components/ui/error-boundary'
 import { router } from './router'
 import { RouterMount } from './router/auth-boundary'
+import { PreopenNotificationStream } from './components/notifications/notification-stream'
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
                 <DraftsProvider>
                   <SearchProvider>
                     <ErrorBoundary>
+                      <PreopenNotificationStream />
                       <RouterMount router={router} />
                       <Toaster />
                     </ErrorBoundary>
