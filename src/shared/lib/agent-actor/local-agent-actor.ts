@@ -12,7 +12,7 @@ import type * as transcriptOps from './local-transcript-ops'
 import type { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import type { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
-import type { listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
+import { scanArtifactsIn } from '@shared/lib/services/artifact-scan'
 import type { HostPort } from './host-port'
 import { runComputerUse, runScript } from './host-runs'
 import type { SessionsRuntime } from './live/live-sessions'
@@ -81,7 +81,6 @@ export interface LocalActorDeps {
   readonly syncAgentConnectionEnvironment: typeof syncAgentConnectionEnvironment
   readonly loadDailyUsageData: typeof loadDailyUsageData
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
-  readonly listArtifactsAndWidgets: typeof listArtifactsAndWidgets
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
 }
@@ -164,7 +163,7 @@ export class LocalAgentActor implements AgentActor {
       const [live, sessions, artifacts, refreshingWidgets] = await Promise.all([
         this.live(),
         this.sessions.summary(),
-        deps.listArtifactsAndWidgets(slug),
+        scanArtifactsIn(this.files, { includeWidgets: true, agentSlug: slug }),
         this.widgets.refreshing(),
       ])
       return { live, sessions, artifacts, refreshingWidgets }

@@ -1,39 +1,29 @@
-import { createHash } from 'crypto'
 import pLimit from 'p-limit'
-import { WorkspaceFileError, agentRegistry, joinWorkspacePath, type FileEntry } from '@shared/lib/agent-actor'
+import { agentRegistry, joinWorkspacePath, type FileEntry } from '@shared/lib/agent-actor'
 import {
   WIDGET_HTML_FILENAME,
-  artifactPackageSchema,
-  artifactShapeOf,
-  isWidgetStale,
   snapshotFileName,
-  widgetSnapshotSchema,
   type ApiAgentWidget,
   type WidgetScale,
   type WidgetScheme,
   type WidgetSize,
   type WidgetSnapshot,
 } from '@shared/lib/widgets/widget-schema'
+import {
+  ARTIFACTS_DIRNAME,
+  ARTIFACT_MANIFEST_FILENAME,
+  SNAPSHOTS_DIRNAME,
+  artifactPath,
+  containedPathIn,
+  describeWidgetIn,
+  isMissingDirectoryError,
+  isWidgetSlug,
+  readDocIn,
+  readWidgetSnapshotIn,
+  widgetPath,
+} from './artifact-scan'
 
-export const WIDGET_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
-const ARTIFACTS_DIRNAME = 'artifacts'
-const ARTIFACT_MANIFEST_FILENAME = 'package.json'
-const SNAPSHOTS_DIRNAME = 'snapshots'
-const SNAPSHOT_META_FILENAME = 'snapshot.json'
 const WIDGET_LOG_FILENAME = 'widget.log'
-
-/** Same 16-hex-char sha256 prefix the container writes into snapshot.json. */
-export function hashWidgetHtml(html: string | Uint8Array): string {
-  return createHash('sha256').update(html).digest('hex').slice(0, 16)
-}
-
-/**
- * True for an artifact that exposes only a widget (no start script). The
- * dashboard lister skips these — the two kinds share artifacts/.
- */
-export function isWidgetOnlyArtifact(pkg: unknown): boolean {
-  return !artifactShapeOf(pkg).isDashboard
-}
 
 /**
  * Workspace path of the directory that holds an agent's artifacts. A
@@ -43,11 +33,6 @@ export function isWidgetOnlyArtifact(pkg: unknown): boolean {
  */
 export function artifactsDirFor(_agentSlug: string): string {
   return ARTIFACTS_DIRNAME
-}
-
-/** One path segment: a directory or file name, not a climb and not a path. */
-function isPlainSegment(segment: string): boolean {
-  return segment.length > 0 && segment !== '.' && segment !== '..' && !/[/\\\0]/.test(segment)
 }
 
 /**
@@ -61,10 +46,8 @@ function isPlainSegment(segment: string): boolean {
  * the link check this service always made; nothing here knows where the
  * workspace is.
  */
-export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
-  if (!WIDGET_SLUG_REGEX.test(artifactSlug)) return null
-  if (!segments.every(isPlainSegment)) return null
-  return joinWorkspacePath(artifactsDirFor(agentSlug), artifactSlug, ...segments)
+export function resolveWidgetPath(_agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
+  return widgetPath(artifactSlug, ...segments)
 }
 
 /**
@@ -74,9 +57,8 @@ export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...se
  * name too. One plain directory name is the whole rule; the widget slug
  * rule applies only where the container's widget code made the directory.
  */
-export function resolveArtifactPath(agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
-  if (![artifactSlug, ...segments].every(isPlainSegment)) return null
-  return joinWorkspacePath(artifactsDirFor(agentSlug), artifactSlug, ...segments)
+export function resolveArtifactPath(_agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
+  return artifactPath(artifactSlug, ...segments)
 }
 
 export function widgetSnapshotPngPath(
@@ -101,14 +83,8 @@ export function widgetSnapshotPngPath(
  * dashboard screenshot read as named, as they always did; extending the
  * check to them is part of the containment work tracked separately.
  */
-export async function containedArtifactPath(agentSlug: string, workspacePath: string | null): Promise<string | null> {
-  if (workspacePath === null) return null
-  try {
-    return await agentRegistry.get(agentSlug).files.resolve(workspacePath)
-  } catch (error) {
-    if (error instanceof WorkspaceFileError) return null
-    throw error
-  }
+export function containedArtifactPath(agentSlug: string, workspacePath: string | null): Promise<string | null> {
+  return containedPathIn(agentRegistry.get(agentSlug).files, workspacePath)
 }
 
 /**
@@ -116,14 +92,8 @@ export async function containedArtifactPath(agentSlug: string, workspacePath: st
  * that leads out of the workspace, or a directory where a file should be,
  * reads as absent too, as it always has on these read paths.
  */
-export async function readArtifactDoc(agentSlug: string, workspacePath: string | null): Promise<Uint8Array | null> {
-  const real = await containedArtifactPath(agentSlug, workspacePath)
-  if (real === null) return null
-  try {
-    return await agentRegistry.get(agentSlug).files.getDoc(real)
-  } catch {
-    return null
-  }
+export function readArtifactDoc(agentSlug: string, workspacePath: string | null): Promise<Uint8Array | null> {
+  return readDocIn(agentRegistry.get(agentSlug).files, workspacePath)
 }
 
 async function readArtifactText(agentSlug: string, workspacePath: string | null): Promise<string | null> {
@@ -131,87 +101,8 @@ async function readArtifactText(agentSlug: string, workspacePath: string | null)
   return bytes === null ? null : new TextDecoder().decode(bytes)
 }
 
-/**
- * True when a listing failed for a reason that means "nothing to list": no
- * directory there yet, a file where the directory should be, or a directory
- * the actor refuses to follow (a link planted out of the workspace). The
- * agents list fans out over every agent's artifacts, so a planted link must
- * read as an empty listing rather than take the whole list down — and there is
- * nothing trustworthy to show for it anyway.
- */
-export function isMissingDirectoryError(error: unknown): boolean {
-  return error instanceof WorkspaceFileError
-}
-
-export async function readWidgetSnapshot(agentSlug: string, artifactSlug: string): Promise<WidgetSnapshot | null> {
-  const meta = await readArtifactText(
-    agentSlug,
-    resolveWidgetPath(agentSlug, artifactSlug, SNAPSHOTS_DIRNAME, SNAPSHOT_META_FILENAME),
-  )
-  if (meta === null) return null
-  try {
-    return widgetSnapshotSchema.parse(JSON.parse(meta))
-  } catch {
-    return null
-  }
-}
-
-/**
- * Describe one artifact's widget from a manifest the caller has already read.
- * Null when the artifact does not expose a widget.
- *
- * The artifact lister reads every package.json anyway, so the agents-list path
- * hands its copy straight here rather than paying for a second scan — see
- * listArtifactsAndWidgets in artifact-service.
- */
-export async function describeWidgetFromManifest(
-  agentSlug: string,
-  artifactSlug: string,
-  manifestJson: unknown,
-  now: number = Date.now(),
-): Promise<ApiAgentWidget | null> {
-  // The manifest decides whether there is a widget here at all, and answering
-  // that costs no reads. Every dashboard-only artifact stops here.
-  let pkg
-  let shape
-  try {
-    shape = artifactShapeOf(manifestJson)
-    if (!shape.widget) return null
-    pkg = artifactPackageSchema.parse(manifestJson)
-  } catch {
-    return null
-  }
-  const dir = resolveWidgetPath(agentSlug, artifactSlug)
-  if (!dir) return null
-  // A widget's directory is checked by real location before its files are
-  // read, as the widget reads always were; a link out of the workspace is no
-  // widget. Dashboards are not held to this (the containment work tracked
-  // separately covers them), so the check costs only widget artifacts.
-  if ((await containedArtifactPath(agentSlug, dir)) === null) return null
-
-  // Scripted or static is a manifest fact (`scripts.widget`, run as
-  // `bun run widget` in the container), so answering it costs no reads.
-  const hasScript = typeof pkg.scripts?.widget === 'string' && pkg.scripts.widget.trim().length > 0
-  const [html, snapshot] = await Promise.all([
-    readArtifactDoc(agentSlug, joinWorkspacePath(dir, WIDGET_HTML_FILENAME)),
-    readWidgetSnapshot(agentSlug, artifactSlug),
-  ])
-  const htmlHash = html ? hashWidgetHtml(html) : null
-  const state = { hasHtml: html !== null, hasScript, htmlHash }
-  return {
-    slug: artifactSlug,
-    name: pkg.name || artifactSlug,
-    description: pkg.description || '',
-    size: shape.widget.size ?? 'small',
-    hasDashboard: shape.isDashboard,
-    ...state,
-    refreshOnTurnEnd: shape.widget.refreshOnTurnEnd === true,
-    generatedAt: snapshot?.generatedAt ?? null,
-    validUntil: snapshot?.validUntil ?? null,
-    lastError: snapshot?.lastError ?? null,
-    isStale: isWidgetStale(state, snapshot, now),
-    refreshing: false,
-  }
+export function readWidgetSnapshot(agentSlug: string, artifactSlug: string): Promise<WidgetSnapshot | null> {
+  return readWidgetSnapshotIn(agentRegistry.get(agentSlug).files, artifactSlug)
 }
 
 /**
@@ -234,7 +125,7 @@ export async function readWidgetFromFilesystem(
   } catch {
     return null
   }
-  return describeWidgetFromManifest(agentSlug, artifactSlug, manifestJson, now)
+  return describeWidgetIn(agentRegistry.get(agentSlug).files, artifactSlug, manifestJson, now)
 }
 
 /**
@@ -243,7 +134,7 @@ export async function readWidgetFromFilesystem(
  * a widget shows exactly what it showed last time, across app launches.
  *
  * The refresh service's own triggers use this; the agents-list path goes
- * through listArtifactsAndWidgets, which shares one scan with the dashboards.
+ * through scanArtifactsIn (artifact-scan), which shares one scan with the dashboards.
  */
 export async function listWidgetsFromFilesystem(agentSlug: string): Promise<ApiAgentWidget[]> {
   // The directory as named, the way the plain listing read it; each widget's
@@ -268,11 +159,6 @@ export async function listWidgetsFromFilesystem(agentSlug: string): Promise<ApiA
       .map((entry) => limit(() => readWidgetFromFilesystem(agentSlug, entry.name, now))),
   )
   return widgets.filter((w): w is ApiAgentWidget => w !== null)
-}
-
-/** A directory name that can appear in a widget route's path. */
-export function isWidgetSlug(name: string): boolean {
-  return WIDGET_SLUG_REGEX.test(name)
 }
 
 /**
