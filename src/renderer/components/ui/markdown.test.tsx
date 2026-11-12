@@ -100,10 +100,9 @@ describe('Markdown', () => {
     expect(screen.queryByRole('link')).toBeNull()
   })
 
-  it('renders a workspace file link as plain text where no preview tray is open', () => {
+  it('keeps a workspace file link as a link to the file where no side panel is open', () => {
     render(<Markdown agentSlug="sales-helper">{'[Open](/workspace/output/report.md)'}</Markdown>)
-    expect(screen.getByText('Open')).toBeInTheDocument()
-    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('href', '/api/agents/sales-helper/files/output/report.md')
   })
 
   it.each([
@@ -111,18 +110,42 @@ describe('Markdown', () => {
     ['a heading anchor', '/workspace/output/report.md#results', '/workspace/output/report.md'],
     ['a malformed escape', '/workspace/output/%FF.md', '/workspace/output/%FF.md'],
     ['its file: form', 'file:///workspace/output/report.md', '/workspace/output/report.md'],
-    ['a path relative to the workspace', 'output/report.md', '/workspace/output/report.md'],
     ['a path relative to the open file', 'notes.md', '/workspace/blog/notes.md', '/workspace/blog'],
     ['a drive path', '/mounts/Drive/report.md', '/mounts/Drive/report.md'],
-  ])('opens a workspace file link with %s in the preview tray', (_, href, filePath, folder?: string) => {
+  ])('opens a workspace file link with %s in the side panel', (_, href, filePath, folder?: string) => {
     render(
       <FilePreviewProvider>
         <Markdown agentSlug="sales-helper" folder={folder}>{`[Open](${href})`}</Markdown>
         <OpenTabs />
       </FilePreviewProvider>,
     )
-    fireEvent.click(screen.getByRole('link', { name: 'Open' }))
+    const link = screen.getByRole('link', { name: 'Open' })
+    // A real file URL, so a middle-click or a copied link still reaches the file.
+    expect(link.getAttribute('href')).toMatch(/^\/api\/agents\/sales-helper\/(mount-)?files\//)
+    fireEvent.click(link)
     expect(screen.getByRole('status').textContent).toBe(`file:sales-helper:${filePath}`)
+  })
+
+  it('leaves a modifier-click on a file link to the browser', () => {
+    render(
+      <FilePreviewProvider>
+        <Markdown agentSlug="sales-helper">{'[Open](/workspace/output/report.md)'}</Markdown>
+        <OpenTabs />
+      </FilePreviewProvider>,
+    )
+    fireEvent.click(screen.getByRole('link', { name: 'Open' }), { metaKey: true })
+    expect(screen.getByRole('status').textContent).toBe('')
+  })
+
+  it('opens a folder link in the folder browser', () => {
+    render(
+      <FilePreviewProvider>
+        <Markdown agentSlug="sales-helper">{'[Outputs](/workspace/output/)'}</Markdown>
+        <OpenTabs />
+      </FilePreviewProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Outputs' }))
+    expect(screen.getByRole('status').textContent).toBe('folder:sales-helper:/workspace/output')
   })
 
   it.each([
@@ -130,6 +153,9 @@ describe('Markdown', () => {
     ['a heading only', '#results'],
     ['a path outside the agent files', '/etc/passwd'],
     ['a file: path outside the agent files', 'file:///etc/passwd'],
+    ['a relative path, with no file to resolve it from', 'output/report.md'],
+    ['a web address with no scheme', 'github.com/acme/repo'],
+    ['a source file and line', 'src/a.ts:42'],
   ])('renders a workspace link with %s as plain text', (_, href) => {
     render(
       <FilePreviewProvider>
@@ -152,6 +178,12 @@ describe('Markdown', () => {
     )
     fireEvent.click(screen.getByRole('link', { name: 'Open' }))
     expect(screen.getByRole('status').textContent).toBe('file:sales-helper:/workspace/output/report.md')
+  })
+
+  it('never hands a file link to a caller\'s link handler', () => {
+    const link = vi.fn((_href: string | undefined) => null)
+    render(<AgentMarkdown text="[Open](/workspace/output/report.md) [Docs](notes.md)" mode="settled" agentSlug="sales-helper" link={link} />)
+    expect(link.mock.calls.map(([href]) => href)).toEqual(['notes.md'])
   })
 
   it('keeps a protocol-relative web link as a link', () => {

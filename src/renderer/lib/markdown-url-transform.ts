@@ -1,6 +1,6 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
-import { isPreviewableImage } from './file-types'
-import { agentFileHref, getAgentFileUrl, resolveAgentFilePath } from './workspace-file-url'
+import { describeWorkspaceFile } from './workspace-file'
+import { resolveAgentFilePath } from './workspace-file-url'
 
 // react-markdown's defaultUrlTransform passes only URLs whose scheme matches
 // ^(https?|ircs?|mailto|xmpp)$ and rewrites everything else to '' (an empty
@@ -28,6 +28,11 @@ export function safeHref(url: string): string {
   return defaultUrlTransform(url)
 }
 
+/** Whether a url names its scheme (`https:`, `mailto:`), as opposed to a path. */
+export function hasUrlScheme(url: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(url)
+}
+
 /**
  * Shared `urlTransform` for every <ReactMarkdown> renderer.
  *
@@ -52,20 +57,22 @@ export const markdownUrlTransform: UrlTransform = (url, key) => {
 export interface MarkdownImageContext {
   /** Exact container paths proven to belong to image blocks in tool results. */
   aliases?: ReadonlyMap<string, string>
-  /** Resolves agent file links and images through the authenticated file route. */
+  /** Opts in to this agent's files: never for text written outside the app, since resolving one reads it with the viewer's session. */
   agentSlug?: string
-  /** Where a relative path resolves from: the open file's folder, `/workspace` by default, or null for nowhere. */
-  folder?: string | null
+  /** Opts in to relative paths, resolved from this folder: the folder of the file being shown. */
+  folder?: string
+  /** Filled with each href this transform made for an agent file or folder, keyed to the path it names. */
+  agentFileLinks?: Map<string, string>
 }
 
 /**
- * Per-message Markdown policy for agent files. A link or image the resolver
- * names as one of that agent's files becomes its canonical `file:` link or its
- * authenticated image URL. Everything else, tool-result aliases aside, keeps the
- * shared policy, so arbitrary host and container paths stay blocked.
+ * Per-message Markdown policy for agent files. A link the resolver names as
+ * one of that agent's files gets the file's URL, and a folder link keeps its
+ * path. An image gets its authenticated inline URL. Everything else, tool-result
+ * aliases aside, keeps the shared policy, so arbitrary host and container paths
+ * stay blocked.
  */
 export function createMarkdownUrlTransform(context: MarkdownImageContext = {}): UrlTransform {
-  const folder = context.folder === undefined ? '/workspace' : context.folder
   return (url, key, node) => {
     if (key === 'src' && typeof url === 'string') {
       const alias = context.aliases?.get(url)
@@ -73,9 +80,15 @@ export function createMarkdownUrlTransform(context: MarkdownImageContext = {}): 
     }
 
     if (context.agentSlug && (key === 'src' || key === 'href') && typeof url === 'string') {
-      const filePath = resolveAgentFilePath(url, folder)
-      if (filePath && key === 'href') return agentFileHref(filePath)
-      if (filePath && isPreviewableImage(filePath)) return getAgentFileUrl(context.agentSlug, filePath, { inline: true })
+      const filePath = resolveAgentFilePath(url, context.folder)
+      const file = filePath === null ? null : describeWorkspaceFile(filePath, context.agentSlug)
+      if (file && key === 'href') {
+        // A folder has no URL, so its link carries its path for the link to open.
+        const href = file.downloadUrl ?? file.path
+        context.agentFileLinks?.set(href, file.path)
+        return href
+      }
+      if (file?.isImage) return file.inlineUrl
     }
 
     return markdownUrlTransform(url, key, node)

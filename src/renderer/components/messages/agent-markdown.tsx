@@ -188,7 +188,7 @@ export const COMPACT_AGENT_TEXT = '[&_pre]:text-xs/relaxed [&_code]:text-xs [&_t
 
 export type AgentMarkdownProps = {
   text: string
-  /** Resolves agent file links and images through the authenticated file route. */
+  /** Opts in to this agent's files: never for text written outside the app, since resolving one reads it with the viewer's session. */
   agentSlug?: string
   folder?: MarkdownProps['folder']
   imageAliases?: EmbeddedImageAliases
@@ -209,7 +209,7 @@ export type AgentMarkdownProps = {
 export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, folder, imageAliases, link, rehypePlugins, htmlPreview }: AgentMarkdownProps) {
   const base = htmlPreview ? HTML_PREVIEW_COMPONENTS : MODE_COMPONENTS[mode]
   const components = link
-    ? { ...base, a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} agentSlug={agentSlug} /> }
+    ? { ...base, a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} /> }
     : base
   return (
     <Markdown components={components} rehypePlugins={rehypePlugins} imageAliases={imageAliases} agentSlug={agentSlug} folder={folder}>

@@ -1,28 +1,46 @@
-import { useContext, useMemo, type ReactNode } from 'react'
+import { createElement, useContext, useMemo, type ReactNode } from 'react'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import { REMARK_PLUGINS } from '@renderer/lib/remark-plugins'
-import { createMarkdownUrlTransform, markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { createMarkdownUrlTransform, hasUrlScheme, markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { Link, type LinkProps } from '@tanstack/react-router'
 import { isAgentPageHref, settingsTabFromHref } from '@renderer/lib/in-app-link'
 import { DialogContext } from '@renderer/context/dialog-context'
-import { FilePreviewContext } from '@renderer/context/file-preview-context'
-import { resolveAgentFilePath } from '@renderer/lib/workspace-file-url'
+import { AgentFileOpenerContext } from '@renderer/context/agent-file-opener-context'
+import { isFolderPath } from '@shared/lib/utils/workspace-path'
 
 // The one place react-markdown is wired: plugins, link-href policy, default anchor.
 
-// Its own component so only workspace links re-render with the preview tray.
-function WorkspaceFileLink({ children, href, agentSlug }: { children?: ReactNode; href: string; agentSlug?: string }) {
-  const openFile = useContext(FilePreviewContext)?.openFile
-  const filePath = resolveAgentFilePath(href, null)
-  if (!agentSlug || !openFile || !filePath) return <>{children}</>
+// A file link keeps the file's real URL, so a middle-click or a copied link still gets the file.
+function AgentFileLink({ children, href, filePath, agentSlug }: { children?: ReactNode; href: string; filePath: string; agentSlug: string }) {
+  const opener = useContext(AgentFileOpenerContext)
+  if (isFolderPath(filePath)) {
+    if (!opener) return <>{children}</>
+    const open = () => opener.openFolder(filePath, agentSlug)
+    // Inline text, not a button: a button never wraps, so text after it at the end of a line drops to its own line.
+    return (
+      <span
+        role="button"
+        tabIndex={0}
+        className="cursor-pointer text-blue-500 hover:underline"
+        onClick={open}
+        onKeyDown={(event) => { if (event.key === 'Enter') open() }}
+      >
+        {children}
+      </span>
+    )
+  }
   return (
     <a
       href={href}
+      target="_blank"
+      rel="noopener noreferrer"
       className="text-blue-500 hover:underline"
-      onClick={(event) => {
+      onClick={opener ? (event) => {
+        // A modifier-click keeps the browser's own handling: a new tab or window gets the file.
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
         event.preventDefault()
-        openFile(filePath, agentSlug)
-      }}
+        opener.openFile(filePath, agentSlug)
+      } : undefined}
     >
       {children}
     </a>
@@ -30,7 +48,7 @@ function WorkspaceFileLink({ children, href, agentSlug }: { children?: ReactNode
 }
 
 // target="_blank" is the only path that reaches the Electron shell opener.
-export function MarkdownLink({ children, href, agentSlug }: { children?: ReactNode; href?: string; agentSlug?: string }) {
+export function MarkdownLink({ children, href }: { children?: ReactNode; href?: string }) {
   const openSettings = useContext(DialogContext)?.openSettings
   if (href?.startsWith('/agents/')) {
     if (!isAgentPageHref(href)) return <>{children}</>
@@ -40,9 +58,6 @@ export function MarkdownLink({ children, href, agentSlug }: { children?: ReactNo
         {children}
       </Link>
     )
-  }
-  if (href?.startsWith('file:')) {
-    return <WorkspaceFileLink href={href} agentSlug={agentSlug}>{children}</WorkspaceFileLink>
   }
   const settingsTab = settingsTabFromHref(href)
   if (settingsTab && openSettings) {
@@ -60,7 +75,7 @@ export function MarkdownLink({ children, href, agentSlug }: { children?: ReactNo
     )
   }
   // A path with no scheme that nothing above claimed would open a blank page of this app.
-  if (!/^[a-z][a-z0-9+.-]*:|^\/\//i.test(href ?? '')) return <>{children}</>
+  if (!href || !(hasUrlScheme(href) || href.startsWith('//'))) return <>{children}</>
   return (
     <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
       {children}
@@ -79,23 +94,33 @@ export interface MarkdownProps {
   rehypePlugins?: ReactMarkdownOptions['rehypePlugins']
   /** Exact container paths proven to belong to image blocks in tool results. */
   imageAliases?: ReadonlyMap<string, string>
-  /** Resolves agent file links and images through the authenticated file route. */
+  /** Opts in to this agent's files. See MarkdownImageContext. */
   agentSlug?: string
-  /** Where a relative path resolves from. See MarkdownImageContext. */
-  folder?: string | null
+  /** Opts in to relative paths, resolved from this folder. See MarkdownImageContext. */
+  folder?: string
 }
 
 export function Markdown({ children, components, rehypePlugins, imageAliases, agentSlug, folder }: MarkdownProps) {
-  const merged = useMemo(() => {
-    const defaults: Components = agentSlug
-      ? { ...DEFAULT_COMPONENTS, a: (props) => <MarkdownLink {...props} agentSlug={agentSlug} /> }
-      : DEFAULT_COMPONENTS
-    return components ? { ...defaults, ...components } : defaults
-  }, [components, agentSlug])
-  const urlTransform = useMemo(
-    () => (imageAliases || agentSlug ? createMarkdownUrlTransform({ aliases: imageAliases, agentSlug, folder }) : markdownUrlTransform),
-    [imageAliases, agentSlug, folder]
-  )
+  const { merged, urlTransform } = useMemo(() => {
+    const base = components ? { ...DEFAULT_COMPONENTS, ...components } : DEFAULT_COMPONENTS
+    if (!agentSlug) {
+      return { merged: base, urlTransform: imageAliases ? createMarkdownUrlTransform({ aliases: imageAliases }) : markdownUrlTransform }
+    }
+    // The URL step records each file link it makes, so the anchor opens that path without resolving it again.
+    const agentFileLinks = new Map<string, string>()
+    const a: Components['a'] = (props) => {
+      const filePath = props.href === undefined ? undefined : agentFileLinks.get(props.href)
+      // Claimed before a caller's anchor, so a caller's link handler never sees a file link.
+      if (props.href !== undefined && filePath !== undefined) {
+        return <AgentFileLink href={props.href} filePath={filePath} agentSlug={agentSlug}>{props.children}</AgentFileLink>
+      }
+      return createElement(base.a ?? MarkdownLink, props)
+    }
+    return {
+      merged: { ...base, a },
+      urlTransform: createMarkdownUrlTransform({ aliases: imageAliases, agentSlug, folder, agentFileLinks }),
+    }
+  }, [components, imageAliases, agentSlug, folder])
   return (
     <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={merged} urlTransform={urlTransform}>
       {children}
