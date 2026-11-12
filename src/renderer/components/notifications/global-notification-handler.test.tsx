@@ -81,6 +81,7 @@ vi.mock('@renderer/hooks/use-mount-warnings', () => ({
 
 import { STREAM_RECONNECT_MS } from '@renderer/lib/stream-liveness'
 import { GlobalNotificationHandler, isRefetchableAfterOutage } from './global-notification-handler'
+import { closePreopenedNotificationStream, preopenNotificationStream } from './notification-stream'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1351,6 +1352,32 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     simulateSSEMessage(es, { type: 'connected' })
     expect(queryClient.getQueryState(['settings'])?.isInvalidated).toBe(true)
     vi.mocked(Date.now).mockRestore()
+  })
+
+  it('takes over the stream opened at sign-in and replays the frames it received first', () => {
+    const now = Date.now()
+    queryClient.setQueryData(['agents'], [], { updatedAt: now - 1_000 })
+    preopenNotificationStream()
+    const es = getLatestEventSource()
+    // A startup read lands after the stream was requested, then the server says connected before the router mounts the handler.
+    queryClient.setQueryData(['settings'], {}, { updatedAt: now + 1_000 })
+    es.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'connected' }) }))
+
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+
+    expect(MockEventSource.instances).toHaveLength(1)
+    expect(queryClient.getQueryState(['agents'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['settings'])?.isInvalidated).toBe(false)
+  })
+
+  it('closes a stream opened at sign-in that no handler took', () => {
+    preopenNotificationStream()
+    const es = getLatestEventSource()
+    closePreopenedNotificationStream()
+    expect(es.readyState).toBe(MockEventSource.CLOSED)
+
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    expect(MockEventSource.instances).toHaveLength(2)
   })
 })
 
