@@ -25,10 +25,12 @@ const SIGNAL_OPS = new Set(['messages.page', 'messages.delta', 'messages.media']
 export function serializingActor(actor: AgentActor): AgentActor {
   const groups = new Map<PropertyKey, unknown>(ACTOR_GROUPS.map((name) => [name, wrapGroup(actor[name], name)]))
   const live = wrapOp(actor, 'live', 'live')
+  const listing = wrapOp(actor, 'listing', 'listing')
   return new Proxy(actor, {
     get(target, key, receiver) {
       if (groups.has(key)) return groups.get(key)
       if (key === 'live') return live
+      if (key === 'listing') return listing
       // `slug`, and the local actor's own state for a test that reaches into it by a cast.
       return Reflect.get(target, key, receiver)
     },

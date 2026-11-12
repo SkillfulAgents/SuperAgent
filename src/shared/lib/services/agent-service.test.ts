@@ -59,6 +59,7 @@ import {
   getAgentWithStatus,
   listAgents,
   listAgentsWithStatus,
+  listAgentsWithListing,
   createAgent,
   createAgentFromExistingWorkspace,
   updateAgentAvatar,
@@ -407,6 +408,49 @@ Instructions`
       const agents = await listAgentsWithStatus({ slugs: ['agent-2', 'agent-3', 'not-an-agent'] })
 
       expect(agents.map((agent) => agent.slug)).toEqual(['agent-3', 'agent-2'])
+    })
+  })
+
+  describe('listAgentsWithListing', () => {
+    it('asks each agent its listing once, and takes the status from it', async () => {
+      await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
+      await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
+      const actors = ['agent-1', 'agent-2'].map((slug) => agentRegistry.get(slug))
+      const listings = actors.map((actor) => vi.spyOn(actor, 'listing'))
+      const lives = actors.map((actor) => vi.spyOn(actor, 'live'))
+      const summaries = actors.map((actor) => vi.spyOn(actor.sessions, 'summary'))
+
+      const listed = await listAgentsWithListing()
+
+      expect(listed.map(({ agent }) => agent.slug).sort()).toEqual(['agent-1', 'agent-2'])
+      for (const { agent, listing } of listed) {
+        expect(agent.status).toBe('stopped')
+        expect(listing).toMatchObject({ sessions: { sessionCount: 0 }, artifacts: { dashboards: [], widgets: [] }, refreshingWidgets: [] })
+      }
+      // The listing reads the live state and the sessions itself; nothing else asks again.
+      for (const spy of [...listings, ...lives, ...summaries]) expect(spy).toHaveBeenCalledTimes(1)
+    })
+
+    it('asks at most five agents at a time', async () => {
+      const slugs = Array.from({ length: 8 }, (_, i) => `bounded-${i + 1}`)
+      for (const slug of slugs) await createTestAgent(slug, SAMPLE_INSTRUCTIONS_MINIMAL)
+      let inFlight = 0
+      let most = 0
+      for (const slug of slugs) {
+        const actor = agentRegistry.get(slug)
+        const listing = actor.listing.bind(actor)
+        vi.spyOn(actor, 'listing').mockImplementation(async () => {
+          most = Math.max(most, ++inFlight)
+          try {
+            return await listing()
+          } finally {
+            inFlight--
+          }
+        })
+      }
+
+      expect(await listAgentsWithListing()).toHaveLength(8)
+      expect(most).toBe(5)
     })
   })
 

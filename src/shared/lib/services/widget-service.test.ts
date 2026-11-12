@@ -14,8 +14,8 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => {
   }
 })
 
+const { hashWidgetHtml, scanArtifactsIn } = await import('./artifact-scan')
 const {
-  hashWidgetHtml,
   listWidgetsFromFilesystem,
   readWidgetFromFilesystem,
   readWidgetHtml,
@@ -25,8 +25,11 @@ const {
   resolveWidgetPath,
   widgetSnapshotPngPath,
 } = await import('./widget-service')
-const { listArtifactsFromFilesystem, listArtifactsAndWidgets } = await import('./artifact-service')
+const { listArtifactsFromFilesystem } = await import('./artifact-service')
 const { agentRegistry } = await import('@shared/lib/agent-actor')
+
+/** Both halves of an agent's artifacts, as its actor's listing scans them. */
+const listArtifactsAndWidgets = (slug: string) => scanArtifactsIn(agentRegistry.get(slug).files, { includeWidgets: true, agentSlug: slug })
 
 const AGENT = 'agent-1'
 
