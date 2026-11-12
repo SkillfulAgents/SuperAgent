@@ -17,7 +17,7 @@ import {
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'
-import { getAllProviderInfo, getLlmProvider, resolveActiveProviderModel } from './index'
+import { getAllProviderInfo, getLlmProvider, LLM_PROVIDER_IDS, resolveActiveProviderModel } from './index'
 
 beforeEach(() => {
   settingsMock.mockReturnValue({ llmProvider: 'anthropic' })
@@ -650,9 +650,9 @@ describe('getModelContextWindow', () => {
     expect(await getModelContextWindow('grok-4.5', 'platform')).toBe(500_000)
   })
 
-  it('returns the catalog window for OpenRouter GPT models', async () => {
+  it('returns the catalog window for OpenRouter models', async () => {
     expect(await getModelContextWindow('openai/gpt-5.5', 'openrouter')).toBe(1_050_000)
-    expect(await getModelContextWindow('z-ai/glm-5.2', 'openrouter')).toBeUndefined()
+    expect(await getModelContextWindow('z-ai/glm-5.2', 'openrouter')).toBe(1_048_576)
   })
 
   it('returns undefined for Claude models (SDK supplies their window)', async () => {
@@ -893,5 +893,15 @@ describe('resolveActiveProviderModel', () => {
   it('resolves against the active provider from settings', async () => {
     settingsMock.mockReturnValue({ llmProvider: 'bedrock' })
     expect(await resolveActiveProviderModel('opus', 'agent')).toBe('us.anthropic.claude-opus-4-8')
+  })
+})
+
+describe('built-in catalogs', () => {
+  // Without a window the CLI assumes 200k and compacts long sessions on every turn.
+  it('declare a context window for every non-Claude model', () => {
+    const missing = LLM_PROVIDER_IDS.flatMap(id => getLlmProvider(id).getBuiltinCatalog()
+      .filter(model => model.icon !== 'anthropic' && model.contextWindow === undefined)
+      .map(model => `${id}:${model.id}`))
+    expect(missing).toEqual([])
   })
 })

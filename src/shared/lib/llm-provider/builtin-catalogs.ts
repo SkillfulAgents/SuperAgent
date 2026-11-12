@@ -390,6 +390,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
     pricing: pricingFor('z-ai/glm-5.2'),
+    // OpenRouter's live model list context_length, fetched 2026-11-11.
+    contextWindow: 1_048_576,
   },
   {
     id: 'x-ai/grok-4.5',
