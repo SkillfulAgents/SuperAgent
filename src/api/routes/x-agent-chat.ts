@@ -142,6 +142,32 @@ xAgentChat.post('/add', async (c) => {
   }
 })
 
+// The agent's proxy cuts a request at 30 s; past this the agent hears the send is unconfirmed.
+const DELIVER_FILE_BUDGET_MS = 25_000
+
+// POST /deliver-file - send a file the agent delivered to the chat its session answers, and say what happened
+xAgentChat.post('/deliver-file', async (c) => {
+  const body = z.object({
+    session_id: z.string().min(1), file_path: z.string().min(1), description: z.string().optional(),
+  }).safeParse(await c.req.json().catch(() => null))
+  if (!body.success) return c.json({ error: 'Missing required fields: session_id, file_path' }, 400)
+  const { session_id, file_path, description } = body.data
+  const delivery = agentIntegrationManager.deliverFile(getCallerSlug(c), session_id, { filePath: file_path, description })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const outOfTime = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), DELIVER_FILE_BUDGET_MS) })
+  try {
+    const outcome = await Promise.race([delivery, outOfTime])
+    if (outcome === 'timeout') return c.json({ text: 'may not have reached the chat yet. It may still arrive, so do not send it again; ask the user whether it arrived.' })
+    if (!outcome) return c.json({ text: null })
+    return c.json({ text: outcome.delivered ? outcome.text : `${outcome.text} It is still in the workspace, and the user can download it in the Gamut app. Tell the user, and offer another way if one fits (a smaller file, parts, or a link).` })
+  } catch (error) {
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'deliver-file' } })
+    return c.json({ text: 'was not sent to the chat: the chat integration failed. The user can download it in the Gamut app.' })
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
 // POST /send — send a message through a connected integration
 xAgentChat.post('/send', async (c) => {
   try {

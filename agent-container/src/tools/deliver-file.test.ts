@@ -13,7 +13,14 @@ vi.mock('../workspace-file-transfer', async (importOriginal) => {
   }
 })
 
-import { deliverFileTool } from './deliver-file'
+const host = vi.hoisted(() => ({ answer: { text: null as string | null } as { text: string | null } | Error }))
+vi.mock('./chat/host-client', () => ({
+  callChatHost: async () => { if (host.answer instanceof Error) throw host.answer; return host.answer },
+}))
+
+import { makeDeliverFileTool } from './deliver-file'
+
+const deliverFileTool = makeDeliverFileTool(() => null)
 
 describe('deliver_file metadata-only delivery', () => {
   beforeEach(async () => {
@@ -50,5 +57,27 @@ describe('deliver_file metadata-only delivery', () => {
     const result = await deliverFileTool.handler({ filePath }, {})
     expect(result.isError).toBe(true)
     expect(result.content[0]).toMatchObject({ text: expect.stringContaining(message) })
+  })
+})
+
+describe('deliver_file in a chat session', () => {
+  const inChat = makeDeliverFileTool(() => 'session-1')
+  beforeEach(async () => {
+    workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'deliver-file-'))
+    await fs.promises.writeFile(path.join(workspace, 'big.bin'), 'x')
+  })
+  afterEach(async () => {
+    await fs.promises.rm(workspace, { recursive: true, force: true })
+  })
+  const text = async () => ((await inChat.handler({ filePath: '/workspace/big.bin' }, {})).content[0] as { text: string }).text
+
+  it('says what the chat did with the file, not that it was delivered', async () => {
+    host.answer = { text: 'was NOT sent to Telegram: 413: Request Entity Too Large. Tell the user.' }
+    expect(await text()).toMatch(/^File "big.bin" \(1 bytes\) was NOT sent to Telegram: 413/)
+  })
+
+  it('does not claim delivery when the app does not answer', async () => {
+    host.answer = new Error('network down')
+    expect(await text()).toContain('may not have reached the chat')
   })
 })

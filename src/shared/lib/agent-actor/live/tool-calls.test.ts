@@ -1174,15 +1174,15 @@ describe('ToolCalls', () => {
   })
 
   describe('deliver_file', () => {
-    it('tells chat clients the file can go once its result confirms it', () => {
+    it('tells chat clients the file can go once an older sandbox says it delivered it', () => {
       const h = harness()
       h.calls.mainToolUse(use('t_file', 'mcp__user-input__deliver_file', { filePath: '/workspace/report.pdf', description: 'The report' }))
       expect(h.events).toEqual([])
 
-      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_file', content: 'Delivered' }] } })
+      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_file', content: 'File "report.pdf" (5 bytes) has been delivered to the user. They can now download it from the chat.' }] } })
 
       expect(h.events).toEqual([
-        { type: 'tool_result', toolUseId: 't_file', result: 'Delivered', isError: false },
+        { type: 'tool_result', toolUseId: 't_file', result: 'File "report.pdf" (5 bytes) has been delivered to the user. They can now download it from the chat.', isError: false },
         {
           type: 'tool_result_ready',
           toolName: 'mcp__user-input__deliver_file',
@@ -1194,7 +1194,15 @@ describe('ToolCalls', () => {
       ])
     })
 
-    it('says the delivery failed when its result is an error, and says it once', () => {
+    it('tells chat clients nothing when the sandbox had the host send the file itself', () => {
+      const h = harness()
+      h.calls.mainToolUse(use('t_file', 'mcp__user-input__deliver_file', { filePath: '/workspace/report.pdf' }))
+      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_file', content: 'File "report.pdf" (5 bytes) was sent to Telegram.' }] } })
+
+      expect(h.events.map((e) => e.type)).toEqual(['tool_result'])
+    })
+
+    it('tells chat clients nothing about a refused delivery', () => {
       const h = harness()
       h.calls.mainToolUse(use('t_file', 'mcp__user-input__deliver_file', { filePath: '/workspace/missing.pdf' }))
       const result = { message: { content: [{ type: 'tool_result', tool_use_id: 't_file', content: 'No such file', is_error: true }] } }
@@ -1202,9 +1210,7 @@ describe('ToolCalls', () => {
       h.calls.mainToolResults(result)
       h.calls.mainToolResults(result)
 
-      expect(h.events.filter((e) => e.type === 'tool_result_ready')).toEqual([
-        expect.objectContaining({ filePath: '/workspace/missing.pdf', description: undefined, isError: true }),
-      ])
+      expect(h.events.filter((e) => e.type === 'tool_result_ready')).toEqual([])
     })
 
     it('remembers nothing for a delivery without a file path', () => {

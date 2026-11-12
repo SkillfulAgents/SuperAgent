@@ -256,22 +256,17 @@ describe('MeetingAgentIntegration', () => {
     expect(await listMeetings('integration')).toHaveLength(1)
   })
 
-  it('posts files the agent delivers into the meeting chat as links, only while in the call', async () => {
+  it('posts files the agent delivers into the meeting chat as links, only while in the call, and says why not', async () => {
     const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     const context = { integration: record, externalId: meeting.id }
-    const delivered = (filePath: string, extra: Record<string, unknown> = {}) => ({
-      type: 'runtime' as const,
-      event: { type: 'tool_result_ready', toolName: 'mcp__user-input__deliver_file', toolUseId: 't', filePath, isError: false, ...extra },
-    })
     // Not in the call yet: nothing to post to.
-    await integration.deliver(context, delivered('/workspace/output/early.png'))
+    expect(await integration.deliverFile(context, { filePath: '/workspace/output/early.png' }))
+      .toEqual({ delivered: false, text: 'was not posted in the meeting chat: the bot is not in the call.' })
     host.status = { status: 'in_call' }
     await vi.advanceTimersByTimeAsync(5000)
-    await integration.deliver(context, delivered('/workspace/output/q3 chart.png', { description: 'Q3 revenue chart' }))
-    await integration.deliver(context, delivered('/workspace/notes.md'))
-    // Failed deliveries, other tools and spoken replies are not relayed.
-    await integration.deliver(context, delivered('/workspace/broken.pdf', { isError: true }))
-    await integration.deliver(context, { type: 'runtime', event: { type: 'tool_result_ready', toolName: 'Read', toolUseId: 'r', filePath: '/workspace/x' } })
+    expect(await integration.deliverFile(context, { filePath: '/workspace/output/q3 chart.png', description: 'Q3 revenue chart' }))
+      .toEqual({ delivered: true, text: 'was posted as a link in the meeting chat.' })
+    await integration.deliverFile(context, { filePath: '/workspace/notes.md' })
     await integration.deliver(context, { type: 'message', text: 'Here you go.' })
     expect(host.chats.slice(1)).toEqual([
       ['bot-1', 'Q3 revenue chart: https://app.example/api/agents/agent/files/output/q3%20chart.png?inline=true'],
@@ -317,7 +312,7 @@ describe('MeetingAgentIntegration', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await integration.deliver(quiet, { type: 'runtime', event: { type: 'stream_delta', text: 'Fact check: that figure is wrong.' } })
     await integration.deliver(quiet, { type: 'turn-completed', event: { type: 'turn_completed' } })
-    await integration.deliver(quiet, { type: 'runtime', event: { type: 'tool_result_ready', toolName: 'mcp__user-input__deliver_file', toolUseId: 't', filePath: '/workspace/output/chart.png', isError: false } })
+    expect((await integration.deliverFile(quiet, { filePath: '/workspace/output/chart.png' })).delivered).toBe(false)
     expect(host.chats.filter(([bot]) => bot === 'bot-2').map(([, text]) => text)).toEqual([expect.stringMatching(/^Hi, I'm/)])
   })
 

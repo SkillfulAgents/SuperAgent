@@ -1,8 +1,9 @@
 import type { ChatAgentIntegration, IncomingMessage, ToolOutcome } from './chat-agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
+import type { FileDelivery } from '../agent-integrations/agent-integration'
 import type { SessionActivity } from '../types/agent'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
-import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-actor'
+import { agentRegistry, workspaceBasename } from '../agent-actor'
 import { NoImageError, segments, type ChatSegment, type VisualSegment } from './chat-visuals'
 import { getToolDefinition, getToolPresentation } from '@shared/lib/tools/registry'
 import { formatToolName } from '@shared/lib/tools/types'
@@ -353,10 +354,8 @@ export async function processSSEEvent(
       const toolId = data.toolId as string
       const toolName = data.toolName as string
 
-      // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
-      // below), not off the streamed input — so we never read a host-side path
-      // before the in-container tool has validated the file exists. It falls
-      // through to shouldHideToolStatusInChat() here, which just resets the tool input.
+      // deliver_file reaches the chat through its tool (deliverFileToChat), or
+      // from an older sandbox off 'tool_result_ready'; here it only resets the tool input.
 
       if (shouldHideToolStatusInChat(toolName)) {
         managed.currentToolInput = ''
@@ -393,23 +392,11 @@ export async function processSSEEvent(
     }
 
     case 'tool_result_ready': {
-      // Fired once the in-container tool has returned its result. Currently only
-      // deliver_file acts on it: deliver the file to the chat client, but only if
-      // the tool validated the file exists (isError === false). On an error
-      // result we skip host delivery — the agent's text already covers the user.
-      const toolName = data.toolName as string
-      if (toolName === 'mcp__user-input__deliver_file' && !data.isError) {
-        const filePath = data.filePath as string | undefined
-        const description = data.description as string | undefined
-        if (filePath) {
-          try {
-            await sendDeliveredFile(managed, filePath, description)
-          } catch (err) {
-            console.error('[ChatAgentIntegration] Failed to deliver file:', err)
-            reportError(err, 'deliver-file', { integrationId: managed.integration.id, provider: managed.integration.provider })
-          }
-        }
-      }
+      // A sandbox from before deliver_file asked the host: it already told the
+      // agent "delivered", so the user gets the file or, failing that, a pointer.
+      if (data.toolName !== 'mcp__user-input__deliver_file' || data.isError || typeof data.filePath !== 'string') break
+      const sent = await deliverFileToChat(managed, managed.connector.definition.name, data.filePath, data.description as string | undefined)
+      if (!sent.delivered) await managed.connector.sendMessage(managed.chatId, { text: `📎 File ready: \`${data.filePath}\`\n(File delivery to chat not available — download from the UI)` })
       break
     }
 
@@ -613,39 +600,22 @@ async function sendVisual(
   }
 }
 
-/** Read a file from the agent workspace and send it to the chat client. */
-async function sendDeliveredFile(
-  managed: ManagedConnector,
-  filePath: string,
-  description?: string,
-): Promise<void> {
+/** Send a file the agent delivered, and say whether the chat took it. */
+export async function deliverFileToChat(managed: ManagedConnector, destination: string, filePath: string, description?: string): Promise<FileDelivery> {
   try {
     // filePath is a workspace path as the agent wrote it (`/workspace/output.png`).
     // The actor keeps it inside the workspace: a path that would leave it —
     // through `..` or a link — is refused (status 400) before anything is read.
     const fileData = await agentRegistry.get(managed.integration.agentSlug).files.getDoc(filePath)
-    if (fileData === null) {
-      // Benign: the file isn't host-visible (e.g. a not-yet-flushed write across
-      // the VM file-share). The text fallback below still reaches the user, so
-      // don't page Sentry.
-      console.error('[ChatAgentIntegration] Delivered file not found:', filePath)
-    } else {
-      await managed.connector.sendFile(managed.chatId, Buffer.from(fileData), workspaceBasename(filePath), description)
-      return
-    }
+    if (fileData === null) return { delivered: false, text: `was not sent to ${destination}: the app cannot see the file yet, try again in a moment.` }
+    await managed.connector.sendFile(managed.chatId, Buffer.from(fileData), workspaceBasename(filePath), description)
+    return { delivered: true, text: `was sent to ${destination}.` }
   } catch (err) {
-    if (err instanceof WorkspaceFileError && err.status === 400) {
-      console.error('[ChatAgentIntegration] deliver_file path escapes workspace:', filePath)
-      reportError(new Error('Path traversal attempt in deliver_file'), 'deliver-file-security', { filePath, agentSlug: managed.integration.agentSlug }, 'warning')
-      return
-    }
-    console.error('[ChatAgentIntegration] Failed to send delivered file:', err)
-    reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider, filePath }, 'warning')
+    reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider }, 'warning')
+    // The chat's own reason (Telegram's 413) lets the agent act on it.
+    const reason = (err instanceof Error ? err.message : String(err)).trim().slice(0, 300) || 'the chat refused it'
+    return { delivered: false, text: `was NOT sent to ${destination}: ${reason}.` }
   }
-  // Fall back to a text message with the file path
-  await managed.connector.sendMessage(managed.chatId, {
-    text: `📎 File ready: \`${filePath}\`${description ? ` — ${description}` : ''}\n(File delivery to chat not available — download from the UI)`,
-  })
 }
 
 // ── Exported pure functions (testable) ────────────────────────────────
