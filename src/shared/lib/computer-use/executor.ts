@@ -658,11 +658,26 @@ export async function resolveComputerUseTargetApp(
   method: string,
   params: Record<string, unknown>,
 ): Promise<string | undefined> {
-  ;({ method, params } = commandLineOf(method, params))
+  const placed = await placeComputerUseCall(method, params)
+  return typeof placed === 'string' ? placed : undefined
+}
+
+/**
+ * Where a computer-use call acts, for its permission check: the app; nothing
+ * when it cannot be placed (the user is asked about the call itself); or the
+ * reason the executor will refuse it whatever the user decides (it would act
+ * in this app's own window, or in two apps), so the check refuses it at once
+ * instead of asking for an approval that cannot be used.
+ */
+export async function placeComputerUseCall(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<string | undefined | { refused: string }> {
   try {
+    ;({ method, params } = commandLineOf(method, params))
     return await targetAppOf(method, callTargets(method, params))
-  } catch {
-    return undefined
+  } catch (error) {
+    return error instanceof ComputerUseArgumentError ? { refused: error.message } : undefined
   }
 }
 

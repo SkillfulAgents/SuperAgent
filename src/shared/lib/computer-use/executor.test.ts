@@ -94,6 +94,7 @@ const {
   endComputerUseSessions,
   endComputerUseTurn,
   resolveComputerUseTargetApp,
+  placeComputerUseCall,
   checkComputerUsePermissions,
   cursorLabel,
 } = await import('./executor')
@@ -584,6 +585,9 @@ describe('what a call acts on', () => {
       : defaultAnswer(args)
 
     expect(await resolveComputerUseTargetApp('snapshot', {})).toBeUndefined()
+    // The permission check is told it will be refused, and why, so it asks no one.
+    expect(await placeComputerUseCall('mouse-click', { xy: '10,10', headed: true }))
+      .toEqual({ refused: "mouse-click would land on this app's own window, which is at that point on screen; agents do not act in it. Nothing was sent." })
     await expect(executeComputerUseCommand('snapshot', {}, caller())).rejects.toThrow(/this app's own window.*Name the app to act in/)
     // At a point, naming an app changes nothing: it says what is there instead.
     await expect(executeComputerUseCommand('mouse-click', { xy: '10,10', headed: true }, caller()))

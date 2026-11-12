@@ -110,7 +110,7 @@ export const localHostPort = createLocalHostPort({
     computerUseTargetApp: async ({ method, params }) =>
       isE2EMock()
         ? mockTargetApp(method, params)
-        : (await computerUse()).resolveComputerUseTargetApp(method, params),
+        : (await computerUse()).placeComputerUseCall(method, params),
     computerUseAppIcon: async ({ app }) => (await import('@shared/lib/computer-use/app-icon')).getAppIconBase64(app),
     hostScript: async ({ script, scriptType }) => (await import('./script')).runHostScript(script, scriptType),
     loginRequest: async (request) => (await import('@shared/lib/browser-vault/login-host')).decideLoginRequest(request),
