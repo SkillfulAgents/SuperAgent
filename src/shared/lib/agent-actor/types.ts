@@ -861,6 +861,8 @@ export interface ComputerUseOps {
   grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): Promise<void>
   /** `AgentComputerUse.consumeOnce` */
   consumeOnce(level: ComputerUsePermissionLevel, appName?: string): Promise<void>
+  /** `AgentComputerUse.revokeAll`: the persisted "always" grants included. */
+  revokeAll(): Promise<void>
   /** `LiveSessions.clearComputerUseRequest` */
   clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): Promise<void>
   /**
