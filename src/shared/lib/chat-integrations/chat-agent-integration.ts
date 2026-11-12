@@ -80,6 +80,25 @@ export function isMultiPartyChatType(type: ChatConversationType | undefined): bo
   return type === 'group' || type === 'channel' || type === 'thread'
 }
 
+/**
+ * The message a reply quotes: the oldest one not yet answered, unless the reply lands reliably
+ * right under it (a 1:1, the only one unanswered, and still the chat's latest message).
+ */
+export function quotedMessageId(unanswered: string[], multiParty: boolean, latest: string | undefined): string | undefined {
+  return multiParty || unanswered.length > 1 || latest !== unanswered[0] ? unanswered[0] : undefined
+}
+
+/** What a chat's replies need to know to quote, kept while the chat has messages waiting. */
+interface QuoteState {
+  multiParty: boolean
+  /** The chat's latest message, while nothing has been posted after it. */
+  latest?: string
+  /** Waiting messages a finished turn already answered. */
+  answered: Set<string>
+  /** The chat message behind each delivery, since a turn names the deliveries it answered. */
+  deliveries: Map<string, string>
+}
+
 /** Optional discovery features a provider can support (see discoveryCapabilities). */
 export type ChatDiscoveryCapability = 'list_users' | 'list_channels' | 'dm_by_user_id'
 
@@ -204,10 +223,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    * Subsequent calls edit the existing message.
    * Returns the external message ID.
    */
-  abstract sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string>
+  abstract sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string, replyToExternalId?: string): Promise<string>
 
   /** Finalize a streaming message (last edit with final text). */
-  abstract finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void>
+  abstract finalizeStreamingMessage(chatId: string, messageId: string, finalText: string, replyToExternalId?: string): Promise<void>
 
   /**
    * Remove a streamed draft that no text replaces: the reply opened with an image.
@@ -295,6 +314,11 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   // Shared chat policy. The application consumes only the AgentIntegration hooks.
   private deliverySessions = new Map<string, ManagedConnector>()
   private acknowledgements = new Map<string, string[]>()
+  private quoteStates = new Map<string, QuoteState>()
+  // When the agent last posted in each chat. A message sent before then landed above that post,
+  // even when it reaches the host after it. Outlives the waiting list, since that can empty in between.
+  private lastPosts = new Map<string, number>()
+  private static readonly MAX_LAST_POSTS = 1000
   private inputBuilder = new ChatInputBuilder(async () => this.constructor as ChatConnectorClass)
 
   get definition(): AgentIntegrationDefinition {
@@ -325,6 +349,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     const decision = await decideInboundAccess({ integrationId, externalChatId: chatId, chatType: message.chatType,
       userId: message.userId, userName: message.userName, chatName: message.chatName, preview: message.text })
     if (decision.action !== 'blocked') return true
+    this.releaseAcknowledgements(chatId, [message.externalMessageId])
     if (decision.sendNotice) {
       const access = await getChatAccess(integrationId, chatId)
       if (access) {
@@ -355,6 +380,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     const message = incomingMessageSchema.parse(event.payload)
     const { text, failedFiles, request } = await this.inputBuilder.buildMessageContent(context.integration, message)
     const skip = failedFiles.length > 0 && !text.trim()
+    if (skip) this.releaseAcknowledgements(context.externalId, [message.externalMessageId])
+    else if (context.deliveryId) this.quoteStates.get(context.externalId)?.deliveries.set(context.deliveryId, message.externalMessageId)
     if (failedFiles.length && (await this.isAllowed(context))) {
       await this.sendMessage(context.externalId, { text: `Could not download file(s): ${failedFiles.join(', ')}. ${skip ? 'Message was not sent to the agent.' : 'Your text message will still be sent.'}\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.` })
     }
@@ -386,7 +413,12 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {
     if (this.resolveRoute(event).action !== 'run') return
-    const { chatId, externalMessageId: messageId } = incomingMessageSchema.parse(event.payload)
+    const message = incomingMessageSchema.parse(event.payload)
+    const { chatId, externalMessageId: messageId } = message
+    const state: QuoteState = this.quoteStates.get(chatId) ?? { multiParty: false, answered: new Set(), deliveries: new Map() }
+    state.multiParty ||= isMultiPartyChatType((this.constructor as ChatConnectorClass).classifyChatId?.(message))
+    if (message.timestamp.getTime() > (this.lastPosts.get(chatId) ?? 0)) state.latest = messageId
+    this.quoteStates.set(chatId, state)
     const marks = this.acknowledgements.get(chatId)
     if (marks) marks.push(messageId)
     else this.acknowledgements.set(chatId, [messageId])
@@ -400,10 +432,50 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     return [...(this.acknowledgements.get(chatId) ?? [])]
   }
 
+  /** Whether a reply shows text, so it can carry a quote. */
+  carriesText(_chatId: string, text: string): boolean {
+    return text.trim() !== ''
+  }
+
+  /** The message a reply in this chat quotes. Connectors that cannot quote ignore it. */
+  quotedMessage(chatId: string): string | undefined {
+    const state = this.quoteStates.get(chatId)
+    if (!state) return undefined
+    const unanswered = this.acknowledgedMessages(chatId).filter(id => !state.answered.has(id))
+    return quotedMessageId(unanswered, state.multiParty, state.latest)
+  }
+
+  /** The agent posted in the chat, so no waiting message is its latest any more. */
+  messagePosted(chatId: string): void {
+    const state = this.quoteStates.get(chatId)
+    if (state) state.latest = undefined
+    this.lastPosts.delete(chatId)
+    this.lastPosts.set(chatId, Date.now())
+    // Only recent posts matter: keep the most recently active chats.
+    for (const oldest of this.lastPosts.keys()) {
+      if (this.lastPosts.size <= ChatAgentIntegration.MAX_LAST_POSTS) break
+      this.lastPosts.delete(oldest)
+    }
+  }
+
+  /** A turn finished, naming the deliveries it answered. */
+  markAnswered(chatId: string, deliveryIds: string[]): void {
+    const state = this.quoteStates.get(chatId)
+    for (const id of deliveryIds) {
+      const messageId = state?.deliveries.get(id)
+      if (!state || !messageId) continue
+      state.answered.add(messageId)
+      state.deliveries.delete(id)
+    }
+  }
+
   releaseAcknowledgements(chatId: string, messageIds = this.acknowledgedMessages(chatId)): void {
     const remaining = (this.acknowledgements.get(chatId) ?? []).filter(id => !messageIds.includes(id))
     if (remaining.length) this.acknowledgements.set(chatId, remaining)
-    else this.acknowledgements.delete(chatId)
+    else {
+      this.acknowledgements.delete(chatId)
+      this.quoteStates.delete(chatId)
+    }
     for (const messageId of messageIds) {
       background(this.removeAcknowledgement(chatId, messageId).catch(() => {}), { name: 'chat-integration.remove-acknowledgement' })
     }
@@ -411,6 +483,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   protected releaseAllAcknowledgements(): void {
     for (const chatId of [...this.acknowledgements.keys()]) this.releaseAcknowledgements(chatId)
+    this.lastPosts.clear()
   }
 
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext, input: PreparedIntegrationInput): Promise<boolean> {

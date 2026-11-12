@@ -463,6 +463,7 @@ export class IMessageConnector extends ChatAgentIntegration {
     this.readReceipts.clear()
     for (const ack of this.groupAcks.values()) clearTimeout(ack.timer)
     this.groupAcks.clear()
+    this.releaseAllAcknowledgements()
 
     this.stopPingLoop()
 
@@ -511,12 +512,7 @@ export class IMessageConnector extends ChatAgentIntegration {
       for (const reaction of reactions) this.react(latest.id, reaction)
     }
 
-    // Previews need an existing chat (a chat's first message can't be a link) and sends that
-    // complete in order, which only the HTTP path awaits.
-    const previews = !!targetChatId && this.mode === 'webhooks'
-    const { text: converted, decorations, links } = markdownToIMessage(cleanText, { previews })
-    // Text that converts to nothing (a lone rule or link definition) still goes out as written.
-    const body = converted.trim() ? converted : links.length > 0 ? '' : cleanText.trim()
+    const { body, decorations, links } = this.replyBody(cleanText, targetChatId)
 
     // If only reactions, no text to send
     if (!body && links.length === 0) {
@@ -524,7 +520,9 @@ export class IMessageConnector extends ChatAgentIntegration {
     }
 
     // The reply's id is its text message's, or its first preview's when it has no text.
-    let replyId = body ? await this.postMessage(targetChatId, [{ type: 'text', value: body }], decorations) : null
+    // Only the HTTP path hears Linq refuse a quote, so only it quotes.
+    const quote = this.mode === 'webhooks' ? message.replyToExternalId : undefined
+    let replyId = body ? await this.postMessage(targetChatId, [{ type: 'text', value: body }], decorations, quote) : null
     // Once part of the reply is out, a failure must not fail the reply: delivery would resend it all.
     let delivered = !!body
     for (const [i, url] of links.entries()) {
@@ -559,9 +557,9 @@ export class IMessageConnector extends ChatAgentIntegration {
     return existingMessageId || `stream-noop-${Date.now()}`
   }
 
-  async finalizeStreamingMessage(chatId: string, _messageId: string, finalText: string): Promise<void> {
+  async finalizeStreamingMessage(chatId: string, _messageId: string, finalText: string, replyToExternalId?: string): Promise<void> {
     // Since we don't stream, send the complete message now
-    await this.sendMessage(chatId, { text: finalText })
+    await this.sendMessage(chatId, { text: finalText, ...(replyToExternalId && { replyToExternalId }) })
   }
 
   async startWorking(chatId: string, _activity: SessionActivity): Promise<void> {
@@ -977,6 +975,21 @@ export class IMessageConnector extends ChatAgentIntegration {
 
   // ── Reaction parsing ─────────────────────────────────────────────────
 
+  /** Reaction tags and links sent as previews leave no text message to carry a quote. */
+  override carriesText(chatId: string, text: string): boolean {
+    return this.replyBody(this.extractReactions(text).cleanText, chatId || this.lastChatId || undefined).body !== ''
+  }
+
+  private replyBody(cleanText: string, chatId: string | undefined): { body: string; decorations: GatewayTextDecoration[]; links: string[] } {
+    // Previews need an existing chat (a chat's first message can't be a link) and sends that
+    // complete in order, which only the HTTP path awaits.
+    const previews = !!chatId && this.mode === 'webhooks'
+    const { text: converted, decorations, links } = markdownToIMessage(cleanText, { previews })
+    // Text that converts to nothing (a lone rule or link definition) still goes out as written.
+    const body = converted.trim() ? converted : links.length > 0 ? '' : cleanText.trim()
+    return { body, decorations, links }
+  }
+
   private extractReactions(text: string): { cleanText: string; reactions: string[] } {
     const reactions: string[] = []
     const cleanText = text.replace(REACTION_TAG_RE, (_, name: string) => {
@@ -1031,9 +1044,18 @@ export class IMessageConnector extends ChatAgentIntegration {
   // ── Gateway commands: over HTTP with webhooks, over the socket otherwise ──
 
   /** Resolves to Linq's id for the message when the gateway says, which it does over HTTP. */
-  private async postMessage(chatId: string | undefined, parts: GatewayMessagePart[], decorations: GatewayTextDecoration[] = []): Promise<string | null> {
-    const message = { chatId, parts, ...(decorations.length > 0 && { textDecorations: decorations }) }
-    if (this.mode === 'webhooks') return (await sendGatewayMessage(this.config, message)).messageId
+  private async postMessage(chatId: string | undefined, parts: GatewayMessagePart[], decorations: GatewayTextDecoration[] = [], replyToExternalId?: string): Promise<string | null> {
+    const message = { chatId, parts, ...(decorations.length > 0 && { textDecorations: decorations }), ...(replyToExternalId && { replyTo: { messageId: replyToExternalId, partIndex: 0 } }) }
+    if (this.mode === 'webhooks') {
+      try {
+        return (await sendGatewayMessage(this.config, message)).messageId
+      } catch (error) {
+        // Linq refuses a whole message that quotes one it can't find. The reply still goes, unquoted.
+        if (!replyToExternalId || !(error instanceof GatewayRequestError && error.status === 422 && /reply target message not found/.test(error.message))) throw error
+        console.warn('[IMessageConnector] Quoted message not found, sending the reply unquoted')
+        return this.postMessage(chatId, parts, decorations)
+      }
+    }
     this.send({ type: 'send_message', data: message })
     return null
   }
@@ -1059,6 +1081,7 @@ export class IMessageConnector extends ChatAgentIntegration {
 
   /** Once the host accepts a message: "Read" in a 1:1 chat, 👀 in a group, where iMessage shows no read receipts. */
   override async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {
+    await super.acknowledgeInput(event)
     const message = incomingMessageSchema.parse(event.payload)
     const chatId = message.chatId
     if (classifyIMessageChat(message) !== 'group') { this.markRead(chatId); return }

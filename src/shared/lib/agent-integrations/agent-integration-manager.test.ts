@@ -12,7 +12,7 @@ import { updateAgentIntegrationStatus } from '../services/agent-integration-serv
 import { backgroundSettled } from '../background'
 import { getRequestUserId, runWithRequestUser } from '../platform-attribution/request-context'
 import { publishIntegrationAuthorization } from './authorization-events'
-import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
+import type { AgentIntegrationRecord, IntegrationInputContext, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext, PreparedIntegrationInput } from './types'
 
 const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
@@ -117,7 +117,7 @@ class ObjectIntegration extends AgentIntegration {
   allowed = true
   outputs: Array<{ context: IntegrationSessionContext; output: IntegrationOutput }> = []
   released: IntegrationSessionContext[] = []
-  prepareInput = vi.fn(async (event: IntegrationInputEvent): Promise<PreparedIntegrationInput> => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
+  prepareInput = vi.fn(async (event: IntegrationInputEvent, _context?: IntegrationInputContext): Promise<PreparedIntegrationInput> => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
   sessionsToRecover = async () => state.recovery
   session(externalId: string) { return this.host.session(externalId) }
   async connect() { this.connected = true }
@@ -264,7 +264,7 @@ describe('AgentIntegration host contract', () => {
       integration: { id: 'installation-a', name: 'Objects', provider: 'test-objects', family: 'objects' },
     }
 
-    it('records the card under the uuid the message is sent with and shows it live', async () => {
+    it('records the card under the uuid the message is sent with, hands that uuid to the integration, and shows it live', async () => {
       adapter.prepareInput.mockImplementation(withDisplay)
       state.isActive.mockReturnValue(true)
       await manager.start()
@@ -273,11 +273,14 @@ describe('AgentIntegration host contract', () => {
       const initialMessageUuid = state.create.mock.calls[0][0].initialMessageUuid
       expect(initialMessageUuid).toEqual(expect.any(String))
       expect(state.recordMessage).toHaveBeenCalledWith({ id: initialMessageUuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
+      // A turn names the sends it answered by this uuid, so the integration must get the same one.
+      expect(adapter.prepareInput.mock.calls[0][1]?.deliveryId).toBe(initialMessageUuid)
 
       await adapter.input('comment-two', 'follow-up')
       await vi.waitFor(() => expect(state.send).toHaveBeenCalledOnce())
       const [, text, uuid] = state.send.mock.calls[0]
       expect(text).toBe('Object context: follow-up')
+      expect(adapter.prepareInput.mock.calls.at(-1)?.[1]?.deliveryId).toBe(uuid)
       expect(state.recordMessage).toHaveBeenLastCalledWith({ id: uuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
       // The card is the delivery's to show, once its checks pass and with its queued flag: the manager shows none of its own.
       expect(state.deliveries.at(-1)).toEqual({ sessionId: 'session-1', content: text, uuid, echo: { content: text, integration: stored } })
