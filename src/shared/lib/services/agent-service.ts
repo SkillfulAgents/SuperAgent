@@ -11,7 +11,6 @@
  * edit and the host reads them back.
  */
 
-import pLimit from 'p-limit'
 import {
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
@@ -273,12 +272,10 @@ export async function listAgentsWithListing(options: { slugs?: string[] } = {}):
     options.slugs ? agentCatalog.getMany(options.slugs) : agentCatalog.records(),
     teamBrainOf(),
   ])
-  // Each listing scans the agent's sessions and artifacts, so a few agents at a time.
-  const limit = pLimit(5)
-  return Promise.all(records.map((record) => limit(async () => {
+  return Promise.all(records.map(async (record) => {
     const listing = await agentRegistry.get(record.slug).listing()
     return { agent: toApiAgent(record, listing.live.container, teamBrain), listing }
-  })))
+  }))
 }
 
 /** One agent as the agent list shows it, with its instructions (the agent's own page). */
