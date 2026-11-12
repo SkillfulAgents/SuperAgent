@@ -44,6 +44,17 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Agen
 
 export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegrationsProps) {
   const { data: integrations } = useAgentIntegrations(agentSlug)
+  const rows = Array.isArray(integrations) ? integrations : []
+
+  return (
+    <HomeCollapsible id="integrations" title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
+      <HomeAgentIntegrationsBody agentSlug={agentSlug} rows={rows} />
+    </HomeCollapsible>
+  )
+}
+
+// Mounted only while the section is open, so the providers the agent could add are read only then.
+function HomeAgentIntegrationsBody({ agentSlug, rows }: { agentSlug: string; rows: AgentIntegrationListItem[] }) {
   const navigate = useNavigate()
   const { canAdminAgent, canUseAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
@@ -53,11 +64,10 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
     .filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug
-  const rows = Array.isArray(integrations) ? integrations : []
   const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
-    <HomeCollapsible id="integrations" title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
+    <>
       {rows.length > 0 ? (
         <div className="mt-2">
           {rows.map((integration) => {
@@ -145,6 +155,6 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
         provider={setupProvider}
         onOpenChange={(open) => { if (!open) setSetupProvider(null) }}
       />
-    </HomeCollapsible>
+    </>
   )
 }

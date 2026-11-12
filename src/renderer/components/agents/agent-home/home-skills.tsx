@@ -31,11 +31,20 @@ interface HomeSkillsProps {
 }
 
 export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps) {
-  const [browseOpen, setBrowseOpen] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
-
   const { data: skillsData } = useAgentSkills(agentSlug)
   const skills = Array.isArray(skillsData) ? skillsData : []
+
+  return (
+    <HomeCollapsible id="skills" title="Skills" count={skillsData ? skills.length : undefined} className={className}>
+      <HomeSkillsBody agentSlug={agentSlug} skills={skills} onRunSkill={onRunSkill} />
+    </HomeCollapsible>
+  )
+}
+
+// Mounted only while the section is open, so the skills the agent could add are read only then.
+function HomeSkillsBody({ agentSlug, skills, onRunSkill }: { agentSlug: string; skills: ApiSkillWithStatus[]; onRunSkill?: (skillName: string) => void }) {
+  const [browseOpen, setBrowseOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const { data: discoverableSkillsData } = useDiscoverableSkills(agentSlug)
   const discoverableSkills = useMemo(
     () => (Array.isArray(discoverableSkillsData) ? discoverableSkillsData : []),
@@ -45,7 +54,7 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
   const hasDiscoverable = discoverableSkills.length > 0
 
   return (
-    <HomeCollapsible id="skills" title="Skills" count={skillsData ? skills.length : undefined} className={className}>
+    <>
       {skills.length === 0 ? (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No skills yet</p>
@@ -95,7 +104,7 @@ export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps
         onOpenChange={setImportOpen}
         agentSlug={agentSlug}
       />
-    </HomeCollapsible>
+    </>
   )
 }
 
