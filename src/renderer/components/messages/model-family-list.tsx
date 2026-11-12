@@ -78,8 +78,8 @@ export function vendorDefault(
  * keep one row per concrete model.
  */
 const LINEAGE_FAMILIES = new Set([
-  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor',
-  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-carbon', 'gemini-argon',
+  'fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse-wonder', 'muse', 'muse-contributor', 'muse-ember',
+  'gpt-astra', 'gpt-sol', 'gpt-terra', 'gpt-luna', 'gemini-carbon', 'gemini-argon', 'gemini-hydrogen',
 ])
 
 /**

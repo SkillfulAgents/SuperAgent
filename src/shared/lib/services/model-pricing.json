@@ -510,6 +510,28 @@
     "cacheCreation1h": 4,
     "cacheRead": 0.1
   },
+  "gemini-4-hydrogen": {
+    "input": 1.5,
+    "output": 7.5,
+    "cacheCreation": 1.5,
+    "cacheCreation1h": 3,
+    "cacheRead": 0.075
+  },
+  "muse-ember-1.0": {
+    "input": 0.1,
+    "output": 0.5,
+    "cacheCreation": 0.1,
+    "cacheCreation1h": 0.2,
+    "cacheRead": 0.004,
+    "longContext": {
+      "thresholdTokens": 200000,
+      "input": 0.3,
+      "output": 1.5,
+      "cacheCreation": 0.3,
+      "cacheCreation1h": 0.6,
+      "cacheRead": 0.012
+    }
+  },
   "gemini-4-carbon": {
     "input": 2,
     "output": 10,
