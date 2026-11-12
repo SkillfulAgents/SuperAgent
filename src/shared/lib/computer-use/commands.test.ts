@@ -27,7 +27,7 @@ describe('buildCommandArgs', () => {
     expect(() => buildCommandArgs('click', { argv: [flag, '@s1:e1'] })).toThrow(/set by the app/)
   })
 
-  it.each(['session', 'trace', 'cursor-overlay'])('refuses the %s command', (command) => {
+  it.each(['session', 'trace', 'cursor-overlay', 'mcp'])('refuses the %s command', (command) => {
     expect(() => buildCommandArgs(command, { argv: [] })).toThrow(/not available to agents/)
   })
 
@@ -41,6 +41,13 @@ describe('buildCommandArgs', () => {
     expect(() => buildCommandArgs('press', { argv: ['--app', 'Finder', '--force', '--', 'cmd+q'] })).toThrow(/--force/)
     expect(() => buildCommandArgs('permissions', { argv: [] })).toThrow(/managed by the app/)
     expect(() => buildCommandArgs('batch', { argv: ['[{"command":"permissions"}]'] })).toThrow(/managed by the app/)
+  })
+
+  it('refuses text from stdin, which a command run by the app does not have', () => {
+    expect(() => buildCommandArgs('type', { argv: ['--stdin', '--', '@s1:e2'] })).toThrow(/type --stdin is not available/)
+    expect(() => buildCommandArgs('set-value', { argv: ['--stdin', '--', '@s1:e2'] })).toThrow(/not available/)
+    expect(() => buildCommandArgs('clipboard-set', { argv: ['--stdin'] })).toThrow(/not available/)
+    expect(buildCommandArgs('type', { argv: ['--', '@s1:e2', '--stdin'] })).toEqual(['type', '--', '@s1:e2', '--stdin'])
   })
 
   it('reads nothing after -- as a flag', () => {

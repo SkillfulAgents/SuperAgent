@@ -40,9 +40,11 @@ export const OBSERVATION_COMMANDS: ReadonlySet<string> = new Set([
 
 /**
  * Commands the app runs itself: the session, its cursor, its traces, and the
- * OS permissions (checked before every call, and asked of the user).
+ * OS permissions (checked before every call, and asked of the user). And
+ * `mcp`, a server of every command over stdio: a command it ran would pass
+ * none of these checks.
  */
-const DENIED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay', 'permissions'])
+const DENIED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay', 'permissions', 'mcp'])
 
 /** Global flags the app sets (the session) or refuses (traces and debug files written on the host). */
 const HOST_GLOBAL_FLAGS: ReadonlySet<string> = new Set([
@@ -62,12 +64,16 @@ const HOST_GLOBAL_FLAGS: ReadonlySet<string> = new Set([
  * - press: `--force` sends the shortcuts agent-desktop blocks (quit, log out).
  * - clipboard: a path on the host to write the clipboard's image to, or to
  *   read a file onto the clipboard from.
+ * - `--stdin`: the text read from the command's input, which the app gives
+ *   none: it would type, set or copy an empty text.
  */
 const DENIED_COMMAND_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
   launch: new Set(['--cdp', '--arg', '--env', '--cwd']),
   press: new Set(['--force']),
+  type: new Set(['--stdin']),
+  'set-value': new Set(['--stdin']),
   'clipboard-get': new Set(['--out']),
-  'clipboard-set': new Set(['--image', '--file-url']),
+  'clipboard-set': new Set(['--image', '--file-url', '--stdin']),
 }
 
 /** The same refusals in a batch entry's args, which name flags without dashes. */

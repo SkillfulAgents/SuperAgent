@@ -169,7 +169,7 @@
     "@vitest/coverage-v8": "^4.0.18",
     "@welldone-software/why-did-you-render": "^8.0.3",
     "@xyflow/react": "12.12.1",
-    "agent-desktop": "1.1.0",
+    "agent-desktop": "1.2.0",
     "analytics": "^0.8.19",
     "autoprefixer": "^10.4.0",
     "beautiful-mermaid": "^1.1.3",

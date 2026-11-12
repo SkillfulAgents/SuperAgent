@@ -122,13 +122,18 @@ export const DROPPED_SECTIONS: Readonly<Record<string, readonly string[]>> = {
 /**
  * What remains in the guides of the OS permissions and the `permissions`
  * command, left out the same way: lines dropped whole, and text replaced
- * within a line.
+ * within a line. So is `--stdin`, which the app refuses (a command it runs
+ * has no input to read text from): its lines, and the two that go on about
+ * the input.
  */
 export const DROPPED_LINES: readonly RegExp[] = [
   /^\d+\. Check permissions first\b/,
   /^\d+\. \*\*Skipping `status` and `permissions`\.\*\*/,
   /^- `permissions` returns /,
   /^\| `PERM_DENIED` \|/,
+  /--stdin\b/,
+  /^- The action timeout starts after the input ends\b/,
+  /^- The command waits until the input ends\b/,
 ]
 export const REPLACED_TEXT: ReadonlyArray<readonly [string, string]> = [
   [' Permission denial returns `PERM_DENIED` (see the platform skill).', ''],
@@ -171,7 +176,7 @@ export function dropLines(markdown: string, patterns: readonly RegExp[]): string
 }
 
 /** Commands the app runs itself (the session, its cursor, traces, the OS permissions), left out of the flags guide. */
-export const REFUSED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay', 'permissions', 'help'])
+export const REFUSED_COMMANDS: ReadonlySet<string> = new Set(['session', 'trace', 'cursor-overlay', 'permissions', 'mcp', 'help'])
 
 /** Global flags the app sets on every call (or refuses), left out of the flags guide and the tools. */
 const HOST_OWNED_FLAGS = [
@@ -249,14 +254,26 @@ export const TOOL_COMMANDS: readonly string[] = [
 /**
  * What the tools and the flags guide leave out of a command, because the app
  * refuses it (`DENIED_COMMAND_FLAGS` in src/shared/lib/computer-use/commands.ts):
- * host paths, process arguments, blocked shortcuts and the app's own prompts.
+ * host paths, process arguments, blocked shortcuts, the app's own prompts,
+ * and text from an input stream the app does not give a command.
  */
 export const REFUSED_FLAGS: Readonly<Record<string, readonly string[]>> = {
   launch: ['--arg', '--env', '--cwd', '--cdp'],
   press: ['--force'],
+  type: ['--stdin'],
+  'set-value': ['--stdin'],
   screenshot: ['PATH'],
   'clipboard-get': ['--out'],
-  'clipboard-set': ['--image', '--file-url'],
+  'clipboard-set': ['--image', '--file-url', '--stdin'],
+}
+
+/**
+ * Arguments a command's help shows as optional only because a refused flag
+ * can give them instead (`type [TEXT]`, or `--stdin`): required in the tool.
+ */
+export const REQUIRED_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
+  type: ['TEXT'],
+  'set-value': ['VALUE'],
 }
 
 /** A command's positional argument, as a tool param. */
@@ -340,7 +357,7 @@ export function parseToolSpec(command: string, help: string): ToolSpec {
     .filter(({ placeholder }) => !omitted.has(placeholder))
     .map(({ placeholder, required }) => ({
       name: placeholder.toLowerCase(),
-      required,
+      required: required || (REQUIRED_ARGUMENTS[command] ?? []).includes(placeholder),
       description: argumentDescriptions.get(placeholder) ?? '',
     }))
 
@@ -515,8 +532,8 @@ host's OS: \`${DOCS_ROOT}/${macos.file}\` or \`${DOCS_ROOT}/${windows.file}\`.
 - **Refused:** paths on the user's computer (\`screenshot\`'s output path,
   \`clipboard-get --out\`, \`clipboard-set --image\` / \`--file-url\`,
   \`--screenshot\`), \`launch --cdp\` / \`--arg\` / \`--env\` / \`--cwd\`,
-  \`press --force\`, and the commands \`session\`, \`trace\` and
-  \`cursor-overlay\`.
+  \`press --force\`, \`--stdin\` (pass the text as the argument), and the
+  commands \`session\`, \`trace\`, \`cursor-overlay\` and \`mcp\`.
 - **Approval.** The user approves each app before you act in it, so a first
   call in an app may wait. A denial stands: do not retry it.
 - **Opening a web address** in a browser: send \`press\` \`cmd+l\` (or \`cmd+t\`
