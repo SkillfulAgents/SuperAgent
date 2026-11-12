@@ -44,6 +44,22 @@ it('declares Messages effort choices for every Token Plan model', () => {
   })
 })
 
+it('declares a context window for every Token Plan model', () => {
+  const catalog = modelCatalogSchema.parse(new QwenSubscriptionLlmProvider().getBuiltinCatalog())
+  expect(Object.fromEntries(catalog.map(model => [model.id, model.contextWindow]))).toEqual({
+    'qwen3.6-flash': 983_616,
+    'qwen3.7-plus': 983_616,
+    'qwen3.7-max': 983_616,
+    'qwen3.8-flash': 983_616,
+    'qwen3.8-max': 983_616,
+    'qwen4-max-preview': 983_616,
+    'deepseek-v4-pro': 1_000_000,
+    'deepseek-v4.1-flash': 1_000_000,
+    'glm-5.3': 1_048_576,
+    'glm-5.2': 1_048_576,
+  })
+})
+
 it.each(['low', 'medium', 'xhigh'] as const)('sends %s effort unchanged', async effort => {
   const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ error: { message: 'bad key' } }, { status: 401 }))
   const client = await new QwenSubscriptionLlmProvider(configuration).createClient()

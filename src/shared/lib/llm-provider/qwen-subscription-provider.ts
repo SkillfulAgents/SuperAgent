@@ -14,19 +14,21 @@ Speech: POST /api/v1/services/audio/tts/SpeechSynthesizer with {"model":"qwen-au
 Save each result under /workspace/media/ with a unique filename and an extension matching its bytes, print only the saved paths, and deliver them with the existing file-delivery tool. Reuse saved files instead of regenerating.`
 // Text models from Alibaba's Token Plan (Personal Edition) model list. Dated snapshots and `auto` are left out.
 // One level keeps the slider fixed where the Messages endpoint documents no effort choices.
+// Alibaba's Claude Code guide for Token Plan; the documented max input in thinking mode of the 1M window.
+const QWEN_WINDOW = 983_616
 const QWEN_MODELS: ModelDefinition[] = ([
   // The picker reverses each family's catalog order.
-  { id: 'qwen3.6-flash', label: 'Qwen3.6 Flash', family: 'qwen', icon: 'qwen', supportsImageInput: true, supportedEfforts: ['high'] },
-  { id: 'qwen3.7-plus', label: 'Qwen3.7 Plus', family: 'qwen', icon: 'qwen', supportsImageInput: true, supportedEfforts: ['high'] },
-  { id: 'qwen3.7-max', label: 'Qwen3.7 Max', family: 'qwen', icon: 'qwen', supportsImageInput: false, supportedEfforts: ['high'] },
-  { id: 'qwen3.8-flash', label: 'Qwen3.8 Flash', family: 'qwen', icon: 'qwen', supportsImageInput: true, supportedEfforts: ['low', 'medium', 'xhigh'] },
-  { id: 'qwen3.8-max', label: 'Qwen3.8 Max', family: 'qwen', icon: 'qwen', supportsImageInput: true, isLatest: true, isDefault: true, supportedEfforts: ['low', 'medium', 'xhigh'] },
+  { id: 'qwen3.6-flash', label: 'Qwen3.6 Flash', family: 'qwen', icon: 'qwen', supportsImageInput: true, contextWindow: QWEN_WINDOW, supportedEfforts: ['high'] },
+  { id: 'qwen3.7-plus', label: 'Qwen3.7 Plus', family: 'qwen', icon: 'qwen', supportsImageInput: true, contextWindow: QWEN_WINDOW, supportedEfforts: ['high'] },
+  { id: 'qwen3.7-max', label: 'Qwen3.7 Max', family: 'qwen', icon: 'qwen', supportsImageInput: false, contextWindow: QWEN_WINDOW, supportedEfforts: ['high'] },
+  { id: 'qwen3.8-flash', label: 'Qwen3.8 Flash', family: 'qwen', icon: 'qwen', supportsImageInput: true, contextWindow: QWEN_WINDOW, supportedEfforts: ['low', 'medium', 'xhigh'] },
+  { id: 'qwen3.8-max', label: 'Qwen3.8 Max', family: 'qwen', icon: 'qwen', supportsImageInput: true, isLatest: true, isDefault: true, contextWindow: QWEN_WINDOW, supportedEfforts: ['low', 'medium', 'xhigh'] },
   // Preview only until 2026-11-25 24:00 (UTC+8); Alibaba retires it after that, so remove this entry then.
-  { id: 'qwen4-max-preview', label: 'Qwen4 Max Preview', family: 'qwen', icon: 'qwen', supportsImageInput: true, supportedEfforts: ['low', 'medium', 'xhigh'] },
-  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', family: 'deepseek', icon: 'deepseek', supportsImageInput: false, supportedEfforts: ['high', 'max'] },
-  { id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', family: 'deepseek', icon: 'deepseek', supportsImageInput: true, supportedEfforts: ['high'] },
-  { id: 'glm-5.3', label: 'GLM-5.3', family: 'glm', icon: 'zai', supportsImageInput: false, supportedEfforts: ['low', 'high', 'max'] },
-  { id: 'glm-5.2', label: 'GLM-5.2', family: 'glm', icon: 'zai', supportsImageInput: false, supportedEfforts: ['high', 'max'] },
+  { id: 'qwen4-max-preview', label: 'Qwen4 Max Preview', family: 'qwen', icon: 'qwen', supportsImageInput: true, contextWindow: QWEN_WINDOW, supportedEfforts: ['low', 'medium', 'xhigh'] },
+  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', family: 'deepseek', icon: 'deepseek', supportsImageInput: false, contextWindow: 1_000_000, supportedEfforts: ['high', 'max'] },
+  { id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', family: 'deepseek', icon: 'deepseek', supportsImageInput: true, contextWindow: 1_000_000, supportedEfforts: ['high'] },
+  { id: 'glm-5.3', label: 'GLM-5.3', family: 'glm', icon: 'zai', supportsImageInput: false, contextWindow: 1_048_576, supportedEfforts: ['low', 'high', 'max'] },
+  { id: 'glm-5.2', label: 'GLM-5.2', family: 'glm', icon: 'zai', supportsImageInput: false, contextWindow: 1_048_576, supportedEfforts: ['high', 'max'] },
 ] satisfies ModelDefinition[]).map(model => ({ ...model, blurb: 'Uses your Alibaba Cloud Token Plan', supportsWebSearch: false }))
 
 export class QwenSubscriptionLlmProvider extends BaseLlmProvider {
