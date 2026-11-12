@@ -18,7 +18,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient, type QueryKey } from '@tanstack/react-query'
-import { isElectron } from '@renderer/lib/env'
+import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
 import { useRouteLocation } from '@renderer/router/use-route-location'
@@ -64,7 +64,7 @@ import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
-import { notificationStreamUrl, takePreopenedNotificationStream } from './notification-stream'
+import { takePreopenedNotificationStream } from './notification-stream'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
 // refetched wholesale each time the stream says `connected`.
@@ -268,7 +268,7 @@ export function GlobalNotificationHandler() {
 
   useEffect(() => {
     const preopened = takePreopenedNotificationStream()
-    const es = preopened?.es ?? new EventSource(notificationStreamUrl())
+    const es = preopened?.es ?? new EventSource(`${getApiBaseUrl()}/api/notifications/stream`)
     let streamRequestedAt = preopened?.requestedAt ?? Date.now()
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)

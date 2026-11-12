@@ -10,13 +10,9 @@ export interface PreopenedNotificationStream {
 
 let held: (PreopenedNotificationStream & { release: () => void }) | null = null
 
-export function notificationStreamUrl(): string {
-  return `${getApiBaseUrl()}/api/notifications/stream`
-}
-
 export function preopenNotificationStream(): void {
   if (held) return
-  const es = new EventSource(notificationStreamUrl())
+  const es = new EventSource(`${getApiBaseUrl()}/api/notifications/stream`)
   const stream = { es, requestedAt: Date.now(), frames: [] as MessageEvent[], release: () => {} }
   const keepFrame = (event: MessageEvent) => { stream.frames.push(event) }
   // The browser asks again after an error, so the next connect counts from here.
