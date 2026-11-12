@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
+import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import type { GlobalAccess, VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { localVolumeConfigSchema, volumeConfigSchema, type LocalVolumeConfig, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 
@@ -20,7 +21,7 @@ async function checkedResponse(response: Response): Promise<Response> {
 export function useVolumeDefinitions() {
   return useQuery<VolumeDefinitionSummary[]>({
     queryKey: ['volume-definitions'],
-    queryFn: async () => (await checkedResponse(await apiFetch('/api/volume-definitions'))).json(),
+    queryFn: async () => (await checkedResponse(await batchedApiFetch('/api/volume-definitions'))).json(),
     refetchInterval: query => query.state.status !== 'error' && query.state.data?.some(volume => volume.health === 'preparing') ? 2000 : false,
   })
 }

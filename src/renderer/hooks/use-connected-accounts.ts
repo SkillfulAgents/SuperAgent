@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 
 import { useCallback } from 'react'
@@ -56,7 +57,7 @@ export function useAgentConnectedAccounts(agentSlug: string) {
   return useQuery<{ accounts: AgentConnectedAccountDto[] }>({
     queryKey: ['agent-connected-accounts', agentSlug],
     queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`)
+      const res = await batchedApiFetch(`/api/agents/${agentSlug}/connected-accounts`)
       if (!res.ok) throw new Error('Failed to fetch agent connected accounts')
       return res.json()
     },

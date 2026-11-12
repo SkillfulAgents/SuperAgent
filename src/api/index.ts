@@ -49,6 +49,7 @@ import llmRuntimeRouter from './routes/llm-runtime'
 import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
 import serverFactsRouter from './routes/server-facts'
+import { batchReads } from './routes/batch-reads'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
@@ -286,6 +287,8 @@ app.route('/api/llm-runtime', llmRuntimeRouter)
 app.route('/api/llm-connections', llmConnectionsRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/server-facts', serverFactsRouter)
+// Each batched read goes through the whole app again, so it meets the same middleware and route checks as a lone one.
+app.route('/api/batch-reads', batchReads((request, c) => app.fetch(request, c.env)))
 app.route('/api/debug', debugRouter)
 
 // Desktop → cloud-workspace forwarding. Mounted outside `/api` on purpose: it

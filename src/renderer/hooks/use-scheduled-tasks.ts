@@ -5,6 +5,7 @@
  */
 
 import { apiFetch } from '@renderer/lib/api'
+import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import {
@@ -68,7 +69,7 @@ export function useCompletedOneTimeSessions(agentSlug: string | null) {
   return useQuery<AutomationSessionInfo[]>({
     queryKey: ['sessions', agentSlug, 'completed-one-time'],
     queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/scheduled-tasks/completed-sessions`)
+      const res = await batchedApiFetch(`/api/agents/${agentSlug}/scheduled-tasks/completed-sessions`)
       if (!res.ok) throw new Error('Failed to fetch completed one-time sessions')
       return res.json()
     },

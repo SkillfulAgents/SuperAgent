@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -15,7 +16,7 @@ export function useAgentSkills(agentSlug: string | null) {
   const query = useQuery<ApiSkillWithStatus[]>({
     queryKey: ['agent-skills', agentSlug],
     queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/skills`)
+      const res = await batchedApiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/skills`)
       if (!res.ok) throw new Error('Failed to fetch skills')
       const data = await res.json()
       return data.skills
