@@ -105,6 +105,8 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
       markStale: () => { stale = true },
       getHealthWarnings: () => [],
       getCachedInfo: () => ({ status: 'stopped', port: null }),
+      // Never mid-start here, so it holds its drives exactly while running.
+      holdsDrives: () => (runtime!.getCachedInfo as () => { status: string })().status === 'running',
       keepAlive: () => activity.keepAlive(),
       noteSessionActivity: (at?: number) => activity.sessionActivity(at),
       lastActivityAt: () => activity.lastActivityAt(),

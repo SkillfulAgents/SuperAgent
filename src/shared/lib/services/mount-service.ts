@@ -163,11 +163,13 @@ export async function firstCopies(slug: string): Promise<void> {
   await Promise.all((await getMounts(slug)).map(row => instantiateVolume(row, slug)?.whenReady()))
 }
 
-export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
+/** `beforeRead` runs just before the drives are read: a change after it reaches a started agent only through a restart. */
+export async function listVolumes(slug: string, beforeRead?: () => void): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
   // A drive joins the container only when it starts, so a start right after adding one waits for its first copy.
   let timer: ReturnType<typeof setTimeout> | undefined
   await Promise.race([firstCopies(slug), new Promise<void>(resolve => { timer = setTimeout(resolve, FIRST_COPY_WAIT_MS) })])
   clearTimeout(timer)
+  beforeRead?.()
   const judged = await judgeVolumes(slug)
   return {
     volumes: judged.flatMap(({ row, reason }) => {

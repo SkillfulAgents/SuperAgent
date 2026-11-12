@@ -169,9 +169,11 @@ export class ContainerRuntime {
   private disposed = false
   /**
    * Running on a container env that a setting change replaced. The host marks
-   * every running runtime when a platform token changes; a stop clears it.
+   * every running runtime when a platform token changes; a stop or the next start clears it.
    */
   private stale = false
+  /** The start that has read this agent's drives. A drive change after it needs a restart. */
+  private drivesReadIn: number | null = null
   /**
    * Whether webhooks could be received when this process built the
    * container's env (WEBHOOK_RELAY_AVAILABLE); null until it has.
@@ -386,6 +388,10 @@ export class ContainerRuntime {
     this.starting = startPromise
     try {
       await startPromise
+    } catch (error) {
+      // Nothing runs on the drives a failed start read, so a mark made during it means nothing.
+      if (this.starting === startPromise) this.stale = false
+      throw error
     } finally {
       // A later start that replaced this one clears and arms for itself when it settles.
       if (this.starting === startPromise) this.starting = null
@@ -432,6 +438,11 @@ export class ContainerRuntime {
 
   isStale(): boolean {
     return this.stale
+  }
+
+  /** Running, or starting past its drive read: either way a drive change reaches it only through a restart. */
+  holdsDrives(): boolean {
+    return this.cached?.status === 'running' || (this.starting !== null && this.drivesReadIn === this.lifecycle)
   }
 
   /**
@@ -685,6 +696,8 @@ export class ContainerRuntime {
   private async doStartContainer(client: ContainerClient): Promise<ContainerClient> {
     const slug = this.slug
     const lifecycle = ++this.lifecycle
+    // A mark from an earlier start that failed does not carry into this one, which reads everything again.
+    this.stale = false
     // Read once for this start, and handed to the client's start with the env:
     // the image, the resource limits, the provider env and the platform token
     // all come from it. The next start reads again.
@@ -800,7 +813,11 @@ export class ContainerRuntime {
 
     envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
-    const listed = await listVolumes(slug)
+    const listed = await listVolumes(slug, () => {
+      // An overtaken start must not claim the drive read of the start that replaced it.
+      this.assertCurrent(lifecycle)
+      this.drivesReadIn = lifecycle
+    })
     const canMount = listed.volumes.length > 0 && client.volumeRunFlags() !== null
     const notMounted = [...listed.notMounted, ...(canMount ? [] : notMountedAll(listed.volumes, 'not supported here'))]
     const volumes = canMount ? listed.volumes : []

@@ -192,8 +192,9 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     keepAlive: async () => runtime().keepAlive(),
     status: async () => runtime().getCachedInfo(),
     invalidate: async (options) => {
-      if (runtime().getCachedInfo().status !== 'running') return 'not-running'
-      if (!options?.restart) {
+      if (!runtime().holdsDrives()) return 'not-running'
+      // A start in flight is not torn down: it comes up stale instead.
+      if (!options?.restart || runtime().isStarting()) {
         runtime().markStale()
         return 'marked-stale'
       }
