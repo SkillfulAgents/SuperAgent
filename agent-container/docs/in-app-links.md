@@ -92,8 +92,8 @@ and an image path shows the picture.
 - In chat, write the absolute path: `/workspace/...`, or `/mounts/<drive>/...`
   for a file in a drive. A relative path in chat shows as plain text.
 - Inside a Markdown file you write, a relative path works from that file's
-  folder: `![chart](shots/chart.png)` in `/workspace/blog/draft.md` shows
-  `/workspace/blog/shots/chart.png`.
+  folder: in `/workspace/blog/draft.md`, the image path `shots/chart.png`
+  shows `/workspace/blog/shots/chart.png`.
 - End a folder link with `/` to open the folder browser.
 - File links open only in the app. In Slack, email, Telegram, or other chat
   integrations, name the file in words.
