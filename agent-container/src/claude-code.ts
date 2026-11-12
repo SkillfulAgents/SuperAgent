@@ -32,6 +32,7 @@ import { builtinHints, createHintHookMatchers } from './hints';
 import { promptDate } from './prompt-date';
 import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
+import { transcriptStore } from './transcript-store';
 import { ContextUsageReporter, contextUsageChange } from './context-usage-reporter';
 
 /**
@@ -1142,6 +1143,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ],
     });
 
+    const sessionStore = transcriptStore();
     return {
       model: this.model,
       cwd: this.workingDirectory,
@@ -1155,6 +1157,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       // env is fixed when the query is created, before init reports an id.
       // Mutually exclusive with `resume` per the SDK contract.
       ...(!this.claudeSessionId && { sessionId: this.sessionId }),
+      ...(sessionStore && { sessionStore }),
       permissionMode: 'bypassPermissions',
       includePartialMessages: true,
       agentProgressSummaries: true,

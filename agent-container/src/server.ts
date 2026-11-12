@@ -67,6 +67,7 @@ import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
 import { drainVolumeUploads, finishVolumeStop, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
 import { installVolumeStop } from './volume-stop';
+import { loadTranscriptStore } from './transcript-store';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -93,6 +94,7 @@ process.on('unhandledRejection', (reason: unknown) => {
 });
 
 const app = new Hono();
+loadTranscriptStore();
 const sessionManager = new SessionManager();
 
 sessionManager.on('undelivered-turn', (report: UndeliveredTurnReport) => {

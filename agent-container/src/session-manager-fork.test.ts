@@ -33,6 +33,7 @@ vi.mock('./browser-state', () => ({ releaseBrowserLock: () => false }))
 vi.mock('./claude-code', () => ({ ClaudeCodeProcess: class {} }))
 
 import { SessionManager, SessionBusyError } from './session-manager'
+import { setTranscriptStore } from './transcript-store'
 
 const source = {
   sessionId: 'src-1',
@@ -104,6 +105,20 @@ describe('SessionManager.forkSession', () => {
 
     expect(await manager.forkSession('src-1')).toBeNull()
     expect(sdkFork).not.toHaveBeenCalled()
+  })
+
+  it('forks through the transcript store, where a source has no local file', async () => {
+    const store = { append: async () => {}, load: async () => null }
+    setTranscriptStore(store)
+    try {
+      fs.mkdirSync(path.join(workDir, '.claude', 'projects', '-workspace'), { recursive: true })
+      sdkFork.mockResolvedValue({ sessionId: 'fork-1' })
+
+      expect(await manager.forkSession('src-1')).toBe('fork-1')
+      expect(sdkFork).toHaveBeenCalledWith('src-1', { dir: '/workspace', sessionStore: store })
+    } finally {
+      setTranscriptStore(undefined)
+    }
   })
 
   it('returns null when the SDK reports the transcript gone', async () => {
