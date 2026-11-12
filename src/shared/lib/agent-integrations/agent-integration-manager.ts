@@ -1023,11 +1023,12 @@ export class AgentIntegrationManager implements Service {
 
   private async runHealthChecks(): Promise<void> {
     for (const session of [...this.chatSessions.values()]) {
-      if (!(await this.isAllowed(session.integration.id, session.chatId))) continue
+      const idle = await this.isIdleChat(session)
+      if (!idle && !(await this.isAllowed(session.integration.id, session.chatId))) continue
       // The access check is a window in which the chat can be cleared.
       if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) continue
       await this.observe(session)
-      if (session.sessionId) {
+      if (!idle && session.sessionId) {
         const live = await agentRegistry.get(session.integration.agentSlug).sessions.live(session.sessionId)
         if (live.activity !== 'idle' && !live.streamAttached) {
           background(this.recoverSessionContext(session.integration.id, session.chatId, this.generationOf(session.integration.id), session.sessionId)
@@ -1037,6 +1038,18 @@ export class AgentIntegrationManager implements Service {
     }
 
     await this.reconcileIntegrations({ force: false })
+  }
+
+  /**
+   * A chat whose session is idle: the health check only settles its working
+   * indicator, which needs no access check. Thread chats stay open until they
+   * rotate, so a busy workspace keeps thousands of them, and reading access
+   * for each one on every pass held the host for seconds.
+   */
+  private async isIdleChat(session: ManagedSession): Promise<boolean> {
+    if (!session.connector.observesActivity) return false
+    if (!session.sessionId) return true
+    return (await agentRegistry.get(session.integration.agentSlug).sessions.live(session.sessionId)).activity === 'idle'
   }
 
   /**

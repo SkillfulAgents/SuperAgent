@@ -663,6 +663,27 @@ it('a health check does not observe a session cleared while its activity was rea
   }
 })
 
+it('a health check observes an idle chat without reading its access, and checks access once it is busy', async () => {
+  await manager.start()
+  await adapter.input('review-comment')
+  await vi.waitFor(() => expect(state.streams.size).toBe(1))
+  // A connector that reads the activity, as chat connectors do.
+  Object.defineProperty(adapter, 'observesActivity', { value: true })
+  const access = vi.spyOn(adapter, 'isAllowed')
+  const observed = vi.spyOn(adapter, 'observeSession')
+  const health = manager as unknown as { runHealthChecks: () => Promise<void> }
+
+  await health.runHealthChecks()
+  expect(access).not.toHaveBeenCalled()
+  expect(observed).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', activity: 'idle' }))
+
+  observed.mockClear()
+  state.activity.mockReturnValue('working')
+  await health.runHealthChecks()
+  expect(access).toHaveBeenCalledOnce()
+  expect(observed).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', activity: 'working' }))
+})
+
 it('review: reconnect must not restore a session cleared during its access read', async () => {
   await manager.start()
   await adapter.input('review-comment')
