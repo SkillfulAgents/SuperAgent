@@ -141,6 +141,27 @@ describe('AgentDurableObject stop', () => {
   })
 })
 
+describe('AgentDurableObject while its agent starts', () => {
+  /** A container whose agent process exists, so /state answers launched, as it does before the agent's API listens. */
+  function launching(starting?: Promise<void>) {
+    const object = Object.create(AgentDurableObject.prototype) as AgentDurableObject & Record<string, unknown>
+    Object.assign(object, {
+      ctx: { id: { name: 'sales agent' }, container: { running: true } },
+      containerFetch: async () => Response.json({ launched: true }),
+      starting,
+    })
+    return object
+  }
+
+  it('reads as not running until the start has finished, so reads stay on the saved workspace', async () => {
+    expect(await launching(new Promise<void>(() => {})).agentRunning()).toBe(false)
+  })
+
+  it('reads as running once the start has finished', async () => {
+    expect(await launching().agentRunning()).toBe(true)
+  })
+})
+
 /** The object's SQLite in memory, with the tables its constructor makes. */
 function storage() {
   const db = new Database(':memory:')

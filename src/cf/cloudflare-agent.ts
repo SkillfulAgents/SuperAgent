@@ -208,7 +208,8 @@ export class AgentDurableObject extends DurableObject<Env> {
 
   /** What the app sees as running: a container that is up and has launched the agent. A half-started or stopping one reads as stopped. */
   async agentRunning(): Promise<boolean> {
-    if (this.stopping) return false
+    // The container answers /state as launched once the agent's process exists, before its API listens.
+    if (this.stopping || this.starting) return false
     return this.agentUp()
   }
 
