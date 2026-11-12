@@ -31,7 +31,7 @@ export const requestLoginDef = {
   getSummary,
   request: {
     kind: 'login',
-    getNotification: waitingInputNotification('needs you to sign in'),
+    getNotification: waitingInputNotification((audience) => `needs ${audience.name} to sign in`),
     describeVoice: (request) => {
       const fields = summarizeLoginFields(request.fields).map((field) => field.label.toLowerCase())
       return `The agent needs the user to sign in through the form in the app${fields.length ? ` (${fields.join(', ')})` : ''}: ${request.message} Credentials can't be given by voice.`

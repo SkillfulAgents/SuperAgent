@@ -37,6 +37,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   remoteMcpServers: { id: 'id' },
   agentRemoteMcps: {
     agentSlug: 'agent_slug',
