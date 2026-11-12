@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-based agent successfully navigated to example.com and reported the correct page title \"Example Domain\"",
+  "steps": [
+    "Step 1: Navigate to http://localhost:47891 — Successfully loaded the Gamut home page with agent list visible in the sidebar",
+    "Step 2: Find and click the \"QA-20261112-000046-jq9j\" agent in the sidebar — Successfully navigated to the agent's chat page; agent status changed from \"idle\" to \"working\"",
+    "Step 3: Type and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered into the input field and sent; a new session \"Check Example.com Page Title\" was created",
+    "Step 4: Wait for response (up to 3 minutes) — Agent completed the task in 5 seconds with 3 tool calls and 160,712 tokens",
+    "Step 5: Verify response mentions \"Example Domain\" — Response successfully retrieved and displayed: \"The page title is \"Example Domain\". The page loaded normally, and I closed the browser afterward.\" — Response clearly contains the expected page title \"Example Domain\""
+  ],
+  "bugs": [],
+  "durationMs": 64979,
+  "sessionId": "54a23220-6458-4e67-8673-8184c681f466",
+  "cost": {
+    "inputTokens": 350,
+    "outputTokens": 10484,
+    "cacheCreationTokens": 117290,
+    "cacheReadTokens": 929044,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.292287
+  }
+}
