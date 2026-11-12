@@ -238,7 +238,7 @@ import {
   widgetSnapshotPngPath,
   containedArtifactPath,
 } from '@shared/lib/services/widget-service'
-import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
+import { widgetRefreshService, withRefreshingFlags } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
 import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -873,7 +873,7 @@ async function enrichAgentsWithSummary(
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
-        widgets: widgets.map((widget) => ({ ...widget, refreshing: listing.refreshingWidgets.includes(widget.slug) })),
+        widgets: withRefreshingFlags(widgets, listing.refreshingWidgets),
         ...(options.includeLatestVisibleSessionTail
           ? {
               latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
