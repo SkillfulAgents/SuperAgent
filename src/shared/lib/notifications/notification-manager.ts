@@ -14,6 +14,7 @@
 
 import { getRequestDefinition } from '@shared/lib/tools/registry'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
+import { READER, namedAudience, type RequestAudience } from '@shared/lib/tools/requests/definition'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
@@ -22,6 +23,7 @@ import {
   type NotificationType,
 } from '@shared/lib/services/notification-service'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { getUserSummaries } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
@@ -288,6 +290,18 @@ class NotificationManager {
   }
 
   /**
+   * Who a waiting session waits on. With sign-in every member with access
+   * reads the same row, so it names the person who started the session; a
+   * session nobody started (scheduled, webhook) keeps "you".
+   */
+  private async getSessionAudience(agentSlug: string, sessionId: string): Promise<RequestAudience> {
+    if (!isAuthMode()) return READER
+    const userId = (await agentRegistry.get(agentSlug).sessions.metadata(sessionId))?.createdByUserId
+    const name = userId ? (await getUserSummaries([userId])).get(userId)?.name : undefined
+    return name ? namedAudience(name) : READER
+  }
+
+  /**
    * Trigger notification when a session is waiting for user input
    */
   async triggerSessionWaitingInput(
@@ -297,7 +311,11 @@ class NotificationManager {
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    const notification = getRequestDefinition(request.kind).getNotification(displayName, request.payload)
+    const notification = getRequestDefinition(request.kind).getNotification(
+      displayName,
+      request.payload,
+      await this.getSessionAudience(agentSlug, sessionId),
+    )
     if (!notification) return
 
     await this.triggerNotification({

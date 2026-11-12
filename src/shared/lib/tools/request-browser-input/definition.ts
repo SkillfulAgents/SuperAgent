@@ -24,7 +24,7 @@ export const requestBrowserInputDef = {
   getSummary,
   request: {
     kind: 'browser_input',
-    getNotification: waitingInputNotification('needs your browser input'),
+    getNotification: waitingInputNotification((audience) => `needs ${audience.possessive} browser input`),
     describeVoice: (request) => `The agent needs the user to complete an action in the browser: ${request.message}${request.requirements.length ? ` Requirements: ${request.requirements.join(', ')}.` : ''}`,
   } satisfies RequestDefinition<'browser_input'>,
 } as const

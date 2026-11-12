@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   isAuthMode: vi.fn(() => false),
   captureException: vi.fn(),
   getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
+  getUserSummaries: vi.fn(async (_userIds: readonly string[]) => new Map<string, { name: string }>()),
 }))
 
 const notifyInvitedUser = vi.hoisted(() => vi.fn(async () => 'not-invited'))
@@ -47,6 +48,9 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,
+}))
+vi.mock('@shared/lib/services/user-profile-service', () => ({
+  getUserSummaries: mocks.getUserSummaries,
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: mocks.isAuthMode,
@@ -425,6 +429,39 @@ describe('triggerSessionWaitingInput — NOT gated by automated-session flag', (
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'capability_review', payload: { capability: 'subagents' } })
     expect(mockCreateNotification).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('wants to launch a subagent') })
+    )
+  })
+
+  it('names the person who started the session with sign-in, where every member reads the same row', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mockGetSessionMetadata.mockResolvedValue({ createdByUserId: 'user-dana' })
+    mocks.getUserSummaries.mockResolvedValue(new Map([['user-dana', { name: 'Dana' }]]))
+
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
+    expect(mockCreateNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: 'Demo Agent has a question for Dana' })
+    )
+
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'computer_use', payload: {} })
+    expect(mockCreateNotification).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: "Demo Agent wants to control Dana's computer" })
+    )
+  })
+
+  it('keeps "you" with sign-in for a session nobody started', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'Demo Agent has a question for you' })
+    )
+  })
+
+  it('keeps "you" without sign-in', async () => {
+    mockGetSessionMetadata.mockResolvedValue({ createdByUserId: 'user-dana' })
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'Demo Agent has a question for you' })
     )
   })
 })
