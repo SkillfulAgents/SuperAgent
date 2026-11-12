@@ -285,6 +285,19 @@ describe('IMessageConnector through webhooks', () => {
     expect(responses).toMatchObject([{ type: 'response', requestId: 'req-1', requestKind: 'review', value: 'allow' }])
   })
 
+  it('resends a reply without its quote when Linq no longer has the quoted message', async () => {
+    const instance = await connectWebhooks()
+    vi.mocked(sendGatewayMessage)
+      .mockRejectedValueOnce(new GatewayRequestError('iMessage gateway answered POST /messages with HTTP 422: Linq answered 400: reply target message not found: msg_gone (Linq error 1005)', 422))
+
+    expect(await instance.sendMessage('chat_1', { text: 'Yes', replyToExternalId: 'msg_gone' })).toBe('msg_out')
+    expect(vi.mocked(sendGatewayMessage).mock.calls.map(([, message]) => message.replyTo)).toEqual([{ messageId: 'msg_gone', partIndex: 0 }, undefined])
+
+    vi.mocked(sendGatewayMessage).mockClear().mockRejectedValueOnce(new GatewayRequestError('iMessage gateway answered POST /messages with HTTP 422: parts: too long', 422))
+    await expect(instance.sendMessage('chat_1', { text: 'Yes', replyToExternalId: 'msg_1' })).rejects.toThrow('too long')
+    expect(sendGatewayMessage).toHaveBeenCalledTimes(1)
+  })
+
   it('sends replies, reactions, typing and files over HTTP', async () => {
     const instance = await connectWebhooks()
     await deliver(messageEvent('evt_1', 'msg_1'))

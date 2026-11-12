@@ -1,5 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import { MockChatAgentIntegration } from './mock-connector'
+import { quotedMessageId } from './chat-agent-integration'
+import { inputEvent } from './test-helpers'
+import type { AgentIntegrationRecord, IntegrationInputContext } from '../agent-integrations/types'
+
+vi.mock('../services/chat-integration-access-service', () => ({
+  decideInboundAccess: vi.fn(async () => ({ action: 'blocked', sendNotice: false })),
+  getChatAccess: vi.fn(),
+  markNoticeSent: vi.fn(),
+}))
 
 // We test the base class behavior through MockChatAgentIntegration,
 // which extends ChatAgentIntegration and exposes the emit* methods.
@@ -288,5 +297,38 @@ describe('MockChatAgentIntegration', () => {
 
     expect(id1).not.toBe(id2)
     expect(id2).not.toBe(id3)
+  })
+})
+
+describe('quotedMessageId', () => {
+  it('quotes the oldest unanswered message unless the reply lands reliably right under it', () => {
+    expect(quotedMessageId([], false, undefined)).toBeUndefined()
+    expect(quotedMessageId([], true, undefined)).toBeUndefined()
+    expect(quotedMessageId(['a'], false, 'a')).toBeUndefined()
+    expect(quotedMessageId(['a'], false, undefined)).toBe('a')
+    expect(quotedMessageId(['a'], true, 'a')).toBe('a')
+    expect(quotedMessageId(['a', 'b'], false, 'b')).toBe('a')
+  })
+})
+
+describe('waiting messages the agent will never answer', () => {
+  const integration = { id: 'integration', agentSlug: 'agent', provider: 'telegram', config: '{}' } as AgentIntegrationRecord
+  const context = { integration, externalId: 'C1' } as IntegrationInputContext
+
+  it('leave the list when the chat is blocked or the message was only files that failed, so a later reply does not quote them', async () => {
+    const connector = new MockChatAgentIntegration()
+    vi.spyOn(connector, 'isAllowed').mockResolvedValue(false)
+    const blocked = inputEvent({ chatId: 'C1', externalMessageId: 'blocked', text: 'hi' })
+    const filesOnly = inputEvent({ chatId: 'C1', externalMessageId: 'files', files: [{ name: 'a.pdf', url: '' }] })
+    const next = inputEvent({ chatId: 'C1', externalMessageId: 'next', text: 'hello' })
+
+    await connector.acknowledgeInput(blocked)
+    expect(await connector.authorize(context, blocked)).toBe(false)
+    await connector.acknowledgeInput(filesOnly)
+    expect((await connector.prepareInput(filesOnly, context)).skip).toBe(true)
+    await connector.acknowledgeInput(next)
+
+    expect(connector.acknowledgedMessages('C1')).toEqual(['next'])
+    expect(connector.quotedMessage('C1')).toBeUndefined()
   })
 })
