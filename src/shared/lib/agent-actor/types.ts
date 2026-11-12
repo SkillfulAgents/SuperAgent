@@ -51,7 +51,7 @@ import type {
   SessionMetadataMap,
 } from '@shared/lib/types/agent'
 import type { MediaRef } from '@shared/lib/services/session-media'
-import type { ArtifactListing } from '@shared/lib/services/artifact-service'
+import type { ArtifactListing } from '@shared/lib/services/artifact-scan'
 import type { PortableSessionMetadataMap } from '@shared/lib/services/session-metadata-schema'
 import type { ResolvedDeliveredAgentFile, TranscriptView } from '@shared/lib/services/x-agent-transcript-view'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'

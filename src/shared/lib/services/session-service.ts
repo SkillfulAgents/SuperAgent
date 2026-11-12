@@ -11,6 +11,8 @@
 
 import pLimit from 'p-limit'
 import { REMOVE_SESSION, type SessionIndexEntry } from '@shared/lib/agent-actor/session-index'
+import { summarizeSessions } from '@shared/lib/agent-actor/session-summary'
+import type { SessionSummary } from '@shared/lib/agent-actor/types'
 import {
   isSessionIdWellFormed,
   sessionDirPath,
@@ -469,27 +471,8 @@ async function transcriptExists(store: SessionStore, jsonlPath: string): Promise
  * many agents (the agents list, on every poll) needs both, and a second
  * read of each agent's index for it doubles what the poll costs.
  */
-export async function getSessionSummary(store: SessionStore): Promise<{
-  sessionIds: string[]
-  sessionCount: number
-  lastActivityAt: Date | null
-  metadata: SessionMetadataMap
-}> {
-  const sessionIds: string[] = []
-  const metadata: SessionMetadataMap = {}
-  let latestMs: number | null = null
-  for (const { sessionId, meta, transcript } of await store.index.entries()) {
-    if (meta) metadata[sessionId] = meta
-    if (!transcript) continue
-    sessionIds.push(sessionId)
-    if (latestMs === null || transcript.mtimeMs > latestMs) latestMs = transcript.mtimeMs
-  }
-  return {
-    sessionIds,
-    sessionCount: sessionIds.length,
-    lastActivityAt: latestMs === null ? null : new Date(latestMs),
-    metadata,
-  }
+export async function getSessionSummary(store: SessionStore): Promise<SessionSummary> {
+  return summarizeSessions(await store.index.entries())
 }
 
 export type SessionSortBy = 'last_activity_at'

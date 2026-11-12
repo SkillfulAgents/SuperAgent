@@ -647,9 +647,13 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/artifact-scan', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/artifact-scan')>()),
   // The agents list reads an artifact's dashboard and widget halves from one
   // scan, so that is where a test seeds either of them.
-  listArtifactsAndWidgets: vi.fn(async () => ({ dashboards: [], widgets: [] })),
+  scanArtifactsIn: vi.fn(async () => ({ dashboards: [], widgets: [] })),
 }))
 
 vi.mock('@shared/lib/services/agent-integration-service', () => ({
@@ -918,7 +922,8 @@ import { appendMentions } from '@shared/lib/utils/mentions'
 import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent, updateScheduleExpression } from '@shared/lib/services/scheduled-task-service'
-import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { scanArtifactsIn } from '@shared/lib/services/artifact-scan'
 
 /** The list route's agents: these, each with its actor's real `listing()` over the test's mocks. */
 function mockListedAgents(agents: ApiAgent[]): void {
@@ -7830,7 +7835,7 @@ describe('GET /api/agents (enriched summary)', () => {
     })
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
-    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({ dashboards: [], widgets: [] })
+    vi.mocked(scanArtifactsIn).mockResolvedValue({ dashboards: [], widgets: [] })
   })
 
   it.each([
@@ -8735,7 +8740,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns dashboard summaries from artifacts', async () => {
     mockListedAgents([baseAgent])
-    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+    vi.mocked(scanArtifactsIn).mockResolvedValue({
       dashboards: [
         { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
         { slug: 'dash-2', name: 'Metrics', description: '', status: 'stopped', port: 5001 },
@@ -8754,7 +8759,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('uses artifact slug as fallback name when name is empty', async () => {
     mockListedAgents([baseAgent])
-    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+    vi.mocked(scanArtifactsIn).mockResolvedValue({
       dashboards: [{ slug: 'unnamed-dash', name: '', description: '', status: 'running', port: 5000 }],
       widgets: [],
     } as any)

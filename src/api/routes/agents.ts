@@ -226,7 +226,8 @@ import {
   importSkillFromZip,
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
-import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import type { ArtifactInfo } from '@shared/lib/services/artifact-scan'
 import {
   WIDGET_HTML_CSP,
   renderWidgetDocument,
