@@ -10,6 +10,10 @@
  * - A Retina capture has two pixels (or more) per point.
  * - The image is shrunk to what the model takes (see `fitImageSize`).
  *
+ * A Windows capture has no shadow, but is smaller than its window's bounds
+ * instead: they take in invisible resize borders it does not show
+ * (`locateWindowsFrame`).
+ *
  * The result says which screen area the image covers, so a pixel position
  * turns into a point with one multiplication.
  */
@@ -199,6 +203,41 @@ export function locateWindowFrame(image: Rgba, bounds: ScreenArea, pixelsPerPoin
   return fits.length === 1 ? fits[0] : null
 }
 
+/**
+ * The widest invisible resize border a Windows window is given, in pixels
+ * at 100% scaling (8 for a standard frame), with room to spare; it grows
+ * with the display's scale (9 to 11 measured at 150%).
+ */
+const MAX_WINDOWS_BORDER_AT_100 = 12
+
+/** How far, in pixels, a Windows border may differ from its twin and still count as one width. */
+const WINDOWS_BORDER_SLACK = 1.5
+
+/**
+ * The screen area a Windows window capture shows, or null when the capture
+ * does not look like that window.
+ *
+ * On Windows agent-desktop works in physical pixels: window bounds, point
+ * commands and captures alike, one capture pixel to one screen pixel. Its
+ * `scale_factor` is the display's DPI setting (1.5 at 150%), not a
+ * conversion, and is used here only for how wide a border can be.
+ *
+ * A Windows capture has no shadow: it is the window's visible frame, opaque
+ * edge to edge. The window's bounds (GetWindowRect) also take in its
+ * invisible resize borders, one width on the left, right and bottom, and on
+ * top too while it is maximized, so they are wider and taller than what the
+ * capture shows.
+ */
+export function locateWindowsFrame(image: Pick<Rgba, 'width' | 'height'>, bounds: ScreenArea, displayScale?: number): ScreenArea | null {
+  const maxBorder = MAX_WINDOWS_BORDER_AT_100 * Math.max(1, displayScale ?? 1)
+  const side = (bounds.width - image.width) / 2
+  const vertical = bounds.height - image.height
+  if (side < -WINDOWS_BORDER_SLACK / 2 || side > maxBorder) return null
+  const top = Math.abs(vertical - 2 * side) <= WINDOWS_BORDER_SLACK ? side : 0
+  if (Math.abs(vertical - top - side) > WINDOWS_BORDER_SLACK) return null
+  return { x: bounds.x + side, y: bounds.y + top, width: image.width, height: image.height }
+}
+
 function isOpaque(image: Rgba, x: number, y: number): boolean {
   if (x < 0 || y < 0 || x >= image.width || y >= image.height) return false
   return image.data[(y * image.width + x) * 4 + 3] >= OPAQUE
@@ -324,8 +363,13 @@ export function prepareScreenshot(
   capture: Buffer,
   target: ScreenshotTarget | null,
   unknownTargetReason?: string,
-  /** The capture's pixels per point (agent-desktop's `scale_factor`), when it says. */
+  /**
+   * agent-desktop's `scale_factor`, when it says: on macOS the capture's
+   * pixels per point, on Windows the display's DPI setting (see locateWindowsFrame).
+   */
   pixelsPerPoint?: number,
+  /** The OS that took the capture: a Windows window capture has no shadow and its bounds take in borders it does not show. */
+  platform: NodeJS.Platform = process.platform,
 ): PreparedScreenshot {
   const image = nativeDecoder?.(capture) ?? decodeInJavaScript(capture)
   let region: PixelRect = { x: 0, y: 0, width: image.width, height: image.height }
@@ -339,9 +383,17 @@ export function prepareScreenshot(
       unalignedReason = `the image's shape does not match ${target.label}`
     }
   } else if (target?.kind === 'window') {
-    let fits = target.candidates
-      .map((window) => ({ window, rect: locateWindowFrame(image, window.bounds, pixelsPerPoint) }))
-      .filter((fit): fit is { window: WindowCandidate; rect: PixelRect } => fit.rect !== null)
+    type Fit = { window: WindowCandidate; rect: PixelRect; area: ScreenArea }
+    const whole: PixelRect = { x: 0, y: 0, width: image.width, height: image.height }
+    const fit = (window: WindowCandidate): Fit | null => {
+      if (platform === 'win32') {
+        const area = locateWindowsFrame(image, window.bounds, pixelsPerPoint)
+        return area && { window, rect: whole, area }
+      }
+      const rect = locateWindowFrame(image, window.bounds, pixelsPerPoint)
+      return rect && { window, rect, area: window.bounds }
+    }
+    let fits = target.candidates.map(fit).filter((entry): entry is Fit => entry !== null)
     // Two windows of one size both fit; a capture of the app shows the focused one.
     if (fits.length > 1) {
       const focused = fits.filter((fit) => fit.window.focused)
@@ -352,16 +404,16 @@ export function prepareScreenshot(
     let together: string | undefined
     if (fits.length === 0) {
       const union = focusedWithAttached(target.candidates)
-      const rect = union && locateWindowFrame(image, union.window.bounds, pixelsPerPoint)
-      if (union && rect) {
-        fits = [{ window: union.window, rect }]
+      const joint = union && fit(union.window)
+      if (union && joint) {
+        fits = [joint]
         together = union.label
       }
     }
     if (fits.length === 1) {
       region = fits[0].rect
       frame = {
-        area: fits[0].window.bounds,
+        area: fits[0].area,
         window: { id: fits[0].window.id, ...(fits[0].window.app && { app: fits[0].window.app }) },
         label: together ?? windowLabel(fits[0].window),
       }

@@ -354,7 +354,7 @@ export const windowListSchema = z.array(z.object({
   visible: z.boolean().optional(),
 }).passthrough())
 
-export const displayListSchema = z.array(z.object({ bounds: boundsSchema, scale: z.number().optional() }).passthrough())
+export const displayListSchema = z.array(z.object({ bounds: boundsSchema, scale: z.number().optional(), is_primary: z.boolean().optional() }).passthrough())
 
 export const launchDataSchema = z.object({
   app: z.string().optional(),

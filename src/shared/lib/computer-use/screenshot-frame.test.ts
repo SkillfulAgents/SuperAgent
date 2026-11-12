@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { PNG } from 'pngjs'
 import {
   fitImageSize,
   locateWindowFrame,
+  locateWindowsFrame,
   MAX_IMAGE_EDGE,
   MAX_IMAGE_PIXELS,
   prepareScreenshot,
@@ -52,6 +53,11 @@ function paint(png: PNG, x: number, y: number, width: number, height: number): v
 // The shadow of a focused window, as measured on a real capture (2× display):
 // even left and right, deeper below than above.
 const FOCUSED_SHADOW: Margins = { left: 112, right: 112, top: 78, bottom: 150 }
+
+// Captures are macOS's unless a test names another OS, whatever this machine runs.
+const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform')!
+beforeEach(() => { Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true }) })
+afterEach(() => { Object.defineProperty(process, 'platform', ORIGINAL_PLATFORM) })
 
 describe('fitImageSize', () => {
   it('leaves a small image alone', () => {
@@ -202,5 +208,50 @@ describe('prepareScreenshot', () => {
     const capture = PNG.sync.write(windowCapture(800, 600, FOCUSED_SHADOW))
     expect(prepareScreenshot(capture, null, 'it names no window').unalignedReason).toBe('it names no window')
     expect(prepareScreenshot(capture, { kind: 'window', candidates: [] }).frame).toBeNull()
+  })
+})
+
+describe('Windows window captures', () => {
+  // Measured at 150% scaling, agent-desktop 1.1.0, checked against DWM's
+  // frame bounds: the capture is the visible frame, one pixel per physical
+  // pixel (agent-desktop's coordinates), and scale_factor 1.5 is the DPI setting.
+  const NO_SHADOW: Margins = { left: 0, right: 0, top: 0, bottom: 0 }
+  const chrome = { id: 'w-921266', app: 'chrome.exe', bounds: { x: -9, y: 0, width: 1119, height: 1473 } }
+  const slack = { id: 'w-12', app: 'Slack.exe', bounds: { x: -11, y: -11, width: 2326, height: 1486 } }
+
+  it('leaves the invisible borders off a window\'s left, right and bottom', () => {
+    expect(locateWindowsFrame({ width: 1101, height: 1464 }, chrome.bounds, 1.5)).toEqual({ x: 0, y: 0, width: 1101, height: 1464 })
+  })
+
+  it('leaves them off the top too while the window is maximized', () => {
+    expect(locateWindowsFrame({ width: 2304, height: 1464 }, slack.bounds, 1.5)).toEqual({ x: 0, y: 0, width: 2304, height: 1464 })
+  })
+
+  it('allows wider borders on a display of a higher scale', () => {
+    // 15-pixel borders, as a standard frame has at 200%.
+    const bounds = { x: 85, y: 100, width: 1030, height: 815 }
+    expect(locateWindowsFrame({ width: 1000, height: 800 }, bounds, 2)).toEqual({ x: 100, y: 100, width: 1000, height: 800 })
+    expect(locateWindowsFrame({ width: 1000, height: 800 }, bounds, 1)).toBeNull()
+  })
+
+  it('takes a window with no border as its own frame', () => {
+    expect(locateWindowsFrame({ width: 800, height: 600 }, { x: 10, y: 20, width: 800, height: 600 }, 1.5)).toEqual({ x: 10, y: 20, width: 800, height: 600 })
+  })
+
+  it('finds nothing in a capture of another window\'s size', () => {
+    expect(locateWindowsFrame({ width: 1203, height: 1464 }, chrome.bounds, 1.5)).toBeNull()
+    expect(locateWindowsFrame({ width: 1101, height: 1300 }, chrome.bounds, 1.5)).toBeNull()
+  })
+
+  it('says which screen points the image shows, without the borders', () => {
+    const capture = PNG.sync.write(windowCapture(1101, 1464, NO_SHADOW))
+    const prepared = prepareScreenshot(capture, { kind: 'window', candidates: [chrome] }, undefined, 1.5, 'win32')
+    expect(prepared.frame).toEqual({
+      area: { x: 0, y: 0, width: 1101, height: 1464 },
+      window: { id: 'w-921266', app: 'chrome.exe' },
+      label: 'window w-921266 (chrome.exe)',
+    })
+    // The same capture on macOS's rules finds no window: what failed before.
+    expect(prepareScreenshot(capture, { kind: 'window', candidates: [chrome] }, undefined, 1.5, 'darwin').frame).toBeNull()
   })
 })
