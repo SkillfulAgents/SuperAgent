@@ -121,6 +121,24 @@ describe('SessionManager.forkSession', () => {
     }
   })
 
+  it('removes a deleted session from the transcript store, and leaves one that was only forgotten', async () => {
+    const store = { append: async () => {}, load: async () => null }
+    setTranscriptStore(store)
+    try {
+      persisted.set('kept-1', { ...source, sessionId: 'kept-1', claudeSessionId: 'kept-1' })
+      persisted.set('src-1', { ...source, releasedForDeletion: true })
+
+      await manager.deleteSession('kept-1')
+      expect(sdkDelete).not.toHaveBeenCalled()
+
+      await manager.deleteSession('src-1')
+      expect(sdkDelete).toHaveBeenCalledWith('src-1', { dir: '/workspace', sessionStore: store })
+      expect(persisted.has('src-1')).toBe(false)
+    } finally {
+      setTranscriptStore(undefined)
+    }
+  })
+
   it('returns null when the SDK reports the transcript gone', async () => {
     sdkFork.mockRejectedValue(new Error('Session not found'))
 

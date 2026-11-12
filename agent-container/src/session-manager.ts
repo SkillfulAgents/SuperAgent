@@ -901,6 +901,15 @@ export class SessionManager extends EventEmitter {
   async deleteSession(sessionId: string): Promise<boolean> {
     const existed = await this.stopSession(sessionId, false);
     this.sessions.delete(sessionId);
+    // The host removes a deleted session's local files itself. A store's copy
+    // is out of its reach, and would let the released record resume.
+    const persisted = this.persistence.getSession(sessionId);
+    const sessionStore = transcriptStore();
+    if (sessionStore && persisted?.releasedForDeletion) {
+      await sdkDeleteSession(persisted.claudeSessionId, { dir: persisted.workingDirectory, sessionStore }).catch((e) =>
+        console.error(`deleteSession: could not remove ${sessionId} from the transcript store`, e),
+      );
+    }
     this.persistence.deleteSession(sessionId);
 
     console.log(`Deleted session ${sessionId}`);
