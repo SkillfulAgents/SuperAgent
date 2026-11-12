@@ -1237,13 +1237,14 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
-  it("volume_attention_changed refreshes every agent's drives and the drive list, so a status pill follows sync", () => {
+  it("volume_attention_changed refreshes every agent's drives, the drive list and each drive's agents", () => {
     queryClient.setQueryData(['mounts', 'agent-a'], [])
     queryClient.setQueryData(['mounts', 'agent-b'], [])
     queryClient.setQueryData(['volume-definitions'], [])
+    queryClient.setQueryData(['volume-agents', 'v1'], [])
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
     simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
-    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
+    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions'], ['volume-agents', 'v1']]) {
       expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
     }
   })

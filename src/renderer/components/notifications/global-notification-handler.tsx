@@ -661,9 +661,10 @@ export function GlobalNotificationHandler() {
             break
 
           case 'volume_attention_changed':
-            // A drive's sync state changed: a conflict, a stopped push, or the end of one. Its status pills follow.
+            // A drive changed: its settings, its folder, or its sync state. Its rows and status pills follow.
             queryClient.invalidateQueries({ queryKey: ['mounts'] })
             queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+            queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
             break
 
           case 'agent_created':

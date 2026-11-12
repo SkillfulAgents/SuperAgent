@@ -6,6 +6,8 @@ import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, user } from '@shared/lib/db/schema'
 import { attachMount } from '@shared/lib/services/mount-service'
+import { releaseVolume, updateVolumeDefinition } from '@shared/lib/services/volume-service'
+import { afterMountChange, changeDrives } from '../lib/mount-change'
 
 let handle: TestDatabase
 let folder: string
@@ -20,8 +22,17 @@ vi.mock('../middleware/auth', () => ({
   },
 }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
+// One agent's drives can fail to read: the next read of `fail` throws.
+const reads = vi.hoisted(() => ({ fail: null as string | null }))
+vi.mock('@shared/lib/services/mount-service', async (original) => {
+  const actual = await original<typeof import('@shared/lib/services/mount-service')>()
+  return { ...actual, getMounts: async (slug: string) => {
+    if (reads.fail === slug) { reads.fail = null; throw new Error('unreadable') }
+    return actual.getMounts(slug)
+  } }
+})
 // Agents as the container sees them: a running one is marked stale, a stopped one is left alone.
-const containers = vi.hoisted(() => ({ running: new Set<string>(), stale: new Set<string>(), calls: [] as string[] }))
+const containers = vi.hoisted(() => ({ running: new Set<string>(), starting: new Set<string>(), stale: new Set<string>(), calls: [] as string[] }))
 vi.mock('@shared/lib/agent-actor/registry', () => ({
   agentRegistry: {
     get: (slug: string) => ({
@@ -37,6 +48,13 @@ vi.mock('@shared/lib/agent-actor/registry', () => ({
     }),
   },
 }))
+const running = vi.hoisted(() => ({ read: vi.fn() }))
+vi.mock('@shared/lib/agent-actor', () => ({ containerHost: { getAgentIdsHoldingDrives: (options?: { orStarting?: boolean }) => {
+  running.read()
+  return [...containers.running, ...(options?.orStarting ? containers.starting : [])]
+} } }))
+const feed = vi.hoisted(() => ({ publish: vi.fn() }))
+vi.mock('@shared/lib/notifications/global-feed', () => ({ globalFeed: feed }))
 import routes from './volume-definitions'
 const app = new Hono().route('/volumes', routes)
 function request(route = '', method = 'GET', body?: unknown, caller = 'alice') {
@@ -50,8 +68,11 @@ beforeEach(async () => {
   folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-api-')))
   handle = await createTestDatabase()
   containers.running.clear()
+  containers.starting.clear()
   containers.stale.clear()
   containers.calls.length = 0
+  feed.publish.mockClear()
+  running.read.mockClear()
   await handle.db.insert(user).values(['alice', 'bob', 'admin'].map(id => ({ id, name: id, email: `${id}@example.com` }))).run()
   await handle.db.insert(agents).values({ slug: 'agent', name: 'Agent', createdAt: new Date() }).run()
 })
@@ -133,7 +154,7 @@ describe('volume definition API', () => {
     expect(containers.calls).toEqual([])
 
     expect((await request(`/${id}/reconnect`, 'POST', { path: folder })).status).toBe(200)
-    expect(containers.calls.sort()).toEqual(['agent', 'stopped'])
+    expect(containers.calls).toEqual(['agent'])
     expect([...containers.stale]).toEqual(['agent'])
   })
   it('marks every running agent stale for a global drive, attached or not', async () => {
@@ -143,32 +164,44 @@ describe('volume definition API', () => {
     containers.calls.length = 0
     containers.running = new Set(['agent', 'other'])
     expect((await request(`/${id}/reconnect`, 'POST', { path: folder }, 'admin')).status).toBe(200)
-    expect(containers.calls.sort()).toEqual(['agent', 'other', 'stopped'])
+    expect(containers.calls.sort()).toEqual(['agent', 'other'])
     expect([...containers.stale].sort()).toEqual(['agent', 'other'])
   })
-  it('marks the running agents a rename or global change reaches stale, those turning global off leaves included', async () => {
+  it('marks only the running agents whose drives a change alters, and tells every client', async () => {
     await handle.db.insert(agents).values({ slug: 'other', name: 'other', createdAt: new Date() }).run()
     const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
     await attachMount('agent', id, { userId: 'admin', admin: true })
     containers.running = new Set(['agent', 'other'])
 
+    // A refused change reads no agent's drives.
     expect((await request(`/${id}`, 'PATCH', { name: 'Stolen' }, 'bob')).status).toBe(404)
+    expect((await request(`/${id}`, 'DELETE', undefined, 'bob')).status).toBe(404)
+    expect(running.read).not.toHaveBeenCalled()
+    expect((await request(`/${id}`, 'PATCH', { name: 'Notes', visibility: 'public' }, 'admin')).status).toBe(200)
     expect(containers.calls).toEqual([])
     expect((await request(`/${id}`, 'PATCH', { name: 'Team notes' }, 'admin')).status).toBe(200)
     expect([...containers.stale]).toEqual(['agent'])
+    expect(feed.publish.mock.calls).toEqual([...Array(3).fill([{ type: 'volume_attention_changed' }]), [{ type: 'agent_updated', agentSlug: 'agent' }]])
 
+    // Its own attachment gives `agent` the same mount whether or not the drive is global.
+    containers.stale.clear()
     expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
+    expect([...containers.stale]).toEqual(['other'])
+    containers.stale.clear()
+    expect((await request(`/${id}`, 'PATCH', { name: 'Shared notes' }, 'admin')).status).toBe(200)
     expect([...containers.stale].sort()).toEqual(['agent', 'other'])
     containers.stale.clear()
     expect((await request(`/${id}`, 'PATCH', { global: null }, 'admin')).status).toBe(200)
-    expect([...containers.stale].sort()).toEqual(['agent', 'other'])
+    expect([...containers.stale]).toEqual(['other'])
   })
   it('marks every running agent stale when a global drive is deleted', async () => {
+    await handle.db.insert(agents).values({ slug: 'stopped', name: 'stopped', createdAt: new Date() }).run()
     const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
     expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
     containers.running = new Set(['agent'])
     expect((await request(`/${id}`, 'DELETE', undefined, 'admin')).status).toBe(200)
     expect([...containers.stale]).toEqual(['agent'])
+    expect(containers.calls).toEqual(['agent'])
   })
 })
 
@@ -242,5 +275,69 @@ describe('volume browsing', () => {
     const download = await request(`/${id}/file?path=clip.mp4`)
     expect(download.headers.get('content-disposition')).toMatch(/^attachment;/)
     expect(await download.text()).toBe('0123456789')
+  })
+})
+
+describe('changeDrives', () => {
+  it('compares a start that reads its drives during the change, and marks it only if they changed', async () => {
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    await attachMount('agent', id, { userId: 'admin', admin: true })
+    const readsDuringChange = async (name: string) => {
+      containers.starting = new Set(['agent'])
+      await changeDrives(async () => {
+        await updateVolumeDefinition(id, { name }, { userId: 'admin', admin: true })
+        containers.starting.clear()
+        containers.running.add('agent')
+      })
+      containers.running.clear()
+    }
+    await readsDuringChange('Notes')
+    expect(containers.stale.size).toBe(0)
+    await readsDuringChange('Renamed')
+    expect([...containers.stale]).toEqual(['agent'])
+  })
+  it('marks a start that begins during the change, since its drive read is unknown', async () => {
+    await changeDrives(async () => { containers.running.add('agent') })
+    expect([...containers.stale]).toEqual(['agent'])
+  })
+  it('marks nothing when the change is refused', async () => {
+    containers.running = new Set(['agent'])
+    await expect(changeDrives(() => Promise.reject(new Error('conflict')))).rejects.toThrow('conflict')
+    expect(containers.calls).toEqual([])
+    expect(feed.publish).not.toHaveBeenCalled()
+  })
+  it('leaves out only the agent whose drives cannot be read, before or after the change', async () => {
+    await handle.db.insert(agents).values({ slug: 'other', name: 'other', createdAt: new Date() }).run()
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
+    containers.running = new Set(['agent', 'other'])
+    for (const [failBefore, name] of [[true, 'Renamed'], [false, 'Renamed again']] as const) {
+      containers.stale.clear()
+      if (failBefore) reads.fail = 'agent'
+      await changeDrives(async () => {
+        await updateVolumeDefinition(id, { name }, { userId: 'admin', admin: true })
+        if (!failBefore) reads.fail = 'agent'
+      })
+      expect([...containers.stale]).toEqual(['other'])
+    }
+  })
+  it('tells every window about an agent\'s own drive change, running or not', async () => {
+    await afterMountChange('agent')
+    expect(feed.publish.mock.calls).toEqual([[{ type: 'volume_attention_changed' }]])
+    expect(containers.stale.size).toBe(0)
+  })
+})
+
+describe('turning Team Brain off', () => {
+  it('marks the running agents that lose the drive, never the Team Brain agent that keeps it', async () => {
+    await handle.db.insert(agents).values(['brain', 'reader', 'other'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    await attachMount('brain', id, { userId: 'admin', admin: true })
+    await attachMount('reader', id, { userId: 'admin', admin: true })
+    expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
+    containers.running = new Set(['brain', 'reader', 'other'])
+
+    await changeDrives(() => releaseVolume(id, 'brain'))
+    expect([...containers.stale].sort()).toEqual(['other', 'reader'])
   })
 })
