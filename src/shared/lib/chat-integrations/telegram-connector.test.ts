@@ -745,3 +745,18 @@ describe('TelegramConnector.sendFile', () => {
     expect(sendPhoto).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('TelegramConnector — dollar amounts', () => {
+  it('keeps them as text in the rich message, and sends the HTML fallback the reply as written', async () => {
+    const connector = makeConnector()
+    const { sent } = attachFakeBot(connector)
+    const bot = (connector as any).bot
+    await connector.sendMessage('123', { text: '$600 is $108' })
+    bot.api.raw.sendRichMessage = vi.fn(async () => { throw new Error('rich rejected') })
+    const toHtml = vi.spyOn(connector as any, 'markdownToHtml')
+    await connector.sendMessage('123', { text: '$600 is $108' })
+
+    expect(sent[0].rich_message.markdown).toBe('\\$600 is \\$108')
+    expect(toHtml).toHaveBeenCalledWith('$600 is $108')
+  })
+})
