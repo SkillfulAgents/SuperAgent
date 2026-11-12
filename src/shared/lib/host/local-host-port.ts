@@ -119,5 +119,8 @@ export const localHostPort = createLocalHostPort({
     global: feedEvent,
     notification: notify,
     analytics: ({ event, properties }) => trackServerEvent(event, properties),
+    computerUseTurnEnded: async ({ sessionId }) => {
+      if (!isE2EMock()) (await computerUse()).endComputerUseTurn(sessionId)
+    },
   },
 })

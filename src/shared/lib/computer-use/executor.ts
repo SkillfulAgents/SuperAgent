@@ -9,7 +9,9 @@
  *   on its first command, and agent-desktop resolves a ref only inside the
  *   session whose snapshot made it, so one session never acts on another's
  *   refs. The session carries the agent's cursor, in its colour and with its
- *   name, when the user shows cursors.
+ *   name, when the user shows cursors; the cursor is kept on screen from the
+ *   session's first command of a turn until the turn ends (see
+ *   cursor-keep-alive.ts).
  * - the target, for the per-app permission check: the executor remembers
  *   which app each snapshot and window belongs to, so a ref-only call
  *   (`click @s8f3k2p9:e5`) can be checked and shown in the activity indicator.
@@ -52,6 +54,7 @@ import {
 import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
 import { computerUsePreferences } from './types'
 import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
+import { cursorCommandDone, keepCursorOnScreen, letCursorRest } from './cursor-keep-alive'
 import { sameApp } from './app-identity'
 import { appAtPoint, frontmostApp, readScreenWindows, type ScreenWindows } from './screen-windows'
 import { activateStartMenuApp, findStartMenuApp, startMenuApps, waitForActivatedWindow } from './windows-start-menu'
@@ -190,7 +193,7 @@ async function startSession(caller: ComputerUseCaller, showCursor: boolean): Pro
 }
 
 /** The agent-desktop session for an app session, started on first use and kept in step with the cursor settings. */
-async function sessionFor(caller: ComputerUseCaller): Promise<string> {
+async function sessionFor(caller: ComputerUseCaller): Promise<AppSession> {
   const { showCursor } = computerUsePreferences((await getSettings()).computerUse)
   let pending = sessions.get(caller.sessionId)
   if (!pending) {
@@ -211,7 +214,7 @@ async function sessionFor(caller: ComputerUseCaller): Promise<string> {
       console.warn('[ComputerUse] Could not update the agent cursor:', error)
     }
   }
-  return session.agentDesktopSession
+  return session
 }
 
 /**
@@ -639,6 +642,7 @@ export function executeComputerUseCommand(
       return await runCommand(method, params, caller, options.app, stop.signal)
     } finally {
       work.running.delete(stop)
+      cursorCommandDone(caller.sessionId)
     }
   })
 }
@@ -724,7 +728,12 @@ async function runCommand(
   const targets = callTargets(method, params)
   const targetApp = placedIn === undefined ? await targetAppOf(method, targets) : await confirmPlacement(method, targets, placedIn)
   commandArgs = withFocusedApp(method, commandArgs, targets, targetApp)
-  const session = await sessionFor(caller)
+  const appSession = await sessionFor(caller)
+  const session = appSession.agentDesktopSession
+  // agent-desktop fades an idle cursor after a few seconds; a shown one is
+  // kept on screen until the turn ends (endComputerUseTurn).
+  if (appSession.cursor !== null) keepCursorOnScreen(caller.sessionId, session, agentDesktopHome(), requestsHeaded(commandArgs))
+  else letCursorRest(caller.sessionId)
   // agent-desktop does not say where the window it captured is, so the window
   // list is read for that, alongside the capture rather than after it: the
   // two reads are then as close in time as they can be.
@@ -845,6 +854,7 @@ export async function endComputerUseSessions(filter: { agentSlug?: string; sessi
     if (filter.agentSlug && filter.agentSlug !== work.agentSlug) continue
     work.ended++
     for (const stop of work.running) stop.abort()
+    letCursorRest(sessionId)
   }
   const ending: Promise<unknown>[] = []
   for (const [sessionId, pending] of sessions) {
@@ -858,6 +868,15 @@ export async function endComputerUseSessions(filter: { agentSlug?: string; sessi
     }))
   }
   await Promise.all(ending)
+}
+
+/**
+ * An app session's turn ended: its cursor is no longer kept on screen, and
+ * agent-desktop fades it as it does any idle cursor. The agent-desktop
+ * session stays, for the refs of the session's next turn.
+ */
+export function endComputerUseTurn(sessionId: string): void {
+  letCursorRest(sessionId)
 }
 
 /** End every session on app exit. */

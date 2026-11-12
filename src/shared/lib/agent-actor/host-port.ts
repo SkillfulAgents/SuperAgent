@@ -87,6 +87,11 @@ export interface HostEvents {
   notification: SessionNotification
   /** A product analytics event. */
   analytics: { event: string; properties?: Record<string, unknown> }
+  /**
+   * A session's turn ended. The machine that ran its computer-use commands
+   * stops keeping the agent's cursor on screen.
+   */
+  computerUseTurnEnded: { sessionId: string }
 }
 
 /** A session-scoped host tool the agent called, with its raw streamed input. */

@@ -55,6 +55,14 @@ vi.mock('./windows-start-menu', async (importOriginal) => {
   }
 })
 
+// The keep-alive talks to a real overlay's socket; here only what the executor asks of it is seen.
+const keepAlive = {
+  keepCursorOnScreen: vi.fn(),
+  cursorCommandDone: vi.fn(),
+  letCursorRest: vi.fn(),
+}
+vi.mock('./cursor-keep-alive', () => keepAlive)
+
 let computerUseSettings: Record<string, unknown> | undefined
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: async () => ({ computerUse: computerUseSettings }),
@@ -63,6 +71,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 const {
   executeComputerUseCommand,
   endComputerUseSessions,
+  endComputerUseTurn,
   resolveComputerUseTargetApp,
   checkComputerUsePermissions,
   cursorLabel,
@@ -99,6 +108,7 @@ beforeEach(async () => {
     return answer([...args])
   })
   run.mockClear()
+  for (const spy of Object.values(keepAlive)) spy.mockClear()
   computerUseSettings = undefined
   answer = defaultAnswer
   readScreenWindows.mockReset()
@@ -138,6 +148,39 @@ describe('executeComputerUseCommand', () => {
     computerUseSettings = { showCursor: false }
     await executeComputerUseCommand('snapshot', { app: 'Finder' }, caller())
     expect(runs).toContainEqual(['--session', 'ads-1', 'cursor-overlay', 'disable'])
+  })
+
+  it('keeps a shown cursor on screen from a command on, until the turn or the session ends', async () => {
+    await executeComputerUseCommand('snapshot', { app: 'Finder' }, caller())
+    expect(keepAlive.keepCursorOnScreen).toHaveBeenCalledExactlyOnceWith('session-1', 'ads-1', expect.stringMatching(/agent-desktop$/), false)
+    expect(keepAlive.cursorCommandDone).toHaveBeenCalledExactlyOnceWith('session-1')
+    expect(keepAlive.letCursorRest).not.toHaveBeenCalled()
+
+    endComputerUseTurn('session-1')
+    expect(keepAlive.letCursorRest).toHaveBeenCalledExactlyOnceWith('session-1')
+    // The agent-desktop session outlives the turn.
+    expect(runs.some((args) => args[0] === 'session' && args[1] === 'end')).toBe(false)
+
+    await executeComputerUseCommand('snapshot', { app: 'Finder' }, caller())
+    expect(keepAlive.keepCursorOnScreen).toHaveBeenLastCalledWith('session-1', 'ads-1', expect.any(String), false)
+
+    keepAlive.letCursorRest.mockClear()
+    await endComputerUseSessions({ sessionId: 'session-1' })
+    expect(keepAlive.letCursorRest).toHaveBeenCalledExactlyOnceWith('session-1')
+  })
+
+  it('says when a command sends physical input, which agent-desktop hides the cursor for', async () => {
+    computerUseSettings = { inputMode: 'headed' }
+    await executeComputerUseCommand('mouse-click', { xy: '10,20', headed: true, app: 'Notes' }, caller())
+    expect(keepAlive.keepCursorOnScreen).toHaveBeenCalledExactlyOnceWith('session-1', 'ads-1', expect.any(String), true)
+    expect(keepAlive.cursorCommandDone).toHaveBeenCalledExactlyOnceWith('session-1')
+  })
+
+  it('keeps no cursor on screen when the user turned cursors off', async () => {
+    computerUseSettings = { showCursor: false }
+    await executeComputerUseCommand('snapshot', { app: 'Finder' }, caller())
+    expect(keepAlive.keepCursorOnScreen).not.toHaveBeenCalled()
+    expect(keepAlive.letCursorRest).toHaveBeenCalledWith('session-1')
   })
 
   it('runs a tool\'s command line as given, adding only the session', async () => {

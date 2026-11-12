@@ -57,6 +57,17 @@ describe('generated computer-use guides', () => {
       }
     }
   })
+  it('offer no text from stdin, which a command the app runs does not have', () => {
+    const guides = [
+      path.join(DOCS_DIR, 'computer-use.md'),
+      ...readdirSync(path.join(DOCS_DIR, 'computer-use')).map((name) => path.join(DOCS_DIR, 'computer-use', name)),
+    ]
+    for (const guide of guides) {
+      // The header names it once, among what is refused.
+      const mentions = readFileSync(guide, 'utf8').split('\n').filter((line) => line.includes('--stdin') && !line.includes('pass the text as the argument'))
+      expect({ guide: path.relative(ROOT, guide), mentions }).toEqual({ guide: path.relative(ROOT, guide), mentions: [] })
+    }
+  })
 })
 
 describe('rewriteSkillLinks', () => {
@@ -129,6 +140,17 @@ describe('generated tools', () => {
       ['timeout_ms', 'value'], ['headed', 'switch'], ['wait_for', 'value'], ['wait_timeout', 'value'], ['state', 'list'], ['surface', 'value'],
     ])
     expect(spec.options.find((option) => option.name === 'surface')).toMatchObject({ values: ['window', 'menu'], description: 'Surface [default: window]' })
+  })
+
+  it('keeps the text required, and leaves --stdin out, where the help makes the text optional for it', () => {
+    const withStdin = help
+      .replace('[OPTIONS] <REF> <TEXT>', '[OPTIONS] <REF> [TEXT]')
+      .replace('  <TEXT>  Text to type', '  [TEXT]  Text to type')
+      .replace('Options:\n', 'Options:\n      --stdin                          Read up to 10,000 bytes of UTF-8 text from a pipe or file\n')
+    const spec = parseToolSpec('type', withStdin)
+
+    expect(spec.arguments.find((argument) => argument.name === 'text')).toEqual({ name: 'text', required: true, description: 'Text to type' })
+    expect(spec.options.map((option) => option.name)).not.toContain('stdin')
   })
 
   it('gives the wait flags only to snapshot and ref actions, as their help says', () => {

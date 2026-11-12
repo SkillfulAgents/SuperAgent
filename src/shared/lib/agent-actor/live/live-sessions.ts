@@ -323,6 +323,11 @@ export class LiveSessions {
       this.deps.computerUse.clearActiveApp(sessionId)
       this.emit(sessionId, { type: 'computer_use_app_changed', app: null })
     }
+    // The agent's cursor stays on screen for as long as the turn that used
+    // the computer runs: the host lets go of it when the turn ends, either way.
+    if (event.type === 'session_idle' || event.type === 'session_error') {
+      this.deps.host.send('computerUseTurnEnded', { sessionId })
+    }
   }
 
   /** The session as a viewer starting from nothing needs it: it stands for every event up to `lastId`. */
