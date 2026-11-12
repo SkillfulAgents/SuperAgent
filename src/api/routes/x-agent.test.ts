@@ -235,17 +235,23 @@ const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
 // queued decision is the request's outcome, under the arguments it was raised with.
 type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown; callerSessionId?: string }
 const xAgentReviewRequests: XAgentReviewRequest[] = []
+// A real review manager, for tests that drive real sweeps; the queued-decision fake otherwise.
+type RealReviews = InstanceType<typeof import('@shared/lib/proxy/review-manager').ReviewManager>
+let realReviews: RealReviews | undefined
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestXAgent: (callerSlug: string, request: XAgentReviewRequest) => {
+    requestXAgent: (callerSlug: string, request: Parameters<RealReviews['requestXAgent']>[1], options: Parameters<RealReviews['requestXAgent']>[2]) => {
       xAgentReviewRequests.push(request)
+      if (realReviews) return realReviews.requestXAgent(callerSlug, request, options)
       return mockRequestXAgentReview(
         callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
       )
     },
-    withdraw: vi.fn(),
-    takeDenyReason: vi.fn(),
-    getPendingReviewsForAgent: () => [],
+    resume: (slug: string, id: string) => realReviews?.resume(slug, id),
+    settle: (slug: string, id: string, decision: 'allow' | 'deny') => realReviews?.settle(slug, id, decision),
+    withdraw: (slug: string, id: string) => realReviews?.withdraw(slug, id),
+    takeDenyReason: vi.fn((slug: string, id: string) => realReviews?.takeDenyReason(slug, id)),
+    getPendingReviewsForAgent: (slug: string) => realReviews?.getPendingReviewsForAgent(slug) ?? [],
   },
 }))
 
@@ -2572,5 +2578,39 @@ describe('a card approved after a Block is set does not run the operation', () =
     const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hi' })
     expect(res.status).toBe(403)
     expect(mockCreateSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('a request settled by a sweep from another card is decided again', () => {
+  beforeEach(async () => {
+    const { ReviewManager } = await vi.importActual<typeof import('@shared/lib/proxy/review-manager')>('@shared/lib/proxy/review-manager')
+    const { attachInMemoryAgentState } = await import('@shared/lib/agent-actor/testing/in-memory-agent-state')
+    realReviews = new ReviewManager()
+    realReviews.attachAgents(attachInMemoryAgentState().pick((state) => state.reviews))
+    mockGetAgent.mockResolvedValue({ slug: TARGET_SLUG, frontmatter: { name: 'Target', createdAt: '2024-01-01' }, instructions: '' })
+    mockListSessions.mockResolvedValue([])
+  })
+  afterEach(() => {
+    realReviews?.rejectAll()
+    realReviews = undefined
+  })
+
+  it('keeps waiting after a sweep until a saved link allows it', async () => {
+    const reviews = realReviews!
+    const res = authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
+    await vi.waitFor(() => expect(reviews.getPendingReviewsForAgent(CALLER_SLUG)).toHaveLength(1))
+    const [card] = reviews.getPendingReviewsForAgent(CALLER_SLUG)
+
+    // Another card's "always" sweeps this card's scope with nothing saved for it.
+    reviews.resolveMatchingPending(CALLER_SLUG, card.matchedScopes[0], 'allow')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(reviews.getPendingReviewsForAgent(CALLER_SLUG)).toHaveLength(1)
+    expect(mockListSessions).not.toHaveBeenCalled()
+
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'allow')
+    reviews.resolveMatchingPending(CALLER_SLUG, card.matchedScopes[0], 'allow')
+    expect((await res).status).toBe(200)
+    expect(mockListSessions).toHaveBeenCalled()
   })
 })
