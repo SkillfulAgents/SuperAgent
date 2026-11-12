@@ -200,6 +200,7 @@ vi.mock('../credentials/credential-broker', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   proxyAuditLog: {},
   proxyTokens: {},
   agentConnectedAccounts: {},
