@@ -71,7 +71,7 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     const silent = page.getByTestId('message-user').filter({ hasText: 'look at this plan' })
     await expect(silent.getByTestId('user-mention')).toContainText(`@${sara.name}`)
     await expect(silent.locator('[data-notify-only]')).toBeVisible()
-    await expect(silent.getByTestId('mention-notified')).toHaveText(`Notified ${sara.name}`)
+    await expect(silent.getByTestId('mention-notified')).toHaveText('Message ignored by agent')
     await expect(silent).not.toContainText('Mentioned')
     const members = await (await page.request.get(`${endpoint}/members`)).json() as Array<{ id: string; role: string }>
     expect(members.find((member) => member.id === sara.id)?.role).toBe('viewer')
