@@ -687,11 +687,17 @@ export class ToolCalls {
   private async decideComputerUse(toolUse: ToolUse, parentToolUseId: string | undefined, call: ComputerUseCall): Promise<void> {
     const { method, params, permissionLevel } = call
     let appName = call.appName
+    let refused: string | undefined
     let holding: Promise<void> | undefined
     await this.checkHeldGrant(toolUse.id, async () => {
       if (call.placedByMachine) {
         try {
-          appName = await this.ctx.host.call('computerUseTargetApp', { method, params })
+          const placed = await this.ctx.host.call('computerUseTargetApp', { method, params })
+          if (typeof placed === 'object' && placed !== null) {
+            refused = placed.refused
+            return false
+          }
+          appName = placed
         } catch {
           // Proceed without the app name.
         }
@@ -702,6 +708,12 @@ export class ToolCalls {
       const missing = await this.ctx.host.call('computerUsePermissions', { screenRecording: capturesScreen(method, params) }).catch(() => null)
       return missing === null
     }, (granted, stillWanted) => {
+      // The machine will refuse it whatever is approved: refused now, with no card.
+      if (refused !== undefined) {
+        stillWanted()
+        this.autoReject(toolUse.id, refused)
+        return
+      }
       const payload = { method, params, permissionLevel, appName }
       if (granted) {
         // Registered anyway, flagged so no projection reads it as a wait: the

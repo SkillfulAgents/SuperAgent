@@ -8,6 +8,7 @@ vi.mock('../middleware/auth', () => ({
   AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
   IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  ResolveAgentEarly: () => (_c: unknown, next: () => Promise<void>) => next(),
   ResolveAgent: () => async (c: any, next: () => Promise<void>) => {
     c.set('agentId', c.req.param('id'))
     return next()

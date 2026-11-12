@@ -44,7 +44,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, ResolveAgentEarly, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 import {
   listAgentsWithListing,
   getAgentWithListing,
@@ -978,6 +978,8 @@ export async function resolveInterruptedSubagents(
 
 const agents = new Hono()
 
+// Before Authenticated(): the agent's row is read beside the session, not after it.
+agents.use('/:id/*', ResolveAgentEarly())
 agents.use('*', Authenticated())
 
 // Collection roster reads must be mounted before /:id/* resolution.

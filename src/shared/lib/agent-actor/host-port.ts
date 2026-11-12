@@ -45,11 +45,13 @@ export interface HostCalls {
   /**
    * The app a computer-use command targets, from its `--app`, the window it
    * names, the snapshot its ref came from, or the window on top at a point it
-   * acts at, resolved on this machine; undefined when it cannot be.
+   * acts at, resolved on this machine; undefined when it cannot be; `refused`
+   * when the machine will refuse the call whatever is approved (it would act
+   * in the app's own window, or in two apps), with the reason.
    */
   computerUseTargetApp: {
     request: { method: string; params: Record<string, unknown> }
-    response: string | undefined
+    response: string | undefined | { refused: string }
   }
   /** An app's icon as base64 PNG, from this machine; null when it has none. */
   computerUseAppIcon: { request: { app: string }; response: string | null }
