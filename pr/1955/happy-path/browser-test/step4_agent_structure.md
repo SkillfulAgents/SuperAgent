@@ -1,0 +1,167 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e33]:
+            - link "Discover New Agents" [ref=e34] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e35]
+              - generic [ref=e38]: Discover New Agents
+          - listitem [ref=e39]:
+            - button "New Agent" [ref=e40] [cursor=pointer]:
+              - img [ref=e41]
+              - generic [ref=e42]: New Agent
+        - list [ref=e45]:
+          - listitem [ref=e108]:
+            - button "Your Agents" [ref=e109] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e110]:
+                - generic [ref=e111]: Your Agents
+                - img [ref=e113]
+            - button "New agent in Your Agents" [ref=e115] [cursor=pointer]:
+              - img [ref=e116]
+            - list [ref=e118]:
+              - button "QA-20261112-174406-u3be , idle. Never active Options for QA-20261112-174406-u3be Open QA-20261112-174406-u3be New session with QA-20261112-174406-u3be" [ref=e119] [cursor=pointer]:
+                - generic [ref=e120]:
+                  - link "QA-20261112-174406-u3be , idle. Never active" [ref=e121]:
+                    - /url: /agents/qa-20261112-174406-u3be-j8hynxzm1i
+                    - generic [ref=e122]: QA-20261112-174406-u3be
+                    - generic [ref=e123]: ", idle."
+                    - generic [ref=e124]: Never active
+                  - generic:
+                    - button "Options for QA-20261112-174406-u3be" [ref=e168]:
+                      - img [ref=e169]
+                    - generic:
+                      - link "Open QA-20261112-174406-u3be":
+                        - /url: /agents/qa-20261112-174406-u3be-j8hynxzm1i
+                      - link "New session with QA-20261112-174406-u3be" [ref=e173]:
+                        - /url: /agents/qa-20261112-174406-u3be-j8hynxzm1i/sessions/new
+                        - img [ref=e174]
+              - button "QA-20261112-174405-747x , idle. Last active less than a minute ago Options for QA-20261112-174405-747x Open QA-20261112-174405-747x New session with QA-20261112-174405-747x Expand" [ref=e314] [cursor=pointer]:
+                - generic [ref=e126]:
+                  - link "QA-20261112-174405-747x , idle. Last active less than a minute ago" [ref=e315]:
+                    - /url: /agents/qa-20261112-174405-747x-w7qj6a5paa
+                    - generic [ref=e128]: QA-20261112-174405-747x
+                    - generic [ref=e129]: ", idle."
+                    - generic [ref=e130]: Last active less than a minute ago
+                  - generic:
+                    - button "Options for QA-20261112-174405-747x"
+                    - generic:
+                      - link "Open QA-20261112-174405-747x":
+                        - /url: /agents/qa-20261112-174405-747x-w7qj6a5paa
+                      - link "New session with QA-20261112-174405-747x":
+                        - /url: /agents/qa-20261112-174405-747x-w7qj6a5paa/sessions/new
+                        - img
+                  - button "Expand" [ref=e179]:
+                    - img [ref=e190]
+          - status [ref=e131]
+          - listitem [ref=e132]:
+            - button "Add section" [ref=e133] [cursor=pointer]:
+              - img [ref=e135]
+              - generic [ref=e136]: Add section
+      - generic [ref=e56]:
+        - button "Settings" [ref=e57] [cursor=pointer]:
+          - img [ref=e58]
+          - generic [ref=e61]: Settings
+        - button "0.6.10-rc.3" [ref=e62] [cursor=pointer]:
+          - generic [ref=e63]: 0.6.10-rc.3
+      - button "Toggle Sidebar" [ref=e64]
+    - main [ref=e65]:
+      - generic [ref=e192]:
+        - generic [ref=e193]:
+          - button "Toggle Sidebar" [ref=e194] [cursor=pointer]:
+            - img
+            - generic [ref=e195]: Toggle Sidebar
+          - generic [ref=e198]:
+            - generic:
+              - link:
+                - /url: /agents/qa-20261112-174406-u3be-j8hynxzm1i
+                - text: QA-20261112-174406-u3be
+          - generic [ref=e200]:
+            - generic [ref=e201]:
+              - img [ref=e202]
+              - generic [ref=e211]: idle
+            - button "Stop Agent" [ref=e213] [cursor=pointer]:
+              - img [ref=e214]
+        - generic [ref=e220]:
+          - generic [ref=e221]:
+            - generic [ref=e223]:
+              - button "Edit QA-20261112-174406-u3be's name and avatar" [ref=e225] [cursor=pointer]:
+                - generic [ref=e238]: QA-20261112-174406-u3be
+              - button "Share agent" [ref=e239] [cursor=pointer]: Share
+              - button "Agent menu" [ref=e240] [cursor=pointer]:
+                - img
+            - generic [ref=e242]:
+              - button "Expand input" [ref=e244] [cursor=pointer]:
+                - img
+              - textbox "How can I help? Press cmd+enter to send" [active] [ref=e247]:
+                - text: How can I help? Press cmd+enter to send
+                - paragraph [ref=e248]
+              - generic [ref=e249]:
+                - generic [ref=e250]:
+                  - button "Add files" [ref=e251] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e252] [cursor=pointer]':
+                    - generic [ref=e253]:
+                      - text: Opus 5.5
+                      - generic [ref=e254]: · Medium
+                    - img
+                - generic [ref=e255]:
+                  - button "Set up voice input" [ref=e256] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e258]:
+              - paragraph [ref=e259]: Other ways to get started
+              - generic [ref=e260]:
+                - button "Browse Templates — Opens the agent template marketplace" [ref=e261] [cursor=pointer]:
+                  - img [ref=e262]
+                  - generic [ref=e266]: Browse Templates
+                - button "Import an Agent — Import an agent from a .agent or .zip template file" [ref=e267] [cursor=pointer]:
+                  - img [ref=e268]
+                  - generic [ref=e270]: Import an Agent
+          - complementary "Agent settings" [ref=e272]:
+            - generic [ref=e273]:
+              - button "Triggers" [ref=e275] [cursor=pointer]:
+                - generic [ref=e276]: Triggers
+                - generic [ref=e277]:
+                  - generic [ref=e278]: "0"
+                  - img [ref=e279]
+              - button "Connections" [ref=e282] [cursor=pointer]:
+                - generic [ref=e283]: Connections
+                - generic [ref=e284]:
+                  - generic [ref=e285]: "0"
+                  - img [ref=e286]
+              - button "Skills" [ref=e289] [cursor=pointer]:
+                - generic [ref=e290]: Skills
+                - generic [ref=e291]:
+                  - generic [ref=e292]: "0"
+                  - img [ref=e293]
+              - button "External Integrations" [ref=e296] [cursor=pointer]:
+                - generic [ref=e297]: External Integrations
+                - generic [ref=e298]:
+                  - generic [ref=e299]: "0"
+                  - img [ref=e300]
+              - button "Drives" [ref=e303] [cursor=pointer]:
+                - generic [ref=e304]: Drives
+                - generic [ref=e305]:
+                  - generic [ref=e306]: "0"
+                  - img [ref=e307]
+            - button "Show more" [ref=e310] [cursor=pointer]:
+              - generic [ref=e311]: Show more
+              - img [ref=e312]
+  - region "Notifications alt+T"
