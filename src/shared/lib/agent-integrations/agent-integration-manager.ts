@@ -24,12 +24,12 @@ import {
   getIntegration,
   updateIntegrationStatus,
   getIntegrationSession,
+  getIntegrationSessionBySessionId,
   createIntegrationSession,
   updateIntegrationSessionName,
   archiveIntegrationSession,
   touchIntegrationSession,
   listIntegrationSessions,
-  listActiveIntegrationSessions,
   resolveActiveSession,
   getLastDisplayName,
 } from './store'
@@ -182,7 +182,9 @@ export class AgentIntegrationManager implements Service {
 
   // Integration-level: one connector per integration
   private connections: Map<string, IntegrationConnection> = new Map()
-  // Per-chat session: one streaming context per (integrationId, externalId)
+  // Per-chat session: one streaming context per (integrationId, externalId),
+  // held while the chat's session runs. A chat whose session is idle is only
+  // its row: `sessionStarted` finds it again by the session.
   private chatSessions: Map<string, ManagedSession> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
   // Authorization hints for each integration from its first connect attempt until it is removed or the manager stops.
@@ -216,6 +218,8 @@ export class AgentIntegrationManager implements Service {
   // Session row ids whose clear has begun (see noteSessionClear); the row may
   // still read as active until the archive lands.
   private clearedSessionRows = new Set<string>()
+  // Bumped synchronously each time a session starts a turn (see sessionStarted).
+  private sessionStarts = 0
   // In-flight system-resume pass; concurrent reconnectAll calls coalesce onto it.
   private resumeReconcile: Promise<void> | null = null
   // A resume arrived while a pass was in flight: run one more FORCE pass when
@@ -327,6 +331,7 @@ export class AgentIntegrationManager implements Service {
     this.lostVersions.clear()
     this.pausedIds.clear()
     this.sessionClears = 0
+    this.sessionStarts = 0
     this.clearedSessionRows.clear()
     this.messageQueues.clear()
     this.isRunning = false
@@ -748,37 +753,19 @@ export class AgentIntegrationManager implements Service {
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
 
-    // Restore SSE subscriptions for ACTIVE, allowed chat sessions only. Archived/
-    // cleared/timed-out sessions must not be re-subscribed, or stale agent output
-    // could be forwarded back to the external chat (SUP-233); unapproved chats are
-    // skipped by the access check below.
-    const existingSessions = await listActiveIntegrationSessions(integration.id)
-    for (const session of existingSessions) {
-      if (!(await this.isAllowed(integration.id, session.externalId))) continue
-      // The access check is a window in which the chat can be cleared and its
-      // row archived: only a row that is still the live one is re-subscribed,
-      // and only while this connect still owns the integration. The lookup is
-      // a window too: a clear that completes while it is in flight can leave
-      // it answering with the row it read before, so a lookup that a clear
-      // overlapped is repeated.
-      let live: Awaited<ReturnType<typeof getIntegrationSession>> | undefined
-      for (let attempt = 0; attempt < 3 && live === undefined; attempt++) {
-        const clearsBefore = this.sessionClears
-        const row = await getIntegrationSession(integration.id, session.externalId)
-        if (this.sessionClears === clearsBefore) live = row
-      }
-      // A clear whose archive is still pending can leave the row reading as
-      // active through every retry; the row id it marked at the start says so.
-      if (live?.sessionId !== session.sessionId || this.clearedSessionRows.has(live.id)) continue
+    // Follow again the chats whose session is running now: a turn that began
+    // while no connection was there to hear it (a creation accepted during
+    // teardown, a turn started from another surface). An idle chat is not
+    // loaded; its next turn announces itself (see sessionStarted). Recovery
+    // follows only a row that is still the chat's active one, so archived,
+    // cleared and timed-out sessions stay unheard (SUP-233).
+    const running = await agentRegistry.get(integration.agentSlug).live()
+    for (const sessionId of new Set([...running.activeSessionIds, ...running.awaitingSessionIds])) {
+      const row = await getIntegrationSessionBySessionId(integration.agentSlug, sessionId)
+      if (row?.integrationId !== id || row.archivedAt) continue
       if (this.generationOf(id) !== generation) return false
-      await this.subscribeChatSession(integration.id, session.externalId, session.sessionId)
-      const state = await agentRegistry.get(integration.agentSlug).sessions.live(session.sessionId)
-      // A creation accepted during teardown can acquire its mapping after the
-      // old connector vanished. Reattach that known running turn on reconnect.
-      if (state.activity !== 'idle' && !state.streamAttached) {
-        background(this.recoverSessionContext(id, session.externalId, generation, session.sessionId)
-          .catch(error => reportError(error, 'restore-stream', { integrationId: id, sessionId: session.sessionId })), { name: 'integration-manager.restore-stream' })
-      }
+      background(this.recoverSessionContext(id, row.externalId, generation, sessionId)
+        .catch(error => reportError(error, 'restore-stream', { integrationId: id, sessionId })), { name: 'integration-manager.restore-stream' })
     }
     // Recovery is bounded to work the family declares unfinished, and runs off
     // the boot/connect critical path so one slow container cannot block others.
@@ -1023,6 +1010,12 @@ export class AgentIntegrationManager implements Service {
 
   private async runHealthChecks(): Promise<void> {
     for (const session of [...this.chatSessions.values()]) {
+      const starts = this.sessionStarts
+      if (await this.isSettled(session)) {
+        // A turn that started while the session was read is this chat's to hear.
+        if (this.sessionStarts === starts) this.releaseChat(session)
+        continue
+      }
       if (!(await this.isAllowed(session.integration.id, session.chatId))) continue
       // The access check is a window in which the chat can be cleared.
       if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) continue
@@ -1037,6 +1030,47 @@ export class AgentIntegrationManager implements Service {
     }
 
     await this.reconcileIntegrations({ force: false })
+  }
+
+  /**
+   * A session started a turn, from any surface (a chat message, the app, a
+   * scheduled wake, another agent). A chat is held only while its session
+   * runs, so one that is not held is found by the session and followed from
+   * here; what the session does next reaches it.
+   */
+  async sessionStarted(agentSlug: string, sessionId: string): Promise<void> {
+    this.sessionStarts += 1
+    if (!this.isRunning) return
+    for (const held of this.chatSessions.values()) {
+      if (held.sessionId === sessionId && held.integration.agentSlug === agentSlug) return
+    }
+    if (![...this.connections.values()].some(conn => conn.integration.agentSlug === agentSlug)) return
+    const row = await getIntegrationSessionBySessionId(agentSlug, sessionId)
+    if (!row || row.archivedAt) return
+    await this.recoverSessionContext(row.integrationId, row.externalId, this.generationOf(row.integrationId), sessionId)
+  }
+
+  /** The chat's session runs nothing and waits on nothing, and no message or event of the chat is being handled. */
+  private async isSettled(session: ManagedSession): Promise<boolean> {
+    const key = this.getChatSessionKey(session.integration.id, session.chatId)
+    const handling = () => this.messageQueues.has(key) || this.messageQueues.has(`sse:${key}`) || !!session.recovery || !!session.recoveryWake
+    if (handling()) return false
+    if (!session.sessionId) return true
+    const live = await agentRegistry.get(session.integration.agentSlug).sessions.live(session.sessionId)
+    return live.activity === 'idle' && !live.isAwaitingInput && live.openRequests.length === 0 && !handling()
+  }
+
+  /**
+   * Stop holding a chat whose session settled. Its row stays active: the
+   * chat's next message resolves it, and a turn started elsewhere finds it by
+   * the session. Thread chats stay open until they rotate, so a busy workspace
+   * has thousands of rows, and holding each one made connect and every health
+   * pass cost as much as all of them.
+   */
+  private releaseChat(session: ManagedSession): void {
+    if (!this.isCurrentSession(session.integration.id, session.chatId, session, session.sessionId)) return
+    this.stopSession(session)
+    this.chatSessions.delete(this.getChatSessionKey(session.integration.id, session.chatId))
   }
 
   /**

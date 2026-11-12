@@ -91,6 +91,11 @@ async function hostWorkFor(event: GlobalFeedEvent): Promise<void> {
     const { widgetRefreshService } = await import('@shared/lib/services/widget-refresh-service')
     widgetRefreshService.afterSessionSettled(event.agentSlug)
   }
+  // A session started a turn: the chat it belongs to, if any, follows it.
+  if (event.type === 'session_active' && typeof event.agentSlug === 'string' && typeof event.sessionId === 'string') {
+    const { agentIntegrationManager } = await import('@shared/lib/agent-integrations/agent-integration-manager')
+    await agentIntegrationManager.sessionStarted(event.agentSlug, event.sessionId)
+  }
 }
 
 export const localHostPort = createLocalHostPort({
