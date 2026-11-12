@@ -137,6 +137,8 @@ export class AgentComputerUse {
   async revoke(level: ComputerUsePermissionLevel, appName?: string): Promise<void> {
     console.log(`[ComputerUsePermissions] Revoking ${level}${appName ? ` for ${appName}` : ''} from ${this.slug}`)
     this.removeMatchingGrants(level, appName)
+    // Settings are written only when they hold such a grant: taking an app back is far more common than having one saved.
+    if (!(await this.readPersisted()).some((g) => this.grantMatches(g, level, appName))) return
     await this.writePersisted((grants) => grants.filter((g) => !this.grantMatches(g, level, appName)))
   }
 

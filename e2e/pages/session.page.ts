@@ -608,8 +608,13 @@ export class SessionPage {
   async approveComputerUseAlways() {
     const container = this.page.locator('[data-testid="computer-use-request"]').first()
     await container.locator('[data-testid="computer-use-always-allow-btn"]').click()
-    // The menu is portalled out of the card.
-    await this.page.locator('[data-testid="computer-use-always-allow-option"]').click()
+    // The menu is portalled out of the card. A card for a call whose app is
+    // unknown has no grant of its own to make lasting, only the any-app one.
+    await this.page
+      .locator('[data-testid="computer-use-always-allow-option"]')
+      .or(this.page.locator('[data-testid="computer-use-any-app-always-option"]'))
+      .first()
+      .click()
   }
 
   async denyComputerUse() {

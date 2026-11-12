@@ -115,6 +115,19 @@ describe('AgentComputerUse any-app grant', () => {
     expect(await store.check('use_application', 'Notes')).toBe('granted')
   })
 
+  it('writes settings on a revoke only when they hold the grant', async () => {
+    await store.grant('use_any_application', 'timed')
+    await store.revoke('use_any_application')
+    await store.revoke('use_application', 'Notes')
+    expect(mockMutateSettings).not.toHaveBeenCalled()
+    expect(await store.check('use_application', 'Notes')).toBe('prompt_needed')
+
+    await store.grant('use_any_application', 'always')
+    mockMutateSettings.mockClear()
+    await store.revoke('use_any_application')
+    expect(mockMutateSettings).toHaveBeenCalledTimes(1)
+  })
+
   it('is not ended by revoking one app', async () => {
     await store.grant('use_any_application', 'timed')
     await store.revoke('use_application', 'Notes')

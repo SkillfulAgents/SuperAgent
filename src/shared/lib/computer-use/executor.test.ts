@@ -429,6 +429,7 @@ describe('placing a call from the window server\'s list', () => {
 
   it('places a point in the window on top there, whatever lies behind it and whatever has focus', async () => {
     windowListFails()
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({
       hits: [],
       displays,
@@ -443,6 +444,7 @@ describe('placing a call from the window server\'s list', () => {
   })
 
   it('looks past the Dock\'s whole-display window, the agent\'s own cursor overlay and a fully transparent window', async () => {
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({
       hits: [],
       displays,
@@ -452,6 +454,7 @@ describe('placing a call from the window server\'s list', () => {
   })
 
   it('places a point on another app\'s window in front in that app, not the one behind', async () => {
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({ hits: [], displays, windows: [win('Mail', 400, 0, 500, 500), win('Notes', 0, 0, 1728, 1026)] })
     expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=450,100'] })).toBe('Mail')
     expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=100,100'] })).toBe('Notes')
@@ -460,6 +463,7 @@ describe('placing a call from the window server\'s list', () => {
   })
 
   it('places input at a point with no window nowhere, and a look there on the whole screen', async () => {
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({ hits: [], displays, windows: [win('Notes', 0, 0, 500, 500)] })
     expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=900,900'] })).toBeUndefined()
     expect(await resolveComputerUseTargetApp('wait', { argv: ['--xy=900,900', '--text=Done'] })).toBe('Entire screen')
@@ -469,6 +473,7 @@ describe('placing a call from the window server\'s list', () => {
   it('places a point where accessibility\'s hit test says, over what the window list alone would say', async () => {
     // A screenshot overlay covers the display in front of Safari and lets clicks through.
     const windows = [win('Screenshot', 0, 0, 1728, 1117, { pid: 9, layer: 24 }), win('Safari', 0, 0, 1728, 1117, { pid: 3 }), win('Finder', 200, 200, 400, 400, { pid: 4 })]
+    await endComputerUseSessions()
     readScreenWindows.mockImplementation(async (points = []) => ({ displays, windows, hits: points.map((point) => ({ ...point, pid: 3, name: 'Safari' })) }))
     expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=800,500', '--headed'] })).toBe('Safari')
     // In a full-screen app, the strips the menu bar and Dock would take are the app's.
@@ -476,15 +481,18 @@ describe('placing a call from the window server\'s list', () => {
     expect(readScreenWindows).toHaveBeenLastCalledWith([{ x: 800, y: 1100 }])
 
     // The Dock, named as what it is; and a process the window list does not know, by its app name.
+    await endComputerUseSessions()
     readScreenWindows.mockImplementation(async (points = []) => ({ displays, windows, hits: points.map((point) => ({ ...point, pid: 77, name: 'Dock' })) }))
     expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=800,1100', '--headed'] })).toBe('Dock')
   })
 
   it('refuses a point accessibility places in this app, and one it places in a second app', async () => {
     const windows = [win('Notes', 0, 0, 1728, 1117, { pid: 3 })]
+    await endComputerUseSessions()
     readScreenWindows.mockImplementation(async (points = []) => ({ displays, windows, hits: points.map((point) => ({ ...point, pid: process.pid, name: 'Gamut' })) }))
     await expect(executeComputerUseCommand('mouse-click', { argv: ['--xy=100,100', '--headed'] }, caller())).rejects.toThrow(/this app's own window/)
 
+    await endComputerUseSessions()
     readScreenWindows.mockImplementation(async (points = []) => ({
       displays,
       windows: [...windows, win('Mail', 0, 0, 10, 10, { pid: 5 })],
@@ -496,6 +504,7 @@ describe('placing a call from the window server\'s list', () => {
 
   it('does not run an approved click whose point is now the Dock\'s', async () => {
     const windows = [win('Notes', 0, 33, 1728, 1010, { pid: 3 })]
+    await endComputerUseSessions()
     readScreenWindows.mockImplementation(async (points = []) => ({ displays, windows, hits: points.map((point) => ({ ...point, pid: 77, name: 'Dock' })) }))
     await expect(executeComputerUseCommand('mouse-click', { argv: ['--xy=800,1100', '--headed'] }, caller(), { app: 'Notes' }))
       .rejects.toThrow(/now Dock's; this mouse-click was approved for Notes/)
@@ -503,6 +512,7 @@ describe('placing a call from the window server\'s list', () => {
   })
 
   it('places input on the menu bar or the Dock nowhere, whatever window lies under it', async () => {
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({ hits: [], displays, windows: [win('Window Server', 0, 0, 1728, 33), win('Dock', 0, 0, 1728, 1117), win('Notes', 0, 0, 1728, 1117)] })
     expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=400,10'] })).toBeUndefined()
     expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=800,1100'] })).toBeUndefined()
@@ -510,6 +520,7 @@ describe('placing a call from the window server\'s list', () => {
   })
 
   it('refuses a point on this app\'s own window', async () => {
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({ hits: [], displays, windows: [win('Gamut', 0, 0, 800, 600, { pid: process.pid }), win('Notes', 0, 0, 1728, 1026)] })
     await expect(executeComputerUseCommand('mouse-click', { argv: ['--xy=100,100', '--headed'] }, caller())).rejects.toThrow(/this app's own window/)
     expect(runs.some((args) => commandOf(args) === 'mouse-click')).toBe(false)
@@ -517,13 +528,42 @@ describe('placing a call from the window server\'s list', () => {
 
   it('judges keys sent to no app as sent to the frontmost app', async () => {
     windowListFails()
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({ hits: [], displays, frontmost: { pid: 5, name: 'TextEdit' }, windows: [] })
     expect(await resolveComputerUseTargetApp('press', { argv: ['cmd+s'] })).toBe('TextEdit')
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue({ hits: [], displays, windows: [] })
     expect(await resolveComputerUseTargetApp('press', { argv: ['cmd+s'] })).toBeUndefined()
   })
 
+  it('reads the screen once for a call placed when its grant is checked and again as it runs', async () => {
+    await endComputerUseSessions()
+    const windows = [win('Notes', 0, 33, 1728, 1010, { pid: 3 })]
+    readScreenWindows.mockImplementation(async (points = []) => ({ displays, windows, hits: points.map((point) => ({ ...point, pid: 3 })) }))
+    readScreenWindows.mockClear()
+
+    expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=100,100', '--headed'] })).toBe('Notes')
+    await executeComputerUseCommand('mouse-click', { argv: ['--xy=100,100', '--headed'] }, caller(), { app: 'Notes' })
+    expect(readScreenWindows).toHaveBeenCalledTimes(1)
+
+    // The click may have changed what is on screen: the next call looks again.
+    expect(await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=100,100', '--headed'] })).toBe('Notes')
+    expect(readScreenWindows).toHaveBeenCalledTimes(2)
+    // So does a call at another point, and one placed after the read has aged.
+    await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=200,200', '--headed'] })
+    expect(readScreenWindows).toHaveBeenCalledTimes(3)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 1_500)
+      await resolveComputerUseTargetApp('mouse-click', { argv: ['--xy=200,200', '--headed'] })
+      expect(readScreenWindows).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('falls back to the window list where the window server cannot be read', async () => {
+    await endComputerUseSessions()
     readScreenWindows.mockResolvedValue(null)
     answer = (args) => commandOf(args) === 'list-windows'
       ? ok('list-windows', [{ id: 'w-1', app_name: 'Notes', bounds: { x: 0, y: 0, width: 500, height: 500 } }])
