@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { OrbAnimation } from './orb-animation'
-import { orbShape } from './orb-shapes'
+import { orbShape } from '@shared/lib/types/agent-avatar-shapes'
 import type { OrbState } from './orb-states'
 
 const animate = (state: OrbState) =>

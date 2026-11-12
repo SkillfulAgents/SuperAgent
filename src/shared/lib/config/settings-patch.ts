@@ -1,6 +1,7 @@
 import { globalModelPricingPatchSchema } from '../llm-provider/global-pricing-schema'
 import { extractCatalogPricing, patchGlobalModelPricing } from '../llm-provider/global-pricing'
 import { VOICE_PROVIDERS } from '../voice/provider-types'
+import { COMPUTER_USE_INPUT_MODES } from '../computer-use/types'
 import { z } from 'zod'
 import type {
   ApiKeySettings,
@@ -85,7 +86,6 @@ export const appSettingsPatchSchema = z.object({
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
   hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
-  chromeProfileId: z.string(),
   chromeHeadless: z.boolean(),
   allowPrereleaseUpdates: z.boolean(),
   theme: z.enum(['system', 'light', 'dark']),
@@ -181,7 +181,7 @@ const voiceSettingsPatchSchema = z.object({
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({
-  level: z.enum(['list_apps_windows', 'use_application', 'use_host_shell']),
+  level: z.enum(['list_apps_windows', 'use_application', 'use_any_application', 'use_host_shell']),
   appName: z.string().optional(),
   grantType: z.literal('always'),
 }).strict()
@@ -191,6 +191,8 @@ const computerUseSettingsPatchSchema = z.object({
     z.string(),
     z.object({ grants: z.array(computerUseGrantSchema) }).strict(),
   ),
+  showCursor: z.boolean(),
+  inputMode: z.enum(COMPUTER_USE_INPUT_MODES),
 }).partial().strict()
 
 const analyticsTargetSchema = z.object({

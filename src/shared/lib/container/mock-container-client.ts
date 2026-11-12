@@ -2467,8 +2467,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ])],
     ['use computer', new UserInputRequestScenario([
       {
-        name: 'mcp__computer-use__computer_apps',
-        input: { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+        name: 'mcp__agent-desktop__computer_list_apps',
+        input: {},
       },
     ])],
     // Same request pair as 'ask parallel' below, but with real-CLI parallel

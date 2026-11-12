@@ -9,7 +9,7 @@ import { AgentIntegration } from '../agent-integrations/agent-integration'
 import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
 import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
-import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
+import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, deliverMarkdown, UndeliveredMessageError, type ManagedConnector } from './chat-delivery'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import { reviewCardFromRegistry } from './request-card'
@@ -130,6 +130,12 @@ const CHAT_EVENT_LABELS: Record<IntegrationMessageSource['kind'], string> = {
 
 // ── Abstract class ──────────────────────────────────────────────────────
 
+export interface SendFileOptions { asImage?: boolean; alsoSendToChannel?: boolean; altText?: string; deadline?: number }
+
+// The agent waits on send_message, and on the cloud runtime agent-to-host requests are cut at 30 s
+// while the host carries on, so the agent would retry and post twice. It gets its answer by this budget.
+const SEND_MESSAGE_BUDGET_MS = 20_000
+
 export abstract class ChatAgentIntegration extends AgentIntegration {
   abstract readonly provider: ChatProvider
 
@@ -204,6 +210,12 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   abstract finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void>
 
   /**
+   * Remove a streamed draft that no text replaces: the reply opened with an image.
+   * Default no-op for connectors that show no draft.
+   */
+  async retireStreamingMessage(_chatId: string, _messageId: string): Promise<void> {}
+
+  /**
    * Signal that the agent is busy, labeled by what it is doing (`activity`). The
    * connector owns how that maps to its surface (Telegram labels a draft, Slack
    * sets its status line) AND any keep-alive needed to survive provider-side
@@ -220,14 +232,24 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    */
   async stopWorking(_chatId: string): Promise<void> {}
 
+  /** Mark an incoming message as received, before the agent starts. Default no-op. */
+  protected async addAcknowledgement(_chatId: string, _messageId: string): Promise<void> {}
+
+  /** Take the received mark off a message. Default no-op. */
+  protected async removeAcknowledgement(_chatId: string, _messageId: string): Promise<void> {}
+
   /**
-   * Send a file to the chat. Returns the external message ID.
+   * Send a file to the chat. Returns the external message ID. Throws when the file did not arrive.
    * @param chatId Target chat/channel
    * @param fileData Buffer of the file content
    * @param filename Display name for the file
    * @param caption Optional text caption to accompany the file
+   * @param options.asImage Show it as an image in the reply, not as the original file
+   * @param options.alsoSendToChannel Broadcast it from a thread to its channel, as the message's text is
+   * @param options.altText The image's description, where the platform shows one
+   * @param options.deadline When to stop waiting on the platform (epoch ms), past which the send fails
    */
-  abstract sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string>
+  abstract sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: SendFileOptions): Promise<string>
 
   /**
    * Send a rich card for user-request items.
@@ -272,6 +294,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   // Shared chat policy. The application consumes only the AgentIntegration hooks.
   private deliverySessions = new Map<string, ManagedConnector>()
+  private acknowledgements = new Map<string, string[]>()
   private inputBuilder = new ChatInputBuilder(async () => this.constructor as ChatConnectorClass)
 
   get definition(): AgentIntegrationDefinition {
@@ -361,6 +384,35 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     }
   }
 
+  async acknowledgeInput(event: IntegrationInputEvent): Promise<void> {
+    if (this.resolveRoute(event).action !== 'run') return
+    const { chatId, externalMessageId: messageId } = incomingMessageSchema.parse(event.payload)
+    const marks = this.acknowledgements.get(chatId)
+    if (marks) marks.push(messageId)
+    else this.acknowledgements.set(chatId, [messageId])
+    await this.addAcknowledgement(chatId, messageId)
+    if (!this.acknowledgements.get(chatId)?.includes(messageId)) {
+      await this.removeAcknowledgement(chatId, messageId).catch(() => {})
+    }
+  }
+
+  acknowledgedMessages(chatId: string): string[] {
+    return [...(this.acknowledgements.get(chatId) ?? [])]
+  }
+
+  releaseAcknowledgements(chatId: string, messageIds = this.acknowledgedMessages(chatId)): void {
+    const remaining = (this.acknowledgements.get(chatId) ?? []).filter(id => !messageIds.includes(id))
+    if (remaining.length) this.acknowledgements.set(chatId, remaining)
+    else this.acknowledgements.delete(chatId)
+    for (const messageId of messageIds) {
+      background(this.removeAcknowledgement(chatId, messageId).catch(() => {}), { name: 'chat-integration.remove-acknowledgement' })
+    }
+  }
+
+  protected releaseAllAcknowledgements(): void {
+    for (const chatId of [...this.acknowledgements.keys()]) this.releaseAcknowledgements(chatId)
+  }
+
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext, input: PreparedIntegrationInput): Promise<boolean> {
     if (!context.sessionId) return false
     const message = incomingMessageSchema.parse(event.payload)
@@ -402,7 +454,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
         await processSSEEvent(this.deliveryState(context), { type: 'user_request_created', request: output.request }, chatSettings(context.integration).showToolCalls, context.sessionId)
       }
       const card = reviewCardFromRegistry(output.request)
-      if (card) await this.sendUserRequestCard(context.externalId, card, context.sessionId)
+      if (!card) return
+      const marks = this.acknowledgedMessages(context.externalId)
+      await this.sendUserRequestCard(context.externalId, card, context.sessionId)
+      this.releaseAcknowledgements(context.externalId, marks)
       return
     }
     const state = this.deliveryState(context)
@@ -437,12 +492,24 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     })
     const tools = [tool('send_message', 'Send a complete message to an external conversation.', { text: { type: 'string' }, alsoSendToChannel: { type: 'boolean' } }, async input => {
       if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
+      const deadline = Date.now() + SEND_MESSAGE_BUDGET_MS
       const { text, alsoSendToChannel } = z.object({ text: z.string().min(1), alsoSendToChannel: z.boolean() }).parse(input)
       await this.startWorking(context.externalId, 'working').catch(() => {})
       try {
         await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 1100))
         if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
-        return await this.sendMessage(context.externalId, alsoSendToChannel ? { text, alsoSendToChannel } : { text })
+        const delivery = deliverMarkdown(this, context.integration.agentSlug, context.externalId, text, { alsoSendToChannel, deadline })
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const outOfTime = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), deadline - Date.now()) })
+        const delivered = await Promise.race([delivery, outOfTime]).finally(() => clearTimeout(timer))
+        if (!delivered) {
+          // The agent gets its answer within the budget. A post still in flight finishes behind it, and a failure there is reported.
+          background(delivery.then(({ undelivered, error }) => { if (undelivered.length) throw error }), { name: 'chat-integration.send-message-tail' })
+          return ''
+        }
+        const { messageId, undelivered, error } = delivered
+        if (undelivered.length) throw new UndeliveredMessageError(undelivered, error)
+        return messageId
       } finally { await this.stopWorking(context.externalId).catch(() => {}) }
     })]
     if (this.listChatUsers) tools.push(tool('list_users', 'List reachable people.', {}, () => this.listChatUsers!()))

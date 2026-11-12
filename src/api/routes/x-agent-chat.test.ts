@@ -377,6 +377,35 @@ describe('x-agent chat route', () => {
     )
   })
 
+  it('reports why a send failed without the message, and tells the agent why and what was not sent', async () => {
+    const notInChannel = new Error('An API error occurred: not_in_channel')
+    connector.sendMessage.mockRejectedValue(notInChannel)
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Ship the update' }),
+    })
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Not sent (An API error occurred: not_in_channel): Ship the update' })
+    expect(mockCaptureException).toHaveBeenCalledWith(notInChannel, expect.anything())
+  })
+
+  it('answers the agent when the send runs out of time while a post is still in flight', async () => {
+    immediateTimeout()
+    connector.sendMessage.mockReturnValue(new Promise(() => {}))
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Ship the update' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Ship the update' })
+  })
+
   it('falls back to appending JSONL when the live container cannot be notified', async () => {
     immediateTimeout()
     mockEnsureRunning.mockRejectedValue(new Error('container down'))

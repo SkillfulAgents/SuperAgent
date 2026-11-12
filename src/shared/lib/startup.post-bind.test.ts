@@ -150,7 +150,7 @@ vi.mock('./container/client-factory', () => ({
   shutdownActiveRunner: async () => { released.push('active-runner') },
 }))
 vi.mock('./computer-use/executor', () => ({
-  shutdownAC: async () => { released.push('computer-use') },
+  shutdownComputerUse: async () => { released.push('computer-use') },
 }))
 
 describe('initializeServices post-bind critical path', () => {

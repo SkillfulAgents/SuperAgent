@@ -1,24 +1,34 @@
-import { resolveComputerUseMethodName } from './computer-run'
+import { z } from 'zod'
+import { permissionLevelOf } from './commands'
 
 /**
  * Computer Use Permission & Request Types
  *
  * Three permission levels control what agents can do:
- * - list_apps_windows: read-only (ac apps, ac windows, ac status, ac displays)
- * - use_application: interact with a specific app (click, type, launch, grab, etc.)
+ * - list_apps_windows: read-only (list-apps, list-windows, list-displays, status)
+ * - use_application: interact with a specific app (snapshot, click, type, launch, ...)
  * - use_host_shell: shell commands / AppleScript (replaces old hostShellUse toggle)
+ *
+ * A fourth is only ever granted, never what a command asks for:
+ * - use_any_application: every app and target, the read-only level, and a
+ *   call whose app could not be told. It does not cover use_host_shell.
  */
 
 export type ComputerUsePermissionLevel =
   | 'list_apps_windows'
   | 'use_application'
+  | 'use_any_application'
   | 'use_host_shell'
+
+/** The grant that covers every computer-use call except host shell scripts. */
+export const ANY_APPLICATION_LEVEL = 'use_any_application' as const satisfies ComputerUsePermissionLevel
 
 /** User-facing names for the permission levels, shared by the settings tab and
     the in-chat approval card. Written to be self-explanatory without a legend. */
 export const PERMISSION_LEVEL_LABELS: Record<ComputerUsePermissionLevel, string> = {
   list_apps_windows: 'List Apps & Windows (read-only)',
   use_application: 'Use Application',
+  use_any_application: 'Use Any Application',
   use_host_shell: 'Run Shell Commands & Scripts',
 }
 
@@ -34,6 +44,18 @@ export interface PermissionGrant {
   expiresAt?: number
 }
 
+/**
+ * Whether agents may send physical input: agent-desktop's `--headed`, which
+ * an agent passes when a command needs it (double-click, hover, drag, a click
+ * at screen coordinates). It moves the pointer and takes focus.
+ * - headed: allowed.
+ * - headless: refused, so commands stay on accessibility calls and the user
+ *   can keep working.
+ */
+export const COMPUTER_USE_INPUT_MODES = ['headed', 'headless'] as const
+
+export type ComputerUseInputMode = typeof COMPUTER_USE_INPUT_MODES[number]
+
 /** Persisted in settings.json — only 'always' grants are stored */
 export interface ComputerUseSettings {
   agentPermissions?: Record<string, {
@@ -43,69 +65,49 @@ export interface ComputerUseSettings {
       grantType: 'always'
     }>
   }>
+  /** Draw each agent's cursor (its name and colour) where it acts. Default on. */
+  showCursor?: boolean
+  /** Default 'headed'. */
+  inputMode?: ComputerUseInputMode
 }
 
-/** Read-only AC methods that only need list_apps_windows permission */
-export const READ_ONLY_METHODS = new Set([
-  'apps', 'windows', 'status', 'displays', 'permissions',
-])
+export interface ComputerUsePreferences {
+  showCursor: boolean
+  inputMode: ComputerUseInputMode
+}
+
+export const DEFAULT_COMPUTER_USE_PREFERENCES: ComputerUsePreferences = {
+  showCursor: true,
+  inputMode: 'headed',
+}
+
+/** The stored cursor and input settings; a value of the wrong kind (a hand edit) reads as unset. */
+const storedPreferencesSchema = z.object({
+  showCursor: z.boolean().optional().catch(undefined),
+  inputMode: z.enum(COMPUTER_USE_INPUT_MODES).optional().catch(undefined),
+})
+
+/** The cursor and input settings, with their defaults filled in. */
+export function computerUsePreferences(settings: ComputerUseSettings | undefined): ComputerUsePreferences {
+  const stored = storedPreferencesSchema.safeParse(settings ?? {}).data ?? {}
+  return {
+    showCursor: stored.showCursor ?? DEFAULT_COMPUTER_USE_PREFERENCES.showCursor,
+    inputMode: stored.inputMode ?? DEFAULT_COMPUTER_USE_PREFERENCES.inputMode,
+  }
+}
 
 /**
- * Determine the permission level required for an AC method.
+ * Determine the permission level required for a computer-use command.
  */
-export function getRequiredPermissionLevel(method: string): ComputerUsePermissionLevel {
-  if (READ_ONLY_METHODS.has(method)) return 'list_apps_windows'
-  return 'use_application'
-}
-
-const COMPUTER_USE_METHODS: Record<string, string> = {
-  apps: 'apps',
-  windows: 'windows',
-  snapshot: 'snapshot',
-  find: 'find',
-  screenshot: 'screenshot',
-  read: 'read',
-  status: 'status',
-  displays: 'displays',
-  permissions: 'permissions',
-  click: 'click',
-  type: 'type',
-  fill: 'fill',
-  key: 'key',
-  scroll: 'scroll',
-  select: 'select',
-  hover: 'hover',
-  launch: 'launch',
-  quit: 'quit',
-  grab: 'grab',
-  ungrab: 'ungrab',
-  menu: 'menuClick',
-  dialog: 'dialog',
-  run: 'run',
-}
-
-export function computerUseMethodFromToolName(toolName: string): string {
-  const suffix = toolName.replace('mcp__computer-use__computer_', '')
-  return COMPUTER_USE_METHODS[suffix] ?? resolveComputerUseMethodName(suffix)
+export function getRequiredPermissionLevel(method: string, params: Record<string, unknown> = {}): ComputerUsePermissionLevel {
+  try {
+    return permissionLevelOf(method, params)
+  } catch {
+    // Arguments it cannot read are refused when the command runs; until then
+    // the call needs the stronger level.
+    return 'use_application'
+  }
 }
 
 /** Duration of "timed" permission grants in milliseconds (15 minutes) */
 export const TIMED_GRANT_DURATION_MS = 15 * 60 * 1000
-
-/**
- * Resolve which app an AC method call targets, for permission checks.
- * Returns the app name if determinable, undefined otherwise.
- */
-export function resolveTargetApp(
-  method: string,
-  params: Record<string, unknown>,
-  grabbedApp?: string,
-): string | undefined {
-  if (params.app && typeof params.app === 'string') return params.app
-  if (params.name && typeof params.name === 'string') return params.name
-  if (method === 'grab') {
-    if (params.app && typeof params.app === 'string') return params.app
-    return undefined
-  }
-  return grabbedApp
-}

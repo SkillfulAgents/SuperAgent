@@ -280,8 +280,8 @@ import {
   refreshAgentTemplates,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
-  type TemplateZipSource,
 } from '@shared/lib/services/agent-template-service'
+import type { ZipSource } from '@shared/lib/utils/zip'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
@@ -291,8 +291,9 @@ import { effectiveModelsFrom, getSettings, getTeamBrain, mutateSettings, VALID_S
 import { readyTeamBrain } from '@shared/lib/config/team-brain-schema'
 import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
-import { ungrabAC } from '@shared/lib/computer-use/executor'
+import { endComputerUseSessions } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
+import { computerUseDecisionSchema } from '@shared/lib/computer-use/decision-schema'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
 import { createSummarizerText, getConfiguredLlmClientAndModel } from '@shared/lib/llm-provider/helpers'
 import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
@@ -1006,9 +1007,27 @@ agents.route('/members/batch', agentMembersBatch)
 // (paths like /import-template would otherwise match as :id)
 // ============================================================
 
+// Per-request body cap for the multipart upload routes (files, templates, skills). formData() buffers the whole
+// multipart body in memory, so without this any client (curl, proxies) could
+// POST a single multi-GB body and the server would hold it all in RAM. The web
+// client splits files above 50MB into chunks, so no legitimate request body
+// exceeds ~50MB plus multipart framing; 64MB leaves comfortable headroom.
+// Content-Length requests are rejected from the header alone; bodies without a
+// length (chunked transfer-encoding) are counted and cut off at the cap.
+const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
+
+const uploadRequestBodyLimit = bodyLimit({
+  maxSize: MAX_UPLOAD_REQUEST_SIZE,
+  onError: (c) =>
+    c.json(
+      { error: `Request body too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB per request); use chunked upload for larger files` },
+      413,
+    ),
+})
+
 // POST /api/agents/import-template - Import agent from uploaded ZIP
 // Supports both single-request (file field) and chunked upload (chunk field)
-agents.post('/import-template', async (c) => {
+agents.post('/import-template', uploadRequestBodyLimit, async (c) => {
   try {
     const formData = await c.req.formData()
 
@@ -1101,7 +1120,7 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   return result.result
 }
 
-async function processImport(c: Context, zip: TemplateZipSource, formData: FormData) {
+async function processImport(c: Context, zip: ZipSource, formData: FormData) {
   // File sources are size-checked by the caller before reaching here.
   if (Buffer.isBuffer(zip) && zip.length > MAX_COMPRESSED_SIZE) {
     return c.json({ error: formatUploadTooLargeMessage(zip.length, MAX_COMPRESSED_SIZE) }, 413)
@@ -5057,12 +5076,11 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
-    const body = await c.req.json()
-    const { toolUseId, method, params, permissionLevel, appName, grantType, decline, declineReason } = body
-
-    if (!toolUseId) {
+    const body = computerUseDecisionSchema.safeParse(await c.req.json())
+    if (!body.success) {
       return c.json({ error: 'toolUseId is required' }, 400)
     }
+    const { toolUseId, method, params, permissionLevel, appName, grantType, grantAnyApp, decline, declineReason } = body.data
 
     const gated = await gateRequestDecision(c, toolUseId, 'computer_use')
     if (gated) return gated
@@ -5090,7 +5108,8 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       params: params || {},
       permissionLevel: permissionLevel || 'use_application',
       appName,
-      grantType: grantTypeOf(grantType),
+      grantType,
+      ...(grantAnyApp && { grantAnyApp: true }),
     })
     return hostRunResponse(c, outcome, 'computer use')
   } catch (error) {
@@ -5099,7 +5118,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
   }
 })
 
-// POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Ungrab window and revoke permission for the app
+// POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Take back the app the agent is acting in and revoke its permission
 agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
@@ -5109,11 +5128,13 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // Forgets the grab, revokes use_application for the app and tells the
-    // session's viewers. Before the ungrab: the app revoked is the one the
-    // user saw, not one grabbed while the ungrab ran.
-    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseGrab(sessionId)
-    await ungrabAC()
+    // Forgets the active app, revokes use_application for it and tells the
+    // session's viewers. Before the session ends: the app revoked is the one
+    // the user saw, not one a command reached while the session ended.
+    const { appName } = await agentRegistry.get(agentSlug).inputs.computerUse.releaseApp(sessionId)
+    // Ending the session's agent-desktop session takes its cursor away; the
+    // next command starts a new one, under whatever permission it then has.
+    await endComputerUseSessions({ sessionId })
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
@@ -6352,36 +6373,62 @@ agents.delete('/:id/skills/:dir', AgentAdmin(), async (c) => {
 })
 
 // POST /api/agents/:id/skills/import-zip - Import a skill from uploaded ZIP
-agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
+// Supports both single-request (file field) and chunked upload (chunk field)
+agents.post('/:id/skills/import-zip', AgentAdmin(), uploadRequestBodyLimit, async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const formData = await c.req.formData()
-    const file = formData.get('file') as File | null
 
-    if (!file) {
-      return c.json({ error: 'No file provided' }, 400)
+    const chunk = formData.get('chunk') as File | null
+    if (chunk) {
+      const parsed = parseChunkFields(formData)
+      if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+      const stored = await storeUploadChunk({
+        ownerId: getCurrentUserId(c),
+        uploadId: parsed.uploadId,
+        target: `skill-import:${agentSlug}`,
+        chunkIndex: parsed.chunkIndex,
+        totalChunks: parsed.totalChunks,
+        chunk: Buffer.from(await chunk.arrayBuffer()),
+        maxTotalBytes: SKILL_MAX_COMPRESSED_SIZE,
+      }, async (assembled) => {
+        if (assembled.size > SKILL_MAX_COMPRESSED_SIZE) {
+          return c.json({ error: formatUploadTooLargeMessage(assembled.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
+        }
+        return await respondSkillImport(c, agentSlug, { filePath: await assembled.toFile() })
+      })
+      if (stored.status === 'received') {
+        return c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex })
+      }
+      return stored.result
     }
 
+    const file = formData.get('file') as File | null
+    if (!file) {
+      return c.json({ error: 'No file or chunk provided' }, 400)
+    }
     if (file.size > SKILL_MAX_COMPRESSED_SIZE) {
       return c.json({ error: formatUploadTooLargeMessage(file.size, SKILL_MAX_COMPRESSED_SIZE) }, 413)
     }
-
-    const arrayBuffer = await file.arrayBuffer()
-    const zipBuffer = Buffer.from(arrayBuffer)
-
-    if (zipBuffer.length > SKILL_MAX_COMPRESSED_SIZE) {
-      return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, SKILL_MAX_COMPRESSED_SIZE) }, 413)
-    }
-
-    const result = await importSkillFromZip(agentSlug, zipBuffer)
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${result.skillDir}`, action: 'created', details: { skillName: result.skillName, source: 'zip-import' } })
-    return c.json(result, 201)
+    return await respondSkillImport(c, agentSlug, Buffer.from(await file.arrayBuffer()))
   } catch (error) {
+    if (error instanceof UploadTooLargeError) {
+      return c.json({ error: error.message }, 413)
+    }
+    if (error instanceof UploadConflictError) {
+      return c.json({ error: error.message }, 409)
+    }
     const message = error instanceof Error ? error.message : 'Failed to import skill'
     console.error('Failed to import skill:', error)
     return c.json({ error: message }, 500)
   }
 })
+
+async function respondSkillImport(c: Context, agentSlug: string, zip: ZipSource) {
+  const result = await importSkillFromZip(agentSlug, zip)
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${result.skillDir}`, action: 'created', details: { skillName: result.skillName, source: 'zip-import' } })
+  return c.json(result, 201)
+}
 
 /** The workspace path of an installed skill's directory. `dir` is validated by the route. */
 function skillWorkspaceDir(dir: string): string {
@@ -6697,24 +6744,6 @@ async function respondUploadFile(c: Context) {
     return c.json({ error: 'Failed to upload file' }, 500)
   }
 }
-
-// Per-request body cap for the upload-file routes. formData() buffers the whole
-// multipart body in memory, so without this any client (curl, proxies) could
-// POST a single multi-GB body and the server would hold it all in RAM. The web
-// client splits files above 50MB into chunks, so no legitimate request body
-// exceeds ~50MB plus multipart framing; 64MB leaves comfortable headroom.
-// Content-Length requests are rejected from the header alone; bodies without a
-// length (chunked transfer-encoding) are counted and cut off at the cap.
-const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
-
-const uploadRequestBodyLimit = bodyLimit({
-  maxSize: MAX_UPLOAD_REQUEST_SIZE,
-  onError: (c) =>
-    c.json(
-      { error: `Request body too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB per request); use chunked upload for larger files` },
-      413,
-    ),
-})
 
 // POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
 agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)

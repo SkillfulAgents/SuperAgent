@@ -52,7 +52,7 @@ export async function classifyImportPackage(filePath: string): Promise<Classifie
       if (stat.size > SKILL_MAX_COMPRESSED_SIZE) {
         return `Skill packages are limited to ${SKILL_MAX_COMPRESSED_SIZE / 1024 / 1024}MB (this file is ${formatMb(stat.size)})`
       }
-      const result = await validateSkillZip(await fs.promises.readFile(filePath))
+      const result = await validateSkillZip({ filePath })
       if (!result.valid) return result.error ?? 'Invalid skill package'
       return { ...base, kind: 'skill', name: result.skillName ?? null }
     }

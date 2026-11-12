@@ -38,6 +38,7 @@ import {
 } from '@shared/lib/team-directory/directory-app'
 import { resolvePublicAppBaseUrl } from '@shared/lib/agent-integrations/app-link'
 import { captureException } from '@shared/lib/error-reporting'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 
 const router = new Hono()
 
@@ -64,8 +65,14 @@ router.get('/install/callback', async (c) => {
   try {
     const outcome = await completeDirectoryAppConnect({ state, code: c.req.query('code'), error: c.req.query('error') })
     if (!outcome) return callbackPage('Install expired', 'Return to Gamut and start again.', 400)(c)
-    if (outcome.status === 'connected') return callbackPage(`${outcome.tenantName} connected`, 'You can close this window and return to Gamut.')(c)
-    if (outcome.status === 'failed') return callbackPage('Could not connect', `${outcome.error} Return to Gamut to try again.`, 400)(c)
+    if (outcome.status === 'connected') {
+      trackServerEvent('team_directory_connected', { method: 'install' })
+      return callbackPage(`${outcome.tenantName} connected`, 'You can close this window and return to Gamut.')(c)
+    }
+    if (outcome.status === 'failed') {
+      trackServerEvent('team_directory_connect_failed', { method: 'install' })
+      return callbackPage('Could not connect', `${outcome.error} Return to Gamut to try again.`, 400)(c)
+    }
     return callbackPage('Install cancelled', 'Return to Gamut to try again.', 400)(c)
   } catch (error) {
     captureException(error, { tags: { component: 'team-directory', operation: 'install-callback' } })
@@ -142,7 +149,12 @@ router.post('/test', async (c) => {
 
 // POST /api/team-directories - Connects a directory (or replaces the credentials of one already connected).
 router.post('/', async (c) => {
-  const { provider, credentials, tenant } = await verified(await c.req.json())
+  const body = await c.req.json()
+  const { provider, credentials, tenant } = await verified(body).catch((error) => {
+    // The provider refused the credentials; a malformed form is not a connect attempt.
+    if (error instanceof DirectoryConnectError) trackServerEvent('team_directory_connect_failed', { method: 'token' })
+    throw error
+  })
   const saved = await saveDirectoryConnection({
     provider,
     tenant,
@@ -152,6 +164,8 @@ router.post('/', async (c) => {
   // List it now, so the first search finds it cached.
   background(listDirectoryNow(saved), { name: 'team-directory.first-listing' })
   await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: saved.id, action: 'connected', details: { provider, tenantName: tenant.tenantName } })
+  // The provider's id only: a tenant name names a company.
+  trackServerEvent('team_directory_connected', { method: 'token', directory_provider: provider })
   const [view] = await views([saved])
   return c.json({ directory: view, notices: tenant.notices ?? [] }, 201)
 })
@@ -222,6 +236,7 @@ router.delete('/:id', async (c) => {
   if (cleanup?.kind === 'delete') background(cleanup.run(), { name: 'team-directory.delete-app' })
   await forgetDirectoryUsers(removed)
   await logAuditEvent({ userId: isAuthMode() ? getCurrentUserId(c) : null, object: 'team_directory', objectId: removed.id, action: 'disconnected', details: { provider: removed.provider, tenantName: removed.tenantName } })
+  trackServerEvent('team_directory_disconnected', { directory_provider: removed.provider })
   return c.json({ appLeftBehind: cleanup?.kind === 'left-behind' } satisfies DisconnectDirectoryResponse)
 })
 

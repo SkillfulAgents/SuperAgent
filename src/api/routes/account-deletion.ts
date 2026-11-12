@@ -4,6 +4,7 @@ import { z } from 'zod'
 
 import { Authenticated } from '../middleware/auth'
 import { getCurrentUserId } from '@shared/lib/auth/config'
+import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
@@ -79,10 +80,14 @@ accountDeletion.post('/', async (c) => {
 
   try {
     const record = await requestAccountDeletion(account, { platform: deletionEventPlatform(getServerFacts()) })
+    // The usage-analytics record of the request's outcome, as on iOS. Unlike
+    // the request itself it follows the analytics setting.
+    trackServerEvent('account_deletion_request_result', { outcome: 'sent' })
     return c.json(statusOf(record))
   } catch (error) {
     if (!(error instanceof AccountDeletionDeliveryError)) throw error
     console.warn('[AccountDeletion] Delivery was not confirmed:', error.message)
+    trackServerEvent('account_deletion_request_result', { outcome: 'failed', reason_code: error.reason })
     return c.json(
       {
         error: "We couldn't confirm delivery of your request. Please try again. Retrying uses the same request ID.",

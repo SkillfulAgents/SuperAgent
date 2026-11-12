@@ -31,6 +31,7 @@ import {
   accountProviderUserIdFrom,
   effectiveModelsFrom,
   getGlobalInstructions,
+  type AppPreferencesResponse,
   type AppSettings,
   type GlobalSettingsResponse,
   type ModelPickerSettingsResponse,
@@ -308,6 +309,14 @@ async function genericBaseUrlFrom(appSettings: AppSettings): Promise<string | un
   return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl(appSettings) : undefined
 }
 
+// Settings are polled on every page, and a custom icon is up to 256 KB of data URL.
+function appPreferencesResponse(app: AppSettings['app']): AppPreferencesResponse {
+  const preferences = { ...(app ?? { showMenuBarIcon: true }) }
+  const hasCustomFavicon = Boolean(preferences.faviconDataUrl)
+  delete preferences.faviconDataUrl
+  return { ...preferences, hasCustomFavicon }
+}
+
 /**
  * Build the GlobalSettingsResponse shared by GET and PUT handlers, entirely
  * from `appSettings`: it reads no settings itself.
@@ -321,7 +330,7 @@ async function buildSettingsResponse(
     dataDir: getDataDir(),
     hostTotalMemoryBytes: os.totalmem(),
     container: appSettings.container,
-    app: appSettings.app || { showMenuBarIcon: true },
+    app: appPreferencesResponse(appSettings.app),
     hasRunningAgents,
     runnerAvailability,
     llmProvider: appSettings.llmProvider ?? 'anthropic',

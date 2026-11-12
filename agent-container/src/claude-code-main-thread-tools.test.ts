@@ -40,7 +40,7 @@ vi.mock('./mcp-server', () => ({
 }))
 
 vi.mock('./tools/browser', () => ({ createBrowserTools: () => [] }))
-vi.mock('./tools/computer-use', () => ({ computerUseTools: [] }))
+vi.mock('./tools/computer-use', () => ({ COMPUTER_USE_SERVER: 'agent-desktop', COMPUTER_USE_TOOL_PREFIX: 'mcp__agent-desktop__', computerUseTools: [] }))
 vi.mock('./input-manager', () => ({
   inputManager: { setCurrentToolUseId: vi.fn() },
   HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,

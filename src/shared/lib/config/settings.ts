@@ -130,7 +130,6 @@ export interface AppPreferences {
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
-  chromeProfileId?: string
   chromeHeadless?: boolean
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
@@ -378,7 +377,6 @@ export interface ApiKeyStatus {
 // Note: This creates a type-only dependency, avoiding circular imports
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RuntimeReadiness } from '@shared/lib/container/types'
-import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
 // Canonical provider-info type (catalog + defaultModels) lives with the
 // provider layer; import it (type-only, no runtime cycle) so the two never drift.
 import type { LlmProviderInfo } from '../llm-provider'
@@ -388,7 +386,6 @@ export interface HostBrowserProviderInfo {
   name: string
   available: boolean
   reason?: string
-  profiles?: ChromeProfile[]
 }
 
 export interface HostBrowserStatus {
@@ -397,12 +394,15 @@ export interface HostBrowserStatus {
 
 export type { LlmProviderInfo }
 
+/** The web icon itself is served by /api/favicon, so settings reads say only whether one is set. */
+export type AppPreferencesResponse = Omit<AppPreferences, 'faviconDataUrl'> & { hasCustomFavicon: boolean }
+
 export interface GlobalSettingsResponse {
   dataDir: string
   /** Host machine's total physical memory — lets the UI warn about oversized VM memory picks. */
   hostTotalMemoryBytes?: number
   container: ContainerSettings
-  app: AppPreferences
+  app: AppPreferencesResponse
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
   llmProvider: LlmProviderId

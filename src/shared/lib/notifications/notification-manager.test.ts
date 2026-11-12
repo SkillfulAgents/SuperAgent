@@ -598,11 +598,58 @@ describe('triggerSessionMention', () => {
       recipientUserId: 'invited-dana',
       senderName: 'Ada Admin',
       text: '@Dana can you take this one?',
+      relayToInvited: true,
     })
     await backgroundSettled()
     expect(notifyInvitedUser).toHaveBeenCalledWith('invited-dana', expect.objectContaining({
       kind: 'mentioned', byName: 'Ada Admin', text: '@Dana can you take this one?',
     }))
+  })
+})
+
+describe('triggerAgentMentions', () => {
+  const tagged = { agentSlug: 'agent-x', sessionId: 'sess-1', messageUuid: 'msg-1', text: '@Mike Smith please decide' }
+  beforeEach(() => mocks.getAgentAccessUserIds.mockResolvedValue(['user-b', 'user-c']))
+
+  it("tells each member it tags once, under the agent's name, and nobody outside the app", async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    const { backgroundSettled } = await import('@shared/lib/background')
+    await notificationManager.triggerAgentMentions({ ...tagged, userIds: ['user-b', 'outsider', 'user-b'] })
+    await backgroundSettled()
+
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+    expect(mockCreateNotification).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Demo Agent mentioned you', recipientUserId: 'user-b', messageUuid: 'msg-1',
+    }))
+    expect(notifyInvitedUser).not.toHaveBeenCalled()
+  })
+
+  it('tells nobody without sign-in', async () => {
+    await notificationManager.triggerAgentMentions({ ...tagged, userIds: ['user-b'] })
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('shows a hidden run that tagged a member, keeping its own completion muted', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', { responseText: 'Done.', taggedUserIds: ['user-b'] })
+
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
+  })
+
+  it('leaves a hidden run that tagged only outsiders hidden', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', { responseText: 'Done.', taggedUserIds: ['outsider'] })
+    expect(mockPromoteAutomated).not.toHaveBeenCalled()
+  })
+
+  it('still tells everyone a visible run that tagged a member finished', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', { responseText: 'Done.', taggedUserIds: ['user-b'] })
+    expect(mockPromoteAutomated).not.toHaveBeenCalled()
+    expect(mockCreateNotification).toHaveBeenCalledWith(expect.objectContaining({ type: 'session_complete' }))
   })
 })
 

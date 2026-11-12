@@ -4,10 +4,11 @@
  * Container-to-host endpoints for cross-agent operations (create / list /
  * invoke / read sessions). Mounted under /api/x-agent (separate from /api/agents
  * to avoid the /:id middleware that requires an existing agent slug in the URL).
+ * Also serves the caller's own members.
  *
  * Auth: every request must carry the calling agent's proxy token via Authorization:
- * Bearer <token>. The route resolves the caller's agent slug from that token and
- * applies xAgentPolicies + ACLs accordingly.
+ * Bearer <token>. The route resolves the caller's agent slug from that token, and
+ * the cross-agent routes apply xAgentPolicies + ACLs accordingly.
  */
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
@@ -36,6 +37,7 @@ import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { ContainerSession } from '@shared/lib/container/types'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { announceAgentCreated } from '@shared/lib/services/collaboration-events'
+import { listAgentMembers } from '@shared/lib/services/agent-members-service'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
@@ -232,7 +234,14 @@ async function checkAgentPolicy(
     const review = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer, callerSessionId },
       raise,
-    ))
+    ), operation === 'create' ? {} : {
+      // When an "always" decision on another card changes the policy, this
+      // request is decided again rather than released.
+      reevaluate: async () => {
+        const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+        return decision === 'block' ? 'deny' : decision
+      },
+    })
     if (review.decision === 'deny') {
       return { allowed: false, reason: withUserReason('Denied by user.', review.reason) }
     }
@@ -273,6 +282,23 @@ xAgent.post('/list', async (c) => {
       description: a.description,
     }))
   return c.json({ agents: filtered })
+})
+
+// ----------------------------------------------------------------------------
+// POST /api/x-agent/members - the caller's own members. Not reviewed: every
+// member of the agent can already read this roster.
+// ----------------------------------------------------------------------------
+
+// Bounds the agent's context, as chat directory listings do.
+const MAX_LISTED_MEMBERS = 500
+
+xAgent.post('/members', async (c) => {
+  if (!isAuthMode()) return c.json({ truncated: false, members: [] })
+  const members = await listAgentMembers(getCallerSlug(c))
+  return c.json({
+    truncated: members.length > MAX_LISTED_MEMBERS,
+    members: members.slice(0, MAX_LISTED_MEMBERS).map(({ id, name, email, role, invited }) => ({ id, name, email, role, invited })),
+  })
 })
 
 // ----------------------------------------------------------------------------

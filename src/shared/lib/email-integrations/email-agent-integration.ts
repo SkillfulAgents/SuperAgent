@@ -2,6 +2,7 @@ import { describeEmailMessage } from './message-display'
 import { emailSessionPolicy } from './definitions'
 export { emailDefinition } from './definitions'
 import { composeEmailReply } from './composition'
+import { plainUserTags } from '../utils/mentions'
 import { emailAnswer, renderRequestEmail, requestQuestions } from './request-email'
 import { resolveAppLinkContext, withSessionUrl } from '../agent-integrations/app-link'
 import { emailDirectory, workspaceEmailContacts, type EmailHistoryPage } from './directory'
@@ -191,13 +192,13 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     }
     if (output.type !== 'turn-completed' && output.type !== 'message') return
     const turn = output.type === 'message' ? { parts: [output.text], attachments: [] } : this.turns.get(this.turnKey(context))
-    if (!turn || (!turn.parts.some(part => part.trim()) && !turn.attachments.length)) return
+    const parts = turn?.parts.map(part => plainUserTags(part)).filter(part => part.trim()) ?? []
+    if (!turn || (!parts.length && !turn.attachments.length)) return
     // Claim before any asynchronous work so duplicate completion events cannot
     // compose the same buffer twice. Failures use the normal manager error path.
     if (this.turns.get(this.turnKey(context)) === turn) this.turns.delete(this.turnKey(context))
     const parentId = await this.replyParent(context)
     if (!parentId) return
-    const parts = turn.parts.filter(part => part.trim())
     const hash = createHash('sha256').update(JSON.stringify([this.record.id, context.sessionId, parentId, parts, turn.attachments])).digest('hex')
     const parent = await this.getMessage(parentId)
     const draft = output.type === 'message' ? { action: 'send', text: output.text }

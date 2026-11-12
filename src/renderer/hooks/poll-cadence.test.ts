@@ -52,7 +52,7 @@ describe('polling cadence (reviewed interval constants)', () => {
     return (messagesQuery?.refetchInterval as () => number)()
   }
 
-  it('useMessages polls every 15s as the SSE safety net', () => {
+  it('useMessages polls every 15s while the session has no open stream', () => {
     expect(messagesPollMs()).toBe(15000)
   })
 

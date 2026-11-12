@@ -94,6 +94,7 @@ src/shared/lib/app-records/records.test.ts
 src/shared/lib/app-records/host-records.test.ts
 src/shared/lib/config/settings-store.test.ts
 src/shared/lib/db/data-migrations/0009-import-host-records.test.ts
+src/shared/lib/db/data-migrations/0011-remove-chrome-profile-import-copies.test.ts
 src/shared/lib/llm-provider/settings-reads.test.ts
 src/shared/lib/services/session-defaults.test.ts
 src/shared/lib/config/settings.test.ts

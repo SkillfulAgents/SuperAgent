@@ -19,6 +19,7 @@ import {
   getAgentIntegrationSessionBySessionId,
 } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
+import { UndeliveredMessageError } from '@shared/lib/chat-integrations/chat-delivery'
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
 import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
@@ -179,7 +180,7 @@ xAgentChat.post('/send', async (c) => {
       const client = clientFor(integration)
       if (currentSession && !currentSession.archivedAt && currentSession.integrationId === integration.id && email.reply_to_message_id) {
         const parent = await client.message(config.mailboxId, email.reply_to_message_id)
-        if (await emailThreadRoute(integration, parent.threadId) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
+        if (await emailThreadRoute(integration, parent) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
       }
       const connector = await resolveLiveConnector(integration.id, integration.status)
       const tool = connector?.getTools({ integration, externalId: '' }).find(tool => tool.name === 'send_email')
@@ -318,6 +319,12 @@ xAgentChat.post('/send', async (c) => {
   } catch (error) {
     if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid email' }, 400)
     if (error instanceof EmailPolicyError) return c.json({ error: error.message }, 403)
+    if (error instanceof UndeliveredMessageError) {
+      captureException(error.cause, { tags: { component: 'x-agent-chat', operation: 'send' } })
+      // The chat's own reason (Slack's not_in_channel, Telegram's chat not found) lets the agent act on it.
+      const reason = (error.cause instanceof Error ? error.cause.message : String(error.cause ?? '')).trim().slice(0, 300)
+      return c.json({ error: `Not sent${reason ? ` (${reason})` : ''}: ${error.undeliveredText}` }, 500)
+    }
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'send' } })
     return c.json({ error: 'Failed to send chat message' }, 500)
   }

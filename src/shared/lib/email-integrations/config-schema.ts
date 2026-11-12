@@ -48,6 +48,8 @@ export const emailMessageSchema = z.object({
   subject: z.string().nullable(), text: z.string().nullable(), html: z.string().nullable(),
   status: z.string(), createdAt: z.number(), authentication,
   attachments: z.array(z.object({ id: z.string(), filename: z.string(), contentType: z.string(), size: z.number() })).default([]),
+  /** The threads the gateway merged into this one, nearest first. Only a read of one message lists them. */
+  threadAliases: z.array(z.string()).optional(),
 })
 export type EmailMessage = z.infer<typeof emailMessageSchema>
 export const emailSendSchema = z.object({

@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
 import { BrowserbaseSettings } from '@renderer/components/settings/browser-tab'
 import type { HostBrowserProviderId } from '@shared/lib/config/settings'
 
@@ -20,16 +19,16 @@ const BROWSER_HOST_OPTIONS: Array<{
     id: 'chrome' as HostBrowserProviderId,
     label: 'Google Chrome',
     recommended: true,
-    description: 'Your agents can use sites you\'re already logged into Chrome.',
-    subdescription: 'Just pick a Chrome profile.',
+    description: 'Your agents browse in Chrome on this computer, each with its own profile.',
+    subdescription: 'Nothing from your own Chrome profiles is shared.',
   },
   {
     id: CONTAINER_VALUE,
     label: 'Built-in Browser',
     recommended: false,
     isDefault: true,
-    description: 'Your agents will need you to log in before they can use a site.',
-    subdescription: 'No stored passwords or cookies.',
+    description: 'Your agents browse in a headless browser inside their container.',
+    subdescription: 'Nothing opens on your computer.',
   },
   {
     id: 'browserbase' as HostBrowserProviderId,
@@ -50,7 +49,6 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
 
   const [hostProvider, setHostProvider] = useState<string | null>(null)
   const [showAdvancedBrowsers, setShowAdvancedBrowsers] = useState(false)
-  const [chromeProfileId, setChromeProfileId] = useState<string | null>(null)
   const [browserbaseApiKey, setBrowserbaseApiKey] = useState('')
   const [browserbaseProjectId, setBrowserbaseProjectId] = useState('')
   const [isValidating, setIsValidating] = useState(false)
@@ -61,8 +59,6 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
   const isChromeAvailable = !!chromeProvider?.available
   const smartDefault = isChromeAvailable ? 'chrome' : CONTAINER_VALUE
   const effectiveProvider = hostProvider ?? settings?.app?.hostBrowserProvider ?? smartDefault
-  const chromeProfiles = chromeProvider?.profiles ?? []
-  const effectiveChromeProfileId = chromeProfileId ?? settings?.app?.chromeProfileId ?? ''
 
   const browserbaseProvider = providers.find((p) => p.id === 'browserbase')
   const hasSavedBrowserbaseCredentials = !!browserbaseProvider?.available
@@ -195,24 +191,6 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
                   {isSelected && <div className="h-2 w-2 rounded-full bg-primary" />}
                 </div>
               </button>
-
-              {option.id === 'chrome' && chromeProfiles.length > 0 && (
-                <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                  <div className="overflow-hidden">
-                    <div className="px-3 pb-3 pt-2">
-                      <ChromeProfileSelect
-                        profiles={chromeProfiles}
-                        value={effectiveChromeProfileId}
-                        onValueChange={(profileId) => {
-                          setChromeProfileId(profileId)
-                          updateSettings.mutate({ app: { chromeProfileId: profileId } })
-                        }}
-                        idPrefix="wizard-chrome-profile"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {option.id === 'browserbase' && (
                 <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>

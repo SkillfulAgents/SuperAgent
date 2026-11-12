@@ -103,9 +103,9 @@ export interface SlashCommandInfo {
 
 /**
  * A toolset a session can have in the prompt from its first turn
- * (`CreateSessionOptions.preloadToolsets`): the name of the in-process MCP
- * server that carries it in the agent container (PRELOAD_TOOLSETS in
- * `agent-container/src/preload-toolsets.ts`).
+ * (`CreateSessionOptions.preloadToolsets`), by its name on the wire; the agent
+ * container maps it to the in-process MCP server that carries it
+ * (PRELOAD_TOOLSETS in `agent-container/src/preload-toolsets.ts`).
  */
 export type PreloadToolset = 'computer-use'
 

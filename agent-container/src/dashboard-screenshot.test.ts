@@ -1,42 +1,26 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import * as fs from 'fs'
-import * as path from 'path'
-import * as os from 'os'
-import { resolveChromiumExecutable } from './dashboard-screenshot'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { RasterizeHtmlResult, Shot } from './rasterize-html'
 
-describe('resolveChromiumExecutable', () => {
-  let tmpDir: string
+const rasterizeMock = vi.hoisted(() => vi.fn<(shots: Shot[], signal?: AbortSignal) => Promise<RasterizeHtmlResult>>())
+vi.mock('./rasterize-html', () => ({ rasterizeHtml: rasterizeMock }))
 
-  beforeEach(async () => {
-    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pw-resolver-'))
+const { captureDashboardScreenshot } = await import('./dashboard-screenshot')
+
+describe('captureDashboardScreenshot', () => {
+  beforeEach(() => { rasterizeMock.mockReset() })
+
+  it('captures the page by URL with its scripts, at the dashboard size, under its own time limit', async () => {
+    rasterizeMock.mockImplementation(async ([shot]) => ({ written: [shot.path], error: null }))
+
+    expect(await captureDashboardScreenshot('http://127.0.0.1:4000/', '/tmp/dash/shot.png')).toEqual({ ok: true, path: '/tmp/dash/shot.png' })
+    const [[shot], signal] = rasterizeMock.mock.lastCall!
+    expect(shot).toEqual({ url: 'http://127.0.0.1:4000/', viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, colorScheme: 'light', scripts: true, path: '/tmp/dash/shot.png' })
+    expect(signal?.aborted).toBe(false)
   })
 
-  afterEach(async () => {
-    await fs.promises.rm(tmpDir, { recursive: true, force: true })
-  })
+  it('reports why nothing was captured', async () => {
+    rasterizeMock.mockResolvedValue({ written: [], error: 'Screenshot capture exceeded 15000ms' })
 
-  it('returns the path when the binary exists and is executable', () => {
-    const bin = path.join(tmpDir, 'chromium-current')
-    fs.writeFileSync(bin, '#!/bin/sh\necho stub\n')
-    fs.chmodSync(bin, 0o755)
-    expect(resolveChromiumExecutable(bin)).toBe(bin)
-  })
-
-  it('returns null when the binary is missing', () => {
-    const bin = path.join(tmpDir, 'chromium-current')
-    expect(resolveChromiumExecutable(bin)).toBeNull()
-  })
-
-  it('returns null when the file exists but is not executable', () => {
-    const bin = path.join(tmpDir, 'chromium-current')
-    fs.writeFileSync(bin, '')
-    fs.chmodSync(bin, 0o644)
-    expect(resolveChromiumExecutable(bin)).toBeNull()
+    expect(await captureDashboardScreenshot('http://127.0.0.1:4000/', '/tmp/dash/shot.png')).toEqual({ ok: false, reason: 'Screenshot capture exceeded 15000ms' })
   })
 })
-
-// End-to-end capture behaviour is exercised by the Dockerfile build-time
-// assertion (scripts/assert-chromium-available.ts) and the E2E suite; unit
-// testing the thin playwright-core glue without mocking the whole library
-// gives little signal for the effort, so we rely on the resolver tests and
-// the build canary to catch regressions.

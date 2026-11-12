@@ -1,9 +1,9 @@
 /**
  * The router in front of every agent's computer-use permissions.
  *
- * The grants and the grabbed app live in each agent's actor
+ * The grants and the active app live in each agent's actor
  * (`AgentComputerUse`); this singleton dispatches the calls that arrive with
- * a slug — the runtime's ungrab when a container stops — to that agent's
+ * a slug — the runtime's cleanup when a container stops — to that agent's
  * store. The agent's own live sessions call its store directly. A read for
  * an agent that has no handle finds nothing in memory; a check reads the
  * agent's persisted grants from settings through its store.
@@ -59,19 +59,19 @@ export class ComputerUsePermissionManager {
     return this.agents.get(agentSlug).activeGrants()
   }
 
-  /** `AgentComputerUse.setGrabbed` */
-  setGrabbedApp(agentSlug: string, appName: string): void {
-    this.agents.get(agentSlug).setGrabbed(appName)
+  /** `AgentComputerUse.setActiveApp` */
+  setActiveApp(agentSlug: string, sessionId: string, appName: string): boolean {
+    return this.agents.get(agentSlug).setActiveApp(sessionId, appName)
   }
 
-  /** `AgentComputerUse.clearGrabbed` */
-  clearGrabbedApp(agentSlug: string): void {
-    this.agents.peek(agentSlug)?.clearGrabbed()
+  /** `AgentComputerUse.clearActiveApp`: every session's of the agent. */
+  clearActiveApp(agentSlug: string): void {
+    this.agents.peek(agentSlug)?.clearActiveApp()
   }
 
-  /** `AgentComputerUse.grabbed` */
-  getGrabbedApp(agentSlug: string): string | undefined {
-    return this.agents.peek(agentSlug)?.grabbed()
+  /** `AgentComputerUse.activeApp` */
+  getActiveApp(agentSlug: string, sessionId: string): string | undefined {
+    return this.agents.peek(agentSlug)?.activeApp(sessionId)
   }
 }
 

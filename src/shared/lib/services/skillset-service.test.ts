@@ -3235,6 +3235,21 @@ metadata:
       }
     })
 
+    it('imports from a ZIP file on disk, streaming a multi-MB entry intact', async () => {
+      const agentSlug = 'file-import-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+      const large = crypto.randomBytes(3 * 1024 * 1024)
+      const zipPath = path.join(testDir, 'skill.zip')
+      fs.writeFileSync(zipPath, await createZipBuffer({ 'SKILL.md': MINIMAL_SKILL_MD, 'assets/large.bin': large }))
+
+      const result = await importSkillFromZip(agentSlug, { filePath: zipPath })
+
+      const skillDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', result.skillDir)
+      expect(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8')).toBe(MINIMAL_SKILL_MD)
+      // A byte compare: toEqual walks a multi-MB Buffer element by element for seconds.
+      expect(fs.readFileSync(path.join(skillDir, 'assets', 'large.bin')).equals(large)).toBe(true)
+    })
+
     it('export then import preserves files', async () => {
       const agentSlug = 'roundtrip-agent'
       const agentDir = path.join(testDir, 'agents', agentSlug, 'workspace')

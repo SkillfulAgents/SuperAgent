@@ -1,6 +1,6 @@
 import type { SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { hexMix, type OrbAppearance } from '@renderer/components/agents/agent-avatar/avatar-orbs'
+import { hexMix, type OrbAppearance } from '@shared/lib/types/agent-avatar-orbs'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { agentAppIcon } from './agent-app-icon'
 

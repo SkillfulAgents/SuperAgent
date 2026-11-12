@@ -1,8 +1,8 @@
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { OrbAvatar } from '../src/renderer/components/agents/agent-avatar/orb-avatar'
-import { DEFAULT_ORBS } from '../src/renderer/components/agents/agent-avatar/avatar-orbs'
-import { ORB_SHAPES } from '../src/renderer/components/agents/agent-avatar/orb-shapes'
+import { DEFAULT_ORBS } from '../src/shared/lib/types/agent-avatar-orbs'
+import { ORB_SHAPES } from '../src/shared/lib/types/agent-avatar-shapes'
 import type { OrbState } from '../src/renderer/components/agents/agent-avatar/orb-states'
 
 export interface AvatarFixture {

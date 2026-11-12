@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { useIsDark } from '@renderer/hooks/use-theme'
-
-// Scripts and styles are inline; nothing is fetched, posted, or framed. The app's web font
-// would need a network exception a script could leak data through, so text uses the font stack's fallbacks.
-// CSP doesn't cover WebRTC, so a script can still reach a STUN host by peer connection.
-const HTML_BLOCK_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
+import { htmlPreviewBodyStyle, htmlPreviewDocument } from '@shared/lib/html-preview'
 
 const HEIGHT_MESSAGE = 'superagent:html-block-height'
 const WHEEL_MESSAGE = 'superagent:html-block-wheel'
@@ -36,14 +31,7 @@ function themeStyle(): string {
   return (
     `:root{${vars}}` +
     'html{overflow:hidden;scrollbar-width:thin}' +
-    // flow-root keeps child margins inside body, so its height is the content height.
-    // Positioned, so absolute content hanging below it (tooltips, legends) counts toward its height.
-    'body{display:flow-root;position:relative}' +
-    // The frame's height follows its content, so viewport-sized html/body (100vh, 100%) would grow it to the cap.
-    'html,body{height:auto!important;min-height:0!important}' +
-    "html,body{margin:0;background:transparent;color:hsl(var(--foreground));" +
-    // Same size and line height as chat prose (prose-sm).
-    `font:14px/1.7142857 ${fontFamily}}` +
+    htmlPreviewBodyStyle(fontFamily) +
     // Focus rings follow the app's ring color; mouse clicks show none.
     ':focus-visible{outline:2px solid hsl(var(--ring))!important;outline-offset:2px}' +
     ':focus:not(:focus-visible){outline:none!important}'
@@ -82,13 +70,7 @@ const FRAME_SCRIPT = `(() => {
 
 /** The document as the chat renders it: policy, theme, and frame script come before authored markup. */
 function renderHtmlBlockDocument(source: string, scheme: 'light' | 'dark'): string {
-  return (
-    `<!DOCTYPE html><html data-theme="${scheme}"><head>` +
-    `<meta http-equiv="Content-Security-Policy" content="${HTML_BLOCK_CSP}">` +
-    `<meta name="color-scheme" content="${scheme}">` +
-    `<style>${themeStyle()}</style>` +
-    `<script>${FRAME_SCRIPT}</script>${source}`
-  )
+  return htmlPreviewDocument(source, scheme, `<style>${themeStyle()}</style><script>${FRAME_SCRIPT}</script>`)
 }
 
 export function HtmlBlock({ source, fallback }: { source: string; fallback: ReactNode }) {

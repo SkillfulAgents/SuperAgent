@@ -61,6 +61,7 @@ const providers = {
   'codex-subscription': 'Codex Subscription',
   'kimi-subscription': 'Kimi Subscription',
   'minimax-subscription': 'MiniMax Subscription',
+  'qwen-subscription': 'Qwen Subscription',
   openrouter: 'OpenRouter',
   bedrock: 'AWS Bedrock',
   ollama: 'Ollama',
@@ -74,6 +75,7 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'codex-subscription': 'Work ChatGPT Pro',
   'kimi-subscription': 'Personal Kimi Code',
   'minimax-subscription': 'Personal MiniMax',
+  'qwen-subscription': 'Personal Token Plan',
   openrouter: 'Shared OpenRouter',
   bedrock: 'Bedrock us-east-1',
   ollama: 'Local Ollama',
@@ -87,6 +89,7 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'codex-subscription': 'Sign in with ChatGPT to use your Codex subscription.',
   'kimi-subscription': 'Sign in with your Kimi account to use your Kimi Code membership.',
   'minimax-subscription': 'Sign in with your MiniMax account to use your Token Plan.',
+  'qwen-subscription': 'Use your Alibaba Cloud Token Plan with its plan API key.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
   ollama: 'Run open models on your own hardware, with no API key.',
@@ -551,6 +554,7 @@ export function ConnectionEditor({
       if (provider === 'openrouter') apiKeys.openrouterApiKey = apiKey
       if (provider === 'generic') apiKeys.genericApiKey = apiKey
       if (provider === 'bedrock') apiKeys.bedrockApiKey = apiKey
+      if (provider === 'qwen-subscription') apiKeys.planApiKey = apiKey.trim()
     }
     if (provider === 'generic' && (!existing || baseUrl !== (existing.baseUrl ?? ''))) apiKeys.genericBaseUrl = baseUrl
     if (isOllama && (!existing || ollamaUrl !== existing.baseUrl)) apiKeys.ollamaBaseUrl = ollamaUrl

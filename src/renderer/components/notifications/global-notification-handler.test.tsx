@@ -1283,7 +1283,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
 
     simulateSSEMessage(es, { type: 'connected' })
     expect(invalidateSpy).toHaveBeenCalledTimes(1)
-    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: expect.any(Function) })
 
     // A browser-handled reconnect: once on connected, never on open as well.
     invalidateSpy.mockClear()
@@ -1291,7 +1291,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     es.onopen?.()
     simulateSSEMessage(es, { type: 'connected' })
     expect(invalidateSpy).toHaveBeenCalledTimes(1)
-    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: expect.any(Function) })
   })
 
   it('connected after a reconnect from an overflow refreshes schedules, widgets and requests', () => {
@@ -1324,6 +1324,33 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     simulateSSEMessage(es, { type: 'connected' })
     for (const key of kept) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
     expect(queryClient.getQueryState(['skill-publish-info', 'agent-a'])?.isInvalidated).toBe(false)
+  })
+
+  it('connected skips reads whose first load landed after the stream was requested', () => {
+    const now = Date.now()
+    queryClient.setQueryData(['agents'], [], { updatedAt: now - 1_000 })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    const es = getLatestEventSource()
+
+    // Startup reads that finished while the stream was being set up.
+    queryClient.setQueryData(['settings'], {}, { updatedAt: now + 1_000 })
+    queryClient.setQueryData(['runtime-status'], {}, { updatedAt: now + 1_000 })
+    queryClient.setQueryData(['runtime-status'], {}, { updatedAt: now + 2_000 })
+    simulateSSEMessage(es, { type: 'connected' })
+
+    expect(queryClient.getQueryState(['agents'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['settings'])?.isInvalidated).toBe(false)
+    // A second write means it held data before, so it may predate the stream.
+    expect(queryClient.getQueryState(['runtime-status'])?.isInvalidated).toBe(true)
+
+    // After a drop, the same read may have missed events: it refetches.
+    vi.spyOn(Date, 'now').mockReturnValue(now + 5_000)
+    es.readyState = MockEventSource.CONNECTING
+    es.onerror?.()
+    es.readyState = MockEventSource.OPEN
+    simulateSSEMessage(es, { type: 'connected' })
+    expect(queryClient.getQueryState(['settings'])?.isInvalidated).toBe(true)
+    vi.mocked(Date.now).mockRestore()
   })
 })
 
@@ -1377,7 +1404,7 @@ describe('stream healing', () => {
     getLatestEventSource().onopen?.()
     expect(invalidateSpy).not.toHaveBeenCalled()
     simulateSSEMessage(getLatestEventSource(), { type: 'connected' })
-    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: expect.any(Function) })
     expect(isRefetchableAfterOutage({ queryKey: ['sessions', 'a1'] })).toBe(true)
     for (const key of ['agent-template-publish-info', 'agent-template-pr-info', 'skill-publish-info', 'skill-pr-info']) {
       expect(isRefetchableAfterOutage({ queryKey: [key, 'a1'] })).toBe(false)
@@ -1388,7 +1415,7 @@ describe('stream healing', () => {
     getLatestEventSource().onopen?.()
     simulateSSEMessage(getLatestEventSource(), { type: 'connected' })
     expect(invalidateSpy).toHaveBeenCalledTimes(1)
-    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: expect.any(Function) })
   })
 
   it('reopen delay doubles per consecutive fatal close and resets on open', async () => {

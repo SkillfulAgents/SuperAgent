@@ -23,8 +23,8 @@ import {
 } from '@renderer/components/ui/dropdown-menu'
 import { SidebarMenuButton } from '@renderer/components/ui/sidebar'
 import { OrbAvatar } from '@renderer/components/agents/agent-avatar/orb-avatar'
-import { GHOST_ORB } from '@renderer/components/agents/agent-avatar/avatar-orbs'
-import { orbShape } from '@renderer/components/agents/agent-avatar/orb-shapes'
+import { GHOST_ORB } from '@shared/lib/types/agent-avatar-orbs'
+import { orbShape } from '@shared/lib/types/agent-avatar-shapes'
 import { AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
 import {
   containerIdForFolder,

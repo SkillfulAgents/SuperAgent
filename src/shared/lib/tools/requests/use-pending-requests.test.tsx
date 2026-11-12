@@ -521,15 +521,35 @@ describe('usePendingRequests', () => {
     expect(matches[0].url).toBe('https://mcp.example.com')
   })
 
-  it('derives computer-use pending request from message history when active and not auto-approved', () => {
+  // A computer-use call has no card until the host has placed and checked it:
+  // it may wait its turn behind the session's earlier calls, then run under a
+  // grant. A card drawn from the transcript meanwhile would answer nothing.
+  it('draws no computer-use card from message history for a call the server has not registered', () => {
     mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({ id: 'tc-cu-queued', name: 'mcp__agent-desktop__computer_list_apps', input: {}, result: undefined }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+  })
+
+  it('fills in a computer-use card from message history for a request the server holds without its payload', () => {
+    mockStreamState.isActive = true
+    mockUnified.data = [unified('computer_use', 'tc-cu', { recovered: true })]
     mockMessagesData.data = [
       createAssistantMessage({
         content: { text: '' },
         toolCalls: [
           createToolCall({
             id: 'tc-cu',
-            name: 'mcp__computer-use__computer_apps',
+            name: 'mcp__computer-use__computer_list_apps',
             input: { includeHidden: false },
             result: undefined,
           }),
@@ -543,8 +563,8 @@ describe('usePendingRequests', () => {
     expect(matches).toHaveLength(1)
     expect(matches[0]).toMatchObject({
       toolUseId: 'tc-cu',
-      method: 'apps',
-      params: { includeHidden: false },
+      method: 'list-apps',
+      params: { argv: [] },
       permissionLevel: 'list_apps_windows',
     })
   })
@@ -558,7 +578,7 @@ describe('usePendingRequests', () => {
         toolCalls: [
           createToolCall({
             id: 'tc-cu-auto',
-            name: 'mcp__computer-use__computer_apps',
+            name: 'mcp__computer-use__computer_list_apps',
             input: { includeHidden: false },
             result: undefined,
           }),
@@ -594,7 +614,7 @@ describe('usePendingRequests', () => {
         toolCalls: [
           createToolCall({
             id: 'tc-cu-late',
-            name: 'mcp__computer-use__computer_apps',
+            name: 'mcp__computer-use__computer_list_apps',
             input: { includeHidden: false },
             result: undefined,
           }),
@@ -637,14 +657,27 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'script_run')).toHaveLength(0)
   })
 
-  it('derives computer-use pending request from ready streaming tool use', () => {
+  it('draws no computer-use card from a ready streamed call the server has not registered', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = []
     mockStreamState.streamingToolUses = [
+      { id: 'stream-cu-queued', name: 'mcp__agent-desktop__computer_press', partialInput: JSON.stringify({ app: 'Safari', combo: 'return' }), ready: true },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+  })
+
+  it('fills in a computer-use card from a ready streamed call the server holds without its payload', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [unified('computer_use', 'stream-cu', { recovered: true })]
+    mockStreamState.streamingToolUses = [
       {
         id: 'stream-cu',
-        name: 'mcp__computer-use__computer_click',
-        partialInput: JSON.stringify({ app: 'Safari', x: 10, y: 20 }),
+        name: 'mcp__computer-use__computer_press',
+        partialInput: JSON.stringify({ app: 'Safari', combo: 'return' }),
         ready: true,
       },
     ]
@@ -655,8 +688,8 @@ describe('usePendingRequests', () => {
     expect(matches).toHaveLength(1)
     expect(matches[0]).toMatchObject({
       toolUseId: 'stream-cu',
-      method: 'click',
-      params: { app: 'Safari', x: 10, y: 20 },
+      method: 'press',
+      params: { argv: ['--app=Safari', '--', 'return'] },
       permissionLevel: 'use_application',
       appName: 'Safari',
     })

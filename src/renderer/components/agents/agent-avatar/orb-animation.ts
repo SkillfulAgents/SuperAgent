@@ -2,7 +2,7 @@ import {
   blendFrames, doneFrame, easeInOut, idleFrame, needsInputFrame, restFrame,
   sleepingFrame, workingFrame, type OrbFrame, type OrbState,
 } from './orb-states'
-import { cubicBezier, FREE_EASE, gazeToward, nearestAngle, type OrbShape, type ShapeGaze } from './orb-shapes'
+import { cubicBezier, FREE_EASE, gazeToward, nearestAngle, type OrbShape, type ShapeGaze } from '@shared/lib/types/agent-avatar-shapes'
 import { DOTS_CYCLE, DOTS_GATHER, workingPosition } from './orb-working'
 
 const BLEND_MS = 450

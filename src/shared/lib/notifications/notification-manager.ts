@@ -40,6 +40,8 @@ interface SessionCompleteNotificationOptions {
   responseText?: string | null
   /** Where the transcript ended when this turn did: the byte bound for the body's context lookup. */
   responseTranscriptEndOffset?: number | null
+  /** Who the run's messages tagged. */
+  taggedUserIds?: readonly string[]
 }
 
 /** A mention's inbox body is its message, cut to a preview. */
@@ -234,6 +236,15 @@ class NotificationManager {
   ): Promise<void> {
     const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
     if (isHiddenAutomatedSession(meta)) {
+      // A hidden run that tagged a member is shown, so the tag opens something
+      // they can find. Its own completion stays muted.
+      try {
+        if ((await this.membersAmong(agentSlug, options.taggedUserIds ?? [])).length > 0) {
+          await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId, meta)
+        }
+      } catch (error) {
+        console.error('[NotificationManager] Failed to promote a session that tagged a member:', error)
+      }
       return
     }
     const displayName = await this.getAgentDisplayName(agentSlug)
@@ -439,8 +450,10 @@ class NotificationManager {
     messageUuid: string
     recipientUserId: string
     senderName: string
-    /** The message as the bubble shows it. */
+    /** The message as plain text. */
     text: string
+    /** Also tell an invited person, not on Gamut yet, through their team directory. */
+    relayToInvited?: boolean
   }): Promise<void> {
     const body = params.text.length > MENTION_BODY_MAX
       ? `${params.text.slice(0, MENTION_BODY_MAX - 1).trimEnd()}…`
@@ -455,7 +468,34 @@ class NotificationManager {
     })
     // Someone not on Gamut yet finds this waiting when they join; tell them
     // now through their team directory too.
-    background(this.tellInvitedAboutMention(params), { name: 'notification-manager.tell-invited-about-mention' })
+    if (params.relayToInvited) {
+      background(this.tellInvitedAboutMention(params), { name: 'notification-manager.tell-invited-about-mention' })
+    }
+  }
+
+  /**
+   * An agent's message tagged people: each member of the agent is told, under
+   * the agent's name. Anyone else is dropped, and nothing leaves the app.
+   */
+  async triggerAgentMentions(params: { agentSlug: string; sessionId: string; messageUuid: string; userIds: readonly string[]; text: string }): Promise<void> {
+    const members = await this.membersAmong(params.agentSlug, params.userIds)
+    if (members.length === 0) return
+    const senderName = await this.getAgentDisplayName(params.agentSlug)
+    for (const recipientUserId of members) {
+      try {
+        const { sessionId, agentSlug, messageUuid, text } = params
+        await this.triggerSessionMention({ sessionId, agentSlug, messageUuid, text, recipientUserId, senderName })
+      } catch (error) {
+        captureException(error, { tags: { component: 'notifications', operation: 'agent-mention' }, level: 'warning' })
+      }
+    }
+  }
+
+  /** The ids that belong to members of the agent, once each. Teammates exist in auth mode only. */
+  private async membersAmong(agentSlug: string, userIds: readonly string[]): Promise<string[]> {
+    if (userIds.length === 0 || !isAuthMode()) return []
+    const members = new Set(await getAgentAccessUserIds(agentSlug))
+    return [...new Set(userIds)].filter((id) => members.has(id))
   }
 
   private async tellInvitedAboutMention(params: { agentSlug: string; recipientUserId: string; senderName: string; text: string }): Promise<void> {

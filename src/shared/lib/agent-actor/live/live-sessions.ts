@@ -285,16 +285,16 @@ export class LiveSessions {
       { after, snapshot: (lastId) => [this.connectedFrame(sessionId, lastId, stored)] },
       onFrame,
     )
-    // The app the agent has grabbed is agent state, not one of this
+    // The app the agent is acting in is actor state, not one of this
     // session's events (it has no id): every viewer is told, once its icon is
-    // read, unless another grab or a release has gone out meanwhile. A follow
+    // read, unless another app or a release has gone out meanwhile. A follow
     // that fails leaves nothing attached.
     try {
-      const app = this.deps.computerUse.grabbed()
+      const app = this.deps.computerUse.activeApp(sessionId)
       if (app) {
         const icon = await this.appIcon(app)
-        if (this.deps.computerUse.grabbed() === app) {
-          onFrame(wireFrame({ type: 'computer_use_grab_changed', app, ...(icon && { appIcon: icon }) }))
+        if (this.deps.computerUse.activeApp(sessionId) === app) {
+          onFrame(wireFrame({ type: 'computer_use_app_changed', app, ...(icon && { appIcon: icon }) }))
         }
       }
     } catch (error) {
@@ -317,6 +317,17 @@ export class LiveSessions {
     const tagged = this.provisionalSessions.has(sessionId) ? { ...event, provisional: true } : event
     if (this.deps.capture) background(this.deps.capture.recordOutput(sessionId, tagged), { name: 'live-sessions.capture-output' })
     this.channels.emit(sessionId, tagged)
+    // The app a turn acted in is shown while that turn runs; the next turn
+    // starts with none until its own first command.
+    if (event.type === 'session_idle' && this.deps.computerUse.activeApp(sessionId)) {
+      this.deps.computerUse.clearActiveApp(sessionId)
+      this.emit(sessionId, { type: 'computer_use_app_changed', app: null })
+    }
+    // The agent's cursor stays on screen for as long as the turn that used
+    // the computer runs: the host lets go of it when the turn ends, either way.
+    if (event.type === 'session_idle' || event.type === 'session_error') {
+      this.deps.host.send('computerUseTurnEnded', { sessionId })
+    }
   }
 
   /** The session as a viewer starting from nothing needs it: it stands for every event up to `lastId`. */

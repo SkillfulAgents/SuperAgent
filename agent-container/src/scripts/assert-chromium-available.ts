@@ -2,7 +2,7 @@
  * Build-time canary: fails the Docker build if the stable Chromium symlink
  * created earlier in the Dockerfile is missing, not executable, or broken.
  *
- * Runs the same resolver the dashboard-screenshot module uses at runtime,
+ * Runs the same resolver the rasterizer uses at runtime,
  * then spawns the binary with --version to confirm it actually works. A
  * future agent-browser or playwright-core upgrade that changes the on-disk
  * layout breaks this immediately rather than silently at start_dashboard
@@ -12,7 +12,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { spawnSync } from 'child_process'
-import { resolveChromiumExecutable } from '../dashboard-screenshot'
+import { resolveChromiumExecutable } from '../chromium-executable'
 
 const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/playwright-browsers'
 

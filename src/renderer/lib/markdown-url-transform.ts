@@ -1,4 +1,5 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
+import { localFilePath } from '@shared/lib/utils/workspace-file-url'
 import { isPreviewableImage } from './file-types'
 import { getAgentFileUrl, isSafeWorkspaceFilePath } from './workspace-file-url'
 
@@ -58,15 +59,8 @@ export interface MarkdownImageContext {
 
 /** Resolve an agent-workspace file without ever handing `file:` to Chromium. */
 function workspaceImageUrl(url: string, agentSlug: string): string | null {
-  let pathname: string
-  try {
-    // Only an absolute path reads as its file: form. `//host/x` and relative paths stay unresolved.
-    const parsed = new URL(/^\/(?!\/)/.test(url) ? `file://${url}` : url)
-    if (parsed.protocol !== 'file:' || parsed.hostname !== '') return null
-    pathname = decodeURIComponent(parsed.pathname)
-  } catch {
-    return null
-  }
+  const pathname = localFilePath(url)
+  if (pathname === null) return null
 
   // Both questions are answered where they are answered for every other
   // surface: whether the path is inside the workspace and free of traversal,

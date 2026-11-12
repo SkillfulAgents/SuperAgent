@@ -78,6 +78,17 @@ export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }
   return !EXPENSIVE_QUERY_KEYS.has(query.queryKey[0])
 }
 
+// A query whose first and only load landed after the stream was requested is
+// as fresh as a first load still in flight at `connected`, which TanStack
+// already merges into that refetch. Reading it again repeats the same read.
+export function needsRefetchOnConnect(
+  query: { queryKey: readonly unknown[]; state: { dataUpdateCount: number; dataUpdatedAt: number } },
+  streamRequestedAt: number,
+): boolean {
+  if (!isRefetchableAfterOutage(query)) return false
+  return !(query.state.dataUpdateCount === 1 && query.state.dataUpdatedAt > streamRequestedAt)
+}
+
 // Optimistic status echo per session lifecycle event. Deliberately exhaustive
 // with NO fallback: an event type added to the lifecycle case group without a
 // row here gets invalidations but no echo, forcing its semantics to be decided
@@ -258,6 +269,7 @@ export function GlobalNotificationHandler() {
     const baseUrl = getApiBaseUrl()
     const url = `${baseUrl}/api/notifications/stream`
     const es = new EventSource(url)
+    let streamRequestedAt = Date.now()
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
     // One agent's session changed: its detail under every route key and the
@@ -292,7 +304,7 @@ export function GlobalNotificationHandler() {
             // first connect, a gap after a drop, a stream the server ended
             // because it fell behind. Read everything this feed keeps current
             // again. Every server version sends it as its first frame.
-            queryClient.invalidateQueries({ predicate: isRefetchableAfterOutage })
+            queryClient.invalidateQueries({ predicate: (query) => needsRefetchOnConnect(query, streamRequestedAt) })
             break
 
           case 'agent_members_changed':
@@ -763,6 +775,8 @@ export function GlobalNotificationHandler() {
 
     es.onerror = () => {
       // Network errors reconnect in the browser. Fatal close is the watcher.
+      // The browser asks again after this, so the next connect counts from here.
+      streamRequestedAt = Date.now()
     }
 
     const disposeLiveness = watchStreamLiveness(es, () => {

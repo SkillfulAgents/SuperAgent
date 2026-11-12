@@ -958,6 +958,8 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
+  // A session that starts a turn finds its chat by this.
+  sessionIdIdx: index('chat_integration_sessions_session_id_idx').on(table.sessionId),
 }))
 
 // Meetings an agent was asked to attend (meeting integration family). The

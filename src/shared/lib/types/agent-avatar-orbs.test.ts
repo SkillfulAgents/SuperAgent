@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_ORBS, OFFERED_ORBS, PAIRED_DUOS } from './avatar-orbs'
+import { DEFAULT_ORBS, OFFERED_ORBS, PAIRED_DUOS } from './agent-avatar-orbs'
 
 describe('avatar colourways', () => {
   it('offers the sixteen-colour palette then eight duos, under unique keys', () => {

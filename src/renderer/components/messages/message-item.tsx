@@ -19,7 +19,7 @@ import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
 import type { MarkdownProps } from '@renderer/components/ui/markdown'
 import { AgentMarkdown } from './agent-markdown'
-import { splitStreamingMarkdown } from './split-streaming-markdown'
+import { splitStreamingMarkdown } from '@shared/lib/split-streaming-markdown'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
@@ -36,7 +36,7 @@ import { rehypeMentions } from '@renderer/lib/rehype-mentions'
 import { formatCompactDistance } from '@renderer/components/connections/utils'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import { format } from 'date-fns'
-import type { Mention } from '@shared/lib/utils/mentions'
+import { parseUserTags, plainUserTags, type Mention } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -237,7 +237,6 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // the sender prefix into the sender label and the mentions block into chips,
   // leaving just the typed text. Memoized so the mentions keep their identity.
   const userParts = useMemo(() => (isUser ? parseUserMessageParts(rawText) : null), [isUser, rawText])
-  const mentions = userParts?.mentions.length ? userParts.mentions : undefined
   // A message that opened on a teammate only notified them: the agent did not run.
   const silentMention = !!userParts?.silent
   const senderFromPrefix = userParts?.sender ?? null
@@ -251,7 +250,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
     ? parseTaskNotifications(cleanText)
     : { cleanText, workflowResults: [] }
-  const text = textAfterNotifs
+  // An agent tags with `[@Name](user:<id>)`: read as `@Name` plus the person,
+  // the text and list a person's tag gives, so the same chips draw.
+  const agentParts = useMemo(() => (isAssistant ? parseUserTags(textAfterNotifs) : null), [isAssistant, textAfterNotifs])
+  const mentionList = userParts?.mentions ?? agentParts?.mentions ?? []
+  const mentions = mentionList.length ? mentionList : undefined
+  const text = !agentParts ? textAfterNotifs : isStreaming ? plainUserTags(textAfterNotifs, { streaming: true }) : agentParts.text
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
   // Persisted extended-thinking blocks. Defensive shape check — this field
@@ -429,15 +433,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 dir="auto"
                 // Assistant bubbles opt into table breakout and must not clip it.
                 data-allow-table-breakout={isAssistant ? '' : undefined}
-                // A notify-only message (it opened on a teammate): the agent did not
-                // run for it, so its bubble is dashed violet and says who it reached.
+                // A notify-only message (it opened on a teammate). The bubble is drawn
+                // as any other; the line under it says the agent did not run for it.
                 data-notify-only={silentMention ? '' : undefined}
                 className={cn(
                   'rounded-card max-w-full text-foreground',
                   !isAssistant && 'overflow-hidden',
-                  isUser && 'px-4 py-2',
-                  isUser && !silentMention && 'bg-zinc-100 dark:bg-zinc-800/70',
-                  silentMention && 'border border-dashed border-violet-300 bg-violet-50/60 dark:border-violet-400/40 dark:bg-violet-400/10',
+                  isUser && 'px-4 py-2 bg-zinc-100 dark:bg-zinc-800/70',
                   // Relative for the read-aloud controls, which overlay the
                   // gap under the bubble rather than adding a row to it.
                   isAssistant && 'relative py-1'
@@ -561,16 +563,17 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           )}
         </SenderAvatarGroup>
 
-        {/* Who a notify-only message reached: the agent did not run for it. Under
-            the bubble's edge, outside the group so the avatar stays beside the bubble. */}
+        {/* A notify-only message: the agent did not run for it (who it reached is
+            the tooltip, as under the composer). Under the bubble's edge, outside
+            the group so the avatar stays level with the bubble's bottom. */}
         {silentMention && (
           <span
-            className="flex items-center gap-1 text-xs text-muted-foreground"
+            className="flex items-center gap-1 text-2xs text-muted-foreground"
             style={avatarSender ? { marginRight: SENDER_AVATAR_SIZE + SENDER_AVATAR_GAP } : undefined}
             data-testid="mention-notified"
           >
-            <AtSign className="h-3 w-3 text-violet-500" aria-hidden />
-            Notified {userParts!.mentions.flatMap((mention) => mention.kind === 'user' ? [mention.name] : []).join(', ')}
+            <AtSign className="h-2.5 w-2.5 shrink-0 text-violet-500" aria-hidden />
+            <span title={`Only notifies ${userParts!.mentions.flatMap((mention) => mention.kind === 'user' ? [mention.name] : []).join(', ')}`}>Message ignored by agent</span>
           </span>
         )}
 

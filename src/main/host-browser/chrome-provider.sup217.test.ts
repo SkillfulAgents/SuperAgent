@@ -189,11 +189,6 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/tmp/sa-sup217-data',
 }))
 
-vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  listChromeProfiles: () => [],
-  copyChromeProfileData: () => false,
-}))
-
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: () => {},
   captureMessage: () => {},

@@ -152,8 +152,8 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
   const isElectronApp = !!window.electronAPI
   const isMacElectron = window.electronAPI?.platform === 'darwin'
   const showWebFaviconSettings = !isElectronApp && showAdminFeatures
-  const customFavicon = globalSettings?.app?.faviconDataUrl
-  const faviconPreviewSrc = customFavicon || getWebFaviconHref(globalSettings?.app?.faviconUpdatedAt)
+  const customFavicon = globalSettings?.app?.hasCustomFavicon === true
+  const faviconPreviewSrc = getWebFaviconHref(globalSettings?.app?.faviconUpdatedAt)
 
   const handleKeepAwakeToggle = async (checked: boolean) => {
     setKeepAwakeLoading(true)

@@ -6,7 +6,7 @@ import type { AppDatabase } from '../db/drivers/types'
 let handle: TestDatabase, testDb: AppDatabase
 // The gateway client; one operation's client (a poll, a history read) is the same mock.
 const transport = vi.hoisted(() => {
-  const client = { json: vi.fn(), message: vi.fn(), canonicalThreadId: vi.fn(), unwatch: vi.fn(), watch: vi.fn(), forOperation: () => client }
+  const client = { json: vi.fn(), message: vi.fn(), unwatch: vi.fn(), watch: vi.fn(), forOperation: () => client }
   return client
 })
 const relayEndpoints = vi.hoisted(() => ({
