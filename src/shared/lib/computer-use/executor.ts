@@ -53,6 +53,7 @@ import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
 import { computerUsePreferences } from './types'
 import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
 import { sameApp } from './app-identity'
+import { appAtPoint, frontmostApp, readScreenWindows } from './screen-windows'
 import { activateStartMenuApp, findStartMenuApp, startMenuApps, waitForActivatedWindow } from './windows-start-menu'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import * as path from 'path'
@@ -251,15 +252,33 @@ async function placeCall(method: string, targets: CallTargets, reread = false): 
     const app = windowApps.get(id) ?? (await lookUpWindowApp(id))
     if (app) add(app)
   }
-  const windows = targets.points?.length || targets.focused ? await listWindows() : []
+  const hasPoints = (targets.points?.length ?? 0) > 0
+  // On macOS the system itself says whose UI is at a point and which app has
+  // focus (screen-windows). The window list is read only where that is not
+  // available: it has no stacking order, and fails while the frontmost app is
+  // slow to answer.
+  const screen = hasPoints || targets.focused ? await readScreenWindows(targets.points) : null
+  const windows = !screen && (hasPoints || targets.focused) ? await listWindows() : []
+  const observes = OBSERVATION_COMMANDS.has(method)
   for (const point of targets.points ?? []) {
-    const app = appAt(point, windows, OBSERVATION_COMMANDS.has(method))
+    let app: string | undefined
+    if (screen) {
+      const placed = appAtPoint(point, screen)
+      // Where it cannot tell: the whole screen for a command that only looks,
+      // nowhere for one that sends input.
+      app = placed ? (placed.pid === process.pid ? THIS_APP : placed.name) : (observes ? SYSTEM_TARGETS.screen : undefined)
+    } else {
+      app = appAt(point, windows, observes)
+    }
     if (app) add(app)
     else unplaced = true
   }
   if (targets.focused) {
-    const focused = windows.find((window) => window.is_focused)
-    if (focused) add(ownerOf(focused))
+    const frontmost = screen && frontmostApp(screen)
+    const focused = screen
+      ? frontmost && (frontmost.pid === process.pid ? THIS_APP : frontmost.name)
+      : (() => { const window = windows.find((entry) => entry.is_focused); return window && ownerOf(window) })()
+    if (focused) add(focused)
     else unplaced = true
   }
   if (apps.size > 1 && !reread && targets.windowIds.length > 0) {
@@ -335,7 +354,8 @@ async function listWindows(): Promise<WindowEntry[]> {
 }
 
 /**
- * The app whose window is on top at a screen point. The window list is not in
+ * The app whose window is on top at a screen point, from the window list:
+ * where the window server cannot be asked (see placeCall). The list is not in
  * stacking order, so: the focused window when it covers the point (it is in
  * front of every other), else the one app whose shown windows cover it. A
  * point no one app covers is the whole screen for a command that only looks,

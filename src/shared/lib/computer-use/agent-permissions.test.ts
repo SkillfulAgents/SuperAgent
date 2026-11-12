@@ -64,6 +64,70 @@ describe('AgentComputerUse session grant', () => {
   })
 })
 
+describe('AgentComputerUse any-app grant', () => {
+  let store: AgentComputerUse
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSettings.mockReturnValue({})
+    store = new AgentComputerUse('agent-1')
+  })
+
+  it.each(['timed', 'always'] as const)('a %s grant covers every app, the read-only level and a call whose app is unknown, but no shell script', async (grantType) => {
+    await store.grant('use_any_application', grantType)
+    expect(await store.check('use_application', 'Notes')).toBe('granted')
+    expect(await store.check('use_application', 'Safari')).toBe('granted')
+    // A click at a screen point the window list could not place.
+    expect(await store.check('use_application', undefined)).toBe('granted')
+    expect(await store.check('list_apps_windows')).toBe('granted')
+    expect(await store.check('use_host_shell')).toBe('prompt_needed')
+  })
+
+  it('saves the always grant in settings, and reads one saved there', async () => {
+    await store.grant('use_any_application', 'always')
+    expect(mockMutateSettings).toHaveBeenLastCalledWith({
+      computerUse: { agentPermissions: { 'agent-1': { grants: [{ level: 'use_any_application', grantType: 'always' }] } } },
+    })
+    // Another actor (after a restart, say) reads it back.
+    expect(await new AgentComputerUse('agent-1').check('use_application', undefined)).toBe('granted')
+    expect(await new AgentComputerUse('agent-2').check('use_application', 'Notes')).toBe('prompt_needed')
+  })
+
+  it('keeps a timed grant in memory only, until it expires', async () => {
+    vi.useFakeTimers()
+    try {
+      await store.grant('use_any_application', 'timed')
+      expect(mockMutateSettings).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(14 * 60_000)
+      expect(await store.check('use_application', undefined)).toBe('granted')
+      vi.advanceTimersByTime(2 * 60_000)
+      expect(await store.check('use_application', undefined)).toBe('prompt_needed')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ends with its own revoke, leaving a one-app grant', async () => {
+    await store.grant('use_application', 'always', 'Notes')
+    await store.grant('use_any_application', 'always')
+    await store.revoke('use_any_application')
+    expect(await store.check('use_application', 'Safari')).toBe('prompt_needed')
+    expect(await store.check('use_application', 'Notes')).toBe('granted')
+  })
+
+  it('is not ended by revoking one app', async () => {
+    await store.grant('use_any_application', 'timed')
+    await store.revoke('use_application', 'Notes')
+    expect(await store.check('use_application', 'Notes')).toBe('granted')
+  })
+
+  it('still grants nothing lasting for an app grant that names no app', async () => {
+    await store.grant('use_application', 'always')
+    expect(await store.check('use_application', undefined)).toBe('prompt_needed')
+    expect(await store.check('use_application', 'Notes')).toBe('prompt_needed')
+  })
+})
+
 describe('AgentComputerUse app grants on Windows', () => {
   const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform')!
 

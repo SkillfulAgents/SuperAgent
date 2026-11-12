@@ -3,6 +3,7 @@ import type { userInputRequestManager } from '@shared/lib/tools/requests/request
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
 import type { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import type { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
+import { ANY_APPLICATION_LEVEL } from '@shared/lib/computer-use/types'
 import type { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import type * as sessionService from '@shared/lib/services/session-service'
 import type { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
@@ -495,8 +496,9 @@ function createComputerUseOps(state: AgentState, deps: LocalActorDeps): Computer
       const appName = computerUse.activeApp(sessionId)
       computerUse.clearActiveApp(sessionId)
       if (appName) await computerUse.revoke('use_application', appName)
-      // Taking the app back ends the session's any-app grant too: its next
-      // app asks again.
+      // Taking the app back ends the any-app grants too, the agent's and the
+      // session's: its next app asks again.
+      await computerUse.revoke(ANY_APPLICATION_LEVEL)
       computerUse.revokeSession(sessionId)
       state.sessions.emit(sessionId, { type: 'computer_use_app_changed', app: null })
       return { appName }

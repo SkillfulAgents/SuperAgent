@@ -181,7 +181,7 @@ const voiceSettingsPatchSchema = z.object({
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({
-  level: z.enum(['list_apps_windows', 'use_application', 'use_host_shell']),
+  level: z.enum(['list_apps_windows', 'use_application', 'use_any_application', 'use_host_shell']),
   appName: z.string().optional(),
   grantType: z.literal('always'),
 }).strict()

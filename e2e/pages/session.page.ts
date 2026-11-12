@@ -608,6 +608,8 @@ export class SessionPage {
   async approveComputerUseAlways() {
     const container = this.page.locator('[data-testid="computer-use-request"]').first()
     await container.locator('[data-testid="computer-use-always-allow-btn"]').click()
+    // The menu is portalled out of the card.
+    await this.page.locator('[data-testid="computer-use-always-allow-option"]').click()
   }
 
   async denyComputerUse() {

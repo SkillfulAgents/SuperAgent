@@ -5076,7 +5076,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
-    const { toolUseId, method, params, permissionLevel, appName, grantType, decline, declineReason } = body
+    const { toolUseId, method, params, permissionLevel, appName, grantType, grantAnyApp, decline, declineReason } = body
 
     if (!toolUseId) {
       return c.json({ error: 'toolUseId is required' }, 400)
@@ -5109,6 +5109,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       permissionLevel: permissionLevel || 'use_application',
       appName,
       grantType: grantTypeOf(grantType),
+      ...(grantAnyApp === true && { grantAnyApp: true }),
     })
     return hostRunResponse(c, outcome, 'computer use')
   } catch (error) {
