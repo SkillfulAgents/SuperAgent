@@ -74,12 +74,20 @@ export function HomeTriggers({
   onSelectCompletedTasks,
   className,
 }: HomeTriggersProps) {
-  const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
-  const { data: cancelledWebhooksData } = useWebhookTriggers(agentSlug, 'cancelled')
+  const { data: webhookTriggersData } = useWebhookTriggers(agentSlug)
   const { data: cancelledTasksData } = useScheduledTasks(agentSlug, 'cancelled')
   const { data: completedSessionsData } = useCompletedOneTimeSessions(agentSlug)
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const [showDeleted, setShowDeleted] = useState(false)
+
+  // One read answers both lists. A failed trigger shows in neither.
+  const [liveWebhooks, cancelledWebhooks] = useMemo(() => {
+    const all = Array.isArray(webhookTriggersData) ? webhookTriggersData : []
+    return [
+      all.filter((trigger) => trigger.status === 'active' || trigger.status === 'paused'),
+      all.filter((trigger) => trigger.status === 'cancelled'),
+    ]
+  }, [webhookTriggersData])
 
   const items = useMemo<TriggerItem[]>(() => {
     const cronItems: TriggerItem[] = scheduledTasks.map((task) => ({
@@ -87,7 +95,7 @@ export function HomeTriggers({
       createdAtMs: new Date(task.createdAt).getTime(),
       task,
     }))
-    const webhookItems: TriggerItem[] = (webhookTriggersData ?? []).map((trigger) => ({
+    const webhookItems: TriggerItem[] = liveWebhooks.map((trigger) => ({
       kind: 'webhook',
       createdAtMs: new Date(trigger.createdAt).getTime(),
       trigger,
@@ -102,7 +110,7 @@ export function HomeTriggers({
       : []
     return [...cronItems, ...webhookItems, ...inboundItems]
       .sort((a, b) => b.createdAtMs - a.createdAtMs)
-  }, [scheduledTasks, webhookTriggersData, activityStats?.inboundXAgent])
+  }, [scheduledTasks, liveWebhooks, activityStats?.inboundXAgent])
 
   const deletedItems = useMemo<DeletableTriggerItem[]>(() => {
     const cronItems: DeletableTriggerItem[] = (Array.isArray(cancelledTasksData) ? cancelledTasksData : []).map((task) => ({
@@ -110,13 +118,13 @@ export function HomeTriggers({
       createdAtMs: new Date(task.createdAt).getTime(),
       task,
     }))
-    const webhookItems: DeletableTriggerItem[] = (Array.isArray(cancelledWebhooksData) ? cancelledWebhooksData : []).map((trigger) => ({
+    const webhookItems: DeletableTriggerItem[] = cancelledWebhooks.map((trigger) => ({
       kind: 'webhook',
       createdAtMs: new Date(trigger.createdAt).getTime(),
       trigger,
     }))
     return [...cronItems, ...webhookItems].sort((a, b) => b.createdAtMs - a.createdAtMs)
-  }, [cancelledTasksData, cancelledWebhooksData])
+  }, [cancelledTasksData, cancelledWebhooks])
 
   const completedCount = completedSessionsData?.length ?? 0
   const hasDeleted = deletedItems.length > 0

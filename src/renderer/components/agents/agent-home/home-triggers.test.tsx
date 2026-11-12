@@ -40,20 +40,20 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useCompletedOneTimeSessions: (...args: unknown[]) => mockUseCompletedOneTimeSessions(...args),
 }))
 
+const webhook = {
+  id: 'webhook-a',
+  agentSlug: 'agent-a',
+  kind: 'custom',
+  triggerType: 'CUSTOM_WEBHOOK',
+  prompt: 'Handle it',
+  name: 'Inbound webhook',
+  status: 'active',
+  fireCount: 4,
+  createdAt: new Date('2026-07-01T00:00:00.000Z'),
+}
+const webhookList = vi.hoisted(() => ({ current: [] as unknown[] }))
 vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
-  useWebhookTriggers: (_slug: string, status: string) => ({
-    data: status === 'active' ? [{
-      id: 'webhook-a',
-      agentSlug: 'agent-a',
-      kind: 'custom',
-      triggerType: 'CUSTOM_WEBHOOK',
-      prompt: 'Handle it',
-      name: 'Inbound webhook',
-      status: 'active',
-      fireCount: 4,
-      createdAt: new Date('2026-07-01T00:00:00.000Z'),
-    }] : [],
-  }),
+  useWebhookTriggers: () => ({ data: webhookList.current }),
   useCancelWebhookTrigger: () => ({ mutate: vi.fn(), isPending: false }),
   usePauseWebhookTrigger: () => ({ mutate: vi.fn(), isPending: false }),
   useResumeWebhookTrigger: () => ({ mutate: vi.fn(), isPending: false }),
@@ -85,6 +85,7 @@ const task: ApiScheduledTask = {
 describe('HomeTriggers activity charts', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    webhookList.current = [webhook]
     mockUseCompletedOneTimeSessions.mockReturnValue({ data: [] })
     mockUseAgentActivityStats.mockReturnValue({
       data: {
@@ -198,6 +199,7 @@ describe('HomeTriggers activity charts', () => {
 describe('HomeTriggers rows', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    webhookList.current = [webhook]
     mockUseCompletedOneTimeSessions.mockReturnValue({ data: [] })
     mockUseAgentActivityStats.mockReturnValue({ data: undefined, isError: true })
   })
@@ -259,6 +261,20 @@ describe('HomeTriggers rows', () => {
     expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Run Now' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Delete Cron' })).not.toBeInTheDocument()
+  })
+
+  it('lists live webhooks, puts cancelled ones under deleted and hides failed ones, from one read', () => {
+    webhookList.current = [
+      webhook,
+      { ...webhook, id: 'webhook-paused', name: 'Paused webhook', status: 'paused' },
+      { ...webhook, id: 'webhook-cancelled', name: 'Cancelled webhook', status: 'cancelled' },
+      { ...webhook, id: 'webhook-failed', name: 'Failed webhook', status: 'failed' },
+    ]
+    renderTriggers({ scheduledTasks: [] })
+
+    expect(screen.getAllByTestId('home-trigger-row-webhook')).toHaveLength(2)
+    expect(screen.getByText('Show 1 deleted')).toBeInTheDocument()
+    expect(screen.queryByText('Failed webhook')).not.toBeInTheDocument()
   })
 
   it('shows the webhook menu without Run Now', () => {
