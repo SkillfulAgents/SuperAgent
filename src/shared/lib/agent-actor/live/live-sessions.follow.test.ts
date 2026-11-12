@@ -222,6 +222,18 @@ describe('LiveSessions.follow', () => {
       expect(v.events()[1]).toEqual({ type: 'computer_use_app_changed', app: 'Safari' })
     })
 
+    it.each([
+      { type: 'session_idle', isActive: false },
+      { type: 'session_error', error: 'connection lost', isActive: false },
+    ])('tells the host a turn ended on $type, so it lets go of the agent\'s cursor', (event) => {
+      const turnsEnded = () => live.host.sends.filter(([name]) => name === 'computerUseTurnEnded').map(([, sent]) => sent)
+      sessions().emit(SESSION, { type: 'stream_delta', text: 'working' })
+      expect(turnsEnded()).toEqual([])
+
+      sessions().emit(SESSION, event)
+      expect(turnsEnded()).toEqual([{ sessionId: SESSION }])
+    })
+
     it('misses nothing that happens while its snapshot is being prepared, and hears it only once', async () => {
       const other = viewer()
       await sessions().follow(SESSION, undefined, other.onFrame)
