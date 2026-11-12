@@ -11,8 +11,8 @@ Browser use is turned off for this workspace. [Open Browser Use settings](/setti
 Rules:
 
 - Write the path exactly as `/settings/<tab>`, using a tab ID from the table
-  below. No host, no query string, no trailing slash. Any other path is treated
-  as a normal web link.
+  below. No host, no query string, no trailing slash. Any other path that is not
+  one of your files (see "Your files" below) shows as plain text.
 - The link only opens Settings. You cannot change settings yourself, so tell
   the user what to change once they are there.
 - Links work only in the app's chat. In Slack, email, Telegram, or other chat
@@ -62,7 +62,7 @@ Mount the folder from the Volumes section on [your agent's home page](/agents/sa
 ```
 
 The same rules apply: exact path, no host, query string, or trailing slash,
-and in-app chat only. Any other agent path is treated as a normal web link.
+and in-app chat only. Any other agent path shows as plain text.
 `/agents/<slug>` opens the top of the agent home, so name the section the user
 needs (e.g. "Volumes", "Triggers", "Skills") and say it may be further down the
 page: "If you don't see it, scroll down."
@@ -77,3 +77,23 @@ page: "If you don't see it, scroll down."
 | `/agents/<slug>/x-agent-permissions` | Connect this agent to others | "Global permissions", per-agent "Read sessions" and "Send messages" (agent owner only) |
 | `/agents/<slug>/dashboards/<dashboard-slug>` | One dashboard | The dashboard itself; the slug comes from `create_dashboard` or `list_dashboards` |
 | `/agents/<slug>/tasks/<task-id>` | One scheduled task | "Schedule", "Next Run", "Edit Schedule", "Edit Instructions", "Runs"; the ID comes from `schedule_task` or `list_scheduled_tasks` |
+
+## Your files
+
+In the app, a Markdown link to one of your files opens it in the side panel,
+and an image path shows the picture.
+
+```markdown
+[The report](/workspace/out/report.md)
+![Chart](/workspace/out/chart.png)
+[All outputs](/workspace/out/)
+```
+
+- In chat, write the absolute path: `/workspace/...`, or `/mounts/<drive>/...`
+  for a file in a drive. A relative path in chat shows as plain text.
+- Inside a Markdown file you write, a relative path works from that file's
+  folder: `![chart](shots/chart.png)` in `/workspace/blog/draft.md` shows
+  `/workspace/blog/shots/chart.png`.
+- End a folder link with `/` to open the folder browser.
+- File links open only in the app. In Slack, email, Telegram, or other chat
+  integrations, name the file in words.

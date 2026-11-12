@@ -1,12 +1,13 @@
 import { isMountPath, parseMountPath, toWorkspaceRelativePath } from './workspace-path'
 
+/** Escape each segment of a path, keeping its slashes, a leading one included. */
+export function encodePathSegments(path: string): string {
+  return path.split('/').map(segment => encodeURIComponent(segment)).join('/')
+}
+
 /** Convert a container workspace path into safely encoded API path segments. */
 export function encodeWorkspaceFilePath(filePath: string): string {
-  return toWorkspaceRelativePath(filePath)
-    .split('/')
-    .filter(Boolean)
-    .map(segment => encodeURIComponent(segment))
-    .join('/')
+  return encodePathSegments(toWorkspaceRelativePath(filePath).split('/').filter(Boolean).join('/'))
 }
 
 /** The app route that serves a workspace file's bytes, or a drive file's by the path the agent sees it at. */
@@ -32,14 +33,29 @@ export function publicWorkspaceFileUrl(baseUrl: string, agentSlug: string, fileP
   return `${baseUrl.replace(/\/+$/, '')}${getAgentFileApiPath(agentSlug, filePath)}${inline ? '?inline=true' : ''}`
 }
 
-/** The absolute path a markdown url names as a local file (`/abs` or `file:///abs`), or null. */
-export function localFilePath(url: string): string | null {
+/**
+ * The absolute path a markdown url names as a local file (`/abs` or `file:///abs`), or null.
+ * With a `folder`, a relative url resolves from it. A folder keeps its trailing slash.
+ * Each segment is decoded once: a stray `%` keeps its raw name, and an escaped `/` names nothing.
+ */
+export function localFilePath(url: string, folder?: string): string | null {
+  // A host is not a local file, and `//localhost` would parse as one. A bare heading or query names no path.
+  if (url === '' || url.startsWith('//') || url.startsWith('#') || url.startsWith('?')) return null
+  let pathname: string
   try {
-    // Only an absolute path reads as its file: form. `//host/x` and relative paths stay unresolved.
-    const parsed = new URL(/^\/(?!\/)/.test(url) ? `file://${url}` : url)
+    // Without a folder a relative url does not parse, and any other scheme fails the file: check.
+    const parsed = new URL(url.startsWith('/') ? `file://${url}` : url, folder === undefined ? undefined : `file://${encodePathSegments(folder)}/`)
     if (parsed.protocol !== 'file:' || parsed.hostname !== '') return null
-    return decodeURIComponent(parsed.pathname)
+    pathname = parsed.pathname
   } catch {
     return null
   }
+  const segments = pathname.split('/').map((segment) => {
+    try {
+      return decodeURIComponent(segment)
+    } catch {
+      return segment
+    }
+  })
+  return segments.some(segment => segment.includes('/')) ? null : segments.join('/')
 }

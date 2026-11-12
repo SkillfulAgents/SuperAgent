@@ -1,5 +1,5 @@
 import { parseMountPath, toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
-import { encodeWorkspaceFilePath, getAgentFileApiPath } from '@shared/lib/utils/workspace-file-url'
+import { encodeWorkspaceFilePath, getAgentFileApiPath, localFilePath } from '@shared/lib/utils/workspace-file-url'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 /**
@@ -25,37 +25,15 @@ export function isSafeWorkspaceFilePath(filePath: string): boolean {
 
 export { encodeWorkspaceFilePath, getAgentFileApiPath }
 
-const encodePath = (filePath: string) => filePath.split('/').map(encodeURIComponent).join('/')
-
-/**
- * The agent file a path in agent markdown names, or null. The reference is URL text, decoded once here.
- * A segment with a stray `%` keeps its raw name.
- */
-export function resolveAgentFilePath(reference: string, folder: string | null): string | null {
-  // A host is not one of the agent's files, and `//localhost` would parse as one.
-  if (reference.startsWith('//')) return null
-  let pathname: string
-  try {
-    // With no folder a relative reference does not parse, and any other scheme fails the file: check.
-    const parsed = new URL(reference.startsWith('/') ? `file://${reference}` : reference, folder === null ? undefined : `file://${encodePath(folder)}/`)
-    if (parsed.protocol !== 'file:' || parsed.hostname !== '' || parsed.pathname.endsWith('/')) return null
-    pathname = parsed.pathname
-  } catch {
-    return null
-  }
-  const filePath = pathname.split('/').map((segment) => {
-    try {
-      return decodeURIComponent(segment)
-    } catch {
-      return segment
-    }
-  }).join('/')
-  return isSafeWorkspaceFilePath(filePath) || parseMountPath(filePath)?.path ? filePath : null
+/** Whether a container path is one of the agent's own files or folders: in its workspace or one of its drives. */
+export function isAgentFilePath(filePath: string): boolean {
+  return isSafeWorkspaceFilePath(filePath) || Boolean(parseMountPath(filePath)?.path)
 }
 
-/** The one spelling a resolved agent file travels as from the URL policy to the link that opens it. */
-export function agentFileHref(filePath: string): string {
-  return `file://${encodePath(filePath)}`
+/** The agent file or folder a path in agent markdown names, or null. A relative path resolves only from a `folder`. */
+export function resolveAgentFilePath(reference: string, folder?: string): string | null {
+  const filePath = localFilePath(reference, folder)
+  return filePath !== null && isAgentFilePath(filePath) ? filePath : null
 }
 
 interface AgentFileUrlOptions {

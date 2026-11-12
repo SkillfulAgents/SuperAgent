@@ -31,6 +31,12 @@ describe('segments', () => {
     expect(shape(text, false).segments.at(-1)).toEqual({ kind: 'visual', source: '![a](/workspace/a.png)' })
   })
 
+  it('names an image by each segment decoded once', () => {
+    // An escaped slash names no file, and a stray % keeps its raw name.
+    expect(shape('![a](/workspace/a%2Fb.png)', false).segments).toEqual([{ kind: 'text', source: '![a](/workspace/a%2Fb.png)' }])
+    expect(shape('![a](/workspace/90%done/a.png)', false).segments).toEqual([{ kind: 'visual', source: '![a](/workspace/90%done/a.png)' }])
+  })
+
   it('has no segments for an empty reply', () => {
     expect(shape('', false)).toEqual({ segments: [], tail: '' })
   })

@@ -89,7 +89,7 @@ function imageRange(image: PlacedToken, placed: PlacedToken[]): PlacedToken | nu
   return placed.find(({ token }) => token === cut) ?? null
 }
 
-/** The workspace path of an image the app draws inline (`workspaceImageUrl`): an absolute `/workspace` or `file:///workspace` path. */
+/** The workspace path of an image the app draws inline (`createMarkdownUrlTransform`): an absolute `/workspace` or `file:///workspace` path. */
 function workspaceImagePath(url: string): string | null {
   const path = localFilePath(url)
   return path?.startsWith('/workspace/') && isChatImage(path) ? path : null
