@@ -165,7 +165,7 @@ describe('driving a cloud workspace', () => {
     volumes.mounts = [MOUNT]
     volumes.canAddMount = true
     render(<HomeVolumes agentSlug="a1" hiddenVolumeId="v1" />)
-    expect(screen.queryByText('No drives yet')).toBeNull()
+    expect(screen.queryByTestId('home-empty-state')).toBeNull()
   })
 
   it('starts folded where the page\'s look says so', async () => {

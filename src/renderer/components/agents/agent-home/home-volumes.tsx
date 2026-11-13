@@ -27,7 +27,7 @@ import {
   Loader2,
   RefreshCw,
 } from 'lucide-react'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { openableProps } from '@renderer/lib/openable'
 import { canUseHostFeatures } from '@renderer/lib/capabilities'
@@ -73,10 +73,7 @@ export function HomeVolumes({ agentSlug, hiddenVolumeId, className }: HomeVolume
           ))}
         </div>
       ) : volumes.mounts.length === 0 && (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No drives yet</p>
-          <p className="text-xs mt-1">Add a saved drive{volumes.canCreateMount ? ' or create a new one' : ''} to give this agent read/write access.</p>
-        </div>
+        <HomeEmptyState description={`Add a saved drive${volumes.canCreateMount ? ' or create a new one' : ''} to give this agent read/write access.`} />
       )}
 
       <div className="mt-3 px-4">
