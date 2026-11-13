@@ -14,7 +14,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { HomeCollapsible } from './home-collapsible'
+import { HomeCollapsible, HomeEmptyState } from './home-collapsible'
 
 interface HomeAgentIntegrationsProps {
   agentSlug: string
@@ -99,29 +99,29 @@ function HomeAgentIntegrationsBody({ agentSlug, rows }: { agentSlug: string; row
           })}
         </div>
       ) : (
-        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">Not configured yet</p>
-          <p className="text-xs mt-1">
-            {providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
-          </p>
+        <HomeEmptyState
+          description={providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
+        >
           {providers.length > 0 && <div className="mt-3 flex flex-col gap-1.5">
             {providers.map((tile) => (
+              // One soft grey tile per service: the fill is its edge, so there is no border or shadow to compete
+              // with the panel's. Only the icon chip keeps its outline, light in both themes so black marks read.
               <button
                 key={tile.slug}
                 type="button"
                 onClick={() => setSetupProvider(tile)}
                 aria-label={`Set up ${tile.label}`}
-                className="flex items-center gap-2.5 rounded-lg border border-border bg-background p-2 text-left shadow-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex items-center gap-2.5 rounded-lg bg-muted/60 p-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:bg-zinc-200 shadow-sm">
                   <ServiceIcon slug={tile.slug} fallback="mcp" className="h-4 w-4" />
                 </div>
                 <span className="min-w-0 flex-1 truncate text-xs font-normal text-foreground">{tile.label}</span>
-                <span aria-hidden="true" className="shrink-0 text-2xs font-normal text-muted-foreground">Set up</span>
+                <span aria-hidden="true" className="shrink-0 pr-1 text-2xs font-normal text-muted-foreground">Set up</span>
               </button>
             ))}
           </div>}
-        </div>
+        </HomeEmptyState>
       )}
       {rows.length > 0 && providers.length > 0 && (
         <div className="flex items-center justify-between mt-1 px-4 pb-1">
