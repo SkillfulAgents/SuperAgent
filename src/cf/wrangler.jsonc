@@ -7,7 +7,9 @@
 // are set the same way.
 {
   "name": "superagent",
-  "main": "index.ts",
+  // build-worker.mjs emits the server code with lazy imports into dist/cf-worker; wrangler bundles that.
+  "main": "../../dist/cf-worker/src/cf/index.ts",
+  "build": { "command": "node src/cf/build-worker.mjs" },
   "compatibility_date": "2026-07-01",
   "compatibility_flags": ["nodejs_compat"],
   "minify": true,
