@@ -223,6 +223,49 @@ describe('XAgentPermissionsView', () => {
     })
   })
 
+  it('shows what an unset dropdown resolves to and where it comes from', async () => {
+    policies = [policy('invoke', 'target', 'allow'), policy('read', null, 'allow')]
+    renderView()
+
+    const globalRead = within(await screen.findByTestId('x-agent-policy-global-read')).getByTestId('policy-dropdown-trigger')
+    expect(globalRead).toHaveAttribute('data-inherited', 'false')
+    const globalInvoke = within(screen.getByTestId('x-agent-policy-global-invoke')).getByTestId('policy-dropdown-trigger')
+    expect(globalInvoke).toHaveAttribute('data-inherited', 'true')
+    expect(globalInvoke).toHaveTextContent('Needs approval (default)')
+
+    fireEvent.click(screen.getByTestId('x-agent-permissions-trigger-target'))
+    const [read, invoke] = within(screen.getByTestId('x-agent-permissions-popover-target')).getAllByTestId('policy-dropdown-trigger')
+    expect(read).toHaveAttribute('data-inherited', 'true')
+    expect(read).toHaveTextContent('Always allow (from Global)')
+    expect(invoke).toHaveAttribute('data-inherited', 'false')
+    expect(invoke).toHaveTextContent('Always allow')
+  })
+
+  it('shows the default on a per-agent dropdown when Global is unset', async () => {
+    policies = []
+    renderView()
+
+    fireEvent.click(await screen.findByTestId('x-agent-permissions-trigger-target'))
+    const [read] = within(screen.getByTestId('x-agent-permissions-popover-target')).getAllByTestId('policy-dropdown-trigger')
+    expect(read).toHaveAttribute('data-inherited', 'true')
+    expect(read).toHaveTextContent('Needs approval (default)')
+  })
+
+  it('offers Reset to default only on a dropdown with something set', async () => {
+    policies = [policy('read', null, 'allow')]
+    renderView()
+
+    fireEvent.click(within(await screen.findByTestId('x-agent-policy-global-read')).getByTestId('policy-dropdown-trigger'))
+    fireEvent.click(await screen.findByText('Reset to default'))
+    await waitFor(() => {
+      expect(lastPatchBody()).toEqual({ operation: 'read', targetSlug: null, decision: 'default' })
+    })
+
+    fireEvent.click(within(screen.getByTestId('x-agent-policy-global-invoke')).getByTestId('policy-dropdown-trigger'))
+    await screen.findByTestId('policy-menu-allow')
+    expect(screen.queryByTestId('policy-menu-default')).not.toBeInTheDocument()
+  })
+
   it('badges an explicitly blocked agent in the list', async () => {
     policies = [policy('invoke', 'target', 'block')]
     renderView()
