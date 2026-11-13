@@ -120,16 +120,14 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
   }
 
   setMaxBoundParameters(driver.maxBoundParameters)
-  if (options.migrate !== false) await migrate(handle, driver, dbPath)
+  if (options.migrate !== false) await migrate(handle, driver.name, dbPath)
   opened = handle
   return handle.db
 }
 
-async function migrate(handle: OpenedDatabase, driver: DatabaseDriver, dbPath: string | undefined): Promise<void> {
-  const driverName = driver.name
+async function migrate(handle: OpenedDatabase, driverName: string, dbPath: string | undefined): Promise<void> {
   try {
-    if (driver.migrateSchema) await driver.migrateSchema(handle.db, migrationBundle)
-    else await migrateFromBundle(handle.db)
+    await migrateFromBundle(handle.db)
   } catch (err) {
     captureException(err, {
       tags: { component: 'database', operation: 'migrate', driver: driverName },
