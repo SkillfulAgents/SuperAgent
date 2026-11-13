@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@shared/lib/utils/cn'
+import { isWindowActive, subscribeToWindowActive } from '@renderer/lib/window-active'
+import {
+  createHalftoneGpuField,
+  halftoneGpuAvailable,
+  parseHalftoneInk,
+  type HalftoneGpuField,
+} from './halftone-gpu'
 import {
   HALFTONE_CURSOR_INFLUENCE,
   HalftoneFrameRenderer,
@@ -14,6 +21,12 @@ import {
  *   - `pulse`   — slow rings from center, the needs-input state (drawn in orange
  *                 by the caller via the wrapper's ink color).
  * State changes the *character* of motion (speed/dim), set by the caller.
+ *
+ * It animates only while it can be seen and the window is the one in use: off
+ * screen, in a hidden document, or in a window left open behind another app it
+ * holds its last frame. A halftone that does not follow the pointer (a view's
+ * backdrop) is computed and drawn on the GPU where it can be; one that does
+ * (a card) on Canvas2D. docs/halftone-rendering.md has the measurements.
  */
 
 export type { HalftoneState } from './halftone-renderer'
@@ -99,32 +112,50 @@ export function Halftone({
 }: HalftoneProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // False once the GPU has let this halftone down, which sends it to Canvas2D for good.
+  const [gpuAllowed, setGpuAllowed] = useState(true)
+  // The pointer's influence eases per dot over time: state the GPU field does not keep.
+  const surface = gpuAllowed && !followPointer && halftoneGpuAvailable() ? 'gpu' : '2d'
 
   useEffect(() => {
     const wrap = wrapRef.current
     const canvas = canvasRef.current
     if (!wrap || !canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
 
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     const fill = color ?? getComputedStyle(canvas).color
     const speed = (speedProp ?? (state === 'idle' ? 0.2 : state === 'alert' ? 1.6 : 0.75)) * speedScale
-    const renderer = new HalftoneFrameRenderer({
-      motif,
-      state,
-      color: fill,
-      spacing,
-      maxRadius,
-      vignette,
-      contrast,
-      dim,
-      seed,
-    })
+    const field = { motif, state, spacing, maxRadius, vignette, contrast, dim, seed }
+
+    let stopped = false
+    let gpu: HalftoneGpuField | null = null
+    let ctx: CanvasRenderingContext2D | null = null
+    let renderer: HalftoneFrameRenderer | null = null
+    if (surface === 'gpu') {
+      const ink = parseHalftoneInk(fill)
+      gpu = ink && createHalftoneGpuField(canvas, {
+        ...field,
+        ink,
+        onLost: () => {
+          if (!stopped) setGpuAllowed(false)
+        },
+      })
+      if (!gpu) {
+        // A canvas keeps the kind of context it was first asked for, so the
+        // Canvas2D fallback draws on a fresh one (the canvas is keyed by surface).
+        setGpuAllowed(false)
+        return
+      }
+    } else {
+      ctx = canvas.getContext('2d')
+      if (!ctx) return
+      renderer = new HalftoneFrameRenderer({ ...field, color: fill })
+    }
 
     let raf = 0
-    let stopped = false
     let ready = false
+    // Whether the canvas shows a frame at its current size (resizing clears it).
+    let painted = false
     let lastDrawTime = 0
     let t = 0
     let W = 0, H = 0
@@ -155,15 +186,22 @@ export function Halftone({
       W = nextWidth
       H = nextHeight
       pixelRatio = nextPixelRatio
+      painted = false
       canvas!.width = Math.round(W * pixelRatio)
       canvas!.height = Math.round(H * pixelRatio)
-      ctx!.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
-      renderer.resize(W, H)
+      ctx?.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+      renderer?.resize(W, H)
+      gpu?.resize(W, H, pixelRatio)
       ready = true
       return true
     }
 
     function draw(frameScale = 1) {
+      painted = true
+      if (gpu) {
+        gpu.draw(t)
+        return
+      }
       // Pointer position relative to this canvas (recomputed once per frame).
       let mActive = false, mx = 0, my = 0
       if (pointerSeen) {
@@ -176,7 +214,7 @@ export function Halftone({
           my >= -HALFTONE_CURSOR_INFLUENCE &&
           my <= H + HALFTONE_CURSOR_INFLUENCE
       }
-      renderer.draw(ctx!, t, 'alpha-buckets', mx, my, mActive, frameScale)
+      renderer!.draw(ctx!, t, 'alpha-buckets', mx, my, mActive, frameScale)
     }
 
     // IntersectionObserver callbacks are asynchronous. Starting as visible
@@ -184,6 +222,7 @@ export function Halftone({
     // classify it, which can starve those callbacks on large home boards.
     // Browsers without IntersectionObserver retain the eager fallback.
     let intersecting = typeof IntersectionObserver === 'undefined'
+    let windowActive = isWindowActive()
     let pointerListening = false
 
     const setPointerListening = (next: boolean) => {
@@ -201,7 +240,7 @@ export function Halftone({
     const frameTolerance = 4
     function frame(now: number) {
       raf = 0
-      if (stopped || !ready || !intersecting || document.hidden) return
+      if (stopped || !ready || !intersecting || !windowActive || document.hidden) return
       const elapsed = lastDrawTime === 0 ? frameInterval : now - lastDrawTime
       if (elapsed >= frameInterval - frameTolerance) {
         const frameScale = elapsed / (1000 / 60)
@@ -218,7 +257,10 @@ export function Halftone({
     }
 
     const syncAnimation = () => {
-      const active = ready && !reduce && intersecting && !document.hidden && !stopped
+      const visible = ready && intersecting && !document.hidden && !stopped
+      const active = visible && !reduce && windowActive
+      // Held still in an inactive window, it still shows a frame.
+      if (visible && !reduce && !windowActive && !painted) draw(0)
       setPointerListening(active && followPointer)
       if (active && raf === 0) {
         lastDrawTime = 0
@@ -267,19 +309,29 @@ export function Halftone({
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
 
+    // A still frame under reduced motion has nothing to pause.
+    const unsubscribeWindowActive = reduce
+      ? undefined
+      : subscribeToWindowActive((next) => {
+          windowActive = next
+          syncAnimation()
+        })
+
     return () => {
       stopped = true
       cancelAnimationFrame(raf)
       ro.disconnect()
       io?.disconnect()
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      unsubscribeWindowActive?.()
       setPointerListening(false)
+      gpu?.dispose()
     }
-  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed, followPointer])
+  }, [motif, state, speedProp, color, spacing, maxRadius, vignette, contrast, speedScale, dim, seed, followPointer, surface])
 
   return (
     <div ref={wrapRef} className={cn('h-full w-full', className)} aria-hidden>
-      <canvas ref={canvasRef} className="block h-full w-full" />
+      <canvas key={surface} ref={canvasRef} className="block h-full w-full" />
     </div>
   )
 }

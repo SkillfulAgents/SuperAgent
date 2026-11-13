@@ -4,6 +4,50 @@ The homepage Halftone renderer batches visible dots into 32 alpha bands. Each
 non-empty band is emitted as one Canvas2D path and one `fill()`. Alpha uses the
 band midpoint, so the maximum mathematical quantization error is `1 / 64`.
 
+## Two surfaces, and when it animates
+
+A halftone draws on one of two surfaces:
+
+- **Canvas2D** (`halftone-renderer.ts`): every dot is computed in script and
+  drawn as an arc. This is the path for cards, which follow the pointer (the
+  pointer's influence eases per dot over time, so it needs per-dot state).
+- **GPU** (`halftone-gpu.ts`): a vertex shader computes each dot and draws it as
+  a point sprite, so a frame is a few uniforms and one draw call. This is the
+  path for a halftone with `followPointer={false}`: Agent Home's and its
+  sessions' full-view backdrop. It falls back to Canvas2D where hardware WebGL
+  is missing or its context is lost.
+
+The split is by size. Canvas2D costs the renderer's main thread (the field
+maths) and the GPU process (rasterizing the arc paths) in proportion to the dot
+count: about 4,000 dots on a card, about 62,000 on a 1734 × 1016 backdrop. The
+benchmarks below time one card's draw on the main thread only, so they never
+showed what the backdrop cost in both processes.
+
+The two files hold the same field. A change to the shading or a motif in one is
+made in the other; the GPU path was checked against the Canvas2D reference by
+rendering both at the same instant (flow and pulse, with and without vignette,
+and at a clock value of 5 × 10⁷) and comparing the ink in each dot's cell: the
+mean difference was under 0.3% of full coverage and the largest 2.4%.
+
+A halftone animates only while it is on screen, its document is not hidden, and
+its window is the one in use (`src/renderer/lib/window-active.ts`). A window left
+open behind another app is not hidden, so without the last condition it kept
+animating all day; it now holds its last frame instead.
+
+Measured in Electron 45 on an Apple silicon laptop at DPR 2, as a share of one
+core, renderer process + GPU process:
+
+| Fixture | Canvas2D | GPU | Window not in use |
+| --- | --- | --- | --- |
+| Full-view backdrop, 1734 × 1016, idle | 22% + 20% | 4% + 5% | 0% + 0% |
+| Sixteen 420 × 118 cards, idle | 16% + 15% | not used | 0% + 0% |
+
+A board of cards stays on Canvas2D because its cost is mostly not the dots:
+sixteen canvases each presenting 30 frames a second cost the GPU process about
+as much whichever way they are drawn (one WebGL context per card measured 22%,
+one shared context handing frames to each card 31%), and a page may hold only
+about sixteen live WebGL contexts.
+
 ## Performance benchmark
 
 Run both required browser modes:
