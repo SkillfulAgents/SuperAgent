@@ -39,7 +39,7 @@ export async function updateLinearConfig(id: string, update: (config: LinearConf
         let identity: LinearConfig['identity']
         try { identity = parseTaskJson(linearConfigSchema, other.config).identity } catch { continue }
         if (identity?.workspaceId === next.identity.workspaceId && identity.appUserId === next.identity.appUserId) {
-          throw new Error('This Linear app already belongs to another integration. Create a separate app for each agent.')
+          throw new Error('This Linear app already belongs to another add-on. Create a separate app for each agent.')
         }
       }
     }

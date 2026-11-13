@@ -21,14 +21,14 @@ export async function updateGitHubConfig(id: string, update: (config: GitHubConf
       .where(and(eq(chatIntegrations.id, id), eq(chatIntegrations.config, row.config), unique)).returning({ id: chatIntegrations.id }).get()
     if (changed) return next
   }
-  throw new Error('GitHub configuration changed or this app already belongs to another integration. Try again with a separate app for each agent.')
+  throw new Error('GitHub configuration changed or this app already belongs to another add-on. Try again with a separate app for each agent.')
 }
 
 export async function revokeGitHubAuthorization(id: string, version: string | undefined): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const { row, config } = await readGitHubIntegration(id)
     if (config.authorizationVersion !== version || config.pending || config.authorizationError) return
-    const message = 'GitHub access was removed or suspended. Reconnect this integration.'
+    const message = 'GitHub access was removed or suspended. Reconnect this add-on.'
     if (await requireIntegrationReconnect({ integrationId: id, expectedConfig: row.config,
       config: githubConfigSchema.parse({ ...config, authorizationError: message, mcp: undefined }), message })) return
   }

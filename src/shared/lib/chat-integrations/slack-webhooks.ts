@@ -203,7 +203,7 @@ export async function updateSlackWebhookSettings(record: AgentIntegrationRecord,
   if (webhooks === undefined && !secret && !botToken) return { reconnect: false }
   const stored = parseChatIntegrationConfig('slack', record.config) as SlackConfig | null
   if (!stored) {
-    if (webhooks !== undefined) throw new IntegrationSetupError('This Slack integration’s settings can’t be read. Fix its tokens first.')
+    if (webhooks !== undefined) throw new IntegrationSetupError('This Slack add-on’s settings can’t be read. Fix its tokens first.')
     return { reconnect: false }
   }
   if (botToken && !stored.botToken) await checkBotToken(botToken)

@@ -230,7 +230,7 @@ export async function createAgentApp(input: {
 }): Promise<{ config: Record<string, unknown>; verification?: VerificationProfile; release(): Promise<void> }> {
   const { provisioner, connection } = await provisionerFor(input.directoryId)
   if (provisioningOf(connection)?.integrationProvider !== input.integrationProvider) {
-    throw new IntegrationSetupError('This directory can’t create apps for this integration.')
+    throw new IntegrationSetupError('This directory can’t create apps for this add-on.')
   }
   const created = await provisioner.createApp({ ...input.identity, webhookUrl: input.webhookUrl, redirectUrl: input.redirectUrl })
   const provisionedApp: ProvisionedAppConfig = provisionedAppConfigSchema.parse({
@@ -282,7 +282,7 @@ async function rewriteIntegrationConfig(
 ): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const row = await db.select({ config: chatIntegrations.config }).from(chatIntegrations).where(eq(chatIntegrations.id, integrationId)).get()
-    if (!row) throw new IntegrationSetupError('This integration was deleted.', 404)
+    if (!row) throw new IntegrationSetupError('This add-on was deleted.', 404)
     const next = change(z.record(z.string(), z.unknown()).parse(JSON.parse(row.config)))
     const written = changesOf(await db.update(chatIntegrations)
       .set({ config: JSON.stringify(next), ...columns, updatedAt: new Date() })
@@ -302,7 +302,7 @@ const installStates = defineNamespace({
 /** The provider page that installs an installation's app, with a one-time state for its callback. */
 export async function startAgentAppInstall(integration: { id: string; provider: string; config: string }, redirectUrl: string): Promise<{ url: string }> {
   const provisioned = provisionedAppOf(integration.config)
-  if (!provisioned) throw new IntegrationSetupError('This integration’s app wasn’t created by Gamut.')
+  if (!provisioned) throw new IntegrationSetupError('This add-on’s app wasn’t created by Gamut.')
   const state = randomBytes(24).toString('base64url')
   await appState().insertIfAbsent(installStates.key(digestKeyPart(state)), { integrationId: integration.id, provider: integration.provider, redirectUrl })
   const url = new URL(provisioned.installUrl)
@@ -323,11 +323,11 @@ export async function completeAgentAppInstall(provider: string, input: { state: 
   const consumed = await appState().consume(installStates.key(digestKeyPart(input.state)))
   if (!consumed.consumed) return null
   const { integrationId, redirectUrl } = consumed.entry.value
-  if (consumed.entry.value.provider !== provider) throw new IntegrationSetupError('This install belongs to another integration.')
+  if (consumed.entry.value.provider !== provider) throw new IntegrationSetupError('This install belongs to another add-on.')
   if (input.error || !input.code) return { cancelled: true }
   const row = await db.select({ config: chatIntegrations.config }).from(chatIntegrations).where(eq(chatIntegrations.id, integrationId)).get()
   const provisioned = row && provisionedAppOf(row.config)
-  if (!provisioned) throw new IntegrationSetupError('This integration was deleted.', 404)
+  if (!provisioned) throw new IntegrationSetupError('This add-on was deleted.', 404)
   const { provisioner } = await provisionerFor(provisioned.directoryId)
   const connected = await provisioner.completeInstall(provisioned.app, input.code, redirectUrl)
   await rewriteIntegrationConfig(integrationId, (config) => ({

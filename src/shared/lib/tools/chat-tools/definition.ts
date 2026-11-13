@@ -30,18 +30,18 @@ export const listAvailableChatProvidersDef = {
 } as const
 
 export const listAgentIntegrationsDef = {
-  displayName: 'List Agent Integrations',
+  displayName: 'List Add-ons',
   parseInput: (i: unknown) => asObj<ListAgentIntegrationsInput>(i),
-  getSummary: () => 'List configured agent integrations',
+  getSummary: () => 'List configured add-ons',
 } as const
 
 export const addChatIntegrationDef = {
-  displayName: 'Add Chat Integration',
+  displayName: 'New Chat Add-on',
   parseInput: (i: unknown) => asObj<AddChatIntegrationInput>(i),
   getSummary: (i: unknown) => {
     const { provider, name } = asObj<AddChatIntegrationInput>(i)
-    if (name) return `Add ${provider || 'chat'}: ${name}`
-    return provider ? `Add ${provider} integration` : 'Add chat integration'
+    if (name) return `New ${provider || 'chat'} add-on: ${name}`
+    return provider ? `New ${provider} add-on` : 'New chat add-on'
   },
 } as const
 

@@ -161,10 +161,10 @@ They are sealed on the directory's row, apart from its own (`provisioning_creden
    - The callback consumes the state, then exchanges the code (Slack's `oauth.v2.access`) and writes the result (Slack's `botToken`). The installation goes `active`, and the host resumes it.
    - A replayed callback finds no state.
    - Installing with no click at all needs Slack's partner-only `managed_apps:install`.
-4. **Rename and icon.** `POST /:integrationId/app { name?, icon? }`. For Slack, this exports the manifest, changes `display_information.name` and `bot_user.display_name`, and updates it. `apps.icon.set` sets the icon. An icon that fails at creation leaves `iconSet: false`, and the integration page offers "Set icon".
+4. **Rename and icon.** `POST /:integrationId/app { name?, icon? }`. For Slack, this exports the manifest, changes `display_information.name` and `bot_user.display_name`, and updates it. `apps.icon.set` sets the icon. An icon that fails at creation leaves `iconSet: false`, and the add-on page offers "Set icon".
 5. **Delete.** Deleting the installation deletes its app (`cleanupIntegrationResource`).
 
-The client sees `provisionedApp` as `{ directoryId, installed, name, iconSet, settingsUrl? }`, never the app's secrets. The integration page's **App** card (`provisioned-app-card.tsx`) is the same for every provider.
+The client sees `provisionedApp` as `{ directoryId, installed, name, iconSet, settingsUrl? }`, never the app's secrets. The add-on page's **App** card (`provisioned-app-card.tsx`) is the same for every provider.
 
 ### Slack specifics
 
@@ -173,5 +173,5 @@ The client sees `provisionedApp` as `{ directoryId, installed, name, iconSet, se
 - **Credentials.** The admin pastes only the refresh token (`xoxe-…`): `tooling.tokens.rotate` takes nothing else and returns the access token (`xoxe.…`) and when it expires, so verifying is one rotation. Pasting the access token instead is refused with a message that says so. Added to a connected directory, the token must be for its workspace (a grid directory spans its workspaces); connecting one, it names its own.
 - **Apps.** An agent's app uses the manifest from `slackAppManifest` (the same one manual setup prefills), the directory's own app `slackDirectoryAppManifest` (four scopes, no events); both add `oauth_config.redirect_urls`. The directory's app gets the Gamut logo as its icon (`slack-directory-icon.ts`, inlined like the vCard photo), best effort. `apps.icon.set` is multipart. `apps.manifest.export` / `apps.manifest.update` rename, and `apps.manifest.delete` deletes.
 - **Limits.** The Manifest API is marked beta. `apps.manifest.create` and `apps.icon.set` are Tier 1 (about one a minute); apps are made one at a time from the setup form, so there is no queue yet.
-- **Apps made by hand** have only a bot token, and Slack has no API for a bot to rename itself. The connector records the app's id (`auth.test` → `bots.info`, host-owned `appId`), and the integration page links to the app's settings in Slack instead.
+- **Apps made by hand** have only a bot token, and Slack has no API for a bot to rename itself. The connector records the app's id (`auth.test` → `bots.info`, host-owned `appId`), and the add-on page links to the app's settings in Slack instead.
 

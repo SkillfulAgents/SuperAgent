@@ -122,7 +122,7 @@ agentIntegrationsRouter.get('/agents/:id/sessions/:sessionId', ResolveAgent(), A
     return c.json({ integrationId: mapping?.integrationId ?? null })
   } catch (error) {
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'session-integration' }, extra: { sessionId: c.req.param('sessionId') } })
-    return c.json({ error: 'Failed to resolve session integration' }, 500)
+    return c.json({ error: 'Failed to resolve session add-on' }, 500)
   }
 })
 
@@ -130,7 +130,7 @@ const IntegrationAgentRole = EntityAgentRole({
   paramName: 'integrationId',
   lookupFn: async (id: string) => getAgentIntegration(id),
   contextKey: 'agentIntegration',
-  entityName: 'Agent integration',
+  entityName: 'Agent add-on',
 })
 
 // Chat management permits agent users; private OAuth app management needs an owner.
@@ -151,7 +151,7 @@ agentIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), a
   } catch (error) {
     console.error('Failed to fetch agent integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'get-integration' }, extra: { integrationId: c.req.param('integrationId') } })
-    return c.json({ error: 'Failed to fetch agent integration' }, 500)
+    return c.json({ error: 'Failed to fetch agent add-on' }, 500)
   }
 })
 
@@ -185,7 +185,7 @@ agentIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => 
 const RequireSetupManagement: MiddlewareHandler = async (c, next) => {
   const provider = c.req.param('provider') ?? (await c.req.json()).provider
   const definition = agentIntegrationRegistry.getDefinition(provider)
-  if (!definition) return c.json({ error: 'Unknown integration provider' }, 400)
+  if (!definition) return c.json({ error: 'Unknown add-on provider' }, 400)
   return (definition.managementAccess ?? 'owner') === 'owner' ? AgentAdmin()(c, next) : AgentUser()(c, next)
 }
 // Read setup links before creating an installation, using the same management ACL.
@@ -205,7 +205,7 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'describe-setup' } })
-    return c.json({ error: 'Could not load integration setup' }, 500)
+    return c.json({ error: 'Could not load add-on setup' }, 500)
   }
 })
 agentIntegrationsRouter.post('/agents/:id', ResolveAgent(), RequireSetupManagement, createIntegration)
@@ -299,7 +299,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     if (failure) return c.json({ error: failure.error }, failure.status)
     console.error('Failed to create agent integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'create-integration' }, extra: { agentSlug: c.req.param('id') } })
-    return c.json({ error: 'Failed to create agent integration' }, 500)
+    return c.json({ error: 'Failed to create agent add-on' }, 500)
   }
 }
 
@@ -326,7 +326,7 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     const failure = setupError(error)
     if (failure) return c.json({ error: failure.error }, failure.status)
     captureException(error, { tags: { component: 'agent-integration', operation: 'authorize' } })
-    return c.json({ error: 'Could not authorize integration' }, 500)
+    return c.json({ error: 'Could not authorize add-on' }, 500)
   }
 })
 
@@ -363,13 +363,13 @@ agentIntegrationsRouter.post('/:integrationId/tools/:tool', IntegrationAgentRole
   try {
     const parsed = toolInvocationSchema.safeParse(await c.req.json().catch(() => ({})))
     if (!parsed.success) return c.json({ error: 'Invalid tool input' }, 400)
-    if (integration.status === 'paused') return c.json({ error: 'This integration is paused' }, 409)
+    if (integration.status === 'paused') return c.json({ error: 'This add-on is paused' }, 409)
     let connector = agentIntegrationManager.getConnector(integration.id)
     if (!connector) {
       try { await agentIntegrationManager.addIntegration(integration.id) } catch { /* reported by the manager */ }
       connector = agentIntegrationManager.getConnector(integration.id)
     }
-    if (!connector) return c.json({ error: 'This integration is not connected' }, 409)
+    if (!connector) return c.json({ error: 'This add-on is not connected' }, 409)
     const tool = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === toolName)
     if (!tool || (tool.exposure !== 'management' && tool.exposure !== 'both')) return c.json({ error: 'Unknown tool' }, 404)
     const result = await tool.execute(parsed.data.input, { source: 'management', userId: getCurrentUserId(c) })
@@ -465,7 +465,7 @@ agentIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), R
     if (failure) return c.json({ error: failure.error }, failure.status)
     console.error('Failed to update agent integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'update-integration' }, extra: { integrationId: c.req.param('integrationId') } })
-    return c.json({ error: 'Failed to update agent integration' }, 500)
+    return c.json({ error: 'Failed to update agent add-on' }, 500)
   }
 })
 
@@ -510,7 +510,7 @@ agentIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), 
 
     const deleted = await deleteAgentIntegration(id)
     if (!deleted) {
-      return c.json({ error: 'Agent integration not found' }, 404)
+      return c.json({ error: 'Agent add-on not found' }, 404)
     }
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'deleted' })
@@ -519,7 +519,7 @@ agentIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), 
   } catch (error) {
     console.error('Failed to delete agent integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'delete-integration' }, extra: { integrationId: c.req.param('integrationId') } })
-    return c.json({ error: 'Failed to delete agent integration' }, 500)
+    return c.json({ error: 'Failed to delete agent add-on' }, 500)
   }
 })
 
@@ -528,7 +528,7 @@ agentIntegrationsRouter.post('/:integrationId/test', IntegrationAgentRole('user'
   try {
     const integration = c.get('agentIntegration' as never) as Awaited<ReturnType<typeof getAgentIntegration>>
     if (!integration) {
-      return c.json({ error: 'Agent integration not found' }, 404)
+      return c.json({ error: 'Agent add-on not found' }, 404)
     }
 
     // Test by attempting to connect and immediately disconnect
@@ -537,7 +537,7 @@ agentIntegrationsRouter.post('/:integrationId/test', IntegrationAgentRole('user'
   } catch (error) {
     console.error('Failed to test agent integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'test-integration' }, extra: { integrationId: c.req.param('integrationId') } })
-    return c.json({ error: 'Failed to test agent integration' }, 500)
+    return c.json({ error: 'Failed to test agent add-on' }, 500)
   }
 })
 
@@ -546,7 +546,7 @@ agentIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('view
   try {
     const integration = c.get('agentIntegration' as never) as Awaited<ReturnType<typeof getAgentIntegration>>
     if (!integration) {
-      return c.json({ error: 'Agent integration not found' }, 404)
+      return c.json({ error: 'Agent add-on not found' }, 404)
     }
 
     const connected = agentIntegrationManager.isIntegrationConnected(integration.id)
@@ -594,7 +594,7 @@ agentIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integratio
     }
     const integration = c.get('agentIntegration' as never) as NonNullable<Awaited<ReturnType<typeof getAgentIntegration>>>
     if (!agentIntegrationRegistry.getDefinition(integration.provider)?.managementCapabilities?.includes('reset_conversation')) {
-      return c.json({ error: 'This integration keeps one session per work item' }, 400)
+      return c.json({ error: 'This add-on keeps one session per work item' }, 400)
     }
     // Notify the manager to clean up SSE subscriptions
     await agentIntegrationManager.clearSessionById(sessionId)

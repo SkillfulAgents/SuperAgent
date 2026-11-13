@@ -41,7 +41,7 @@ export const listChatProvidersRenderer = defineToolRenderer(listAvailableChatPro
 function ListAgentIntegrationsExpandedView({ result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">Listing configured agent integrations.</p>
+      <p className="text-xs text-muted-foreground">Listing configured add-ons.</p>
       <ResultBlock result={result} isError={isError} />
     </div>
   )

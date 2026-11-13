@@ -86,7 +86,7 @@ export async function completeLinearSetup(state: string, code: string): Promise<
     const authorized = await updateLinearConfig(row.id, latest => {
       if (latest.authorizationVersion !== config.authorizationVersion) throw new IntegrationSetupError('A newer authorization attempt replaced this one')
       if (latest.identity && (latest.identity.appUserId !== identity.appUserId || latest.identity.workspaceId !== identity.workspaceId)) {
-        throw new IntegrationSetupError('This is a different Linear app or workspace. Add a new integration instead.')
+        throw new IntegrationSetupError('This is a different Linear app or workspace. Set up a new add-on instead.')
       }
       return { ...latest, identity, tokens, oauth: undefined, authorizationError: undefined, authorizationPending: false, mcp: undefined, authorizedAt: latest.authorizedAt ?? Date.now() }
     })

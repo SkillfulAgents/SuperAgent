@@ -269,7 +269,7 @@ describe('registry completeness', () => {
 })
 
 it('registers unified integration discovery in host definitions and renderers', () => {
-  expect(getToolDefinition('mcp__chat__list_agent_integrations')?.displayName).toBe('List Agent Integrations')
+  expect(getToolDefinition('mcp__chat__list_agent_integrations')?.displayName).toBe('List Add-ons')
   expect(getRegisteredRendererNames()).toContain('mcp__chat__list_agent_integrations')
 })
 

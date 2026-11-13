@@ -354,7 +354,7 @@ const KIND_LABEL: Record<ResourceKind, string> = {
   mcp: 'MCP server',
   webhook: 'Webhook',
   cron: 'Scheduled task',
-  chat: 'Chat integration',
+  chat: 'Chat add-on',
 }
 
 // Status badge in the hover pill — same palette as the agent homepage

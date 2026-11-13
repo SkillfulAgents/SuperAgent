@@ -196,7 +196,7 @@ it('rejects iMessage credential tests without claiming that a code was verified'
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
   const response = await app.request('/api/agent-integrations/test-credentials', { method: 'POST', headers, body: JSON.stringify({ provider: 'imessage', config: { phoneNumber: '+15555550100', code: '123456' } }) })
   expect(response.status).toBe(400)
-  expect(await response.json()).toEqual({ valid: false, error: 'Credentials are verified when this integration connects' })
+  expect(await response.json()).toEqual({ valid: false, error: 'Credentials are verified when this add-on connects' })
   expect(fetch).not.toHaveBeenCalled()
 })
 it('returns a setup error rather than signing the user out on an invalid iMessage code', async () => {

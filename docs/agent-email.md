@@ -1,6 +1,6 @@
 # Agent email (SUP-877)
 
-An agent owner can add **Email** from the agent's **External Integrations** section when the deployment is connected to Platform. Choose the sender display name, a unique inbox name, and an access level. The gateway provisions `<inbox>@<company>.ongamut.so` and configures the company domain on first use. DNS verification can take several minutes. Renaming changes the sender display name; the address and mailbox binding remain fixed. Deleting disables the gateway mailbox; addresses remain reserved.
+An agent owner can add **Email** from the agent's **Add-ons** section when the deployment is connected to Platform. Choose the sender display name, a unique inbox name, and an access level. The gateway provisions `<inbox>@<company>.ongamut.so` and configures the company domain on first use. DNS verification can take several minutes. Renaming changes the sender display name; the address and mailbox binding remain fixed. Deleting disables the gateway mailbox; addresses remain reserved.
 
 | Access level | Who can initiate email | Who the agent can email |
 | --- | --- | --- |

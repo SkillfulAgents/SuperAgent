@@ -59,7 +59,7 @@ export function GitHubSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
       {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}{id ? 'Continue setup' : 'Connect GitHub'}
     </Button>}
   >
-    <IntegrationSetupField id="github-integration-name" label="Integration name" value={name ?? (agent?.name ?? agentSlug).slice(0, 34)} onChange={event => setName(event.target.value)} maxLength={34} disabled={busy || !!id} />
+    <IntegrationSetupField id="github-integration-name" label="Add-on name" value={name ?? (agent?.name ?? agentSlug).slice(0, 34)} onChange={event => setName(event.target.value)} maxLength={34} disabled={busy || !!id} />
     <IntegrationSetupField id="github-organization" label="GitHub organization (optional)" placeholder="Leave empty for your personal account" value={organization} onChange={event => setOrganization(event.target.value)} disabled={busy || !!id} />
   </IntegrationSetupLayout>
 }

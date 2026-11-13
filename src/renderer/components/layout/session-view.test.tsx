@@ -169,7 +169,7 @@ describe('SessionView agent integration provenance', () => {
   it('names the integration and returns to its open conversation', () => {
     render(<SessionView agentSlug="target-agent" sessionId="int-session" />)
 
-    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from Slack integration "Support bot"')
+    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from Slack add-on "Support bot"')
     fireEvent.click(screen.getByTestId('integration-session-back-button'))
     expect(mocks.navigate).toHaveBeenCalledWith({
       to: '/agents/$slug/chat/$integrationId',
@@ -182,7 +182,7 @@ describe('SessionView agent integration provenance', () => {
     mocks.integration = undefined
     render(<SessionView agentSlug="target-agent" sessionId="int-session" />)
 
-    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from agent integration')
+    expect(screen.getByTestId('integration-session-banner')).toHaveTextContent('Session from agent add-on')
   })
 
   it('draws no integration bar for an ordinary session', () => {

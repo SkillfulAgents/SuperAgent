@@ -15,10 +15,10 @@ describe('IntegrationStatusCard', () => {
 
   // Error is still an "on" state — its switch offers to pause, like the live ones.
   it.each([
-    { status: 'active' as const, connected: true, expectedLabel: 'Listening', expectedSwitch: /pause integration/i },
-    { status: 'active' as const, connected: false, expectedLabel: 'Connecting…', expectedSwitch: /pause integration/i },
-    { status: 'paused' as const, connected: false, expectedLabel: 'Paused', expectedSwitch: /resume integration/i },
-    { status: 'error' as const, connected: false, expectedLabel: 'Error', expectedSwitch: /pause integration/i },
+    { status: 'active' as const, connected: true, expectedLabel: 'Listening', expectedSwitch: /pause add-on/i },
+    { status: 'active' as const, connected: false, expectedLabel: 'Connecting…', expectedSwitch: /pause add-on/i },
+    { status: 'paused' as const, connected: false, expectedLabel: 'Paused', expectedSwitch: /resume add-on/i },
+    { status: 'error' as const, connected: false, expectedLabel: 'Error', expectedSwitch: /pause add-on/i },
   ])('shows the $expectedLabel state', ({ status, connected, expectedLabel, expectedSwitch }) => {
     render(<IntegrationStatusCard integration={makeIntegration({ status })} connected={connected} />)
     expect(screen.getByText(expectedLabel)).toBeInTheDocument()
@@ -34,20 +34,20 @@ describe('IntegrationStatusCard', () => {
   it('pauses when toggled off', async () => {
     const user = userEvent.setup()
     render(<IntegrationStatusCard integration={makeIntegration({ status: 'active' })} connected />)
-    await user.click(screen.getByLabelText(/pause integration/i))
+    await user.click(screen.getByLabelText(/pause add-on/i))
     expect(updateMock).toHaveBeenCalledWith({ id: 'int-1', status: 'paused' })
   })
 
   it('resumes when toggled on', async () => {
     const user = userEvent.setup()
     render(<IntegrationStatusCard integration={makeIntegration({ status: 'paused' })} />)
-    await user.click(screen.getByLabelText(/resume integration/i))
+    await user.click(screen.getByLabelText(/resume add-on/i))
     expect(updateMock).toHaveBeenCalledWith({ id: 'int-1', status: 'active' })
   })
   it('allows pausing damaged credentials but prevents resuming them', async () => {
     const user = userEvent.setup()
     const { rerender } = render(<IntegrationStatusCard integration={makeIntegration({ status: 'error', hasCredentials: false })} />)
-    await user.click(screen.getByLabelText(/pause integration/i))
+    await user.click(screen.getByLabelText(/pause add-on/i))
     expect(updateMock).toHaveBeenCalledWith({ id: 'int-1', status: 'paused' })
     rerender(<IntegrationStatusCard integration={makeIntegration({ status: 'paused', hasCredentials: false })} />)
     expect(screen.getByRole('switch')).toBeDisabled()

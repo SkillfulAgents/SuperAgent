@@ -107,10 +107,10 @@ describe('integration authorization polling', () => {
 
 describe('integration authorization errors', () => {
   it.each([
-    ['<html>Bad gateway</html>', 'Could not authorize integration'],
-    ['', 'Could not authorize integration'],
-    ['null', 'Could not authorize integration'],
-    ['{"error":{"message":"Unexpected error shape"}}', 'Could not authorize integration'],
+    ['<html>Bad gateway</html>', 'Could not authorize add-on'],
+    ['', 'Could not authorize add-on'],
+    ['null', 'Could not authorize add-on'],
+    ['{"error":{"message":"Unexpected error shape"}}', 'Could not authorize add-on'],
     ['{"error":"Invalid app credentials"}', 'Invalid app credentials'],
   ])('shows a useful message for a failed response: %s', async (body, message) => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })

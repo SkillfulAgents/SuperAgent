@@ -11,7 +11,7 @@ export async function openHomeSidePanel(page: Page): Promise<void> {
   await expect(panel).toBeVisible()
 }
 
-export type HomeSection = 'Triggers' | 'Connections' | 'Skills' | 'External Integrations' | 'Drives' | 'Hooks'
+export type HomeSection = 'Triggers' | 'Connections' | 'Skills' | 'Add-ons' | 'Drives' | 'Hooks'
 
 /**
  * Agent Home's sections are rows in one panel, closed until opened, then as the user last left them (a user setting

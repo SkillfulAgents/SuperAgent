@@ -296,7 +296,7 @@ describe('chat-integrations access routes', () => {
       )
 
       expect(res.status).toBe(500)
-      expect(await res.json()).toEqual({ error: 'Failed to update agent integration' })
+      expect(await res.json()).toEqual({ error: 'Failed to update agent add-on' })
       consoleError.mockRestore()
     })
   })
@@ -691,7 +691,7 @@ describe('chat-integrations access routes', () => {
       })
 
       expect(res.status).toBe(500)
-      expect(await res.json()).toEqual({ error: 'Failed to create agent integration' })
+      expect(await res.json()).toEqual({ error: 'Failed to create agent add-on' })
       consoleError.mockRestore()
     })
   })

@@ -20,7 +20,7 @@ export function IntegrationSetupLayout({ provider, label, iconClassName = '', in
     <DialogHeader>
       <DialogTitle className="flex items-center gap-2 font-normal">
         <ServiceIcon slug={provider} fallback="mcp" className={`h-5 w-5 ${iconClassName}`} />
-        Set up integration with {label}
+        Set up the {label} add-on
       </DialogTitle>
       <DialogDescription className="sr-only">Follow the instructions and connect this agent to {label}.</DialogDescription>
     </DialogHeader>

@@ -382,8 +382,8 @@ export function ChatIntegrationSetupForm({
           <IntegrationSetupFeedback state="error">
             {createIntegration.error instanceof AgentIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
               ? provider === 'imessage'
-                ? 'This phone number is already connected to another integration. Remove the existing one first.'
-                : 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
+                ? 'This phone number is already connected to another add-on. Remove the existing one first.'
+                : 'This bot is already connected to another add-on. Remove the existing one first, or use a different bot.'
               : createIntegration.error.message}
           </IntegrationSetupFeedback>
         )}
@@ -419,9 +419,9 @@ export function ChatIntegrationSetupForm({
     >
       {leading}
       <IntegrationSetupField
-        id="setup-integration-name" label="Integration name"
+        id="setup-integration-name" label="Add-on name"
         value={integrationName} onChange={e => setIntegrationName(e.target.value)}
-        placeholder={agent?.name || `My ${info.label} integration`}
+        placeholder={agent?.name || `My ${info.label} add-on`}
       />
 
       {info.fields.map(field => (

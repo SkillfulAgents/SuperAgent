@@ -57,7 +57,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
   const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
-    <HomeCollapsible id="integrations" title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
+    <HomeCollapsible id="integrations" title="Add-ons" count={integrations ? rows.length : undefined} className={className}>
       {rows.length > 0 ? (
         <div className="mt-2">
           {rows.map((integration) => {
@@ -92,7 +92,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">Not configured yet</p>
           <p className="text-xs mt-1">
-            {providers.length > 0 ? 'Bring this agent into the places you work.' : 'No external integrations have been configured for this agent.'}
+            {providers.length > 0 ? 'Bring this agent into the places you work.' : 'No add-ons have been configured for this agent.'}
           </p>
           {providers.length > 0 && <div className="mt-3 flex flex-col gap-1.5">
             {providers.map((tile) => (
@@ -119,7 +119,7 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
             <Popover>
               <PopoverTrigger asChild>
                 <Button type="button" variant="ghost" size="sm">
-                  <Plus /> Add Integration
+                  <Plus /> New Add-on
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-1">

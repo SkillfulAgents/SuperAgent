@@ -289,7 +289,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       notificationType: 'session_chat_integration',
       sessionId: 'sess-1',
       agentSlug: 'my-agent',
-      title: 'Chat Integration Connected',
+      title: 'Chat Add-on Connected',
       body: 'Slack',
     })
 

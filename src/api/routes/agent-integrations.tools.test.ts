@@ -58,7 +58,7 @@ describe('provider availability', () => {
     expect(await providers()).not.toContain('test-gated')
     const res = await app.request('/api/agent-integrations/agents/agent', { method: 'POST', headers: json, body: JSON.stringify({ provider: 'test-gated', config: {} }) })
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'This integration is unavailable on this host' })
+    expect(await res.json()).toEqual({ error: 'This add-on is unavailable on this host' })
     availability.value = true
     expect(await providers()).toContain('test-gated')
     expect((await app.request('/api/agent-integrations/agents/agent', { method: 'POST', headers: json, body: JSON.stringify({ provider: 'test-gated', config: {} }) })).status).toBe(201)

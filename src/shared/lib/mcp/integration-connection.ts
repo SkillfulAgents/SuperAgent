@@ -30,7 +30,7 @@ export class IntegrationMcpAdapter implements McpConnection {
 
   async recoverAuthorization(): Promise<McpRecoveryResult> {
     return { ok: false, reason: 'reconnect_required', error: 'integration_reconnect_required',
-      message: `Reconnect ${this.connection.identity.provider} from this agent’s integration settings.`,
+      message: `Reconnect ${this.connection.identity.provider} from this agent’s add-on settings.`,
       context: { integrationId: this.connection.integrationId } }
   }
 

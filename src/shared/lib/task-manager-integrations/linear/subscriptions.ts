@@ -124,7 +124,7 @@ export class LinearSubscriptions {
     this.ready = false
     if (this.unavailableOperations.has(id)) return
     this.unavailableOperations.add(id)
-    this.options.onError(new Error(`Linear subscription ${id} is unavailable. Check app access and reconnect the integration.`))
+    this.options.onError(new Error(`Linear subscription ${id} is unavailable. Check app access and reconnect the add-on.`))
   }
   private reconnect(): void {
     clearTimeout(this.timer)

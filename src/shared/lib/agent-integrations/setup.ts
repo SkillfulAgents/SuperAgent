@@ -9,7 +9,7 @@ import { requiresRelay, supportedTransports } from './transport'
 import type { IntegrationStatus } from './types'
 
 export async function assertIntegrationAvailable(provider: string): Promise<void> {
-  if (!await agentIntegrationRegistry.isAvailable(provider)) throw new IntegrationSetupError('This integration is unavailable on this host', 400)
+  if (!await agentIntegrationRegistry.isAvailable(provider)) throw new IntegrationSetupError('This add-on is unavailable on this host', 400)
 }
 
 export function getIntegrationSetup(provider: string) {
@@ -61,9 +61,9 @@ function takeProvision(input: unknown): { input: unknown; provision?: ProvisionR
 export async function prepareIntegrationSetup(provider: string, rawInput: unknown, context: IntegrationSetupContext, fromAgent = false): Promise<PreparedIntegrationSetup> {
   await assertIntegrationAvailable(provider)
   const setup = getIntegrationSetup(provider)
-  if (fromAgent && !setup.allowAgentCreation) throw new IntegrationSetupError('This account must be set up by its owner in the agent integration page.', 403)
+  if (fromAgent && !setup.allowAgentCreation) throw new IntegrationSetupError('This account must be set up by its owner in the agent’s Add-ons section.', 403)
   const { input, provision } = takeProvision(rawInput)
-  if (provision && fromAgent) throw new IntegrationSetupError('An agent can’t create apps; its owner sets them up in the agent integration page.', 403)
+  if (provision && fromAgent) throw new IntegrationSetupError('An agent can’t create apps; its owner sets them up in the agent’s Add-ons section.', 403)
   const { relay: wantsRelay, verification, ...prepared } = await setup.prepare(input, context)
   const definition = agentIntegrationRegistry.getDefinition(provider)!
   const transports = supportedTransports(definition)
@@ -113,10 +113,10 @@ export async function prepareIntegrationSetup(provider: string, rawInput: unknow
 export async function testIntegrationCredentials(provider: string, input: unknown) {
   await assertIntegrationAvailable(provider)
   const setup = getIntegrationSetup(provider)
-  if (!setup.testCredentials) throw new IntegrationSetupError('Credentials are verified when this integration connects')
+  if (!setup.testCredentials) throw new IntegrationSetupError('Credentials are verified when this add-on connects')
   return setup.testCredentials(input)
 }
 export function setupError(error: unknown): { error: string; status: 400 | 403 | 404 | 429 } | undefined {
   if (error instanceof IntegrationSetupError) return { error: error.message, status: error.status }
-  if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? 'Invalid integration settings', status: 400 }
+  if (error instanceof z.ZodError) return { error: error.issues[0]?.message ?? 'Invalid add-on settings', status: 400 }
 }

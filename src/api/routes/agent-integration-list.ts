@@ -14,6 +14,6 @@ export async function listAgentIntegrationsHandler(c: Context) {
     })))
   } catch (error) {
     captureException(error, { tags: { component: 'agent-integration', operation: 'list' }, extra: { agentSlug } })
-    return c.json({ error: 'Failed to fetch agent integrations' }, 500)
+    return c.json({ error: 'Failed to fetch agent add-ons' }, 500)
   }
 }
