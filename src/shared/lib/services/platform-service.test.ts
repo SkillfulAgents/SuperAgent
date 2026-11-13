@@ -115,7 +115,7 @@ describe('PlatformService', () => {
   })
 
   it('keeps the plan policy a billing read carries for the acting account, and forgets it on an account change (SUP-1124)', async () => {
-    platformPlanCache.clear()
+    await platformPlanCache.clear()
     mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
     await platformService.refreshBilling()
     const load = vi.fn(async () => null)
@@ -127,7 +127,7 @@ describe('PlatformService', () => {
   })
 
   it('does not record a policy from a proxy that predates plans', async () => {
-    platformPlanCache.clear()
+    await platformPlanCache.clear()
     mockFetchBilling.mockResolvedValue(SNAPSHOT)
     await platformService.refreshBilling()
     const load = vi.fn(async () => ({ planName: 'Pro 200', deniedModels: [] }))

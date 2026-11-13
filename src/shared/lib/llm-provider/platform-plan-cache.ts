@@ -1,3 +1,5 @@
+import { z } from 'zod'
+import { appState, defineNamespace, digestKeyPart } from '@shared/lib/app-state'
 import { background } from '@shared/lib/background'
 import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
@@ -13,8 +15,36 @@ export interface PlatformPlanPolicy {
 const FRESH_MS = 60 * 60_000
 // No answer (an older proxy, or billing was unreachable): ask again sooner.
 const UNKNOWN_MS = 10 * 60_000
+// A policy past its fresh time is served while it reloads, for at most this long.
+const KEPT_MS = 24 * 60 * 60_000
 
-type Entry = { policy: PlatformPlanPolicy | null; expiresAt: number }
+const storedPolicySchema = z.object({
+  policy: z.object({ planName: z.string().nullable(), deniedModels: z.array(z.string()) }).nullable(),
+  /** Epoch ms from which a read reloads the policy in the background. */
+  staleAt: z.number(),
+  /** The generation it was filed under; `clear()` starts a new one. */
+  generation: z.number(),
+})
+type StoredPolicy = z.infer<typeof storedPolicySchema>
+
+// In AppState, so a process that starts often selects a model without reading
+// the account again (SUP-1634).
+const planPolicies = defineNamespace({
+  name: 'cache:platform-plan-policy',
+  consistency: 'eventual',
+  schema: storedPolicySchema,
+  expiry: { ttlMs: KEPT_MS, onUpdate: 'reset' },
+})
+
+// AppState deletes one key at a time, so forgetting every account is a counter:
+// a policy filed under an earlier generation is not served.
+const planPolicyGenerations = defineNamespace({
+  name: 'platform-plan-policy:generation',
+  consistency: 'strong',
+  schema: z.number(),
+  expiry: { ttlMs: null, onUpdate: 'keep' },
+})
+const currentGeneration = planPolicyGenerations.key('current')
 
 /**
  * Plan policies per platform account: platform host, workspace and member,
@@ -24,22 +54,17 @@ type Entry = { policy: PlatformPlanPolicy | null; expiresAt: number }
  * on the network unless the account has no entry yet.
  */
 class PlatformPlanCache {
-  private entries = new Map<string, Entry>()
+  // Loads under way in this process, so its concurrent readers share one.
   private loads = new Map<string, Promise<PlatformPlanPolicy | null>>()
-  private generation = 0
 
   key(orgId: string | null | undefined, memberId: string | null | undefined): string {
     return JSON.stringify([getPlatformBaseUrl(), orgId ?? null, memberId ?? null])
   }
 
   /** Record what a platform response said. Saying nothing never replaces an answer. */
-  remember(key: string, policy: PlatformPlanPolicy | null): void {
-    const known = this.entries.get(key)?.policy
-    if (!policy && known) {
-      this.entries.set(key, { policy: known, expiresAt: Date.now() + UNKNOWN_MS })
-      return
-    }
-    this.entries.set(key, { policy, expiresAt: Date.now() + (policy ? FRESH_MS : UNKNOWN_MS) })
+  async remember(key: string, policy: PlatformPlanPolicy | null): Promise<void> {
+    const { known, generation } = await this.read(key)
+    await this.write(key, policy, known, generation)
   }
 
   /**
@@ -52,36 +77,56 @@ class PlatformPlanCache {
     load: () => Promise<PlatformPlanPolicy | null>,
     options: { fresh?: boolean } = {},
   ): Promise<PlatformPlanPolicy | null> {
-    const entry = this.entries.get(key)
-    if (entry && !options.fresh) {
-      if (entry.expiresAt <= Date.now()) background(this.reload(key, load), { name: 'platform-plan-cache.reload-policy' })
-      return entry.policy
+    const { known, generation } = await this.read(key)
+    if (known && !options.fresh) {
+      if (known.staleAt <= Date.now()) background(this.reload(key, load, generation), { name: 'platform-plan-cache.reload-policy' })
+      return known.policy
     }
-    return this.reload(key, load)
+    return this.reload(key, load, generation)
   }
 
-  private reload(key: string, load: () => Promise<PlatformPlanPolicy | null>): Promise<PlatformPlanPolicy | null> {
+  /** Forget every account: a refusal proved one stale, or the platform connection changed. */
+  async clear(): Promise<void> {
+    this.loads.clear()
+    await appState().increment(currentGeneration)
+  }
+
+  private reload(key: string, load: () => Promise<PlatformPlanPolicy | null>, generation: number): Promise<PlatformPlanPolicy | null> {
     const pending = this.loads.get(key)
     if (pending) return pending
-    const generation = this.generation
     const next = load()
       .catch(() => null)
-      .then((policy) => {
+      .then(async (policy) => {
+        const now = await this.read(key)
         // A load that began before a clear() may carry the policy it cleared.
-        if (generation === this.generation) this.remember(key, policy)
-        return this.entries.get(key)?.policy ?? policy
+        if (now.generation !== generation) return now.known?.policy ?? policy
+        await this.write(key, policy, now.known, generation)
+        return policy ?? now.known?.policy ?? null
       })
       .finally(() => this.loads.delete(key))
     this.loads.set(key, next)
     return next
   }
 
-  /** Forget every account: a refusal proved one stale, or the platform connection changed. */
-  clear(): void {
-    this.generation += 1
-    this.entries.clear()
-    this.loads.clear()
+  /** The account's entry when it belongs to the current generation, and that generation. */
+  private async read(key: string): Promise<{ known: StoredPolicy | null; generation: number }> {
+    const [entry, raised] = await Promise.all([appState().get(storedKey(key)), appState().get(currentGeneration)])
+    const generation = raised?.value ?? 0
+    return { known: entry?.value.generation === generation ? entry.value : null, generation }
   }
+
+  private async write(key: string, policy: PlatformPlanPolicy | null, known: StoredPolicy | null, generation: number): Promise<void> {
+    await appState().set(storedKey(key), {
+      policy: policy ?? known?.policy ?? null,
+      staleAt: Date.now() + (policy ? FRESH_MS : UNKNOWN_MS),
+      generation,
+    })
+  }
+}
+
+// The cache key names the platform host and account ids, which stay out of an AppState key.
+function storedKey(key: string) {
+  return planPolicies.key(digestKeyPart(key))
 }
 
 export const platformPlanCache = new PlatformPlanCache()

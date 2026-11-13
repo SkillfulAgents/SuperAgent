@@ -8,9 +8,9 @@ const PRO_30: PlatformPlanPolicy = { planName: 'Pro 30', deniedModels: ['claude-
 const PRO_200: PlatformPlanPolicy = { planName: 'Pro 200', deniedModels: [] }
 const KEY = platformPlanCache.key('org_1', 'member_a')
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers()
-  platformPlanCache.clear()
+  await platformPlanCache.clear()
 })
 afterEach(() => vi.useRealTimers())
 
@@ -43,8 +43,8 @@ describe('platformPlanCache (SUP-1124)', () => {
   })
 
   it('never lets an answer that says nothing replace one that did', async () => {
-    platformPlanCache.remember(KEY, PRO_30)
-    platformPlanCache.remember(KEY, null)
+    await platformPlanCache.remember(KEY, PRO_30)
+    await platformPlanCache.remember(KEY, null)
     expect(await platformPlanCache.get(KEY, async () => null)).toEqual(PRO_30)
     expect(await platformPlanCache.get(KEY, async () => { throw new Error('offline') }, { fresh: true })).toEqual(PRO_30)
   })
@@ -64,13 +64,29 @@ describe('platformPlanCache (SUP-1124)', () => {
   })
 
   it('does not let a load that began before clear() restore what it cleared', async () => {
-    let finish: (policy: PlatformPlanPolicy) => void = () => {}
+    let finish: ((policy: PlatformPlanPolicy) => void) | undefined
     const pending = platformPlanCache.get(KEY, () => new Promise((resolve) => { finish = resolve }))
-    platformPlanCache.clear()
-    finish(PRO_30)
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    await platformPlanCache.clear()
+    finish?.(PRO_30)
     await pending
     const load = vi.fn(async () => PRO_200)
     expect(await platformPlanCache.get(KEY, load)).toEqual(PRO_200)
     expect(load).toHaveBeenCalled()
+  })
+
+  it('serves another process of the tenant without loading, and forgets there too (SUP-1634)', async () => {
+    await platformPlanCache.get(KEY, async () => PRO_30)
+    // A second copy of the module is another process: its own memory, the same AppState.
+    vi.resetModules()
+    const { platformPlanCache: elsewhere } = await import('./platform-plan-cache')
+    expect(elsewhere).not.toBe(platformPlanCache)
+    const load = vi.fn(async () => PRO_200)
+    expect(await elsewhere.get(KEY, load)).toEqual(PRO_30)
+    expect(load).not.toHaveBeenCalled()
+
+    await elsewhere.clear()
+    expect(await platformPlanCache.get(KEY, load)).toEqual(PRO_200)
+    expect(load).toHaveBeenCalledTimes(1)
   })
 })

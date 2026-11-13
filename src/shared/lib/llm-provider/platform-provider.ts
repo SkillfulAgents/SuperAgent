@@ -14,6 +14,7 @@ import type { ModelAvailability } from './model-availability-schema'
 import { parseModelNotInPlan, platformModelAvailability } from './platform-plan-policy'
 import { actingPlanPolicy } from './platform-plan-account'
 import { platformPlanCache } from './platform-plan-cache'
+import { background } from '@shared/lib/background'
 import { getPlatformContainerToken } from '@shared/lib/platform-attribution/container-token'
 import { platformAccessTokenFrom, platformAuthStatusFrom } from '@shared/lib/services/platform-auth-service'
 import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -126,7 +127,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   // A plan refusal proves a cached policy stale (a downgrade, or a policy read
   // before one): forget them all, so the next selection reads the account again.
   override noteTurnError(_status: number | undefined, body: unknown): void {
-    if (parseModelNotInPlan(body)) platformPlanCache.clear()
+    if (parseModelNotInPlan(body)) background(platformPlanCache.clear(), { name: 'platform-provider.forget-plan-policies' })
   }
 
   async getContainerEnvVars(agent?: AgentIdentity, given?: ProviderSettings): Promise<Record<string, string | undefined>> {

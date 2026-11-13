@@ -44,7 +44,7 @@ import { getPlatformContainerToken } from '../platform-attribution/container-tok
 
 const provider = new PlatformLlmProvider()
 
-beforeEach(() => {
+beforeEach(async () => {
   currentAttribution.mockReset().mockReturnValue(null)
   forAgentAttribution.mockReset().mockReturnValue(null)
   requiresActingMember.mockReset().mockReturnValue(false)
@@ -53,7 +53,7 @@ beforeEach(() => {
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
   fetchActingAccount.mockReset()
   getSettings.mockClear()
-  platformPlanCache.clear()
+  await platformPlanCache.clear()
 })
 
 // SUP-1507: given the settings its operation read, the provider reads none itself.
@@ -145,7 +145,7 @@ describe('getModelAvailability', () => {
     fetchActingAccount.mockResolvedValue(account('member_a', {}))
     expect(await provider.getModelAvailability(catalog)).toBeNull()
     fetchActingAccount.mockRejectedValue(new Error('offline'))
-    platformPlanCache.clear()
+    await platformPlanCache.clear()
     expect(await provider.getModelAvailability(catalog)).toBeNull()
   })
 

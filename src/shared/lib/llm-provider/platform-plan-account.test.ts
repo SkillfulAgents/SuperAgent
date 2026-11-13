@@ -33,7 +33,7 @@ function record(token: string, orgId: string, memberId: string): PlatformAuthSet
 beforeEach(async () => {
   handle = await createTestDatabase()
   testDb = handle.db
-  platformPlanCache.clear()
+  await platformPlanCache.clear()
   fetchAccount.mockReset()
   fetchAccount.mockImplementation(async (token?: string | null) => accounts[(token === undefined ? state.currentToken : token) ?? ''])
 })

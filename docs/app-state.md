@@ -277,3 +277,11 @@ Creating agents' own apps through a team directory (`src/shared/lib/team-directo
 - **`oauth:directory-app-install`** (strong), key part the install's random id, holds a directory being connected with one token (`directory-app.ts`): the digest of the secret in its `state`, the provider, who started it, the redirect URL, and the rotated credentials and the app, sealed. Inserted with `insertIfAbsent`, kept 30 minutes (`keep`). A callback with a code `consume`s it first, so one connects; a declined one only reads it, so the same install page can be tried again. Start over `consume`s it too.
 - **`oauth:directory-app-install-outcome`** (strong), same key part, is what the Settings page polls: `pending` from the start, then `connected`, `cancelled` (with a time, to tell one cancel from the next) or `failed`. Written with `set`, kept 30 minutes from the last write (`reset`). No entry, or a `pending` / `cancelled` one whose install is gone, reads as `expired`.
 
+
+## Platform plan policies
+
+Which models an account's plan refuses (`src/shared/lib/llm-provider/platform-plan-cache.ts`), read with the account from the platform's `/v1/account`. Model selection reads it on every turn, so a process that starts often must not read the account again each time.
+
+- **`cache:platform-plan-policy`** (eventual, 24 h), key part `digestKeyPart` of the platform host, workspace and member, holds the policy, the time from which a read reloads it in the background (an hour after a policy, ten minutes after no answer) and the generation it was filed under.
+- **`platform-plan-policy:generation`** (strong, no expiry) is one counter. A plan refusal or an account change forgets every account by raising it: an entry filed under an earlier generation is not served. A load that began before the raise files its answer under the old generation.
+- Loads under way stay in each process, so one process asks the platform once per account; two processes that both miss may each ask.
