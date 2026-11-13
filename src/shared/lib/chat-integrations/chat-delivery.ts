@@ -48,6 +48,11 @@ export interface ManagedConnector {
   // True once the session_error notice has gone out for the current turn, so a
   // turn can't emit duplicate notices.
   turnNotified?: boolean
+  // The turn's first message with text has gone out. Only that message quotes one of the user's.
+  quoteSent?: boolean
+  // The messages waiting when the last turn ended, so the cleanup that follows releases only
+  // those, not one that arrived while that turn's reply was still being sent.
+  turnEndMarks?: string[]
 }
 
 // ── Turn finalize ──────────────────────────────────────────────────────────
@@ -58,7 +63,8 @@ export interface ManagedConnector {
  * clearIndicator call before finalizing, so this only commits text. Idempotent.
  */
 async function finalizeTurn(managed: ManagedConnector): Promise<void> {
-  const marks = managed.connector.acknowledgedMessages(managed.chatId)
+  const marks = managed.turnEndMarks ?? managed.connector.acknowledgedMessages(managed.chatId)
+  managed.turnEndMarks = undefined
   try {
     await finalizeStreaming(managed)
   } catch (err) {
@@ -67,6 +73,7 @@ async function finalizeTurn(managed: ManagedConnector): Promise<void> {
   }
   await resolvePendingToolMessages(managed)
   managed.connector.releaseAcknowledgements(managed.chatId, marks)
+  managed.quoteSent = false
 }
 
 /**
@@ -313,10 +320,13 @@ export async function processSSEEvent(
         : ''
       if (visibleText) {
         try {
+          // A connector whose first streamed text is a real message (a Telegram group) quotes there.
+          const startsReply = !managed.streamingState.currentMessageId && !managed.quoteSent && managed.connector.carriesText(managed.chatId, visibleText)
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
             visibleText,
             managed.streamingState.currentMessageId ?? undefined,
+            startsReply ? managed.connector.quotedMessage(managed.chatId) : undefined,
           )
           managed.streamingState.currentMessageId = msgId
           managed.streamingState.lastUpdateTime = now
@@ -375,6 +385,7 @@ export async function processSSEEvent(
           : `🔧 *${displayName}* ⏳`
         try {
           const messageId = await managed.connector.showToolStart(managed.chatId, { toolUseId: toolId, toolName: displayName, summary }, text)
+          managed.connector.messagePosted(managed.chatId)
           managed.pendingToolMessages.push({ toolId, messageId, text })
         } catch (err) {
           console.error('[ChatAgentIntegration] Failed to send tool call message:', err)
@@ -444,6 +455,22 @@ export async function processSSEEvent(
       // render: the gate in handleInteractiveResponse is what stops a press on
       // the now-dead card, because no connector can dismiss a single card yet
       // (dismissOpenCards is all-or-nothing, and Slack does not implement it).
+      break
+    }
+
+    case 'turn_output_complete': {
+      // A turn that names the messages it answered: its text goes out first, still quoting
+      // among them, then they stop being candidates for the next turn's quote.
+      if (!Array.isArray(data.answered)) break
+      managed.turnEndMarks = managed.connector.acknowledgedMessages(managed.chatId)
+      try {
+        await finalizeStreaming(managed)
+      } catch (err) {
+        // Reported once, when the session settles and the send is retried.
+        console.error('[ChatAgentIntegration] Failed to finalize turn:', err)
+      }
+      managed.connector.markAnswered(managed.chatId, data.answered.filter((id): id is string => typeof id === 'string'))
+      managed.quoteSent = false
       break
     }
 
@@ -518,7 +545,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
   }
   if (!finalText || finalText.trim() === NO_REPLY_TOKEN) return
 
-  const { undelivered, error, draftId } = await deliverMarkdown(managed.connector, managed.integration.agentSlug, managed.chatId, finalText, { draftId: messageId })
+  const { undelivered, error, draftId } = await deliverMarkdown(managed.connector, managed.integration.agentSlug, managed.chatId, finalText, { draftId: messageId, turn: managed })
   if (!undelivered.length) return
   // The chat was unreachable. Put what did not arrive back in front of anything
   // streamed since, so the next finalize retries it, and re-throw so callers log it.
@@ -553,26 +580,27 @@ export async function deliverMarkdown(
   agentSlug: string,
   chatId: string,
   text: string,
-  options: { draftId?: string | null; alsoSendToChannel?: boolean; deadline?: number },
+  options: { draftId?: string | null; alsoSendToChannel?: boolean; deadline?: number; turn?: Turn },
 ): Promise<{ messageId: string; undelivered: ChatSegment[]; error?: unknown; draftId?: string | null }> {
   const all = segments(text, { settledOnly: false }).segments
   const { deadline = Infinity } = options
   let draftId = options.draftId
+  const { alsoSendToChannel, turn } = options
   let messageId = ''
   for (const [index, segment] of all.entries()) {
     try {
       if (Date.now() >= deadline) {
         // Out of time: the rest goes out as one text, any visual in it as its source.
         const rest = all.slice(index).map(({ source }) => source).join('')
-        if (rest.trim()) messageId = await sendText(connector, chatId, rest, draftId, options.alsoSendToChannel)
+        if (rest.trim()) messageId = await sendText(connector, chatId, rest, draftId, { alsoSendToChannel, turn })
         return { messageId, undelivered: [] }
       }
       if (segment.kind === 'visual') {
-        messageId = await sendVisual(connector, agentSlug, chatId, segment, draftId, options.alsoSendToChannel, options.deadline)
+        messageId = await sendVisual(connector, agentSlug, chatId, segment, draftId, { alsoSendToChannel, deadline: options.deadline, turn })
         draftId = null
       } else if (segment.source.trim() || all.length === 1) {
         // A reply of only whitespace still goes out, as before: the connector words it.
-        messageId = await sendText(connector, chatId, segment.source, draftId, options.alsoSendToChannel)
+        messageId = await sendText(connector, chatId, segment.source, draftId, { alsoSendToChannel, turn })
         draftId = null
       }
     } catch (error) {
@@ -582,14 +610,30 @@ export async function deliverMarkdown(
   return { messageId, undelivered: [] }
 }
 
-async function sendText(connector: ChatAgentIntegration, chatId: string, text: string, draftId: string | null | undefined, alsoSendToChannel?: boolean): Promise<string> {
-  if (draftId) {
-    try {
-      await connector.finalizeStreamingMessage(chatId, draftId, text)
-      return draftId
-    } catch { /* sent as a new message below */ }
+/** A reply turn's state that decides which of its texts quotes the user's message. */
+type Turn = Pick<ManagedConnector, 'quoteSent'>
+
+async function sendText(connector: ChatAgentIntegration, chatId: string, text: string, draftId: string | null | undefined, { alsoSendToChannel, turn }: { alsoSendToChannel?: boolean; turn?: Turn }): Promise<string> {
+  // Only text that shows as a message counts as posted or may quote: a reaction alone does not.
+  const shows = connector.carriesText(chatId, text)
+  // The turn's first such text quotes. Claimed before the await, and given back if the send fails.
+  const claimed = shows && !!turn && !turn.quoteSent
+  if (claimed) turn.quoteSent = true
+  const replyToExternalId = claimed ? connector.quotedMessage(chatId) : undefined
+  try {
+    let sentId = draftId
+    if (draftId) {
+      try {
+        await connector.finalizeStreamingMessage(chatId, draftId, text, replyToExternalId)
+      } catch { sentId = null /* sent as a new message below */ }
+    }
+    sentId ||= await connector.sendMessage(chatId, { text, ...(alsoSendToChannel && { alsoSendToChannel }), ...(replyToExternalId && { replyToExternalId }) })
+    if (shows) connector.messagePosted(chatId)
+    return sentId
+  } catch (error) {
+    if (claimed && turn) turn.quoteSent = false
+    throw error
   }
-  return connector.sendMessage(chatId, alsoSendToChannel ? { text, alsoSendToChannel } : { text })
 }
 
 /** A visual as an image, or as its source text when it has none. The draft is retired only once the image is sent. */
@@ -599,17 +643,17 @@ async function sendVisual(
   chatId: string,
   segment: VisualSegment,
   draftId: string | null | undefined,
-  alsoSendToChannel?: boolean,
-  deadline?: number,
+  { alsoSendToChannel, deadline, turn }: { alsoSendToChannel?: boolean; deadline?: number; turn?: Turn },
 ): Promise<string> {
   try {
     const { data, filename, alt } = await segment.draw(agentSlug, deadline)
     const messageId = await connector.sendFile(chatId, data, filename, undefined, { asImage: true, alsoSendToChannel, altText: alt, deadline })
+    connector.messagePosted(chatId)
     if (draftId) await connector.retireStreamingMessage(chatId, draftId).catch((err) => console.error('[ChatAgentIntegration] Failed to retire draft:', err))
     return messageId
   } catch (err) {
     if (!(err instanceof NoImageError)) reportError(err, 'send-visual', { provider: connector.provider }, 'warning')
-    return sendText(connector, chatId, segment.source, draftId, alsoSendToChannel)
+    return sendText(connector, chatId, segment.source, draftId, { alsoSendToChannel, turn })
   }
 }
 
@@ -631,6 +675,7 @@ async function sendDeliveredFile(
       console.error('[ChatAgentIntegration] Delivered file not found:', filePath)
     } else {
       await managed.connector.sendFile(managed.chatId, Buffer.from(fileData), workspaceBasename(filePath), description)
+      managed.connector.messagePosted(managed.chatId)
       return
     }
   } catch (err) {

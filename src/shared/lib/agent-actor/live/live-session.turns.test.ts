@@ -111,6 +111,16 @@ describe('replayable turn outcomes', () => {
   const idle = () => emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
   const text = (value: string) => emit({ type: 'assistant', message: { id: 'answer', role: 'assistant', content: [{ type: 'text', text: value }] } })
 
+  it('names the sends each turn answered, and nothing when the runtime does not say', () => {
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {}, user_message_uuids: ['send-a', 'send-b'] })
+    sessions().markActive(SESSION_ID)
+    result()
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'resume', num_turns: 1, usage: {}, user_message_uuids: ['send-c'] })
+    expect(sseEvents.filter(e => e.type === 'turn_output_complete').map(e => e.answered)).toEqual([['send-a', 'send-b'], undefined, undefined])
+  })
+
   it('retains streamed text when no complete assistant frame was delivered', () => {
     sessions().markActive(SESSION_ID)
     emit({ type: 'stream_event', event: { type: 'message_start' } })

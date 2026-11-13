@@ -109,6 +109,8 @@ export interface IntegrationSessionContext {
 
 export interface IntegrationInputContext extends IntegrationSessionContext {
   actor: AgentActor
+  /** The delivery handing this input to the agent; a turn names the deliveries it answered. */
+  deliveryId?: string
 }
 
 export interface PreparedIntegrationInput {

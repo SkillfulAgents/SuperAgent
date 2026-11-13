@@ -1291,7 +1291,7 @@ export class AgentIntegrationManager implements Service {
         await attempt.bind(null)
       }
     }
-    const input = await conn.connector.prepareInput(message, { ...context, actor, sessionId })
+    const input = await conn.connector.prepareInput(message, { ...context, actor, sessionId, deliveryId: attempt.id })
     if (input.skip) return
     // The awaited provider context work may race pause, auth loss or reset.
     // Use the current mapping as well as generation immediately before handoff.

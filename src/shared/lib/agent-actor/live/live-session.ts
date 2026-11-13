@@ -1476,7 +1476,9 @@ export class LiveSession {
     // The output is complete whether or not the session settles: the
     // renderer reconciles what streamed against the transcript (whose write
     // can lag), or a follow-up turn's stream_start could blink it out.
-    this.ctx.emit({ type: 'turn_output_complete' })
+    // The sends this turn answered, a batch taken in mid-turn included. A resume pauses inside the turn.
+    const answered = content.subtype !== 'resume' && Array.isArray(content.user_message_uuids) ? content.user_message_uuids : undefined
+    this.ctx.emit({ type: 'turn_output_complete', ...(answered && { answered }) })
     // A UI hint: background tasks outlive the turn's output.
     const stillOpen = this.background.openCount()
     if (stillOpen > 0) {

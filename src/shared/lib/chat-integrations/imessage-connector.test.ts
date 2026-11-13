@@ -670,6 +670,27 @@ describe('IMessageConnector', () => {
       expect((messages[0].data as any).parts[0].value).toBe('Hello there')
     })
 
+    it('sends no quote over the socket, which cannot hear Linq refuse one', async () => {
+      await connector.acknowledgeInput({
+        type: 'input', id: 'in-1', externalId: 'chat-g', timestamp: new Date(),
+        payload: { externalMessageId: 'in-1', text: 'hi', chatId: 'chat-g', chatName: 'Dinner', userId: '+1555', timestamp: new Date() },
+      })
+      expect(connector.quotedMessage('chat-g')).toBe('in-1')
+      await connector.sendMessage('chat-g', { text: 'Yes', replyToExternalId: 'in-1' })
+
+      expect((parseSent(ws).find(m => m.type === 'send_message')!.data as any).replyTo).toBeUndefined()
+    })
+
+    it('counts a reply of only reactions as no text, so the quote waits for the answer', () => {
+      expect(connector.carriesText('chat-1', '[[reaction:🔍]]')).toBe(false)
+      expect(connector.carriesText('chat-1', '[[reaction:🔍]] Seattle is 62°F')).toBe(true)
+      expect(connector.carriesText('chat-1', '---')).toBe(true)
+      expect(connector.carriesText('chat-1', '   ')).toBe(false)
+      expect(connector.carriesText('chat-1', 'https://a.com')).toBe(true)
+      ;(connector as any).mode = 'webhooks'
+      expect(connector.carriesText('chat-1', 'https://a.com')).toBe(false)
+    })
+
     it('sends markdown as plain text with its styles as decorations', async () => {
       await connector.sendMessage('chat-1', { text: 'Ship **today**' })
 

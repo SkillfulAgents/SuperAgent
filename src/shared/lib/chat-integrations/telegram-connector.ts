@@ -168,6 +168,13 @@ export function isTelegramPhotoRefusal(errorCode: number, description: string): 
   return errorCode === 413 || (errorCode === 400 && /PHOTO|IMAGE/.test(description))
 }
 
+/** Quote a message. If it was deleted, Telegram still sends the reply, without the quote. */
+function replyParameters(replyToExternalId?: string) {
+  return replyToExternalId
+    ? { reply_parameters: { message_id: Number(replyToExternalId), allow_sending_without_reply: true } }
+    : undefined
+}
+
 /** Rejects after `ms`; `promise` still settles on its own, unobserved. */
 function within<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -570,9 +577,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     if (!this.bot) throw new Error('Bot not connected')
 
     const chunks = splitForRichLimits(message.text || '(empty message)')
-    const replyParams = message.replyToExternalId
-      ? { reply_parameters: { message_id: Number(message.replyToExternalId) } }
-      : undefined
+    const replyParams = replyParameters(message.replyToExternalId)
 
     let lastMessageId = ''
     for (let i = 0; i < chunks.length; i++) {
@@ -607,7 +612,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     return String(result.message_id)
   }
 
-  async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
+  async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string, replyToExternalId?: string): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
     const body = text || 'Thinking...'
 
@@ -628,9 +633,9 @@ export class TelegramConnector extends ChatAgentIntegration {
       if (this.useRich) {
         // Via sendRichOrHtml so a rich-send failure falls back to HTML like every
         // other send path, instead of throwing and aborting the stream.
-        return this.sendRichOrHtml(chatId, body)
+        return this.sendRichOrHtml(chatId, body, replyParameters(replyToExternalId))
       }
-      const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(body), { parse_mode: 'HTML' })
+      const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(body), { parse_mode: 'HTML', ...replyParameters(replyToExternalId) })
       return String(sent.message_id)
     }
 
@@ -647,13 +652,13 @@ export class TelegramConnector extends ChatAgentIntegration {
     return existingMessageId
   }
 
-  async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
+  async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string, replyToExternalId?: string): Promise<void> {
     if (!this.bot) return
     const text = finalText || '(empty response)'
 
     // DM draft path: commit the ephemeral draft as a real persisted message.
     if (messageId.startsWith(RICH_DRAFT_SENTINEL_PREFIX)) {
-      await this.commitDraft(chatId, text)
+      await this.commitDraft(chatId, text, replyToExternalId)
       return
     }
 
@@ -704,11 +709,11 @@ export class TelegramConnector extends ChatAgentIntegration {
     return `${RICH_DRAFT_SENTINEL_PREFIX}${chatId}`
   }
 
-  private async commitDraft(chatId: string, text: string): Promise<void> {
+  private async commitDraft(chatId: string, text: string, replyToExternalId?: string): Promise<void> {
     this.activeDrafts.delete(chatId)
     const chunks = splitForRichLimits(text)
-    for (const chunk of chunks) {
-      await this.sendRichOrHtml(chatId, chunk)
+    for (const [i, chunk] of chunks.entries()) {
+      await this.sendRichOrHtml(chatId, chunk, i === 0 ? replyParameters(replyToExternalId) : undefined)
     }
   }
 
@@ -1253,7 +1258,7 @@ export class TelegramConnector extends ChatAgentIntegration {
   private async sendRichOrHtml(
     chatId: string,
     md: string,
-    other?: { reply_markup?: unknown; reply_parameters?: { message_id: number } },
+    other?: { reply_markup?: unknown; reply_parameters?: { message_id: number; allow_sending_without_reply?: boolean } },
   ): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
     if (this.useRich) {

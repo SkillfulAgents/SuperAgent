@@ -21,7 +21,7 @@ export class MockChatAgentIntegration extends ChatAgentIntegration {
   sentCards: { chatId: string; event: UserRequestEvent; sessionId?: string }[] = []
   sentFiles: { chatId: string; filename: string; size: number; caption?: string; options?: SendFileOptions }[] = []
   streamUpdates: { chatId: string; text: string; existingMessageId?: string }[] = []
-  finalizedMessages: { chatId: string; messageId: string; finalText: string }[] = []
+  finalizedMessages: { chatId: string; messageId: string; finalText: string; replyToExternalId?: string }[] = []
   typingIndicators: string[] = []
   stoppedWorking: string[] = []
   workingActivities: SessionActivity[] = [] // activity passed to each startWorking call
@@ -116,8 +116,8 @@ export class MockChatAgentIntegration extends ChatAgentIntegration {
     return id
   }
 
-  async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
-    this.finalizedMessages.push({ chatId, messageId, finalText })
+  async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string, replyToExternalId?: string): Promise<void> {
+    this.finalizedMessages.push({ chatId, messageId, finalText, ...(replyToExternalId && { replyToExternalId }) })
   }
 
   async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
