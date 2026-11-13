@@ -833,7 +833,7 @@ Instructions`
 
       await deleteAgent('test-agent')
 
-      expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
+      expect(mockStopContainer).toHaveBeenCalledWith('test-agent', { forDeletion: true })
     })
 
     it('drops what the host kept for the agent: locks, widget refreshes, proxy sessions, uploads, deferred namings', async () => {
