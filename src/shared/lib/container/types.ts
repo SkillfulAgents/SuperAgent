@@ -223,6 +223,12 @@ export interface HealthCheckResult {
 
 export interface StopOptions {
   /**
+   * The agent is being deleted: nothing its container holds is needed again,
+   * so a runtime that saves the workspace on stop may drop the container
+   * without saving.
+   */
+  forDeletion?: boolean
+  /**
    * A session's fatal error (OOM, say) is taking the container down: no one
    * stopped the sessions on it, so one mid-turn reads it as the crash it is.
    */

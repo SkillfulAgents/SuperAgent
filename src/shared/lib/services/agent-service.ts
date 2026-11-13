@@ -459,7 +459,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // removal below never runs, so the workspace is preserved and the delete is
   // retryable.
   try {
-    await agentRegistry.get(slug).container.stop()
+    await agentRegistry.get(slug).container.stop({ forDeletion: true })
   } catch (error) {
     throw new AgentContainerStopError(slug, error)
   }
