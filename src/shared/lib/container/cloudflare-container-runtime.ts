@@ -5,7 +5,7 @@
  *
  * - `GET  {url}/_control/{agentId}`: `{ "running": boolean }`
  * - `POST {url}/_control/{agentId}/start` with `{ "env": {...} }`: starts the container
- * - `POST {url}/_control/{agentId}/stop`: stops it
+ * - `POST {url}/_control/{agentId}/stop`: stops it; with `{ "discard": true }`, without saving its workspace
  * - `{url}/{agentId}/{path}`: the agent's container API, HTTP and WebSocket
  *
  * Control calls carry `authorization: Bearer {CLOUDFLARE_CONTAINER_TOKEN}`.
@@ -97,9 +97,9 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
     return { status: 'running', port: CONTAINER_INTERNAL_PORT }
   }
 
-  async stop(_options?: StopOptions): Promise<StopResult> {
+  async stop(options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
-    await this.control('POST', '/stop')
+    await this.control('POST', '/stop', options?.forDeletion ? { discard: true } : undefined)
     this.markStopped()
     return { forceStopUsed: false, stopped: true }
   }

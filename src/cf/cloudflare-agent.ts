@@ -25,6 +25,8 @@ const SNAPSHOT_SERVER = ['node', '/opt/gamut/cloudflare/snapshot-server.mjs']
 // How often a boot checks whether a port in the starting container answers, and for how long.
 const PORT_POLL_MS = 50
 const PORT_WAIT_MS = 120_000
+// How long a stop waits for the container to exit after asking it to.
+const EXIT_WAIT_MS = 30_000
 // The runtime stops the container once this object has been quiet this long; SuperAgent's own idle check sleeps the agent sooner.
 const INACTIVITY_TIMEOUT_MS = 30 * 60_000
 const INSTANCE = 'standard-1'
@@ -190,8 +192,9 @@ export class AgentDurableObject extends DurableObject<Env> {
     console.log(`[AgentDurableObject ${this.agentName()}] agent launched`)
   }
 
-  stopAgent(): Promise<void> {
-    this.stopping ??= this.shutDown().finally(() => {
+  /** `discard`: the agent is being deleted, so its container goes without a save. */
+  stopAgent(options: { discard?: boolean } = {}): Promise<void> {
+    this.stopping ??= (options.discard ? this.discardContainer() : this.shutDown()).finally(() => {
       this.stopping = undefined
     })
     return this.stopping
@@ -203,7 +206,19 @@ export class AgentDurableObject extends DurableObject<Env> {
     this.launched = false
     await this.stop()
     // The exiting container still answers /state as launched, so wait until it is gone.
-    for (let i = 0; i < 60 && (await this.containerUp()); i++) await new Promise((resolve) => setTimeout(resolve, 500))
+    await this.containerExit()
+  }
+
+  private async discardContainer(): Promise<void> {
+    this.launched = false
+    if (await this.containerUp()) await this.destroy()
+  }
+
+  // Settles when the watched container exits, or at once when none is watched; gives up after EXIT_WAIT_MS.
+  private async containerExit(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([this.watching, new Promise((resolve) => { timer = setTimeout(resolve, EXIT_WAIT_MS) })])
+    clearTimeout(timer)
   }
 
   /** What the app sees as running: a container that is up and has launched the agent. A half-started or stopping one reads as stopped. */

@@ -125,6 +125,33 @@ describe('AgentDurableObject stop', () => {
     expect(calls).toEqual(['save'])
   })
 
+  it('waits for the container it watches to exit before the stop is over', async () => {
+    const { object, calls } = agent(true)
+    let exit: () => void = () => {}
+    object.watching = new Promise<void>((resolve) => {
+      exit = resolve
+    })
+
+    const stopped = object.stopAgent().then(() => calls.push('stopped'))
+    await vi.waitFor(() => expect(calls).toEqual(['save', 'stop']))
+    exit()
+    await stopped
+
+    expect(calls).toEqual(['save', 'stop', 'stopped'])
+  })
+
+  it('drops the container of an agent being deleted without saving its workspace', async () => {
+    const { object, calls } = agent(true)
+    object.containerUp = async () => true
+    object.destroy = async () => {
+      calls.push('destroy')
+    }
+
+    await object.stopAgent({ discard: true })
+
+    expect(calls).toEqual(['destroy'])
+  })
+
   it('stops an agent whose container never started without signalling it', async () => {
     const { object } = agent(true)
     const signal = vi.fn(() => {

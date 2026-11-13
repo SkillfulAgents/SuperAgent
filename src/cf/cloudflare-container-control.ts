@@ -69,7 +69,8 @@ export function routeContainerFetch(agents: AgentObjects): void {
       return new Response(null, { status: 204 })
     }
     if (request.method === 'POST' && action === 'stop') {
-      await agent.stopAgent()
+      const discard = request.headers.has('content-type') && ((await request.json()) as { discard?: boolean }).discard === true
+      await agent.stopAgent({ discard })
       return new Response(null, { status: 204 })
     }
     return new Response('not found', { status: 404 })
