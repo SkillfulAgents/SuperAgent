@@ -42,7 +42,7 @@ import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, Che
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { formatLastRun } from '@renderer/lib/last-run'
+import { compactAgo, formatLastRun } from '@renderer/lib/last-run'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { toast } from 'sonner'
 
@@ -219,17 +219,6 @@ function stripAgentPrefix(sessionName: string, agentName: string): string {
   if (matched < Math.min(2, agentWords.length)) return sessionName
   const rest = sessionWords.slice(matched).join(' ').replace(/^[\s:–—\-·]+/, '')
   return rest.length >= 3 ? rest : sessionName
-}
-
-/** Compact relative age: 4m, 1h, 2d. */
-function compactAgo(date: Date | string | undefined): string | null {
-  if (!date) return null
-  const mins = Math.max(0, Math.round((Date.now() - new Date(date).getTime()) / 60_000))
-  if (mins < 1) return 'now'
-  if (mins < 60) return `${mins}m`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.round(hours / 24)}d`
 }
 
 type SessionState = 'awaiting' | 'working' | 'mention' | 'unread'
