@@ -28,7 +28,7 @@ test.describe('Chat integration connector page', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('External Integrations card on agent-home lists a seeded integration and navigates to the chat view on click', async ({
+  test('Add-ons card on agent-home lists a seeded integration and navigates to the chat view on click', async ({
     page,
   }) => {
     const agentName = `Chat Overhaul ${Date.now()}`
@@ -40,11 +40,11 @@ test.describe('Chat integration connector page', () => {
     // Navigate to agent-home so React Query fetches the freshly-seeded integration.
     await page.goto(`/agents/${slug}`)
 
-    // The External Integrations HomeCollapsible lists the integration row.
+    // The Add-ons HomeCollapsible lists the integration row.
     const mainContent = appPage.getMainContent()
-    // Exact: until the list loads, the card's empty state also mentions "external integrations".
-    await expect(mainContent.getByText('External Integrations', { exact: true })).toBeVisible()
-    await openHomeSection(page, 'External Integrations')
+    // Exact: until the list loads, the card's empty state also mentions "add-ons".
+    await expect(mainContent.getByText('Add-ons', { exact: true })).toBeVisible()
+    await openHomeSection(page, 'Add-ons')
     await expect(mainContent.getByText('E2E Overhaul Bot')).toBeVisible({ timeout: 10000 })
 
     // Click the integration row - IntegrationRow renders role="button" when interactive.
@@ -98,7 +98,7 @@ test.describe('Chat integration connector page', () => {
 
     // Settings cards (canManage gate is open in mock mode for the creating user).
     await expect(mainContent.getByText('Status', { exact: true })).toBeVisible()
-    await expect(mainContent.getByText('Integration Settings', { exact: true })).toBeVisible()
+    await expect(mainContent.getByText('Add-on Settings', { exact: true })).toBeVisible()
     await expect(mainContent.getByText('Model & Effort', { exact: true })).toBeVisible()
 
     // Access control is folded into the conversation inbox (no separate Access

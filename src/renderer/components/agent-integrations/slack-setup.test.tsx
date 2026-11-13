@@ -44,7 +44,7 @@ beforeEach(() => {
 describe('SlackSetup', () => {
   it('sends an explicit off for threading turned off at setup, so the server default does not turn it back on', async () => {
     setup()
-    fireEvent.change(await screen.findByLabelText('Integration name'), { target: { value: 'Helper' } })
+    fireEvent.change(await screen.findByLabelText('Add-on name'), { target: { value: 'Helper' } })
     fireEvent.click(screen.getByRole('switch', { name: /Reply in thread/ }))
     fireEvent.click(screen.getByTestId('slack-create-app'))
     await waitFor(() => expect(state.requests[0]).toBeDefined())
@@ -53,7 +53,7 @@ describe('SlackSetup', () => {
 
   it('with a relay, creates the installation first and opens Slack with the webhook URL in the manifest', async () => {
     setup()
-    fireEvent.change(await screen.findByLabelText('Integration name'), { target: { value: 'Helper' } })
+    fireEvent.change(await screen.findByLabelText('Add-on name'), { target: { value: 'Helper' } })
     expect(screen.queryByLabelText('App-Level Token')).toBeNull()
     expect(screen.getByLabelText('Bot Token')).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Connect' })).toBeDisabled()
@@ -69,7 +69,7 @@ describe('SlackSetup', () => {
     })
     // The choice is fixed once the installation exists.
     expect(screen.getByTestId('slack-webhooks-choice')).toBeDisabled()
-    expect(screen.getByLabelText('Integration name')).toBeDisabled()
+    expect(screen.getByLabelText('Add-on name')).toBeDisabled()
 
     fireEvent.change(screen.getByLabelText('Signing Secret'), { target: { value: 'secret' } })
     fireEvent.change(screen.getByLabelText('Bot Token'), { target: { value: 'xoxb-1' } })

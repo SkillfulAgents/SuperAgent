@@ -40,7 +40,7 @@ export function SlackSetup(props: IntegrationSetupProps) {
   const [installed, setInstalled] = useState(false)
   // Which form depends on the relay; one that can't be read means Socket Mode.
   if (isPending || setup.isPending) return <>
-    <DialogTitle className="sr-only">Set up integration with Slack</DialogTitle>
+    <DialogTitle className="sr-only">Set up the Slack add-on</DialogTitle>
     <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-label="Loading" /></div>
   </>
   const choice = (disabled = false) => relay?.available && <label className="flex items-start gap-2 text-sm cursor-pointer">
@@ -164,8 +164,8 @@ function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated }: Integr
     </>}
   >
     {choice(!!created)}
-    <IntegrationSetupField id="setup-integration-name" label="Integration name" value={name} onChange={event => setName(event.target.value)}
-      placeholder={agent?.name || 'My Slack integration'} disabled={busy || !!created} />
+    <IntegrationSetupField id="setup-integration-name" label="Add-on name" value={name} onChange={event => setName(event.target.value)}
+      placeholder={agent?.name || 'My Slack add-on'} disabled={busy || !!created} />
     <IntegrationSetupField id="setup-signingSecret" label="Signing Secret" type="password" autoComplete="new-password" value={signingSecret}
       onChange={event => setSigningSecret(event.target.value)} placeholder="From Basic Information" disabled={!created} />
     <IntegrationSetupField id="setup-botToken" label="Bot Token" type="password" autoComplete="new-password" value={botToken}

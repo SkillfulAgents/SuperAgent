@@ -31,7 +31,7 @@ export const githubSetup: IntegrationProviderSetup = {
     async run(record, _input, context) {
       const state = `${record.id}.${randomUUID()}`
       const config = await updateGitHubConfig(record.id, latest => {
-        if (!latest.relay) throw new IntegrationSetupError('This integration needs a webhook relay')
+        if (!latest.relay) throw new IntegrationSetupError('This add-on needs a webhook relay')
         return { ...latest, redirectUri: context.callbackUrl, authorizationVersion: randomUUID(), authorizationError: undefined,
           pending: { stateHash: hash(state), expiresAt: Date.now() + EXPIRES_MS, phase: latest.app ? 'installation' : 'manifest', claimed: false } }
       })

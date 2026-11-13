@@ -11,7 +11,7 @@ Linear MCP owns outbound operations, through Gamut's shared MCP proxy.
 
 ## Set up an identity
 
-From the agent home, open **External Integrations → Add Integration → Linear**. The live
+From the agent home, open **Add-ons → New Add-on → Linear**. The live
 connection works without a Gamut platform account, hosted relay, or public webhook
 listener. When the host's webhook relay is available, setup also offers to set up
 webhooks, ticked by default ([Webhook transport](#webhook-transport)).
@@ -141,7 +141,7 @@ Provider hooks implement creation, authorization and callbacks under the shared
 with the common renderer; it has no separate management router. The
 `list_agent_integrations` tool discovers Linear alongside chat accounts.
 
-All providers share the Agent Home integration list, integration page, status/settings/model
+All providers share the Agent Home Add-ons list, add-on page, status/settings/model
 controls, and read-only conversation viewer. Provider-specific setup fields live within
 that layout. The API exposes a credential-free `PublicAgentIntegration` contract and
 capabilities so the shared UI only offers supported controls. Existing chat API URLs

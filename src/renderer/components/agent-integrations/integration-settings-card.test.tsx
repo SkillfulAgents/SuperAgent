@@ -25,7 +25,7 @@ describe('IntegrationSettingsCard', () => {
 
   it('does NOT render the status toggle or connection row (they live in the Status card)', () => {
     render(<IntegrationSettingsCard integration={makeIntegration({ status: 'active' })} />)
-    expect(screen.queryByLabelText(/pause integration/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/pause add-on/i)).not.toBeInTheDocument()
     expect(screen.queryByText('Connection')).not.toBeInTheDocument()
   })
 

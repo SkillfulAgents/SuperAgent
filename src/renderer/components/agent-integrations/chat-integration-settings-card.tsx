@@ -13,7 +13,7 @@ export function ChatIntegrationSettingsCard({ integration, canManageAccess }: {
   const setRequireApproval = useSetRequireApproval()
 
   return (
-    <DetailCard label="Integration Settings">
+    <DetailCard label="Add-on Settings">
       {/* -mx-4 cancels the card's px-4 so rows span edge-to-edge with full-width dividers. */}
       <div className="-mx-4 divide-y divide-border/50">
         {isPublicChatIntegration(integration) && integrationSupports(integration, 'session_timeout') && <SessionTimeoutSelect

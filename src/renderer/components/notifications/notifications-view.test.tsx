@@ -328,12 +328,12 @@ describe('NotificationsView', () => {
         id: 'ci1',
         type: 'session_chat_integration',
         agentSlug: 'slack-bot-1',
-        title: 'Chat Integration Connected',
+        title: 'Chat Add-on Connected',
       })],
       total: 1,
     }
     renderWithProviders(<NotificationsView />)
-    const link = screen.getByText('Chat Integration Connected').closest('a')
+    const link = screen.getByText('Chat Add-on Connected').closest('a')
     expect(link).toHaveAttribute('data-to', '/agents/$slug')
     expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'slack-bot-1' }))
   })

@@ -142,9 +142,9 @@ export function SessionView({ agentSlug, sessionId, onSessionCreated: handleSess
       {sessionId && integrationId && (
         <SessionProvenanceBanner
           icon={Plug}
-          text={<>Session from {integration ? `${formatProviderName(integration.provider)} integration${integration.name ? ` "${integration.name}"` : ''}` : 'agent integration'}</>}
+          text={<>Session from {integration ? `${formatProviderName(integration.provider)} add-on${integration.name ? ` "${integration.name}"` : ''}` : 'agent add-on'}</>}
           back={{
-            label: 'View integration',
+            label: 'View add-on',
             onClick: () => {
               void navigate({
                 to: '/agents/$slug/chat/$integrationId',

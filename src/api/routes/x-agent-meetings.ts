@@ -60,7 +60,7 @@ async function ensureMeetingIntegration(callerSlug: string, request: Request): P
   const existing = await meetingIntegrationsOf(callerSlug)
   const usable = existing.find(row => row.status === 'active') ?? existing.find(row => row.status === 'error')
   if (usable) return { integration: usable, created: false }
-  if (existing.length > 0) throw new IntegrationPolicyError('The meeting integration is paused. The person who manages this agent can resume it from the integration page.')
+  if (existing.length > 0) throw new IntegrationPolicyError('The meeting integration is paused. The person who manages this agent can resume it from its add-on page.')
   let provider: string | undefined
   for (const candidate of meetingProviders) {
     if (await agentIntegrationRegistry.isAvailable(candidate.definition.provider)) { provider = candidate.definition.provider; break }

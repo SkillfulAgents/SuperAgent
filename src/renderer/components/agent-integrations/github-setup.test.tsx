@@ -32,7 +32,7 @@ it('uses the shared modal and creates nothing until the user continues', async (
   renderForm()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeEnabled())
   expect(screen.getByTestId('integration-setup-layout')).toBeInTheDocument()
-  expect(screen.getByLabelText('Integration name')).toHaveValue('Release Assistant')
+  expect(screen.getByLabelText('Add-on name')).toHaveValue('Release Assistant')
   expect(creates()).toHaveLength(0)
 })
 it('launches the manifest flow and closes only when the callback has completed installation', async () => {

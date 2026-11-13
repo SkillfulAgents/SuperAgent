@@ -99,7 +99,7 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
         setClientSecret(''); setWebhookSecret(''); setCredentialsSaved(true); setAuthUrl(result.url)
         return result.url
       })
-    } catch (error) { setError(error instanceof Error ? error.message : 'Could not connect integration') }
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not connect add-on') }
     finally { connecting.current = false; setBusy(false) }
   }
 
@@ -127,7 +127,7 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
     </>}
     feedback={<>
       {setup.error && <IntegrationSetupFeedback state="error">{setup.error.message} <button className="underline" onClick={() => void setup.refetch()}>Try again</button></IntegrationSetupFeedback>}
-      {(error || linear?.authorizationMessage || refreshError) && <IntegrationSetupFeedback state="error">{error ?? linear?.authorizationMessage ?? 'Could not check authorization. Reopen this integration to continue.'}</IntegrationSetupFeedback>}
+      {(error || linear?.authorizationMessage || refreshError) && <IntegrationSetupFeedback state="error">{error ?? linear?.authorizationMessage ?? 'Could not check authorization. Reopen this add-on to continue.'}</IntegrationSetupFeedback>}
       {pending && <IntegrationSetupFeedback state="pending">
         <p>Waiting for authorization in Linear. This window will update when you’re connected.</p>
         {authUrl && <a href={authUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block underline" onClick={event => {
@@ -148,7 +148,7 @@ export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onC
       <input type="checkbox" className="mt-1" checked={webhooksChosen} disabled={busy} onChange={event => setWebhooksChosen(event.target.checked)} />
       <span>Set up webhooks (recommended)<span className="block text-xs text-muted-foreground">Events that happen while this agent is offline are delivered when it’s back. Without them it uses a live connection and misses those.</span></span>
     </label>}
-    <IntegrationSetupField id="setup-integration-name" label="Integration name" value={name ?? agent?.name ?? agentSlug} onChange={event => setName(event.target.value)} maxLength={80} disabled={busy || !!integrationId} />
+    <IntegrationSetupField id="setup-integration-name" label="Add-on name" value={name ?? agent?.name ?? agentSlug} onChange={event => setName(event.target.value)} maxLength={80} disabled={busy || !!integrationId} />
     <IntegrationSetupField id="linear-client-id" label="Client ID" value={clientId} onChange={event => setClientId(event.target.value)} autoComplete="off" disabled={busy || credentialsSaved} />
     <IntegrationSetupField id="linear-client-secret" label="Client secret" type="password" value={clientSecret} onChange={event => setClientSecret(event.target.value)} autoComplete="new-password" placeholder={credentialsSaved ? 'Saved securely' : undefined} disabled={busy || credentialsSaved} />
     {viaRelay && <IntegrationSetupField id="linear-webhook-secret" label="Webhook signing secret (strongly recommended)" type="password" value={webhookSecret} onChange={event => setWebhookSecret(event.target.value)} autoComplete="new-password" placeholder={credentialsSaved ? 'Saved securely' : undefined} disabled={busy || credentialsSaved} />}
@@ -182,7 +182,7 @@ export function LinearConnectionSettings({ integration }: { integration: PublicA
         setClientSecret(''); setWebhookSecret(''); setEditCredentials(false); setAuthUrl(result.url)
         return result.url
       })
-    } catch (error) { setError(error instanceof Error ? error.message : 'Could not authorize integration') }
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not authorize add-on') }
     finally { setBusy(false) }
   }
   return <DetailCard label="Linear Account">
@@ -224,7 +224,7 @@ export function LinearIntegrationSettings({ integration }: { integration: Public
   const update = useUpdateAgentIntegration()
   if (!isPublicLinearIntegration(integration)) return null
   return <>
-    <DetailCard label="Integration Settings"><ToggleRow
+    <DetailCard label="Add-on Settings"><ToggleRow
       label="Run on status changes" helperText="Start work when an involved issue changes status."
       checked={integration.settings.runOnStatusChange} disabled={update.isPending}
       onCheckedChange={runOnStatusChange => update.mutate({ id: integration.id, settings: { runOnStatusChange } })}

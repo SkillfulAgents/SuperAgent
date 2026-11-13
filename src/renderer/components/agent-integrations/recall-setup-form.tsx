@@ -32,10 +32,10 @@ export function RecallSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
     label="Meetings"
     instructions={<>
       <ol className="list-decimal list-outside ml-5 space-y-2.5 text-sm font-normal text-foreground">
-        <li>Pick the name the agent appears under in calls, and optionally give it standing instructions that apply to every meeting it joins. Both can be changed later on the integration page.</li>
-        <li>Once connected, paste a Zoom, Google Meet or Microsoft Teams invite link on the integration page and the agent joins as a voice participant. Hosts may need to admit it from the waiting room.</li>
+        <li>Pick the name the agent appears under in calls, and optionally give it standing instructions that apply to every meeting it joins. Both can be changed later on the add-on page.</li>
+        <li>Once connected, paste a Zoom, Google Meet or Microsoft Teams invite link on the add-on page and the agent joins as a voice participant. Hosts may need to admit it from the waiting room.</li>
       </ol>
-      <p className="text-xs text-muted-foreground">The bot records the audio of each call for its notes and says so in the call chat when it joins. Recordings are kept for {retentionDays} days and can be played back from the integration page until then. Meeting bot time is billed to your Platform account.</p>
+      <p className="text-xs text-muted-foreground">The bot records the audio of each call for its notes and says so in the call chat when it joins. Recordings are kept for {retentionDays} days and can be played back from the add-on page until then. Meeting bot time is billed to your Platform account.</p>
     </>}
     feedback={error && <IntegrationSetupFeedback state="error">{error}</IntegrationSetupFeedback>}
     actions={

@@ -53,7 +53,7 @@ export async function provisionIntegrationRelay(name: string, userId?: string, v
   } catch (error) {
     if (error instanceof WebhookRelayUnavailableError) throw new IntegrationSetupError(error.message)
     if (error instanceof WebhookEndpointsApiError && error.statusCode === 409) {
-      throw new IntegrationSetupError('This workspace has reached its limit of active webhook endpoints. Remove an unused integration or webhook trigger first.')
+      throw new IntegrationSetupError('This workspace has reached its limit of active webhook endpoints. Remove an unused add-on or webhook trigger first.')
     }
     throw error
   }

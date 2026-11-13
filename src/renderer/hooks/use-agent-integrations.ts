@@ -57,7 +57,7 @@ export function useAvailableAgentIntegrationProviders() {
     queryKey: ['agent-integration-providers', platform?.connected, relay?.available],
     queryFn: async () => {
       const response = await apiFetch('/api/agent-integrations/providers')
-      if (!response.ok) throw new Error('Failed to fetch available integrations')
+      if (!response.ok) throw new Error('Failed to fetch available add-ons')
       return response.json()
     },
     // Both answers are in the key, so a read before they arrive is read again right after.
@@ -75,7 +75,7 @@ export function useAgentIntegrations(agentSlug: string | null, status?: string) 
         ? `/api/agent-integrations/agents/${agentSlug}?status=${status}`
         : `/api/agent-integrations/agents/${agentSlug}`
       const res = await apiFetch(url)
-      if (!res.ok) throw new Error('Failed to fetch agent integrations')
+      if (!res.ok) throw new Error('Failed to fetch agent add-ons')
       return res.json()
     },
     enabled: !!agentSlug,
@@ -96,7 +96,7 @@ export function useAgentIntegration(id: string | null) {
     queryKey: agentIntegrationKeys.detail(id),
     queryFn: async () => {
       const res = await apiFetch(`/api/agent-integrations/${id}`)
-      if (!res.ok) throw new Error('Failed to fetch agent integration')
+      if (!res.ok) throw new Error('Failed to fetch agent add-on')
       return res.json()
     },
     enabled: !!id,
@@ -146,7 +146,7 @@ export function useSessionAgentIntegrationId(agentSlug: string, sessionId: strin
     queryKey: agentIntegrationKeys.sessionOwner(agentSlug, sessionId),
     queryFn: async () => {
       const res = await apiFetch(`/api/agent-integrations/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId!)}`)
-      if (!res.ok) throw new Error('Failed to resolve session integration')
+      if (!res.ok) throw new Error('Failed to resolve session add-on')
       return (await res.json()).integrationId
     },
     enabled: !!sessionId,
@@ -160,7 +160,7 @@ export function useAgentIntegrationSessions(integrationId: string | null) {
     queryKey: agentIntegrationKeys.sessions(integrationId),
     queryFn: async () => {
       const res = await apiFetch(`/api/agent-integrations/${integrationId}/sessions`)
-      if (!res.ok) throw new Error('Failed to fetch agent integration sessions')
+      if (!res.ok) throw new Error('Failed to fetch agent add-on sessions')
       return res.json()
     },
     enabled: !!integrationId,
@@ -180,7 +180,7 @@ export function useAgentIntegrationAccess(integrationId: string | null, enabled 
     queryKey: agentIntegrationKeys.access(integrationId ?? ''),
     queryFn: async () => {
       const res = await apiFetch(`/api/agent-integrations/${integrationId}/access`)
-      if (!res.ok) throw new Error('Failed to fetch agent integration access')
+      if (!res.ok) throw new Error('Failed to fetch agent add-on access')
       return res.json()
     },
     // The /access route is owner-gated; callers pass enabled=false for non-owners
@@ -268,7 +268,7 @@ export function useUpdateAgentIntegration() {
       })
       if (!res.ok) {
         const payload = await res.json().catch(() => null) as { error?: string } | null
-        throw new Error(payload?.error ?? 'Failed to update agent integration')
+        throw new Error(payload?.error ?? 'Failed to update agent add-on')
       }
       return res.json() as Promise<PublicAgentIntegration>
     },
@@ -291,7 +291,7 @@ export function useDeleteAgentIntegration() {
   return useMutation({
     mutationFn: async ({ id, agentSlug }: { id: string; agentSlug: string }) => {
       const res = await apiFetch(`/api/agent-integrations/${id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete agent integration')
+      if (!res.ok) throw new Error('Failed to delete agent add-on')
       return { id, agentSlug }
     },
     onSuccess: (_, variables) => {
@@ -407,7 +407,7 @@ export function useAgentIntegrationSetup(agentSlug: string, provider: string, na
     queryFn: async ({ signal }) => {
       const query = new URLSearchParams(name ? { name } : {})
       const response = await apiFetch(`/api/agent-integrations/agents/${encodeURIComponent(agentSlug)}/providers/${encodeURIComponent(provider)}/setup?${query}`, { signal })
-      if (!response.ok) throw new Error('Could not load integration setup')
+      if (!response.ok) throw new Error('Could not load add-on setup')
       return integrationSetupMetadataSchema.parse(await response.json())
     },
     staleTime: 60_000,
@@ -445,7 +445,7 @@ export function useAuthorizeAgentIntegration() {
       })
       if (!response.ok) {
         const result = await response.json().catch(() => null)
-        throw new Error(typeof result?.error === 'string' && result.error ? result.error : 'Could not authorize integration')
+        throw new Error(typeof result?.error === 'string' && result.error ? result.error : 'Could not authorize add-on')
       }
       return await response.json() as { url: string }
     },

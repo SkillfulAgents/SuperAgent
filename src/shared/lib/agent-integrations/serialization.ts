@@ -26,7 +26,7 @@ export function toPublicAgentIntegration(row: AgentIntegrationRecord): PublicAge
       createdByUserId: row.createdByUserId, createdAt: row.createdAt, updatedAt: row.updatedAt,
       hasCredentials: false, settings: {}, capabilities, managementAccess,
       errorMessage: definition
-        ? 'Stored integration settings are invalid. Delete this integration and add it again.'
-        : 'This integration provider is unavailable in this version of the app.' }
+        ? 'Stored add-on settings are invalid. Delete this add-on and add it again.'
+        : 'This add-on provider is unavailable in this version of the app.' }
   }
 }

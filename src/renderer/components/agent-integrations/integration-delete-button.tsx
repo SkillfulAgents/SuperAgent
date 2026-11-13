@@ -31,8 +31,8 @@ export function IntegrationDeleteButton({ integration, onDeleted }: {
         type="button"
         size="icon"
         variant="outline"
-        aria-label="Delete integration"
-        title="Delete integration"
+        aria-label="Delete add-on"
+        title="Delete add-on"
         className="text-destructive hover:bg-destructive/10 hover:text-destructive"
         disabled={deleteIntegration.isPending}
         onClick={() => setOpen(true)}
@@ -42,9 +42,9 @@ export function IntegrationDeleteButton({ integration, onDeleted }: {
       <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Chat Integration</AlertDialogTitle>
+            <AlertDialogTitle>Delete Add-on</AlertDialogTitle>
             <AlertDialogDescription>
-              This will disconnect the bot and remove this integration permanently.
+              This will disconnect the bot and remove this add-on permanently.
               Existing conversation history will be preserved.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -58,7 +58,7 @@ export function IntegrationDeleteButton({ integration, onDeleted }: {
               disabled={deleteIntegration.isPending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deleteIntegration.isPending ? 'Deleting...' : 'Delete Integration'}
+              {deleteIntegration.isPending ? 'Deleting...' : 'Delete Add-on'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

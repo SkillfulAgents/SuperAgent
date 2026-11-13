@@ -129,7 +129,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
   if (error || !integration) {
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
-        Failed to load integration
+        Failed to load add-on
       </div>
     )
   }
@@ -183,7 +183,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
               }}
               onError={(error) => {
                 console.error('Failed to rename integration:', error)
-                toast.error('Failed to rename integration', {
+                toast.error('Failed to rename add-on', {
                   description: error instanceof Error ? error.message : 'Please try again.',
                 })
               }}
@@ -191,7 +191,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
               displayClassName="text-xl font-medium"
               inputClassName="h-9 text-xl font-medium"
               saveButtonClassName="h-8 w-8"
-              ariaLabel="Rename integration"
+              ariaLabel="Rename add-on"
               saveAriaLabel="Save name"
               displayTestId="integration-name"
               inputTestId="integration-name-input"
@@ -199,7 +199,7 @@ export function AgentIntegrationView({ integrationId, agentSlug, chatSessionId, 
             <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2 py-1 text-xs">
               <ServiceIcon slug={integration.provider} fallback="mcp" className={`h-3.5 w-3.5 shrink-0 ${integrationSetupProviders.find(provider => provider.slug === integration.provider)?.iconClassName ?? ''}`} />
               <span className="font-medium">{providerName}</span>
-              <span className="text-muted-foreground">Integration</span>
+              <span className="text-muted-foreground">Add-on</span>
             </span>
           </div>
         }

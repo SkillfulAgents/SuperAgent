@@ -97,7 +97,7 @@ describe('AgentIntegrationView', () => {
     render(<AgentIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
     expect(screen.getByTestId('inbox')).toBeInTheDocument()
     expect(screen.queryByTestId('panel')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Rename integration' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Rename add-on' })).toBeNull()
     expect(screen.queryByText('delete')).toBeNull()
   })
 
@@ -105,7 +105,7 @@ describe('AgentIntegrationView', () => {
     render(<AgentIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
     expect(screen.getByText('Bot')).toBeInTheDocument()
     expect(screen.getByText('Telegram')).toBeInTheDocument()
-    expect(screen.getByText('Integration')).toBeInTheDocument()
+    expect(screen.getByText('Add-on')).toBeInTheDocument()
   })
 
   it('falls back to the agent name when the integration has no custom name (matches the agent-home row list)', () => {
@@ -129,7 +129,7 @@ describe('AgentIntegrationView', () => {
     userState.canUseAgent = false
     render(<AgentIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
     expect(screen.getByText('Bot')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Rename integration' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Rename add-on' })).toBeNull()
   })
 
   it('toasts an error when the rename fails', async () => {
@@ -143,7 +143,7 @@ describe('AgentIntegrationView', () => {
     const input = screen.getByTestId('integration-name-input')
     await user.clear(input)
     await user.type(input, 'Nope{Enter}')
-    expect(toast.error).toHaveBeenCalledWith('Failed to rename integration', expect.anything())
+    expect(toast.error).toHaveBeenCalledWith('Failed to rename add-on', expect.anything())
   })
 
   it('passes the route ?session through to the inbox', () => {

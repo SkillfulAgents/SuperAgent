@@ -24,7 +24,7 @@ export function IntegrationStatusCard({ integration, connected }: {
             className="scale-75 origin-right"
             checked={isOn}
             disabled={updateIntegration.isPending || (!isOn && !integration.hasCredentials)}
-            aria-label={isOn ? 'Pause integration' : 'Resume integration'}
+            aria-label={isOn ? 'Pause add-on' : 'Resume add-on'}
             onCheckedChange={(next) =>
               updateIntegration.mutate({ id: integration.id, status: next ? 'active' : 'paused' })
             }

@@ -415,15 +415,15 @@ class NotificationManager {
 
     switch (event) {
       case 'connected':
-        title = 'Chat Integration Connected'
+        title = 'Chat Add-on Connected'
         body = `${integrationName} connected for ${displayName}`
         break
       case 'disconnected':
-        title = 'Chat Integration Disconnected'
+        title = 'Chat Add-on Disconnected'
         body = `${integrationName} disconnected from ${displayName}`
         break
       case 'error':
-        title = 'Chat Integration Error'
+        title = 'Chat Add-on Error'
         body = detail
           ? `${integrationName} error on ${displayName}: ${detail}`
           : `${integrationName} encountered an error on ${displayName}`
