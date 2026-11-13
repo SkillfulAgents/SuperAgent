@@ -7,6 +7,9 @@ export async function mockDropboxVolumes(page: Page, agentSlug?: string) {
   const mounts: MountSummaryWithHealth[] = []
   const created: unknown[] = []
   let foldersFail = false
+  // The mocked reads below must each go out by themselves: a batch would carry them past these routes
+  // to the real server. A refused batch makes the page send every read alone, as it does on an older server.
+  await page.route('**/api/batch-reads', route => route.fulfill({ status: 404, json: { error: 'Not found' } }))
   await page.route('**/api/connected-accounts', route => route.fulfill({ json: { accounts: [
     { id: 'dropbox-test', toolkitSlug: 'dropbox', providerName: 'composio', displayName: 'Team Dropbox', status: 'active' },
     { id: 'dropbox-expired', toolkitSlug: 'dropbox', providerName: 'composio', displayName: 'Old Dropbox', status: 'expired' },
