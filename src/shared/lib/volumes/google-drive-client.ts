@@ -9,8 +9,10 @@ import { VolumeError } from './volume-error'
 import { RemoteRequestPacer, retryAfterSeconds } from './remote-request-pacer'
 
 const HOST = 'www.googleapis.com'
-/** Composio's proxy refuses bodies from 768 KiB; Drive wants multiples of 256 KiB. */
-export const UPLOAD_CHUNK_BYTES = 512 * 1024
+/** A request through the account travels base64 in JSON, which the platform proxy caps at 1 MB. */
+export const MULTIPART_MAX_BYTES = 512 * 1024
+/** The connection sends session chunks straight to the upload link, so only memory bounds them; Drive wants multiples of 256 KiB. */
+export const UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
 const RATE_LIMIT_REASONS = ['userRateLimitExceeded', 'rateLimitExceeded', 'dailyLimitExceeded', 'sharingRateLimitExceeded']
 
 export function requireGoogleDriveAccount(accountId: string, creator?: { userId: string | null }) {
@@ -99,7 +101,7 @@ export async function driveRequest(accountId: string, request: DriveRequest, opt
 }
 
 /** A small upload carries metadata and bytes in one multipart request. Larger
- * files stage 512 KiB chunks, holding back the final chunk until publication is
+ * files open a session and send 16 MiB chunks to its link, holding back the final chunk until publication is
  * authorized. Both paths finish reading/validating the body before publication. */
 export async function driveUpload(
   accountId: string, session: { method: 'POST' | 'PATCH'; path: string; json: unknown; contentType?: string },
@@ -111,14 +113,14 @@ export async function driveUpload(
   const publish = options.publish ?? (send => send())
   const stored = async (response: Response, total: number) => {
     if (response.status === 308) throw unavailable(503)
-    const file = driveFileSchema.parse(await response.json())
+    const file = driveFileSchema.parse(await response.json().catch(() => { throw unavailable(503) }))
     if (!contentType && file.size !== total) throw new VolumeError(`Google Drive stored ${file.size} of ${total} bytes`, 503)
     return file
   }
   try {
     const first = await chunks.next()
     let next = await chunks.next()
-    if (next.done) {
+    if (next.done && (first.value?.byteLength ?? 0) <= MULTIPART_MAX_BYTES) {
       const bytes = first.value ?? new ArrayBuffer(0)
       const boundary = `gamut_${randomUUID()}`
       const multipart = new Uint8Array(Buffer.concat([
