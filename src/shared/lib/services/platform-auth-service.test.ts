@@ -598,7 +598,6 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
     await initEnvManagedPlatformStatus()
-    await platformPlanCache.clear()
     vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({

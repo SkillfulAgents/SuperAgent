@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
-import { platformPlanCache } from './platform-plan-cache'
 import { actingPlanCacheKey, actingPlanPolicy } from './platform-plan-account'
 
 // The account each token belongs to, and its plan. A read without a token
@@ -33,7 +32,6 @@ function record(token: string, orgId: string, memberId: string): PlatformAuthSet
 beforeEach(async () => {
   handle = await createTestDatabase()
   testDb = handle.db
-  await platformPlanCache.clear()
   fetchAccount.mockReset()
   fetchAccount.mockImplementation(async (token?: string | null) => accounts[(token === undefined ? state.currentToken : token) ?? ''])
 })

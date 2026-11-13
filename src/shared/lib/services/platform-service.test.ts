@@ -114,20 +114,25 @@ describe('PlatformService', () => {
     expect(platformService.getCachedBilling()).toBeNull()
   })
 
-  it('keeps the plan policy a billing read carries for the acting account, and forgets it on an account change (SUP-1124)', async () => {
-    await platformPlanCache.clear()
+  it('keeps the plan policy a billing read carries for the acting account (SUP-1124)', async () => {
     mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
     await platformService.refreshBilling()
     const load = vi.fn(async () => null)
     expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
     expect(load).not.toHaveBeenCalled()
-    platformService.onAuthChanged(false)
-    expect(await platformPlanCache.get('acting-account', load)).toBeNull()
-    expect(load).toHaveBeenCalled()
+  })
+
+  // Opening Account is the way to see a plan change before the cached policy runs out.
+  it('replaces a cached policy with the one a billing read carries, at once', async () => {
+    await platformPlanCache.remember('acting-account', { planName: 'Pro 200', deniedModels: [] })
+    mockFetchBilling.mockResolvedValue({ ...SNAPSHOT, plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] }, deniedModels: ['claude-fable-'] })
+    await platformService.refreshBilling()
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get('acting-account', load)).toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(load).not.toHaveBeenCalled()
   })
 
   it('does not record a policy from a proxy that predates plans', async () => {
-    await platformPlanCache.clear()
     mockFetchBilling.mockResolvedValue(SNAPSHOT)
     await platformService.refreshBilling()
     const load = vi.fn(async () => ({ planName: 'Pro 200', deniedModels: [] }))

@@ -67,7 +67,6 @@ class PlatformService implements Service {
 
   /** Connect → refresh; disconnect → clear the cache. Either way the account changed. */
   onAuthChanged(connected: boolean): void {
-    background(platformPlanCache.clear(), { name: 'platform-service.forget-plan-policies' })
     if (connected) background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
     else this.clearCache()
   }
