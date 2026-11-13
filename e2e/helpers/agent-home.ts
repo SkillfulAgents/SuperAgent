@@ -38,18 +38,23 @@ export async function openHomeAdvancedSettings(page: Page): Promise<void> {
   await expect(toggle).toHaveAttribute('aria-expanded', 'true')
 }
 
-/** Agent Home's Import (in the Skills section, which this opens): opens the Import dialog. */
+/**
+ * Agent Home's Add Skill (in the Skills section, which this opens): a menu (Browse skills, Upload a skill) when the agent
+ * has team skills to browse, or straight to the Upload dialog when it has none. Opens the Upload dialog either way.
+ */
 export async function openSkillUpload(page: Page): Promise<void> {
   await openHomeSection(page, 'Skills')
-  const importButton = page.getByTestId('import-skill-button')
-  await expect(importButton).toBeVisible({ timeout: 10000 })
-  await importButton.click()
+  const add = page.getByTestId('add-skill-button')
+  await expect(add).toBeVisible({ timeout: 10000 })
+  await add.click()
+  if ((await add.getAttribute('aria-haspopup')) === 'menu') await page.getByTestId('upload-skill-item').click()
 }
 
-/** Agent Home's Add Skill (the agent has team skills to browse): opens the browse dialog. Opens the Skills section. */
+/** Agent Home's Add Skill menu → Browse skills (the agent has team skills to browse). Opens the Skills section. */
 export async function openSkillBrowse(page: Page): Promise<void> {
   await openHomeSection(page, 'Skills')
   const add = page.getByTestId('add-skill-button')
   await expect(add).toBeVisible({ timeout: 10000 })
   await add.click()
+  await page.getByTestId('browse-skills-item').click()
 }

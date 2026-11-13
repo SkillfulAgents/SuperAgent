@@ -2,7 +2,8 @@ import { useState, useMemo, useRef, useCallback } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, Download, FileArchive, Trash2 } from 'lucide-react'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
+import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, FileArchive, Trash2, Library, ArrowUpFromLine } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -68,25 +69,30 @@ function HomeSkillsBody({ agentSlug, skills, onRunSkill }: { agentSlug: string; 
         </div>
       )}
 
-      <div className="flex justify-end mt-3 px-4 pb-1 gap-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => setImportOpen(true)}
-          data-testid="import-skill-button"
-        >
-          <Download className="h-3.5 w-3.5" />
-          Import
-        </Button>
-        {hasDiscoverable && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setBrowseOpen(true)}
-            data-testid="add-skill-button"
-          >
+      {/* One Add Skill, as Drives has one Add Drive: a menu of the ways in when the team has skills to browse, or
+          straight to the upload dialog when it has none. */}
+      <div className="flex justify-end mt-3 px-4 pb-1">
+        {hasDiscoverable ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" data-testid="add-skill-button">
+                <Plus />
+                Add Skill
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onSelect={() => setBrowseOpen(true)} data-testid="browse-skills-item">
+                <Library className="h-4 w-4" />
+                Browse skills
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setImportOpen(true)} data-testid="upload-skill-item">
+                <ArrowUpFromLine className="h-4 w-4" />
+                Upload a skill
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Button type="button" variant="ghost" size="sm" onClick={() => setImportOpen(true)} data-testid="add-skill-button">
             <Plus />
             Add Skill
           </Button>
@@ -293,7 +299,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
     try {
       const result = await importSkill.mutateAsync({ agentSlug, file: importFile })
       closeDialog()
-      toast.success(`Imported skill "${result.skillName}"`)
+      toast.success(`Uploaded skill "${result.skillName}"`)
     } catch {
       // Error is shown by the mutation's error state
     }
@@ -309,9 +315,9 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
       <Dialog open={open} onOpenChange={(o) => { if (!o) closeDialog() }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="font-medium">Import a Skill</DialogTitle>
+            <DialogTitle className="font-medium">Upload a Skill</DialogTitle>
             <DialogDescription className="sr-only">
-              Upload a .skill or .zip file to import a skill.
+              Upload a .skill or .zip file to add it to this agent.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleImport}>
@@ -364,7 +370,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
                   </div>
                 ) : (
                   <>
-                    <Download className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
+                    <ArrowUpFromLine className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">
                       Drop a .skill or .zip file here<br />
                       or click to browse
@@ -388,10 +394,10 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
                 {importSkill.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Importing...
+                    Uploading...
                   </>
                 ) : (
-                  'Import'
+                  'Upload'
                 )}
               </Button>
             </DialogFooter>
