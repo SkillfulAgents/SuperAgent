@@ -20,8 +20,10 @@ import type { Env } from './index'
 // this module loads when the Worker starts, and the container client pulls in too much for that.
 const CONTAINER_INTERNAL_PORT = 3000
 // agent-container/cloudflare/snapshot-server.mjs: restores and saves /workspace, then launches the agent.
+// The image starts as root here (START_USER in wrangler.jsonc): gamut-start opens /dev/fuse, then runs
+// the snapshot server as claude.
 const SNAPSHOT_PORT = 8090
-const SNAPSHOT_SERVER = ['node', '/opt/gamut/cloudflare/snapshot-server.mjs']
+const SNAPSHOT_SERVER = ['gamut-start', 'node', '/opt/gamut/cloudflare/snapshot-server.mjs']
 // How often a boot checks whether a port in the starting container answers, and for how long.
 const PORT_POLL_MS = 50
 const PORT_WAIT_MS = 120_000

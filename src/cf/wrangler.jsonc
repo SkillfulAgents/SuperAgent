@@ -44,7 +44,8 @@
   },
   // The normal agent image, which each agent's object starts with agent-container/cloudflare/snapshot-server.mjs
   // (cloudflare-agent.ts). durable_object policy: a deploy never rolls a running container onto the new image.
-  "containers": [{ "name": "superagent-agent", "class_name": "AgentDurableObject", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "../../agent-container/Dockerfile" } } }],
+  // start() cannot pick a user, so the image starts as root to open /dev/fuse for FUSE mounts.
+  "containers": [{ "name": "superagent-agent", "class_name": "AgentDurableObject", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "../../agent-container/Dockerfile", "build_vars": { "START_USER": "root" } } } }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject", "AgentDurableObject"] }],
   "observability": { "enabled": true }
 }

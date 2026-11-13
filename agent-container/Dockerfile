@@ -297,8 +297,10 @@ COPY --chown=root:root start.sh /usr/local/bin/gamut-start
 # /workspace, which starts empty there, then runs gamut-start (src/cf/cloudflare-agent.ts).
 COPY --chown=claude:claude cloudflare/snapshot-server.mjs cloudflare/workspace-scan.mjs /opt/gamut/cloudflare/
 
-# Switch to non-root user
-USER claude
+# Switch to non-root user. A runtime that cannot pick the user at start sets START_USER=root,
+# and starts gamut-start, which opens /dev/fuse and then drops to claude.
+ARG START_USER=claude
+USER ${START_USER}
 
 # Expose port
 EXPOSE 3000
