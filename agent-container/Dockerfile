@@ -2,9 +2,12 @@
 # the Agent SDK native-binary cleanup step below must flip: delete the `-glibc`
 # variant instead of the `-musl` one, or the Claude subprocess will fail to spawn.
 #
-# Stage layout: `base` holds the agent's tool environment (apt packages,
-# runtimes, browser) and is shared by `builder` (dev deps + tsc, discarded)
-# and `runtime` (prod deps + dist, published).
+# Stage layout: `base` holds the system layer (apt packages, Node, Python,
+# rclone, the claude user). Large self-contained parts are built in stages of
+# their own (`browser`, `bun`, `prod-deps` with the Claude CLI) and copied into
+# `runtime` with `COPY --link`. A linked layer's digest depends only on its own
+# content, so a change to `base` or to another part does not make anyone pull it
+# again. `builder` (dev deps + tsc) is discarded; `runtime` is published.
 #
 # Pinned by digest: when Docker Hub moves the tag, every layer's cache key
 # changes, so the image rebuilds from scratch and every user re-pulls all of
@@ -106,16 +109,6 @@ RUN npm ci --prefix /opt/gamut/runtime-tools --omit=dev --ignore-scripts && \
     done && \
     rm -rf /root/.npm
 
-# Install Bun (for running dashboard servers)
-# Install as root then copy binary to /usr/local/bin so the claude user can access it
-# (symlinks to /root/.bun/bin/ won't work because /root/ is not readable by other users).
-# Remove the installer's /root/.bun copy in the same layer or the ~90MB binary ships twice.
-RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3" && \
-    cp /root/.bun/bin/bun /usr/local/bin/bun && \
-    ln -s /usr/local/bin/bun /usr/local/bin/bunx && \
-    chmod 755 /usr/local/bin/bun && \
-    rm -rf /root/.bun
-
 # Install rclone, the FUSE driver that mounts each volume from the app over WebDAV.
 # Checksums come from the release's SHA256SUMS for the two supported arches.
 RUN arch="$(dpkg --print-architecture)" && \
@@ -138,6 +131,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Create the non-root user and its directories up front so every layer below
+# can create files with the right owner. Ownership fixes must happen in the
+# SAME layer that creates the files: a later `chown -R` (or `rm`) of a lower
+# layer copies up (or merely whiteouts) every file, shipping ~400MB twice.
+RUN useradd -m -s /bin/bash claude && \
+    install -d -o claude -g claude /app /workspace /mounts /home/claude/.claude
+WORKDIR /app
+
+# ---- browser: agent-browser and Playwright's Chromium headless shell ----
+FROM base AS browser
+
 # Install agent-browser (native Rust binary since v0.20.0) and Playwright's
 # Chromium headless shell. Both the agent-browser runtime (via
 # AGENT_BROWSER_EXECUTABLE_PATH) and our dashboard screenshot code (via
@@ -150,15 +154,15 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 # The npm package ships the CLI for every platform (~100MB); its postinstall
 # links agent-browser straight to this machine's binary, so the others are
 # dead weight. Pruned only when the link is that direct one.
-RUN npm install -g agent-browser@0.41.2 && \
-    keep="$(readlink -f "$(command -v agent-browser)")" && \
+RUN NPM_CONFIG_PREFIX=/opt/agent-browser npm install -g agent-browser@0.41.2 && \
+    keep="$(readlink -f /opt/agent-browser/bin/agent-browser)" && \
     case "$keep" in \
       */agent-browser-linux-*) \
-        for f in "$(npm root -g)"/agent-browser/bin/agent-browser-*; do \
+        for f in /opt/agent-browser/lib/node_modules/agent-browser/bin/agent-browser-*; do \
           [ "$(readlink -f "$f")" = "$keep" ] || rm -f "$f"; \
         done ;; \
     esac && \
-    agent-browser --version && \
+    /opt/agent-browser/bin/agent-browser --version && \
     npx --yes playwright@1.64.1 install chromium --only-shell && \
     chmod -R o+rx /opt/playwright-browsers && \
     rm -rf /root/.npm
@@ -181,13 +185,47 @@ RUN bin=$(find /opt/playwright-browsers -type f \( -name headless_shell -o -name
     ln -sf "$bin" /opt/playwright-browsers/chromium-current; \
     echo "Linked /opt/playwright-browsers/chromium-current -> $bin"
 
-# Create the non-root user and its directories up front so every layer below
-# can create files with the right owner. Ownership fixes must happen in the
-# SAME layer that creates the files: a later `chown -R` (or `rm`) of a lower
-# layer copies up (or merely whiteouts) every file, shipping ~400MB twice.
-RUN useradd -m -s /bin/bash claude && \
-    install -d -o claude -g claude /app /workspace /mounts /home/claude/.claude
-WORKDIR /app
+# ---- bun: the Bun binary (for running dashboard servers) ----
+# Copied out of /root, which the claude user cannot read. The fixed mtime keeps
+# the layer identical when this stage is rebuilt for an unrelated base change.
+FROM base AS bun
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3" && \
+    mkdir /out && \
+    install -m 755 /root/.bun/bin/bun /out/bun && \
+    ln -s bun /out/bunx && \
+    touch -h -d @0 /out/bun /out/bunx /out
+
+# ---- prod-deps: production dependencies, with the Claude CLI split out ----
+# The Agent SDK ships per-platform native Claude Code binaries as optional
+# dependencies; npm picks the matching one for this arch (e.g.
+# @anthropic-ai/claude-agent-sdk-linux-arm64/claude).
+#
+# Drop the musl SDK variant if npm installed it alongside the glibc one. Our
+# base image is glibc-based Ubuntu (see note at top of file), but npm sometimes
+# ignores the package's `libc` field and installs both. The SDK's resolver
+# prefers the musl binary when present, which then fails at runtime with
+# "binary not found" (the kernel can't load it because ld-musl-<arch>.so isn't
+# on the image). If the base image ever switches to musl (Alpine), invert this:
+# delete the non-musl variants instead.
+#
+# The binary is about half of these dependencies by size and changes only when
+# the SDK version does, so it moves to /claude-cli for a layer of its own and
+# leaves a symlink behind. The fixed mtime keeps that layer identical when only
+# other dependencies change.
+FROM base AS prod-deps
+COPY package*.json ./
+RUN npm ci --omit=dev && \
+    rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl /root/.npm && \
+    cli="$(echo node_modules/@anthropic-ai/claude-agent-sdk-linux-*/claude)" && \
+    if [ ! -x "$cli" ]; then \
+      echo "No SDK-bundled claude binary found under node_modules/@anthropic-ai/" >&2; \
+      ls -la node_modules/@anthropic-ai/ >&2; \
+      exit 1; \
+    fi && \
+    mkdir /claude-cli && \
+    mv "$cli" /claude-cli/claude && \
+    ln -s /opt/claude-cli/claude "$cli" && \
+    touch -d @0 /claude-cli/claude /claude-cli
 
 # ---- builder: dev install + TypeScript build ----
 # Nothing from this stage ships except /app/dist, so devDeps (typescript,
@@ -203,38 +241,16 @@ RUN npm run build
 # ---- runtime ----
 FROM base AS runtime
 
-# Copy package files
+COPY --link --from=browser /opt/agent-browser /opt/agent-browser
+COPY --link --from=browser /opt/playwright-browsers /opt/playwright-browsers
+COPY --link --from=bun /out/ /usr/local/bin/
+COPY --link --from=prod-deps /claude-cli /opt/claude-cli
+# `claude -p ...` from a shell inside the container uses the same binary as the SDK.
+RUN ln -s /opt/agent-browser/bin/agent-browser /usr/local/bin/agent-browser && \
+    ln -s /opt/claude-cli/claude /usr/local/bin/claude
+
 COPY --chown=claude:claude package*.json ./
-
-# Install production dependencies only. The Agent SDK ships per-platform
-# native Claude Code binaries as optional dependencies; npm picks the matching
-# one for this arch (e.g. @anthropic-ai/claude-agent-sdk-linux-arm64/claude).
-#
-# In the same layer (see note above), drop the musl SDK variant if npm
-# installed it alongside the glibc one. Our base image is glibc-based Ubuntu
-# (see note at top of file), but npm sometimes ignores the package's `libc`
-# field and installs both. The SDK's resolver prefers the musl binary when
-# present, which then fails at runtime with "binary not found" (the kernel
-# can't load it because ld-musl-<arch>.so isn't on the image). If the base
-# image ever switches to musl (Alpine), invert this: delete the non-musl
-# variants instead.
-RUN npm ci --omit=dev && \
-    rm -rf /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl /root/.npm && \
-    chown -R claude:claude /app
-
-# Expose the SDK-bundled claude binary on PATH so shell invocations
-# (`claude -p ...`) inside the container still work. Find-based resolution
-# keeps this portable across platforms — the matching optional dep name
-# varies by os/arch.
-RUN bin=$(find /app/node_modules/@anthropic-ai -maxdepth 2 -type d -name 'claude-agent-sdk-*' 2>/dev/null | head -n 1)/claude; \
-    if [ -x "$bin" ]; then \
-      ln -sf "$bin" /usr/local/bin/claude; \
-      echo "Symlinked /usr/local/bin/claude -> $bin"; \
-    else \
-      echo "No SDK-bundled claude binary found under /app/node_modules/@anthropic-ai/" >&2; \
-      ls -la /app/node_modules/@anthropic-ai/ >&2; \
-      exit 1; \
-    fi
+COPY --from=prod-deps --chown=claude:claude /app/node_modules ./node_modules
 
 # Compiled output from the builder stage
 COPY --from=builder --chown=claude:claude /app/dist ./dist
