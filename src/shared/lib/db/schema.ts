@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 import { NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-filters'
@@ -168,6 +168,19 @@ export const mobilePairingToken = sqliteTable('mobile_pairing_token', {
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   expiresAtIdx: index('mobile_pairing_token_expires_at_idx').on(table.expiresAt),
+}))
+
+
+// What Better Auth reads together: a session or an account with its user, and a user with its
+// accounts. With these, its adapter sends one query for each instead of two (`joins` in auth/index.ts).
+export const authSessionRelations = relations(authSession, ({ one }) => ({
+  user: one(user, { fields: [authSession.userId], references: [user.id] }),
+}))
+export const authAccountRelations = relations(authAccount, ({ one }) => ({
+  user: one(user, { fields: [authAccount.userId], references: [user.id] }),
+}))
+export const userRelations = relations(user, ({ many }) => ({
+  accounts: many(authAccount),
 }))
 
 export const verification = sqliteTable('verification', {

@@ -9,7 +9,7 @@ import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 // The catalog leaf, not the actor package index: the index loads the
 // container layer, which every route test would then have to mock.
-import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
+import { agentCatalog, namesMintedAgent } from '@shared/lib/agent-actor/agent-catalog'
 import type { AgentRecord } from '@shared/lib/agent-actor/types'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
@@ -30,6 +30,7 @@ import type { MeetingParticipantPrincipal } from '@shared/lib/meeting-integratio
 const AUTHORIZED_AGENT_ROLE_CONTEXT_KEY = 'authorizedAgentRole'
 const REQUEST_SESSION_CONTEXT_KEY = 'requestSession'
 const MEETING_PARTICIPANT_CONTEXT_KEY = 'meetingParticipant'
+const AGENT_RECORD_READ_CONTEXT_KEY = 'agentRecordRead'
 
 /**
  * The meeting bot's page acting for the person who started the meeting (see
@@ -159,6 +160,32 @@ function isAdmin(user: { role?: string }): boolean {
 }
 
 /**
+ * ResolveAgentEarly — start reading the agent the `:id` route param names, and do not wait for it.
+ * Mounted before Authenticated(), the read runs beside the session read instead of after it:
+ * the agent's row depends on the URL only, not on who asks. ResolveAgent() takes the result, and
+ * nothing of it reaches the caller before the access checks.
+ *
+ * Only a param shaped like a minted agent starts a read: a router's fixed paths (`/my-roles`)
+ * match `:id` too. Any other form of the param is read by ResolveAgent() as before.
+ *
+ * In auth mode, only a request that carries a credential (a cookie or an Authorization header)
+ * starts a read, so an anonymous request costs no agent read before its 401.
+ */
+export function ResolveAgentEarly(): MiddlewareHandler {
+  return (c: Context, next: Next) => {
+    const id = c.req.param('id') ?? ''
+    const mayBeSignedIn = !isAuthMode() || c.req.header('cookie') !== undefined || c.req.header('authorization') !== undefined
+    if (c.get(AGENT_RECORD_READ_CONTEXT_KEY as never) === undefined && mayBeSignedIn && namesMintedAgent(id)) {
+      const read = agentCatalog.resolveRecord(id)
+      // ResolveAgent() reports a failed read. A request refused before it must not leave the rejection unhandled.
+      read.catch(() => {})
+      c.set(AGENT_RECORD_READ_CONTEXT_KEY as never, read as never)
+    }
+    return next()
+  }
+}
+
+/**
  * ResolveAgent — resolve the `:id` route param (which may be a decorative
  * display slug, a bare id, or a legacy compound folder name) to the canonical
  * agent id, stash it on the context as `agentId`, and 404 if no such agent
@@ -174,7 +201,8 @@ function isAdmin(user: { role?: string }): boolean {
 export function ResolveAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (c.get('agentRecord' as never) === undefined) {
-      const agent = await agentCatalog.resolveRecord(c.req.param('id') ?? '')
+      const early = c.get(AGENT_RECORD_READ_CONTEXT_KEY as never) as Promise<AgentRecord | null> | undefined
+      const agent = await (early ?? agentCatalog.resolveRecord(c.req.param('id') ?? ''))
       if (!agent) return c.json({ error: 'Agent not found' }, 404)
       c.set('agentId' as never, agent.slug as never)
       c.set('agentRecord' as never, agent as never)

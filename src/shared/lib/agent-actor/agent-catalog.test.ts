@@ -11,7 +11,7 @@ let testDb: AppDatabase
 let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
-import { createAgentCatalog } from './agent-catalog'
+import { createAgentCatalog, namesMintedAgent } from './agent-catalog'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import * as avatarAssignment from './agent-avatar'
 import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentInstructionsPath } from '@shared/lib/utils/file-storage'
@@ -285,5 +285,37 @@ describe('reading rows', () => {
     respond()
     expect((await before)?.name).toBe('Research')
     expect((await after)?.name).toBe('Market research')
+  })
+})
+
+describe('namesMintedAgent', () => {
+  const id = 'a1b2c3d4e5'
+
+  it('accepts a minted id and a display slug that ends in one', () => {
+    expect(id).toHaveLength(AGENT_ID_LENGTH)
+    expect(namesMintedAgent(id)).toBe(true)
+    expect(namesMintedAgent(`sales-${id}`)).toBe(true)
+    expect(namesMintedAgent(`market-research-${id}`)).toBe(true)
+  })
+
+  it('refuses the fixed paths of the agents router', () => {
+    for (const path of ['my-roles', 'import-template', 'export-status', 'discoverable-agents', 'install-from-skillset', 'generate-name']) {
+      expect(namesMintedAgent(path)).toBe(false)
+    }
+  })
+
+  it('refuses a last segment of the wrong length or characters, and unsafe input', () => {
+    expect(namesMintedAgent('sales-a1b2c3d4e')).toBe(false)
+    expect(namesMintedAgent('sales-a1b2c3d4e56')).toBe(false)
+    expect(namesMintedAgent('sales-A1B2C3D4E5')).toBe(false)
+    expect(namesMintedAgent(`../${id}`)).toBe(false)
+    expect(namesMintedAgent('')).toBe(false)
+  })
+
+  it('agrees with the resolver: a display slug it accepts resolves to the minted agent', async () => {
+    await testDb.insert(schema.agents).values({ slug: id, name: 'Sales', createdAt: new Date() }).run()
+
+    expect(namesMintedAgent(`sales-${id}`)).toBe(true)
+    expect((await catalog.resolveRecord(`sales-${id}`))?.slug).toBe(id)
   })
 })

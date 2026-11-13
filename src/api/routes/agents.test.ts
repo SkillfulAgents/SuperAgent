@@ -208,6 +208,7 @@ vi.mock('../middleware/auth', () => ({
   // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
   // mock) and stash the resolved id, which getAgentId reads back. For test slugs
   // (already canonical), resolution is the identity.
+  ResolveAgentEarly: () => (_c: unknown, next: () => Promise<void>) => next(),
   ResolveAgent: () => async (c: any, next: () => Promise<void>) => {
     const slug = c.req.param('id')
     if (!(await mockAgentExists(slug))) return c.json({ error: 'Agent not found' }, 404)
