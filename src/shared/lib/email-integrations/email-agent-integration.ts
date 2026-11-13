@@ -3,7 +3,7 @@ import { emailSessionPolicy } from './definitions'
 export { emailDefinition } from './definitions'
 import { composeEmailReply } from './composition'
 import { plainUserTags } from '../utils/mentions'
-import { emailAnswer, renderRequestEmail, requestQuestions } from './request-email'
+import { renderRequestEmail } from './request-email'
 import { resolveAppLinkContext, withSessionUrl } from '../agent-integrations/app-link'
 import { emailDirectory, workspaceEmailContacts, type EmailHistoryPage } from './directory'
 import { createHash } from 'node:crypto'
@@ -81,14 +81,9 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     // about something else: it waits behind the request as an ordinary message.
     const sender = emailAddress(message.from)
     if (!sender || !(await agentUserEmails(context.integration.agentSlug)).has(sender)) return false
-    const question = live.openRequests.find(request => request.kind === 'question')
-    const questions = question && requestQuestions(question)
-    if (question && questions?.length === 1 && message.text) {
-      await this.emitEvent({ type: 'response', externalId: context.externalId, requestId: question.id, requestKind: 'input', value: { answers: { [questions[0].question]: emailAnswer(questions[0], message.text) } } })
-      return true
-    }
-    // Email can neither approve nor cancel an outstanding privileged request.
-    return true
+    // As in chat and the app, the reply ends the wait and reaches the agent as a new message. It cannot approve anything.
+    await context.actor.inputs.cancelAwaiting(context.sessionId)
+    return false
   }
   async prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext) {
     const message = emailMessageSchema.parse(event.payload)
