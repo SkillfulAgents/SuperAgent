@@ -281,11 +281,16 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // from a read-only mirror prefix. An integration card names its own author,
   // and a bare kind (the interrupt marker) has nothing to sit beside.
   const avatarSender = isUser && !isIntegrationMessage && !bareUserRender && sender?.name ? sender : null
+  // Someone outside the app wrote an integration message, so rendering it reads none of the agent's files.
   const renderMarkdown = useCallback((markdown: string) => (
     <div dir="auto" className={PROSE_CLASS}>
-      <MarkdownBlock text={markdown} embeddedImageAliases={embeddedImageAliases} agentSlug={agentSlug} />
+      <MarkdownBlock
+        text={markdown}
+        embeddedImageAliases={isIntegrationMessage ? undefined : embeddedImageAliases}
+        agentSlug={isIntegrationMessage ? undefined : agentSlug}
+      />
     </div>
-  ), [embeddedImageAliases, agentSlug])
+  ), [embeddedImageAliases, agentSlug, isIntegrationMessage])
 
   // While streaming, pre-split the markdown into fence-safe blocks so each
   // settled block parses once; only the small trailing block re-parses per

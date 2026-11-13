@@ -89,6 +89,43 @@ describe('FilePreviewContext', () => {
       expect(result.current.activeTabIndex).toBe(0)
     })
 
+    it('opens one tab for a workspace-relative and an absolute spelling of a file', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('out/a.md', 'agent-1'))
+      act(() => result.current.openFile('/workspace/out/a.md', 'agent-1'))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/out/a.md' })
+      act(() => result.current.openFile('out/a%20b.md', 'agent-1'))
+      expect(result.current.openTabs[1]).toMatchObject({ filePath: '/workspace/out/a%20b.md' })
+    })
+
+    it('reaches a tab and its comments through either spelling of its path', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFolder('out/', 'agent-1'))
+      act(() => result.current.removeDirectoryPath('/workspace/out', 'agent-1'))
+      expect(result.current.openTabs).toHaveLength(0)
+
+      act(() => result.current.openFile('/workspace/out/a.md', 'agent-1'))
+      act(() => result.current.renameFilePath('out/a.md', 'out/b.md', 'agent-1'))
+      expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/out/b.md' })
+      act(() => result.current.setPdfPage('out/b.md', 'agent-1', 3))
+      expect(result.current.openTabs[0]).toMatchObject({ pdfPage: 3 })
+      act(() => result.current.removeFilePath('out/b.md', 'agent-1'))
+      expect(result.current.openTabs).toHaveLength(0)
+
+      act(() => result.current.openFolder('/workspace/out', 'agent-1'))
+      act(() => result.current.setFolderQuery('out/', 'agent-1', 'q'))
+      expect(result.current.openTabs[0]).toMatchObject({ rootPath: '/workspace/out', query: 'q' })
+      act(() => result.current.removeDirectoryPath('out/', 'agent-1'))
+      expect(result.current.openTabs).toHaveLength(0)
+
+      act(() => result.current.addComment({ filePath: 'out/c.md', agentSlug: 'agent-1', text: 'note', anchor: { kind: 'file' } }))
+      expect(result.current.commentsFor('/workspace/out/c.md', 'agent-1')).toHaveLength(1)
+      act(() => result.current.clearComments('out/c.md', 'agent-1'))
+      expect(result.current.commentsFor('/workspace/out/c.md', 'agent-1')).toHaveLength(0)
+    })
+
     it('bumps version on re-delivery of same file', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))

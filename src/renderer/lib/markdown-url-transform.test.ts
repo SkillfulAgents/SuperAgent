@@ -83,12 +83,40 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('/workspace/../secrets.png', 'src', node)).toBe('')
     expect(transform('/workspace/report.txt', 'src', node)).toBe('')
     expect(transform('/workspaceX/chart.png', 'src', node)).toBe('')
-    // relative to the document, or naming a host, is not a workspace path
-    expect(transform('workspace/chart.png', 'src', node)).toBe('')
     expect(transform('//localhost/workspace/chart.png', 'src', node)).toBe('')
   })
 
   // A relative src loads from the app's own origin with the user's session.
+  it('resolves a relative path only from the folder it is given', () => {
+    expect(createMarkdownUrlTransform({ agentSlug: 'a', folder: '/workspace/blog' })('shots/c.png', 'src', node)).toBe(
+      '/api/agents/a/files/blog/shots/c.png?inline=true'
+    )
+    expect(createMarkdownUrlTransform({ agentSlug: 'a' })('out/c.png', 'src', node)).toBe('')
+    expect(createMarkdownUrlTransform({ agentSlug: 'a' })('/mounts/Drive/c.png', 'src', node)).toBe(
+      '/api/agents/a/mount-files/Drive/c.png?inline=true'
+    )
+  })
+
+  it('resolves nothing without an agent to read the files of', () => {
+    expect(createMarkdownUrlTransform({ folder: '/workspace/blog' })('shots/c.png', 'src', node)).toBe('')
+    expect(createMarkdownUrlTransform({ folder: '/workspace/blog' })('notes.md', 'href', node)).toBe('notes.md')
+  })
+
+  it('gives an agent file link the file URL and records the path it opens', () => {
+    const agentFileLinks = new Map<string, string>()
+    const transform = createMarkdownUrlTransform({ agentSlug: 'a', folder: '/workspace/blog', agentFileLinks })
+    expect(transform('notes.md', 'href', node)).toBe('/api/agents/a/files/blog/notes.md')
+    expect(transform('/workspace/Q3%20report.md#x', 'href', node)).toBe('/api/agents/a/files/Q3%20report.md')
+    expect(transform('shots/', 'href', node)).toBe('/workspace/blog/shots/')
+    expect(transform('#results', 'href', node)).toBe('#results')
+    expect(transform('https://example.com/a.md', 'href', node)).toBe('https://example.com/a.md')
+    expect([...agentFileLinks]).toEqual([
+      ['/api/agents/a/files/blog/notes.md', '/workspace/blog/notes.md'],
+      ['/api/agents/a/files/Q3%20report.md', '/workspace/Q3 report.md'],
+      ['/workspace/blog/shots/', '/workspace/blog/shots/'],
+    ])
+  })
+
   it('loads an unresolved image only from an absolute web URL', () => {
     expect(onSrc('/api/agents/a/files/chart.png')).toBe('')
     expect(onSrc('media/chart.png')).toBe('')
