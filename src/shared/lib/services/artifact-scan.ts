@@ -72,6 +72,12 @@ function isPlainSegment(segment: string): boolean {
 /**
  * Workspace path of a file inside a widget's artifact dir, or null when the
  * slug is not a widget slug or a segment would leave the artifact's directory.
+ * Every route that touches a widget's files goes through here.
+ *
+ * This is domain validation only: a slug like `../x` is a bad slug and is
+ * answered as one. Lexical containment is the actor's, and the readers below
+ * ask it where the path really is before reading it (`containedPathIn`);
+ * nothing here knows where the workspace is.
  */
 export function widgetPath(artifactSlug: string, ...segments: string[]): string | null {
   if (!WIDGET_SLUG_REGEX.test(artifactSlug)) return null
@@ -79,7 +85,13 @@ export function widgetPath(artifactSlug: string, ...segments: string[]): string 
   return joinWorkspacePath(ARTIFACTS_DIRNAME, artifactSlug, ...segments)
 }
 
-/** The same for any artifact: one plain directory name is the whole rule. */
+/**
+ * The same for any artifact, not only a widget: an artifact is whatever
+ * directory under artifacts/ carries a manifest, and the listing shows it
+ * under the name it has, so its thumbnail, rename and delete accept that
+ * name too. One plain directory name is the whole rule; the widget slug
+ * rule applies only where the container's widget code made the directory.
+ */
 export function artifactPath(artifactSlug: string, ...segments: string[]): string | null {
   if (![artifactSlug, ...segments].every(isPlainSegment)) return null
   return joinWorkspacePath(ARTIFACTS_DIRNAME, artifactSlug, ...segments)

@@ -14,7 +14,7 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => {
   }
 })
 
-const { hashWidgetHtml, scanArtifactsIn } = await import('./artifact-scan')
+const { hashWidgetHtml, scanArtifactsIn, widgetPath } = await import('./artifact-scan')
 const {
   listWidgetsFromFilesystem,
   readWidgetFromFilesystem,
@@ -22,7 +22,6 @@ const {
   readArtifactDoc,
   readWidgetLogTail,
   renderWidgetDocument,
-  resolveWidgetPath,
   widgetSnapshotPngPath,
 } = await import('./widget-service')
 const { listArtifactsFromFilesystem } = await import('./artifact-service')
@@ -180,12 +179,12 @@ describe('widget-service', () => {
   it('refuses slugs and segments that escape the artifacts dir', () => {
     // Pure string work: the slug is domain validation, the result a workspace
     // path. Containment of that path is the actor's job, tested below.
-    expect(resolveWidgetPath(AGENT, '../secrets')).toBeNull()
-    expect(resolveWidgetPath(AGENT, 'Macros')).toBeNull()
-    expect(resolveWidgetPath(AGENT, 'macros', '..', '..', 'x')).toBeNull()
-    expect(resolveWidgetPath(AGENT, 'macros', 'nested/file')).toBeNull()
-    expect(resolveWidgetPath(AGENT, 'macros')).toBe('artifacts/macros')
-    expect(widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)).toBe(
+    expect(widgetPath('../secrets')).toBeNull()
+    expect(widgetPath('Macros')).toBeNull()
+    expect(widgetPath('macros', '..', '..', 'x')).toBeNull()
+    expect(widgetPath('macros', 'nested/file')).toBeNull()
+    expect(widgetPath('macros')).toBe('artifacts/macros')
+    expect(widgetSnapshotPngPath('macros', 'small', 'dark', 3)).toBe(
       'artifacts/macros/snapshots/small-dark@3x.png',
     )
   })
@@ -202,10 +201,10 @@ describe('widget-service', () => {
     fs.symlinkSync(secret, path.join(dir, 'widget.log'))
     fs.symlinkSync(secret, path.join(dir, 'snapshots', 'small-dark@3x.png'))
 
-    const htmlPath = resolveWidgetPath(AGENT, 'macros', 'widget.html')
+    const htmlPath = widgetPath('macros', 'widget.html')
     expect(htmlPath).toBe('artifacts/macros/widget.html')
     expect(await readArtifactDoc(AGENT, htmlPath)).toBeNull()
-    const pngPath = widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)
+    const pngPath = widgetSnapshotPngPath('macros', 'small', 'dark', 3)
     expect(await readArtifactDoc(AGENT, pngPath)).toBeNull()
     // The readers answer "absent", as they always have.
     expect(await readWidgetHtml(AGENT, 'macros')).toBeNull()
@@ -226,7 +225,7 @@ describe('widget-service', () => {
     fs.mkdirSync(ourWorkspace, { recursive: true })
     fs.symlinkSync(path.join(tmpRoot, 'agent-2', 'workspace', 'artifacts'), path.join(ourWorkspace, 'artifacts'))
 
-    expect(resolveWidgetPath(AGENT, 'daily-macros', 'widget.html')).toBe('artifacts/daily-macros/widget.html')
+    expect(widgetPath('daily-macros', 'widget.html')).toBe('artifacts/daily-macros/widget.html')
     expect(await readWidgetHtml(AGENT, 'daily-macros')).toBeNull()
     expect(await readWidgetFromFilesystem(AGENT, 'daily-macros')).toBeNull()
     // The listing answers empty rather than with the other agent's artifacts.

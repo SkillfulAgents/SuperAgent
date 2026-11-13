@@ -1,3 +1,4 @@
+import pLimit from 'p-limit'
 import type { containerHost } from '@shared/lib/container/container-host'
 import type { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
@@ -90,6 +91,14 @@ export interface LocalActorDeps {
 const subagentCapture = SubagentCapture.fromEnv()
 
 /**
+ * How many of this process's agents read their listing from disk at a time.
+ * The agent list asks every agent at once; the actors of one process share
+ * its disk and its thread pool, so the bound is theirs to keep. An actor
+ * alone in its process is never held back by it.
+ */
+const listingLimit = pLimit(5)
+
+/**
  * An agent whose container and files are managed by this process.
  *
  * Runtime methods delegate with the agent's store or slug, or with the
@@ -159,15 +168,17 @@ export class LocalAgentActor implements AgentActor {
     this.widgets = createWidgetOps(this.state)
     this.mcpSessions = createMcpSessionOps(this.state)
     this.volumeUploads = createVolumeUploadOps(this.state)
-    this.listing = async () => {
-      const [live, sessions, artifacts, refreshingWidgets] = await Promise.all([
-        this.live(),
+    this.listing = () => listingLimit(async () => {
+      const [sessions, artifacts] = await Promise.all([
         this.sessions.summary(),
         scanArtifactsIn(this.files, { includeWidgets: true, agentSlug: slug }),
-        this.widgets.refreshing(),
       ])
+      // What is in memory is read after the disk, so it is never older than
+      // the files beside it: a refresh that ended during the scan left its new
+      // snapshot in `artifacts`, and must not still read as in flight.
+      const [live, refreshingWidgets] = await Promise.all([this.live(), this.widgets.refreshing()])
       return { live, sessions, artifacts, refreshingWidgets }
-    }
+    })
   }
 
   /** The registry is dropping this handle: release everything it owns. */

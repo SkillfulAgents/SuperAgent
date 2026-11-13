@@ -46,9 +46,9 @@ import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 import {
-  listAgentsWithListing,
+  listAgentsToList,
   getAgentWithListing,
-  type ListedAgent,
+  type AgentToList,
   createAgent,
   getAgentWithStatus,
   getAgent,
@@ -227,15 +227,13 @@ import {
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
 import { listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
-import type { ArtifactInfo } from '@shared/lib/services/artifact-scan'
+import { artifactPath, widgetPath, type ArtifactInfo } from '@shared/lib/services/artifact-scan'
 import {
   WIDGET_HTML_CSP,
   renderWidgetDocument,
   listWidgetsFromFilesystem,
   readWidgetFromFilesystem,
   readWidgetHtml,
-  resolveWidgetPath,
-  resolveArtifactPath,
   widgetSnapshotPngPath,
   containedArtifactPath,
 } from '@shared/lib/services/widget-service'
@@ -596,10 +594,8 @@ interface AgentSummaryOptions {
    */
   userId: string
   /** The unread projection for exactly these agents, when the caller already started it. */
-  unreadProjection?: UnreadProjection
+  unreadProjection?: ReturnType<typeof readUnreadProjection>
 }
-
-type UnreadProjection = Awaited<ReturnType<typeof readUnreadProjection>>
 
 function attentionSessionCountsOutsideLatest(
   sessionId: string,
@@ -803,20 +799,26 @@ async function readUnreadProjection(slugs: string[], userId: string) {
 }
 
 /**
- * Enrich an array of ApiAgent objects with summary fields:
- * active/awaiting sessions, last activity, and dashboards.
- * Batch notification lookup upfront; each agent's state is its one `listing()`.
+ * The agents as the list shows them: each with its summary fields
+ * (active/awaiting sessions, last activity, dashboards and widgets).
+ * One notification lookup for all of them; each agent's state is its one
+ * `listing()`. Every agent is asked at once and finished on its own, so a
+ * slow agent holds back only its own row.
  */
 async function enrichAgentsWithSummary(
-  agents: ListedAgent[],
+  agents: AgentToList[],
   options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] =
-    options.unreadProjection ?? await readUnreadProjection(agents.map(({ agent }) => agent.slug), options.userId)
+  // Independent of the listings, so neither waits for the other.
+  const unreadProjection = options.unreadProjection ?? readUnreadProjection(agents.map(({ slug }) => slug), options.userId)
 
-  const limit = pLimit(5)
-  return Promise.all(
-    agents.map(({ agent, listing }) => limit(async () => {
+  // Bounds the Home tail's reads only. The listings are not under it: the
+  // actors of one process bound their own disk reads.
+  const tailLimit = pLimit(5)
+  const [enriched] = await Promise.all([
+    Promise.all(agents.map(async ({ listed }) => {
+      const [{ agent, listing }, [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent]] =
+        await Promise.all([listed(), unreadProjection])
       // Union of the two sources, so every projection below sees one set.
       const notifiedIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
       const markedIds = markedUnreadByAgent.get(agent.slug) ?? new Set<string>()
@@ -824,11 +826,19 @@ async function enrichAgentsWithSummary(
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
-      const { live, sessions: sessionSummary, artifacts: { dashboards: artifacts, widgets } } = listing
+      const { sessions: sessionSummary, artifacts: { dashboards: artifacts, widgets } } = listing
       const sessionMetadata = sessionSummary.metadata
-      const visibleSessionExpansion = options.includeLatestVisibleSessionTail
-        ? await getVisibleSessionExpansion(agent.slug, unreadSessionIds, sessionMetadata, options.signal)
+      const tail = options.includeLatestVisibleSessionTail
+        ? await tailLimit(async () => {
+            const expansion = await getVisibleSessionExpansion(agent.slug, unreadSessionIds, sessionMetadata, options.signal)
+            // Read again after the tail: reading it can recover an ask whose
+            // event was missed, and the row's flags below must agree with
+            // what the tail says of its session.
+            return { expansion, live: await agentRegistry.get(agent.slug).live() }
+          })
         : undefined
+      const visibleSessionExpansion = tail?.expansion
+      const live = tail?.live ?? listing.live
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -887,8 +897,11 @@ async function enrichAgentsWithSummary(
             }
           : {}),
       }
-    }))
-  )
+    })),
+    // Awaited here too, so it has a reader even when there is no agent.
+    unreadProjection,
+  ])
+  return enriched
 }
 
 /**
@@ -1437,8 +1450,12 @@ agents.get('/', async (c) => {
     // agent routes (via middleware), but agents must be explicitly shared with
     // admins for them to appear in the sidebar. This prevents admins from
     // seeing every agent in large deployments.
-    let agentList: ListedAgent[]
-    let unreadProjection: UnreadProjection | undefined
+    const summaryOptions = {
+      includeLatestVisibleSessionTail:
+        parsedQuery.data.includeLatestVisibleSessionTail === true,
+      signal: c.req.raw.signal,
+      userId: getCurrentUserId(c),
+    }
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
       const rows = await db
@@ -1449,22 +1466,17 @@ agents.get('/', async (c) => {
       // One catalog query for the visible slugs, newest first like the
       // non-auth listing, so a freshly created agent lands at the top of the
       // sidebar (the client's applyAgentOrder floats new agents up). The
-      // unread projection needs only the slugs, so it runs beside it.
-      ;[agentList, unreadProjection] = await Promise.all([
-        listAgentsWithListing({ slugs }),
-        readUnreadProjection(slugs, userId),
+      // unread projection needs only the slugs, so it runs beside that query
+      // and the listings that follow it.
+      const unreadProjection = readUnreadProjection(slugs, userId)
+      const [enriched] = await Promise.all([
+        listAgentsToList({ slugs }).then((agentList) => enrichAgentsWithSummary(agentList, { ...summaryOptions, unreadProjection })),
+        unreadProjection,
       ])
-    } else {
-      agentList = await listAgentsWithListing()
+      return c.json(enriched)
     }
 
-    return c.json(await enrichAgentsWithSummary(agentList, {
-      includeLatestVisibleSessionTail:
-        parsedQuery.data.includeLatestVisibleSessionTail === true,
-      signal: c.req.raw.signal,
-      userId: getCurrentUserId(c),
-      unreadProjection,
-    }))
+    return c.json(await enrichAgentsWithSummary(await listAgentsToList(), summaryOptions))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
@@ -1501,13 +1513,11 @@ agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
     const resolved = getResolvedAgent(c)
     const userId = getCurrentUserId(c)
-    // Needs only the slug, so it runs in parallel with the status read.
-    const [listed, unreadProjection] = await Promise.all([
-      getAgentWithListing(resolved),
-      readUnreadProjection([resolved.slug], userId),
-    ])
-
-    const [enriched] = await enrichAgentsWithSummary([listed], { userId, unreadProjection })
+    const [enriched] = await enrichAgentsWithSummary(
+      [{ slug: resolved.slug, listed: () => getAgentWithListing(resolved) }],
+      // Needs only the slug, so it runs beside the agent's listing.
+      { userId, unreadProjection: readUnreadProjection([resolved.slug], userId) },
+    )
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
@@ -7576,7 +7586,7 @@ agents.post('/:id/widgets/refresh-stale', AgentUser(), async (c) => {
 agents.post('/:id/artifacts/:artifactSlug/widget/refresh', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
-  if (!resolveWidgetPath(slug, artifactSlug)) return c.json({ error: 'Invalid artifact slug' }, 400)
+  if (!widgetPath(artifactSlug)) return c.json({ error: 'Invalid artifact slug' }, 400)
   const widget = await readWidgetFromFilesystem(slug, artifactSlug)
   if (!widget) return c.json({ error: 'Artifact has no widget' }, 404)
   const outcome = await widgetRefreshService.refreshWidget(slug, artifactSlug, { wake: true, reason: 'manual' })
@@ -7620,7 +7630,7 @@ agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c
   const family = parsed.data.family ?? widget.size
   const scale = parsed.data.scale === '3' ? 3 : 2
   const scheme = parsed.data.scheme ?? 'light'
-  const pngPath = widgetSnapshotPngPath(slug, artifactSlug, family, scheme, scale)
+  const pngPath = widgetSnapshotPngPath(artifactSlug, family, scheme, scale)
   if (!pngPath) return c.json({ error: 'Invalid artifact slug' }, 400)
   try {
     // Where the file really is, the check this route always made; an
@@ -7656,7 +7666,7 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
   // A bad slug is answered here; containment of the path is the actor's job.
   // Any artifact the listing shows can have a thumbnail, whatever its
   // directory is called, so this is the artifact rule, not the widget one.
-  const screenshotPath = resolveArtifactPath(agentSlug, artifactSlug, 'screenshot.png')
+  const screenshotPath = artifactPath(artifactSlug, 'screenshot.png')
   if (!screenshotPath) {
     return c.json({ error: 'Invalid artifact slug' }, 400)
   }

@@ -1,5 +1,4 @@
-import pLimit from 'p-limit'
-import { agentRegistry, joinWorkspacePath, type FileEntry } from '@shared/lib/agent-actor'
+import { agentRegistry, joinWorkspacePath } from '@shared/lib/agent-actor'
 import {
   WIDGET_HTML_FILENAME,
   snapshotFileName,
@@ -10,65 +9,26 @@ import {
   type WidgetSnapshot,
 } from '@shared/lib/widgets/widget-schema'
 import {
-  ARTIFACTS_DIRNAME,
   ARTIFACT_MANIFEST_FILENAME,
   SNAPSHOTS_DIRNAME,
-  artifactPath,
   containedPathIn,
   describeWidgetIn,
-  isMissingDirectoryError,
-  isWidgetSlug,
   readDocIn,
+  readTextIn,
   readWidgetSnapshotIn,
+  scanArtifactsIn,
   widgetPath,
 } from './artifact-scan'
 
 const WIDGET_LOG_FILENAME = 'widget.log'
 
-/**
- * Workspace path of the directory that holds an agent's artifacts. A
- * workspace path is relative to that agent's workspace root, so it is the
- * same spelling for every agent; the slug stays in the signature because the
- * path only means something next to `agentRegistry.get(agentSlug).files`.
- */
-export function artifactsDirFor(_agentSlug: string): string {
-  return ARTIFACTS_DIRNAME
-}
-
-/**
- * Workspace path of a file inside an artifact dir, or null when the slug is
- * not an artifact slug or a segment would leave the artifact's directory.
- * Every route that touches an artifact's files goes through here.
- *
- * This is domain validation only: a slug like `../x` is a bad slug and is
- * answered as one. Lexical containment is the actor's, and the readers below
- * ask it where the path really is before reading it (`containedArtifactPath`),
- * the link check this service always made; nothing here knows where the
- * workspace is.
- */
-export function resolveWidgetPath(_agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
-  return widgetPath(artifactSlug, ...segments)
-}
-
-/**
- * The same for any artifact, not only a widget: an artifact is whatever
- * directory under artifacts/ carries a manifest, and the listing shows it
- * under the name it has, so its thumbnail, rename and delete accept that
- * name too. One plain directory name is the whole rule; the widget slug
- * rule applies only where the container's widget code made the directory.
- */
-export function resolveArtifactPath(_agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
-  return artifactPath(artifactSlug, ...segments)
-}
-
 export function widgetSnapshotPngPath(
-  agentSlug: string,
   artifactSlug: string,
   size: WidgetSize,
   scheme: WidgetScheme,
   scale: WidgetScale,
 ): string | null {
-  return resolveWidgetPath(agentSlug, artifactSlug, SNAPSHOTS_DIRNAME, snapshotFileName(size, scheme, scale))
+  return widgetPath(artifactSlug, SNAPSHOTS_DIRNAME, snapshotFileName(size, scheme, scale))
 }
 
 /**
@@ -96,11 +56,6 @@ export function readArtifactDoc(agentSlug: string, workspacePath: string | null)
   return readDocIn(agentRegistry.get(agentSlug).files, workspacePath)
 }
 
-async function readArtifactText(agentSlug: string, workspacePath: string | null): Promise<string | null> {
-  const bytes = await readArtifactDoc(agentSlug, workspacePath)
-  return bytes === null ? null : new TextDecoder().decode(bytes)
-}
-
 export function readWidgetSnapshot(agentSlug: string, artifactSlug: string): Promise<WidgetSnapshot | null> {
   return readWidgetSnapshotIn(agentRegistry.get(agentSlug).files, artifactSlug)
 }
@@ -115,9 +70,10 @@ export async function readWidgetFromFilesystem(
   artifactSlug: string,
   now: number = Date.now(),
 ): Promise<ApiAgentWidget | null> {
-  const dir = resolveWidgetPath(agentSlug, artifactSlug)
+  const dir = widgetPath(artifactSlug)
   if (!dir) return null
-  const manifest = await readArtifactText(agentSlug, joinWorkspacePath(dir, ARTIFACT_MANIFEST_FILENAME))
+  const files = agentRegistry.get(agentSlug).files
+  const manifest = await readTextIn(files, joinWorkspacePath(dir, ARTIFACT_MANIFEST_FILENAME))
   if (manifest === null) return null
   let manifestJson: unknown
   try {
@@ -125,7 +81,7 @@ export async function readWidgetFromFilesystem(
   } catch {
     return null
   }
-  return describeWidgetIn(agentRegistry.get(agentSlug).files, artifactSlug, manifestJson, now)
+  return describeWidgetIn(files, artifactSlug, manifestJson, now)
 }
 
 /**
@@ -133,32 +89,11 @@ export async function readWidgetFromFilesystem(
  * container is running — snapshots persist in the bind-mounted workspace, so
  * a widget shows exactly what it showed last time, across app launches.
  *
- * The refresh service's own triggers use this; the agents-list path goes
- * through scanArtifactsIn (artifact-scan), which shares one scan with the dashboards.
+ * The refresh service's own triggers use this. It is the scan the agents list
+ * makes (`scanArtifactsIn`), so the two never disagree about which widgets exist.
  */
 export async function listWidgetsFromFilesystem(agentSlug: string): Promise<ApiAgentWidget[]> {
-  // The directory as named, the way the plain listing read it; each widget's
-  // own files are checked by real location when they are read.
-  const dir = artifactsDirFor(agentSlug)
-  let entries: FileEntry[]
-  try {
-    entries = await agentRegistry.get(agentSlug).files.list(dir)
-  } catch (error) {
-    // No artifacts directory yet: nothing to list. Any other failure reads the
-    // same way, for the reason isMissingDirectoryError gives.
-    if (!isMissingDirectoryError(error)) {
-      console.warn(`[widget-service] Could not list widgets for ${agentSlug}; treating as none:`, error)
-    }
-    return []
-  }
-  const limit = pLimit(8)
-  const now = Date.now()
-  const widgets = await Promise.all(
-    entries
-      .filter((entry) => entry.kind === 'directory' && isWidgetSlug(entry.name))
-      .map((entry) => limit(() => readWidgetFromFilesystem(agentSlug, entry.name, now))),
-  )
-  return widgets.filter((w): w is ApiAgentWidget => w !== null)
+  return (await scanArtifactsIn(agentRegistry.get(agentSlug).files, { includeWidgets: true, agentSlug })).widgets
 }
 
 /**
@@ -170,7 +105,7 @@ export async function readWidgetLogTail(
   artifactSlug: string,
   maxChars = 2000,
 ): Promise<string | null> {
-  const content = await readArtifactText(agentSlug, resolveWidgetPath(agentSlug, artifactSlug, WIDGET_LOG_FILENAME))
+  const content = await readTextIn(agentRegistry.get(agentSlug).files, widgetPath(artifactSlug, WIDGET_LOG_FILENAME))
   if (content === null) return null
   const trimmed = content.trimEnd()
   if (!trimmed) return null
@@ -178,7 +113,7 @@ export async function readWidgetLogTail(
 }
 
 export async function readWidgetHtml(agentSlug: string, artifactSlug: string): Promise<string | null> {
-  return readArtifactText(agentSlug, resolveWidgetPath(agentSlug, artifactSlug, WIDGET_HTML_FILENAME))
+  return readTextIn(agentRegistry.get(agentSlug).files, widgetPath(artifactSlug, WIDGET_HTML_FILENAME))
 }
 
 /**

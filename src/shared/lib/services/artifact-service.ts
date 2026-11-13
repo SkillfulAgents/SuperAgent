@@ -1,6 +1,5 @@
 import { agentRegistry, joinWorkspacePath } from '@shared/lib/agent-actor'
-import { ARTIFACT_MANIFEST_FILENAME, scanArtifactsIn, type ArtifactInfo } from './artifact-scan'
-import { resolveArtifactPath } from './widget-service'
+import { ARTIFACT_MANIFEST_FILENAME, artifactPath, scanArtifactsIn, type ArtifactInfo } from './artifact-scan'
 
 /**
  * List dashboard artifacts for an agent from its workspace.
@@ -19,7 +18,7 @@ export async function listArtifactsFromFilesystem(
  * than handed to the actor as a path.
  */
 function artifactDirFor(agentSlug: string, artifactSlug: string): string {
-  const dir = resolveArtifactPath(agentSlug, artifactSlug)
+  const dir = artifactPath(artifactSlug)
   if (dir === null) throw new Error('Invalid artifact slug')
   return dir
 }

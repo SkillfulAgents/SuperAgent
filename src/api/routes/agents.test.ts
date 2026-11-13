@@ -480,7 +480,7 @@ vi.mock('@shared/lib/auth/config', () => ({
 const mockAgentExists = vi.fn().mockResolvedValue(true)
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgentsWithStatus: vi.fn(),
-  listAgentsWithListing: vi.fn(),
+  listAgentsToList: vi.fn(),
   getAgentWithListing: vi.fn(),
   createAgent: vi.fn(),
   getAgentWithStatus: vi.fn(),
@@ -912,7 +912,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { getAgent, getAgentRecord, getAgentWithListing, getAgentWithStatus, listAgentsWithListing, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
+import { getAgent, getAgentRecord, getAgentWithListing, getAgentWithStatus, listAgentsToList, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole, countOtherMembers, listAgentMembers } from '@shared/lib/services/agent-members-service'
 import { loginFillAccountSchema } from '../../../agent-container/src/login-schema'
 import { attachMount, removeMount, resolveMountPath } from '@shared/lib/services/mount-service'
@@ -926,8 +926,10 @@ import { scanArtifactsIn } from '@shared/lib/services/artifact-scan'
 
 /** The list route's agents: these, each with its actor's real `listing()` over the test's mocks. */
 function mockListedAgents(agents: ApiAgent[]): void {
-  vi.mocked(listAgentsWithListing).mockImplementation(async () =>
-    Promise.all(agents.map(async (agent) => ({ agent, listing: await agentRegistry.get(agent.slug).listing() }))))
+  vi.mocked(listAgentsToList).mockImplementation(async () => agents.map((agent) => ({
+    slug: agent.slug,
+    listed: async () => ({ agent, listing: await agentRegistry.get(agent.slug).listing() }),
+  })))
 }
 
 /**
@@ -7874,6 +7876,56 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
+  it('reads the live state again after the tail, so a recovered ask shows on the row too', async () => {
+    mockListedAgents([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(readSessionMetadata).mockResolvedValue({ 'latest-visible': { createdAt: '2026-01-01T11:00:00.000Z' } })
+    // Nothing waits when the listing is read; reading the tail recovers the ask.
+    let tailRead = false
+    vi.mocked(getSessionMessagesPage).mockImplementation(async () => {
+      tailRead = true
+      return { messages: [], nextCursor: null }
+    })
+    mockLiveSessions.activeIds.mockImplementation(() => (tailRead ? ['latest-visible'] : []))
+    mockLiveSessions.isAwaitingInput.mockImplementation(() => tailRead)
+
+    const res = await getReq(app, '/api/agents?include_latest_visible_session_tail=true')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].latestVisibleSession.session.isAwaitingInput).toBe(true)
+    expect(body[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('starts an agent\'s tail when its own listing is in, not when every listing is', async () => {
+    let releaseSlow!: () => void
+    const slow = new Promise<void>((resolve) => { releaseSlow = resolve })
+    const agentsToList = [baseAgent, { ...baseAgent, slug: 'agent-2', displaySlug: 'agent-two-agent-2', name: 'Agent Two' }]
+    vi.mocked(listAgentsToList).mockImplementation(async () => agentsToList.map((agent) => ({
+      slug: agent.slug,
+      listed: async () => {
+        if (agent.slug === 'agent-1') await slow
+        return { agent, listing: await agentRegistry.get(agent.slug).listing() }
+      },
+    })))
+    vi.mocked(listSessions).mockImplementation(async (store) => [sessionInfo('latest-visible', store.slug)])
+    vi.mocked(readSessionMetadata).mockResolvedValue({ 'latest-visible': { createdAt: '2026-01-01T11:00:00.000Z' } })
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const pending = getReq(app, '/api/agents?include_latest_visible_session_tail=true')
+    try {
+      await vi.waitFor(() => expect(getSessionMessagesPage).toHaveBeenCalledWith(
+        expect.objectContaining({ slug: 'agent-2' }), 'latest-visible', expect.anything(),
+      ))
+      expect(getSessionMessagesPage).toHaveBeenCalledTimes(1)
+    } finally {
+      releaseSlow()
+    }
+    const res = await pending
+    expect(res.status).toBe(200)
+    expect((await res.json()).map((agent: { slug: string }) => agent.slug)).toEqual(['agent-1', 'agent-2'])
+  })
+
   it('returns the latest tail and excludes attention on that session', async () => {
     mockListedAgents([baseAgent])
     vi.mocked(listSessions).mockResolvedValue([sessionInfo('settled-visible')])
@@ -8463,7 +8515,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body).toHaveLength(1)
     expect(body[0].slug).toBe('agent-1')
-    expect(listAgentsWithListing).toHaveBeenCalledWith({ slugs: ['agent-1'] })
+    expect(listAgentsToList).toHaveBeenCalledWith({ slugs: ['agent-1'] })
     expect(listSessions).toHaveBeenCalledTimes(1)
     expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
@@ -8481,7 +8533,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'Invalid agent list query' })
-    expect(listAgentsWithListing).not.toHaveBeenCalled()
+    expect(listAgentsToList).not.toHaveBeenCalled()
     expect(getSessionSummary).not.toHaveBeenCalled()
     expect(listSessions).not.toHaveBeenCalled()
   })
@@ -8805,7 +8857,7 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0]).toHaveProperty('hasActiveSessions')
     expect(body[0]).toHaveProperty('dashboards')
     // One listing restricted to the ACL rows, not a lookup per agent
-    expect(listAgentsWithListing).toHaveBeenCalledWith({ slugs: ['agent-1'] })
+    expect(listAgentsToList).toHaveBeenCalledWith({ slugs: ['agent-1'] })
   })
 
   it('loads a single agent without a redundant service summary pass', async () => {
@@ -8849,7 +8901,7 @@ describe('GET /api/agents (enriched summary)', () => {
     const res = await getReq(app, '/api/agents')
     expect(res.status).toBe(200)
 
-    expect(listAgentsWithListing).toHaveBeenCalledWith({ slugs: ['aaaaaaaaaa', 'mmmmmmmmmm', 'zzzzzzzzzz'] })
+    expect(listAgentsToList).toHaveBeenCalledWith({ slugs: ['aaaaaaaaaa', 'mmmmmmmmmm', 'zzzzzzzzzz'] })
     const body = await res.json()
     expect(body.map((a: { slug: string }) => a.slug)).toEqual([
       'mmmmmmmmmm', // 2026-01-03 newest

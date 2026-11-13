@@ -59,7 +59,8 @@ import {
   getAgentWithStatus,
   listAgents,
   listAgentsWithStatus,
-  listAgentsWithListing,
+  listAgentsToList,
+  getAgentWithListing,
   createAgent,
   createAgentFromExistingWorkspace,
   updateAgentAvatar,
@@ -411,7 +412,7 @@ Instructions`
     })
   })
 
-  describe('listAgentsWithListing', () => {
+  describe('listAgentsToList', () => {
     it('asks each agent its listing once, and takes the status from it', async () => {
       await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
       await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
@@ -420,7 +421,7 @@ Instructions`
       const lives = actors.map((actor) => vi.spyOn(actor, 'live'))
       const summaries = actors.map((actor) => vi.spyOn(actor.sessions, 'summary'))
 
-      const listed = await listAgentsWithListing()
+      const listed = await Promise.all((await listAgentsToList()).map((agent) => agent.listed()))
 
       expect(listed.map(({ agent }) => agent.slug).sort()).toEqual(['agent-1', 'agent-2'])
       for (const { agent, listing } of listed) {
@@ -429,6 +430,73 @@ Instructions`
       }
       // The listing reads the live state and the sessions itself; nothing else asks again.
       for (const spy of [...listings, ...lives, ...summaries]) expect(spy).toHaveBeenCalledTimes(1)
+    })
+
+    it('reads at most five local agents from disk at a time, though all are asked at once', async () => {
+      const slugs = Array.from({ length: 8 }, (_, i) => `bounded-${i + 1}`)
+      for (const slug of slugs) await createTestAgent(slug, SAMPLE_INSTRUCTIONS_MINIMAL)
+      let reading = 0
+      let most = 0
+      for (const slug of slugs) {
+        const { sessions } = agentRegistry.get(slug)
+        const summary = sessions.summary.bind(sessions)
+        vi.spyOn(sessions, 'summary').mockImplementation(async () => {
+          most = Math.max(most, ++reading)
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 5))
+            return await summary()
+          } finally {
+            reading--
+          }
+        })
+      }
+
+      const listed = await Promise.all((await listAgentsToList()).map((agent) => agent.listed()))
+
+      expect(listed).toHaveLength(8)
+      expect(most).toBe(5)
+    })
+
+    it('reads the live state and the refreshing widgets after the disk', async () => {
+      await createTestAgent('ordered-agent', SAMPLE_INSTRUCTIONS_MINIMAL)
+      const actor = agentRegistry.get('ordered-agent')
+      const live = vi.spyOn(actor, 'live')
+      const refreshing = vi.spyOn(actor.widgets, 'refreshing')
+      const summary = actor.sessions.summary.bind(actor.sessions)
+      let readBeforeTheDisk = -1
+      vi.spyOn(actor.sessions, 'summary').mockImplementation(async () => {
+        const result = await summary()
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        readBeforeTheDisk = live.mock.calls.length + refreshing.mock.calls.length
+        return result
+      })
+
+      await actor.listing()
+
+      expect(readBeforeTheDisk).toBe(0)
+      expect(live).toHaveBeenCalledTimes(1)
+      expect(refreshing).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('getAgentWithListing', () => {
+    it('returns the agent with its instructions, and its status from the listing', async () => {
+      await createTestAgent('detail-agent', SAMPLE_INSTRUCTIONS)
+      mockGetCachedInfo.mockReturnValueOnce({ status: 'running', port: 3456 })
+      const actor = agentRegistry.get('detail-agent')
+      const listings = vi.spyOn(actor, 'listing')
+      const lives = vi.spyOn(actor, 'live')
+
+      const { agent, listing } = await getAgentWithListing((await getAgentRecord('detail-agent'))!)
+
+      expect(agent).toMatchObject({ slug: 'detail-agent', status: 'running', containerPort: 3456 })
+      expect(agent.instructions).toBe((await getAgent('detail-agent'))?.instructions)
+      expect(agent.instructions).toBeTruthy()
+      expect(listing.live.container).toMatchObject({ status: 'running', port: 3456 })
+      expect(listing).toMatchObject({ sessions: { sessionCount: 0 }, artifacts: { dashboards: [], widgets: [] }, refreshingWidgets: [] })
+      // One listing answers the status too: the live state is not asked for again.
+      expect(listings).toHaveBeenCalledTimes(1)
+      expect(lives).toHaveBeenCalledTimes(1)
     })
   })
 
