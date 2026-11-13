@@ -139,36 +139,40 @@ describe('apiFetch on a server that asks for reads together', () => {
     _resetFactsForTest()
   })
 
-  it('sends the page reads started together as one request, and answers each caller', async () => {
-    fetchMock.mockResolvedValueOnce(new Response(answer(1, { sessions: [] }) + answer(0, { slug: 'sales' })))
+  it('sends the reads of one module started together as one request, and answers each caller', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(answer(1, { mounts: [] }) + answer(0, { hooks: [] })))
 
-    const [agent, sessions] = await Promise.all([apiFetch('/api/agents/sales'), apiFetch('/api/agents/sales/sessions')])
+    const [hooks, mounts] = await Promise.all([apiFetch('/api/agents/sales/hooks'), apiFetch('/api/agents/sales/mounts')])
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][0]).toBe('/api/batch-reads')
-    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({ paths: ['/api/agents/sales', '/api/agents/sales/sessions'] })
-    expect([await agent.json(), await sessions.json()]).toEqual([{ slug: 'sales' }, { sessions: [] }])
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({ paths: ['/api/agents/sales/hooks', '/api/agents/sales/mounts'] })
+    expect([await hooks.json(), await mounts.json()]).toEqual([{ hooks: [] }, { mounts: [] }])
   })
 
-  it('sends by itself a write, a read with options, and a read the server does not batch', async () => {
+  it("sends by itself each read of the page's main content, a write, and a read with options", async () => {
     fetchMock.mockImplementation(async () => Response.json({}))
 
     await Promise.all([
-      apiFetch('/api/agents/sales/sessions', { method: 'POST' }),
-      apiFetch('/api/agents/sales', { signal: new AbortController().signal }),
+      apiFetch('/api/agents/sales'),
+      apiFetch('/api/agents/sales/sessions'),
       apiFetch('/api/agents/sales/sessions/s1/messages'),
+      apiFetch('/api/agents/sales/hooks', { method: 'POST' }),
+      apiFetch('/api/agents/sales/mounts', { signal: new AbortController().signal }),
     ])
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/agents/sales/sessions', '/api/agents/sales', '/api/agents/sales/sessions/s1/messages'])
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/agents/sales', '/api/agents/sales/sessions', '/api/agents/sales/sessions/s1/messages', '/api/agents/sales/hooks', '/api/agents/sales/mounts',
+    ])
   })
 
   it('sends every read by itself on a server that did not ask', async () => {
     _setFactsForTest({ client: { shell: 'browser', os: null, distribution: null }, server: { os: 'linux', distribution: 'deployment' } })
     fetchMock.mockImplementation(async () => Response.json({}))
 
-    await Promise.all([apiFetch('/api/agents/sales'), apiFetch('/api/agents/sales/sessions')])
+    await Promise.all([apiFetch('/api/agents/sales/hooks'), apiFetch('/api/agents/sales/mounts')])
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/agents/sales', '/api/agents/sales/sessions'])
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/agents/sales/hooks', '/api/agents/sales/mounts'])
   })
 })
 

@@ -1,4 +1,4 @@
-import { MAX_BATCHED_READS, type BatchedReadAnswer } from '@shared/lib/batched-reads'
+import { MAX_BATCHED_READS, type BatchModule, type BatchedReadAnswer } from '@shared/lib/batched-reads'
 
 interface WaitingRead {
   path: string
@@ -19,20 +19,23 @@ export interface ReadBatcherLinks {
 const BODILESS = new Set([204, 205, 304])
 
 /**
- * Returns a read function for GETs that other reads start beside, as a page's
- * sections do when they mount together. Reads asked for in the same turn of the
- * event loop go out as one request, and each caller gets the Response its own
- * route gave, as soon as the server has it. A read asked for alone is a plain
- * request. Only for the paths the server batches (`@shared/lib/batched-reads`).
+ * Returns a read function for the GETs of a page's modules
+ * (`@shared/lib/batched-reads`). The reads of one module asked for in the same
+ * turn of the event loop go out as one request, and each caller gets the
+ * Response its own route gave, as soon as the server has it. Two modules never
+ * share a request, so a slow one holds back only its own part of the screen. A
+ * read asked for alone is a plain request.
  */
-export function createReadBatcher(links: ReadBatcherLinks): (path: string) => Promise<Response> {
-  let waiting: WaitingRead[] = []
+export function createReadBatcher(links: ReadBatcherLinks): (module: BatchModule, path: string) => Promise<Response> {
+  let waiting = new Map<BatchModule, WaitingRead[]>()
 
   function sendWaiting(): void {
-    const reads = waiting
-    waiting = []
-    for (let start = 0; start < reads.length; start += MAX_BATCHED_READS) {
-      void send(reads.slice(start, start + MAX_BATCHED_READS))
+    const modules = waiting
+    waiting = new Map()
+    for (const reads of modules.values()) {
+      for (let start = 0; start < reads.length; start += MAX_BATCHED_READS) {
+        void send(reads.slice(start, start + MAX_BATCHED_READS))
+      }
     }
   }
 
@@ -67,9 +70,11 @@ export function createReadBatcher(links: ReadBatcherLinks): (path: string) => Pr
     sendEachAlone(unanswered.values())
   }
 
-  return (path) => new Promise((resolve, reject) => {
-    waiting.push({ path, resolve, reject })
-    if (waiting.length === 1) setTimeout(sendWaiting, 0)
+  return (module, path) => new Promise((resolve, reject) => {
+    if (waiting.size === 0) setTimeout(sendWaiting, 0)
+    const reads = waiting.get(module) ?? []
+    reads.push({ path, resolve, reject })
+    waiting.set(module, reads)
   })
 }
 

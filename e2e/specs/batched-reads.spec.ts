@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
 import { createAgent, createSession, deleteAgentViaApi, uniqueName, waitForSessionIdle } from '../helpers/agents'
 import { openHomeSection } from '../helpers/agent-home'
+import { batchModuleOf } from '../../src/shared/lib/batched-reads'
 
 /**
  * Serves the app as a server that spreads its requests would: the fact is added to the facts in the HTML,
@@ -15,30 +16,24 @@ async function serveAsSpreadingServer(page: Page, pagePath: string): Promise<voi
   })
 }
 
-/** The page's API requests, and the most it had open at once. A stream stays open, so it is not counted. */
+/** The page's API requests: the batches it sent, and the reads it sent by themselves. */
 function watchApiRequests(page: Page) {
   const sent: Request[] = []
-  const open = new Set<Request>()
-  let mostOpen = 0
-  const isApiCall = (request: Request) => new URL(request.url()).pathname.startsWith('/api/') && !request.url().includes('/stream')
   page.on('request', (request) => {
-    if (!isApiCall(request)) return
-    sent.push(request)
-    open.add(request)
-    mostOpen = Math.max(mostOpen, open.size)
+    if (new URL(request.url()).pathname.startsWith('/api/')) sent.push(request)
   })
-  page.on('requestfinished', (request) => open.delete(request))
-  page.on('requestfailed', (request) => open.delete(request))
   const pathOf = (request: Request) => new URL(request.url()).pathname + new URL(request.url()).search
   return {
     batches: () => sent.filter((request) => pathOf(request) === '/api/batch-reads').map((request) => (request.postDataJSON() as { paths: string[] }).paths),
     loneReads: () => sent.filter((request) => request.method() === 'GET').map(pathOf),
-    mostOpen: () => mostOpen,
   }
 }
 
+/** The module each batch carried: a batch never mixes two. */
+const modulesOf = (batches: string[][]) => batches.map((paths) => [...new Set(paths.map(batchModuleOf))])
+
 test.describe('reads sent together', () => {
-  test('an agent page opens with a few requests at once, and shows what its reads returned', async ({ page, request }, testInfo) => {
+  test('an agent page sends each module as one request and its main content read by read', async ({ page, request }, testInfo) => {
     const agent = await createAgent(request, uniqueName(testInfo, 'Batched reads'))
     try {
       await serveAsSpreadingServer(page, `/agents/${agent.slug}`)
@@ -50,20 +45,21 @@ test.describe('reads sent together', () => {
       await openHomeSection(page, 'Skills')
       await expect(page.getByTestId('import-skill-button')).toBeVisible()
 
-      expect(requests.batches().flat()).toEqual(expect.arrayContaining([
-        `/api/agents/${agent.slug}`,
-        `/api/agents/${agent.slug}/sessions`,
+      const batches = requests.batches()
+      expect(batches.find((paths) => paths.includes(`/api/agents/${agent.slug}/hooks`))).toEqual(expect.arrayContaining([
         `/api/agents/${agent.slug}/skills`,
+        `/api/agents/${agent.slug}/mounts`,
         `/api/agents/${agent.slug}/webhook-triggers?status=active`,
-        '/api/user-settings',
       ]))
-      expect(requests.mostOpen()).toBeLessThanOrEqual(5)
+      expect(batches.find((paths) => paths.includes(`/api/agents/${agent.slug}/bookmarks`))).toContain(`/api/agents/${agent.slug}/widgets`)
+      expect(modulesOf(batches).every((modules) => modules.length === 1)).toBe(true)
+      expect(requests.loneReads()).toEqual(expect.arrayContaining([`/api/agents/${agent.slug}`, `/api/agents/${agent.slug}/sessions`]))
     } finally {
       await deleteAgentViaApi(request, agent)
     }
   })
 
-  test('a session opens with a few requests at once, and shows its messages', async ({ page, request }, testInfo) => {
+  test('a session sends the message box options as one request and the session by itself', async ({ page, request }, testInfo) => {
     const agent = await createAgent(request, uniqueName(testInfo, 'Batched session'))
     try {
       const session = await createSession(request, agent, 'Say hello')
@@ -76,11 +72,10 @@ test.describe('reads sent together', () => {
       await expect(page.getByTestId('message-list')).toContainText('Say hello')
       await expect(page.getByTestId('message-input')).toBeVisible()
 
-      expect(requests.batches().flat()).toEqual(expect.arrayContaining([
-        `/api/agents/${agent.slug}/sessions/${session.id}`,
-        `/api/agents/${agent.slug}/sessions/${session.id}/llm-connections`,
-      ]))
-      expect(requests.mostOpen()).toBeLessThanOrEqual(5)
+      const batches = requests.batches()
+      expect(batches.find((paths) => paths.includes(`/api/agents/${agent.slug}/sessions/${session.id}/llm-connections`))).toContain('/api/llm-connections')
+      expect(modulesOf(batches).every((modules) => modules.length === 1)).toBe(true)
+      expect(requests.loneReads()).toContain(`/api/agents/${agent.slug}/sessions/${session.id}`)
     } finally {
       await deleteAgentViaApi(request, agent)
     }

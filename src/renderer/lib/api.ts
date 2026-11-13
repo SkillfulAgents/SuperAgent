@@ -1,4 +1,4 @@
-import { isBatchableRead } from '@shared/lib/batched-reads'
+import { batchModuleOf } from '@shared/lib/batched-reads'
 import { isSafeInternalPath } from './safe-internal-path'
 import { getApiBaseUrl } from './env'
 import { sendsReadsTogether } from './capabilities'
@@ -19,15 +19,17 @@ import { WORKSPACE_UNAVAILABLE_HEADER, WorkspaceUnavailableError } from './works
  * workspace that is not ready (see `handleWorkspaceUnavailableResponse`).
  * In auth mode, automatically signs out on 401 responses (expired session).
  *
- * On a server that asks for it (`sendsReadsTogether()`), a plain read of a
- * page's data goes out in one request with the reads started beside it
- * (`read-batcher.ts`). The caller gets the same Response either way.
+ * On a server that asks for it (`sendsReadsTogether()`), a plain read of one
+ * of a page's modules goes out in one request with that module's other reads
+ * started beside it (`read-batcher.ts`). The caller gets the same Response
+ * either way.
  */
 export async function apiFetch(
   path: string,
   init?: RequestInit
 ): Promise<Response> {
-  if (init === undefined && isBatchableRead(path) && sendsReadsTogether()) return readTogether(path)
+  const module = init === undefined ? batchModuleOf(path) : null
+  if (module && sendsReadsTogether()) return readTogether(module, path)
   return sendAlone(path, init)
 }
 

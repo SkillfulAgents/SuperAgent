@@ -23,12 +23,14 @@ function openBatchAnswer() {
 const batchAnswer = (...lines: string[]) => new Response(lines.join(''), { headers: { 'Content-Type': 'application/x-ndjson' } })
 
 let read: (path: string) => Promise<Response>
+let readOf: ReturnType<typeof createReadBatcher>
 
 beforeEach(() => {
   alone.mockReset()
   batch.mockReset()
   answered.mockClear()
-  read = createReadBatcher({ alone, batch, answered })
+  readOf = createReadBatcher({ alone, batch, answered })
+  read = (path) => readOf('agent-sections', path)
 })
 
 describe('createReadBatcher', () => {
@@ -43,10 +45,29 @@ describe('createReadBatcher', () => {
     expect([mounts.ok, mounts.status, await mounts.json()]).toEqual([false, 403, { error: 'Forbidden' }])
   })
 
+  it('sends each module in a request of its own', async () => {
+    batch.mockImplementation(async (paths) => batchAnswer(...paths.map((path, index) => line(index, 200, { from: path }))))
+
+    const answers = await Promise.all([
+      readOf('agent-sections', '/api/agents/sales/hooks'),
+      readOf('composer-options', '/api/llm-connections'),
+      readOf('agent-sections', '/api/agents/sales/mounts'),
+      readOf('composer-options', '/api/voice/configured'),
+    ])
+
+    expect(batch.mock.calls).toEqual([
+      [['/api/agents/sales/hooks', '/api/agents/sales/mounts']],
+      [['/api/llm-connections', '/api/voice/configured']],
+    ])
+    expect(await Promise.all(answers.map((answer) => answer.json()))).toEqual([
+      { from: '/api/agents/sales/hooks' }, { from: '/api/llm-connections' }, { from: '/api/agents/sales/mounts' }, { from: '/api/voice/configured' },
+    ])
+  })
+
   it('gives a caller its answer when the server sends it, while a slower read of the batch is still open', async () => {
     const answer = openBatchAnswer()
     batch.mockResolvedValueOnce(answer.response)
-    const slow = read('/api/skillsets')
+    const slow = read('/api/agents/sales/skills')
     const fast = read('/api/agents/sales/hooks')
     let slowAnswered = false
     void slow.then(() => { slowAnswered = true })
@@ -55,9 +76,9 @@ describe('createReadBatcher', () => {
 
     expect(await (await fast).json()).toEqual({ hooks: [] })
     expect(slowAnswered).toBe(false)
-    answer.send(line(0, 200, { skillsets: [] }))
+    answer.send(line(0, 200, { skills: [] }))
     answer.end()
-    expect(await (await slow).json()).toEqual({ skillsets: [] })
+    expect(await (await slow).json()).toEqual({ skills: [] })
   })
 
   it('reads an answer that arrives split across chunks, even inside a character', async () => {

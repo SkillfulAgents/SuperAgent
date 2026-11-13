@@ -18,9 +18,9 @@ function app() {
   inner.get('/api/agents/:id/hooks', (c) => c.json({ hooks: [{ id: 'hook-1' }] }))
   inner.get('/api/agents/:id/mounts', (c) => c.json({ error: 'Forbidden' }, 403))
   inner.get('/api/activity/agents/:id', (c) => c.json({ days: c.req.query('days') }))
-  inner.get('/api/skillsets', async (c) => {
+  inner.get('/api/agents/:id/skills', async (c) => {
     await slowReadReleased
-    return c.json({ skillsets: [] })
+    return c.json({ skills: [] })
   })
   inner.get('/api/agents/:id/sessions/:session/messages', (c) => c.json({ messages: [] }))
   inner.route('/api/batch-reads', batchReads((request) => inner.fetch(request)))
@@ -53,14 +53,14 @@ describe('batchReads', () => {
   it('sends a read\'s answer when it finishes, before a slower read of the same batch', async () => {
     const { batch, releaseSlowRead } = app()
 
-    const response = await batch(['/api/skillsets', '/api/agents/sales/hooks'])
+    const response = await batch(['/api/agents/sales/skills', '/api/agents/sales/hooks'])
     const reader = response.body!.getReader()
     const first = answersOf(new TextDecoder().decode((await reader.read()).value))
 
     expect(first.map((answer) => answer.index)).toEqual([1])
     releaseSlowRead()
     const second = answersOf(new TextDecoder().decode((await reader.read()).value))
-    expect(second.map((answer) => [answer.index, JSON.parse(answer.body)])).toEqual([[0, { skillsets: [] }]])
+    expect(second.map((answer) => [answer.index, JSON.parse(answer.body)])).toEqual([[0, { skills: [] }]])
   })
 
   it("sends each read as the caller, without the batch's body headers", async () => {

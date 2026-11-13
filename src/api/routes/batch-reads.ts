@@ -6,8 +6,8 @@ import { isBatchableRead, MAX_BATCHED_READS, type BatchedReadAnswer } from '@sha
 const bodySchema = z.object({ paths: z.array(z.string()).min(1).max(MAX_BATCHED_READS) })
 
 /**
- * Answers several reads in one request, so a page that needs many small reads
- * at once does not send each by itself. `dispatch` hands every read to the app
+ * Answers several reads in one request, so a module of a page that needs many
+ * small reads at once does not send each by itself. `dispatch` hands every read to the app
  * as its own GET with the caller's headers: each route keeps its own access
  * checks, and its status and body come back unchanged.
  *
