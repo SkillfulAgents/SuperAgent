@@ -129,8 +129,8 @@ async function fetchPlatformAccountInfo(token: string) {
 
 // Every account read carries the account's plan policy (SUP-1124): keep it for
 // model selection, keyed by the account it describes.
-function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T): T {
-  platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId), accountPlanPolicy(account))
+async function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T): Promise<T> {
+  await platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId), accountPlanPolicy(account))
   return account
 }
 
@@ -484,7 +484,7 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
   const token = await getPlatformAccessToken()
   if (!token) return null
   try {
-    const account = rememberAccountPolicy(await runWithRequestUser(userId, () =>
+    const account = await rememberAccountPolicy(await runWithRequestUser(userId, () =>
       fetchPlatformJson({
         path: '/v1/account',
         token,

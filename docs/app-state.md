@@ -277,3 +277,12 @@ Creating agents' own apps through a team directory (`src/shared/lib/team-directo
 - **`oauth:directory-app-install`** (strong), key part the install's random id, holds a directory being connected with one token (`directory-app.ts`): the digest of the secret in its `state`, the provider, who started it, the redirect URL, and the rotated credentials and the app, sealed. Inserted with `insertIfAbsent`, kept 30 minutes (`keep`). A callback with a code `consume`s it first, so one connects; a declined one only reads it, so the same install page can be tried again. Start over `consume`s it too.
 - **`oauth:directory-app-install-outcome`** (strong), same key part, is what the Settings page polls: `pending` from the start, then `connected`, `cancelled` (with a time, to tell one cancel from the next) or `failed`. Written with `set`, kept 30 minutes from the last write (`reset`). No entry, or a `pending` / `cancelled` one whose install is gone, reads as `expired`.
 
+
+## Platform plan policies
+
+Which models an account's plan refuses (`src/shared/lib/llm-provider/platform-plan-cache.ts`), read with the account from the platform's `/v1/account`. Model selection reads it on every turn, so a process that starts often must not read the account again each time.
+
+- **`cache:platform-plan-policy`** (eventual), key part `digestKeyPart` of the platform host, workspace and member, holds the account's policy, or that the platform was asked and did not say. A policy is kept an hour from the write (`reset`); "did not say" is kept ten minutes, and is never written over a policy.
+- It is a plain cache: the last write wins, and nothing clears it. A plan change is seen within the hour, or at once from a billing read (opening Account) or a fresh read (the picker after an upgrade, the plan refusal card), which write what the platform just said.
+- A read or a write that AppState fails is logged and skipped: the account is read instead.
+- Loads under way stay in each process, so one process asks the platform once per account; two processes that both miss may each ask.
