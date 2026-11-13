@@ -41,6 +41,7 @@ vi.mock('../agent-integrations/agent-integration-manager', () => ({ agentIntegra
 vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 import { createAgentIntegration, getAgentIntegration } from './agent-integration-service'
 import { cleanupAgentData } from './agent-cleanup-service'
+import { getSettings, mutateSettings } from '../config/settings'
 
 const AGENT_SLUG = 'test-agent'
 const OTHER_AGENT_SLUG = 'other-agent'
@@ -522,6 +523,23 @@ describe('agent-cleanup-service', () => {
         .where(eq(schema.webhookTriggers.agentSlug, AGENT_SLUG))
         .all()
       expect(triggers.every(t => t.status === 'cancelled')).toBe(true)
+    })
+
+    it('drops the agent\'s computer-use "always" grants and keeps other agents\' grants', async () => {
+      await mutateSettings((settings) => {
+        settings.computerUse = {
+          ...settings.computerUse,
+          agentPermissions: {
+            [AGENT_SLUG]: { grants: [{ level: 'use_application', appName: 'Notes', grantType: 'always' }] },
+            [OTHER_AGENT_SLUG]: { grants: [{ level: 'list_apps_windows', grantType: 'always' }] },
+          },
+        }
+      })
+
+      await cleanupAgentData(AGENT_SLUG)
+
+      const agentPermissions = (await getSettings()).computerUse?.agentPermissions ?? {}
+      expect(Object.keys(agentPermissions)).toEqual([OTHER_AGENT_SLUG])
     })
 
     it('is a no-op for an agent with no peripherals', async () => {

@@ -507,6 +507,7 @@ function createComputerUseOps(state: AgentState, deps: LocalActorDeps): Computer
     clearActiveApp: async (sessionId) => computerUse.clearActiveApp(sessionId),
     grant: async (...args) => computerUse.grant(...args),
     consumeOnce: async (...args) => computerUse.consumeOnce(...args),
+    revokeAll: async () => computerUse.revokeAll(),
     clearPending: async (...args) => state.sessions.clearComputerUseRequest(...args),
     run: (run) => runComputerUse(state.hostRuns, deps.host, run),
     runScript: (run) => runScript(state.hostRuns, deps.host, run),
