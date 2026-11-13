@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
-import { Bot, ChevronRight, MessageSquare, Search, SquareMousePointer } from 'lucide-react'
+import { Bot, Search } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
-import { useAgents } from '@renderer/hooks/use-agents'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSearch } from '@renderer/context/search-context'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
-import { formatLastRun } from '@renderer/lib/last-run'
-import { filterAgentsAndSessions, flattenGroups, getRecentAgents, type FlatItem } from './filter'
+import { compactAgo } from '@renderer/lib/last-run'
+import { flattenSections, getRecent, searchAll, type FlatItem, type SearchSections } from './filter'
 
 /**
  * Rendered inside the router, so it can use the `useNavigate` hook directly.
@@ -23,7 +24,6 @@ export function SearchDialog() {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
-  const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set())
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
@@ -47,7 +47,6 @@ export function SearchDialog() {
     if (open) {
       setQuery('')
       setActiveIndex(0)
-      setExpandedSlugs(new Set())
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [open])
@@ -83,22 +82,17 @@ export function SearchDialog() {
     return map
   }, [agents, sessionQueries])
 
-  const isSearchMode = query.trim().length > 0
+  const trimmedQuery = query.trim()
+  const isSearchMode = trimmedQuery.length > 0
 
-  const visibleGroups = useMemo(() => {
-    if (!agents) return []
-    if (isSearchMode) {
-      return filterAgentsAndSessions(agents, sessionsByAgent, query)
-    }
-    return getRecentAgents(agents, sessionsByAgent)
+  const sections = useMemo<SearchSections>(() => {
+    if (!agents) return { agents: [], sessions: [], dashboards: [] }
+    return isSearchMode
+      ? searchAll(agents, sessionsByAgent, query)
+      : getRecent(agents, sessionsByAgent)
   }, [agents, sessionsByAgent, query, isSearchMode])
 
-  const flatItems = useMemo<FlatItem[]>(() => {
-    if (isSearchMode) {
-      return flattenGroups(visibleGroups)
-    }
-    return flattenGroups(visibleGroups, expandedSlugs)
-  }, [visibleGroups, isSearchMode, expandedSlugs])
+  const flatItems = useMemo<FlatItem[]>(() => flattenSections(sections), [sections])
 
   // Clamp activeIndex when result list shrinks
   useEffect(() => {
@@ -114,18 +108,6 @@ export function SearchDialog() {
     )
     el?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex])
-
-  const toggleExpand = (slug: string) => {
-    setExpandedSlugs((prev) => {
-      const next = new Set(prev)
-      if (next.has(slug)) {
-        next.delete(slug)
-      } else {
-        next.add(slug)
-      }
-      return next
-    })
-  }
 
   const handleSelect = (item: FlatItem) => {
     // Close the dialog BEFORE navigating: the route transition otherwise strands
@@ -155,25 +137,6 @@ export function SearchDialog() {
       setActiveIndex((i) =>
         flatItems.length === 0 ? 0 : (i - 1 + flatItems.length) % flatItems.length
       )
-    } else if (e.key === 'ArrowRight' && !isSearchMode) {
-      e.preventDefault()
-      const item = flatItems[activeIndex]
-      if (item?.kind === 'agent' && !expandedSlugs.has(item.agent.slug)) {
-        toggleExpand(item.agent.slug)
-      }
-    } else if (e.key === 'ArrowLeft' && !isSearchMode) {
-      e.preventDefault()
-      const item = flatItems[activeIndex]
-      if (item?.kind === 'agent' && expandedSlugs.has(item.agent.slug)) {
-        toggleExpand(item.agent.slug)
-      } else if (item?.kind === 'dashboard' || item?.kind === 'session') {
-        // Collapse the parent agent and move focus to it
-        toggleExpand(item.agent.slug)
-        const agentIdx = flatItems.findIndex(
-          (fi) => fi.kind === 'agent' && fi.agent.slug === item.agent.slug
-        )
-        if (agentIdx >= 0) setActiveIndex(agentIdx)
-      }
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const item = flatItems[activeIndex]
@@ -187,14 +150,19 @@ export function SearchDialog() {
           safe-area inset drops the whole palette (input + close X) below the Dynamic Island.
           env() is 0 on desktop / non-standalone mobile Safari; md: resets it (desktop centers). */}
       <DialogContent
-        className="search-anim max-w-xl p-0 gap-0 overflow-hidden top-4 translate-y-0 mt-[env(safe-area-inset-top)] md:top-[50%] md:-translate-y-1/2 md:mt-0 [&>button]:top-3 [&>button]:right-3"
+        // A fixed 640 by 560 box (narrower or shorter only when the window is), so it
+        // holds still as results come and go; the list scrolls inside it.
+        className="search-anim flex h-[560px] max-w-[640px] flex-col p-0 gap-0 overflow-hidden top-4 translate-y-0 mt-[env(safe-area-inset-top)] md:top-[50%] md:-translate-y-1/2 md:mt-0 [&>button]:top-6 [&>button]:right-5 md:[&>button]:hidden"
         onKeyDown={handleKeyDown}
         aria-label="Search agents, dashboards, and sessions"
       >
         <DialogTitle className="sr-only">Search agents, dashboards, and sessions</DialogTitle>
         <DialogDescription className="sr-only">Find agents, dashboards, and sessions by name</DialogDescription>
-        <div className="flex items-center gap-2 border-b px-3 py-2.5">
-          <Search className="h-4 w-4 text-muted-foreground shrink-0" />
+        {/* The header is the field alone: large type, no rule beneath it, and from md
+            no close button (Escape or a click outside closes; touch keeps the X, so
+            the field leaves room for it). Its icon sits on the rows' left edge. */}
+        <div className="flex shrink-0 items-center gap-4 pb-3 pl-6 pr-12 pt-5 md:pr-6">
+          <Search className="h-[18px] w-[18px] shrink-0 text-muted-foreground" />
           <input
             ref={inputRef}
             type="text"
@@ -204,13 +172,13 @@ export function SearchDialog() {
               setActiveIndex(0)
             }}
             placeholder="Search agents, dashboards, and sessions..."
-            className="flex-1 bg-transparent outline-none text-sm placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-lg outline-none placeholder:text-muted-foreground/60"
             data-testid="search-input"
           />
         </div>
         <div
           ref={listRef}
-          className="max-h-[60vh] overflow-y-auto py-1"
+          className="min-h-0 flex-1 overflow-y-auto px-3 pb-3"
           data-testid="search-results"
         >
           {flatItems.length === 0 ? (
@@ -218,118 +186,150 @@ export function SearchDialog() {
               {isSearchMode ? 'No matches found' : 'No recent agents'}
             </div>
           ) : (
-            (() => {
-              let idx = 0
-              return visibleGroups.map((g) => {
-                const agentIdx = idx++
-                const isExpanded = isSearchMode || expandedSlugs.has(g.agent.slug)
-                const hasChildren = g.dashboards.length > 0 || g.sessions.length > 0
-                return (
-                  <div key={g.agent.slug} className="py-1">
-                    <button
-                      type="button"
-                      data-index={agentIdx}
-                      data-testid="search-agent-row"
-                      data-agent-name={g.agent.name}
-                      data-agent-slug={g.agent.slug}
-                      onClick={() => handleSelect({ kind: 'agent', agent: g.agent })}
-                      onMouseEnter={() => setActiveIndex(agentIdx)}
-                      className={cn(
-                        'w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm rounded-item',
-                        activeIndex === agentIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
-                      )}
-                    >
-                      {!isSearchMode && hasChildren && (
-                        <ChevronRight
-                          data-testid="search-agent-expand"
-                          data-agent-slug={g.agent.slug}
-                          className={cn(
-                            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-                            isExpanded && 'rotate-90'
-                          )}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            toggleExpand(g.agent.slug)
-                          }}
-                        />
-                      )}
-                      {!isSearchMode && !hasChildren && (
-                        <span className="w-3.5 shrink-0" />
-                      )}
-                      <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span className="truncate font-medium">
-                        <HighlightMatch text={g.agent.name} query={query} />
-                      </span>
-                      {!isSearchMode && g.agent.lastActivityAt && (
-                        <span className="ml-auto shrink-0 text-xs italic text-muted-foreground">
-                          {formatLastRun(g.agent.lastActivityAt)}
-                        </span>
-                      )}
-                    </button>
-                    {isExpanded && g.dashboards.map((d) => {
-                      const dashboardIdx = idx++
-                      return (
-                        <button
-                          key={d.slug}
-                          type="button"
-                          data-index={dashboardIdx}
-                          data-testid="search-dashboard-row"
-                          data-agent-name={g.agent.name}
-                          data-agent-slug={g.agent.slug}
-                          data-dashboard-name={d.name}
-                          data-dashboard-slug={d.slug}
-                          onClick={() => handleSelect({ kind: 'dashboard', agent: g.agent, dashboard: d })}
-                          onMouseEnter={() => setActiveIndex(dashboardIdx)}
-                          className={cn(
-                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-item',
-                            activeIndex === dashboardIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
-                          )}
-                        >
-                          <SquareMousePointer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate text-muted-foreground">
-                            <HighlightMatch text={d.name} query={query} />
-                          </span>
-                        </button>
-                      )
-                    })}
-                    {isExpanded && g.sessions.map((s) => {
-                      const sessionIdx = idx++
-                      return (
-                        <button
-                          key={s.id}
-                          type="button"
-                          data-index={sessionIdx}
-                          data-testid="search-session-row"
-                          data-agent-name={g.agent.name}
-                          data-agent-slug={g.agent.slug}
-                          data-session-name={s.name}
-                          data-session-id={s.id}
-                          onClick={() => handleSelect({ kind: 'session', agent: g.agent, session: s })}
-                          onMouseEnter={() => setActiveIndex(sessionIdx)}
-                          className={cn(
-                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-item',
-                            activeIndex === sessionIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
-                          )}
-                        >
-                          <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate text-muted-foreground">
-                            <HighlightMatch text={s.name} query={query} />
-                          </span>
-                          {!isSearchMode && s.lastActivityAt && (
-                            <span className="ml-auto shrink-0 text-xs italic text-muted-foreground">
-                              {formatLastRun(s.lastActivityAt)}
-                            </span>
-                          )}
-                        </button>
-                      )
-                    })}
-                  </div>
-                )
-              })
-            })()
+            <>
+              <ResultSection label={isSearchMode ? 'Agents' : 'Recent agents'} count={sections.agents.length}>
+                {sections.agents.map((agent, i) => (
+                  <ResultRow
+                    key={agent.slug}
+                    index={i}
+                    active={activeIndex === i}
+                    agent={agent}
+                    title={<HighlightMatch text={agent.name} query={trimmedQuery} />}
+                    subtitle={lastActive(agent.lastActivityAt)}
+                    onSelect={() => handleSelect({ kind: 'agent', agent })}
+                    onActivate={setActiveIndex}
+                    data-testid="search-agent-row"
+                    data-agent-name={agent.name}
+                    data-agent-slug={agent.slug}
+                  />
+                ))}
+              </ResultSection>
+              <ResultSection label={isSearchMode ? 'Sessions' : 'Recent sessions'} count={sections.sessions.length}>
+                {sections.sessions.map(({ agent, session }, i) => {
+                  const index = sections.agents.length + i
+                  return (
+                    <ResultRow
+                      key={session.id}
+                      index={index}
+                      active={activeIndex === index}
+                      agent={agent}
+                      owned
+                      title={<HighlightMatch text={session.name} query={trimmedQuery} />}
+                      subtitle={`${agent.name} · ${compactAgo(session.lastActivityAt)}`}
+                      onSelect={() => handleSelect({ kind: 'session', agent, session })}
+                      onActivate={setActiveIndex}
+                      data-testid="search-session-row"
+                      data-agent-name={agent.name}
+                      data-agent-slug={agent.slug}
+                      data-session-name={session.name}
+                      data-session-id={session.id}
+                    />
+                  )
+                })}
+              </ResultSection>
+              <ResultSection label="Dashboards" count={sections.dashboards.length}>
+                {sections.dashboards.map(({ agent, dashboard }, i) => {
+                  const index = sections.agents.length + sections.sessions.length + i
+                  return (
+                    <ResultRow
+                      key={`${agent.slug}/${dashboard.slug}`}
+                      index={index}
+                      active={activeIndex === index}
+                      agent={agent}
+                      owned
+                      title={<HighlightMatch text={dashboard.name} query={trimmedQuery} />}
+                      subtitle={agent.name}
+                      onSelect={() => handleSelect({ kind: 'dashboard', agent, dashboard })}
+                      onActivate={setActiveIndex}
+                      data-testid="search-dashboard-row"
+                      data-agent-name={agent.name}
+                      data-agent-slug={agent.slug}
+                      data-dashboard-name={dashboard.name}
+                      data-dashboard-slug={dashboard.slug}
+                    />
+                  )
+                })}
+              </ResultSection>
+            </>
           )}
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** An agent row's second line, with the age in its compact form: "Last active 4m ago". */
+function lastActive(date: ApiAgent['lastActivityAt']): string {
+  const ago = compactAgo(date)
+  if (!ago) return 'Never active'
+  return ago === 'now' ? 'Last active just now' : `Last active ${ago} ago`
+}
+
+/** A labelled run of rows. Nothing is drawn for a section with no rows, label included. */
+function ResultSection({ label, count, children }: { label: string; count: number; children: React.ReactNode }) {
+  if (count === 0) return null
+  return (
+    // Space above a section sets it apart from the one before; the first needs
+    // only a little, under the header.
+    <div role="group" aria-label={label} data-testid="search-section" data-section={label} className="mt-6 first:mt-2">
+      <div className="px-3 pb-2 pt-2 text-xs text-muted-foreground" aria-hidden="true">
+        {label}
+      </div>
+      <div className="space-y-0.5">{children}</div>
+    </div>
+  )
+}
+
+/**
+ * One result, on two lines: its name, and a muted line beneath. An agent's row
+ * leads with its avatar and says when it was last active. A session or a
+ * dashboard (`owned`) belongs to an agent, so its second line names that agent
+ * behind a small avatar, and the row itself has none.
+ */
+function ResultRow({
+  index,
+  active,
+  agent,
+  owned = false,
+  title,
+  subtitle,
+  onSelect,
+  onActivate,
+  ...data
+}: {
+  index: number
+  active: boolean
+  agent: ApiAgent
+  owned?: boolean
+  title: React.ReactNode
+  subtitle: string
+  onSelect: () => void
+  onActivate: (index: number) => void
+} & Record<`data-${string}`, string>) {
+  return (
+    <button
+      type="button"
+      data-index={index}
+      onClick={onSelect}
+      // Move, not enter: a row that scrolls under a resting pointer during
+      // keyboard navigation must not take the selection.
+      onMouseMove={() => onActivate(index)}
+      className={cn(
+        'flex w-full items-center gap-4 rounded-item px-3 py-2.5 text-left',
+        active && 'bg-accent text-accent-foreground'
+      )}
+      {...data}
+    >
+      {!owned && (agent.avatar
+        ? <AgentAvatar agent={agent} size={28} />
+        : <Bot className="size-7 shrink-0 p-0.5 text-muted-foreground" aria-hidden />)}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm">{title}</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/70">
+          {owned && agent.avatar && <AgentAvatar agent={agent} size={14} />}
+          <span className="truncate">{subtitle}</span>
+        </span>
+      </span>
+    </button>
   )
 }

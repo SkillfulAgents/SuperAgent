@@ -1,11 +1,24 @@
 import type { ApiAgentDashboard, ApiSession } from '@shared/lib/types/api'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
-export interface AgentGroup {
+export interface DashboardResult {
   agent: ApiAgent
-  matchedAgent: boolean
-  dashboards: ApiAgentDashboard[]
-  sessions: ApiSession[]
+  dashboard: ApiAgentDashboard
+}
+
+export interface SessionResult {
+  agent: ApiAgent
+  session: ApiSession
+}
+
+/**
+ * What the search dialog lists, one array per section. A section with nothing
+ * in it is not drawn.
+ */
+export interface SearchSections {
+  agents: ApiAgent[]
+  sessions: SessionResult[]
+  dashboards: DashboardResult[]
 }
 
 export type FlatItem =
@@ -13,79 +26,78 @@ export type FlatItem =
   | { kind: 'dashboard'; agent: ApiAgent; dashboard: ApiAgentDashboard }
   | { kind: 'session'; agent: ApiAgent; session: ApiSession }
 
+/** How many rows "Recent agents" and "Recent sessions" show before a query is typed. */
+export const RECENT_AGENTS_LIMIT = 5
+export const RECENT_SESSIONS_LIMIT = 10
+
 function getAgentDashboards(agent: ApiAgent): ApiAgentDashboard[] {
   return Array.isArray(agent.dashboards) ? agent.dashboards : []
 }
 
-/**
- * Return the top N most recently used agents with their sessions sorted by recency.
- */
-export function getRecentAgents(
-  agents: ApiAgent[],
-  sessionsByAgent: Record<string, ApiSession[]>,
-  limit = 10
-): AgentGroup[] {
-  return [...agents]
-    .filter((a) => a.lastActivityAt)
-    .sort((a, b) => {
-      const ta = new Date(a.lastActivityAt!).getTime()
-      const tb = new Date(b.lastActivityAt!).getTime()
-      return tb - ta
-    })
-    .slice(0, limit)
-    .map((agent) => {
-      const sessions = (sessionsByAgent[agent.slug] ?? [])
-        .slice()
-        .sort((a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime())
-        .slice(0, 10)
-      return { agent, matchedAgent: true, dashboards: getAgentDashboards(agent), sessions }
-    })
+function time(date: Date | string | null | undefined): number {
+  return date ? new Date(date).getTime() : 0
+}
+
+function byRecentSession(a: SessionResult, b: SessionResult): number {
+  return time(b.session.lastActivityAt) - time(a.session.lastActivityAt)
 }
 
 /**
- * Filter agents, dashboards, and sessions by a substring query. Case-insensitive.
- *
- * - An agent is included if its name matches OR if any of its dashboards/sessions match.
- * - Only matching dashboards/sessions are returned within an agent group.
+ * What the dialog shows before anything is typed: the most recently active
+ * agents, and the most recently active sessions across every agent.
  */
-export function filterAgentsAndSessions(
+export function getRecent(
+  agents: ApiAgent[],
+  sessionsByAgent: Record<string, ApiSession[]>,
+  limits: { agents: number; sessions: number } = { agents: RECENT_AGENTS_LIMIT, sessions: RECENT_SESSIONS_LIMIT }
+): SearchSections {
+  const recentAgents = agents
+    .filter((a) => a.lastActivityAt)
+    .sort((a, b) => time(b.lastActivityAt) - time(a.lastActivityAt))
+    .slice(0, limits.agents)
+  const recentSessions = agents
+    .flatMap((agent) => (sessionsByAgent[agent.slug] ?? []).map((session) => ({ agent, session })))
+    .sort(byRecentSession)
+    .slice(0, limits.sessions)
+  return { agents: recentAgents, sessions: recentSessions, dashboards: [] }
+}
+
+/**
+ * Filter agents, sessions, and dashboards by a substring query. Case-insensitive.
+ *
+ * Each kind is matched on its own name: an agent whose name does not match is
+ * not listed because one of its sessions does. Sessions come newest first.
+ */
+export function searchAll(
   agents: ApiAgent[],
   sessionsByAgent: Record<string, ApiSession[]>,
   query: string
-): AgentGroup[] {
+): SearchSections {
   const trimmed = query.trim().toLowerCase()
-  if (!trimmed) return []
-  const groups = agents.map<AgentGroup>((agent) => {
-    const sessions = sessionsByAgent[agent.slug] ?? []
-    const dashboards = getAgentDashboards(agent)
-    const matchedAgent = agent.name.toLowerCase().includes(trimmed)
-    const matchedDashboards = dashboards.filter((d) =>
-      d.name.toLowerCase().includes(trimmed) || d.slug.toLowerCase().includes(trimmed)
-    )
-    const matchedSessions = sessions.filter((s) =>
-      s.name.toLowerCase().includes(trimmed)
-    )
-    return { agent, matchedAgent, dashboards: matchedDashboards, sessions: matchedSessions }
-  })
-  return groups.filter((g) => g.matchedAgent || g.dashboards.length > 0 || g.sessions.length > 0)
+  if (!trimmed) return { agents: [], sessions: [], dashboards: [] }
+  const matches = (text: string) => text.toLowerCase().includes(trimmed)
+  return {
+    agents: agents.filter((agent) => matches(agent.name)),
+    sessions: agents
+      .flatMap((agent) =>
+        (sessionsByAgent[agent.slug] ?? [])
+          .filter((s) => matches(s.name))
+          .map((session) => ({ agent, session }))
+      )
+      .sort(byRecentSession),
+    dashboards: agents.flatMap((agent) =>
+      getAgentDashboards(agent)
+        .filter((d) => matches(d.name) || matches(d.slug))
+        .map((dashboard) => ({ agent, dashboard }))
+    ),
+  }
 }
 
-/** Flatten visible groups into the linear list used for keyboard navigation. */
-export function flattenGroups(
-  groups: AgentGroup[],
-  expandedSlugs?: Set<string>
-): FlatItem[] {
-  const items: FlatItem[] = []
-  for (const g of groups) {
-    items.push({ kind: 'agent', agent: g.agent })
-    if (!expandedSlugs || expandedSlugs.has(g.agent.slug)) {
-      for (const d of g.dashboards) {
-        items.push({ kind: 'dashboard', agent: g.agent, dashboard: d })
-      }
-      for (const s of g.sessions) {
-        items.push({ kind: 'session', agent: g.agent, session: s })
-      }
-    }
-  }
-  return items
+/** The sections in the order they are drawn, as the linear list keyboard navigation walks. */
+export function flattenSections(sections: SearchSections): FlatItem[] {
+  return [
+    ...sections.agents.map<FlatItem>((agent) => ({ kind: 'agent', agent })),
+    ...sections.sessions.map<FlatItem>(({ agent, session }) => ({ kind: 'session', agent, session })),
+    ...sections.dashboards.map<FlatItem>(({ agent, dashboard }) => ({ kind: 'dashboard', agent, dashboard })),
+  ]
 }
