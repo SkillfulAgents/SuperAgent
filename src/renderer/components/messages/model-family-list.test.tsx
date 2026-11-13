@@ -50,6 +50,8 @@ describe('familyDisplayName', () => {
     expect(familyDisplayName('muse-wonder')).toBe('Muse Wonder')
     expect(familyDisplayName('gemini-carbon')).toBe('Gemini Carbon')
     expect(familyDisplayName('gemini-argon')).toBe('Gemini Argon')
+    expect(familyDisplayName('gemini-hydrogen')).toBe('Gemini Hydrogen')
+    expect(familyDisplayName('muse-ember')).toBe('Muse Ember')
     expect(familyDisplayName('muse')).toBe('Muse Spark')
     expect(familyDisplayName('muse-contributor')).toBe('Muse Spark Contributor')
   })

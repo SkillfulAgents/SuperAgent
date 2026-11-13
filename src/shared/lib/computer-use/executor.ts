@@ -53,11 +53,13 @@ import {
 } from './agent-desktop'
 import { prepareScreenshot, type ScreenshotTarget } from './screenshot-frame'
 import { computerUsePreferences } from './types'
-import { cursorImageFile, hasCursorImageRenderer } from './cursor-image'
+import { CURSOR_IMAGE_SCALE, cursorImageFile, hasCursorImageRenderer } from './cursor-image'
 import { cursorCommandDone, keepCursorOnScreen, letCursorRest } from './cursor-keep-alive'
 import { sameApp } from './app-identity'
 import { appAtPoint, frontmostApp, readScreenWindows, type ScreenWindows } from './screen-windows'
 import { activateStartMenuApp, findStartMenuApp, startMenuApps, waitForActivatedWindow } from './windows-start-menu'
+import { prepareWindowsHitTest, stopWindowsHitTest, windowsAtPoints, type WindowHit } from './windows-hit-test'
+import { background } from '@shared/lib/background'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import * as path from 'path'
 
@@ -123,11 +125,15 @@ function cursorKey(caller: ComputerUseCaller, showCursor: boolean): string | nul
 }
 
 /**
- * The agent's own cursor image (arrow, orb and name chip), drawn on macOS
- * where this process can render one; null to use agent-desktop's arrow.
+ * The agent's own cursor image (arrow, orb and name chip), drawn on macOS and
+ * Windows where this process can render one; null to use agent-desktop's arrow.
+ *
+ * On Windows the image is also what keeps agent-desktop from greeting: its
+ * renderer (1.1.0) shows "Hey, let's play with this computer!" on `enable`
+ * even with a `--label`, and shows nothing of its own only with `--image`.
  */
 async function cursorImage(caller: ComputerUseCaller): Promise<{ path: string; hotspot: { x: number; y: number } } | null> {
-  if (process.platform !== 'darwin' || !hasCursorImageRenderer()) return null
+  if ((process.platform !== 'darwin' && process.platform !== 'win32') || !hasCursorImageRenderer()) return null
   try {
     return await cursorImageFile(
       { name: cursorLabel(caller.label), avatar: caller.avatar },
@@ -148,12 +154,22 @@ async function applyCursor(session: string, caller: ComputerUseCaller, showCurso
   const image = await cursorImage(caller)
   if (image) {
     // The image carries the name, so agent-desktop draws no label of its own,
-    // and with an image it shows no greeting either.
+    // and with an image it shows no greeting either. macOS reads the PNG's
+    // density and takes its hotspot in points. Windows ignores the density,
+    // drawing one PNG pixel per physical pixel and taking the hotspot in PNG
+    // pixels, both then scaled by --size: the display's scale over the
+    // image's draws it at its size in points, as the system cursor is.
+    const placement = process.platform === 'win32'
+      ? [
+        `--hotspot=${image.hotspot.x * CURSOR_IMAGE_SCALE},${image.hotspot.y * CURSOR_IMAGE_SCALE}`,
+        `--size=${windowsCursorSize(await primaryDisplayScale())}`,
+      ]
+      : [`--hotspot=${image.hotspot.x},${image.hotspot.y}`]
     warnIfNotRendered(await runAgentDesktopOrThrow([
       '--session', session,
       'cursor-overlay', 'enable',
       `--image=${image.path}`,
-      `--hotspot=${image.hotspot.x},${image.hotspot.y}`,
+      ...placement,
       ...accent,
     ]))
     return
@@ -168,6 +184,27 @@ async function applyCursor(session: string, caller: ComputerUseCaller, showCurso
   ]))
 }
 
+/**
+ * The primary display's scale (Windows' DPI setting: 1.5 at 150%), or 1 when
+ * the display list cannot be read. A cursor on a display of another scale is
+ * drawn at the primary's size: agent-desktop takes one size for the session.
+ */
+async function primaryDisplayScale(): Promise<number> {
+  try {
+    const displays = displayListSchema.safeParse((await runAgentDesktop(['list-displays'], { timeoutMs: WINDOW_LIST_TIMEOUT_MS })).data)
+    if (!displays.success) return 1
+    const primary = displays.data.find((display) => display.is_primary === true) ?? displays.data[0]
+    return primary?.scale && primary.scale > 0 ? primary.scale : 1
+  } catch {
+    return 1
+  }
+}
+
+/** The --size that draws the cursor image at its size in points on a Windows display of this scale, within agent-desktop's 0.5 to 4. */
+export function windowsCursorSize(displayScale: number): number {
+  return Math.min(4, Math.max(0.5, displayScale / CURSOR_IMAGE_SCALE))
+}
+
 /** `cursor-overlay enable` succeeds when no renderer came up to draw the cursor too; it says so in `rendered`. */
 function warnIfNotRendered(data: unknown): void {
   if (cursorOverlayDataSchema.safeParse(data).data?.rendered === false) {
@@ -180,6 +217,8 @@ async function startSession(caller: ComputerUseCaller, showCursor: boolean): Pro
     await runAgentDesktopOrThrow(['session', 'start', '--no-trace', `--name=${caller.label.slice(0, 128) || caller.agentSlug}`]),
   )
   const session: AppSession = { agentDesktopSession: data.session_id, agentSlug: caller.agentSlug, cursor: null }
+  // Started in the seconds before the agent's first click needs it.
+  if (process.platform === 'win32') background(prepareWindowsHitTest(), { name: 'computer-use.windows-hit-test' })
   if (showCursor) {
     try {
       await applyCursor(session.agentDesktopSession, caller, true)
@@ -279,15 +318,22 @@ async function placeCall(method: string, targets: CallTargets, reread = false): 
   // available: it has no stacking order, and fails while the frontmost app is
   // slow to answer.
   const screen = hasPoints || targets.focused ? await screenFor(targets.points) : null
-  const windows = !screen && (hasPoints || targets.focused) ? await listWindows() : []
+  // On Windows, Windows' own hit test says whose window is at each point
+  // (windows-hit-test), and the window list names it as agent-desktop does.
+  const [windows, hits] = await Promise.all([
+    !screen && (hasPoints || targets.focused) ? listWindows() : Promise.resolve([]),
+    process.platform === 'win32' && hasPoints ? windowsAtPoints(targets.points ?? []) : Promise.resolve(null),
+  ])
   const observes = OBSERVATION_COMMANDS.has(method)
-  for (const point of targets.points ?? []) {
+  for (const [index, point] of (targets.points ?? []).entries()) {
     let app: string | undefined
     if (screen) {
       const placed = appAtPoint(point, screen)
       // Where it cannot tell: the whole screen for a command that only looks,
       // nowhere for one that sends input.
       app = placed ? (placed.pid === process.pid ? THIS_APP : placed.name) : (observes ? SYSTEM_TARGETS.screen : undefined)
+    } else if (hits) {
+      app = appOfWindowHit(hits[index], windows, observes)
     } else {
       app = appAt(point, windows, observes)
     }
@@ -319,7 +365,11 @@ async function placeCall(method: string, targets: CallTargets, reread = false): 
 async function targetAppOf(method: string, targets: CallTargets): Promise<string | undefined> {
   const { apps, unplaced } = await placeCall(method, targets)
   if (apps.has(THIS_APP)) {
-    throw new ComputerUseArgumentError(`${method} would act in this app's own window, which agents do not use. Nothing was sent. Name the app to act in (app).`)
+    // Placed by a point it names: the window there is this app's, which naming an app would not change.
+    const byPoint = (targets.points?.length ?? 0) > 0 && !targets.app && !targets.focused
+    throw new ComputerUseArgumentError(byPoint
+      ? `${method} would land on this app's own window, which is at that point on screen; agents do not act in it. Nothing was sent.`
+      : `${method} would act in this app's own window, which agents do not use. Nothing was sent. Name the app to act in (app).`)
   }
   if (apps.size > 1) {
     throw new ComputerUseArgumentError(`One call acts in one app; this one names ${[...apps].join(', ')}`)
@@ -376,21 +426,69 @@ async function listWindows(): Promise<WindowEntry[]> {
 
 /**
  * The app whose window is on top at a screen point, from the window list:
- * where the window server cannot be asked (see placeCall). The list is not in
- * stacking order, so: the focused window when it covers the point (it is in
- * front of every other), else the one app whose shown windows cover it. A
- * point no one app covers is the whole screen for a command that only looks,
- * and placed nowhere for one that sends input: the user is asked about it.
+ * where the window server cannot be asked (see placeCall).
+ *
+ * On Windows the list comes front to back (agent-desktop enumerates with
+ * EnumWindows, which walks the stacking order), so the first window covering
+ * the point is the one on top. A maximized window behind everything (a chat
+ * app, a terminal) covers every point, and without the order no point on
+ * screen had one app. Elsewhere the list is not in stacking order, so: the
+ * focused window when it covers the point (it is in front of every other),
+ * else the one app whose shown windows cover it.
+ *
+ * A point no one app covers is the whole screen for a command that only
+ * looks, and placed nowhere for one that sends input: the user is asked
+ * about it.
  */
 function appAt(point: ScreenPoint, windows: readonly WindowEntry[], observes: boolean): string | undefined {
   const under = windows.filter((window) => !window.minimized && window.visible !== false && window.bounds
     && point.x >= window.bounds.x && point.x < window.bounds.x + window.bounds.width
     && point.y >= window.bounds.y && point.y < window.bounds.y + window.bounds.height)
+  if (process.platform === 'win32') {
+    const top = under[0]
+    return top ? ownerOf(top) : observes ? SYSTEM_TARGETS.screen : undefined
+  }
   const focused = under.find((window) => window.is_focused)
   if (focused) return ownerOf(focused)
   const apps = new Set(under.map(ownerOf))
   if (apps.size === 1) return apps.values().next().value
   return observes ? SYSTEM_TARGETS.screen : undefined
+}
+
+/**
+ * Window classes of the Windows shell itself (the taskbars, the desktop, the
+ * tray's overflow, Start and search, the task switcher), whatever process
+ * draws them: not an app's window to grant.
+ */
+const SHELL_WINDOW_CLASSES: ReadonlySet<string> = new Set([
+  'Shell_TrayWnd',
+  'Shell_SecondaryTrayWnd',
+  'Progman',
+  'WorkerW',
+  'NotifyIconOverflowWindow',
+  'TopLevelWindowForOverflowXamlIsland',
+  'Windows.UI.Core.CoreWindow',
+  'XamlExplorerHostIslandWindow',
+])
+
+/**
+ * The app a click reaches, from Windows' hit test at the point: the listed
+ * window it landed on, named as agent-desktop names it (a Store app by its
+ * own name, not its frame host's). A popup or menu of an app, which the list
+ * leaves out, is that app's when its process has windows listed under one
+ * name, as a click on an app's menu is the app's. Not explorer.exe's: the
+ * shell draws its own popups in that process. Anything else (the shell, the
+ * bare desktop, a window no app is listed for) is the whole screen for a
+ * command that only looks, and nowhere for one that sends input.
+ */
+function appOfWindowHit(hit: WindowHit, windows: readonly WindowEntry[], observes: boolean): string | undefined {
+  const nowhere = observes ? SYSTEM_TARGETS.screen : undefined
+  if (!hit.hwnd || SHELL_WINDOW_CLASSES.has(hit.className)) return nowhere
+  const listed = windows.find((window) => window.id === `w-${hit.hwnd}`)
+  if (listed) return listed.minimized ? nowhere : ownerOf(listed)
+  const owners = new Set(windows.filter((window) => window.pid === hit.pid).map(ownerOf))
+  const [owner] = owners
+  return owners.size === 1 && !sameApp(owner, 'explorer.exe') ? owner : nowhere
 }
 
 async function lookUpWindowApp(windowId: string): Promise<string | undefined> {
@@ -560,11 +658,26 @@ export async function resolveComputerUseTargetApp(
   method: string,
   params: Record<string, unknown>,
 ): Promise<string | undefined> {
-  ;({ method, params } = commandLineOf(method, params))
+  const placed = await placeComputerUseCall(method, params)
+  return typeof placed === 'string' ? placed : undefined
+}
+
+/**
+ * Where a computer-use call acts, for its permission check: the app; nothing
+ * when it cannot be placed (the user is asked about the call itself); or the
+ * reason the executor will refuse it whatever the user decides (it would act
+ * in this app's own window, or in two apps), so the check refuses it at once
+ * instead of asking for an approval that cannot be used.
+ */
+export async function placeComputerUseCall(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<string | undefined | { refused: string }> {
   try {
+    ;({ method, params } = commandLineOf(method, params))
     return await targetAppOf(method, callTargets(method, params))
-  } catch {
-    return undefined
+  } catch (error) {
+    return error instanceof ComputerUseArgumentError ? { refused: error.message } : undefined
   }
 }
 
@@ -800,9 +913,30 @@ async function launchFromStartMenu(
   const entry = findStartMenuApp(name, await startMenuApps().catch(() => []))
   if (!entry || signal?.aborted) return null
   const before = await listWindows()
+  const startMenu = { name: entry.name, app_id: entry.appId }
+  // Already running: activating its Start menu entry would open another
+  // window of it (Chrome, Explorer), taking focus from the one the user had.
+  // Its windows are the answer instead, and nothing is started or raised.
+  const running = before.filter((window) => [name, entry.name, entry.appId].some((known) => sameApp(known, window.app_name)))
+  if (running.length > 0) {
+    const shown = running.find((window) => window.is_focused) ?? running.find((window) => !window.minimized) ?? running[0]
+    const envelope: AgentDesktopEnvelope = {
+      ...(failed.version !== undefined && { version: failed.version }),
+      ok: true,
+      command: 'launch',
+      data: {
+        app: shown.app_name,
+        window: { id: shown.id, ...(shown.title !== undefined && { title: shown.title }) },
+        windows: running.map((window) => ({ id: window.id, ...(window.title !== undefined && { title: window.title }), ...(window.minimized && { minimized: true }) })),
+        start_menu: startMenu,
+        already_running: true,
+        note: `${shown.app_name} was already running, with ${running.length === 1 ? 'this window' : `these ${running.length} windows`}; no new instance was started and no window was brought forward.`,
+      },
+    }
+    return { stdout: JSON.stringify(envelope), envelope }
+  }
   activateStartMenuApp(entry)
   const window = await waitForActivatedWindow(before, listWindows, START_MENU_LAUNCH_WAIT_MS, signal)
-  const startMenu = { name: entry.name, app_id: entry.appId }
   const envelope: AgentDesktopEnvelope = {
     ...(failed.version !== undefined && { version: failed.version }),
     ok: true,
@@ -868,6 +1002,8 @@ export async function endComputerUseSessions(filter: { agentSlug?: string; sessi
     }))
   }
   await Promise.all(ending)
+  // With no session left, nothing will place a point: the hit test's helper can go.
+  if (sessions.size === 0) stopWindowsHitTest()
 }
 
 /**

@@ -32,7 +32,7 @@ test.describe('Skill Export & Import', () => {
     }
   })
 
-  test('import a skill via the Import dialog', async ({ page }) => {
+  test('upload a skill via the Upload dialog', async ({ page }) => {
     const skillName = `e2e-imported-${Date.now()}`
     const zipPath = await buildSkillZip(
       path.join(tmpDir, 'skill.zip'),
@@ -58,7 +58,7 @@ test.describe('Skill Export & Import', () => {
     await expect(installedRow).toBeVisible({ timeout: 10000 })
   })
 
-  test('import shows error for ZIP without SKILL.md', async ({ page }) => {
+  test('upload shows error for ZIP without SKILL.md', async ({ page }) => {
     const badZipPath = await buildSkillZip(
       path.join(tmpDir, 'bad.zip'),
       { name: 'will-be-replaced' },

@@ -612,6 +612,25 @@ const MUSE_WONDER_MODELS: ModelDefinition[] = [
 ]
 
 /**
+ * Meta's small tier, same route and traits as Spark (research.meta.ai/blog/muse-ember).
+ * Prompts over 200K input tokens bill the whole request at 3x.
+ */
+const MUSE_EMBER_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    family: 'muse-ember',
+    id: 'muse-ember-1.0',
+    pricing: pricingFor('muse-ember-1.0'),
+    label: 'Muse Ember 1.0',
+    blurb: 'Meta small model, served via Platform',
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    contextWindow: 1_048_576,
+    longContextPriceCliff: { thresholdTokens: 200_000, inputMultiplier: 3, outputMultiplier: 3 },
+  },
+]
+
+/**
  * OpenAI names GPT models version-then-tier ("GPT-6.1 Sol"), so each tier is
  * its own family: the bare `gpt-sol` alias rides Sol releases the way `opus`
  * rides Opus. `gpt` predates the split and still resolves to Sol.
@@ -826,6 +845,22 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_048_576,
   },
   {
+    // Same route as gemini-4-argon; measured 2026-11-12: efforts low through
+    // xhigh (max 400). Flat price across the 1M window.
+    id: 'gemini-4-hydrogen',
+    label: 'Gemini 4 Hydrogen',
+    blurb: 'Google fast model, served via Platform',
+    family: 'gemini-hydrogen',
+    isLatest: true,
+    icon: 'gemini',
+    supportedEfforts: XHIGH_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    pricing: pricingFor('gemini-4-hydrogen'),
+    contextWindow: 1_048_576,
+  },
+  {
     // Bare id matches the platform proxy's kimi-* → fireworks route.
     id: 'kimi-k3',
     label: 'Kimi K3',
@@ -850,6 +885,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   },
   ...MUSE_WONDER_MODELS,
   ...MUSE_SPARK_MODELS,
+  ...MUSE_EMBER_MODELS,
   {
     // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.
     id: 'glm-5.3-flash',

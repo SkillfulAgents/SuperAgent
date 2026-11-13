@@ -334,7 +334,6 @@ async function buildSettingsResponse(
     hasRunningAgents,
     runnerAvailability,
     llmProvider: appSettings.llmProvider ?? 'anthropic',
-    llmProviderStatus: allProviderInfoFrom(appSettings),
     modelCatalog: appSettings.modelCatalog ?? {},
     modelPricing: appSettings.modelPricing ?? {},
     webProvider: resolveEffectiveWebVendorFrom(appSettings),

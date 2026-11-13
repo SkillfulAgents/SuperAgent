@@ -19,7 +19,7 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { DOMSerializer, Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec, type ResolvedPos } from 'prosemirror-model'
+import { DOMParser as ProseMirrorDOMParser, DOMSerializer, Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec, type ResolvedPos } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
@@ -63,7 +63,7 @@ export interface MarkdownComposerEditorProps {
   onEditorElement?: (element: HTMLDivElement | null) => void
 }
 
-const CARET_SENTINEL = '\u2063'
+const CARET_SENTINEL = '⁣'
 const EMPTY_CHIP_CONTEXT: ChipContext = {}
 
 const chipOf = (node: ProseMirrorNode) => node.attrs as Chip
@@ -91,6 +91,10 @@ const chipNodeSpec: NodeSpec = {
 }
 
 const commonmarkNodes = commonmarkSchema.spec.nodes
+
+/** Pasted HTML marks a loose list by wrapping its items in paragraphs; ProseMirror's own copy also sets data-tight. */
+const isTightHtmlList = (dom: HTMLElement) =>
+  dom.hasAttribute('data-tight') || !dom.querySelector(':scope > li > p')
 const markdownSchema = new Schema({
   nodes: commonmarkNodes
     .addBefore('hard_break', 'soft_break', {
@@ -101,6 +105,20 @@ const markdownSchema = new Schema({
       toDOM: () => ['br', { 'data-soft-break': 'true' }] as const,
     })
     .addBefore('hard_break', 'chip', chipNodeSpec)
+    .update('bullet_list', {
+      ...commonmarkNodes.get('bullet_list'),
+      parseDOM: [{ tag: 'ul', getAttrs: (dom) => ({ tight: isTightHtmlList(dom as HTMLElement) }) }],
+    })
+    .update('ordered_list', {
+      ...commonmarkNodes.get('ordered_list'),
+      parseDOM: [{
+        tag: 'ol',
+        getAttrs: (dom) => {
+          const start = (dom as HTMLElement).getAttribute('start')
+          return { order: start ? Number(start) : 1, tight: isTightHtmlList(dom as HTMLElement) }
+        },
+      }],
+    })
     .update('heading', { ...commonmarkNodes.get('heading'), content: '(text | image | chip)*' })
     .update('code_block', { ...commonmarkNodes.get('code_block'), content: '(text | chip)*' }),
   marks: commonmarkSchema.spec.marks.addBefore('link', 'strike', {
@@ -426,6 +444,24 @@ function markdownClipboardSlice(text: string): Slice {
     : new Slice(doc.content, 0, 0)
 }
 
+const plainPasteNodes = new Set(['doc', 'paragraph', 'text', 'hard_break', 'soft_break'])
+
+/**
+ * Whether copied HTML carries formatting the schema keeps (lists, bold, links,
+ * headings...). Code editors put unstyled HTML beside Markdown source, and
+ * that source should still be read as Markdown from text/plain.
+ */
+function htmlHasRichFormatting(html: string): boolean {
+  const body = new window.DOMParser().parseFromString(html, 'text/html').body
+  const slice = ProseMirrorDOMParser.fromSchema(markdownSchema).parseSlice(body)
+  let rich = false
+  slice.content.descendants((node) => {
+    if (node.isText ? node.marks.length > 0 : !plainPasteNodes.has(node.type.name)) rich = true
+    return !rich
+  })
+  return rich
+}
+
 function boundaryDelimitedMarkInputRule(
   regexp: RegExp,
   markType: MarkType,
@@ -614,22 +650,22 @@ function buildInputRules() {
   const { nodes, marks } = markdownSchema
   return inputRules({
     rules: [
-      blockAfterSoftBreakInputRule(/\ufffc\s*>\s$/, () =>
+      blockAfterSoftBreakInputRule(/￼\s*>\s$/, () =>
         nodes.blockquote.create(null, nodes.paragraph.create())
       ),
-      blockAfterSoftBreakInputRule(/\ufffc\s*([-+*])\s$/, () =>
+      blockAfterSoftBreakInputRule(/￼\s*([-+*])\s$/, () =>
         nodes.bullet_list.create(
           { tight: true },
           nodes.list_item.create(null, nodes.paragraph.create())
         )
       ),
-      blockAfterSoftBreakInputRule(/\ufffc\s*(\d+)\.\s$/, (match) =>
+      blockAfterSoftBreakInputRule(/￼\s*(\d+)\.\s$/, (match) =>
         nodes.ordered_list.create(
           { order: Number(match[1]), tight: true },
           nodes.list_item.create(null, nodes.paragraph.create())
         )
       ),
-      blockAfterSoftBreakInputRule(/\ufffc\s*(#{1,6})\s$/, (match) =>
+      blockAfterSoftBreakInputRule(/￼\s*(#{1,6})\s$/, (match) =>
         nodes.heading.create({ level: match[1].length })
       ),
       wrappingInputRule(/^\s*>\s$/, nodes.blockquote),
@@ -770,7 +806,7 @@ function chipPickAt(state: EditorState): ChipPick | null {
   if (!selection.empty) return null
   const { $from } = selection
   if ($from.parent.type.spec.code || $from.marks().some((mark) => mark.type.spec.code)) return null
-  const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 40), $from.parentOffset, undefined, '\ufffc')
+  const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 40), $from.parentOffset, undefined, '￼')
   for (const { trigger, pattern } of TRIGGER_PATTERNS) {
     const match = pattern.exec(before)
     if (match) return { trigger, from: $from.pos - match[1].length - trigger.char.length, to: $from.pos, query: match[1] }
@@ -1081,12 +1117,17 @@ export function MarkdownComposerEditor({
         }
         const text = event.clipboardData?.getData('text/plain')
         if (!text) return false
-        event.preventDefault()
         const linked = linkPastedUrl(editorView.state, text)
         if (linked) {
+          event.preventDefault()
           editorView.dispatch(linked)
           return true
         }
+        // Copying rendered content (a chat message, a web page) puts its formatting
+        // only in text/html; ProseMirror's own paste reads that through the schema.
+        const html = event.clipboardData?.getData('text/html')
+        if (html && htmlHasRichFormatting(html)) return false
+        event.preventDefault()
         editorView.dispatch(
           editorView.state.tr
             .replaceSelection(markdownClipboardSlice(text))

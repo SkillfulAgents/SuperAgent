@@ -798,6 +798,19 @@ describe('ToolCalls', () => {
       expect(mocks.runAutoApproved).toHaveBeenCalledWith(h.runs, h.host.port, expect.objectContaining({ appName: 'Notes' }), expect.anything())
     })
 
+    // An approval the machine would refuse anyway asked the user for nothing.
+    it('refuses at once, with no card, a call the machine says it will refuse', async () => {
+      const reason = "mouse-wheel would land on this app's own window, which is at that point on screen; agents do not act in it. Nothing was sent."
+      const h = harness({ answers: { computerUseTargetApp: { refused: reason } } })
+
+      h.calls.mainToolUse(use('t_cu', 'mcp__agent-desktop__agent_desktop', { args: ['mouse-wheel', '--x', '700', '--y', '900', '--headed'] }))
+      await settle()
+
+      expect(h.open('t_cu')).toBeNull()
+      expect(mocks.runAutoApproved).not.toHaveBeenCalled()
+      expect(h.answered).toEqual([{ toolUseId: 't_cu', how: 'reject', value: reason }])
+    })
+
     it('judges a command without its app when the machine cannot say', async () => {
       const h = harness({
         answers: {

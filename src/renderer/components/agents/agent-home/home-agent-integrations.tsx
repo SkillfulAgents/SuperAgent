@@ -44,6 +44,17 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Agen
 
 export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegrationsProps) {
   const { data: integrations } = useAgentIntegrations(agentSlug)
+  const rows = Array.isArray(integrations) ? integrations : []
+
+  return (
+    <HomeCollapsible id="integrations" title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
+      <HomeAgentIntegrationsBody agentSlug={agentSlug} rows={rows} />
+    </HomeCollapsible>
+  )
+}
+
+// Mounted only while the section is open, so the providers the agent could add are read only then.
+function HomeAgentIntegrationsBody({ agentSlug, rows }: { agentSlug: string; rows: AgentIntegrationListItem[] }) {
   const navigate = useNavigate()
   const { canAdminAgent, canUseAgent } = useUser()
   const canManageApproval = canAdminAgent(agentSlug)
@@ -53,11 +64,10 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
     .filter(provider => provider.managementAccess === 'owner' ? canManageApproval : canUseAgent(agentSlug))
   const { data: agent } = useAgent(agentSlug)
   const agentName = agent?.name ?? agentSlug
-  const rows = Array.isArray(integrations) ? integrations : []
   const [setupProvider, setSetupProvider] = useState<IntegrationSetupProvider | null>(null)
 
   return (
-    <HomeCollapsible id="integrations" title="External Integrations" count={integrations ? rows.length : undefined} className={className}>
+    <>
       {rows.length > 0 ? (
         <div className="mt-2">
           {rows.map((integration) => {
@@ -100,14 +110,14 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
                 key={tile.slug}
                 type="button"
                 onClick={() => setSetupProvider(tile)}
-                aria-label={`Connect via ${tile.label}`}
+                aria-label={`Set up ${tile.label}`}
                 className="flex items-center gap-2.5 rounded-lg bg-muted/60 p-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:bg-zinc-200 shadow-sm">
                   <ServiceIcon slug={tile.slug} fallback="mcp" className="h-4 w-4" />
                 </div>
                 <span className="min-w-0 flex-1 truncate text-xs font-normal text-foreground">{tile.label}</span>
-                <span aria-hidden="true" className="shrink-0 pr-1 text-2xs font-normal text-muted-foreground">Connect</span>
+                <span aria-hidden="true" className="shrink-0 pr-1 text-2xs font-normal text-muted-foreground">Set up</span>
               </button>
             ))}
           </div>}
@@ -145,6 +155,6 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
         provider={setupProvider}
         onOpenChange={(open) => { if (!open) setSetupProvider(null) }}
       />
-    </HomeCollapsible>
+    </>
   )
 }
