@@ -9,7 +9,7 @@ import { getServerFacts, withServerFacts, withServerFactsRevision } from '@share
 import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './cloudflare-app-state'
 import { serveContainerCall, type AgentDurableObject } from './cloudflare-agent'
-import { startTaskManager, type TaskManagerDurableObject } from './cloudflare-task-manager'
+import { prepareDeploy, startTaskManager, type TaskManagerDurableObject } from './cloudflare-task-manager'
 import { logErrorsAsText } from './error-logs'
 import type { VersionMetadata } from './object-version'
 
@@ -52,11 +52,18 @@ export interface Env {
 logErrorsAsText()
 
 const SERVICE_WORKER = '/sw.js'
+/** What the deploy step calls right after an upload (wrangler.jsonc). */
+const DEPLOY_PATH = '/_deploy/prepare'
 let taskManagerWoken = false
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (!new URL(request.url).pathname.startsWith('/api/')) return serveAppShell(request, env.ASSETS)
+    const { pathname } = new URL(request.url)
+    if (pathname === DEPLOY_PATH && request.method === 'POST') {
+      await prepareDeploy(env)
+      return Response.json({ version: env.VERSION?.id ?? null })
+    }
+    if (!pathname.startsWith('/api/')) return serveAppShell(request, env.ASSETS)
     const app = await import('./boot')
     const booting = app.boot(env)
     // A client that leaves mid-boot must not cancel the boot that later requests wait on.

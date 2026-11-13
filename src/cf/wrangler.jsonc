@@ -4,6 +4,7 @@
 //   npx wrangler r2 bucket create superagent-workspaces
 //   npx wrangler secret put SUPERAGENT_VAULT_KEY --config src/cf/wrangler.jsonc   (openssl rand -base64 32)
 //   npx wrangler deploy --config src/cf/wrangler.jsonc
+//   curl -fsS -X POST "$APP_ORIGIN/_deploy/prepare"   (migrates the database for this deploy)
 // The org's sign-in and platform secrets (BETTER_AUTH_SECRET, AUTH_PROVIDERS_JSON, PLATFORM_TOKEN)
 // are set the same way.
 {
