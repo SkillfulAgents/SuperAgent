@@ -554,7 +554,7 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-home')).toHaveTextContent('team-brain')
   })
 
-  it('names a missing Gamut Public Skillset before any drive set-up, and adds it as new workspaces have it', async () => {
+  it('names a missing Gamut Community library before any drive set-up, and adds it as new workspaces have it', async () => {
     const clicker = userEvent.setup()
     app.skillsets = [{ id: 'github-com-acme-skills' }]
     app.addSkillset.mockImplementationOnce(async () => {

@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const navigate = vi.fn()
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+let search: { library?: string } = {}
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate, useSearch: () => search }))
 
 const openSettings = vi.fn()
 vi.mock('@renderer/context/dialog-context', () => ({ useDialogs: () => ({ openSettings }) }))
@@ -33,6 +35,7 @@ const marketing: ApiDiscoverableAgent = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  search = {}
   skillsets = [{ id: 'skillset-1' }]
   discoverable = [marketing]
   isLoading = false
@@ -69,6 +72,23 @@ describe('CategoryView', () => {
     render(<CategoryView category="Recruiting" />)
     expect(screen.queryByTestId('explore-empty')).toBeNull()
     expect(screen.getByText('No templates in Recruiting.')).toBeTruthy()
+  })
+
+  it('stays inside the library it was opened from, and returns to it', async () => {
+    skillsets = [{ id: 'skillset-1' }, { id: 'skillset-2' }]
+    discoverable = [
+      marketing,
+      { ...marketing, skillsetId: 'skillset-2', skillsetName: 'Private', name: 'Private Writer' },
+    ]
+    search = { library: 'skillset-2' }
+    render(<CategoryView category="Marketing" />)
+
+    const cards = screen.getAllByTestId('explore-template-card')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].textContent).toContain('Private Writer')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Agent Template Library' }))
+    expect(navigate).toHaveBeenCalledWith({ to: '/explore', search: { library: 'skillset-2' } })
   })
 
   it('shows a skeleton while the skillset list is still loading', () => {

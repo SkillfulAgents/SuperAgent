@@ -80,7 +80,7 @@ describe('TemplateDetailView back navigation', () => {
     locationState = { __TSR_index: 1, exploreReturnKey: 'explore-entry' }
     renderDetail()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Discover New Agents' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Agent Template Library' }))
 
     expect(historyBack).toHaveBeenCalledOnce()
     expect(navigate).not.toHaveBeenCalled()
@@ -89,10 +89,10 @@ describe('TemplateDetailView back navigation', () => {
   it('falls back to the marketplace route for a directly opened template', async () => {
     renderDetail()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Discover New Agents' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Agent Template Library' }))
 
     expect(historyBack).not.toHaveBeenCalled()
-    expect(navigate).toHaveBeenCalledWith({ to: '/explore' })
+    expect(navigate).toHaveBeenCalledWith({ to: '/explore', search: { library: 'skillset-1' } })
   })
 })
 

@@ -1,7 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from '@tanstack/react-router'
-import { Check, Filter, Search, Settings2 } from 'lucide-react'
+import { Check, ChevronDown, Search, Settings2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
@@ -13,6 +19,8 @@ import {
   groupTemplatesByCategory,
   NoTemplatesEmptyState,
   useExploreTemplates,
+  useLibrarySelection,
+  type TemplateLibrary,
 } from './explore-templates'
 import {
   getRememberedExploreScrollPosition,
@@ -46,7 +54,6 @@ export function ExploreView() {
   // `null` means "no filter"; a set means only those are shown.
   const [selectedCategories, setSelectedCategories] = useState<Set<string> | null>(null)
   const [selectedConnections, setSelectedConnections] = useState<Set<string> | null>(null)
-  const [selectedSkillsets, setSelectedSkillsets] = useState<Set<string> | null>(null)
 
   useEffect(() => {
     const id = setTimeout(() => setDebouncedSearch(search), 150)
@@ -95,23 +102,14 @@ export function ExploreView() {
 
   const filterCount = (selectedCategories?.size ?? 0) + (selectedConnections?.size ?? 0)
 
-  const skillsetList = useMemo(() => {
-    const seen = new Map<string, string>()
-    for (const t of templates) {
-      if (!seen.has(t.skillsetId)) seen.set(t.skillsetId, t.skillsetName)
-    }
-    return Array.from(seen, ([id, name]) => ({ id, name }))
-  }, [templates])
-
-  const activeSkillsets = useMemo(
-    () => selectedSkillsets ?? new Set(skillsetList.map((s) => s.id)),
-    [selectedSkillsets, skillsetList],
-  )
+  const { libraries, activeLibrary } = useLibrarySelection(templates)
+  const selectLibrary = (id: string) =>
+    void navigate({ to: '/explore', search: { library: id }, replace: true })
 
   const filtered = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase()
     return templates.filter((t) => {
-      if (!activeSkillsets.has(t.skillsetId)) return false
+      if (activeLibrary && t.skillsetId !== activeLibrary.id) return false
       if (selectedCategories) {
         const c = templateCategory(t)
         if (!c || !selectedCategories.has(c)) return false
@@ -129,7 +127,7 @@ export function ExploreView() {
         (t.tags?.some((tag) => tag.toLowerCase().includes(q)) ?? false)
       )
     })
-  }, [templates, debouncedSearch, selectedCategories, selectedConnections, activeSkillsets])
+  }, [templates, debouncedSearch, selectedCategories, selectedConnections, activeLibrary])
 
   /**
    * With no search or filter on, the roster is 160+ templates — a flat grid
@@ -164,140 +162,97 @@ export function ExploreView() {
       className="px-[88px] pb-16 pt-12"
     >
       <PageTitle
-        title="Discover New Agents"
+        title={
+          <LibraryTitle
+            libraries={libraries}
+            active={activeLibrary}
+            onChange={selectLibrary}
+          />
+        }
         scrollAware
         actions={
           <div className="flex items-center gap-2">
-              <div className="relative w-56">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search templates..."
-                  className="pl-8"
-                />
-              </div>
+            <div className="relative w-56">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search templates..."
+                className="pl-8"
+              />
+            </div>
 
-              {(categories.length > 1 || connections.length > 1) && (
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-9 gap-2 px-3"
-                      title="Filter"
-                      aria-label="Filter"
-                    >
-                      <Settings2 className="h-4 w-4 text-muted-foreground" />
-                      {filterCount > 0 && (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
-                          {filterCount}
-                        </span>
-                      )}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="end" className="w-64 p-0">
-                    {/* Compatibility can run to ~30 services, so the body scrolls
-                        and the Clear footer stays pinned below it. */}
-                    <div className="max-h-[340px] overflow-y-auto p-1">
-                      {categories.length > 1 && (
-                        <>
-                          <FilterSectionLabel>Category</FilterSectionLabel>
-                          {categories.map(({ name, count }) => (
-                            <FilterRow
-                              key={name}
-                              label={name}
-                              count={count}
-                              checked={selectedCategories?.has(name) ?? false}
-                              onToggle={() => toggleIn(selectedCategories, name, setSelectedCategories)}
-                            />
-                          ))}
-                        </>
-                      )}
-
-                      {connections.length > 1 && (
-                        <>
-                          <FilterSectionLabel className={categories.length > 1 ? 'mt-2' : undefined}>
-                            Compatibility
-                          </FilterSectionLabel>
-                          {connections.map(({ slug, count }) => (
-                            <FilterRow
-                              key={slug}
-                              label={connectionLabel(slug)}
-                              count={count}
-                              checked={selectedConnections?.has(slug) ?? false}
-                              onToggle={() => toggleIn(selectedConnections, slug, setSelectedConnections)}
-                              icon={<ServiceIcon slug={slug} className="size-3.5 shrink-0" />}
-                            />
-                          ))}
-                        </>
-                      )}
-                    </div>
-
+            {(categories.length > 1 || connections.length > 1) && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 gap-2 px-3"
+                    title="Filter"
+                    aria-label="Filter"
+                  >
+                    <Settings2 className="h-4 w-4 text-muted-foreground" />
                     {filterCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedCategories(null)
-                          setSelectedConnections(null)
-                        }}
-                        className="flex w-full items-center border-t px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                      >
-                        Clear filters
-                      </button>
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                        {filterCount}
+                      </span>
                     )}
-                  </PopoverContent>
-                </Popover>
-              )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-64 p-0">
+                  {/* Compatibility can run to ~30 services, so the body scrolls
+                      and the Clear footer stays pinned below it. */}
+                  <div className="max-h-[340px] overflow-y-auto p-1">
+                    {categories.length > 1 && (
+                      <>
+                        <FilterSectionLabel>Category</FilterSectionLabel>
+                        {categories.map(({ name, count }) => (
+                          <FilterRow
+                            key={name}
+                            label={name}
+                            count={count}
+                            checked={selectedCategories?.has(name) ?? false}
+                            onToggle={() => toggleIn(selectedCategories, name, setSelectedCategories)}
+                          />
+                        ))}
+                      </>
+                    )}
 
-              {skillsetList.length > 1 && (
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
+                    {connections.length > 1 && (
+                      <>
+                        <FilterSectionLabel className={categories.length > 1 ? 'mt-2' : undefined}>
+                          Compatibility
+                        </FilterSectionLabel>
+                        {connections.map(({ slug, count }) => (
+                          <FilterRow
+                            key={slug}
+                            label={connectionLabel(slug)}
+                            count={count}
+                            checked={selectedConnections?.has(slug) ?? false}
+                            onToggle={() => toggleIn(selectedConnections, slug, setSelectedConnections)}
+                            icon={<ServiceIcon slug={slug} className="size-3.5 shrink-0" />}
+                          />
+                        ))}
+                      </>
+                    )}
+                  </div>
+
+                  {filterCount > 0 && (
+                    <button
                       type="button"
-                      size="icon"
-                      variant="outline"
-                      className="h-9 w-9 relative"
-                      title="Filter by skillset"
-                      aria-label="Filter by skillset"
+                      onClick={() => {
+                        setSelectedCategories(null)
+                        setSelectedConnections(null)
+                      }}
+                      className="flex w-full items-center border-t px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
                     >
-                      <Filter className="h-4 w-4 text-muted-foreground" />
-                      {selectedSkillsets && selectedSkillsets.size < skillsetList.length && (
-                        <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-primary" />
-                      )}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent align="end" className="w-56 p-1 space-y-0.5">
-                    {skillsetList.map((ss) => {
-                      const checked = activeSkillsets.has(ss.id)
-                      return (
-                        <button
-                          key={ss.id}
-                          type="button"
-                          onClick={() => {
-                            const next = new Set(activeSkillsets)
-                            if (checked) next.delete(ss.id)
-                            else next.add(ss.id)
-                            // Same rule as `toggleIn`: all checked and none
-                            // checked both mean "no filter". Letting the set
-                            // empty out would strand the page on zero results
-                            // with no filter chip explaining why.
-                            setSelectedSkillsets(
-                              next.size === 0 || next.size === skillsetList.length ? null : next,
-                            )
-                          }}
-                          className={`flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-left hover:bg-accent ${
-                            checked ? 'bg-accent' : ''
-                          }`}
-                        >
-                          <span className="text-xs truncate flex-1 min-w-0">{ss.name}</span>
-                          {checked && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
-                        </button>
-                      )
-                    })}
-                  </PopoverContent>
-                </Popover>
-              )}
+                      Clear filters
+                    </button>
+                  )}
+                </PopoverContent>
+              </Popover>
+            )}
           </div>
         }
       />
@@ -337,7 +292,11 @@ export function ExploreView() {
                     <SeeMoreCard
                       rest={rest}
                       onClick={() =>
-                        void navigate({ to: '/explore/category/$category', params: { category } })
+                        void navigate({
+                          to: '/explore/category/$category',
+                          params: { category },
+                          search: { library: activeLibrary?.id },
+                        })
                       }
                     />
                   )}
@@ -361,6 +320,61 @@ export function ExploreView() {
   )
 }
 
+/**
+ * The page heading reads "Library: <name>", the name in lighter text. With
+ * more than one library contributing templates the name doubles as the
+ * switcher: it and its chevron open a menu of the libraries. A single library
+ * has nothing to switch to, so it is a plain heading.
+ */
+function LibraryTitle({
+  libraries,
+  active,
+  onChange,
+}: {
+  libraries: TemplateLibrary[]
+  active: TemplateLibrary | undefined
+  onChange: (id: string) => void
+}) {
+  if (!active || libraries.length <= 1) {
+    return (
+      <h2 className="truncate text-xl font-medium">
+        Library
+        {active && <span className="text-muted-foreground">: {active.name}</span>}
+      </h2>
+    )
+  }
+
+  return (
+    <DropdownMenu>
+      <h2 className="flex min-w-0 items-center text-xl font-medium">
+        <span className="shrink-0">Library:</span>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="ml-0.5 inline-flex h-8 min-w-0 items-center gap-1 rounded-control px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-accent data-[state=open]:text-foreground"
+            data-testid="explore-library-select"
+          >
+            <span className="truncate">{active.name}</span>
+            <ChevronDown className="h-5 w-5 shrink-0" />
+          </button>
+        </DropdownMenuTrigger>
+      </h2>
+      <DropdownMenuContent align="start" className="w-64">
+        {libraries.map((library) => (
+          <DropdownMenuItem
+            key={library.id}
+            onSelect={() => onChange(library.id)}
+            className="gap-2"
+          >
+            <span className="min-w-0 truncate">{library.name}</span>
+            <span className="shrink-0 text-xs text-muted-foreground/60">{library.count}</span>
+            {library.id === active.id && <Check className="ml-auto h-3.5 w-3.5 shrink-0" />}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
 
 /** Add or remove one value from a filter set. An empty set collapses back to
  *  `null` — "nothing checked" must mean "no filter", not "match nothing". */

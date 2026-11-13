@@ -201,7 +201,7 @@ function LocationStep({ setup, nav }: { setup: TeamBrainSetupActions; nav: StepN
     try {
       await setup.addPublicSkillset()
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : 'Could not add the Gamut Public Skillset')
+      setAddError(err instanceof Error ? err.message : `Could not add ${DEFAULT_PUBLIC_SKILLSET.name}`)
     } finally { setIsAdding(false) }
   }
 
@@ -282,10 +282,10 @@ function LocationStep({ setup, nav }: { setup: TeamBrainSetupActions; nav: StepN
       {missingPublic && (
         <div className="mt-4 text-[13px]" data-testid="team-brain-public-skillset-missing">
           <div className="flex items-center justify-between gap-3">
-            <span role="alert">Team Brain needs the Gamut Public Skillset.</span>
+            <span role="alert">Team Brain needs the {DEFAULT_PUBLIC_SKILLSET.name} library.</span>
             <button type="button" className={SECONDARY} onClick={() => void addPublic()} disabled={isAdding}>
               {isAdding && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-              Add Gamut Public Skillset
+              Add {DEFAULT_PUBLIC_SKILLSET.name}
             </button>
           </div>
           {addError && <p role="alert" className="mt-2 text-destructive">{addError}</p>}
