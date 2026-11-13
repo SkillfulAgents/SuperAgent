@@ -9,6 +9,7 @@ import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { canonicalizeTargetPath } from '@shared/lib/proxy/target-path'
 import { requestBodyPreview } from '@shared/lib/proxy/review-display'
+import { parseRuleProposal } from '@shared/lib/proxy/rules/proposal-schema'
 
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
@@ -325,5 +326,23 @@ describe('ProxyReviewRequestItem connection link', () => {
 
     expect(screen.queryByTestId('proxy-review-connection-link')).not.toBeInTheDocument()
     expect(screen.getByText('Railway')).toBeInTheDocument()
+  })
+})
+
+describe('ProxyReviewRequestItem rule proposal', () => {
+  it('draws backticked values as code and leaves the rest of the text literal', () => {
+    const ruleProposal = parseRuleProposal({
+      ruleKind: 'api', targetId: 'acct-1', targetName: 'Notion', appliesTo: 'agent', effect: 'allow',
+      description: 'Allow reads of `page` objects.',
+      restatement: 'For requests to `api.notion.com`, this allows `POST /v1/search`, GET /v1/*/children and GET /v1/* only when `page_size` is at most 50.',
+      patterns: ['POST /v1/search'], code: 'return true', tests: [], coverage: [], warnings: [],
+    })
+    renderCard({ ruleProposal })
+
+    const restatement = screen.getByTestId('rule-proposal-restatement')
+    expect(restatement.textContent).toBe('For requests to api.notion.com, this allows POST /v1/search, GET /v1/*/children and GET /v1/* only when page_size is at most 50.')
+    expect([...restatement.querySelectorAll('code')].map((c) => c.textContent)).toEqual(['api.notion.com', 'POST /v1/search', 'page_size'])
+    const description = screen.getByText((_, el) => el?.tagName === 'P' && el.textContent === 'Allow reads of page objects.')
+    expect(description.querySelector('code')?.textContent).toBe('page')
   })
 })
