@@ -6,7 +6,6 @@ import Database from 'better-sqlite3'
 import type { MigrationMeta } from 'drizzle-orm/migrator'
 import { closeDatabase, getDb, MIGRATIONS_TABLE, openDatabase } from '../open-database'
 import { migrationBundle } from '../migrations/bundle'
-import { DATA_MIGRATIONS } from '../data-migrations'
 import { dataMigrations } from '../schema'
 import { d1, migrateD1, type D1Binding } from './d1'
 
@@ -96,19 +95,30 @@ afterEach(async () => {
 })
 
 describe('the D1 driver', () => {
-  it('brings a new database to the bundled schema in one batch, then runs the data migrations', async () => {
+  it('brings a new database to the bundled schema in one batch', async () => {
     const { sqlite, binding } = memoryD1()
+    const batch = vi.spyOn(binding, 'batch')
 
-    await openDatabase({ driver: d1(binding) })
+    await migrateD1(binding, migrationBundle)
 
+    expect(batch).toHaveBeenCalledTimes(1)
     expect(journalRows(sqlite)).toEqual({ n: migrationBundle.length })
-    const ledger = await getDb().select({ id: dataMigrations.id }).from(dataMigrations).all()
-    expect(ledger).toHaveLength(DATA_MIGRATIONS.length)
+  })
+
+  it('opens a migrated database without migrating it again', async () => {
+    const { binding } = memoryD1()
+    await migrateD1(binding, migrationBundle)
+    const prepare = vi.spyOn(binding, 'prepare')
+
+    await openDatabase({ driver: d1(binding), migrate: false })
+
+    expect(prepare).not.toHaveBeenCalled()
+    expect(await getDb().select({ id: dataMigrations.id }).from(dataMigrations).all()).toEqual([])
   })
 
   it('runs nothing again on a database it brought up to date', async () => {
     const { sqlite, binding } = memoryD1()
-    await openDatabase({ driver: d1(binding) })
+    await migrateD1(binding, migrationBundle)
     const batch = vi.spyOn(binding, 'batch')
 
     await migrateD1(binding, migrationBundle)
