@@ -413,6 +413,8 @@ Instructions`
   })
 
   describe('listAgentsToList', () => {
+    const NO_SESSIONS = { sessionIds: [], sessionCount: 0, lastActivityAt: null, metadata: {} }
+
     it('asks each agent its listing once, and takes the status from it', async () => {
       await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
       await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
@@ -438,16 +440,11 @@ Instructions`
       let reading = 0
       let most = 0
       for (const slug of slugs) {
-        const { sessions } = agentRegistry.get(slug)
-        const summary = sessions.summary.bind(sessions)
-        vi.spyOn(sessions, 'summary').mockImplementation(async () => {
+        vi.spyOn(agentRegistry.get(slug).sessions, 'summary').mockImplementation(async () => {
           most = Math.max(most, ++reading)
-          try {
-            await new Promise((resolve) => setTimeout(resolve, 5))
-            return await summary()
-          } finally {
-            reading--
-          }
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          reading--
+          return NO_SESSIONS
         })
       }
 
@@ -462,13 +459,11 @@ Instructions`
       const actor = agentRegistry.get('ordered-agent')
       const live = vi.spyOn(actor, 'live')
       const refreshing = vi.spyOn(actor.widgets, 'refreshing')
-      const summary = actor.sessions.summary.bind(actor.sessions)
       let readBeforeTheDisk = -1
       vi.spyOn(actor.sessions, 'summary').mockImplementation(async () => {
-        const result = await summary()
         await new Promise((resolve) => setTimeout(resolve, 5))
         readBeforeTheDisk = live.mock.calls.length + refreshing.mock.calls.length
-        return result
+        return NO_SESSIONS
       })
 
       await actor.listing()
