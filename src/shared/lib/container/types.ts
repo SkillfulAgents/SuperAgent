@@ -165,6 +165,8 @@ export interface CreateSessionOptions {
    * ignores it.
    */
   preloadToolsets?: PreloadToolset[]
+  /** False where the person sends files by replying (chat, email): the session does not list request_file. */
+  fileRequests?: boolean
   /**
    * What the NEXT session on this agent will most likely ask for: the agent's
    * default model/effort/speed with the global fallback applied, ignoring any

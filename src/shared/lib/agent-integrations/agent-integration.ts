@@ -52,6 +52,11 @@ export abstract class AgentIntegration {
    * event); otherwise the context carries `'unknown'`.
    */
   readonly observesActivity: boolean = false
+  /**
+   * Whether sessions it starts list the file request tool. Off where a person
+   * sends files by replying with them attached: the upload card exists only in the app.
+   */
+  readonly fileRequests: boolean = true
   observeSession(_context: IntegrationSessionContext): void {}
   releaseSession(_context: IntegrationSessionContext): void {}
   async onCreated(_integration: AgentIntegrationRecord): Promise<void> {}

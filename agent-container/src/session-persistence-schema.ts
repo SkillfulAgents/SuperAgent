@@ -26,6 +26,7 @@ export const sessionMetadataSchema = z
     webSearchProvider: z.string().optional(),
     webFetchProvider: z.string().optional(),
     availableIntegrationFamilies: z.array(z.string()).optional(),
+    fileRequests: z.boolean().optional(),
     maxOutputTokens: z.number().optional(),
     maxThinkingTokens: z.number().optional(),
     maxTurns: z.number().optional(),

@@ -661,6 +661,18 @@ describe('generateSystemPrompt rendering', () => {
     expect(buildSystemPromptVars(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, families).meetings).toBe(advertised)
   })
 
+  // Where the person sends files by replying, request_file is not listed and
+  // the prompt must not mention it anywhere.
+  it.each([
+    { fileRequests: undefined, advertised: true },
+    { fileRequests: true, advertised: true },
+    { fileRequests: false, advertised: false },
+  ])('file requests follow the session: fileRequests=$fileRequests', ({ fileRequests, advertised }) => {
+    const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, fileRequests)
+    expect(out.includes('### Requesting Files from Users')).toBe(advertised)
+    expect(out.includes('request_file')).toBe(advertised)
+  })
+
   // Future-proofing the template <-> code seam: the template is edited often,
   // and these guard the drift that would otherwise fail silently. Tags inside a
   // list section resolve against the list's element, then outward through the

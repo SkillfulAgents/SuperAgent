@@ -89,6 +89,7 @@ export interface CreateSessionRequest {
   webSearchProvider?: string; // Active host-side web search vendor id (non-secret); activates mcp__web__search + disables native WebSearch
   webFetchProvider?: string; // Active host-side web fetch vendor id (non-secret); activates mcp__web__web_fetch + disables native WebFetch
   availableIntegrationFamilies?: string[]; // Integration families the host can run ('meeting' registers mcp__meetings__*); absent → none
+  fileRequests?: boolean; // false: the person sends files by replying (chat, email), so request_file is not listed; absent → listed
   maxOutputTokens?: number; // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
   maxThinkingTokens?: number; // Max tokens for extended thinking
   maxTurns?: number; // Max conversation turns
