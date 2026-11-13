@@ -45,14 +45,6 @@ const runtimeTextEventSchema = z.discriminatedUnion('type', [
 const MAX_WRITTEN_REPLY_CHARS = 16_000
 const MAX_CHAT_MESSAGE_CHARS = 4096
 
-const olderSandboxFileSchema = z.object({
-  type: z.literal('tool_result_ready'),
-  toolName: z.literal('mcp__user-input__deliver_file'),
-  filePath: z.string().min(1),
-  description: z.string().optional(),
-  isError: z.boolean().optional(),
-})
-
 /** How often the family asks the host where its bot is. Webhooks can replace this behind the same transitions. */
 export const MEETING_POLL_INTERVAL_MS = 5000
 export const MAX_CONSECUTIVE_POLL_FAILURES = 24
@@ -126,13 +118,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
    */
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void> {
     const meeting = await getMeeting(context.externalId)
-    if (!meeting) return
-    // A listening bot gives the call nothing; the person reads the session in the app.
-    if (meeting.mode === 'listen') return
-    if (meeting.mode === 'silent') await this.deliverWrittenReply(meeting, output)
-    // A sandbox from before deliver_file asked the host still announces files here.
-    const file = output.type === 'runtime' ? olderSandboxFileSchema.safeParse(output.event) : null
-    if (file?.success && !file.data.isError) await this.deliverFile(context, file.data)
+    if (meeting?.mode === 'silent') await this.deliverWrittenReply(meeting, output)
   }
 
   /**
@@ -143,8 +129,8 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
   override async deliverFile(context: IntegrationSessionContext, { filePath, description }: DeliveredFile): Promise<FileDelivery> {
     const notPosted = (reason: string) => ({ delivered: false, text: `was not posted in the meeting chat: ${reason}.` })
     const meeting = await getMeeting(context.externalId)
-    // A listening bot gives the call nothing; the person reads the session in the app.
     if (!meeting) return notPosted('the meeting is over')
+    // A listening bot gives the call nothing; the person reads the session in the app.
     if (meeting.mode === 'listen') return notPosted('the bot only listens in this call')
     const baseUrl = resolveInternetAppBaseUrl()
     if (!meeting.botId || meeting.status !== 'in_call') return notPosted('the bot is not in the call')

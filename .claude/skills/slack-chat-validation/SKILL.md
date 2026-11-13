@@ -121,7 +121,7 @@ install is only ever read.**
 | `question-freetext-reply` | A plain-text reply to an open single-question card settles it and the agent responds — and the report says **which** path ran (answer-in-turn vs cancel → fresh turn) |
 | `question-cancelled-by-unrelated-message` | An unrelated message cancels the parked question instead of deadlocking behind it, and the fresh turn runs |
 | `question-multi-is-not-consumed-by-text` | A multi-question ask posts one card per question, and text does **not** answer it (an answer would be attributed to the wrong question) |
-| `file-delivery-notice` | `deliver_file` reaches the conversation as real uploaded bytes with the description as caption (text fallback accepted and reported) |
+| `file-delivery-notice` | `deliver_file` reaches the conversation as real uploaded bytes with the description as caption |
 | `unsupported-*` (7) | Per kind: the exact refusal wording, the **exact host-aware link tail**, no interactive card, and the request staying parked in the registry |
 
 `unsupported-capability-review` is the newest row and the one with the least
