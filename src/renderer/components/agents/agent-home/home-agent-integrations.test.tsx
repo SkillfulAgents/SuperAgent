@@ -177,7 +177,7 @@ it('does not invite viewers to configure providers or render an empty setup grid
   mockUseChatIntegrations.mockReturnValue({ data: [] })
   const { container } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
   expect(screen.getByText('No external integrations have been configured for this agent.')).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /connect via/i })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /^set up /i })).not.toBeInTheDocument()
   expect(container.querySelector('.grid')).toBeNull()
 })
 
@@ -186,12 +186,12 @@ it('offers only the providers the host makes available', () => {
   mockUseChatIntegrations.mockReturnValue({ data: [] })
   availability.providers = ['slack']
   const { rerender } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.getByRole('button', { name: 'Connect via Slack' })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Connect via Email' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Set up Slack' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Set up Email' })).not.toBeInTheDocument()
   availability.providers = ['platform-email']
   rerender(<HomeAgentIntegrations agentSlug="test-agent" />)
-  expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Connect via Slack' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Set up Email' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Set up Slack' })).not.toBeInTheDocument()
 })
 
 it('offers nothing until host availability is known and preserves installed rows', () => {
