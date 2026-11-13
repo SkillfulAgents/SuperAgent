@@ -1,7 +1,8 @@
 /**
  * Cloudflare D1, next to better-sqlite3.ts and libsql.ts. D1 runs batches and has no interactive
  * transaction, so it refuses the default migrator, which runs every pending migration in one
- * transaction. This driver applies them as one batch instead, atomic as that transaction is.
+ * transaction. migrateD1 applies them as one batch instead, atomic as that transaction is. The
+ * entry point runs it as its own step and opens the database with `migrate: false`.
  */
 import { drizzle } from 'drizzle-orm/d1'
 import type { MigrationMeta } from 'drizzle-orm/migrator'
@@ -23,7 +24,6 @@ export function d1(binding: D1Binding): DatabaseDriver {
   return {
     name: 'd1',
     open: () => ({ db: drizzle(binding as Parameters<typeof drizzle>[0], { schema }), close: () => {} }),
-    migrateSchema: (_db, migrations) => migrateD1(binding, migrations),
   }
 }
 

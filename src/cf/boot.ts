@@ -6,7 +6,9 @@
  */
 import api from '../api'
 import { openDatabase } from '@shared/lib/db/open-database'
-import { d1 } from '@shared/lib/db/drivers/d1'
+import { d1, migrateD1 } from '@shared/lib/db/drivers/d1'
+import { migrationBundle } from '@shared/lib/db/migrations/bundle'
+import { runDataMigrations } from '@shared/lib/db/data-migrations'
 import { initializeAppState, isAppStateInitialized } from '@shared/lib/app-state'
 import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
@@ -53,7 +55,9 @@ export function stopBackgroundServices(): Promise<void> {
 }
 
 async function start(env: Env): Promise<void> {
-  await openDatabase({ driver: d1(env.DB) })
+  // Its own step, not part of opening the database: D1 takes the schema migrations as one batch.
+  await migrateD1(env.DB, migrationBundle)
+  await runDataMigrations(await openDatabase({ driver: d1(env.DB), migrate: false }))
   // A boot retried after a later step failed finds AppState installed.
   if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE))
   await ensureKeyManager(() => new CloudflareKeyManager({ env, probes: appKeyProbes }))

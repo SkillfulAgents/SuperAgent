@@ -9,7 +9,6 @@
  */
 import type { ExtractTablesWithRelations } from 'drizzle-orm'
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core'
-import type { MigrationMeta } from 'drizzle-orm/migrator'
 import type * as schema from '../schema'
 
 /**
@@ -47,10 +46,4 @@ export interface DatabaseDriver {
   /** The driver package's name, for logs and error reports. */
   readonly name: string
   open(): Promise<OpenedDatabase> | OpenedDatabase
-  /**
-   * Applies the bundled schema migrations the database has not seen, for a driver whose
-   * database refuses the default migrator (one transaction around them all). The data
-   * migrations still run after it. Omitted: `migrateFromBundle`.
-   */
-  migrateSchema?(db: AppDatabase, migrations: readonly MigrationMeta[]): Promise<void>
 }
