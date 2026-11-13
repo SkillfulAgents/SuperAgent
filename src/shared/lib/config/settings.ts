@@ -406,7 +406,6 @@ export interface GlobalSettingsResponse {
   hasRunningAgents: boolean
   runnerAvailability: RunnerAvailability[]
   llmProvider: LlmProviderId
-  llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
   modelPricing?: GlobalModelPricing
   // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
@@ -456,8 +455,10 @@ export interface GlobalSettingsResponse {
  */
 export type ModelPickerSettingsResponse = Pick<
   GlobalSettingsResponse,
-  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
+  'llmProvider' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
 > & {
+  // Every provider's catalog (over 100 KB); only this response carries it.
+  llmProviderStatus: LlmProviderInfo[]
   connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
   defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
   legacyLlmProviderId?: string
