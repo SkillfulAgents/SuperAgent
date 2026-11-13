@@ -100,14 +100,14 @@ export function HomeAgentIntegrations({ agentSlug, className }: HomeAgentIntegra
                 key={tile.slug}
                 type="button"
                 onClick={() => setSetupProvider(tile)}
-                aria-label={`Connect via ${tile.label}`}
+                aria-label={`Set up ${tile.label}`}
                 className="flex items-center gap-2.5 rounded-lg border border-border bg-background p-2 text-left shadow-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:bg-zinc-200 shadow-sm">
                   <ServiceIcon slug={tile.slug} fallback="mcp" className="h-4 w-4" />
                 </div>
                 <span className="min-w-0 flex-1 truncate text-xs font-normal text-foreground">{tile.label}</span>
-                <span aria-hidden="true" className="shrink-0 text-2xs font-normal text-muted-foreground">Connect</span>
+                <span aria-hidden="true" className="shrink-0 text-2xs font-normal text-muted-foreground">Set up</span>
               </button>
             ))}
           </div>}
