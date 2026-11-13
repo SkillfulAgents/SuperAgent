@@ -101,6 +101,15 @@ export async function ensureOrgPrepared(env: Pick<Env, 'TASK_MANAGER' | 'VERSION
   await env.TASK_MANAGER.getByName(OBJECT_NAME).prepareOrg()
 }
 
+/**
+ * The deploy step, right after an upload: migrates the org's database and runs its setup for this
+ * deploy, so the first user request does not wait for them. An isolate's boot still checks both.
+ */
+export async function prepareDeploy(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
+  await ensureMigrated(env)
+  await ensureOrgPrepared(env)
+}
+
 export class TaskManagerDurableObject extends DurableObject<Env> {
   private readonly steps = new Map<string, Promise<void>>()
   private readonly runs = new Map<string, Run>()

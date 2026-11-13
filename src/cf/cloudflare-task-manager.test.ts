@@ -20,7 +20,7 @@ const app = vi.hoisted(() => {
 vi.mock('./boot', () => app)
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
-import { CloudflareTaskManager, TaskManagerDurableObject, ensureMigrated, ensureOrgPrepared } from './cloudflare-task-manager'
+import { CloudflareTaskManager, TaskManagerDurableObject, ensureMigrated, ensureOrgPrepared, prepareDeploy } from './cloudflare-task-manager'
 import type { Env } from './index'
 
 const T0 = Date.UTC(2026, 10, 6, 12)
@@ -359,5 +359,20 @@ describe('migrating the database', () => {
 
     await testObject(sql, deploy('deploy-2')).object.prepareOrg()
     expect(app.prepareOrg).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves nothing for a boot to run once the deploy step ran', async () => {
+    app.prepareOrg.mockClear()
+    const { object } = testObject(memorySql(), deploy('deploy-1'))
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await prepareDeploy({ TASK_MANAGER: objects })
+    expect(app.migrateDatabase).toHaveBeenCalledTimes(1)
+    expect(app.prepareOrg).toHaveBeenCalledTimes(1)
+    expect(app.migrateDatabase.mock.invocationCallOrder[0]).toBeLessThan(app.prepareOrg.mock.invocationCallOrder[0])
+
+    await Promise.all([ensureMigrated({ TASK_MANAGER: objects }), ensureOrgPrepared({ TASK_MANAGER: objects })])
+    expect(app.migrateDatabase).toHaveBeenCalledTimes(1)
+    expect(app.prepareOrg).toHaveBeenCalledTimes(1)
   })
 })
