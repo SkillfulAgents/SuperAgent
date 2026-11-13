@@ -1,6 +1,7 @@
 import * as fs from 'fs'
-import { chromium, type Browser, type BrowserServer } from 'playwright-core'
+import type { Browser, BrowserServer } from 'playwright-core'
 import { resolveChromiumExecutable } from './chromium-executable'
+import { loadChromium } from './load-chromium'
 import { withinStopDeadline } from './stop-deadline'
 
 // One Chromium launch renders every shot of a call; the whole batch is bounded
@@ -127,6 +128,7 @@ async function runRasterize(
   let server: BrowserServer | null = null
   let error: string | null = null
   try {
+    const chromium = await loadChromium()
     // A server rather than a plain launch: only a server's process can be killed when closing it hangs.
     server = await chromium.launchServer({
       // The server's control socket is for this process only.
