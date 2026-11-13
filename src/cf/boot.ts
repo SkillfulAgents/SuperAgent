@@ -14,7 +14,7 @@ import { runDataMigrations } from '@shared/lib/db/data-migrations'
 import { initializeAppState, isAppStateInitialized } from '@shared/lib/app-state'
 import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
-import { runWithBackground } from '@shared/lib/background'
+import { background, runWithBackground } from '@shared/lib/background'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { initializeServices, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { registerAllAccountProviders } from '@shared/lib/account-providers/register'
@@ -106,10 +106,9 @@ export function serve(request: Request, env: Env, ctx: ExecutionContext): Promis
     // honour for a missing path; here the folder never exists (the workspace is in the container and R2).
     if (deleted) mkdirSync(getAgentDir(deleted), { recursive: true })
     const response = await api.fetch(request, env, ctx)
+    // The agent is gone once its rows are: its saved files are removed after the answer.
     if (deleted && response.ok) {
-      await withAgentObject(env.AGENT, deleted, env.VERSION?.timestamp, (agent) => agent.purgeWorkspace()).catch((error: unknown) => {
-        console.error(`[cloudflare] purging the saved workspace of ${deleted} failed:`, error)
-      })
+      background(withAgentObject(env.AGENT, deleted, env.VERSION?.timestamp, (agent) => agent.purgeWorkspace()), { name: 'cloudflare.purge-workspace' })
     }
     return response
   })
