@@ -167,11 +167,15 @@ function isAdmin(user: { role?: string }): boolean {
  *
  * Only a param shaped like a minted agent starts a read: a router's fixed paths (`/my-roles`)
  * match `:id` too. Any other form of the param is read by ResolveAgent() as before.
+ *
+ * In auth mode, only a request that carries a credential (a cookie or an Authorization header)
+ * starts a read, so an anonymous request costs no agent read before its 401.
  */
 export function ResolveAgentEarly(): MiddlewareHandler {
   return (c: Context, next: Next) => {
     const id = c.req.param('id') ?? ''
-    if (c.get(AGENT_RECORD_READ_CONTEXT_KEY as never) === undefined && namesMintedAgent(id)) {
+    const mayBeSignedIn = !isAuthMode() || c.req.header('cookie') !== undefined || c.req.header('authorization') !== undefined
+    if (c.get(AGENT_RECORD_READ_CONTEXT_KEY as never) === undefined && mayBeSignedIn && namesMintedAgent(id)) {
       const read = agentCatalog.resolveRecord(id)
       // ResolveAgent() reports a failed read. A request refused before it must not leave the rejection unhandled.
       read.catch(() => {})
