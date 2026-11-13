@@ -108,6 +108,8 @@ function fakeDeps() {
     idleSince: vi.fn<() => number | null>().mockReturnValue(null),
     getHealthWarnings: vi.fn().mockReturnValue([]),
     isStale: vi.fn().mockReturnValue(false),
+    holdsDrives: vi.fn().mockReturnValue(true),
+    isStarting: vi.fn().mockReturnValue(false),
     markStale: vi.fn(),
     restartContainer: vi.fn().mockResolvedValue(undefined),
   })
@@ -696,14 +698,18 @@ describe('createAgentRegistry', () => {
   })
 
   describe('a read → decide → write is one op', () => {
-    it('container.invalidate marks a running container stale, restarts it when asked, and leaves a stopped one', async () => {
+    it('container.invalidate marks a container holding its drives stale, restarts a running one when asked, and leaves the rest', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       const runtime = fake.containerHost.runtime('a')
       expect(await actor.container.invalidate()).toBe('marked-stale')
       expect(runtime.markStale).toHaveBeenCalledOnce()
       expect(await actor.container.invalidate({ restart: true })).toBe('restarted')
       expect(runtime.restartContainer).toHaveBeenCalledOnce()
-      runtime.getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
+      // A start past its drive read comes up stale rather than being torn down.
+      runtime.isStarting.mockReturnValue(true)
+      expect(await actor.container.invalidate({ restart: true })).toBe('marked-stale')
+      expect(runtime.restartContainer).toHaveBeenCalledOnce()
+      runtime.holdsDrives.mockReturnValue(false)
       expect(await actor.container.invalidate({ restart: true })).toBe('not-running')
       expect(runtime.restartContainer).toHaveBeenCalledOnce()
     })

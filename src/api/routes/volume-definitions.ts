@@ -4,10 +4,11 @@ import { z } from 'zod'
 import { Authenticated, getReadableAgentIds } from '../middleware/auth'
 import { volumeViewer } from '../lib/volume-access'
 import { serveVolumeFile, volumeErrorResponse } from '../lib/volume-file'
-import { afterVolumeChange } from '../lib/mount-change'
+import { afterVolumeChange, changeDrives } from '../lib/mount-change'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, updateVolumeDefinition, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { assertManageableVolume, createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, updateVolumeDefinition, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
 
 const routes = new Hono()
 routes.use('*', Authenticated())
@@ -48,12 +49,15 @@ routes.get('/:id/file', async c => {
 routes.get('/', async c => c.json(await listVolumeDefinitions(volumeViewer(c))))
 routes.post('/', async c => {
   const id = await createVolumeDefinition(await c.req.json(), volumeViewer(c))
+  globalFeed.publish({ type: 'volume_attention_changed' })
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'created' })
   return c.json({ id }, 201)
 })
 routes.patch('/:id', async c => {
   const id = c.req.param('id')
-  await updateVolumeDefinition(id, await c.req.json(), volumeViewer(c))
+  await assertManageableVolume(id, volumeViewer(c))
+  const body = await c.req.json()
+  await changeDrives(() => updateVolumeDefinition(id, body, volumeViewer(c)))
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'updated' })
   return c.json({ success: true })
 })
@@ -67,7 +71,8 @@ routes.post('/:id/reconnect', async c => {
 })
 routes.delete('/:id', async c => {
   const id = c.req.param('id')
-  await deleteVolumeDefinition(id, volumeViewer(c))
+  await assertManageableVolume(id, volumeViewer(c))
+  await changeDrives(() => deleteVolumeDefinition(id, volumeViewer(c)))
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'deleted' })
   return c.json({ success: true })
 })

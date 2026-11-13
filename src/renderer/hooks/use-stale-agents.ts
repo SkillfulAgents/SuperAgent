@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAgents, useStopAgent } from './use-agents'
+import { useUser } from '@renderer/context/user-context'
 
 export interface StaleAgentRow {
   slug: string
@@ -16,11 +17,12 @@ export interface StaleAgentRow {
  */
 export function useStaleAgents() {
   const { data: agents = [] } = useAgents()
+  const { isAdmin, canUseAgent } = useUser()
   const stopAgent = useStopAgent()
   const [run, setRun] = useState({ pending: false, stopped: 0 })
 
   const rows: StaleAgentRow[] = agents
-    .filter((a) => a.stale)
+    .filter((a) => a.stale && (isAdmin || canUseAgent(a.slug)))
     .map((a) => ({ slug: a.slug, name: a.name, working: a.hasActiveSessions === true }))
 
   // Every listed agent's own stop, all at once. A failed one stays listed.

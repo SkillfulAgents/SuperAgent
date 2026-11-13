@@ -181,7 +181,9 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   // file manager only works when that machine is this one; against a cloud
   // workspace it either fails or, worse, opens a same-named folder of yours.
   const { hostPath } = mount
-  const subtitle = mount.name === mount.volumeName ? mount.sourceLabel ?? hostPath : mountPathOf(mount.name)
+  // Only a mounted drive has its folder in the agent. Until then the row shows where it comes from.
+  const agentPath = mount.health === 'ok' ? mountPathOf(mount.name) : null
+  const subtitle = agentPath ?? mount.sourceLabel ?? hostPath
   const canOpenInFileManager = canUseHostFeatures() && hostPath !== null
 
   const handleOpenInFinder = () => {
@@ -190,7 +192,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   }
 
   const handleCopyPath = () => {
-    if (hostPath) void navigator.clipboard.writeText(hostPath)
+    if (agentPath) void navigator.clipboard.writeText(agentPath)
   }
 
   const canOpen = definition !== undefined && !isRenaming
@@ -273,7 +275,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                   Open in {fileManagerLabel}
                 </button>
               )}
-              {hostPath && (
+              {agentPath && (
                 <button
                   className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => {
@@ -283,7 +285,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                   }}
                 >
                   <Copy className="h-3.5 w-3.5" />
-                  Copy path
+                  Copy folder path
                 </button>
               )}
               {definition?.canManage && (
