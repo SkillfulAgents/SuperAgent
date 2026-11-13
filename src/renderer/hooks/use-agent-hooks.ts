@@ -1,5 +1,4 @@
 import { apiFetch } from '@renderer/lib/api'
-import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AgentHook, RemoveAgentHookTarget } from '@shared/lib/services/agent-hooks-schema'
 
@@ -8,7 +7,7 @@ export function useAgentHooks(agentSlug: string | null) {
   return useQuery<AgentHook[]>({
     queryKey: ['agent-hooks', agentSlug],
     queryFn: async () => {
-      const res = await batchedApiFetch(`/api/agents/${agentSlug}/hooks`)
+      const res = await apiFetch(`/api/agents/${agentSlug}/hooks`)
       if (!res.ok) return []
       const data = await res.json()
       return Array.isArray(data?.hooks) ? data.hooks : []

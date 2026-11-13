@@ -14,10 +14,11 @@ import {
   listsRecentFiles,
   offersComputerUseSettings,
   offersPrivateSkillsets,
+  sendsReadsTogether,
   signsInWithAuthSession,
   usesHostFolderPaths,
 } from './capabilities'
-import { _setFactsForTest } from './facts'
+import { _resetFactsForTest, _setFactsForTest } from './facts'
 import type { ServerFacts } from '@shared/lib/facts/facts-schema'
 
 beforeEach(() => {
@@ -159,5 +160,26 @@ describe('what the App Sandbox leaves out', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('sendsReadsTogether', () => {
+  const browser = { shell: 'browser', os: null, distribution: null } as const
+
+  it('is true when the server this window drives spreads its requests', () => {
+    _setFactsForTest({ client: browser, server: { os: 'linux', distribution: 'deployment', spreadsRequests: true } })
+    expect(sendsReadsTogether()).toBe(true)
+  })
+
+  it('is false for a server that does not say so, or said nothing', () => {
+    _setFactsForTest({ client: browser, server: { os: 'linux', distribution: 'deployment' } })
+    expect(sendsReadsTogether()).toBe(false)
+    _setFactsForTest({ client: browser, server: null })
+    expect(sendsReadsTogether()).toBe(false)
+  })
+
+  it('is false before boot has settled the facts', () => {
+    _resetFactsForTest()
+    expect(sendsReadsTogether()).toBe(false)
   })
 })

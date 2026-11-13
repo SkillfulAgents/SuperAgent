@@ -1,7 +1,7 @@
-import { readsHostFolders, runsHostGit, runsInAppSandbox, supportsComputerUse, updatesItself } from '@shared/lib/facts/capabilities'
+import { answersReadsTogether, readsHostFolders, runsHostGit, runsInAppSandbox, supportsComputerUse, updatesItself } from '@shared/lib/facts/capabilities'
 import { targetIsRemote } from './api-target'
 import { isElectron } from './env'
-import { clientFacts, serverFacts } from './facts'
+import { clientFacts, factsSettled, serverFacts } from './facts'
 
 /**
  * What this window may offer, asked by name. Each answer is about one side:
@@ -159,4 +159,15 @@ export function listsRecentFiles(): boolean {
 export function signsInWithAuthSession(): boolean {
   const client = clientFacts()
   return client.shell === 'electron' && client.os === 'darwin' && runsInAppSandbox(client)
+}
+
+/**
+ * Whether this window sends the reads it starts together as one request: the
+ * server it drives asked for that. A read before boot settles the facts (a
+ * module at load) goes by itself, as do all reads when the server didn't say.
+ */
+export function sendsReadsTogether(): boolean {
+  if (!factsSettled()) return false
+  const server = serverFacts()
+  return server !== null && answersReadsTogether(server)
 }

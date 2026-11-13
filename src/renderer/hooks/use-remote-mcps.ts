@@ -1,5 +1,4 @@
 import { apiFetch } from '@renderer/lib/api'
-import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 
 import { useCallback } from 'react'
@@ -69,7 +68,7 @@ export function useAgentRemoteMcps(agentSlug: string) {
   return useQuery<{ mcps: AgentRemoteMcpDto[] }>({
     queryKey: ['agent-remote-mcps', agentSlug],
     queryFn: async () => {
-      const res = await batchedApiFetch(`/api/agents/${agentSlug}/remote-mcps`)
+      const res = await apiFetch(`/api/agents/${agentSlug}/remote-mcps`)
       if (!res.ok) throw new Error('Failed to fetch agent remote MCPs')
       return res.json()
     },

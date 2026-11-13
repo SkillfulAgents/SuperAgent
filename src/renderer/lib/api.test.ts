@@ -12,6 +12,7 @@ vi.mock('./auth-client', () => ({ signOut: signOutMock }))
 
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
 import { _resetCloudSessionForTest, onCloudSessionRejected } from './cloud-session'
+import { _resetFactsForTest, _setFactsForTest } from './facts'
 import { isWorkspaceUnavailableError, type WorkspaceUnavailableError } from './workspace-unavailable'
 import {
   apiFetch,
@@ -120,6 +121,54 @@ describe('apiJson (loader fetch: status-preserving throw)', () => {
     await expect(apiJson('/x')).rejects.toSatisfy(
       (err: unknown) => err instanceof HttpError && err.status === status && err.name === 'HttpError',
     )
+  })
+})
+
+describe('apiFetch on a server that asks for reads together', () => {
+  const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>()
+  const answer = (index: number, body: unknown) => `${JSON.stringify({ index, status: 200, contentType: 'application/json', body: JSON.stringify(body) })}\n`
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+    _setFactsForTest({ client: { shell: 'browser', os: null, distribution: null }, server: { os: 'linux', distribution: 'deployment', spreadsRequests: true } })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetFactsForTest()
+  })
+
+  it('sends the page reads started together as one request, and answers each caller', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(answer(1, { sessions: [] }) + answer(0, { slug: 'sales' })))
+
+    const [agent, sessions] = await Promise.all([apiFetch('/api/agents/sales'), apiFetch('/api/agents/sales/sessions')])
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/batch-reads')
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({ paths: ['/api/agents/sales', '/api/agents/sales/sessions'] })
+    expect([await agent.json(), await sessions.json()]).toEqual([{ slug: 'sales' }, { sessions: [] }])
+  })
+
+  it('sends by itself a write, a read with options, and a read the server does not batch', async () => {
+    fetchMock.mockImplementation(async () => Response.json({}))
+
+    await Promise.all([
+      apiFetch('/api/agents/sales/sessions', { method: 'POST' }),
+      apiFetch('/api/agents/sales', { signal: new AbortController().signal }),
+      apiFetch('/api/agents/sales/sessions/s1/messages'),
+    ])
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/agents/sales/sessions', '/api/agents/sales', '/api/agents/sales/sessions/s1/messages'])
+  })
+
+  it('sends every read by itself on a server that did not ask', async () => {
+    _setFactsForTest({ client: { shell: 'browser', os: null, distribution: null }, server: { os: 'linux', distribution: 'deployment' } })
+    fetchMock.mockImplementation(async () => Response.json({}))
+
+    await Promise.all([apiFetch('/api/agents/sales'), apiFetch('/api/agents/sales/sessions')])
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/agents/sales', '/api/agents/sales/sessions'])
   })
 })
 

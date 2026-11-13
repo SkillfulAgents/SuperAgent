@@ -121,3 +121,13 @@ export function mayDownloadCode(server: ServerFacts): boolean {
 export function updatesItself(client: ClientFacts): boolean {
   return client.shell === 'electron' && client.distribution === 'direct'
 }
+
+/**
+ * Whether a page should send the reads it starts together as one request
+ * (`POST /api/batch-reads`). On a server that spreads concurrent requests over
+ * instances, each request of a burst can wait for an instance to start; one
+ * request waits for one.
+ */
+export function answersReadsTogether(server: ServerFacts): boolean {
+  return server.spreadsRequests === true
+}

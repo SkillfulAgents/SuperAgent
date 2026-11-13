@@ -12,7 +12,6 @@ import { integrationSetupMetadataSchema } from '@shared/lib/agent-integrations/s
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { isSettling } from '@shared/lib/agent-integrations/presentation'
 import { apiFetch } from '@renderer/lib/api'
-import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 export type { AgentIntegrationSession, ChatIntegrationAccess }
@@ -75,7 +74,7 @@ export function useAgentIntegrations(agentSlug: string | null, status?: string) 
       const url = status
         ? `/api/agent-integrations/agents/${agentSlug}?status=${status}`
         : `/api/agent-integrations/agents/${agentSlug}`
-      const res = await batchedApiFetch(url)
+      const res = await apiFetch(url)
       if (!res.ok) throw new Error('Failed to fetch agent integrations')
       return res.json()
     },

@@ -8,7 +8,6 @@
  */
 
 import { apiFetch } from '@renderer/lib/api'
-import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
@@ -44,7 +43,7 @@ export function useAutomationList<T>(
       const url = status
         ? `/api/agents/${agentSlug}/${type}?status=${status}`
         : `/api/agents/${agentSlug}/${type}`
-      const res = await batchedApiFetch(url)
+      const res = await apiFetch(url)
       if (!res.ok) throw new Error(`Failed to fetch ${type.replace('-', ' ')}`)
       return res.json()
     },

@@ -1,5 +1,8 @@
+import { isBatchableRead } from '@shared/lib/batched-reads'
 import { isSafeInternalPath } from './safe-internal-path'
 import { getApiBaseUrl } from './env'
+import { sendsReadsTogether } from './capabilities'
+import { createReadBatcher } from './read-batcher'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { isMeetingParticipantPage } from './meeting-participant-page'
 import { reportCloudSessionRejected } from './cloud-session'
@@ -15,11 +18,20 @@ import { WORKSPACE_UNAVAILABLE_HEADER, WorkspaceUnavailableError } from './works
  * Rejects with `WorkspaceUnavailableError` when the cloud router answered for a
  * workspace that is not ready (see `handleWorkspaceUnavailableResponse`).
  * In auth mode, automatically signs out on 401 responses (expired session).
+ *
+ * On a server that asks for it (`sendsReadsTogether()`), a plain read of a
+ * page's data goes out in one request with the reads started beside it
+ * (`read-batcher.ts`). The caller gets the same Response either way.
  */
 export async function apiFetch(
   path: string,
   init?: RequestInit
 ): Promise<Response> {
+  if (init === undefined && isBatchableRead(path) && sendsReadsTogether()) return readTogether(path)
+  return sendAlone(path, init)
+}
+
+async function sendAlone(path: string, init?: RequestInit): Promise<Response> {
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)
   handleWorkspaceUnavailableResponse(path, (name) => response.headers.get(name))
@@ -78,6 +90,16 @@ export async function handleUnauthorizedResponse(status: number, path: string): 
     reportCloudSessionRejected()
   }
 }
+
+const readTogether = createReadBatcher({
+  alone: (path) => sendAlone(path),
+  batch: (paths) => sendAlone('/api/batch-reads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths }),
+  }),
+  answered: handleUnauthorizedResponse,
+})
 
 const REDIRECT_KEY = 'superagent.redirect'
 

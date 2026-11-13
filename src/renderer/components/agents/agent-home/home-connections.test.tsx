@@ -20,10 +20,6 @@ const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
-// Each read by itself: these tests answer by path.
-vi.mock('@renderer/lib/batched-api-fetch', () => ({
-  batchedApiFetch: (path: string) => mockApiFetch(path),
-}))
 
 const oauthReconnectMocks = vi.hoisted(() => ({
   reconnect: vi.fn(),

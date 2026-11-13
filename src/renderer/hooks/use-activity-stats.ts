@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { z } from 'zod'
 import { apiFetch } from '@renderer/lib/api'
-import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { DEFAULT_ACTIVITY_DAYS } from '@shared/lib/types/activity'
 import {
   agentActivityStatsSchema,
@@ -11,8 +10,8 @@ import {
 const ACTIVITY_STALE_TIME_MS = 60_000
 const ACTIVITY_REFETCH_INTERVAL_MS = 120_000
 
-async function activityJson<T>(url: string, schema: z.ZodType<T>, fetchJson: (url: string) => Promise<Response> = apiFetch): Promise<T> {
-  const response = await fetchJson(url)
+async function activityJson<T>(url: string, schema: z.ZodType<T>): Promise<T> {
+  const response = await apiFetch(url)
   if (!response.ok) throw new Error('Failed to fetch activity statistics')
   return schema.parse(await response.json())
 }
@@ -35,7 +34,6 @@ export function useAgentActivityStats(
     queryFn: () => activityJson(
       `/api/activity/agents/${encodeURIComponent(agentSlug!)}?days=${days}&tz=${tzOffsetMinutes}`,
       agentActivityStatsSchema,
-      batchedApiFetch,
     ),
     enabled: !!agentSlug,
     staleTime: ACTIVITY_STALE_TIME_MS,

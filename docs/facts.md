@@ -15,7 +15,7 @@ in two halves (`src/shared/lib/facts/facts-schema.ts`):
 | Half | Describes | Fields |
 | --- | --- | --- |
 | `ClientFacts` | the app the person is looking at, and its computer | `shell` (`electron` / `browser`), `os` (null in a browser), `distribution` (null in a browser) |
-| `ServerFacts` | the machine running the API and the agents | `os`, `distribution` (adds `deployment` for a web deployment) |
+| `ServerFacts` | the machine running the API and the agents | `os`, `distribution` (adds `deployment` for a web deployment), `spreadsRequests` (a serverless deployment sets `SUPERAGENT_SPREADS_REQUESTS=true`) |
 
 | Configuration | Client | Server |
 | --- | --- | --- |

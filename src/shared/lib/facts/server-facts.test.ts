@@ -85,6 +85,24 @@ describe('getServerFacts', () => {
   })
 })
 
+describe('a deployment that spreads requests', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('says so when its environment does', () => {
+    stubProcess({ type: undefined, platform: 'linux' })
+    vi.stubEnv('SUPERAGENT_SPREADS_REQUESTS', 'true')
+    expect(getServerFacts()).toEqual({ os: 'linux', distribution: 'deployment', spreadsRequests: true })
+  })
+
+  it('leaves the fact out anywhere else, so the facts of other servers do not change', () => {
+    stubProcess({ type: undefined, platform: 'linux' })
+    vi.stubEnv('SUPERAGENT_SPREADS_REQUESTS', 'false')
+    expect(getServerFacts()).toEqual({ os: 'linux', distribution: 'deployment' })
+  })
+})
+
 describe('withServerFacts', () => {
   const FACTS: ServerFacts = { os: 'linux', distribution: 'deployment' }
 

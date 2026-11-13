@@ -53,6 +53,12 @@ export type ServerDistribution = z.infer<typeof serverDistributionSchema>
 export const serverFactsSchema = z.object({
   os: osSchema,
   distribution: serverDistributionSchema,
+  /**
+   * True when the server may answer each of the requests a page sends at once
+   * in an instance of its own, started for that request: a serverless
+   * deployment. Absent on a server that answers them all in one process.
+   */
+  spreadsRequests: z.boolean().optional(),
 })
 export type ServerFacts = z.infer<typeof serverFactsSchema>
 

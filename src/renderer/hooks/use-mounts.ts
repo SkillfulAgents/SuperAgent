@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { apiFetch } from '@renderer/lib/api'
-import { batchedApiFetch } from '@renderer/lib/batched-api-fetch'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
 import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
@@ -22,7 +21,7 @@ export function useAgentMounts(agentSlug: string) {
   return useQuery<MountSummaryWithHealth[]>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
-      const res = await batchedApiFetch(`/api/agents/${agentSlug}/mounts`)
+      const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch drives'))
       return res.json()
     },

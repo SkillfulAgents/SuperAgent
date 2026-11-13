@@ -47,9 +47,22 @@ function mockRunDistribution(): ServerDistribution | null {
   return parsed.success ? parsed.data : null
 }
 
+/**
+ * Whether this deployment may answer each concurrent request in an instance of
+ * its own: `SUPERAGENT_SPREADS_REQUESTS=true`, which a serverless deployment
+ * sets. No server can tell this about itself.
+ */
+function spreadsRequests(): boolean {
+  return process.env.SUPERAGENT_SPREADS_REQUESTS === 'true'
+}
+
 /** The facts of the server this process is: a desktop install's API, or a web deployment. */
 export function getServerFacts(): ServerFacts {
-  return { os: currentOs(), distribution: mockRunDistribution() ?? desktopDistribution() ?? 'deployment' }
+  return {
+    os: currentOs(),
+    distribution: mockRunDistribution() ?? desktopDistribution() ?? 'deployment',
+    ...(spreadsRequests() ? { spreadsRequests: true } : {}),
+  }
 }
 
 /**

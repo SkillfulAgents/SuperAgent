@@ -59,6 +59,11 @@ function read(): Facts {
   return settled
 }
 
+/** Whether boot has settled the facts. A read before that has none to ask. */
+export function factsSettled(): boolean {
+  return settled !== null
+}
+
 /** This window's app and the computer it runs on. */
 export function clientFacts(): ClientFacts {
   return read().client
