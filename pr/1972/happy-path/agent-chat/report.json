@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: r the 3-minute timeout).\n\n[STEP] Step 6: Verified response mentions \"4\" and took screenshot - Response clearly displays \"2 + 2 = 4.\" which includes the number \"4\" as required. Screenshot saved successfully showing the complete conversation.\n\nAll test steps completed successfully with no bugs found.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 50519,
+  "sessionId": "6cd18757-5bf2-4125-9a19-25f05ddb3adb",
+  "cost": {
+    "inputTokens": 280,
+    "outputTokens": 8260,
+    "cacheCreationTokens": 103984,
+    "cacheReadTokens": 690072,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.240567
+  }
+}
