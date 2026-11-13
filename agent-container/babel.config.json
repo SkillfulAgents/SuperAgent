@@ -1,0 +1,5 @@
+{
+  // `lazy` turns each import of a package into a require() at its first use, so a start loads only what it runs.
+  "presets": ["@babel/preset-typescript"],
+  "plugins": [["@babel/plugin-transform-modules-commonjs", { "lazy": true }]]
+}

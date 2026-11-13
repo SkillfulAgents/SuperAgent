@@ -196,7 +196,7 @@ FROM base AS builder
 
 COPY package*.json ./
 RUN npm ci
-COPY tsconfig.json ./
+COPY tsconfig.json babel.config.json ./
 COPY src ./src
 RUN npm run build
 

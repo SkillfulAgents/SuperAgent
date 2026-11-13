@@ -7,7 +7,7 @@
   },
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc && cp src/*.md dist/ && cp -R src/hints/builtin dist/hints/",
+    "build": "tsc && babel src --out-dir dist --extensions .ts --ignore \"src/**/*.test.ts\" && cp src/*.md dist/ && cp -R src/hints/builtin dist/hints/",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
     "watch": "tsc --watch",
@@ -38,6 +38,10 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@babel/cli": "^8.1.0",
+    "@babel/core": "^8.1.0",
+    "@babel/plugin-transform-modules-commonjs": "^8.0.1",
+    "@babel/preset-typescript": "^8.0.7",
     "@types/js-yaml": "^4.0.9",
     "@types/mustache": "^4.2.6",
     "@types/node": "^22.20.0",
