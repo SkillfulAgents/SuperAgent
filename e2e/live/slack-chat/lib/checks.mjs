@@ -398,15 +398,11 @@ export const CHECKS = [
           `"validation artifact ${tag}".`,
       )
       // deliver_file uploads the real bytes and uses the description as the
-      // caption; it falls back to a text message only when the host can't read
-      // the file. Either shape counts as delivered, but the tool-call echo
-      // (`🔧 Write — validation-….txt`) does NOT — matching on the filename
-      // alone passes on that echo and tests nothing.
+      // caption. The tool-call echo (`🔧 Write — validation-….txt`) carries the
+      // filename too, so only an attached file counts.
       const delivered = await ctx.conv.awaitBot(
         'the delivered file',
-        (message, text) =>
-          (message.files ?? []).some((f) => (f.name ?? '').includes(`validation-${tag}`)) ||
-          (text.includes('File ready') && text.includes(`validation-${tag}.txt`)),
+        (message) => (message.files ?? []).some((f) => (f.name ?? '').includes(`validation-${tag}`)),
         300_000,
       )
       const uploaded = (delivered.files ?? [])[0]
@@ -414,9 +410,7 @@ export const CHECKS = [
       if (!text.includes(`validation artifact ${tag}`)) {
         throw new Error(`Delivery dropped the description: ${text.slice(0, 160)}`)
       }
-      return uploaded
-        ? `uploaded ${uploaded.name} (${uploaded.size ?? '?'} bytes)`
-        : 'text fallback — the host could not read the file'
+      return `uploaded ${uploaded.name} (${uploaded.size ?? '?'} bytes)`
     },
     async cleanup(ctx) {
       await clearPending(ctx)

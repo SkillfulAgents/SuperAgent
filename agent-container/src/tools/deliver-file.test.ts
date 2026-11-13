@@ -76,8 +76,13 @@ describe('deliver_file in a chat session', () => {
     expect(await text()).toMatch(/^File "big.bin" \(1 bytes\) was NOT sent to Telegram: 413/)
   })
 
-  it('does not claim delivery when the app does not answer', async () => {
+  it('does not claim chat delivery when the app does not answer, and says the file is in the app', async () => {
     host.answer = new Error('network down')
-    expect(await text()).toContain('may not have reached the chat')
+    expect(await text()).toMatch(/^File "big.bin" \(1 bytes\) is in the app\. A connected chat may not have received it: the app did not confirm\. Do not send it again/)
+  })
+
+  it('says the file was delivered when the session has no chat', async () => {
+    host.answer = { text: null }
+    expect(await text()).toMatch(/^File "big.bin" \(1 bytes\) has been delivered to the user\./)
   })
 })

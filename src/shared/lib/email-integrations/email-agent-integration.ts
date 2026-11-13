@@ -187,7 +187,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     }
     if (output.type === 'turn-failed') { this.turns.delete(this.turnKey(context)); return }
     if (output.type === 'runtime') {
-      const event = z.object({ type: z.string(), text: z.string().optional(), toolName: z.string().optional(), isError: z.boolean().optional(), filePath: z.string().optional() }).passthrough().parse(output.event)
+      const event = z.object({ type: z.string(), text: z.string().optional() }).parse(output.event)
       const turn = this.turns.get(this.turnKey(context)) ?? { parts: [], attachments: [] }
       // Keep every textual block, including the answer before a monitor acknowledgment.
       // Tool boundaries separate blocks; tool results and thinking are never composer input.
@@ -197,12 +197,6 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
       if (event.type === 'stream_delta') {
         if (!turn.parts.length) turn.parts.push('')
         turn.parts[turn.parts.length - 1] += event.text ?? ''
-      }
-      // A sandbox from before deliver_file asked the host still announces files here.
-      if (event.type === 'tool_result_ready' && event.toolName === 'mcp__user-input__deliver_file' && !event.isError && event.filePath) {
-        this.turns.set(this.turnKey(context), turn)
-        await this.deliverFile(context, { filePath: event.filePath })
-        return
       }
       this.turns.set(this.turnKey(context), turn)
       return

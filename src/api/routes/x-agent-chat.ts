@@ -157,7 +157,7 @@ xAgentChat.post('/deliver-file', async (c) => {
   const outOfTime = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), DELIVER_FILE_BUDGET_MS) })
   try {
     const outcome = await Promise.race([delivery, outOfTime])
-    if (outcome === 'timeout') return c.json({ text: 'may not have reached the chat yet. It may still arrive, so do not send it again; ask the user whether it arrived.' })
+    if (outcome === 'timeout') return c.json({ text: 'is in the app. A connected chat may not have received it yet, and it may still arrive. Do not send it again; if the user is in a chat, ask whether it arrived there.' })
     if (!outcome) return c.json({ text: null })
     return c.json({ text: outcome.delivered ? outcome.text : `${outcome.text} It is still in the workspace, and the user can download it in the Gamut app. Tell the user, and offer another way if one fits (a smaller file, parts, or a link).` })
   } catch (error) {

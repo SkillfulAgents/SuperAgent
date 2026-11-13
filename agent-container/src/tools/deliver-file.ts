@@ -45,7 +45,7 @@ Example usage:
       const sessionId = getSessionId()
       const chat = sessionId
         ? await callChatHost<{ text: string | null }>('deliver-file', { session_id: sessionId, file_path: args.filePath, description: args.description })
-          .catch(() => ({ text: 'may not have reached the chat: the app did not confirm it. Do not send it again; ask the user whether it arrived.' }))
+          .catch(() => ({ text: 'is in the app. A connected chat may not have received it: the app did not confirm. Do not send it again; if the user is in a chat, ask whether it arrived there.' }))
         : { text: null }
       const outcome = chat.text ?? 'has been delivered to the user. They can now download it from the chat.'
       return {

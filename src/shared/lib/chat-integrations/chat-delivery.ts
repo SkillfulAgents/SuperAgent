@@ -354,8 +354,8 @@ export async function processSSEEvent(
       const toolId = data.toolId as string
       const toolName = data.toolName as string
 
-      // deliver_file reaches the chat through its tool (deliverFileToChat), or
-      // from an older sandbox off 'tool_result_ready'; here it only resets the tool input.
+      // deliver_file reaches the chat through its tool (deliverFileToChat); here
+      // it only resets the tool input.
 
       if (shouldHideToolStatusInChat(toolName)) {
         managed.currentToolInput = ''
@@ -388,15 +388,6 @@ export async function processSSEEvent(
       if (index === -1) break
       const [pending] = managed.pendingToolMessages.splice(index, 1)
       await updateToolMessage(managed, pending, data.isError ? 'error' : 'success')
-      break
-    }
-
-    case 'tool_result_ready': {
-      // A sandbox from before deliver_file asked the host: it already told the
-      // agent "delivered", so the user gets the file or, failing that, a pointer.
-      if (data.toolName !== 'mcp__user-input__deliver_file' || data.isError || typeof data.filePath !== 'string') break
-      const sent = await deliverFileToChat(managed, managed.connector.definition.name, data.filePath, data.description as string | undefined)
-      if (!sent.delivered) await managed.connector.sendMessage(managed.chatId, { text: `📎 File ready: \`${data.filePath}\`\n(File delivery to chat not available — download from the UI)` })
       break
     }
 

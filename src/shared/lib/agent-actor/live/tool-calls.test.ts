@@ -1173,60 +1173,6 @@ describe('ToolCalls', () => {
     })
   })
 
-  describe('deliver_file', () => {
-    it('tells chat clients the file can go once an older sandbox says it delivered it', () => {
-      const h = harness()
-      h.calls.mainToolUse(use('t_file', 'mcp__user-input__deliver_file', { filePath: '/workspace/report.pdf', description: 'The report' }))
-      expect(h.events).toEqual([])
-
-      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_file', content: 'File "report.pdf" (5 bytes) has been delivered to the user. They can now download it from the chat.' }] } })
-
-      expect(h.events).toEqual([
-        { type: 'tool_result', toolUseId: 't_file', result: 'File "report.pdf" (5 bytes) has been delivered to the user. They can now download it from the chat.', isError: false },
-        {
-          type: 'tool_result_ready',
-          toolName: 'mcp__user-input__deliver_file',
-          toolUseId: 't_file',
-          filePath: '/workspace/report.pdf',
-          description: 'The report',
-          isError: false,
-        },
-      ])
-    })
-
-    it('tells chat clients nothing when the sandbox had the host send the file itself', () => {
-      const h = harness()
-      h.calls.mainToolUse(use('t_file', 'mcp__user-input__deliver_file', { filePath: '/workspace/report.pdf' }))
-      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_file', content: 'File "report.pdf" (5 bytes) was sent to Telegram.' }] } })
-
-      expect(h.events.map((e) => e.type)).toEqual(['tool_result'])
-    })
-
-    it('tells chat clients nothing about a refused delivery', () => {
-      const h = harness()
-      h.calls.mainToolUse(use('t_file', 'mcp__user-input__deliver_file', { filePath: '/workspace/missing.pdf' }))
-      const result = { message: { content: [{ type: 'tool_result', tool_use_id: 't_file', content: 'No such file', is_error: true }] } }
-
-      h.calls.mainToolResults(result)
-      h.calls.mainToolResults(result)
-
-      expect(h.events.filter((e) => e.type === 'tool_result_ready')).toEqual([])
-    })
-
-    it('remembers nothing for a delivery without a file path', () => {
-      const h = harness()
-      h.calls.mainToolUse(use('t_1', 'mcp__user-input__deliver_file', { description: 'no path' }))
-      h.calls.mainToolUse(use('t_2', 'mcp__user-input__deliver_file', '{"filePa'))
-
-      h.calls.mainToolResults({ message: { content: [
-        { type: 'tool_result', tool_use_id: 't_1', content: 'x' },
-        { type: 'tool_result', tool_use_id: 't_2', content: 'x' },
-      ] } })
-
-      expect(h.events.map((e) => e.type)).toEqual(['tool_result', 'tool_result'])
-    })
-  })
-
   describe('main-stream tool results', () => {
     it('settles the ask each result answers, declined for an error, and tells clients', () => {
       const h = harness()

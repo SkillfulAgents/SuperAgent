@@ -1235,17 +1235,6 @@ describe('deliver_file delivery', () => {
     expect(getMock(managed).sentMessages).toHaveLength(0)
   })
 
-  it('still sends an older sandbox\'s file, with the old pointer when the chat refuses it', async () => {
-    const fs = await import('fs')
-    const path = await import('path')
-    fs.writeFileSync(path.join(workspaceDir, 'big.bin'), 'x')
-    vi.spyOn(getMock(managed), 'sendFile').mockRejectedValue(new Error('413'))
-
-    await processSSEEvent(managed, { type: 'tool_result_ready', toolName: 'mcp__user-input__deliver_file', toolUseId: 't1', filePath: '/workspace/big.bin', isError: false })
-
-    expect(getMock(managed).sentMessages.map((m) => m.message.text)).toEqual(['📎 File ready: `/workspace/big.bin`\n(File delivery to chat not available — download from the UI)'])
-  })
-
   it('says a file the app cannot see yet was not sent', async () => {
     expect((await deliverFileToChat(managed, 'Telegram', '/workspace/not-on-host.txt')).delivered).toBe(false)
     expect(getMock(managed).sentFiles).toHaveLength(0)
