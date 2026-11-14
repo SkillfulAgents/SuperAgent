@@ -26,5 +26,10 @@
   <true/>
   <key>com.apple.security.files.bookmarks.app-scope</key>
   <true/>
+  <!-- The first screen's native Sign in with Apple prompt (App Review 4.8). -->
+  <key>com.apple.developer.applesignin</key>
+  <array>
+    <string>Default</string>
+  </array>
 </dict>
 </plist>

@@ -146,6 +146,12 @@ Slack, Linear, GitHub) still opens the browser, in every build, and the direct
 build keeps the browser for the Gamut sign-in too: the person is usually signed
 in there already.
 
+**The first screen also offers "Sign in with Apple"** (`signsInWithApple()`),
+because App Review guideline 4.8 asks for it beside Google sign-in. macOS's own
+Apple prompt runs first (`apple_sign_in_start` in the same bridge), then the
+same sheet opens the platform's Apple page, which continues to the same login
+URL. Only this build carries the `com.apple.developer.applesignin` entitlement.
+
 **The Account tab offers "Request account deletion"** in every build, which
 guideline 5.1.1(v) requires of an app that lets people create an account. See
 [account-deletion.md](account-deletion.md).
