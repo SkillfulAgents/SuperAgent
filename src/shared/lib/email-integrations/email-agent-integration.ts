@@ -28,6 +28,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   protected abstract downloadAttachment(id: string): Promise<Buffer>
   protected abstract uploadAttachment(data: Buffer, filename: string): Promise<string>
   protected abstract recentHistory(): Promise<EmailHistoryPage>
+  override readonly fileRequests = false
   private turns = new Map<string, { parts: string[]; attachments: string[] }>()
   private admissions = new Map<string, { message: EmailMessage; contacted: boolean }>()
   private turnKey(context: IntegrationSessionContext) { return JSON.stringify([context.sessionId, context.externalId, context.replyTarget?.messageId]) }

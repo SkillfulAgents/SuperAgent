@@ -113,6 +113,7 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addEr
 class ObjectIntegration extends AgentIntegration {
   readonly provider = 'test-objects'
   readonly definition = { provider: this.provider, name: 'Objects', family: 'objects', capabilities: [], settings: [], setup: { kind: 'test', credentialFields: [] } }
+  override readonly fileRequests = false
   connected = false
   allowed = true
   outputs: Array<{ context: IntegrationSessionContext; output: IntegrationOutput }> = []
@@ -592,6 +593,12 @@ describe('AgentIntegration host contract', () => {
     await adapter.cancel(acknowledged)
     expect(state.stop).toHaveBeenCalledWith('session-1', { scope: 'turn' })
     expect(acknowledged).toHaveBeenCalledOnce()
+  })
+  it('starts sessions without the file request tool where files arrive by reply', async () => {
+    await manager.start()
+    await adapter.input('comment')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    expect(state.create.mock.calls[0][0]).toMatchObject({ fileRequests: false })
   })
   it.each(['proxy_review', 'x_agent_review'])('routes %s only through its owning session', async kind => {
     await manager.start()

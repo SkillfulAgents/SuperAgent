@@ -1415,6 +1415,7 @@ export class AgentIntegrationManager implements Service {
       effort: resolved.effort,
       ...(resolved.speed ? { speed: resolved.speed } : {}),
       ...(systemPrompt ? { systemPrompt } : {}),
+      fileRequests: connector.fileRequests,
     }), check)
 
     // Retain the returned ID before any fallible registration/stream work, so

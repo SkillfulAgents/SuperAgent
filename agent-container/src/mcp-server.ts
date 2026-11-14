@@ -78,6 +78,8 @@ export function createUserInputMcpServer(
   // request_login prepares its fields through the browser, which checks the
   // calling session owns it — read at call time, since the id changes on restart.
   getSessionId: () => string | null = () => null,
+  // Off where the person sends files by replying (chat, email): a request there could not be shown.
+  includeFileRequests = true,
 ) {
   // Scripts run on the host's desktop, so they come with computer use.
   const includeScriptRun = isComputerUseHost()
@@ -98,7 +100,7 @@ export function createUserInputMcpServer(
       scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
-      deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      deliverFileTool, deliverSessionTool, ...(includeFileRequests ? [requestFileTool] : []), requestBrowserInputTool,
       createRequestLoginTool(getSessionId),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),

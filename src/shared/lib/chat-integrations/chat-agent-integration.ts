@@ -466,6 +466,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     await processSSEEvent(state, output.event, chatSettings(context.integration).showToolCalls, context.sessionId ?? '')
   }
 
+  override readonly fileRequests = false
   // The working indicator is armed from what the session is doing.
   override readonly observesActivity = true
   observeSession(context: IntegrationSessionContext): void {
