@@ -161,6 +161,31 @@ describe('AudioRenderer', () => {
     expect(requestFrame).toHaveBeenCalledTimes(2)
   })
 
+  // Live (docs/animations.md): audio plays on behind another app, and so does its playhead.
+  it('keeps the playhead moving in a window that is shown but not in use', () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    let nextFrame: FrameRequestCallback | undefined
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      nextFrame = callback
+      return 1
+    }))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
+
+    const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+    Object.defineProperty(audio, 'paused', { configurable: true, value: false })
+    Object.defineProperty(audio, 'ended', { configurable: true, value: false })
+    fireEvent.play(audio)
+
+    for (const [frame, seconds] of [[1000, 4.5], [1100, 65], [1200, 125]]) {
+      audio.currentTime = seconds
+      const run = nextFrame
+      nextFrame = undefined
+      act(() => run?.(frame))
+      expect(screen.getByText(`${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')} / 0:00`)).toBeVisible()
+    }
+  })
+
   it('plays, seeks, changes speed and comments from the keyboard, but not while typing', async () => {
     const user = userEvent.setup()
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)

@@ -3,12 +3,14 @@ import {
   sleepingFrame, workingFrame, type OrbFrame, type OrbState,
 } from './orb-states'
 import { cubicBezier, FREE_EASE, gazeToward, nearestAngle, type OrbShape, type ShapeGaze } from '@shared/lib/types/agent-avatar-shapes'
-import { DOTS_CYCLE, DOTS_GATHER, workingPosition } from './orb-working'
+import { DOTS_CYCLE, DOTS_GATHER, TYPING_FROM, workingPosition } from './orb-working'
 
 const BLEND_MS = 450
 const FOLLOW_MS = 360
 /** Time constant the shown roll eases toward its target with. */
 const ROLL_MS = 120
+/** A finished orb's nod and the blink that ends it; after that it only breathes. */
+const DONE_NOD_MS = 1500
 
 export interface OrbAnimationConfig {
   shape: OrbShape
@@ -121,6 +123,31 @@ export class OrbAnimation {
     this.blend(now)
   }
 
+  /**
+   * Paints a second this moment's motion is worth: an idle or sleeping orb's glance and blink,
+   * and a finished one's breathing after its nod, are slow and small and read the same at 30;
+   * typing dots, a knock, a nod, a change of state, a followed pointer and a roll are quick,
+   * and get 60.
+   */
+  get pace(): 30 | 60 {
+    if (this.working || this.from) return 60
+    // A followed pointer is quick only while the gaze is still travelling to it.
+    if (this.follow && this.lastTick - this.follow.since < this.followDuration) return 60
+    if (this.state === 'needs-input') return 60
+    if (this.state === 'done' && this.lastTick - this.since < DONE_NOD_MS) return 60
+    return Math.abs(this.roll.target - this.roll.shown) > 0.5 ? 60 : 30
+  }
+
+  /**
+   * Whether a change of state is still playing out: a blend, the dots coming out or gathering
+   * back in. The dots advance by what each frame adds, a step at most, so on a slow clock
+   * they would take most of a minute: whoever paints this keeps its full rate until it is over.
+   */
+  get settling(): boolean {
+    const run = this.working
+    return Boolean(this.from) || Boolean(run && (run.ending || run.elapsed < TYPING_FROM))
+  }
+
   resume(now: number) {
     // Offscreen time must not advance the incremental typing/gather animation in one step.
     this.lastTick = now
@@ -162,6 +189,10 @@ export class OrbAnimation {
     return frame
   }
 
+  private get followDuration(): number {
+    return this.config.shape.snaps ? this.config.shape.duration : FOLLOW_MS
+  }
+
   private blend(now: number) {
     this.from = this.last
     this.blendSince = now
@@ -179,8 +210,7 @@ export class OrbAnimation {
 
   private followGaze(now: number): ShapeGaze {
     const follow = this.follow!
-    const duration = this.config.shape.snaps ? this.config.shape.duration : FOLLOW_MS
-    const k = this.followEase(Math.min(1, (now - follow.since) / duration))
+    const k = this.followEase(Math.min(1, (now - follow.since) / this.followDuration))
     return {
       phi: follow.from.phi + (nearestAngle(follow.from.phi, follow.to.phi) - follow.from.phi) * k,
       distance: follow.from.distance + (follow.to.distance - follow.from.distance) * k,

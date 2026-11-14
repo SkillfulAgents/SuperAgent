@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 const STRIPE_COLORS = [
   '#c0392b', '#e74c3c', '#e67e22', '#f39c12', '#d4ac0d', '#8b6914',
@@ -103,7 +104,6 @@ export function RibbonWave({ className }: RibbonWaveProps) {
     let smoothMy = -9999
     let t = 0
     let stripeOffset = 0
-    let animId = 0
 
     function resize() {
       const dpr = window.devicePixelRatio || 1
@@ -196,7 +196,6 @@ export function RibbonWave({ className }: RibbonWaveProps) {
       }
 
       draw()
-      animId = requestAnimationFrame(loop)
     }
 
     function onMouseMove(e: MouseEvent) {
@@ -219,10 +218,12 @@ export function RibbonWave({ className }: RibbonWaveProps) {
     canvas.addEventListener('mouseleave', onMouseLeave)
 
     resize()
-    animId = requestAnimationFrame(loop)
+    // Decoration. The loop advances a fixed step per call, so its pace is its frame rate:
+    // 60 a second in the window in use, held still in one that is not (ambient-frames.ts).
+    const stop = subscribeToAmbientFrames(loop, { kind: 'decoration' })
 
     return () => {
-      cancelAnimationFrame(animId)
+      stop()
       resizeObserver.disconnect()
       canvas.removeEventListener('mousemove', onMouseMove)
       canvas.removeEventListener('mouseleave', onMouseLeave)
