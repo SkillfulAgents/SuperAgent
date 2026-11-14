@@ -25,9 +25,17 @@ describe('prepareAuthSession', () => {
 
     await prepareAuthSession(onCancelled).navigate('https://platform.example/auth/superagent')
 
-    expect(api.startPlatformSignIn).toHaveBeenCalledWith('https://platform.example/auth/superagent')
+    expect(api.startPlatformSignIn).toHaveBeenCalledWith('https://platform.example/auth/superagent', false)
     expect(api.openExternal).not.toHaveBeenCalled()
     expect(onCancelled).not.toHaveBeenCalled()
+  })
+
+  it('asks main for the Apple prompt first when the attempt is a Sign in with Apple', async () => {
+    const api = installSession(new Promise<Outcome>(() => {}))
+
+    await prepareAuthSession(vi.fn(), true).navigate('https://platform.example/auth/superagent')
+
+    expect(api.startPlatformSignIn).toHaveBeenCalledWith('https://platform.example/auth/superagent', true)
   })
 
   it('reports the person closing the sheet', async () => {

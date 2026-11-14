@@ -16,6 +16,8 @@ export const fakeLoginWindow = {
   source: new MessageChannel().port1,
   /** Set when the hook opened a sign-in sheet; calling it is the person closing the sheet. */
   cancelAuthSession: null as (() => void) | null,
+  /** Whether that sheet was asked to run the native Sign in with Apple prompt first. */
+  withApple: false,
 }
 
 export function prepareOAuthPopup() {
@@ -28,7 +30,8 @@ export function prepareOAuthPopup() {
 }
 
 /** The sign-in sheet stands in as the same fake window; tests cancel it through `cancelAuthSession`. */
-export function prepareAuthSession(onCancelled: () => void) {
+export function prepareAuthSession(onCancelled: () => void, withApple = false) {
   fakeLoginWindow.cancelAuthSession = onCancelled
+  fakeLoginWindow.withApple = withApple
   return prepareOAuthPopup()
 }

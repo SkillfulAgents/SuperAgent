@@ -14,11 +14,18 @@
 
 import AppKit
 import AuthenticationServices
+import CryptoKit
 import Foundation
+import Security
+
+/// The app window a sheet attaches to.
+private func appWindow() -> ASPresentationAnchor {
+  NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible }) ?? ASPresentationAnchor()
+}
 
 private final class WindowAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
   func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-    NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible }) ?? ASPresentationAnchor()
+    appWindow()
   }
 }
 
@@ -95,5 +102,123 @@ public func webAuthStart(_ urlText: UnsafePointer<CChar>, _ schemeText: UnsafePo
 public func webAuthCancel() {
   DispatchQueue.main.async {
     activeSession?.cancel()
+  }
+}
+
+// MARK: - Sign in with Apple
+
+// The native Apple prompt for the Mac App Store build's "Sign in with Apple".
+// The raw nonce is made here and returned with the token; Apple receives only
+// its SHA-256, and the platform hands the raw value to Supabase to check it.
+
+private final class AppleSignInDelegate: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+  private let rawNonce: String
+  private let finish: ([String: Any]) -> Void
+  // Main queue only. Apple and a replacing start can both end the same request.
+  private var finished = false
+
+  init(rawNonce: String, finish: @escaping ([String: Any]) -> Void) {
+    self.rawNonce = rawNonce
+    self.finish = finish
+  }
+
+  func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+    appWindow()
+  }
+
+  func end(_ fields: [String: Any]) {
+    guard !finished else { return }
+    finished = true
+    finish(fields)
+  }
+
+  func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+    guard
+      let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+      let tokenData = credential.identityToken,
+      let idToken = String(data: tokenData, encoding: .utf8)
+    else {
+      end(["error": "Apple returned no identity token"])
+      return
+    }
+    var fields: [String: Any] = ["idToken": idToken, "nonce": rawNonce]
+    // Apple sends the name on the first sign-in only.
+    if let fullName = credential.fullName {
+      let name = PersonNameComponentsFormatter().string(from: fullName)
+      if !name.isEmpty { fields["name"] = name }
+    }
+    end(fields)
+  }
+
+  func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+    if let error = error as? ASAuthorizationError, error.code == .canceled {
+      end(["cancelled": true])
+    } else {
+      end(["error": error.localizedDescription])
+    }
+  }
+}
+
+// Read and written on the main queue only; the controller holds its delegate weakly.
+private var activeAppleController: ASAuthorizationController?
+private var activeAppleDelegate: AppleSignInDelegate?
+
+private func makeRawNonce() -> String? {
+  var bytes = [UInt8](repeating: 0, count: 32)
+  guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
+  return Data(bytes).base64EncodedString()
+}
+
+/// Runs the Apple prompt and returns when it ends, as JSON:
+/// `{"idToken": "…", "nonce": "<raw>", "name"?: "…"}`, `{"cancelled": true}`, or `{"error": "…"}`.
+/// A request still up is cancelled first.
+@_cdecl("apple_sign_in_start")
+public func appleSignInStart() -> UnsafeMutablePointer<CChar>? {
+  guard let rawNonce = makeRawNonce() else { return result(["error": "could not create a nonce"]) }
+  let hashedNonce = SHA256.hash(data: Data(rawNonce.utf8)).map { String(format: "%02x", $0) }.joined()
+
+  let done = DispatchSemaphore(value: 0)
+  var outcome: [String: Any] = ["error": "the Apple sign-in did not start"]
+
+  DispatchQueue.main.async {
+    // A request still up is ended here: the controller holds its delegate
+    // weakly, so once replaced it could never report and its caller would wait forever.
+    if #available(macOS 13.0, *) {
+      activeAppleController?.cancel()
+    }
+    activeAppleDelegate?.end(["cancelled": true])
+
+    let request = ASAuthorizationAppleIDProvider().createRequest()
+    request.requestedScopes = [.fullName, .email]
+    request.nonce = hashedNonce
+
+    let controller = ASAuthorizationController(authorizationRequests: [request])
+    let delegate = AppleSignInDelegate(rawNonce: rawNonce) { fields in
+      outcome = fields
+      if activeAppleController === controller {
+        activeAppleController = nil
+        activeAppleDelegate = nil
+      }
+      done.signal()
+    }
+    controller.delegate = delegate
+    controller.presentationContextProvider = delegate
+    activeAppleController = controller
+    activeAppleDelegate = delegate
+    controller.performRequests()
+  }
+
+  done.wait()
+  return result(outcome)
+}
+
+/// Ends the Apple prompt that is up, if any. Its `apple_sign_in_start` returns cancelled.
+@_cdecl("apple_sign_in_cancel")
+public func appleSignInCancel() {
+  DispatchQueue.main.async {
+    // `cancel()` is macOS 13+ API, and the bridge is built for a 12.0 target.
+    if #available(macOS 13.0, *) {
+      activeAppleController?.cancel()
+    }
   }
 }

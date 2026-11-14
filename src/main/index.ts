@@ -52,7 +52,13 @@ import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oau
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
-import { cancelWebAuthSession, isPlatformLoginUrl, runWebAuthSession } from './web-auth-session'
+import {
+  appleSignInSheetUrl,
+  cancelAppleSignIn,
+  cancelWebAuthSession,
+  isPlatformLoginUrl,
+  runWebAuthSession,
+} from './web-auth-session'
 import { getPlatformBaseUrl, getPlatformCallbackUri } from '@shared/lib/platform-auth/config'
 import { osNotificationOptions, reviewIdOf, reviewNotificationId } from './os-notification-options'
 import { areOsNotificationsBlocked } from './notification-authorization'
@@ -585,12 +591,22 @@ ipcMain.handle('open-external', async (_event, url: string) => {
 // which the Mac App Store build uses instead of the default browser. Only the
 // platform's own login page is opened this way. The page ends on the same
 // deep link the browser would open, handled the same way.
-ipcMain.handle('platform-sign-in-start', async (_event, url: unknown) => {
+// With `withApple`, the native Sign in with Apple prompt runs first and the
+// sheet opens the platform's Apple page instead, which then continues to the
+// same login URL. Cancel and a newer start bump the attempt, so a prompt or
+// sheet that ends after them delivers nothing.
+let platformSignInAttempt = 0
+ipcMain.handle('platform-sign-in-start', async (_event, url: unknown, withApple: unknown) => {
   if (!isPlatformLoginUrl(url, getPlatformBaseUrl())) {
     console.warn('[WebAuth] Refusing to open a sign-in session on a URL that is not the platform login')
     return 'failed'
   }
-  const result = await runWebAuthSession(url, PROTOCOL_SCHEME)
+  const attempt = ++platformSignInAttempt
+  const sheet = withApple === true
+    ? await appleSignInSheetUrl(url, () => attempt === platformSignInAttempt)
+    : { url }
+  const result = 'url' in sheet ? await runWebAuthSession(sheet.url, PROTOCOL_SCHEME) : sheet
+  if (attempt !== platformSignInAttempt) return 'cancelled'
   if (!result) {
     await safeOpenExternalFromApp(url)
     return 'browser'
@@ -611,6 +627,8 @@ ipcMain.handle('platform-sign-in-start', async (_event, url: unknown) => {
 })
 
 ipcMain.handle('platform-sign-in-cancel', async () => {
+  platformSignInAttempt++
+  await cancelAppleSignIn()
   await cancelWebAuthSession()
 })
 

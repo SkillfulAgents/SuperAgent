@@ -160,3 +160,12 @@ export function signsInWithAuthSession(): boolean {
   const client = clientFacts()
   return client.shell === 'electron' && client.os === 'darwin' && runsInAppSandbox(client)
 }
+
+/**
+ * Whether the first screen offers the native Sign in with Apple prompt: the
+ * Mac App Store build, which carries the entitlement, and where the prompt's
+ * hand-off sheet exists.
+ */
+export function signsInWithApple(): boolean {
+  return signsInWithAuthSession()
+}
