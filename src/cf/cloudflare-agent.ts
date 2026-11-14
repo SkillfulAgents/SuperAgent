@@ -31,7 +31,8 @@ const PORT_WAIT_MS = 120_000
 const EXIT_WAIT_MS = 30_000
 // The runtime stops the container once this object has been quiet this long; SuperAgent's own idle check sleeps the agent sooner.
 const INACTIVITY_TIMEOUT_MS = 30 * 60_000
-const INSTANCE = 'standard-1'
+// 2 vCPU: on standard-1 (1/2 vCPU) creating a session in the container took about 5.7 s, here about 2.5 s.
+const INSTANCE = 'standard-3'
 // The hosts the container calls this deploy on: the API, and the saved workspace's bytes.
 const HOST = 'host.internal'
 const WORKSPACE = 'workspace.internal'
