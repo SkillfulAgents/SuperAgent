@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { MicrophoneSettings } from './microphone-settings'
 
@@ -89,6 +89,38 @@ describe('MicrophoneSettings', () => {
     expect(stop).toHaveBeenCalled()
     expect(disconnect).toHaveBeenCalled()
     expect(close).toHaveBeenCalled()
+  })
+
+  // Live (docs/animations.md): the person may be testing the microphone they hold while another app has the focus.
+  it('keeps reading the level in a window that is shown but not in use', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    getUserMedia.mockResolvedValue({
+      getTracks: () => [{ stop: vi.fn() }],
+      getAudioTracks: () => [{ getSettings: () => ({ deviceId: 'studio-mic' }) }],
+    } as unknown as MediaStream)
+    const read = vi.fn()
+    vi.stubGlobal('AudioContext', function FakeAudioContext() {
+      return {
+        createMediaStreamSource: () => ({ connect: vi.fn(), disconnect: vi.fn() }),
+        createAnalyser: () => ({ fftSize: 0, getByteTimeDomainData: read }),
+        close: vi.fn(async () => {}),
+      }
+    })
+    let frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => frames.push(callback)))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    renderWithProviders(<MicrophoneSettings />)
+    fireEvent.click(screen.getByRole('button', { name: 'Test microphone' }))
+    await screen.findByRole('button', { name: 'Stop test' })
+
+    // A third of a second of a 60 Hz display: about ten readings at the meter's 30 a second.
+    for (let i = 0; i < 20; i++) {
+      const due = frames
+      frames = []
+      act(() => due.forEach((callback) => callback(1000 + i * (1000 / 60))))
+    }
+    expect(read.mock.calls.length).toBeGreaterThanOrEqual(9)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop test' }))
   })
 
   it('releases a microphone that opens after the settings tab unmounts', async () => {

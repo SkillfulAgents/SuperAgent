@@ -30,17 +30,21 @@ and at a clock value of 5 × 10⁷) and comparing the ink in each dot's cell: th
 mean difference was under 0.3% of full coverage and the largest 2.4%.
 
 A halftone animates only while it is on screen, its document is not hidden, and
-its window is the one in use (`src/renderer/lib/window-active.ts`). A window left
+its window is the one in use, on the app's shared ambient frame loop
+(`src/renderer/lib/ambient-frames.ts`, [docs/animations.md](animations.md)). A window left
 open behind another app is not hidden, so without the last condition it kept
-animating all day; it now holds its last frame instead.
+animating all day; there it is decoration, and holds its frame.
 
 Measured in Electron 45 on an Apple silicon laptop at DPR 2, as a share of one
 core, renderer process + GPU process:
 
-| Fixture | Canvas2D | GPU | Window not in use |
-| --- | --- | --- | --- |
-| Full-view backdrop, 1734 × 1016, idle | 22% + 20% | 4% + 5% | 0% + 0% |
-| Sixteen 420 × 118 cards, idle | 16% + 15% | not used | 0% + 0% |
+| Fixture | Canvas2D | GPU |
+| --- | --- | --- |
+| Full-view backdrop, 1734 × 1016, idle | 22% + 20% | 4% + 5% |
+| Sixteen 420 × 118 cards, idle | 16% + 15% | not used |
+
+In a window that is not in use, whole screens with these on them read about
+1% + 1.5% ([docs/animations.md](animations.md#measuring)).
 
 A board of cards stays on Canvas2D because its cost is mostly not the dots:
 sixteen canvases each presenting 30 frames a second cost the GPU process about

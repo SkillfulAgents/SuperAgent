@@ -3,8 +3,8 @@ import { cn } from '@shared/lib/utils/cn'
 import { AGENT_AVATAR_SHAPES, type AgentAvatarColor } from '@shared/lib/types/agent-avatar'
 import { AvatarView, orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
-import { subscribeToFrames } from '@renderer/components/agents/agent-avatar/orb-ticker'
 import { observeOrbVisibility } from '@renderer/components/agents/agent-avatar/orb-visibility'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 import { animateSpring, type SpringHandle } from '@renderer/lib/spring'
 import { OrbRink, type Point } from './orb-rink'
 import { WelcomeDebossedMark } from './welcome-debossed-mark'
@@ -79,10 +79,14 @@ const RINK = '[data-orb-rink]'
  * and lights up. Every orb watches the cursor while it is over the rink.
  *
  * The physics is `OrbRink`; the orbs are the app's own agent avatars. Motion
- * is written straight to the orbs' transforms from the avatars' shared frame
- * loop, so a frame costs no React render. `paused` holds the rink still (the
- * wizard sets it while this panel is slid away); reduced motion gets the
+ * is written straight to the orbs' transforms from the app's shared ambient
+ * frame loop, so a frame costs no React render. `paused` holds the rink still
+ * (the wizard sets it while this panel is slid away); reduced motion gets the
  * crowd at rest in its starting spots.
+ *
+ * The glide is decoration (docs/animations.md): in a window that is not the
+ * one in use the rink holds where it is, and carries on from there. The orbs
+ * themselves are avatars and keep their own slow clock.
  */
 export function WelcomeOrbCrowd({ paused = false, className }: { paused?: boolean; className?: string }) {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -172,7 +176,8 @@ export function WelcomeOrbCrowd({ paused = false, className }: { paused?: boolea
     }
     let unsubscribe: (() => void) | undefined
     const unobserve = observeOrbVisibility(root, visible => {
-      if (visible) unsubscribe ??= subscribeToFrames(tick)
+      // 60 a second: a flicked orb crosses the rink fast, and a held one follows the pointer.
+      if (visible) unsubscribe ??= subscribeToAmbientFrames(tick, { kind: 'decoration', fps: 60 })
       else {
         unsubscribe?.()
         unsubscribe = undefined
