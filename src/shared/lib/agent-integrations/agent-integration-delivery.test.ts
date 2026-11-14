@@ -483,3 +483,33 @@ describe('shared manager durability with real integration storage', () => {
     expect(runtime.send).not.toHaveBeenCalled()
   })
 })
+
+describe('delivered files', () => {
+  it('sends the file through the chat after the output already queued for it, and says what happened', async () => {
+    await start('telegram')
+    await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1' }))
+    const order: string[] = []
+    vi.spyOn(adapter, 'deliver').mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 20)); order.push('text') })
+    vi.spyOn(adapter as Chat, 'deliverFile').mockImplementation(async () => { order.push('file'); return { delivered: false, text: 'was NOT sent to Telegram: too large.' } })
+
+    runtime.emit({ type: 'stream_delta', text: 'Here it is' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const outcome = await manager.deliverFile('agent', 'session-1', { filePath: '/workspace/big.bin' })
+
+    expect(outcome).toEqual({ delivered: false, text: 'was NOT sent to Telegram: too large.' })
+    expect(order).toEqual(['text', 'file'])
+  })
+
+  it('answers nothing for a session of a family that takes no files', async () => {
+    await start('linear')
+    await adapter.input('first')
+    await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1' }))
+    expect(await manager.deliverFile('agent', 'session-1', { filePath: '/workspace/big.bin' })).toBeNull()
+  })
+
+  it('answers nothing for a session no chat belongs to', async () => {
+    await start('telegram')
+    expect(await manager.deliverFile('agent', 'app-session', { filePath: '/workspace/big.bin' })).toBeNull()
+  })
+})

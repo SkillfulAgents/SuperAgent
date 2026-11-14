@@ -8,7 +8,8 @@ import { resolveAppLinkContext, withSessionUrl } from '../agent-integrations/app
 import { emailDirectory, workspaceEmailContacts, type EmailHistoryPage } from './directory'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { AgentIntegration } from '../agent-integrations/agent-integration'
+import { AgentIntegration, type DeliveredFile, type FileDelivery } from '../agent-integrations/agent-integration'
+import { captureException } from '../error-reporting'
 import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationInputContext, IntegrationSessionContext, IntegrationOutput, IntegrationRoute, IntegrationTool } from '../agent-integrations/types'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { agentRegistry } from '../agent-actor'
@@ -30,6 +31,22 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
   protected abstract recentHistory(): Promise<EmailHistoryPage>
   private turns = new Map<string, { parts: string[]; attachments: string[] }>()
   private admissions = new Map<string, { message: EmailMessage; contacted: boolean }>()
+  /** A file the agent delivers goes out attached to this turn's reply. */
+  override async deliverFile(context: IntegrationSessionContext, { filePath }: DeliveredFile): Promise<FileDelivery> {
+    try {
+      const data = await agentRegistry.get(context.integration.agentSlug).files.getDoc(filePath)
+      if (data === null) return { delivered: false, text: 'was not attached: the app cannot see the file yet, try again in a moment.' }
+      const id = await this.uploadAttachment(Buffer.from(data), sanitizeUploadFilename(filePath))
+      const turn = this.turns.get(this.turnKey(context)) ?? { parts: [], attachments: [] }
+      if (!turn.attachments.includes(id)) turn.attachments.push(id)
+      this.turns.set(this.turnKey(context), turn)
+      return { delivered: true, text: 'is attached to the email reply. It goes out only if that reply is sent.' }
+    } catch (error) {
+      captureException(error, { tags: { component: 'email-integration', operation: 'attach-delivered-file' }, extra: { integrationId: context.integration.id } })
+      return { delivered: false, text: `was not attached to the email reply: ${(error instanceof Error ? error.message : String(error)).trim().slice(0, 300) || 'the upload failed'}.` }
+    }
+  }
+
   private turnKey(context: IntegrationSessionContext) { return JSON.stringify([context.sessionId, context.externalId, context.replyTarget?.messageId]) }
 
   private async directory() {
@@ -165,7 +182,7 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     }
     if (output.type === 'turn-failed') { this.turns.delete(this.turnKey(context)); return }
     if (output.type === 'runtime') {
-      const event = z.object({ type: z.string(), text: z.string().optional(), toolName: z.string().optional(), isError: z.boolean().optional(), filePath: z.string().optional() }).passthrough().parse(output.event)
+      const event = z.object({ type: z.string(), text: z.string().optional() }).parse(output.event)
       const turn = this.turns.get(this.turnKey(context)) ?? { parts: [], attachments: [] }
       // Keep every textual block, including the answer before a monitor acknowledgment.
       // Tool boundaries separate blocks; tool results and thinking are never composer input.
@@ -175,12 +192,6 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
       if (event.type === 'stream_delta') {
         if (!turn.parts.length) turn.parts.push('')
         turn.parts[turn.parts.length - 1] += event.text ?? ''
-      }
-      if (event.type === 'tool_result_ready' && event.toolName === 'mcp__user-input__deliver_file' && !event.isError && event.filePath) {
-        const data = await agentRegistry.get(context.integration.agentSlug).files.getDoc(event.filePath)
-        if (data === null) throw new Error('Email attachment is unavailable')
-        const id = await this.uploadAttachment(Buffer.from(data), sanitizeUploadFilename(event.filePath))
-        if (!turn.attachments.includes(id)) turn.attachments.push(id)
       }
       this.turns.set(this.turnKey(context), turn)
       return

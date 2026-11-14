@@ -12,7 +12,6 @@
  * - host tools (schedules, triggers, webhook endpoints) are the host's to run,
  *   whoever calls them, except the main conversation's own (schedule_resume),
  *   which fail from a subagent;
- * - deliver_file is remembered until its result says the file exists;
  * - a Task/Agent call starts a subagent entry.
  *
  * Calls arrive by three paths, which act on different subsets, in the order
@@ -157,8 +156,6 @@ const USER_INPUT_REQUESTS: Record<
 const LAUNCH_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent'])
 const REVIEWED_LAUNCH_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent', 'Workflow'])
 
-const DELIVER_FILE_TOOL = 'mcp__user-input__deliver_file'
-
 /** A computer-use call as read on arrival, before it is placed and checked. */
 interface ComputerUseCall {
   method: string
@@ -171,12 +168,6 @@ interface ComputerUseCall {
 }
 
 export class ToolCalls {
-  /**
-   * deliver_file calls waiting for their result. The file goes to chat
-   * clients off the RESULT (which confirms the file exists in the container),
-   * never off the streamed input.
-   */
-  private readonly pendingDeliveries = new Map<string, { filePath: string; description?: string }>()
   /**
    * Capability reviews cancelled before their card existed: the handler looks
    * up the container's grants before it registers the card, so a
@@ -274,7 +265,6 @@ export class ToolCalls {
     // Under a 'review' policy the container parks the launch on an approval;
     // the review itself checks the policy and the session's grants.
     if (REVIEWED_LAUNCH_TOOLS.has(name)) background(this.capabilityReview(toolUse), { name: 'tool-calls.capability-review' })
-    if (name === DELIVER_FILE_TOOL) this.rememberDelivery(toolUse)
     if (LAUNCH_TOOLS.has(name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
   }
 
@@ -298,10 +288,7 @@ export class ToolCalls {
     if (isComputerUseToolName(toolUse.name)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
   }
 
-  /**
-   * Main-stream tool results: a result settles the request it answers, and a
-   * deliver_file result tells chat clients the file can go.
-   */
+  /** Main-stream tool results: a result settles the request it answers. */
   mainToolResults(content: { message?: { content?: unknown } }): void {
     const blocks = Array.isArray(content.message?.content) ? content.message.content : []
     for (const block of blocks as Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
@@ -313,18 +300,6 @@ export class ToolCalls {
       // resurrect a decided card.
       this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')
       this.ctx.emit({ type: 'tool_result', toolUseId: block.tool_use_id, result: block.content, isError: block.is_error || false })
-      const delivery = this.pendingDeliveries.get(block.tool_use_id)
-      if (delivery) {
-        this.pendingDeliveries.delete(block.tool_use_id)
-        this.ctx.emit({
-          type: 'tool_result_ready',
-          toolName: DELIVER_FILE_TOOL,
-          toolUseId: block.tool_use_id,
-          filePath: delivery.filePath,
-          description: delivery.description,
-          isError: block.is_error || false,
-        })
-      }
     }
     this.ctx.syncAwaiting()
   }
@@ -856,20 +831,6 @@ export class ToolCalls {
     }
     if (!this.hostRunChecks.has(toolUseId)) return
     proceed(granted, () => this.hostRunChecks.delete(toolUseId))
-  }
-
-  private rememberDelivery(toolUse: ToolUse): void {
-    try {
-      const parsed = JSON.parse(toolUse.input)
-      if (parsed && typeof parsed.filePath === 'string') {
-        this.pendingDeliveries.set(toolUse.id, {
-          filePath: parsed.filePath,
-          description: typeof parsed.description === 'string' ? parsed.description : undefined,
-        })
-      }
-    } catch {
-      // Partial or invalid JSON: nothing to deliver.
-    }
   }
 
   private autoReject(toolUseId: string, reason: string): void {

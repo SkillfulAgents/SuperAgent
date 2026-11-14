@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, deliverMarkdown, UndeliveredMessageError, STREAM_FIRST_POST_CHARS, STREAM_UPDATE_MS, type ManagedConnector } from './chat-delivery'
+import { processSSEEvent, finalizeStreaming, deliverFileToChat, resolvePendingToolMessages, deliverMarkdown, UndeliveredMessageError, STREAM_FIRST_POST_CHARS, STREAM_UPDATE_MS, type ManagedConnector } from './chat-delivery'
 import { MockChatAgentIntegration } from './mock-connector'
 import { NO_REPLY_TOKEN } from './chat-session-context'
 import { createdEvent } from './user-request-fixtures'
@@ -1189,11 +1189,9 @@ describe('no-streaming connector (iMessage-style)', () => {
   })
 })
 
-// ── deliver_file (tool_result_ready) ──────────────────────────────────────
-// Files are delivered off the tool RESULT (which validates existence in the
-// container), not the streamed input — see ELECTRON-39.
+// ── deliver_file (deliverFileToChat) ─────────────────────────────────────
+// The file tool waits on this: it reads what the chat did with the file.
 describe('deliver_file delivery', () => {
-  const DELIVER = 'mcp__user-input__deliver_file'
   let workspaceDir: string
   let managed: ManagedConnector
   let prevDataDir: string | undefined
@@ -1212,69 +1210,34 @@ describe('deliver_file delivery', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
     else process.env.SUPERAGENT_DATA_DIR = prevDataDir
   })
 
-  it('does NOT deliver the file on tool_use_ready (streamed input)', async () => {
-    await processEvents(managed, [
-      { type: 'tool_use_start', toolId: 't1', toolName: DELIVER },
-      { type: 'tool_use_streaming', partialInput: '{"filePath":"/workspace/out.txt"}' },
-      { type: 'tool_use_ready', toolId: 't1', toolName: DELIVER },
-    ])
-    const mock = getMock(managed)
-    expect(mock.sentFiles.length).toBe(0)
-    expect(mock.sentMessages.length).toBe(0)
-  })
-
-  it('delivers the file on a successful tool_result_ready', async () => {
+  it('sends the file and says the chat took it', async () => {
     const fs = await import('fs')
     const path = await import('path')
     fs.writeFileSync(path.join(workspaceDir, 'out.txt'), 'hello')
 
-    await processSSEEvent(managed, {
-      type: 'tool_result_ready',
-      toolName: DELIVER,
-      toolUseId: 't1',
-      filePath: '/workspace/out.txt',
-      description: 'a report',
-      isError: false,
-    })
-
-    const mock = getMock(managed)
-    expect(mock.sentFiles.length).toBe(1)
-    expect(mock.sentFiles[0].filename).toBe('out.txt')
-    expect(mock.sentFiles[0].caption).toBe('a report')
+    expect(await deliverFileToChat(managed, 'Telegram', '/workspace/out.txt', 'a report')).toEqual({ delivered: true, text: 'was sent to Telegram.' })
+    expect(getMock(managed).sentFiles).toEqual([expect.objectContaining({ filename: 'out.txt', caption: 'a report' })])
   })
 
-  it('does NOT deliver when the tool_result is an error', async () => {
-    await processSSEEvent(managed, {
-      type: 'tool_result_ready',
-      toolName: DELIVER,
-      toolUseId: 't1',
-      filePath: '/workspace/missing.txt',
-      isError: true,
-    })
+  it('says the chat refused it, with the chat\'s own reason, and posts nothing else', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    fs.writeFileSync(path.join(workspaceDir, 'big.bin'), 'x')
+    vi.spyOn(getMock(managed), 'sendFile').mockRejectedValue(new Error("Call to 'sendDocument' failed! (413: Request Entity Too Large)"))
 
-    const mock = getMock(managed)
-    expect(mock.sentFiles.length).toBe(0)
-    expect(mock.sentMessages.length).toBe(0)
+    expect(await deliverFileToChat(managed, 'Telegram', '/workspace/big.bin'))
+      .toEqual({ delivered: false, text: "was NOT sent to Telegram: Call to 'sendDocument' failed! (413: Request Entity Too Large)." })
+    expect(getMock(managed).sentMessages).toHaveLength(0)
   })
 
-  it('falls back to a text message (no throw) when a success result points at a missing host file', async () => {
-    // Success result but the file isn't host-visible (benign ENOENT) — graceful fallback.
-    await processSSEEvent(managed, {
-      type: 'tool_result_ready',
-      toolName: DELIVER,
-      toolUseId: 't1',
-      filePath: '/workspace/not-on-host.txt',
-      isError: false,
-    })
-
-    const mock = getMock(managed)
-    expect(mock.sentFiles.length).toBe(0)
-    expect(mock.sentMessages.length).toBe(1)
-    expect(mock.sentMessages[0].message.text).toContain('not-on-host.txt')
+  it('says a file the app cannot see yet was not sent', async () => {
+    expect((await deliverFileToChat(managed, 'Telegram', '/workspace/not-on-host.txt')).delivered).toBe(false)
+    expect(getMock(managed).sentFiles).toHaveLength(0)
   })
 })
 

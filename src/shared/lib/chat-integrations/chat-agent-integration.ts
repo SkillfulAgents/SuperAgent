@@ -5,11 +5,11 @@
  * the platform-specific connection, messaging, and interactive response logic.
  */
 
-import { AgentIntegration } from '../agent-integrations/agent-integration'
+import { AgentIntegration, type DeliveredFile, type FileDelivery } from '../agent-integrations/agent-integration'
 import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
 import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
-import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, deliverMarkdown, UndeliveredMessageError, type ManagedConnector } from './chat-delivery'
+import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, deliverMarkdown, deliverFileToChat, UndeliveredMessageError, type ManagedConnector } from './chat-delivery'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import { reviewCardFromRegistry } from './request-card'
@@ -442,6 +442,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     }
     state.integration = context.integration
     return state
+  }
+
+  override deliverFile(context: IntegrationSessionContext, file: DeliveredFile): Promise<FileDelivery> {
+    return deliverFileToChat(this.deliveryState(context), this.definition.name, file.filePath, file.description)
   }
 
   async deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void> {
