@@ -187,6 +187,19 @@ describe('AgentDurableObject while its agent starts', () => {
   it('reads as running once the start has finished', async () => {
     expect(await launching().agentRunning()).toBe(true)
   })
+
+  it('is not proven stopped while it starts or its container is up', async () => {
+    expect(await launching(new Promise<void>(() => {})).containerStopped()).toBe(false)
+    expect(await launching().containerStopped()).toBe(false)
+  })
+})
+
+describe('AgentDurableObject with no container', () => {
+  it('is proven stopped, so a session of a stopped agent can be deleted', async () => {
+    const object = Object.create(AgentDurableObject.prototype) as AgentDurableObject & Record<string, unknown>
+    Object.assign(object, { ctx: { id: { name: 'sales agent' }, container: { running: false } } })
+    expect(await object.containerStopped()).toBe(true)
+  })
 })
 
 /** The object's SQLite in memory, with the tables its constructor makes. */

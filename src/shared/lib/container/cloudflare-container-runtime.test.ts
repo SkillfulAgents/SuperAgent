@@ -35,6 +35,7 @@ function fakeDeployment(options: { running?: boolean; startStatus?: number; boot
       if (state.controlDown) return new Response('bad gateway', { status: 502 })
     }
     if (url.pathname === '/_control/agent-1') return Response.json({ running: state.running })
+    if (url.pathname === '/_control/agent-1/stopped') return Response.json({ stopped: !state.running })
     if (url.pathname === '/_control/agent-1/start') {
       if (options.startStatus) return new Response('no capacity', { status: options.startStatus })
       state.running = !options.bootFails
@@ -135,5 +136,18 @@ describe('CloudflareContainerRuntimeClient', () => {
     const client = new CloudflareContainerRuntimeClient({ agentId: 'agent-1' })
     expect(client.getWebSocketBaseUrl(3000)).toBe('ws://agent-container.internal/agent-1')
     expect(client.getHostApiBaseUrl()).toBe('http://host.internal')
+  })
+
+  it('reports the container of a stopped agent as definitely stopped, and an unreachable deployment as unknown', async () => {
+    const deployment = fakeDeployment()
+    const client = new CloudflareContainerRuntimeClient({ agentId: 'agent-1' })
+    await expect(client.isDefinitelyStopped()).resolves.toBe(true)
+
+    deployment.state.running = true
+    await expect(client.isDefinitelyStopped()).resolves.toBe(false)
+
+    deployment.state.running = false
+    deployment.state.controlDown = true
+    await expect(client.isDefinitelyStopped()).resolves.toBe(false)
   })
 })

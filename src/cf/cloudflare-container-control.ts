@@ -1,7 +1,7 @@
 /**
  * Serves SuperAgent's cloudflare-container runner in this isolate. A Worker cannot dial a
  * container's port, so the runner calls CLOUDFLARE_CONTAINER_URL (http://agent-container.internal)
- * and these calls are answered here, by intercepting fetch: `_control/<agentId>[/start|/stop]`
+ * and these calls are answered here, by intercepting fetch: `_control/<agentId>[/start|/stop|/stopped]`
  * drives the agent's AgentDurableObject, and `<agentId>/<path>` (WebSocket upgrades too) goes to
  * its container's API. The agent reaches the host at CLOUDFLARE_CONTAINER_HOST_URL
  * (http://host.internal), which AgentDurableObject routes back to the Worker.
@@ -63,6 +63,7 @@ export function routeContainerFetch(agents: AgentObjects): void {
     if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })
     const agent = agents.getByName(agentId)
     if (request.method === 'GET' && action === '') return Response.json({ running: await agent.agentRunning() })
+    if (request.method === 'GET' && action === 'stopped') return Response.json({ stopped: await agent.containerStopped() })
     if (request.method === 'POST' && action === 'start') {
       const { env } = (await request.json()) as { env: Record<string, string> }
       await agent.startAgent(env)
