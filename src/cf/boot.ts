@@ -44,7 +44,7 @@ import { getAgentDir } from '@shared/lib/utils/file-storage'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
-import { CloudflareTaskManager, ensureMigrated, ensureOrgPrepared } from './cloudflare-task-manager'
+import { CloudflareTaskManager } from './cloudflare-task-manager'
 import { withAgentObject, routeContainerFetch, sleepingStore, type SleepingStore } from './cloudflare-container-control'
 import { createCloudflareFileOps } from './cloudflare-file-ops'
 import { ownedHere, servingAgentObject } from './agent-objects'
@@ -56,7 +56,7 @@ let tasks: CloudflareTaskManager | undefined
 let fetchWrapped = false
 /** Boots SuperAgent in this isolate once; a failed boot is tried again by the next call. */
 export function boot(env: Env): Promise<void> {
-  booted ??= bootIsolate(env).then(() => ensureOrgPrepared(env)).then(prepareIsolate).catch((error: unknown) => {
+  booted ??= bootIsolate(env).then(prepareIsolate).catch((error: unknown) => {
     booted = undefined
     throw error
   })
@@ -173,8 +173,7 @@ async function start(env: Env): Promise<void> {
   // Before anything can start a container: SuperAgent's cloudflare-container runner calls this isolate.
   routeContainerFetch(env.AGENT, env.VERSION?.timestamp)
   wireAgents(env)
-  // The org's task manager object migrates the database once per deploy; no other isolate does.
-  await ensureMigrated(env)
+  // The deploy step migrated the database (prepareDeploy); a boot neither migrates nor checks it.
   await openDatabase({ driver: d1(env.DB), migrate: false })
   // A boot retried after a later step failed finds AppState installed.
   if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE, { version: env.VERSION?.timestamp }))

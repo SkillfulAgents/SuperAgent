@@ -80,7 +80,7 @@ export async function startTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'
 
 /**
  * Resolves once the org's database is at this deploy's schema and data. The task manager object
- * migrates it once per deploy; every isolate waits here before it opens the database.
+ * migrates it once per deploy.
  */
 export async function ensureMigrated(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
   // The object's own boot: a call through its stub would come back to it.
@@ -91,8 +91,7 @@ export async function ensureMigrated(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>)
 }
 
 /**
- * Resolves once the org's once-per-deploy setup has run (prepareOrg in boot.ts). Every isolate
- * waits here at the end of its boot instead of running that setup itself.
+ * Resolves once the org's once-per-deploy setup has run (prepareOrg in boot.ts).
  */
 export async function ensureOrgPrepared(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
   const own = servingTaskManager()
@@ -103,7 +102,7 @@ export async function ensureOrgPrepared(env: Pick<Env, 'TASK_MANAGER' | 'VERSION
 
 /**
  * The deploy step, right after an upload: migrates the org's database and runs its setup for this
- * deploy, so the first user request does not wait for them. An isolate's boot still checks both.
+ * deploy. An isolate's boot does not check either, so every deploy must run this step.
  */
 export async function prepareDeploy(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
   await ensureMigrated(env)
