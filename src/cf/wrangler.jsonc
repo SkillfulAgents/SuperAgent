@@ -1,6 +1,7 @@
 // SuperAgent for one org as one Cloudflare Worker. From the repository root, after
 // `AUTH_MODE=true npm run build:web`:
 //   npx wrangler d1 create superagent          (put its id below)
+//   npx wrangler r2 bucket create superagent-workspaces
 //   npx wrangler secret put SUPERAGENT_VAULT_KEY --config src/cf/wrangler.jsonc   (openssl rand -base64 32)
 //   npx wrangler deploy --config src/cf/wrangler.jsonc
 // The org's sign-in and platform secrets (BETTER_AUTH_SECRET, AUTH_PROVIDERS_JSON, PLATFORM_TOKEN)
@@ -35,12 +36,18 @@
     "run_worker_first": ["/*", "!/assets/*", "!/model-icons/*", "!/provider-icons/*", "!/service-icons/*"]
   },
   "d1_databases": [{ "binding": "DB", "database_name": "superagent", "database_id": "00000000-0000-0000-0000-000000000000" }],
+  "r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "superagent-workspaces" }],
   "durable_objects": {
     "bindings": [
       { "name": "APP_STATE", "class_name": "AppStateDurableObject" },
-      { "name": "TASK_MANAGER", "class_name": "TaskManagerDurableObject" }
+      { "name": "TASK_MANAGER", "class_name": "TaskManagerDurableObject" },
+      { "name": "AGENT", "class_name": "AgentDurableObject" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject"] }],
+  // The normal agent image, which each agent's object starts with agent-container/cloudflare/snapshot-server.mjs
+  // (cloudflare-agent.ts). durable_object policy: a deploy never rolls a running container onto the new image.
+  // start() cannot pick a user, so the image starts as root to open /dev/fuse for FUSE mounts.
+  "containers": [{ "name": "superagent-agent", "class_name": "AgentDurableObject", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "../../agent-container/Dockerfile", "build_vars": { "START_USER": "root" } } } }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject", "AgentDurableObject"] }],
   "observability": { "enabled": true }
 }

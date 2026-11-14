@@ -4,14 +4,28 @@
  * loads on the first API request (boot.ts): evaluating it while the Worker starts goes over the
  * startup CPU limit.
  */
-import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher } from 'cloudflare:workers'
+import { WorkerEntrypoint, type D1Database, type DurableObjectNamespace, type ExecutionContext, type ExportedHandler, type Fetcher, type R2Bucket } from 'cloudflare:workers'
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
+import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './cloudflare-app-state'
+import { serveContainerCall, type AgentDurableObject } from './cloudflare-agent'
 import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
 import { logErrorsAsText } from './error-logs'
 
 export { AppStateDurableObject } from './cloudflare-app-state'
 export { TaskManagerDurableObject } from './cloudflare-task-manager'
+export { AgentDurableObject } from './cloudflare-agent'
+
+/**
+ * A container's calls to http://host.internal and http://workspace.internal, which its
+ * AgentDurableObject routes here (ctx.exports, by this name). The work they leave running keeps
+ * the invocation alive.
+ */
+export class AgentContainerOutbound extends WorkerEntrypoint<Env, { containerId: string }> {
+  fetch(request: Request): Promise<Response> {
+    return runWithBackground(this.ctx, () => serveContainerCall(request, this.env, this.ctx.props.containerId))
+  }
+}
 
 export interface Env {
   /** The org's database: SuperAgent's tables. */
@@ -20,6 +34,10 @@ export interface Env {
   APP_STATE: DurableObjectNamespace<AppStateDurableObject>
   /** The org's scheduled work, and where its background services run (cloudflare-task-manager.ts). */
   TASK_MANAGER: DurableObjectNamespace<TaskManagerDurableObject>
+  /** One per agent: its container and, while it sleeps, its saved workspace (cloudflare-agent.ts). */
+  AGENT: DurableObjectNamespace<AgentDurableObject>
+  /** Agent workspace files, one object per content hash. */
+  WORKSPACES: R2Bucket
   /** The built UI. */
   ASSETS: Fetcher
   /** The Browser Vault key, 32 bytes in base64: a Worker secret (cloudflare-key-manager.ts). */
