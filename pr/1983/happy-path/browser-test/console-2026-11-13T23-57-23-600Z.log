@@ -1,0 +1,18 @@
+[   10625ms] [WARNING] [.WebGL-0xbbc000fda00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ http://localhost:47891/agents/qa-20261113-235714-zkqw-jbdfasmc4i:0
+[   10904ms] [WARNING] [.WebGL-0xbbc000fda00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ http://localhost:47891/agents/qa-20261113-235714-zkqw-jbdfasmc4i:0
+[   10946ms] [WARNING] [.WebGL-0xbbc000fda00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels @ http://localhost:47891/agents/qa-20261113-235714-zkqw-jbdfasmc4i:0
+[   11038ms] [WARNING] [.WebGL-0xbbc000fda00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat) @ http://localhost:47891/agents/qa-20261113-235714-zkqw-jbdfasmc4i:0
+[   58492ms] ReferenceError: page is not defined
+    at eval (eval at predicate (eval at evaluate (:301:30)), <anonymous>:1:7)
+    at predicate (eval at evaluate (:301:30), <anonymous>:7:23)
+    at next (eval at evaluate (:301:30), <anonymous>:29:29)
+    at eval (eval at evaluate (:301:30), <anonymous>:42:9)
+    at UtilityScript.evaluate (<anonymous>:303:16)
+    at UtilityScript.<anonymous> (<anonymous>:1:44)
+[   62373ms] ReferenceError: page is not defined
+    at eval (eval at predicate (eval at evaluate (:301:30)), <anonymous>:2:22)
+    at predicate (eval at evaluate (:301:30), <anonymous>:7:23)
+    at next (eval at evaluate (:301:30), <anonymous>:29:29)
+    at eval (eval at evaluate (:301:30), <anonymous>:42:9)
+    at UtilityScript.evaluate (<anonymous>:303:16)
+    at UtilityScript.<anonymous> (<anonymous>:1:44)
