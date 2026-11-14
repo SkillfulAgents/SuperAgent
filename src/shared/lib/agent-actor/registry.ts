@@ -144,6 +144,30 @@ if (process.env.NODE_ENV !== 'production') {
   globalForRegistry.agentActorStates = agentActorStates
 }
 
+// Set once at boot by a deployment whose agents run outside this process. Desktop and the Node host never set them.
+let actorTransport: ((slug: AgentSlug, local: AgentActor) => AgentActor) | undefined
+let sessionStoreFactory: LocalActorDeps['createSessionStore']
+
+/**
+ * How callers reach each agent: what `agentRegistry.get` hands out in place of
+ * the actor in this process, such as a client of the agent's actor in another
+ * process. Called once at boot, before the first `get`: a handle
+ * already handed out keeps what it was made with.
+ */
+export function setActorTransport(make: (slug: AgentSlug, local: AgentActor) => AgentActor): void {
+  actorTransport = make
+}
+
+/** Where each agent's files are, when the deployment keeps them somewhere other than this machine (see `LocalActorDeps.createSessionStore`). */
+export function setSessionStore(make: NonNullable<LocalActorDeps['createSessionStore']>): void {
+  sessionStoreFactory = make
+}
+
+// Development and tests only: every actor reached through the serializing test transport.
+const testTransport = process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
+  ? serializingActor
+  : undefined
+
 // Getters, not values: each dependency is read when an actor method runs, not
 // when this module loads. A test that mocks one of these modules therefore
 // intercepts exactly the call it always intercepted, and the others are never
@@ -197,10 +221,13 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   get host() {
     return localHostPort
   },
+  get createSessionStore() {
+    return sessionStoreFactory
+  },
 }, {
   states: agentActorStates,
-  // Development and tests only: every actor reached through the serializing test transport.
-  ...(process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
-    ? { transport: serializingActor }
-    : {}),
+  get transport() {
+    const make = actorTransport
+    return make ? (actor: AgentActor) => make(actor.slug, actor) : testTransport
+  },
 })

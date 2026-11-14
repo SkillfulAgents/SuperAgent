@@ -18,8 +18,9 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DurableObject } from 'cloudflare:workers'
-import type { DurableObjectNamespace, DurableObjectState, DurableObjectStub } from 'cloudflare:workers'
+import type { DurableObjectNamespace, DurableObjectState } from 'cloudflare:workers'
 import type { Env } from './index'
+import { reachCurrentCode, restartIfOlder } from './object-version'
 import { Task, TaskManager, type PeriodicOptions, type RetryPolicy, type TaskContext, type TaskSpec } from '@shared/lib/background-work'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -71,11 +72,37 @@ export function servingTaskManager(): TaskManagerDurableObject | null {
   return serving.getStore() ?? null
 }
 
-export function taskManagerOf(objects: DurableObjectNamespace<TaskManagerDurableObject>): DurableObjectStub<TaskManagerDurableObject> {
-  return objects.getByName(OBJECT_NAME)
+/** Makes sure the org's task manager runs its services, once it runs this deploy's code or newer. */
+export async function startTaskManager(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
+  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+  await env.TASK_MANAGER.getByName(OBJECT_NAME).wake()
+}
+
+/**
+ * Resolves once the org's database is at this deploy's schema and data. The task manager object
+ * migrates it once per deploy; every isolate waits here before it opens the database.
+ */
+export async function ensureMigrated(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
+  // The object's own boot: a call through its stub would come back to it.
+  const own = servingTaskManager()
+  if (own) return own.migrate()
+  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+  await env.TASK_MANAGER.getByName(OBJECT_NAME).migrate()
+}
+
+/**
+ * Resolves once the org's once-per-deploy setup has run (prepareOrg in boot.ts). Every isolate
+ * waits here at the end of its boot instead of running that setup itself.
+ */
+export async function ensureOrgPrepared(env: Pick<Env, 'TASK_MANAGER' | 'VERSION'>): Promise<void> {
+  const own = servingTaskManager()
+  if (own) return own.prepareOrg()
+  await reachCurrentCode(env.TASK_MANAGER, OBJECT_NAME, env.VERSION?.timestamp)
+  await env.TASK_MANAGER.getByName(OBJECT_NAME).prepareOrg()
 }
 
 export class TaskManagerDurableObject extends DurableObject<Env> {
+  private readonly steps = new Map<string, Promise<void>>()
   private readonly runs = new Map<string, Run>()
   private started: Promise<void> | undefined
   private stopped = false
@@ -86,6 +113,45 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     const sql = ctx.storage.sql
     sql.exec('CREATE TABLE IF NOT EXISTS job (id TEXT PRIMARY KEY, gen TEXT NOT NULL, task_type TEXT NOT NULL, payload TEXT NOT NULL, interval_ms INTEGER, jitter_ratio REAL, wake_at INTEGER, tick_at INTEGER, execution_id TEXT, attempt INTEGER NOT NULL DEFAULT 0)')
     sql.exec('CREATE TABLE IF NOT EXISTS live_check (id INTEGER PRIMARY KEY CHECK (id = 1), checked_at INTEGER NOT NULL)')
+    sql.exec('CREATE TABLE IF NOT EXISTS deploy_step (step TEXT NOT NULL, version TEXT NOT NULL, PRIMARY KEY (step, version))')
+  }
+
+  checkVersion(callerVersion: string): boolean {
+    return restartIfOlder(this.ctx, this.env.VERSION, callerVersion)
+  }
+
+  /** Migrates the org's database unless this deploy already did. A failed migration is tried again by the next call. */
+  migrate(): Promise<void> {
+    return this.oncePerDeploy('migrate', async () => (await import('./boot')).migrateDatabase(this.env))
+  }
+
+  /** Runs the org's setup unless this deploy already did, on a boot of this isolate that does not wait for it. */
+  prepareOrg(): Promise<void> {
+    return this.oncePerDeploy('prepare-org', async () => {
+      const app = await import('./boot')
+      await app.bootIsolate(this.env)
+      await app.prepareOrg(this.env)
+    })
+  }
+
+  private oncePerDeploy(step: string, run: () => Promise<void>): Promise<void> {
+    let done = this.steps.get(step)
+    if (!done) {
+      done = this.runStep(step, run).catch((error: unknown) => {
+        this.steps.delete(step)
+        throw error
+      })
+      this.steps.set(step, done)
+    }
+    return done
+  }
+
+  private async runStep(step: string, run: () => Promise<void>): Promise<void> {
+    const version = this.env.VERSION?.id
+    const sql = this.ctx.storage.sql
+    if (version && sql.exec('SELECT 1 FROM deploy_step WHERE step = ? AND version = ?', step, version).toArray().length > 0) return
+    await run()
+    if (version) sql.exec('INSERT OR IGNORE INTO deploy_step (step, version) VALUES (?, ?)', step, version)
   }
 
   /** Starts the background services unless they already run here. Each isolate of the org calls it once. */
@@ -289,7 +355,10 @@ export class CloudflareTaskManager extends TaskManager {
   private queue: Promise<unknown> = Promise.resolve()
   private stopped = false
 
-  constructor(private readonly objects: DurableObjectNamespace<TaskManagerDurableObject>) {
+  constructor(
+    private readonly objects: DurableObjectNamespace<TaskManagerDurableObject>,
+    private readonly version?: string,
+  ) {
     super()
   }
 
@@ -358,7 +427,12 @@ export class CloudflareTaskManager extends TaskManager {
 
   private inOrder(call: (schedule: Schedule) => Promise<unknown> | unknown): Promise<unknown> {
     // Inside the object itself (a task scheduling more work), the call goes to it directly: through its stub it would come back to it.
-    const run = () => call(servingTaskManager() ?? this.objects.getByName(OBJECT_NAME))
+    const run = async () => {
+      const own = servingTaskManager()
+      if (own) return call(own)
+      await reachCurrentCode(this.objects, OBJECT_NAME, this.version)
+      return call(this.objects.getByName(OBJECT_NAME))
+    }
     const next = this.queue.then(run, run)
     this.queue = next.catch(() => {})
     return next

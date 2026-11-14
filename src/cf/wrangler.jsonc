@@ -12,7 +12,8 @@
   "main": "../../dist/cf-worker/src/cf/index.ts",
   "build": { "command": "node src/cf/build-worker.mjs" },
   "compatibility_date": "2026-07-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // A Durable Object stays alive while it waits on RPC, its container or waitUntil work (default from 2026-10-01).
+  "compatibility_flags": ["nodejs_compat", "durable_object_io_tasks_prevent_eviction"],
   "minify": true,
   // What Workers lacks, bundled in place of the package (workers-shims/).
   "alias": {
@@ -49,5 +50,7 @@
   // start() cannot pick a user, so the image starts as root to open /dev/fuse for FUSE mounts.
   "containers": [{ "name": "superagent-agent", "class_name": "AgentDurableObject", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "../../agent-container/Dockerfile", "build_vars": { "START_USER": "root" } } } }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject", "AgentDurableObject"] }],
+  // An object on older code restarts when a caller on a newer deploy reaches it (object-version.ts).
+  "version_metadata": { "binding": "VERSION" },
   "observability": { "enabled": true }
 }

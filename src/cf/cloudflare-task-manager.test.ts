@@ -9,6 +9,9 @@ const app = vi.hoisted(() => {
   return {
     state,
     boot: vi.fn(async () => {}),
+    migrateDatabase: vi.fn(async () => {}),
+    bootIsolate: vi.fn(async () => {}),
+    prepareOrg: vi.fn(async () => {}),
     startBackgroundServices: vi.fn(async () => {}),
     stopBackgroundServices: vi.fn(async () => {}),
     backgroundTasks: () => state.manager,
@@ -17,7 +20,7 @@ const app = vi.hoisted(() => {
 vi.mock('./boot', () => app)
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
-import { CloudflareTaskManager, TaskManagerDurableObject } from './cloudflare-task-manager'
+import { CloudflareTaskManager, TaskManagerDurableObject, ensureMigrated, ensureOrgPrepared } from './cloudflare-task-manager'
 import type { Env } from './index'
 
 const T0 = Date.UTC(2026, 10, 6, 12)
@@ -49,7 +52,7 @@ class TestObject extends TaskManagerDurableObject {
   }
 }
 
-function testObject(sql = memorySql()) {
+function testObject(sql = memorySql(), env = {} as Env) {
   const ctx = {
     id: { name: 'org', toString: () => 'org' },
     storage: {
@@ -59,7 +62,7 @@ function testObject(sql = memorySql()) {
       deleteAlarm: async () => { object.alarmAt = null },
     },
   }
-  const object: TestObject = new TestObject(ctx as unknown as DurableObjectState, {} as Env)
+  const object: TestObject = new TestObject(ctx as unknown as DurableObjectState, env)
   return { object, sql }
 }
 
@@ -303,5 +306,58 @@ describe('TaskManagerDurableObject after a deploy', () => {
     sql.refuse = false
     await after(object, 60_000)
     expect(task.runs).toEqual([])
+  })
+})
+
+describe('migrating the database', () => {
+  const deploy = (id: string) => ({ VERSION: { id, timestamp: '2026-11-06T12:00:00.000Z' } }) as unknown as Env
+
+  beforeEach(() => {
+    app.migrateDatabase.mockReset()
+    app.migrateDatabase.mockResolvedValue(undefined)
+  })
+
+  it('migrates once per deploy, however many isolates ask and however often the object restarts', async () => {
+    const sql = memorySql()
+    const { object } = testObject(sql, deploy('deploy-1'))
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await Promise.all([ensureMigrated({ TASK_MANAGER: objects }), ensureMigrated({ TASK_MANAGER: objects })])
+    expect(app.migrateDatabase).toHaveBeenCalledTimes(1)
+
+    // The object restarted on the same deploy: its storage remembers.
+    await testObject(sql, deploy('deploy-1')).object.migrate()
+    expect(app.migrateDatabase).toHaveBeenCalledTimes(1)
+
+    await testObject(sql, deploy('deploy-2')).object.migrate()
+    expect(app.migrateDatabase).toHaveBeenCalledTimes(2)
+  })
+
+  it('tries a failed migration again on the next call', async () => {
+    const { object } = testObject(memorySql(), deploy('deploy-1'))
+    app.migrateDatabase.mockRejectedValueOnce(new Error('D1 is unavailable'))
+
+    await expect(object.migrate()).rejects.toThrow('D1 is unavailable')
+    await object.migrate()
+    await object.migrate()
+    expect(app.migrateDatabase).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs the org setup once per deploy, after a boot that does not wait for it', async () => {
+    app.prepareOrg.mockClear()
+    app.bootIsolate.mockClear()
+    const sql = memorySql()
+    const { object } = testObject(sql, deploy('deploy-1'))
+    const objects = { getByName: () => object } as unknown as DurableObjectNamespace<TaskManagerDurableObject>
+
+    await Promise.all([ensureOrgPrepared({ TASK_MANAGER: objects }), ensureOrgPrepared({ TASK_MANAGER: objects })])
+    await testObject(sql, deploy('deploy-1')).object.prepareOrg()
+    expect(app.prepareOrg).toHaveBeenCalledTimes(1)
+    expect(app.bootIsolate.mock.invocationCallOrder[0]).toBeLessThan(app.prepareOrg.mock.invocationCallOrder[0])
+    // The migration is its own step: one being done does not count for the other.
+    expect(app.migrateDatabase).not.toHaveBeenCalled()
+
+    await testObject(sql, deploy('deploy-2')).object.prepareOrg()
+    expect(app.prepareOrg).toHaveBeenCalledTimes(2)
   })
 })

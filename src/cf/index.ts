@@ -9,8 +9,9 @@ import { getServerFacts, withServerFacts, withServerFactsRevision } from '@share
 import { runWithBackground } from '@shared/lib/background'
 import type { AppStateDurableObject } from './cloudflare-app-state'
 import { serveContainerCall, type AgentDurableObject } from './cloudflare-agent'
-import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
+import { startTaskManager, type TaskManagerDurableObject } from './cloudflare-task-manager'
 import { logErrorsAsText } from './error-logs'
+import type { VersionMetadata } from './object-version'
 
 export { AppStateDurableObject } from './cloudflare-app-state'
 export { TaskManagerDurableObject } from './cloudflare-task-manager'
@@ -44,6 +45,8 @@ export interface Env {
   SUPERAGENT_VAULT_KEY?: string
   /** The origin browsers reach this Worker at. */
   APP_ORIGIN: string
+  /** This deploy: an object on older code restarts when a caller on this one reaches it (object-version.ts). */
+  VERSION?: VersionMetadata
 }
 
 logErrorsAsText()
@@ -82,7 +85,7 @@ export function withClientAddress(request: Request): Request {
 function wakeTaskManager(env: Env, ctx: ExecutionContext): void {
   if (taskManagerWoken) return
   taskManagerWoken = true
-  ctx.waitUntil(taskManagerOf(env.TASK_MANAGER).wake().catch((error: unknown) => {
+  ctx.waitUntil(startTaskManager(env).catch((error: unknown) => {
     taskManagerWoken = false
     console.error('[cloudflare] waking the task manager failed:', error)
   }))
