@@ -301,6 +301,11 @@ export class AgentDurableObject extends DurableObject<Env> {
     return this.agentUp()
   }
 
+  /** Positive evidence that no container process remains: none is up and none is starting. */
+  async containerStopped(): Promise<boolean> {
+    return !this.starting && !(await this.containerUp())
+  }
+
   /** Records bytes the Worker is about to store for this agent (serveWorkspaceRequest). */
   /** The container's saves of what changed; its file bytes go to R2 in the Worker. */
   async workspaceRequest(request: Request): Promise<Response> {

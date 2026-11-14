@@ -1,7 +1,7 @@
 /**
  * Serves SuperAgent's cloudflare-container runner in this isolate. A Worker cannot dial a
  * container's port, so the runner calls CLOUDFLARE_CONTAINER_URL (http://agent-container.internal)
- * and these calls are answered here, by intercepting fetch: `_control/<agentId>[/start|/stop]`
+ * and these calls are answered here, by intercepting fetch: `_control/<agentId>[/start|/stop|/stopped]`
  * drives the agent's AgentDurableObject, and `<agentId>/<path>` (WebSocket upgrades too) goes to
  * its container's API. The agent reaches the host at CLOUDFLARE_CONTAINER_HOST_URL
  * (http://host.internal), which AgentDurableObject routes back to the Worker.
@@ -49,7 +49,7 @@ export async function withAgentObject<R>(agents: AgentObjects, agentId: string, 
 }
 
 /** The agent object's calls the rest of the org makes, as its stub answers them. */
-type AgentCalls = Pick<AgentDurableObject, 'fetch' | 'actorCall' | 'agentRunning' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
+type AgentCalls = Pick<AgentDurableObject, 'fetch' | 'actorCall' | 'agentRunning' | 'containerStopped' | 'startAgent' | 'stopAgent' | 'storedEntry' | 'storedRead' | 'storedWrite' | 'storedRemove' | 'purgeWorkspace'>
 
 export function sleepingStore(agents: AgentObjects, agentId: string, version: string | undefined): SleepingStore {
   const call = <R>(run: (agent: AgentCalls) => R | Promise<R>) => withAgentObject(agents, agentId, version, run)
@@ -80,6 +80,7 @@ export function routeContainerFetch(agents: AgentObjects, version: string | unde
   const control = async (request: Request, agentId: string, action: string): Promise<Response> => {
     if (request.headers.get('authorization') !== `Bearer ${token}`) return new Response('unauthorized', { status: 401 })
     if (request.method === 'GET' && action === '') return Response.json({ running: await call(agentId, (agent) => agent.agentRunning()) })
+    if (request.method === 'GET' && action === 'stopped') return Response.json({ stopped: await call(agentId, (agent) => agent.containerStopped()) })
     if (request.method === 'POST' && action === 'start') {
       const { env } = (await request.json()) as { env: Record<string, string> }
       await call(agentId, (agent) => agent.startAgent(env))

@@ -123,6 +123,15 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
     return this.lastKnownInfo
   }
 
+  async isDefinitelyStopped(): Promise<boolean> {
+    try {
+      return ((await (await this.control('GET', '/stopped')).json()) as { stopped: boolean }).stopped === true
+    } catch {
+      // An unreachable deployment proves nothing.
+      return false
+    }
+  }
+
   async getStats(): Promise<ContainerStats | null> {
     return null
   }
@@ -136,7 +145,7 @@ export class CloudflareContainerRuntimeClient extends BaseContainerClient {
     this.rememberRunningPort(null)
   }
 
-  private async control(method: 'GET' | 'POST', action: '' | '/start' | '/stop', body?: unknown): Promise<Response> {
+  private async control(method: 'GET' | 'POST', action: '' | '/start' | '/stop' | '/stopped', body?: unknown): Promise<Response> {
     const { url, token } = requireConfig()
     const path = `/_control/${encodeURIComponent(this.config.agentId)}${action}`
     const response = await fetch(`${url}${path}`, {
