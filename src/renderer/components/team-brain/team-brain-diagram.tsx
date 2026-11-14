@@ -3,7 +3,7 @@ import { Folder, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { OFFERED_ORBS } from '@shared/lib/types/agent-avatar-orbs'
-import { subscribeToFrames } from '@renderer/components/agents/agent-avatar/orb-ticker'
+import { ambientAnimationAllowed, subscribeToAmbientAnimationAllowed, subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { teamBrainSource } from '@renderer/lib/team-brain/team-brain-sources'
 import { TEAM_BRAIN_SOURCE_IDS } from '@renderer/lib/team-brain/team-brain-schema'
@@ -255,6 +255,7 @@ export function TeamBrainDiagram({ className }: { className?: string }) {
   const sourceNodes = SOURCE_NODES
   const filled = agentSpots(shown.length)
 
+  const frameRef = useRef<HTMLDivElement>(null)
   // Sources then agents, the order the lines are drawn in; the drift moves each node and its line together.
   const nodeRefs = useRef<(HTMLElement | null)[]>([])
   const rayRefs = useRef<(SVGPathElement | null)[]>([])
@@ -272,8 +273,22 @@ export function TeamBrainDiagram({ className }: { className?: string }) {
     const linked = [...SOURCE_NODES, ...agentSpots(agentCount)]
     const landings = agentCount > 0 ? [SLACK_IN, AGENT_WRITE] : [SLACK_IN]
     const clock = pulsesRef.current
-    const start = performance.now()
-    return subscribeToFrames((now) => {
+    // The drift holds in a window that is not in use, so the pulses hold with it: the rows
+    // below read the pulses' clock, and a pulse must not land on a row that cannot change.
+    // (The page-wide hold catches loops running when the window leaves, not ones that mount after.)
+    const drawings = Array.from(frameRef.current?.querySelectorAll('svg') ?? []).filter((svg) => !svg.ownerSVGElement)
+    const holdPulses = () => {
+      for (const svg of drawings) {
+        if (typeof svg.pauseAnimations !== 'function') continue
+        if (ambientAnimationAllowed()) svg.unpauseAnimations()
+        else svg.pauseAnimations()
+      }
+    }
+    const unsubscribeAllowed = subscribeToAmbientAnimationAllowed(holdPulses)
+    holdPulses()
+    let last = performance.now()
+    let t = 0
+    const unsubscribeFrames = subscribeToAmbientFrames((now) => {
       // Each row: its old age until the first pulse lands, then "Updating" while tinted, then "now".
       if (typeof clock?.getCurrentTime === 'function') {
         const loops = clock.getCurrentTime() / LOOP_S
@@ -284,7 +299,9 @@ export function TeamBrainDiagram({ className }: { className?: string }) {
           if (element && element.dataset.state !== state) element.dataset.state = state
         }
       }
-      const t = (now - start) / 1000
+      // Time as painted, a step at most: after a hold the nodes carry on from where they were.
+      t += Math.min(Math.max(now - last, 0), 100) / 1000
+      last = now
       const rays = linked.map((node, i) => {
         const { dx, dy } = drift(i, t)
         const element = nodeRefs.current[i]
@@ -294,10 +311,13 @@ export function TeamBrainDiagram({ className }: { className?: string }) {
         return d
       })
       for (const { index, path } of Object.values(pulseRefs.current)) path?.setAttribute('d', rays[index])
-    })
+    }, { kind: 'decoration', fps: 30 })
+    return () => {
+      unsubscribeFrames()
+      unsubscribeAllowed()
+    }
   }, [agentCount])
 
-  const frameRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(1)
   useLayoutEffect(() => {
     const frame = frameRef.current

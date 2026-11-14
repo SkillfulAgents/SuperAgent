@@ -3,7 +3,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { polar, radialTree, type RadialNode } from '@renderer/lib/team-brain/team-brain-radial'
 import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
 import { revealDrive } from '@renderer/lib/team-brain/team-brain-budget'
-import { subscribeToFrames } from '@renderer/components/agents/agent-avatar/orb-ticker'
+import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 import { CLICK_SLOP, prefersReducedMotion, useFrameWidth, type OpenFile } from './team-brain-radial-parts'
 
 /** The outer ring, where every page sits; folders sit on rings inside it by depth. */
@@ -618,7 +618,7 @@ export function TeamBrainRadial({
     let nextPulseAt = 0
     let pulseId = 0
     let live = 0
-    return subscribeToFrames((now) => {
+    return subscribeToAmbientFrames((now) => {
       const dt = Math.min((now - last) / 1000, 0.1)
       last = now
       if (drag.current || selectedRef.current || now < moveEndsAt.current) return void (velocity = 0)
@@ -648,7 +648,7 @@ export function TeamBrainRadial({
         setPulses((current) => current.filter((p) => p.id !== pulse.id))
       }, PULSE.signalMs + 1100)
       pulseTimers.current.add(done)
-    })
+    }, { kind: 'decoration' })
   }, [applyView])
 
   const start = (event: ReactPointerEvent, target: RadialNode | null, opens?: () => void) => {
