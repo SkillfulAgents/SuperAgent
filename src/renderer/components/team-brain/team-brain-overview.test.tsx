@@ -24,7 +24,10 @@ const { app, openExternalUrl, screenSize } = vi.hoisted(() => ({
 vi.mock('@renderer/hooks/use-agents', () => ({
   useListedAgents: () => ({ data: app.agents }),
   useDeleteAgent: () => ({ mutate: app.deleteAgent, isPending: false }),
+  // Mention chips look their agents and people up for avatars.
+  useAgents: () => ({ data: undefined }),
 }))
+vi.mock('@renderer/hooks/use-agent-members', () => ({ useAgentMembers: () => ({ data: undefined }) }))
 // The Team Brain agent's own drive, in Dropbox.
 vi.mock('@renderer/hooks/use-mounts', () => ({
   useAgentMounts: () => ({
@@ -83,7 +86,7 @@ vi.mock('@renderer/hooks/use-team-brain-syncs', () => ({
           id: '_brain/syncs/2026-10-23 0300.md', at: new Date(Date.now() - 7_200_000).toISOString(), session: 's-1', sources: ['slack', 'notion'], added: 3, updated: 9,
           highlights: [{ title: 'Acme’s renewal moves to Q1', body: 'Acme asked to **move** it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date, from [the thread](https://slack.com/x). [Call](javascript:alert(1))' }],
           changes: '- Cycle 14 closed.\n  - Four bugs left open.',
-          needsYou: { blocked: '- Reconnect Slack. #sales was not read this run.', toDecide: '' },
+          needsYou: { blocked: '- Reconnect Slack. #sales was not read this run.', toDecide: '- [@Graham](user:u1), is a seat a person or a login?' },
         },
       ],
     }
@@ -641,6 +644,9 @@ describe('TeamBrainOverview', () => {
     expect(within(latest).getByText('Four bugs left open.').closest('li')?.parentElement?.closest('li')).toHaveTextContent(/^Cycle 14 closed\./)
     // The latest says what needs a person, and its title opens the run's session.
     expect(within(latest).getByTestId('team-brain-sync-needs-you')).toHaveTextContent('Reconnect Slack.')
+    // An agent's tag draws the chip it draws in chat.
+    expect(within(latest).getByTestId('user-mention')).toHaveTextContent('@Graham')
+    expect(latest).not.toHaveTextContent('user:u1')
     await userEvent.click(within(latest).getByTestId('team-brain-sync-session-_brain/syncs/2026-10-23 0300.md'))
     expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug/sessions/$sessionId', params: { slug: 'team-brain', sessionId: 's-1' } })
     // A page named in a summary opens from the drive in the drawer.
