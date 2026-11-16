@@ -15,15 +15,9 @@ import { db } from '@shared/lib/db'
 import { agents, type AgentRow } from '@shared/lib/db/schema'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import { randomAgentAvatar } from './agent-avatar'
-import {
-  AGENT_ID_LENGTH,
-  directoryExists,
-  getAgentDir,
-  getAgentsDir,
-  removeDirectory,
-} from '@shared/lib/utils/file-storage'
-import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
+import { AGENT_ID_LENGTH, directoryExists, getAgentDir } from '@shared/lib/utils/file-storage'
 import { LOCAL_RUNTIME } from './agent-directories'
+import { removeAgentWorkspace } from './workspace-removal'
 import { dropDbSessionIndex } from './db-session-index-storage'
 import type { AgentCatalog, AgentIdentityChanges, AgentRecord, AgentSlug } from './types'
 
@@ -155,11 +149,7 @@ export function createAgentCatalog(): AgentCatalog {
       // The workspace goes first: a removal that fails (a busy mount, a
       // permission) leaves the row, so the agent still exists and the delete
       // can be retried, instead of a workspace on disk that nothing lists.
-      if (row.runtime === LOCAL_RUNTIME) {
-        const dir = getAgentDir(slug)
-        assertPathWithinDir(getAgentsDir(), dir)
-        await removeDirectory(dir)
-      }
+      if (row.runtime === LOCAL_RUNTIME) await removeAgentWorkspace(slug)
       // Its session index goes with it: a later agent that is given the
       // slug must not inherit the sessions.
       await dropDbSessionIndex(slug)

@@ -12,6 +12,7 @@ let handle: TestDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { createAgentCatalog } from './agent-catalog'
+import { setWorkspaceRemoval } from './workspace-removal'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import * as avatarAssignment from './agent-avatar'
 import { AGENT_ID_LENGTH, ensureDirectory, getAgentDir, getAgentInstructionsPath } from '@shared/lib/utils/file-storage'
@@ -196,6 +197,40 @@ describe('removing an agent', () => {
 
     expect(await rowFor('remote')).toBeUndefined()
     expect(fs.existsSync(getAgentDir('remote'))).toBe(true)
+  })
+
+  it("removes the workspace the deployment's own way when it set one, and touches no directory", async () => {
+    await writeAgentDirectory('hosted', '---\nname: Hosted\n---\nBody')
+    await catalog.insert({ slug: 'hosted', name: 'Hosted', createdAt: new Date() })
+    const removed: string[] = []
+    setWorkspaceRemoval(async (slug) => {
+      removed.push(slug)
+    })
+
+    try {
+      await catalog.remove('hosted')
+    } finally {
+      setWorkspaceRemoval(null)
+    }
+
+    expect(removed).toEqual(['hosted'])
+    expect(await rowFor('hosted')).toBeUndefined()
+    expect(fs.existsSync(getAgentDir('hosted'))).toBe(true)
+  })
+
+  it("keeps the agent when the deployment's removal fails, so the delete can be retried", async () => {
+    await catalog.insert({ slug: 'hosted', name: 'Hosted', createdAt: new Date() })
+    setWorkspaceRemoval(async () => {
+      throw new Error('The workspace store is unavailable')
+    })
+
+    try {
+      await expect(catalog.remove('hosted')).rejects.toThrow('The workspace store is unavailable')
+    } finally {
+      setWorkspaceRemoval(null)
+    }
+
+    expect(await catalog.exists('hosted')).toBe(true)
   })
 
   it('does nothing for a slug that is not an agent', async () => {
