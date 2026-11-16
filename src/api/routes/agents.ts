@@ -301,7 +301,7 @@ import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
-import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { readAgentPreferences, resolveAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
@@ -1684,7 +1684,8 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 
     await assertConnectionSelectionAccess(parsed.data.defaultLlmProviderId, parsed.data.defaultLlmProviderId ? (await readAgentPreferences(slug)).defaultLlmProviderId : undefined)
     const merged = await updateAgentPreferences(slug, parsed.data)
-    return c.json(merged)
+    // Answer in the GET's form, so the client keeps this instead of reading again.
+    return c.json(await resolveAgentPreferences(merged))
   } catch (error) {
     if (error instanceof LlmProviderNotFoundError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
