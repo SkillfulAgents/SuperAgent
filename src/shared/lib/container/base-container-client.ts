@@ -1379,9 +1379,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const modelPromptHints = llmRuntime.modelPromptHints
       const subagentModels = llmRuntime.subagentModels
       // Catalog windows for ALL models (not just isLatest like subagentModels):
-      // the container passes the session model's window to the Claude Agent SDK
-      // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
-      // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
+      // the container passes the non-Claude models' window to the Claude Agent
+      // SDK via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else the CLI assumes 1M for a
+      // model it does not know and a smaller one never compacts (CLI 2.1.323+).
       const modelContextWindows = llmRuntime.modelContextWindows
       // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
       // Resolved once here from global settings so every session-creation caller inherits it. One

@@ -118,6 +118,21 @@ const WEB_BROWSER_AGENT_PROMPT = loadPrompt('web-browser-agent-prompt.md');
 const COMPUTER_USE_AGENT_PROMPT = loadPrompt('computer-use-agent-prompt.md');
 const DASHBOARD_BUILDER_AGENT_PROMPT = loadPrompt('dashboard-builder-agent-prompt.md');
 
+// The window a non-Claude model without a catalog window is given through
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS: the CLI's own default for unknown models
+// before 2.1.323 raised it to 1M.
+const UNKNOWN_MODEL_CONTEXT_WINDOW = 200_000;
+
+/**
+ * A Claude model id in any of our providers' spellings (claude-…,
+ * us.anthropic.claude-…, anthropic/claude-…). Every Claude id in our catalogs
+ * is one the CLI knows, so it sizes them itself and ignores
+ * CLAUDE_CODE_MAX_CONTEXT_TOKENS for them.
+ */
+function isClaudeModelId(id: string): boolean {
+  return /claude/i.test(id);
+}
+
 interface RemoteMcpConfig {
   id: string;
   name: string;
@@ -1021,8 +1036,22 @@ export class ClaudeCodeProcess extends EventEmitter {
     return this.warmHandle !== null;
   }
 
-  private contextWindowForModel(model: string | undefined): number | undefined {
-    return model ? this.modelContextWindows[model] : undefined;
+  /**
+   * CLAUDE_CODE_MAX_CONTEXT_TOKENS for a query led by `model`, or undefined to
+   * leave it unset. The CLI reads it as ONE window for every model it does not
+   * know, the lead and each subagent alike, and never for a Claude model it
+   * knows. With it unset, an unknown model is assumed to hold 1M (200K before
+   * CLI 2.1.323), so a smaller one fills up and then fails every turn instead
+   * of compacting. A non-Claude lead gets its catalog window; under a Claude
+   * lead the value reaches only the non-Claude subagents, so it is the
+   * smallest of their windows. A model with no catalog window counts as 200K.
+   */
+  private contextWindowEnvFor(model: string | undefined): number | undefined {
+    const windowOf = (id: string) => this.modelContextWindows[id] ?? UNKNOWN_MODEL_CONTEXT_WINDOW;
+    if (model && !isClaudeModelId(model)) return windowOf(model);
+    const nonClaudeSubagents = [...this.subagentModels.map((m) => m.id), this.browserModel, this.dashboardBuilderModel]
+      .filter((id): id is string => !!id && !isClaudeModelId(id));
+    return nonClaudeSubagents.length > 0 ? Math.min(...nonClaudeSubagents.map(windowOf)) : undefined;
   }
 
   /**
@@ -1301,15 +1330,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         CLAUDE_CODE_ELEGANT_MEADOW: '0',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-        // Tell the SDK the real context window for non-Claude models (it
-        // assumes 200k for unknown ids and auto-compacts against that — 40% of
-        // grok's 500k, 19% of gpt-5.x's 1.05M). The SDK only honors this env
-        // var for non-claude-* models, so it never affects Claude sessions. A
-        // user-set custom env var (spread above) deliberately wins.
-        ...(this.contextWindowForModel(this.model) &&
+        // Tell the CLI the real context window of the non-Claude models it
+        // does not know (see contextWindowEnvFor); a Claude model it knows
+        // never reads this. A user-set custom env var (spread above)
+        // deliberately wins.
+        ...(this.contextWindowEnvFor(this.model) &&
           !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS &&
           !this.llmRuntime?.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
-            CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowEnvFor(this.model)),
           }),
       }), this.speed),
       mcpServers: {
@@ -2002,7 +2030,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // that changes the catalog window (e.g. claude → grok) can't use dynamic
     // setModel — the new model would run against the old window.
     const contextWindowChanged =
-      modelChanged && this.contextWindowForModel(model) !== this.contextWindowForModel(this.model);
+      modelChanged && this.contextWindowEnvFor(model) !== this.contextWindowEnvFor(this.model);
 
     // Capability policies follow the host's CURRENT settings, refreshed on
     // every message so a long-lived session tracks settings changes. Review
