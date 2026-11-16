@@ -9,6 +9,7 @@ import { DurableObject } from 'cloudflare:workers'
 import type { DurableObjectNamespace, DurableObjectState, WorkerWebSocket } from 'cloudflare:workers'
 import type { z } from 'zod'
 import { background } from '@shared/lib/background'
+import { captureException } from '@shared/lib/error-reporting'
 import type {
   AppState,
   AppStateScope,
@@ -465,6 +466,7 @@ class HubSubscription<E> implements Subscription {
       if (!this.active) return
       this.open().catch((error: unknown) => {
         console.error('[app-state] reconnecting a subscription failed:', error)
+        captureException(error, { tags: { component: 'app-state', operation: 'resubscribe' } })
         this.lost()
       })
     }, delay)

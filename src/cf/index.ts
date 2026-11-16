@@ -5,6 +5,7 @@
  * startup CPU limit.
  */
 import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHandler, Fetcher } from 'cloudflare:workers'
+import { captureException, flushErrorReporting } from '@shared/lib/error-reporting'
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import type { AppStateDurableObject } from './cloudflare-app-state'
 import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
@@ -36,13 +37,20 @@ let taskManagerWoken = false
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (!new URL(request.url).pathname.startsWith('/api/')) return serveAppShell(request, env.ASSETS)
-    const app = await import('./boot')
-    const booting = app.boot(env)
-    // A client that leaves mid-boot must not cancel the boot that later requests wait on.
-    ctx.waitUntil(booting.catch(() => {}))
-    await booting
-    wakeTaskManager(env, ctx)
-    return app.serve(withClientAddress(request), env, ctx)
+    try {
+      const app = await import('./boot')
+      const booting = app.boot(env)
+      // A client that leaves mid-boot must not cancel the boot that later requests wait on.
+      ctx.waitUntil(booting.catch(() => {}))
+      await booting
+      wakeTaskManager(env, ctx)
+      return await app.serve(withClientAddress(request), env, ctx)
+    } catch (error) {
+      // A failed boot, or an error the API did not answer itself: reported before the request ends.
+      captureException(error, { tags: { component: 'cloudflare', operation: 'serve' } })
+      ctx.waitUntil(flushErrorReporting())
+      throw error
+    }
   },
 } satisfies ExportedHandler<Env>
 
@@ -68,6 +76,8 @@ function wakeTaskManager(env: Env, ctx: ExecutionContext): void {
   ctx.waitUntil(taskManagerOf(env.TASK_MANAGER).wake().catch((error: unknown) => {
     taskManagerWoken = false
     console.error('[cloudflare] waking the task manager failed:', error)
+    captureException(error, { tags: { component: 'cloudflare', operation: 'wake-task-manager' } })
+    return flushErrorReporting()
   }))
 }
 

@@ -96,8 +96,14 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    await this.start()
-    await this.dispatch()
+    try {
+      await this.start()
+      await this.dispatch()
+    } catch (error) {
+      // The runtime runs a failed alarm again; the failure is reported each time.
+      captureException(error, { tags: { component: 'task-manager', operation: 'alarm' } })
+      throw error
+    }
   }
 
   /** Replaces whatever is scheduled under `id` with a one-off at `runAt`. A run in flight finishes; its result is ignored. */
@@ -155,7 +161,10 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     } catch (error) {
       console.warn('[task-manager] storage refused a write: a newer instance replaced this one, so its background services stop', error)
       this.stopDispatch()
-      serving.run(this, stopServices).catch((stopError: unknown) => console.error('[task-manager] stopping the background services failed:', stopError))
+      serving.run(this, stopServices).catch((stopError: unknown) => {
+        console.error('[task-manager] stopping the background services failed:', stopError)
+        captureException(stopError, { tags: { component: 'task-manager', operation: 'stop-replaced-services' } })
+      })
     }
   }
 

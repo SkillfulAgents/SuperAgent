@@ -16,8 +16,10 @@ import { runWithBackground } from '@shared/lib/background'
 import { mutateSettings } from '@shared/lib/config/settings'
 import { initializeServices, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
+import { getErrorReporter, initErrorReporting } from '@shared/lib/error-reporting'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
+import { createCloudflareErrorReporter } from './cloudflare-error-reporting'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './cloudflare-task-manager'
 import type { Env } from './index'
@@ -54,7 +56,13 @@ export function stopBackgroundServices(): Promise<void> {
   return shutdownServices()
 }
 
+/** Error reporting, before the database: a failed migration or open is the first thing a boot can fail on. */
+export function startErrorReporting(): void {
+  if (!getErrorReporter()) initErrorReporting(createCloudflareErrorReporter({ environment: 'cloudflare' }))
+}
+
 async function start(env: Env): Promise<void> {
+  startErrorReporting()
   // Its own step, not part of opening the database: D1 takes the schema migrations as one batch.
   await migrateD1(env.DB, migrationBundle)
   await runDataMigrations(await openDatabase({ driver: d1(env.DB), migrate: false }))
