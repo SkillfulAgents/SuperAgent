@@ -1669,6 +1669,7 @@ export function clearBrowserActive(sessionId: string): void {
 }
 
 const EMPTY_SLASH_COMMANDS: SlashCommandInfo[] = []
+const EMPTY_READY_TOOL_USES: StreamState['streamingToolUses'] = []
 
 export interface MessageStreamValue extends StreamState {
   slashCommands: SlashCommandInfo[]
@@ -1677,6 +1678,14 @@ export interface MessageStreamValue extends StreamState {
   workflows: WorkflowRunLive[]
   isThinking: boolean
   thinkingBlocks: ThinkingBlock[]
+  /**
+   * The entries of `streamingToolUses` whose input is complete (`ready`).
+   * Derived on read, so it follows every path that clears or replaces
+   * `streamingToolUses`. Its identity changes only when that set changes, not
+   * on each tool-input delta: select it instead of `streamingToolUses` when
+   * partial input is of no interest.
+   */
+  readyStreamingToolUses: StreamState['streamingToolUses']
 }
 
 export type MessageStreamField = keyof MessageStreamValue
@@ -1689,6 +1698,7 @@ const EMPTY_MESSAGE_STREAM_VALUE: MessageStreamValue = {
   workflows: EMPTY_WORKFLOWS,
   isThinking: EMPTY_THINKING.isThinking,
   thinkingBlocks: EMPTY_THINKING.blocks,
+  readyStreamingToolUses: EMPTY_READY_TOOL_USES,
 }
 
 // The global sets are mutated in place, so reuse the previous snapshot when the contents match.
@@ -1704,10 +1714,32 @@ function snapshotIdSet(prev: ReadonlySet<string>, current: Set<string> | undefin
   return new Set(current)
 }
 
+// The reducer keeps a tool's object when another tool changes and replaces it
+// when its own input or `ready` flag does, so comparing entries by reference
+// is exact: the previous snapshot is reused until a tool becomes ready, a
+// ready tool is replaced, or the list is cleared.
+function snapshotReadyToolUses(
+  prev: StreamState['streamingToolUses'],
+  tools: StreamState['streamingToolUses'],
+): StreamState['streamingToolUses'] {
+  let count = 0
+  let identical = true
+  for (const tool of tools) {
+    if (!tool.ready) continue
+    if (prev[count] !== tool) identical = false
+    count++
+  }
+  if (identical && count === prev.length) return prev
+  if (count === 0) return EMPTY_READY_TOOL_USES
+  return tools.filter((tool) => tool.ready)
+}
+
 function readMessageStream(sessionId: string, prev: MessageStreamValue): MessageStreamValue {
   const thinking = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+  const state = streamStates.get(sessionId) ?? prev
   return {
-    ...(streamStates.get(sessionId) ?? prev),
+    ...state,
+    readyStreamingToolUses: snapshotReadyToolUses(prev.readyStreamingToolUses, state.streamingToolUses),
     slashCommands: sessionSlashCommands.get(sessionId) ?? EMPTY_SLASH_COMMANDS,
     autoApprovedScriptRunIds: snapshotIdSet(prev.autoApprovedScriptRunIds, sessionAutoApprovedScriptRunIds.get(sessionId)),
     autoApprovedComputerUseIds: snapshotIdSet(prev.autoApprovedComputerUseIds, sessionAutoApprovedComputerUseIds.get(sessionId)),

@@ -6,7 +6,7 @@ import { emailThreadRoute } from '@shared/lib/email-integrations/routing'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { Hono } from 'hono'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import {
   getAgentIntegration,
   createAgentIntegration,
@@ -33,18 +33,7 @@ type XAgentChatVariables = { callerSlug: string }
 
 const xAgentChat = new Hono<{ Variables: XAgentChatVariables }>()
 
-xAgentChat.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const callerSlug = await validateProxyToken(token)
-  if (!callerSlug) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgentChat.use('*', requireAgentCaller)
 
 function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')

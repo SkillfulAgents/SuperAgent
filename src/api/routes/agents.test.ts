@@ -4720,6 +4720,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(typeof body.uuid).toBe('string')
     expect(body.queued).toBe(false)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, sent())
+    // The agent ResolveAgent() read is the one the route uses.
+    expect(getAgentRecord).not.toHaveBeenCalled()
 
     // No DB insert for message author outside auth mode
     expect(mockDbInsertValues).not.toHaveBeenCalled()
@@ -7478,6 +7480,8 @@ describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sess
 
     expect(res.status).toBe(400)
     expect(mockClientCreateSession).not.toHaveBeenCalled()
+    // The agent ResolveAgent() read is the one the route uses.
+    expect(getAgentRecord).not.toHaveBeenCalled()
   })
 })
 
@@ -10372,6 +10376,33 @@ describe('agent preferences — PUT /:id/preferences', () => {
     const body = await res.json()
     expect(body.defaultModel).toBe('opus')
     expect(persistedPreferences()).toEqual({ defaultModel: 'opus' })
+  })
+
+  it('answers in the form the GET gives, so a client can keep the response instead of reading again', async () => {
+    // A stored default whose account is gone: the GET hides it, and a PUT that
+    // only changes retention must not hand the stored model back.
+    storePreferences({ defaultModel: 'retired-model', defaultLlmProviderId: 'gone' })
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const resolve = vi.spyOn(connections, 'resolveConnectionSelection').mockResolvedValue(null)
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({ ...settings, llmDefault: { model: 'model-a', llmProviderId: 'conn-1' } } as never)
+    try {
+      const res = await putJson(PREFS_URL, { autoDeleteInactiveDays: 7 })
+
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toEqual({ autoDeleteInactiveDays: 7, defaultLlmProviderId: null })
+      // What is stored keeps the model: resolving is for the answer only.
+      const stored = persistedPreferences() as Record<string, unknown>
+      expect(stored).toEqual({ defaultModel: 'retired-model', defaultLlmProviderId: 'gone', autoDeleteInactiveDays: 7 })
+
+      storePreferences(stored)
+      const read = await app.request(`http://localhost${PREFS_URL}`)
+      expect(await read.json()).toEqual(body)
+    } finally {
+      resolve.mockRestore()
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
   })
 
   it('strips unknown keys from the stored prefs and the response', async () => {

@@ -605,10 +605,13 @@ export function usePendingRequests({
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,
-    streamingToolUses,
+    readyStreamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
-  } = useMessageStream(sessionId, agentSlug, ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
+  } = useMessageStream(sessionId, agentSlug, ['isActive', 'readyStreamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
+  // `readyStreamingToolUses`, not `streamingToolUses`: the latter is a new
+  // array on every tool-input delta, and this hook runs in the parent of the
+  // whole session column (thread, composer), which would re-render per delta.
 
   // The snapshot is the only source for reviews and capability reviews, and
   // the primary one for every other kind. The streaming/message-history
@@ -672,9 +675,7 @@ export function usePendingRequests({
   const streamingBasedPendingRequests = useMemo(() => {
     const buckets = createPendingRequestBuckets()
 
-    for (const toolUse of streamingToolUses) {
-      if (!toolUse.ready) continue
-
+    for (const toolUse of readyStreamingToolUses) {
       try {
         addPendingRequestFromToolCall(buckets, {
           id: toolUse.id,
@@ -688,7 +689,7 @@ export function usePendingRequests({
     }
 
     return buckets
-  }, [streamingToolUses])
+  }, [readyStreamingToolUses])
 
   // Track toolUseIds the user has already answered, so no source re-surfaces
   // them before the settlement lands. State (not a ref): the merge memos

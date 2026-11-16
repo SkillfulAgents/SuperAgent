@@ -19,6 +19,7 @@ src/api/routes/llm-runtime.test.ts
 src/shared/lib/notifications/push/apns-device-service.test.ts
 src/shared/lib/notifications/push/push-subscription-service.test.ts
 src/shared/lib/agent-actor/agent-catalog.test.ts
+src/api/middleware/auth.agent-role.integration.test.ts
 src/shared/lib/services/user-settings-service.test.ts
 src/shared/lib/services/chat-integration-access-service.test.ts
 src/shared/lib/services/agent-integration-service.test.ts
@@ -126,3 +127,4 @@ src/shared/lib/services/session-service.lifecycle.test.ts
 src/shared/lib/db/data-migrations/0010-import-session-metadata.test.ts
 src/shared/lib/services/session-deletion.test.ts
 src/shared/lib/config/settings-request-memo.test.ts
+src/shared/lib/services/audit-log-service.test.ts

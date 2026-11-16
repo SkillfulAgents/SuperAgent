@@ -2,6 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import { Hono, type Context, type Next } from 'hono'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -102,6 +103,7 @@ describe('browser accounts API', () => {
 
     expect((await app.request(`/api/browser-accounts/${account.id}`, { method: 'DELETE' })).status).toBe(200)
     expect(await listOwnedAccounts(null)).toEqual([])
+    await backgroundSettled()
     const actions = (await testDb.select({ action: auditLog.action }).from(auditLog).all()).map((row) => row.action)
     expect(actions).toEqual(['assigned', 'unassigned', 'updated', 'deleted'])
   })

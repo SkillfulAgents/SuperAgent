@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { AppDatabase } from '@shared/lib/db'
@@ -231,6 +232,7 @@ describe('saveAccount', () => {
     await grantAccount({ accountId: account.id, agentSlug: 'agent-a', grantedBy: null })
     await markAccountRejected({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-1' })
     expect((await getOwnedAccount(null, account.id))?.rejectedAt).toBeInstanceOf(Date)
+    await backgroundSettled()
     expect(await testDb.select().from(auditLog).all()).toMatchObject([{ objectId: account.id, action: 'rejected' }])
     // Another part is not the correction; the password is.
     await saveAccount({ ...github, username: 'octocat', values: { 'text:workspace': 'acme2' } })

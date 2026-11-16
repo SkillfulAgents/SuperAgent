@@ -301,7 +301,7 @@ import { activeLlmProviderFrom, getLlmProvider } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
-import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { readAgentPreferences, resolveAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { resolveSessionDefaults } from '@shared/lib/services/session-defaults'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
@@ -1684,7 +1684,8 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 
     await assertConnectionSelectionAccess(parsed.data.defaultLlmProviderId, parsed.data.defaultLlmProviderId ? (await readAgentPreferences(slug)).defaultLlmProviderId : undefined)
     const merged = await updateAgentPreferences(slug, parsed.data)
-    return c.json(merged)
+    // Answer in the GET's form, so the client keeps this instead of reading again.
+    return c.json(await resolveAgentPreferences(merged))
   } catch (error) {
     if (error instanceof LlmProviderNotFoundError) return c.json({ error: error.message }, 404)
     console.error('Failed to update agent preferences:', error)
@@ -2241,11 +2242,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       dashboardDispatch = parsed.data
     }
 
-    // The agent's name is all this route needs of it, and the catalog has it.
-    const agent = await getAgentRecord(slug)
-    if (!agent) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
+    // The agent's name is all this route needs of it, and ResolveAgent() read it.
+    const agent = getResolvedAgent(c)
 
     // Refused before the session exists. A first message always runs the agent:
     // the teammates it tags are notified, and it is never notify-only.
@@ -2901,11 +2899,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // The agent's name is all this route needs of it, and the catalog has it.
-    const agent = await getAgentRecord(agentSlug)
-    if (!agent) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
+    // The agent's name is all this route needs of it, and ResolveAgent() read it.
+    const agent = getResolvedAgent(c)
 
     // Refused before anything is written. A message that opens on a teammate
     // only notifies them: it joins the transcript, and no turn runs.
