@@ -1709,7 +1709,9 @@ export class LiveSession {
       this.response.taggedUserIds.add(id)
     }
     const { agentSlug, sessionId } = this.ctx
-    this.ctx.host.send('notification', { kind: 'message_mentions', agentSlug, sessionId, messageUuid: content.uuid, userIds, text: stripMarkdownPreview(text) })
+    // A message of several frames shows under its first frame's uuid, which need not be the frame with the tag.
+    const messageUuid = this.response.firstEntryUuid(messageId) ?? content.uuid
+    this.ctx.host.send('notification', { kind: 'message_mentions', agentSlug, sessionId, messageUuid, userIds, text: stripMarkdownPreview(text) })
   }
 
   /**

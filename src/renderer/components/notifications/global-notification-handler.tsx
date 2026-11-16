@@ -464,6 +464,7 @@ export function GlobalNotificationHandler() {
                 agentSlug: agentSlug ?? baseContext.agentSlug,
                 sessionId: notificationSessionId ?? baseContext.sessionId,
                 notificationId: data.notificationId ?? baseContext.notificationId,
+                messageUuid: data.messageUuid,
               }
               // Web Notifications have no context round-trip — wire the click
               // straight to the platform detail route (Electron routes the

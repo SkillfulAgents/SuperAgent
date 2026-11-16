@@ -298,6 +298,8 @@ describe('TurnResponse', () => {
       next.assistantFrame(frame('msg_1', 'u3', text(' late')))
       next.assistantFrame(frame('msg_2', 'u4', text(' continued')))
       expect(next.answer).toBe('Answer continued')
+      // A message still shows under its first frame's uuid after the reattach.
+      expect(next.firstEntryUuid('msg_2')).toBe('u2')
     })
 
     it('carries only the streamed text and the outcome between turns', () => {
@@ -315,6 +317,7 @@ describe('TurnResponse', () => {
       expect(next.streamedText).toBe('streamed')
       expect(next.outcome).toBe(outcome)
       // Nothing of the old turn's messages: the same id is a new message now.
+      expect(next.firstEntryUuid('msg_1')).toBeUndefined()
       expect(next.assistantFrame(frame('msg_1', 'u1', text('Again')))).toBe('Again')
       expect(next.answer).toBe('Again')
     })

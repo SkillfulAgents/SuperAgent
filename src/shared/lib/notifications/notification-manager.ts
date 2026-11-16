@@ -189,7 +189,7 @@ class NotificationManager {
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
       ...(extra ? { extra } : {}),
-      ...(recipient ? { recipientUserId: recipient.userId } : {}),
+      ...(recipient ? { recipientUserId: recipient.userId, messageUuid: recipient.messageUuid } : {}),
     }
 
     // Fire-and-forget per channel: delivery to one backend (a slow push POST,

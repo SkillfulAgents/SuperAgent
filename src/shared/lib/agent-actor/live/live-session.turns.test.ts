@@ -1636,4 +1636,24 @@ describe('agent tags', () => {
     }])
     expect(completions().at(-1)?.taggedUserIds).toEqual(['u_mike1'])
   })
+
+  it("points at the message's first frame when the tag is in a later one", async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    // The transcript shows a message of several frames under its first frame's uuid.
+    mockClient.emit({ type: 'assistant', uuid: 'think-entry', message: { id: 'msg-think', content: [{ type: 'thinking', thinking: 'Who decides?' }] } })
+    mockClient.emit({ type: 'assistant', uuid: 'text-entry', message: { id: 'msg-think', content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] } })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions').map((n) => n.messageUuid)).toEqual(['think-entry'])
+  })
+
+  it('points at the frame itself when the message carries no id', async () => {
+    sessions().markActive(SESSION_ID)
+    mockClient.emit({ type: 'system', subtype: 'capabilities', session_state_events: true })
+    mockClient.emit({ type: 'assistant', uuid: 'lone-entry', message: { content: [{ type: 'text', text: '[@Mike Smith](user:u_mike1) please decide' }] } })
+    await flushNotifications()
+
+    expect(live.host.sent('notification').filter((n) => n.kind === 'message_mentions').map((n) => n.messageUuid)).toEqual(['lone-entry'])
+  })
 })

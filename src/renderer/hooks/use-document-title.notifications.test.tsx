@@ -27,6 +27,7 @@ vi.mock('@renderer/router/use-route-location', () => ({
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
+  useSearch: () => ({}),
   useRouterState: <T,>(options: {
     select: (state: { matches: Array<{ params: object; fullPath: string }> }) => T
   }) => options.select({ matches: [{ params: {}, fullPath: '/agents/$slug/sessions/$sessionId' }] }),

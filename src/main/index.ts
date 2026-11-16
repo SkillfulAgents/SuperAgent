@@ -739,9 +739,9 @@ ipcMain.handle('show-notification', (
       // If the notification carries agent/session context, navigate there
       // so the click lands on the conversation that needs attention rather
       // than dumping the user on the homepage.
-      const ctx = context as { agentSlug?: string; sessionId?: string | null } | undefined
+      const ctx = context as { agentSlug?: string; sessionId?: string | null; messageUuid?: unknown } | undefined
       if (ctx?.agentSlug) {
-        mainWindow.webContents.send('navigate-to-agent', ctx.agentSlug, ctx.sessionId ?? null)
+        mainWindow.webContents.send('navigate-to-agent', ctx.agentSlug, ctx.sessionId ?? null, typeof ctx.messageUuid === 'string' ? ctx.messageUuid : undefined)
       }
     }
     event.sender.send('notification-event', { type: 'click', context })

@@ -20,6 +20,7 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import type { PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import type { SessionUsage } from '@shared/lib/types/agent'
+import type { MessageTarget } from '@renderer/components/messages/locate-message'
 
 interface SessionChatColumnProps {
   sessionId: string | null
@@ -45,6 +46,7 @@ interface SessionChatColumnProps {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  messageTarget?: MessageTarget
 }
 
 export function SessionChatColumn({
@@ -68,6 +70,7 @@ export function SessionChatColumn({
   pendingWakeAt,
   pendingWakeTaskId,
   pendingWakeNote,
+  messageTarget,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug, ['isActive', 'browserActive', 'isWaitingBackground'])
   const voiceModeActive = useIsVoiceModeActive(sessionId)
@@ -105,6 +108,7 @@ export function SessionChatColumn({
       pendingRequestCount={pendingRequestCount}
       onPendingMessageAppeared={onPendingMessageAppeared}
       suppressScrollToBottom={staleSession.popoverOpen}
+      messageTarget={messageTarget}
       overlayFooter
       footerClassName="max-w-[740px] mx-auto w-full"
       footer={

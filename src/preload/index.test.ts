@@ -144,12 +144,15 @@ describe('preload electronAPI bridge', () => {
     api.onNavigateToAgent(callback)
 
     const handler = electronMocks.on.mock.calls.find(([channel]) => channel === 'navigate-to-agent')?.[1] as
-      | ((event: unknown, agentSlug: string, sessionId?: string | null) => void)
+      | ((event: unknown, agentSlug: string, sessionId?: string | null, messageUuid?: unknown) => void)
       | undefined
     expect(handler).toBeDefined()
 
     handler?.({}, 'agent-one', 'session-one')
-    expect(callback).toHaveBeenCalledWith('agent-one', 'session-one')
+    expect(callback).toHaveBeenCalledWith('agent-one', 'session-one', undefined)
+    // A mention banner also names the message to land on.
+    handler?.({}, 'agent-one', 'session-one', 'msg-7')
+    expect(callback).toHaveBeenLastCalledWith('agent-one', 'session-one', 'msg-7')
 
     api.removeNavigateToAgent()
     expect(electronMocks.removeAllListeners).toHaveBeenCalledWith('navigate-to-agent')
