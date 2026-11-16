@@ -27,7 +27,7 @@ import {
   decodeOrgIdFromToken,
   installPlatformFetchInterceptor,
 } from './platform-attribution'
-import { getPlatformAccessToken } from './services/platform-auth-service'
+import { getPlatformAccessToken, initEnvManagedPlatformStatus } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
 import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
@@ -212,30 +212,17 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
   }
 }
 
-let processPrepared: Promise<void> | null = null
-
 /**
- * The setup that requests read from this process's memory: account providers,
- * the auth gate, platform attribution and the managed platform connection.
- * Runs once per process. Service startup runs it alongside agent discovery and
- * joins both before any container starts; a
- * host that serves requests from processes that start no services (one per
- * request, or many short-lived ones) calls it after AppState and KeyManager.
- * A failure is not remembered, so the next call tries again.
+ * The setup that lives in this process's memory: the analytics version, the
+ * account providers, the verified `PLATFORM_TOKEN` status and platform
+ * attribution. Every process that serves runs it, after AppState and
+ * KeyManager. Running it twice is harmless.
  */
-export function prepareProcess(): Promise<void> {
-  processPrepared ??= prepareProcessInner().catch((error: unknown) => {
-    processPrepared = null
-    throw error
-  })
-  return processPrepared
-}
-
-async function prepareProcessInner(): Promise<void> {
+export async function prepareProcess(): Promise<void> {
   setServerAnalyticsVersion(APP_VERSION)
   // Account providers (Composio, Nango if configured)
   registerAllAccountProviders()
-  if (isAuthMode()) await validateAuthModeStartup()
+  await initEnvManagedPlatformStatus()
   // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
   try {
     const platformToken = await getPlatformAccessToken()
@@ -245,8 +232,16 @@ async function prepareProcessInner(): Promise<void> {
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
   }
-  // Provision hosted Platform installs and later logins independently of legacy
-  // data migrations, before any agent or helper resolves its initial model.
+}
+
+/**
+ * Idempotent checks and writes on data every process of the deployment
+ * shares: the auth gate and the managed platform connection. Once per deploy
+ * is enough. The connection is provisioned before any agent or helper
+ * resolves its initial model.
+ */
+export async function prepareDeployment(): Promise<void> {
+  if (isAuthMode()) await validateAuthModeStartup()
   const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
   await ensureManagedPlatformConnection()
 }
@@ -281,8 +276,9 @@ async function initializeServicesInner() {
 
   // The process setup and agent discovery are independent reads. Run them
   // together, then join before container initialization so a failed auth gate
-  // still prevents any runtime side effects.
-  const [, agents] = await Promise.all([prepareProcess(), listAgents()])
+  // still prevents any runtime side effects. Memory goes first, so a server
+  // that keeps serving after a failed gate still has its account providers.
+  const [, agents] = await Promise.all([prepareProcess().then(prepareDeployment), listAgents()])
   if (isAuthMode()) {
     try {
       await clearPendingApprovalBans()
