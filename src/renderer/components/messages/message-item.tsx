@@ -32,7 +32,6 @@ import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from 
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
-import { rehypeMentions } from '@renderer/lib/rehype-mentions'
 import { formatCompactDistance } from '@renderer/components/connections/utils'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import { format } from 'date-fns'
@@ -68,11 +67,7 @@ function spokenPlugins(spoken: boolean | undefined, offset: number | undefined):
 const NO_MENTIONS: readonly Mention[] = []
 
 export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview, mentions = NO_MENTIONS }: MarkdownBlockProps) {
-  const rehypePlugins = useMemo(() => {
-    const plugins = spokenPlugins(spoken, spokenOffset)
-    if (mentions.length === 0) return plugins
-    return [[rehypeMentions, { mentions, agentSlug }], ...(plugins ?? [])] as MarkdownProps['rehypePlugins']
-  }, [spoken, spokenOffset, mentions, agentSlug])
+  const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
   return (
     <AgentMarkdown
       text={text}
@@ -81,6 +76,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAl
       rehypePlugins={rehypePlugins}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
+      mentions={mentions}
     />
   )
 })
@@ -117,6 +113,7 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
       rehypePlugins={rehypePlugins}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
+      mentions={NO_MENTIONS}
     />
   )
 })
