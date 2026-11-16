@@ -532,7 +532,7 @@ const SDK296_SCENARIOS = [
   'sendmessage-resumed-subagent',
 ]
 
-describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s capture replays', (sdk) => {
+describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321', 'sdk325'])('%s capture replays', (sdk) => {
   const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
 
   afterEach(() => {
@@ -699,7 +699,7 @@ describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s 
 // a background subagent like any other (async_launched ack, task_started with
 // is_backgrounded, terminal task frames); only its transcript differs (see
 // subagentOwnEntries).
-describe.each(['sdk303', 'sdk311', 'sdk318', 'sdk321'])('%s fork captures replay', (sdk) => {
+describe.each(['sdk303', 'sdk311', 'sdk318', 'sdk321', 'sdk325'])('%s fork captures replay', (sdk) => {
   afterEach(() => {
     vi.clearAllMocks()
   })
