@@ -1,4 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
+import { HttpError } from '@renderer/lib/http-error'
+import { useUser } from '@renderer/context/user-context'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type {
   GlobalSettingsResponse,
@@ -19,16 +21,32 @@ import type { ModelSearchResult } from '@shared/lib/llm-provider'
 
 export type { GlobalSettingsResponse, ModelPickerSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
+/** The server's refusal of a signed-in user who is not an admin. */
+function isForbidden(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 403
+}
+
+/**
+ * The global settings. `GET /api/settings` is admin-only in auth mode, so the
+ * query is off for everyone else there (and until the session says who is
+ * asking): `data` stays undefined and `isLoading` stays false, with no request.
+ * A 403 that still arrives (a role revoked since the session was read) is not
+ * retried and stops the poll.
+ */
 export function useSettings(options?: { enabled?: boolean }) {
+  const { isAuthMode, isAdmin } = useUser()
+  const mayRead = !isAuthMode || isAdmin
   return useQuery<GlobalSettingsResponse>({
     queryKey: ['settings'],
     queryFn: async () => {
       const res = await apiFetch('/api/settings')
-      if (!res.ok) throw new Error('Failed to fetch settings')
+      if (!res.ok) throw new HttpError(res.status, 'Failed to fetch settings')
       return res.json()
     },
-    refetchInterval: 60000, // Poll less frequently - container status is cached server-side
-    enabled: options?.enabled,
+    // Poll less frequently - container status is cached server-side
+    refetchInterval: (query) => (isForbidden(query.state.error) ? false : 60000),
+    retry: (failureCount, error) => !isForbidden(error) && failureCount < 3,
+    enabled: mayRead && (options?.enabled ?? true),
   })
 }
 
