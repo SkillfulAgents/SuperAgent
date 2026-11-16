@@ -1,7 +1,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { chromium, type Browser, type Page } from 'playwright-core'
+import type { Browser, Page } from 'playwright-core'
 import { z } from 'zod'
+import { loadChromium } from './load-chromium'
 
 const BrowserUploadRequestSchema = z.object({
   sessionId: z.string().min(1),
@@ -248,6 +249,7 @@ export async function uploadToFileInput({
   file,
   urlsMatch,
 }: UploadToFileInputOptions): Promise<{ verification: UploadVerification | null }> {
+  const chromium = await loadChromium()
   const browser = await chromium.connectOverCDP(connectionUrl)
   try {
     const page = getActivePage(browser, activeTargetUrl, urlsMatch)
