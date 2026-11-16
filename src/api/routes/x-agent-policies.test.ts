@@ -56,7 +56,6 @@ vi.mock('../middleware/auth', async (importOriginal) => {
     // The real role gates, so a test of who may write a link runs them.
     AgentUser: actual.AgentUser,
     AgentAdmin: actual.AgentAdmin,
-    ResolveAgentEarly: passthrough,
     ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
     getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
     EntityAgentRole: () => () => passthrough(),
