@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appState } from '@shared/lib/app-state'
+import { backgroundSettled } from '@shared/lib/background'
 import type { AppDatabase } from '@shared/lib/db'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, auditLog, user } from '@shared/lib/db/schema'
@@ -778,6 +779,7 @@ describe('decideLoginRequest with held values', () => {
 
       expect(await readAccountValues(account.id)).toEqual({ password: secret })
       expect(sentValues()).toEqual([[secret], [secret], [secret], [secret]])
+      await backgroundSettled()
       // Everything else the container was sent: the notes on each fill, and the agent's answers.
       const elsewhere = container.calls.map((sent) => (sent.path === '/browser/login/fill' ? { ...(sent.body as object), values: null } : sent))
       for (const seen of [

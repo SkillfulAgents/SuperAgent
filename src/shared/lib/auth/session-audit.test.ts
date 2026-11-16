@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 const logAuditEventMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 vi.mock('@shared/lib/services/audit-log-service', () => ({
-  logAuditEvent: logAuditEventMock,
+  logAuditEventAndWait: logAuditEventMock,
 }))
 
 import {
