@@ -208,6 +208,7 @@ function NotificationRow({
     <AppLink
       to="/agents/$slug/sessions/$sessionId"
       params={{ slug: notification.agentSlug, sessionId }}
+      search={{ message: notification.messageUuid ?? undefined }}
       onClick={handleClick}
       className={ROW_CLASS_NAME}
     >

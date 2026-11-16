@@ -56,6 +56,7 @@ import {
   reuseEqualEmbeddedImageAliases,
   type EmbeddedImageAliases,
 } from '@renderer/lib/parse-tool-result'
+import { type LocateOutcome, type MessageTarget } from './locate-message'
 
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 
@@ -164,9 +165,10 @@ interface MessageListProps {
   suppressScrollToBottom?: boolean
   /** Height of an overlaid footer that the live edge must remain above. */
   bottomInset?: number
+  messageTarget?: MessageTarget
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0, messageTarget }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
   // useMutation returns a new object every render; only `mutate` is stable, and the
@@ -749,6 +751,26 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [visibleMessages, isActive, hasTurnStartingPendingMessage])
 
+  // Landing opens the message's turn and keeps it open once the URL drops the request.
+  const targetIndex = useMemo(
+    () => (messageTarget ? visibleMessages.findIndex((m) => m.id === messageTarget.id) : -1),
+    [messageTarget, visibleMessages],
+  )
+  const locatingTurnId = messageTarget ? completedTurnByItemId.get(messageTarget.id)?.id : undefined
+  const [ringId, setRingId] = useState<string>()
+  const onTargetSettled = useCallback((outcome: LocateOutcome) => {
+    if (outcome === 'landed' && messageTarget) {
+      if (locatingTurnId) setExpandedTurnIds((current) => new Set(current).add(locatingTurnId))
+      setRingId(messageTarget.id)
+    }
+    messageTarget?.onSettled(outcome)
+  }, [messageTarget, locatingTurnId])
+  useEffect(() => {
+    if (!ringId) return
+    const timer = setTimeout(() => setRingId(undefined), 2000)
+    return () => clearTimeout(timer)
+  }, [ringId])
+
   // All scrolling behavior — live-edge following (the owned engine), the
   // new-turn reading-line reserve, windowed rendering of long histories. The
   // domain values passed through exist so the hook re-syncs its reserve on
@@ -770,6 +792,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     handleTouchMove,
     handleTouchEnd,
   } = useMessageListScroll({
+    target: messageTarget ? { id: messageTarget.id, index: targetIndex } : undefined,
+    onTargetSettled,
     visibleMessages,
     pendingUserMessages,
     bottomInset,
@@ -1032,7 +1056,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         ) : null}
         {windowedMessages.map((item, index) => {
           const turn = completedTurnByItemId.get(item.id)
-          const expanded = !!turn && expandedTurnIds.has(turn.id)
+          const expanded = !!turn && (expandedTurnIds.has(turn.id) || turn.id === locatingTurnId)
           const previousItem = index > 0 ? windowedMessages[index - 1] : null
           const previousTurn = previousItem
             ? completedTurnByItemId.get(previousItem.id)
@@ -1101,6 +1125,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       }
                       embeddedImageAliases={embeddedImageAliases}
                       suppressInlineError={item.id === currentRoutedError?.messageId}
+                      highlighted={item.id === ringId}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (

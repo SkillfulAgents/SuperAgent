@@ -156,6 +156,7 @@ interface MessageItemProps {
   voiceReading?: boolean
   /** The temporary row of a reply still streaming. Its persisted message replaces it, so HTML previews wait for that row and run once. */
   isStreamingRow?: boolean
+  highlighted?: boolean
 }
 
 function isSubagentTool(name: string): boolean {
@@ -227,7 +228,7 @@ function SenderAvatarGroup({ sender, children }: { sender: { id: string; name: s
   )
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow, highlighted }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -378,6 +379,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
       data-turn-anchor-id={isUser ? message.id : undefined}
+      data-message-id={message.id}
     >
       {/* Message content */}
       <div
@@ -438,6 +440,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 data-notify-only={silentMention ? '' : undefined}
                 className={cn(
                   'rounded-card max-w-full text-foreground',
+                  // The mention color, for the message a mention click landed on.
+                  highlighted && 'ring-2 ring-violet-500 ring-offset-2 ring-offset-background',
                   !isAssistant && 'overflow-hidden',
                   isUser && 'px-4 py-2 bg-zinc-100 dark:bg-zinc-800/70',
                   // Relative for the read-aloud controls, which overlay the

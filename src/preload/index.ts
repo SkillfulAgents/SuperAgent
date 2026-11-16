@@ -160,9 +160,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Navigation from tray menu or deep links.
-  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void): (() => void) => {
-    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown) =>
-      callback(agentSlug as string, sessionId as string | null | undefined)
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void): (() => void) => {
+    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown, messageUuid: unknown) =>
+      callback(agentSlug as string, sessionId as string | null | undefined, typeof messageUuid === 'string' ? messageUuid : undefined)
     ipcRenderer.on('navigate-to-agent', handler)
     return () => {
       ipcRenderer.removeListener('navigate-to-agent', handler)
@@ -571,7 +571,7 @@ declare global {
       cancelPlatformSignIn?: () => Promise<void>
       openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void) => () => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => () => void
       removeOpenSettings: () => void

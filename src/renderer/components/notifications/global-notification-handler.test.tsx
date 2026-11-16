@@ -256,6 +256,34 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(showOSNotification).toHaveBeenCalled()
   })
 
+  it('a mention banner carries the message it tags, so its click lands there', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_mention',
+      notificationId: 'n1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Dana Lee mentioned you',
+      body: 'look at this',
+      messageUuid: 'msg-7',
+    })
+
+    expect(showOSNotification).toHaveBeenCalledWith(
+      'Dana Lee mentioned you', 'look at this', undefined,
+      expect.objectContaining({ context: expect.objectContaining({ sessionId: 'sess-1', messageUuid: 'msg-7' }) }),
+    )
+  })
+
   // For chattier types (chat-integration, session-complete) we keep the
   // visibility-only gate to avoid spam for users with side-panel windows.
   // When unfocused-but-visible, those types should NOT fire if the user is
