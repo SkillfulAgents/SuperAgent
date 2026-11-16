@@ -19,17 +19,44 @@ function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
 
 /**
  * Routes whose request bodies carry credentials: a sign-in form's values,
- * a secret, a password manager's verification code. The HTTP integration
- * buffers incoming bodies and attaches them to any event captured while the
- * request is handled; these never go along.
+ * a secret, a password manager's verification code, an integration's tokens.
+ * The HTTP integration buffers incoming bodies and attaches them to any event
+ * captured while the request is handled; these never go along.
  */
-export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)/
+export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)|\/api\/(agent|chat)-integrations(?:[/?#]|$)|\/api\/x-agent\/chat\/add(?:[?#]|$)/
 
 /** Drop a captured request body from an event raised while handling a credential route. */
 export function scrubCredentialRequestBody<T extends { request?: { url?: string; data?: unknown } }>(event: T): T {
   const url = event.request?.url
   if (url && CREDENTIAL_BODY_ROUTE.test(url) && event.request) delete event.request.data
   return event
+}
+
+/** A Telegram bot token, `<bot id>:<secret>`, bare or inside an API URL's `bot<token>` segment. */
+const TELEGRAM_BOT_TOKEN = /(\d{6,}):[\w-]{30,}/g
+
+/** The text with every Telegram bot token's secret replaced; the bot id stays. */
+export function redactBotTokens(text: string): string {
+  return text.replace(TELEGRAM_BOT_TOKEN, '$1:[redacted]')
+}
+
+/** Redact bot tokens in every string of an event the SDK is about to send. */
+function redactBotTokensInEvent<T extends object>(event: T): T {
+  for (const [key, value] of Object.entries(event)) {
+    if (typeof value === 'string') Reflect.set(event, key, redactBotTokens(value))
+    else if (value && typeof value === 'object') redactBotTokensInEvent(value)
+  }
+  return event
+}
+
+/** Redact bot tokens in a breadcrumb; a console breadcrumb's raw arguments go, its message holds their text. */
+function scrubBreadcrumb(breadcrumb: Sentry.Breadcrumb): Sentry.Breadcrumb {
+  const data = breadcrumb.data && { ...breadcrumb.data }
+  if (data) {
+    if (breadcrumb.category === 'console') delete data.arguments
+    if (typeof data.url === 'string') data.url = redactBotTokens(data.url)
+  }
+  return { ...breadcrumb, message: breadcrumb.message && redactBotTokens(breadcrumb.message), data }
 }
 
 /**
@@ -77,7 +104,21 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
         // Settings unreadable, or not available yet (a boot failure before the
         // database opened): allow the event (fail-open for crash reports).
       }
-      return scrubCredentialRequestBody(event)
+      // A throw here makes the SDK send its own report, unscrubbed; dropping the event is safe.
+      try {
+        return redactBotTokensInEvent(scrubCredentialRequestBody(event))
+      } catch {
+        return null
+      }
+    },
+    // The SDK's own failure reports skip beforeSend but carry the breadcrumbs. A throw
+    // here would reach whatever recorded the breadcrumb.
+    beforeBreadcrumb(breadcrumb) {
+      try {
+        return scrubBreadcrumb(breadcrumb)
+      } catch {
+        return null
+      }
     },
   })
 
