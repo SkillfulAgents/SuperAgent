@@ -325,6 +325,7 @@ export class LiveSession {
       emit,
       responseStarted: () => this.response.beginStreamedText(),
       textStreamed: (text) => this.response.appendStreamedText(text),
+      mayStreamLate: () => this.ctx.isCurrent(),
     })
     // The background work, and the process it belongs to, carry over with
     // the level set describing them: the incoming handshake decides whether
@@ -876,6 +877,8 @@ export class LiveSession {
    */
   dispose(options: { replaced?: boolean } = {}): void {
     this.cancelSettleAfterStop()
+    this.stream.dropHeldToolInput()
+    this.subagents.dropHeldToolInputs()
     // The session is gone: a sign-in the host is still deciding raises no card.
     this.toolCalls.dropLoginDecisions()
     if (!options.replaced) this.toolCalls.dropHostRunChecks()
@@ -1407,6 +1410,10 @@ export class LiveSession {
     // queued turn nor resets that turn's answer early.
     if (!classification.isInterrupt && content.subtype !== 'resume') this.response.turnCompleted()
     this.stream.isStreaming = false
+    // A result that cut a tool call short (an API error mid-input) leaves its
+    // last input frame held: sent after the turn settles, it would reopen
+    // the card in clients that had just reset.
+    this.stream.dropHeldToolInput()
 
     if (isError && inferOomSigkillFatal(content) && this.ctx.runtime.fatalResult(this.ctx.transport(), 'oom_sigkill') === 'defer_for_recovery') {
       this.ctx.runtime.unexpectedDeath()

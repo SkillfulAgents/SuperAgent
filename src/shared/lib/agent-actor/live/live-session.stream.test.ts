@@ -105,6 +105,43 @@ describe('main message handling', () => {
     expect(ready[0].toolName).toBe('Bash')
   })
 
+  it('sends a tool call\'s complete input before its ready frame, and no input frame after', () => {
+    vi.useFakeTimers()
+    try {
+      mockClient.emit({ type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-1', name: 'Bash' } } })
+      for (const partial_json of ['{"comm', 'and":', '"ls', ' -la"}']) {
+        mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json } } })
+      }
+      mockClient.emit({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      vi.advanceTimersByTime(60_000)
+
+      const types = sseEvents.map(e => e.type).filter(type => type.startsWith('tool_use_'))
+      expect(types).toEqual(['tool_use_start', 'tool_use_streaming', 'tool_use_streaming', 'tool_use_ready'])
+      expect(sseEvents.filter(e => e.type === 'tool_use_streaming').at(-1).partialInput).toBe('{"command":"ls -la"}')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not send a held input frame after a result ended the turn mid-input', () => {
+    vi.useFakeTimers()
+    try {
+      sessions().markActive(SESSION_ID)
+      mockClient.emit({ type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'tool-1', name: 'Bash' } } })
+      mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"comm' } } })
+      mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: 'and":' } } })
+
+      mockClient.emit({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error' })
+      const heard = sseEvents.length
+      vi.advanceTimersByTime(60_000)
+
+      expect(sseEvents.slice(heard).filter(e => e.type === 'tool_use_streaming')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'tool_use_streaming')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('skips messages after session is interrupted (except result)', async () => {
     sessions().markActive(SESSION_ID)
     sessions().markInterrupted(SESSION_ID)

@@ -7,6 +7,7 @@
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { redactStreamedToolInput } from './redaction'
 import type { SessionEvent } from './session-channel'
+import { ToolInputThrottle } from './tool-input-throttle'
 
 export interface MainStreamSink {
   emit(event: SessionEvent): void
@@ -14,6 +15,12 @@ export interface MainStreamSink {
   responseStarted(): void
   /** Reply text streamed. */
   textStreamed(text: string): void
+  /**
+   * Whether a held tool-input frame may still go out when its timer fires,
+   * outside any stream event. False once the attachment the frame would go
+   * out on is no longer the session's.
+   */
+  mayStreamLate?(): boolean
 }
 
 /** A tool call the agent finished writing. */
@@ -47,7 +54,13 @@ export class MainStream {
   private messageId: string | null = null
   private thinkingBlockIndex: number | null = null
 
-  constructor(private readonly sink: MainStreamSink) {}
+  // One tool call is written at a time: its input frames are paced, and what
+  // is held goes out before anything that ends the input.
+  private readonly toolInput: ToolInputThrottle
+
+  constructor(private readonly sink: MainStreamSink) {
+    this.toolInput = new ToolInputThrottle(() => this.currentToolUse !== null && (sink.mayStreamLate?.() ?? true))
+  }
 
   /** One stream event. Returns the tool call it finished, for the session to act on. */
   event(event: StreamEvent): FinishedToolUse | null {
@@ -58,6 +71,7 @@ export class MainStream {
         // with a tool call stays 'working' rather than flipping streaming→working.
         this.isStreaming = false
         this.currentToolUse = null
+        this.toolInput.reset()
         this.isThinking = false
         this.messageId = event.message?.id ?? null
         this.thinkingBlockIndex = null
@@ -71,6 +85,7 @@ export class MainStream {
         if (event.content_block?.type === 'tool_use') {
           this.currentToolUse = { id: event.content_block.id!, name: event.content_block.name! }
           this.currentToolInput = ''
+          this.toolInput.reset()
           this.sink.emit({
             type: 'tool_use_start',
             toolId: event.content_block.id,
@@ -101,24 +116,26 @@ export class MainStream {
           this.sink.emit({ type: 'thinking_delta', thinkingId: this.thinkingId(), text: event.delta.thinking })
         } else if (event.delta?.type === 'input_json_delta') {
           this.currentToolInput += event.delta.partial_json || ''
-          this.sink.emit({
-            type: 'tool_use_streaming',
-            toolId: this.currentToolUse?.id,
-            toolName: this.currentToolUse?.name,
-            partialInput: redactStreamedToolInput(this.currentToolUse?.name, this.currentToolInput),
-          })
+          // The frame carries the whole input so far, so it is paced rather
+          // than sent per delta; it is built (and redacted) when it goes out.
+          this.toolInput.offer(this.currentToolInput.length, () => this.emitToolInput())
         }
         return null
 
       case 'content_block_stop':
         if (this.isThinking) this.endThinking()
+        // The input is complete: its last frame goes out now, ahead of
+        // whatever the finished call triggers and of tool_use_ready.
+        this.toolInput.flush()
         return this.currentToolUse
           ? { id: this.currentToolUse.id, name: this.currentToolUse.name, input: this.currentToolInput }
           : null
 
-
       case 'message_stop':
         this.isStreaming = false
+        // A tool call whose block stop was missed: what was held is its last frame.
+        this.toolInput.flush()
+        this.toolInput.reset()
         this.currentToolUse = null
         this.currentToolInput = ''
         // A thinking block whose stop was missed ends with its message.
@@ -135,6 +152,9 @@ export class MainStream {
   /** The finished tool call has been acted on: its card stops streaming. */
   toolUseReady(): void {
     if (!this.currentToolUse) return
+    // No input frame may follow the ready frame.
+    this.toolInput.flush()
+    this.toolInput.reset()
     this.sink.emit({ type: 'tool_use_ready', toolId: this.currentToolUse.id, toolName: this.currentToolUse.name })
     this.currentToolUse = null
     this.currentToolInput = ''
@@ -184,12 +204,31 @@ export class MainStream {
     this.isRetrying = false
   }
 
-  /** The turn stopped: nothing is streaming any more. */
+  /**
+   * The turn stopped: nothing is streaming any more. A held input frame is
+   * dropped, not sent: its call was abandoned, and the frame that ends the
+   * turn resets the clients' streaming state.
+   */
   stop(): void {
     this.isStreaming = false
     this.currentText = ''
+    this.toolInput.reset()
     this.currentToolUse = null
     this.currentToolInput = ''
+  }
+
+  /** The turn or the attachment ended without a stream event saying so: a tool-input frame still held is never sent. */
+  dropHeldToolInput(): void {
+    this.toolInput.reset()
+  }
+
+  private emitToolInput(): void {
+    this.sink.emit({
+      type: 'tool_use_streaming',
+      toolId: this.currentToolUse?.id,
+      toolName: this.currentToolUse?.name,
+      partialInput: redactStreamedToolInput(this.currentToolUse?.name, this.currentToolInput),
+    })
   }
 
   private endThinking(): void {
