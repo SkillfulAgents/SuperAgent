@@ -777,5 +777,20 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1794451767741,
     "hash": "2c87583b4f97fb0437d89d54aaecc08d1d02381685edfc04c15ebaebde39e8c3"
+  },
+  {
+    "sql": [
+      "DROP INDEX `audit_log_object_idx`;",
+      "\nCREATE INDEX `audit_log_object_created_at_idx` ON `audit_log` (`object`,`created_at`);",
+      "\nDROP INDEX `chat_integration_sessions_integration_id_idx`;",
+      "\nCREATE INDEX `chat_integration_sessions_integration_chat_idx` ON `chat_integration_sessions` (`integration_id`,`external_chat_id`);",
+      "\nDROP INDEX `notifications_agent_slug_is_read_idx`;",
+      "\nCREATE INDEX `notifications_agent_read_type_idx` ON `notifications` (`agent_slug`,`is_read`,`type`,`recipient_user_id`,`session_id`);",
+      "\nCREATE INDEX `notifications_agent_created_at_idx` ON `notifications` (`agent_slug`,`created_at`);",
+      "\nCREATE INDEX `scheduled_tasks_agent_slug_status_idx` ON `scheduled_tasks` (`agent_slug`,`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794868843117,
+    "hash": "d4ce1cca596492dca6fbeaf7f86ba65f0471fa7e9950d4e6906753b058969861"
   }
 ]
