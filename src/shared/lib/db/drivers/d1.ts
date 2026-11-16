@@ -20,9 +20,13 @@ interface D1Statement {
   raw(): Promise<unknown[][]>
 }
 
+/** D1 binds at most this many parameters in one statement. */
+const D1_MAX_BOUND_PARAMETERS = 100
+
 export function d1(binding: D1Binding): DatabaseDriver {
   return {
     name: 'd1',
+    maxBoundParameters: D1_MAX_BOUND_PARAMETERS,
     open: () => ({ db: drizzle(binding as Parameters<typeof drizzle>[0], { schema }), close: () => {} }),
   }
 }

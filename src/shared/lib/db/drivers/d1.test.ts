@@ -140,3 +140,9 @@ describe('the D1 driver', () => {
     expect(journalRows(sqlite)).toEqual({ n: 0 })
   })
 })
+
+describe('d1', () => {
+  it("names D1's limit of 100 bound parameters, so writes are split to fit it", () => {
+    expect(d1(memoryD1().binding).maxBoundParameters).toBe(100)
+  })
+})
