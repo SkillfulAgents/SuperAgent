@@ -238,11 +238,11 @@ describe('Google Drive volume access and transport', () => {
     }
     forward.mockResolvedValueOnce(new Response(null, { headers: { Location: 'https://evil.example/upload' } }))
     await expect(driveUpload('drive', { method: 'POST', path: 'upload/drive/v3/files', json: { name: 'x' } }, new Blob([new Uint8Array(512 * 1024 + 1)]).stream())).rejects.toThrow('www.googleapis.com')
-    const chunks = new Uint8Array(512 * 1024 + 3).fill(7)
+    const chunks = new Uint8Array(16 * 1024 * 1024 + 3).fill(7)
     forward.mockClear()
     await driveUpload('drive', { method: 'POST', path: 'upload/drive/v3/files', json: { name: 'x', parents: ['team'] } }, new Blob([chunks]).stream(), { agentSlug: 'agent-a' })
     const puts = forward.mock.calls.filter(([call]) => call.method === 'PUT').map(([call]) => [call.headers.get('Content-Range'), call.headers.get('Content-Type'), call.body.byteLength])
-    expect(puts).toEqual([['bytes 0-524287/*', 'application/octet-stream', 524288], ['bytes 524288-524290/524291', 'application/octet-stream', 3]])
+    expect(puts).toEqual([['bytes 0-16777215/*', 'application/octet-stream', 16777216], ['bytes 16777216-16777218/16777219', 'application/octet-stream', 3]])
     expect(forward.mock.calls[0][0].headers.get('Content-Type')).toBe('application/json')
     expect(forward.mock.calls[0][0].targetUrl).toContain('uploadType=resumable')
     // A client that gave up never sees the upload finish: no chunk is sent once it aborts.

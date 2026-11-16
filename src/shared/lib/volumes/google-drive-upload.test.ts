@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const { proxy, token } = vi.hoisted(() => ({ proxy: vi.fn(), token: vi.fn() }))
 vi.mock('@shared/lib/composio/client', () => ({
   getConnectionToken: token, proxyExecute: proxy, ComposioRedactedTokenError: class extends Error {},
@@ -16,7 +16,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 vi.mock('@shared/lib/account-providers/provider-factory', () => ({ getAccountProviderByName: () => provider }))
 import { ComposioRedactedTokenError, type ProxyExecuteParams } from '@shared/lib/composio/client'
 import { ComposioAccountProvider } from '@shared/lib/account-providers/composio-account-provider'
-import { driveUpload, UPLOAD_CHUNK_BYTES } from './google-drive-client'
+import { driveUpload, MULTIPART_MAX_BYTES, UPLOAD_CHUNK_BYTES } from './google-drive-client'
 
 let provider: ComposioAccountProvider
 beforeEach(() => {
@@ -25,8 +25,10 @@ beforeEach(() => {
   token.mockRejectedValue(new ComposioRedactedTokenError('Managed account'))
 })
 
+afterEach(() => { vi.unstubAllGlobals() })
+
 describe('Google Drive uploads through the managed Composio transport', () => {
-  it.each([0, 21, UPLOAD_CHUNK_BYTES, UPLOAD_CHUNK_BYTES + 1, 5 * 1024 * 1024])('commits all %i bytes within the encoded request cap', async size => {
+  it.each([0, 21, MULTIPART_MAX_BYTES, MULTIPART_MAX_BYTES + 1, UPLOAD_CHUNK_BYTES, UPLOAD_CHUNK_BYTES + 1])('commits all %i bytes, sending session chunks straight to Google', async size => {
     let committed: Buffer | undefined
     const staged: Buffer[] = []
     let multipart = 0
@@ -49,18 +51,24 @@ describe('Google Drive uploads through the managed Composio transport', () => {
         committed = bytes.subarray(contentStart, bytes.lastIndexOf(`\r\n--${boundary}--`))
         return stored()
       }
-      if (url.searchParams.get('uploadType') === 'resumable') return { status: 200, data: null, headers: { Location: 'https://www.googleapis.com/upload/session' } }
-      const range = p.parameters?.find(header => header.name.toLowerCase() === 'content-range')?.value
-      staged.push(bytes)
-      if (range?.endsWith('/*')) return { status: 308, data: null, headers: {} }
-      committed = Buffer.concat(staged)
-      return stored()
+      expect(url.searchParams.get('uploadType')).toBe('resumable')
+      return { status: 200, data: null, headers: { Location: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=session' } }
     })
+    const direct = vi.fn(async (_url: string, init: RequestInit) => {
+      const headers = new Headers(init.headers)
+      staged.push(Buffer.from(init.body as ArrayBuffer))
+      if (headers.get('content-range')?.endsWith('/*')) return new Response(null, { status: 308 })
+      committed = Buffer.concat(staged)
+      return Response.json({ id: 'file', name: 'café.bin', mimeType: 'application/octet-stream', size: String(size), modifiedTime: '2026-10-07T12:00:00Z' })
+    })
+    vi.stubGlobal('fetch', direct)
     const content = Uint8Array.from({ length: size }, (_, i) => i % 256)
     await driveUpload('account', { method: 'POST', path: 'upload/drive/v3/files', json: { name: 'café.bin', parents: ['team'] } }, new Blob([content]).stream())
     expect(committed?.equals(Buffer.from(content))).toBe(true)
-    expect(multipart).toBe(size <= UPLOAD_CHUNK_BYTES ? 1 : 0)
-    if (size <= UPLOAD_CHUNK_BYTES) expect(proxy).toHaveBeenCalledOnce()
+    expect(multipart).toBe(size <= MULTIPART_MAX_BYTES ? 1 : 0)
+    expect(staged.length).toBe(size <= MULTIPART_MAX_BYTES ? 0 : Math.ceil(size / UPLOAD_CHUNK_BYTES))
+    expect(proxy).toHaveBeenCalledOnce()
+    expect(direct.mock.calls.every(([url, init]) => new URL(String(url)).searchParams.get('upload_id') === 'session' && !new Headers(init.headers).has('authorization') && init.redirect === 'manual')).toBe(true)
   })
 
   it('updates a Google Doc in one request with the import MIME type in the media part', async () => {
