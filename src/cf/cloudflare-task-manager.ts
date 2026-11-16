@@ -27,6 +27,8 @@ import { captureException } from '@shared/lib/error-reporting'
 const OBJECT_NAME = 'org'
 /** How often an instance checks that it is still the live one. */
 const CHECK_EVERY_MS = 10_000
+/** How long a job waits before this code looks again at a task type it does not know. */
+const UNKNOWN_TASK_RETRY_MS = 10 * 60_000
 
 /** What CloudflareTaskManager.execute hands back for the object to apply. */
 export type ExecutionOutcome =
@@ -186,8 +188,11 @@ export class TaskManagerDurableObject extends DurableObject<Env> {
     const app = await import('./boot')
     const tasks = app.backgroundTasks()
     if (!tasks.handles(job.task_type)) {
-      console.error(`[task-manager] no task is registered for type ${job.task_type}; dropping job ${job.id}`)
-      this.ctx.storage.sql.exec('DELETE FROM job WHERE id = ? AND gen = ?', job.id, job.gen)
+      // Code that does not know the type (an older deploy during a rollout, or after a rollback) keeps the
+      // job for code that does: a one-off or a retry waits and is looked at again, a recurring job keeps its passes.
+      tasks.report(new Error(`No task is registered for type ${job.task_type}; job ${job.id} is kept and looked at again later`), { taskType: job.task_type, jobId: job.id, attempt: job.attempt })
+      this.ctx.storage.sql.exec('UPDATE job SET wake_at = ? WHERE id = ? AND gen = ? AND wake_at IS NOT NULL', this.now() + UNKNOWN_TASK_RETRY_MS, job.id, job.gen)
+      await this.rearm()
       return
     }
     const controller = new AbortController()

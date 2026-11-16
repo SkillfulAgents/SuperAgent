@@ -246,6 +246,20 @@ describe('TaskManagerDurableObject', () => {
     expect(task.runs.map((run) => run.note)).toEqual(['Send the March invoice'])
   })
 
+  it('keeps a job whose task type this code does not know, and looks at it again later', async () => {
+    await manager.at(T0, 'reminder:invoice', spec('Send the March invoice'))
+    // An older deploy: its isolate never registered the task.
+    const older = managerFor(object)
+
+    await object.alarm()
+    expect(task.runs).toEqual([])
+    expect(object.alarmAt).toBe(T0 + 10 * 60_000)
+
+    older.register(task)
+    await after(object, 10 * 60_000)
+    expect(task.runs.map((run) => run.note)).toEqual(['Send the March invoice'])
+  })
+
   it('takes calls from another isolate in the order they were made', async () => {
     const cancelled = manager.cancel('reminder:invoice')
     const scheduled = manager.at(T0, 'reminder:invoice', spec('kept'))
