@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CircleCheckBig, Hand, Ban, ChevronDown, CircleDashed, RotateCcw } from 'lucide-react'
+import { CircleCheckBig, Hand, Ban, ChevronDown, CircleDashed, RotateCcw, ChevronRight } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import {
   Tooltip,
@@ -136,10 +136,16 @@ export function PolicyDecisionDropdown({
   disabled = false,
   inheritedValue,
   inheritedLabel,
+  look = 'field',
 }: {
   value: PolicyDecision
   onChange: (value: PolicyDecision) => void
   className?: string
+  /**
+   * `field`: a framed control with the decision's icon. `row`: the value in muted text with a soft right chevron, for
+   * the end of a list row, like the agent settings panel's rows.
+   */
+  look?: 'field' | 'row'
   /**
    * When false, the "Reset to default" menu item is omitted — for strict
    * three-way policies with no inherit tier, mirroring the toggle's
@@ -167,11 +173,27 @@ export function PolicyDecisionDropdown({
           data-decision={value}
           data-inherited={inheriting}
           className={cn(
-            'flex h-7 w-36 items-center gap-1.5 whitespace-nowrap rounded-control border border-input bg-transparent px-2 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring',
+            look === 'row'
+              ? '-mr-1 flex h-8 items-center gap-1.5 whitespace-nowrap rounded-control px-1 text-[12px]/5 text-muted-foreground/70 hover:text-muted-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+              : 'flex h-7 w-36 items-center gap-1.5 whitespace-nowrap rounded-control border border-input bg-transparent px-2 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring',
             disabled && 'cursor-wait opacity-60',
             className,
           )}
         >
+          {look === 'row' ? (
+            <>
+              {/* The decision's icon, greyed to the value's colour so the row stays quiet. */}
+              {current && CurrentIcon
+                ? <CurrentIcon className="h-3.5 w-3.5 shrink-0" />
+                : <CircleDashed className="h-3.5 w-3.5 shrink-0" />}
+              <span className="truncate">
+                {current ? current.tooltip : 'Default'}
+                {inheriting && inheritedLabel && ` (${inheritedLabel})`}
+              </span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/50" />
+            </>
+          ) : (
+          <>
           {current && CurrentIcon ? (
             <CurrentIcon className={cn('h-3.5 w-3.5 shrink-0', current.activeColor, inheriting && 'opacity-60')} />
           ) : (
@@ -182,6 +204,8 @@ export function PolicyDecisionDropdown({
             {inheriting && inheritedLabel && ` (${inheritedLabel})`}
           </span>
           <ChevronDown className="ml-auto h-3.5 w-3.5 shrink-0 opacity-50" />
+          </>
+          )}
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-40 p-1">

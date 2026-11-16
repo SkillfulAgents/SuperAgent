@@ -15,6 +15,41 @@ import { compactAgo } from '@renderer/lib/last-run'
 import { flattenSections, getRecent, searchAll, type FlatItem, type SearchSections } from './filter'
 
 /**
+ * The search palette's box: a fixed 640 by 560 box (narrower or shorter only when the window is), so it holds still as
+ * results come and go; the list scrolls inside it. Installed-PWA full-bleed: the box is top-anchored (top-4), so a top
+ * margin of the safe-area inset drops the whole palette (input + close X) below the Dynamic Island. env() is 0 on
+ * desktop / non-standalone mobile Safari; md: resets it (desktop centers). Shared with other pickers built like search.
+ */
+export const SEARCH_DIALOG_CONTENT_CLASS = 'search-anim flex h-[560px] max-w-[640px] flex-col p-0 gap-0 overflow-hidden top-4 translate-y-0 mt-[env(safe-area-inset-top)] md:top-[50%] md:-translate-y-1/2 md:mt-0 [&>button]:top-6 [&>button]:right-5 md:[&>button]:hidden'
+
+/**
+ * The palette's header: the field alone, in large type, with no rule beneath it and, from md, no close button (Escape
+ * or a click outside closes; touch keeps the X, so the field leaves room for it). Its icon sits on the rows' left edge.
+ */
+export function SearchField({ inputRef, value, onChange, placeholder, testId }: {
+  inputRef: React.RefObject<HTMLInputElement>
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+  testId: string
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-4 pb-3 pl-6 pr-12 pt-5 md:pr-6">
+      <Search className="h-[18px] w-[18px] shrink-0 text-muted-foreground" />
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 bg-transparent text-lg outline-none placeholder:text-muted-foreground/60"
+        data-testid={testId}
+      />
+    </div>
+  )
+}
+
+/**
  * Rendered inside the router, so it can use the `useNavigate` hook directly.
  * Open state comes from SearchContext (`open`/`closeSearch`), which lives above
  * the router.
@@ -146,36 +181,23 @@ export function SearchDialog() {
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) closeSearch() }}>
-      {/* Installed-PWA full-bleed: the box is top-anchored (top-4), so a top margin of the
-          safe-area inset drops the whole palette (input + close X) below the Dynamic Island.
-          env() is 0 on desktop / non-standalone mobile Safari; md: resets it (desktop centers). */}
       <DialogContent
-        // A fixed 640 by 560 box (narrower or shorter only when the window is), so it
-        // holds still as results come and go; the list scrolls inside it.
-        className="search-anim flex h-[560px] max-w-[640px] flex-col p-0 gap-0 overflow-hidden top-4 translate-y-0 mt-[env(safe-area-inset-top)] md:top-[50%] md:-translate-y-1/2 md:mt-0 [&>button]:top-6 [&>button]:right-5 md:[&>button]:hidden"
+        className={SEARCH_DIALOG_CONTENT_CLASS}
         onKeyDown={handleKeyDown}
         aria-label="Search agents, dashboards, and sessions"
       >
         <DialogTitle className="sr-only">Search agents, dashboards, and sessions</DialogTitle>
         <DialogDescription className="sr-only">Find agents, dashboards, and sessions by name</DialogDescription>
-        {/* The header is the field alone: large type, no rule beneath it, and from md
-            no close button (Escape or a click outside closes; touch keeps the X, so
-            the field leaves room for it). Its icon sits on the rows' left edge. */}
-        <div className="flex shrink-0 items-center gap-4 pb-3 pl-6 pr-12 pt-5 md:pr-6">
-          <Search className="h-[18px] w-[18px] shrink-0 text-muted-foreground" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value)
-              setActiveIndex(0)
-            }}
-            placeholder="Search agents, dashboards, and sessions..."
-            className="min-w-0 flex-1 bg-transparent text-lg outline-none placeholder:text-muted-foreground/60"
-            data-testid="search-input"
-          />
-        </div>
+        <SearchField
+          inputRef={inputRef}
+          value={query}
+          onChange={(value) => {
+            setQuery(value)
+            setActiveIndex(0)
+          }}
+          placeholder="Search agents, dashboards, and sessions..."
+          testId="search-input"
+        />
         <div
           ref={listRef}
           className="min-h-0 flex-1 overflow-y-auto px-3 pb-3"
@@ -266,7 +288,7 @@ function lastActive(date: ApiAgent['lastActivityAt']): string {
 }
 
 /** A labelled run of rows. Nothing is drawn for a section with no rows, label included. */
-function ResultSection({ label, count, children }: { label: string; count: number; children: React.ReactNode }) {
+export function ResultSection({ label, count, children }: { label: string; count: number; children: React.ReactNode }) {
   if (count === 0) return null
   return (
     // Space above a section sets it apart from the one before; the first needs
@@ -286,7 +308,7 @@ function ResultSection({ label, count, children }: { label: string; count: numbe
  * dashboard (`owned`) belongs to an agent, so its second line names that agent
  * behind a small avatar, and the row itself has none.
  */
-function ResultRow({
+export function ResultRow({
   index,
   active,
   agent,
@@ -299,7 +321,7 @@ function ResultRow({
 }: {
   index: number
   active: boolean
-  agent: ApiAgent
+  agent: Pick<ApiAgent, 'slug' | 'avatar'>
   owned?: boolean
   title: React.ReactNode
   subtitle: string
