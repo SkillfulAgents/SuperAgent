@@ -494,7 +494,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
       if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
       const deadline = Date.now() + SEND_MESSAGE_BUDGET_MS
       const { text, alsoSendToChannel } = z.object({ text: z.string().min(1), alsoSendToChannel: z.boolean() }).parse(input)
-      await this.startWorking(context.externalId, 'working').catch(() => {})
+      background(this.startWorking(context.externalId, 'working').catch(() => {}), { name: 'chat-integration.send-message-start-working' })
       try {
         await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 1100))
         if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
@@ -510,7 +510,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
         const { messageId, undelivered, error } = delivered
         if (undelivered.length) throw new UndeliveredMessageError(undelivered, error)
         return messageId
-      } finally { await this.stopWorking(context.externalId).catch(() => {}) }
+      } finally { background(this.stopWorking(context.externalId).catch(() => {}), { name: 'chat-integration.send-message-stop-working' }) }
     })]
     if (this.listChatUsers) tools.push(tool('list_users', 'List reachable people.', {}, () => this.listChatUsers!()))
     if (this.listChatChannels) tools.push(tool('list_channels', 'List reachable channels.', {}, () => this.listChatChannels!()))

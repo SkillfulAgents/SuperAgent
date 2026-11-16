@@ -10,6 +10,7 @@
 import * as Sentry from '@sentry/node'
 import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 import { ERROR_REPORTING_INGEST_URL } from './config'
+import { isTelegramTemporary } from '../chat-integrations/telegram-error'
 import { collectEnvironmentData } from './environment'
 import { APP_VERSION } from '../config/version'
 
@@ -91,7 +92,7 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
       }),
     ],
     // Consent is read fresh for every event, never from an earlier read.
-    async beforeSend(event) {
+    async beforeSend(event, hint) {
       try {
         // Loaded here, not at the top: error reporting is part of the
         // database's boot graph, and settings reads go through the database.
@@ -106,6 +107,8 @@ function startServerProvider(options: ErrorReportingInitOptions): ErrorReporting
       }
       // A throw here makes the SDK send its own report, unscrubbed; dropping the event is safe.
       try {
+        // Telegram being busy or unreachable is reported as a warning.
+        if (isTelegramTemporary(hint.originalException)) event.level = 'warning'
         return redactBotTokensInEvent(scrubCredentialRequestBody(event))
       } catch {
         return null
