@@ -10374,6 +10374,33 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(persistedPreferences()).toEqual({ defaultModel: 'opus' })
   })
 
+  it('answers in the form the GET gives, so a client can keep the response instead of reading again', async () => {
+    // A stored default whose account is gone: the GET hides it, and a PUT that
+    // only changes retention must not hand the stored model back.
+    storePreferences({ defaultModel: 'retired-model', defaultLlmProviderId: 'gone' })
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const resolve = vi.spyOn(connections, 'resolveConnectionSelection').mockResolvedValue(null)
+    const settings = mockRuntimeSettings()
+    mockRuntimeSettings.mockReturnValue({ ...settings, llmDefault: { model: 'model-a', llmProviderId: 'conn-1' } } as never)
+    try {
+      const res = await putJson(PREFS_URL, { autoDeleteInactiveDays: 7 })
+
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toEqual({ autoDeleteInactiveDays: 7, defaultLlmProviderId: null })
+      // What is stored keeps the model: resolving is for the answer only.
+      const stored = persistedPreferences() as Record<string, unknown>
+      expect(stored).toEqual({ defaultModel: 'retired-model', defaultLlmProviderId: 'gone', autoDeleteInactiveDays: 7 })
+
+      storePreferences(stored)
+      const read = await app.request(`http://localhost${PREFS_URL}`)
+      expect(await read.json()).toEqual(body)
+    } finally {
+      resolve.mockRestore()
+      mockRuntimeSettings.mockReturnValue(settings)
+    }
+  })
+
   it('strips unknown keys from the stored prefs and the response', async () => {
     const res = await putJson(PREFS_URL, { defaultModel: 'opus', favoriteColor: 'blue' })
 
