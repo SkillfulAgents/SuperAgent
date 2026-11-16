@@ -85,6 +85,7 @@ src/shared/lib/auth/oidc.integration.test.ts
 src/shared/lib/auth/oidc-issuer-policy.integration.test.ts
 src/shared/lib/auth/oidc-discovery-timeout.integration.test.ts
 src/shared/lib/auth/user-deletion.integration.test.ts
+src/shared/lib/auth/session-user-join.integration.test.ts
 src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts

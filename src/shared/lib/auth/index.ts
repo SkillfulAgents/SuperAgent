@@ -93,6 +93,8 @@ function createAuthInstance({ authSettings, trustedOrigins, baseURL, oauthProvid
         verification: schema.verification,
       },
     }),
+    // A session is read with its user in one query (the relations are in db/schema.ts).
+    advanced: { database: { joins: true } },
     emailAndPassword: {
       enabled: true,
       minPasswordLength: authSettings.passwordMinLength,
