@@ -1,7 +1,7 @@
-export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel'
 
 export interface BrowserConnectionInfo {
-  /** Full CDP WebSocket URL (for remote providers like Browserbase) */
+  /** Full CDP WebSocket URL (for remote providers like Browserbase and Steel) */
   cdpUrl?: string
   /** Local CDP port (for local providers like Chrome — container resolves to CDP URL) */
   port?: number

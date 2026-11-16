@@ -24,6 +24,7 @@ const mockGetEffectiveAgentLimits = vi.fn()
 const mockGetCustomEnvVars = vi.fn()
 const mockGetVoiceSettings = vi.fn()
 const mockGetBrowserbaseApiKeyStatus = vi.fn()
+const mockGetSteelApiKeyStatus = vi.fn()
 const mockGetNangoApiKeyStatus = vi.fn()
 const mockGetAccountProviderUserId = vi.fn()
 const mockGetDefaultAccountProviderType = vi.fn()
@@ -88,6 +89,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   composioUserIdFrom: (...args: unknown[]) => mockGetComposioUserId(...args),
   effectiveModelsFrom: (...args: unknown[]) => mockGetEffectiveModels(...args),
   browserbaseApiKeyStatusFrom: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
+  steelApiKeyStatusFrom: (...args: unknown[]) => mockGetSteelApiKeyStatus(...args),
   nangoApiKeyStatusFrom: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
   accountProviderUserIdFrom: (...args: unknown[]) => mockGetAccountProviderUserId(...args),
   getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
@@ -318,6 +320,7 @@ function setupDefaults() {
   mockGetAnthropicApiKeyStatus.mockReturnValue({ isConfigured: true, source: 'settings' })
   mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetBrowserbaseApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
+  mockGetSteelApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetComposioUserId.mockReturnValue(undefined)
   mockGetNangoApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetAccountProviderUserId.mockReturnValue(undefined)
@@ -842,6 +845,20 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.apiKeys.browserbaseApiKey).toBeUndefined()
+    })
+
+    it('sets and deletes the Steel API key', async () => {
+      let res = await putSettings({ apiKeys: { steelApiKey: 'ste-key' } })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[0][0].apiKeys.steelApiKey).toBe('ste-key')
+
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { anthropicApiKey: 'sk-existing', steelApiKey: 'ste-old' },
+      })
+      res = await putSettings({ apiKeys: { steelApiKey: '' } })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[1][0].apiKeys.steelApiKey).toBeUndefined()
     })
 
     it('removes apiKeys entirely when all keys deleted and object becomes empty', async () => {
@@ -1433,6 +1450,52 @@ describe('settings route', () => {
     })
   })
 
+  describe('POST /validate-steel', () => {
+    async function validate(body: unknown) {
+      return app.request('http://localhost/api/settings/validate-steel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+    const steelAnswers = (status: number, body: unknown) => {
+      const fetchMock = vi.fn(async () => Response.json(body, { status }))
+      vi.stubGlobal('fetch', fetchMock)
+      return fetchMock
+    }
+    afterEach(() => { vi.unstubAllGlobals() })
+
+    it('returns 400 when apiKey is missing', async () => {
+      const res = await validate({})
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('API key is required')
+    })
+
+    it('checks the key with one read of the sessions list, which creates nothing', async () => {
+      const fetchMock = steelAnswers(200, { sessions: [], nextCursor: null })
+      const res = await validate({ apiKey: 'ste-good' })
+      expect(await res.json()).toEqual({ valid: true })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe('https://api.steel.dev/v1/sessions?limit=1')
+      expect(init.method).toBe('GET')
+      expect(init.headers).toMatchObject({ 'steel-api-key': 'ste-good' })
+    })
+
+    it('reports a key Steel refuses as invalid', async () => {
+      steelAnswers(401, { error: 'Unauthorized', message: 'Invalid API key' })
+      expect(await (await validate({ apiKey: 'ste-bad' })).json()).toEqual({ valid: false, error: 'Invalid API key' })
+    })
+
+    it('reports any other answer with its status and Steel message', async () => {
+      steelAnswers(503, { error: 'Unavailable', code: 'maintenance', message: 'Back soon' })
+      const body = await (await validate({ apiKey: 'ste-good' })).json()
+      expect(body.valid).toBe(false)
+      expect(body.error).toContain('503')
+      expect(body.error).toContain('Back soon')
+    })
+  })
+
   describe('POST /validate-web-key', () => {
     async function validate(body: unknown) {
       return app.request('http://localhost/api/settings/validate-web-key', {
@@ -1763,6 +1826,29 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.app.hostBrowserProvider).toBe('browserbase')
+    })
+
+    it('accepts Steel as the host browser, with its session settings', async () => {
+      const res = await putSettings({
+        app: {
+          hostBrowserProvider: 'steel',
+          steelSolveCaptcha: true,
+          steelProxies: true,
+          steelProxyCountry: 'US',
+          steelProxyState: 'NY',
+          steelProxyCity: 'NEW_YORK',
+        },
+      })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app).toMatchObject({
+        hostBrowserProvider: 'steel',
+        steelSolveCaptcha: true,
+        steelProxies: true,
+        steelProxyCountry: 'US',
+        steelProxyState: 'NY',
+        steelProxyCity: 'NEW_YORK',
+      })
     })
 
     it('preserves hostBrowserProvider when app is updated but hostBrowserProvider not mentioned', async () => {
@@ -2154,6 +2240,7 @@ describe('settings route', () => {
       expect(body.apiKeyStatus).toHaveProperty('openrouter')
       expect(body.apiKeyStatus).toHaveProperty('bedrock')
       expect(body.apiKeyStatus).toHaveProperty('browserbase')
+      expect(body.apiKeyStatus).toHaveProperty('steel')
       expect(body.apiKeyStatus).toHaveProperty('composio')
       expect(body.apiKeyStatus).toHaveProperty('deepgram')
       expect(body.apiKeyStatus).toHaveProperty('openai')

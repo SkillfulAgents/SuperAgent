@@ -3046,11 +3046,16 @@ function startScreencast(state: NonNullable<typeof cdpScreencast>): void {
   state.screencastStarted = true;
 }
 
-/** Derive the CDP HTTP endpoint from the current browser state */
+/**
+ * Derive the CDP HTTP endpoint from the current browser state: the CDP URL's
+ * host, over TLS when the URL is (a remote provider's wss:// endpoint carries
+ * its credentials in the query, which stays out of it, and may not answer on
+ * plain HTTP at all: Steel's never does).
+ */
 function getCdpHttpEndpoint(): string {
   if (browserState.cdpUrl) {
-    const match = browserState.cdpUrl.match(/^wss?:\/\/([^/]+)/);
-    if (match) return `http://${match[1]}`;
+    const match = browserState.cdpUrl.match(/^(wss?):\/\/([^/?#]+)/);
+    if (match) return `${match[1] === 'wss' ? 'https' : 'http'}://${match[2]}`;
   }
   // Local browser: read the dynamic port from Chrome's DevToolsActivePort file
   const port = readChromeDebugPort();
@@ -3069,6 +3074,18 @@ interface PageTarget {
   requiresSession: boolean;
 }
 
+/** How long a /json lookup may take: instant on a local Chrome. */
+const CDP_JSON_TIMEOUT_MS = 5_000;
+
+/**
+ * Whether the browser may serve Chrome's HTTP /json: a local or host Chrome
+ * does. A remote provider's TLS endpoint (wss://: Browserbase, Steel) does
+ * not, and is not asked.
+ */
+function cdpServesJson(): boolean {
+  return !browserState.cdpUrl?.startsWith('wss:');
+}
+
 /**
  * Strict variant of the /json lookup: throws when Chrome cannot be reached or
  * answers garbage, so confirmNoPagesLeft can tell "answered: no pages" from
@@ -3077,7 +3094,8 @@ interface PageTarget {
  * close, and guessing costs a leaked remote session.
  */
 async function listPageTargetsStrict(): Promise<Array<{ type: string }>> {
-  const res = await fetch(`${getCdpHttpEndpoint()}/json`);
+  if (!cdpServesJson()) throw new Error('A remote browser serves no CDP /json');
+  const res = await fetch(`${getCdpHttpEndpoint()}/json`, { signal: AbortSignal.timeout(CDP_JSON_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`CDP /json answered ${res.status}`);
   const targets = await res.json() as Array<{ type: string }>;
   return targets.filter(t => t.type === 'page');
@@ -3088,33 +3106,34 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
   return (await discoverPageTargets()).filter((target) => !isSessionStubTarget(target.id));
 }
 
-async function discoverPageTargets(): Promise<PageTarget[]> {
-  // Try Chrome's HTTP /json endpoint first (works for local Chrome)
+/** Page targets from Chrome's HTTP /json; none when it cannot be reached or lists none. */
+async function pageTargetsFromJson(): Promise<PageTarget[]> {
   const endpoint = getCdpHttpEndpoint();
   try {
-    const res = await fetch(`${endpoint}/json`);
+    const res = await fetch(`${endpoint}/json`, { signal: AbortSignal.timeout(CDP_JSON_TIMEOUT_MS) });
     const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; faviconUrl?: string; webSocketDebuggerUrl: string }>;
-
-    const pages = targets.filter(t => t.type === 'page');
-    if (pages.length > 0) {
-      // Chrome's /json may return webSocketDebuggerUrl with localhost which won't
-      // work from inside a Docker container. Rewrite to the host we actually used.
-      const cdpHost = endpoint.replace(/^https?:\/\//, '');
-      for (const page of pages) {
-        page.webSocketDebuggerUrl = page.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${cdpHost}`);
-      }
-
-      return pages.map(p => ({
-        id: p.id,
-        url: p.url,
-        title: decodeChromeTargetTitle(p.title || ''),
-        faviconUrl: p.faviconUrl || undefined,
-        wsUrl: p.webSocketDebuggerUrl,
-        requiresSession: false,
-      }));
-    }
+    // Chrome's /json may return webSocketDebuggerUrl with localhost which won't
+    // work from inside a Docker container. Rewrite to the host we actually used.
+    const cdpHost = endpoint.replace(/^https?:\/\//, '');
+    return targets.filter(t => t.type === 'page').map(p => ({
+      id: p.id,
+      url: p.url,
+      title: decodeChromeTargetTitle(p.title || ''),
+      faviconUrl: p.faviconUrl || undefined,
+      wsUrl: p.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${cdpHost}`),
+      requiresSession: false,
+    }));
   } catch {
-    // HTTP /json not available — fall through to WebSocket CDP approach
+    // HTTP /json not available — the caller falls through to the WebSocket CDP approach
+    return [];
+  }
+}
+
+async function discoverPageTargets(): Promise<PageTarget[]> {
+  // Try Chrome's HTTP /json endpoint first (works for local Chrome)
+  if (cdpServesJson()) {
+    const pages = await pageTargetsFromJson();
+    if (pages.length > 0) return pages;
   }
 
   // For remote CDP providers (e.g. Browserbase), try the host API debug endpoint first.
@@ -3149,10 +3168,10 @@ async function discoverPageTargets(): Promise<PageTarget[]> {
     }
   }
 
-  // Fallback: try CDP Target.getTargets over WebSocket
+  // Fallback: Target.getTargets over the browser-level WebSocket (Steel serves
+  // neither /json nor page-level endpoints, so its pages are always found here).
   if (!browserState.cdpUrl) return [];
-  const target = await findPageTargetViaCdp(browserState.cdpUrl);
-  return target ? [target] : [];
+  return findPageTargetsViaCdp(browserState.cdpUrl);
 }
 
 /** Find Chrome's active page. Credential actions opt into the viewer page. */
@@ -3178,11 +3197,15 @@ async function findActivePageTarget(preferViewer = false): Promise<PageTarget | 
   );
 }
 
-/** Discover page targets via CDP WebSocket protocol (for remote providers) */
-function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> {
+/**
+ * Discover page targets via CDP WebSocket protocol (for remote providers).
+ * Every page, in Chrome's order: the active one is picked against the
+ * daemon's tabs, as with /json.
+ */
+function findPageTargetsViaCdp(browserWsUrl: string): Promise<PageTarget[]> {
   return new Promise((resolve) => {
     const ws = new WebSocket(browserWsUrl);
-    const timeout = setTimeout(() => { ws.close(); resolve(null); }, 5000);
+    const timeout = setTimeout(() => { ws.close(); resolve([]); }, 5000);
 
     ws.on('open', () => {
       ws.send(JSON.stringify({ id: 1, method: 'Target.getTargets' }));
@@ -3196,15 +3219,19 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
           ws.close();
           const pages = (msg.result?.targetInfos || []).filter(
             (t: { type: string; targetId: string }) => t.type === 'page' && !isSessionStubTarget(t.targetId)
-          );
-          if (pages.length === 0) { resolve(null); return; }
-          const target = pages[pages.length - 1];
-          resolve({ id: target.targetId, url: target.url || '', title: target.title || '', wsUrl: browserWsUrl, requiresSession: true });
+          ) as Array<{ targetId: string; url?: string; title?: string }>;
+          resolve(pages.map((target) => ({
+            id: target.targetId,
+            url: target.url || '',
+            title: target.title || '',
+            wsUrl: browserWsUrl,
+            requiresSession: true,
+          })));
         }
       } catch { /* wait for next message */ }
     });
 
-    ws.on('error', () => { clearTimeout(timeout); resolve(null); });
+    ws.on('error', () => { clearTimeout(timeout); resolve([]); });
   });
 }
 
@@ -3708,12 +3735,10 @@ function switchScreencastTarget(target: PageTarget, clientWs: WebSocket): void {
 /** Activate a tab in Chrome without stealing OS focus.
  *  Opens a short-lived browser-level CDP connection to send Target.activateTarget. */
 function activateTargetInBackground(targetId: string): void {
-  const endpoint = getCdpHttpEndpoint();
-  // Fetch the browser WebSocket URL, then send activateTarget
-  fetch(`${endpoint}/json/version`)
-    .then(res => res.json() as Promise<{ webSocketDebuggerUrl: string }>)
-    .then(info => {
-      const browserWs = new WebSocket(info.webSocketDebuggerUrl);
+  // The browser's own endpoint: a remote provider's serves no /json/version.
+  browserWsUrl()
+    .then(url => {
+      const browserWs = new WebSocket(url);
       browserWs.on('open', () => {
         browserWs.send(JSON.stringify({
           id: 1,
@@ -3918,11 +3943,8 @@ function handleBrowserStreamConnection(ws: WebSocket) {
         }
       } else if (data.type === 'close_tab' && data.targetId) {
         // Close a tab via CDP Target.closeTarget on a temporary browser-level connection
-        const endpoint = getCdpHttpEndpoint();
         try {
-          const versionRes = await fetch(`${endpoint}/json/version`);
-          const versionInfo = await versionRes.json() as { webSocketDebuggerUrl: string };
-          const browserWs = new WebSocket(versionInfo.webSocketDebuggerUrl);
+          const browserWs = new WebSocket(await browserWsUrl());
           browserWs.on('open', () => {
             browserWs.send(JSON.stringify({
               id: 1,

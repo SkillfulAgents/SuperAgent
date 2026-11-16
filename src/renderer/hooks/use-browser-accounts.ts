@@ -20,7 +20,7 @@ const browserAccountSchema = z.object({
   /** The agents granted it, named: some may be ones the user can no longer open. */
   agents: z.array(z.object({ slug: z.string(), name: z.string() })),
   /** The browser types it has a signed-in session saved for, and when it was saved (none from a workspace older than saved sessions). */
-  sessions: z.array(z.object({ browserType: z.enum(['container', 'chrome', 'browserbase', 'platform']), capturedAt: z.string() })).default([]),
+  sessions: z.array(z.object({ browserType: z.enum(['container', 'chrome', 'browserbase', 'platform', 'steel']), capturedAt: z.string() })).default([]),
 })
 export type BrowserAccount = z.infer<typeof browserAccountSchema>
 

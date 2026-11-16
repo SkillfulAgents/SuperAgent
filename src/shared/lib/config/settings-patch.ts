@@ -85,7 +85,7 @@ export const appSettingsPatchSchema = z.object({
   apiLogAutoDeleteDays: z.number().int().nonnegative(),
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
-  hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
+  hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform', 'steel']).nullable(),
   chromeHeadless: z.boolean(),
   allowPrereleaseUpdates: z.boolean(),
   theme: z.enum(['system', 'light', 'dark']),
@@ -105,6 +105,11 @@ export const appSettingsPatchSchema = z.object({
   browserbaseProxyCountry: z.string(),
   browserbaseProxyState: z.string(),
   browserbaseProxyCity: z.string(),
+  steelSolveCaptcha: z.boolean(),
+  steelProxies: z.boolean(),
+  steelProxyCountry: z.string(),
+  steelProxyState: z.string(),
+  steelProxyCity: z.string(),
 }).partial().strict()
 
 export const apiKeySettingsPatchSchema = z.object({
@@ -120,6 +125,7 @@ export const apiKeySettingsPatchSchema = z.object({
   composioUserId: z.string(),
   browserbaseApiKey: z.string(),
   browserbaseProjectId: z.string(),
+  steelApiKey: z.string(),
   deepgramApiKey: z.string(),
   openaiApiKey: z.string(),
   nangoSecretKey: z.string(),

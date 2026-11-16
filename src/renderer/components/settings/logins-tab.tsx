@@ -58,6 +58,7 @@ const BROWSER_NAMES: Record<BrowserAccount['sessions'][number]['browserType'], s
   container: 'Built-in browser',
   chrome: 'Chrome',
   browserbase: 'Browserbase',
+  steel: 'Steel',
   platform: 'Platform browser',
 }
 

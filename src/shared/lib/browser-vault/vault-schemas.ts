@@ -63,7 +63,7 @@ export const accountPartsSchema = z.array(partKeySchema).max(MAX_PARTS)
 // the same shape; a contract test keeps the two together).
 
 /** The browser types a saved session restores into: only the type it came from. */
-export const BROWSER_TYPES = ['container', 'chrome', 'browserbase', 'platform'] as const
+export const BROWSER_TYPES = ['container', 'chrome', 'browserbase', 'platform', 'steel'] as const
 export type BrowserType = (typeof BROWSER_TYPES)[number]
 
 const sessionOriginSchema = z.string().max(300).refine((value) => {

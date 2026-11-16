@@ -25,6 +25,7 @@ import {
   updateSettings,
   mutateSettings,
   browserbaseApiKeyStatusFrom,
+  steelApiKeyStatusFrom,
   composioApiKeyStatusFrom,
   nangoApiKeyStatusFrom,
   composioUserIdFrom,
@@ -58,6 +59,7 @@ import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, re
 import { offersRuntime } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { detectAllProviders } from '../../main/host-browser'
+import { SteelApi, SteelApiError } from '../../main/host-browser/steel-api'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { resetApplicationTables } from '@shared/lib/db/reset'
 import fs from 'fs'
@@ -345,6 +347,7 @@ async function buildSettingsResponse(
       platform: getLlmProvider('platform').apiKeyStatusFrom(appSettings),
       generic: getLlmProvider('generic').apiKeyStatusFrom(appSettings),
       browserbase: browserbaseApiKeyStatusFrom(appSettings),
+      steel: steelApiKeyStatusFrom(appSettings),
       composio: composioApiKeyStatusFrom(appSettings),
       nango: nangoApiKeyStatusFrom(appSettings),
       deepgram: getVoiceProvider('deepgram').apiKeyStatusFrom(appSettings),
@@ -786,6 +789,25 @@ settings.post('/validate-browserbase', async (c) => {
 
     return c.json({ valid: true })
   } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-steel - Validate a Steel API key with one read
+// (listing sessions), which creates nothing billable
+settings.post('/validate-steel', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    await new SteelApi(apiKey).checkKey()
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    if (error instanceof SteelApiError && (error.status === 401 || error.status === 403)) {
+      return c.json({ valid: false, error: 'Invalid API key' })
+    }
     const message = error instanceof Error ? error.message : 'Validation failed'
     return c.json({ valid: false, error: message })
   }
