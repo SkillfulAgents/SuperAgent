@@ -37,6 +37,7 @@ import {
   type GlobalSettingsResponse,
   type ModelPickerSettingsResponse,
 } from '@shared/lib/config/settings'
+import { settingsWritten } from '@shared/lib/config/settings-request-memo'
 import { DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import {
   applySettingsPatch,
@@ -945,6 +946,7 @@ settings.post('/factory-reset', async (c) => {
     // identity so a fresh one is issued on next login. The tenant id and the
     // auth secret stay: user accounts survive a reset.
     await deleteRecord(SETTINGS_RECORD_KEY)
+    settingsWritten()
     await deleteRecord(PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY)
     // The files they were once imported from (settings.json holds API keys).
     await fs.promises.rm(path.join(getDataDir(), 'settings.json'), { force: true })

@@ -19,6 +19,7 @@ import {
 import { InvalidAppRecordError } from '@shared/lib/app-records/errors'
 import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import { globalInstructionsSchema } from './global-instructions-schema'
+import { requestScopedSettings, settingsWritten } from './settings-request-memo'
 import { readyTeamBrain, teamBrainStoredSchema, type TeamBrainRecord, type TeamBrainStored } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
@@ -758,17 +759,24 @@ export async function loadSettingsStrict(db?: RecordDb): Promise<AppSettings> {
 }
 
 /**
- * The current settings, read from the store on every call (there is no
- * process-wide copy: a write committed by another process is what the next
- * call returns). Tolerant of an invalid stored value: it degrades to the
- * defaults, reported, but nothing writes those defaults back, because every
- * write goes through {@link updateSettings}, which reads strictly. A database
- * error is not an invalid value and propagates.
+ * The current settings, read from the store (there is no process-wide copy: a
+ * write committed by another process is what the next operation reads).
+ * Tolerant of an invalid stored value: it degrades to the defaults, reported,
+ * but nothing writes those defaults back, because every write goes through
+ * {@link updateSettings}, which reads strictly. A database error is not an
+ * invalid value and propagates.
  *
  * Read once per operation and pass the value on, rather than calling this
- * from every helper an operation reaches.
+ * from every helper an operation reaches. Inside one API request the calls
+ * share a single read, each getting its own copy (see
+ * `settings-request-memo.ts`); everywhere else, and with an explicit `db`,
+ * every call reads.
  */
 export async function getSettings(db?: RecordDb): Promise<AppSettings> {
+  return db ? readSettingsTolerant(db) : requestScopedSettings(() => readSettingsTolerant())
+}
+
+async function readSettingsTolerant(db?: RecordDb): Promise<AppSettings> {
   try {
     return await loadSettingsStrict(db)
   } catch (error) {
@@ -830,6 +838,9 @@ export async function updateSettings(
     const written = revision === 0
       ? await insertRecordIfAbsent(SETTINGS_RECORD_KEY, value, db)
       : await compareAndSetRecord(SETTINGS_RECORD_KEY, revision, value, db)
+    // The stored settings changed, by this write or by the writer it lost to:
+    // a request that read them earlier must not keep that read.
+    settingsWritten()
     if (written) return { before, after: draft, written: true }
   }
   throw new SettingsWriteConflictError()
