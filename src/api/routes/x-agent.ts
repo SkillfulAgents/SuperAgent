@@ -24,7 +24,7 @@ import { userExists } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import {
   createAgent,
   listAgents,
@@ -75,18 +75,7 @@ const xAgent = new Hono<{ Variables: XAgentVariables }>()
 // Auth: resolve caller agent slug from Bearer token (proxy token)
 // ----------------------------------------------------------------------------
 
-xAgent.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const callerSlug = await validateProxyToken(token)
-  if (!callerSlug) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgent.use('*', requireAgentCaller)
 
 function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')

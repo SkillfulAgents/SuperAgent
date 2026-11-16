@@ -21,7 +21,7 @@ import { Hono, type Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { auditRuleChange, auditRuleDecision } from '@shared/lib/proxy/rules/audit-events'
 import { createRule, addRuleVersion, deleteRule, getRule, listRules, toRuleView, type RuleTarget } from '@shared/lib/proxy/rules/store'
@@ -54,13 +54,7 @@ export function _setProposalTimingForTest(timing: Partial<typeof PROPOSAL_TIMING
   proposals = createProposals()
 }
 
-xAgentRules.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  const callerSlug = token ? await validateProxyToken(token) : null
-  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgentRules.use('*', requireAgentCaller)
 
 const targetSchema = z.object({
   kind: z.enum(['api', 'mcp']),
