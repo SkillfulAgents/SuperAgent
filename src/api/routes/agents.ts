@@ -2242,11 +2242,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       dashboardDispatch = parsed.data
     }
 
-    // The agent's name is all this route needs of it, and the catalog has it.
-    const agent = await getAgentRecord(slug)
-    if (!agent) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
+    // The agent's name is all this route needs of it, and ResolveAgent() read it.
+    const agent = getResolvedAgent(c)
 
     // Refused before the session exists. A first message always runs the agent:
     // the teammates it tags are notified, and it is never notify-only.
@@ -2902,11 +2899,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // The agent's name is all this route needs of it, and the catalog has it.
-    const agent = await getAgentRecord(agentSlug)
-    if (!agent) {
-      return c.json({ error: 'Agent not found' }, 404)
-    }
+    // The agent's name is all this route needs of it, and ResolveAgent() read it.
+    const agent = getResolvedAgent(c)
 
     // Refused before anything is written. A message that opens on a teammate
     // only notifies them: it joins the transcript, and no turn runs.
