@@ -12,12 +12,12 @@ const VIEW = 600
 const POINT = VIEW / 240
 /**
  * The floor of the mark: lightest at the upper left, darkest at the lower
- * right. A step quieter than the iOS face (white 0.12 to 0.045, highlight
- * 0.28), since the mark is drawn far larger here.
+ * right. Far fainter than the iOS face (white 0.12 to 0.045, highlight
+ * 0.28): here it is drawn much larger and is meant to be barely there.
  */
-const FLOOR = { light: '#171717', dark: '#090909' }
+const FLOOR = { light: '#0d0d0d', dark: '#050505' }
 /** The upper-left edges carry a thin line of light… */
-const HIGHLIGHT = { offset: 2.5 * POINT, blur: 1 * POINT, opacity: 0.18 }
+const HIGHLIGHT = { offset: 2.5 * POINT, blur: 1 * POINT, opacity: 0.08 }
 /** …and the lower-right edges fall away into the black. */
 const SHADE = { offset: 7 * POINT, blur: 3 * POINT, opacity: 0.85 }
 
