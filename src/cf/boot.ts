@@ -12,6 +12,8 @@ import { d1, migrateD1 } from '@shared/lib/db/drivers/d1'
 import { migrationBundle } from '@shared/lib/db/migrations/bundle'
 import { runDataMigrations } from '@shared/lib/db/data-migrations'
 import { initializeAppState, isAppStateInitialized } from '@shared/lib/app-state'
+import { setBlobStore } from '@shared/lib/blob-store/blob-store'
+import { setUploadByteStore } from '@shared/lib/utils/chunked-upload-bytes'
 import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { runWithBackground } from '@shared/lib/background'
@@ -21,9 +23,11 @@ import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/l
 import { getErrorReporter, initErrorReporting } from '@shared/lib/error-reporting'
 import type { ExecutionContext } from 'cloudflare:workers'
 import { CloudflareAppState } from './cloudflare-app-state'
+import { CloudflareBlobStore } from './cloudflare-blob-store'
 import { createCloudflareErrorReporter } from './cloudflare-error-reporting'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './cloudflare-task-manager'
+import { CloudflareUploadByteStore } from './cloudflare-upload-byte-store'
 import { seedSettings } from './seed-settings'
 import type { Env } from './index'
 
@@ -97,6 +101,9 @@ export async function migrateDatabase(env: Env): Promise<void> {
 async function start(env: Env): Promise<void> {
   startErrorReporting()
   installFetch()
+  // A Worker's disk does not outlive a request: blobs and the bytes of uploads in progress live in R2.
+  setBlobStore(new CloudflareBlobStore(env.HOST_FILES))
+  setUploadByteStore(new CloudflareUploadByteStore(env.HOST_FILES))
   // The deploy step migrated the database (prepareDeploy); a boot neither migrates nor checks it.
   await openDatabase({ driver: d1(env.DB), migrate: false })
   // A boot retried after a later step failed finds AppState installed.

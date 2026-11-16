@@ -74,6 +74,25 @@ declare module 'cloudflare:workers' {
     getByName(name: string): DurableObjectStub<T>
   }
 
+  export interface R2ObjectBody {
+    readonly body: ReadableStream<Uint8Array>
+    arrayBuffer(): Promise<ArrayBuffer>
+  }
+
+  export interface R2Objects {
+    objects: Array<{ key: string; size: number }>
+    truncated: boolean
+    cursor?: string
+  }
+
+  export interface R2Bucket {
+    get(key: string, options?: { range?: { offset?: number; length?: number } }): Promise<R2ObjectBody | null>
+    head(key: string): Promise<unknown | null>
+    put(key: string, value: ReadableStream<Uint8Array> | ArrayBuffer | Uint8Array | string, options?: { sha256?: string }): Promise<unknown>
+    delete(keys: string | string[]): Promise<void>
+    list(options?: { prefix?: string; cursor?: string }): Promise<R2Objects>
+  }
+
   export abstract class DurableObject<Env = unknown> {
     protected readonly ctx: DurableObjectState
     protected readonly env: Env
