@@ -288,7 +288,7 @@ export function WelcomeOrbCrowd({ paused = false, className }: { paused?: boolea
       className={cn('relative touch-none select-none overflow-hidden bg-black', className)}
       {...(still ? {} : { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave })}
     >
-      <WelcomeDebossedMark paused={held} still={still} />
+      <WelcomeDebossedMark />
       {diameter > 0 && CROWD.map((orb, index) => {
         const isLit = lit.has(index)
         return (
