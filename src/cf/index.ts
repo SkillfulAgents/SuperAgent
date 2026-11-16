@@ -49,14 +49,15 @@ export default {
 /**
  * The client's address where SuperAgent reads it (x-forwarded-for, as the cloud load balancer sets
  * it): Cloudflare's cf-connecting-ip, which a client cannot set. Without it every client shares one
- * address, so one client's sign-in attempts use up everyone's limit.
+ * address, so one client's sign-in attempts use up everyone's limit. An address the client sent
+ * itself never counts, with or without Cloudflare's.
  */
 export function withClientAddress(request: Request): Request {
-  const address = request.headers.get('cf-connecting-ip')
-  if (!address) return request
   const headers = new Headers(request.headers)
-  headers.set('x-forwarded-for', address)
+  headers.delete('x-forwarded-for')
   headers.delete('x-real-ip')
+  const address = request.headers.get('cf-connecting-ip')
+  if (address) headers.set('x-forwarded-for', address)
   return new Request(request, { headers })
 }
 
