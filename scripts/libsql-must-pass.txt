@@ -126,4 +126,5 @@ src/shared/lib/services/session-service.listing-cost.test.ts
 src/shared/lib/services/session-service.lifecycle.test.ts
 src/shared/lib/db/data-migrations/0010-import-session-metadata.test.ts
 src/shared/lib/services/session-deletion.test.ts
+src/shared/lib/config/settings-request-memo.test.ts
 src/shared/lib/services/audit-log-service.test.ts

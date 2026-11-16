@@ -74,6 +74,7 @@ import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
+import { runWithSettingsMemo } from '@shared/lib/config/settings-request-memo'
 import { defaultCacheControl } from './middleware/default-cache-control'
 import { apiErrorHandler } from './error-handler'
 
@@ -85,6 +86,11 @@ const app = new Hono()
 // Must run before any middleware that awaits: a client hangup during those
 // awaits is otherwise invisible to every later signal check (see the module).
 app.use('*', armAbortSignal)
+
+// One settings read per request: the auth middleware, the handler and the
+// services it calls share it. Dropped when the handler settles, so a stream it
+// returned reads afresh (see settings-request-memo.ts).
+app.use('*', (_c, next) => runWithSettingsMemo(next))
 
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
