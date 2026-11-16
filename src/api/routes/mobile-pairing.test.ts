@@ -8,6 +8,7 @@
  * credentials, and per-user device-family listing/revocation.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import Database from 'better-sqlite3'
 import fs from 'fs'
 import os from 'os'
@@ -500,6 +501,7 @@ describe('devices list and revoke', () => {
     const protectedRes = await app.request('/api/protected', { headers: bearer(mobile.token) })
     expect(protectedRes.status).toBe(401)
 
+    await backgroundSettled()
     const audit = sqlite
       .prepare(`SELECT user_id, action FROM audit_log WHERE object = 'session' AND action = 'revoked' AND object_id = ?`)
       .get(mobile.deviceId) as { user_id: string; action: string } | undefined
