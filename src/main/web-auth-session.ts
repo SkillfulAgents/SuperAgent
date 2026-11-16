@@ -16,7 +16,7 @@ function webAuthBridgePath(): string {
 }
 
 interface WebAuthBridge {
-  start: KoffiFunc<(url: string, scheme: string) => string>
+  start: KoffiFunc<(url: string, scheme: string, ephemeral: boolean) => string>
   cancel: KoffiFunc<() => void>
   appleStart: KoffiFunc<() => string>
   appleCancel: KoffiFunc<() => void>
@@ -35,7 +35,7 @@ function loadBridge(): Promise<WebAuthBridge | null> {
       const lib = load(file)
       return {
         // `str!` frees the returned string after converting it.
-        start: lib.func('str! web_auth_start(str url, str scheme)') as WebAuthBridge['start'],
+        start: lib.func('str! web_auth_start(str url, str scheme, bool ephemeral)') as WebAuthBridge['start'],
         cancel: lib.func('void web_auth_cancel()') as WebAuthBridge['cancel'],
         appleStart: lib.func('str! apple_sign_in_start()') as WebAuthBridge['appleStart'],
         appleCancel: lib.func('void apple_sign_in_cancel()') as WebAuthBridge['appleCancel'],
@@ -101,14 +101,19 @@ function appleSignInPageUrl(loginUrl: string, apple: { idToken: string; nonce: s
  * and resolves when it ends: with the callback URL the page reached on
  * `callbackScheme`, as cancelled, or with an error. Resolves null when there is
  * no bridge (not macOS, or a dev checkout that never built it), so the caller
- * can fall back to the browser.
+ * can fall back to the browser. An `ephemeral` sheet shares no cookies with the
+ * person's browser, so a Gamut session already there does not carry over.
  */
-export async function runWebAuthSession(url: string, callbackScheme: string): Promise<WebAuthResult | null> {
+export async function runWebAuthSession(
+  url: string,
+  callbackScheme: string,
+  { ephemeral }: { ephemeral: boolean },
+): Promise<WebAuthResult | null> {
   const loaded = await loadBridge()
   if (!loaded) return null
   return new Promise((resolve) => {
     // koffi runs it on a worker thread; the call returns when the sheet closes.
-    loaded.start.async(url, callbackScheme, (err: unknown, raw: unknown) => {
+    loaded.start.async(url, callbackScheme, ephemeral, (err: unknown, raw: unknown) => {
       resolve(err ? { error: err instanceof Error ? err.message : String(err) } : parseWebAuthResult(raw))
     })
   })
@@ -142,17 +147,22 @@ export async function cancelAppleSignIn(): Promise<void> {
 
 /**
  * Runs the native Apple prompt for a sign-in to `loginUrl` (already checked by
- * `isPlatformLoginUrl`) and returns the page the sheet opens next. An attempt
+ * `isPlatformLoginUrl`) and returns the sheet to open next. An attempt
  * cancelled while the prompt was up resolves cancelled, so its sheet never opens.
+ *
+ * The sheet is ephemeral. The platform's Apple page keeps a session it finds
+ * rather than sign in with the token, so a sheet sharing the browser's cookies
+ * would continue as whoever is signed in to Gamut there, not the Apple ID the
+ * person just chose.
  */
 export async function appleSignInSheetUrl(
   loginUrl: string,
   isCurrent: () => boolean,
   prompt: () => Promise<AppleSignInResult | null> = runAppleSignIn,
-): Promise<{ url: string } | { cancelled: true } | { error: string }> {
+): Promise<{ url: string; ephemeral: true } | { cancelled: true } | { error: string }> {
   const apple = await prompt()
   if (!isCurrent() || (apple && 'cancelled' in apple)) return { cancelled: true }
   if (!apple) return { error: 'the Sign in with Apple bridge is missing' }
   if ('error' in apple) return apple
-  return { url: appleSignInPageUrl(loginUrl, apple) }
+  return { url: appleSignInPageUrl(loginUrl, apple), ephemeral: true }
 }

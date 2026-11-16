@@ -40,7 +40,7 @@ describe('the sign-in sheet', () => {
   })
 
   it('has no session to run where the bridge was never built, so the caller falls back to the browser', async () => {
-    await expect(runWebAuthSession(`${BASE}/auth/superagent`, 'superagent')).resolves.toBeNull()
+    await expect(runWebAuthSession(`${BASE}/auth/superagent`, 'superagent', { ephemeral: false })).resolves.toBeNull()
   })
 
   it('reads the Apple prompt’s three results, and anything else as an error', () => {
@@ -52,7 +52,7 @@ describe('the sign-in sheet', () => {
     expect(parseAppleSignInResult(null)).toHaveProperty('error')
   })
 
-  it('sends Apple’s answer to the platform’s Apple sign-in page, which continues to the same login URL', async () => {
+  it('sends Apple’s answer to the platform’s Apple sign-in page in an ephemeral sheet, which continues to the same login URL', async () => {
     const sheet = await appleSignInSheetUrl(
       `${BASE}/auth/superagent?app_callback=superagent%3A%2F%2Fplatform-auth-callback&device_name=Mac`,
       () => true,
@@ -60,6 +60,8 @@ describe('the sign-in sheet', () => {
     )
     const url = new URL('url' in sheet ? sheet.url : '')
 
+    // No Gamut session from the browser, which the page would keep over Apple's answer.
+    expect(sheet).toHaveProperty('ephemeral', true)
     expect(url.origin + url.pathname).toBe(`${BASE}/auth/apple/mac`)
     expect(url.searchParams.get('next')).toBe('/auth/superagent?app_callback=superagent%3A%2F%2Fplatform-auth-callback&device_name=Mac')
     const fragment = new URLSearchParams(url.hash.slice(1))

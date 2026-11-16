@@ -43,8 +43,9 @@ private func result(_ fields: [String: Any]) -> UnsafeMutablePointer<CChar>? {
 /// when the page reached the callback scheme, `{"cancelled": true}` when the
 /// person closed the sheet (or `web_auth_cancel` did), `{"error": "…"}`
 /// otherwise. A session still up when this is called is cancelled first.
+/// An `ephemeral` session shares no cookies with the person's browser.
 @_cdecl("web_auth_start")
-public func webAuthStart(_ urlText: UnsafePointer<CChar>, _ schemeText: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
+public func webAuthStart(_ urlText: UnsafePointer<CChar>, _ schemeText: UnsafePointer<CChar>, _ ephemeral: Bool) -> UnsafeMutablePointer<CChar>? {
   let scheme = String(cString: schemeText)
   guard let url = URL(string: String(cString: urlText)), !scheme.isEmpty else {
     return result(["error": "invalid sign-in URL"])
@@ -80,9 +81,11 @@ public func webAuthStart(_ urlText: UnsafePointer<CChar>, _ schemeText: UnsafePo
 
     let anchor = WindowAnchor()
     session.presentationContextProvider = anchor
-    // The person's browser session carries over, so someone already signed in
-    // on the web is not asked for their password again.
-    session.prefersEphemeralWebBrowserSession = false
+    // Otherwise the person's browser session carries over, so someone already
+    // signed in on the web is not asked for their password again. The Apple
+    // hand-off is ephemeral: its token decides who signs in, and the platform
+    // page keeps any session it finds in place of the token.
+    session.prefersEphemeralWebBrowserSession = ephemeral
     activeSession = session
     activeAnchor = anchor
     if !session.start() {
@@ -113,13 +116,17 @@ public func webAuthCancel() {
 
 private final class AppleSignInDelegate: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
   private let rawNonce: String
-  private let finish: ([String: Any]) -> Void
-  // Main queue only. Apple and a replacing start can both end the same request.
-  private var finished = false
+  private let answer: ([String: Any]) -> Void
+  private let settled: () -> Void
+  // Main queue only. Apple and a cancel can both end the same request.
+  private var answered = false
 
-  init(rawNonce: String, finish: @escaping ([String: Any]) -> Void) {
+  /// `answer` gets the outcome once, for the waiting caller; `settled` runs
+  /// when Apple reports, which on macOS 12 can be long after a cancel answered.
+  init(rawNonce: String, answer: @escaping ([String: Any]) -> Void, settled: @escaping () -> Void) {
     self.rawNonce = rawNonce
-    self.finish = finish
+    self.answer = answer
+    self.settled = settled
   }
 
   func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
@@ -127,12 +134,13 @@ private final class AppleSignInDelegate: NSObject, ASAuthorizationControllerDele
   }
 
   func end(_ fields: [String: Any]) {
-    guard !finished else { return }
-    finished = true
-    finish(fields)
+    guard !answered else { return }
+    answered = true
+    answer(fields)
   }
 
   func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+    defer { settled() }
     guard
       let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
       let tokenData = credential.identityToken,
@@ -151,6 +159,7 @@ private final class AppleSignInDelegate: NSObject, ASAuthorizationControllerDele
   }
 
   func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+    defer { settled() }
     if let error = error as? ASAuthorizationError, error.code == .canceled {
       end(["cancelled": true])
     } else {
@@ -159,9 +168,22 @@ private final class AppleSignInDelegate: NSObject, ASAuthorizationControllerDele
   }
 }
 
-// Read and written on the main queue only; the controller holds its delegate weakly.
+// Read and written on the main queue only. Both are kept until Apple reports,
+// even once a cancel has answered the caller: the controller holds its delegate
+// weakly, and on macOS 12 its prompt stays up until the person dismisses it.
 private var activeAppleController: ASAuthorizationController?
 private var activeAppleDelegate: AppleSignInDelegate?
+
+/// Answers the caller of the Apple request that is up, if any, as cancelled,
+/// and closes its prompt. Main queue only. `cancel()` is macOS 13+ API and the
+/// bridge targets 12.0, where the prompt stays until the person dismisses it
+/// and what they choose there is dropped.
+private func endActiveAppleRequest() {
+  if #available(macOS 13.0, *) {
+    activeAppleController?.cancel()
+  }
+  activeAppleDelegate?.end(["cancelled": true])
+}
 
 private func makeRawNonce() -> String? {
   var bytes = [UInt8](repeating: 0, count: 32)
@@ -171,7 +193,8 @@ private func makeRawNonce() -> String? {
 
 /// Runs the Apple prompt and returns when it ends, as JSON:
 /// `{"idToken": "…", "nonce": "<raw>", "name"?: "…"}`, `{"cancelled": true}`, or `{"error": "…"}`.
-/// A request still up is cancelled first.
+/// A request still up is cancelled first. On macOS 12, where its prompt cannot
+/// be closed, this returns an error instead until the person dismisses it.
 @_cdecl("apple_sign_in_start")
 public func appleSignInStart() -> UnsafeMutablePointer<CChar>? {
   guard let rawNonce = makeRawNonce() else { return result(["error": "could not create a nonce"]) }
@@ -181,26 +204,35 @@ public func appleSignInStart() -> UnsafeMutablePointer<CChar>? {
   var outcome: [String: Any] = ["error": "the Apple sign-in did not start"]
 
   DispatchQueue.main.async {
-    // A request still up is ended here: the controller holds its delegate
-    // weakly, so once replaced it could never report and its caller would wait forever.
-    if #available(macOS 13.0, *) {
-      activeAppleController?.cancel()
+    if activeAppleController != nil {
+      endActiveAppleRequest()
+      // No second prompt over one macOS 12 cannot close.
+      guard #available(macOS 13.0, *) else {
+        outcome = ["error": "a Sign in with Apple prompt is still open"]
+        done.signal()
+        return
+      }
     }
-    activeAppleDelegate?.end(["cancelled": true])
 
     let request = ASAuthorizationAppleIDProvider().createRequest()
     request.requestedScopes = [.fullName, .email]
     request.nonce = hashedNonce
 
     let controller = ASAuthorizationController(authorizationRequests: [request])
-    let delegate = AppleSignInDelegate(rawNonce: rawNonce) { fields in
-      outcome = fields
-      if activeAppleController === controller {
-        activeAppleController = nil
-        activeAppleDelegate = nil
+    let delegate = AppleSignInDelegate(
+      rawNonce: rawNonce,
+      answer: { fields in
+        outcome = fields
+        done.signal()
+      },
+      settled: { [weak controller] in
+        // A newer request may already have replaced this one.
+        if let controller, activeAppleController === controller {
+          activeAppleController = nil
+          activeAppleDelegate = nil
+        }
       }
-      done.signal()
-    }
+    )
     controller.delegate = delegate
     controller.presentationContextProvider = delegate
     activeAppleController = controller
@@ -212,13 +244,11 @@ public func appleSignInStart() -> UnsafeMutablePointer<CChar>? {
   return result(outcome)
 }
 
-/// Ends the Apple prompt that is up, if any. Its `apple_sign_in_start` returns cancelled.
+/// Ends the Apple prompt that is up, if any. Its `apple_sign_in_start` returns
+/// cancelled at once, on macOS 12 too, where the prompt itself stays up.
 @_cdecl("apple_sign_in_cancel")
 public func appleSignInCancel() {
   DispatchQueue.main.async {
-    // `cancel()` is macOS 13+ API, and the bridge is built for a 12.0 target.
-    if #available(macOS 13.0, *) {
-      activeAppleController?.cancel()
-    }
+    endActiveAppleRequest()
   }
 }

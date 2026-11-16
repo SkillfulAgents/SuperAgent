@@ -150,7 +150,10 @@ in there already.
 because App Review guideline 4.8 asks for it beside Google sign-in. macOS's own
 Apple prompt runs first (`apple_sign_in_start` in the same bridge), then the
 same sheet opens the platform's Apple page, which continues to the same login
-URL. Only this build carries the `com.apple.developer.applesignin` entitlement.
+URL. That sheet is ephemeral, sharing no cookies with the browser: the page
+keeps a Gamut session it finds over Apple's answer, so the Apple ID the person
+chose would otherwise lose to whoever is signed in there. Only this build
+carries the `com.apple.developer.applesignin` entitlement.
 
 **The Account tab offers "Request account deletion"** in every build, which
 guideline 5.1.1(v) requires of an app that lets people create an account. See

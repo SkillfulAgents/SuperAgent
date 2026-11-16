@@ -591,9 +591,9 @@ ipcMain.handle('open-external', async (_event, url: string) => {
 // which the Mac App Store build uses instead of the default browser. Only the
 // platform's own login page is opened this way. The page ends on the same
 // deep link the browser would open, handled the same way.
-// With `withApple`, the native Sign in with Apple prompt runs first and the
-// sheet opens the platform's Apple page instead, which then continues to the
-// same login URL. Cancel and a newer start bump the attempt, so a prompt or
+// With `withApple`, the native Sign in with Apple prompt runs first and an
+// ephemeral sheet opens the platform's Apple page instead, which then continues
+// to the same login URL. Cancel and a newer start bump the attempt, so a prompt or
 // sheet that ends after them delivers nothing.
 let platformSignInAttempt = 0
 ipcMain.handle('platform-sign-in-start', async (_event, url: unknown, withApple: unknown) => {
@@ -604,8 +604,10 @@ ipcMain.handle('platform-sign-in-start', async (_event, url: unknown, withApple:
   const attempt = ++platformSignInAttempt
   const sheet = withApple === true
     ? await appleSignInSheetUrl(url, () => attempt === platformSignInAttempt)
-    : { url }
-  const result = 'url' in sheet ? await runWebAuthSession(sheet.url, PROTOCOL_SCHEME) : sheet
+    : { url, ephemeral: false }
+  const result = 'url' in sheet
+    ? await runWebAuthSession(sheet.url, PROTOCOL_SCHEME, { ephemeral: sheet.ephemeral })
+    : sheet
   if (attempt !== platformSignInAttempt) return 'cancelled'
   if (!result) {
     await safeOpenExternalFromApp(url)
