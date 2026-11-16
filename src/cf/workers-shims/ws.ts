@@ -104,10 +104,14 @@ export class WebSocket {
     this.close(1000)
   }
 
-  // The runtime keeps the connection alive itself and offers no ping; answer at once so a
-  // caller's pong watchdog does not drop a healthy connection.
+  // The runtime keeps the connection alive itself and offers no ping to send. A pong is reported
+  // only while the runtime still holds the connection open, so a caller's pong watchdog keeps a
+  // healthy connection and drops one the runtime has lost.
   ping(): void {
-    queueMicrotask(() => this.emit('pong'))
+    const socket = this.socket
+    queueMicrotask(() => {
+      if (socket && socket.readyState === WebSocket.OPEN && this.readyState === WebSocket.OPEN) this.emit('pong')
+    })
   }
 
   on(event: string, listener: Listener): this {

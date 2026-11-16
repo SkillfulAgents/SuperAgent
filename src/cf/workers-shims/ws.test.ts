@@ -8,6 +8,7 @@ type Handler = (event: Record<string, unknown>) => void
 function fakeSocket() {
   const handlers = new Map<string, Handler>()
   const socket = {
+    readyState: 1,
     addEventListener: (type: string, handler: Handler) => handlers.set(type, handler),
     send: () => {},
     close: () => {},
@@ -30,5 +31,22 @@ describe('ws shim', () => {
     deliver('close', { code: 1000, reason: '' })
 
     expect(seen).toEqual(['agent-object', 'agent-object', 'agent-object'])
+  })
+
+  it('answers a ping with a pong only while the runtime holds the connection open', async () => {
+    const { socket } = fakeSocket()
+    const ws = WebSocket.fromSocket(socket)
+    let pongs = 0
+    ws.on('pong', () => pongs++)
+
+    ws.ping()
+    await Promise.resolve()
+    expect(pongs).toBe(1)
+
+    // The runtime lost the connection and has not delivered a close event.
+    ;(socket as unknown as { readyState: number }).readyState = 3
+    ws.ping()
+    await Promise.resolve()
+    expect(pongs).toBe(1)
   })
 })
