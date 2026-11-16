@@ -10,6 +10,17 @@ import { modelDownloadSchema, type ModelDownload } from './server-status-schema'
  */
 export const OLLAMA_CATALOG_SYNC_TASK = 'ollama.catalog-sync'
 
+/**
+ * Ask for a catalog pass now. The sync has one job, under its task type, and
+ * this takes the place of whatever pass was waiting there: the passes stop while
+ * there is no Ollama connection, so this is also what starts them again when
+ * one is saved. Nothing happens where the sync is not registered.
+ */
+export async function requestOllamaCatalogSync(): Promise<void> {
+  if (!taskManager().handles(OLLAMA_CATALOG_SYNC_TASK)) return
+  await taskManager().at(Date.now(), OLLAMA_CATALOG_SYNC_TASK, { taskType: OLLAMA_CATALOG_SYNC_TASK, payload: {} })
+}
+
 const PROGRESS_WRITE_INTERVAL_MS = 500
 // A pull is one long read of a stream, so this bounds silence, not the download.
 const PULL_STALL_TIMEOUT_MS = 2 * 60_000
@@ -142,8 +153,8 @@ class OllamaPullTask extends Task<PullPayload> {
       }
       return { kind: 'done' }
     }
-    // The model is on disk whatever happens next; the recurring sync catches a miss here.
-    await taskManager().at(Date.now(), `${OLLAMA_CATALOG_SYNC_TASK}:after-pull`, { taskType: OLLAMA_CATALOG_SYNC_TASK, payload: {} })
+    // The model is on disk whatever happens next; the sync's next pass catches a miss here.
+    await requestOllamaCatalogSync()
       .catch((error: unknown) => console.warn('[ollama] Catalog sync after pull failed:', error))
     await clearPull(baseUrl, model)
     return { kind: 'done' }

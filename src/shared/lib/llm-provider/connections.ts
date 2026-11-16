@@ -12,6 +12,8 @@ import { parseConnectionJson } from './connection-schema'
 import { randomUUID } from 'node:crypto'
 import { legacyLlmProviderId, providerCredentialFields } from './provider-settings'
 import { changesOf } from '../db/batch'
+import { background } from '../background'
+import { requestOllamaCatalogSync } from './ollama-pull'
 import { sql, eq, isNull, or, and } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db'
@@ -322,6 +324,9 @@ export async function saveConnection(
       throw error
     }
     if (claim) await consumeOAuthLogin(claim)
+    // The catalog sync stops passing while there is no Ollama connection; this
+    // starts it again, and lists the server's models without waiting a pass out.
+    if (input.provider === 'ollama') background(requestOllamaCatalogSync(), { name: 'ollama-catalog.request-sync' })
     return llmProviderId
   })
 }
