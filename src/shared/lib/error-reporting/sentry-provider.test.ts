@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeOptions } from '@sentry/node'
-import { CREDENTIAL_BODY_ROUTE, createServerProvider, scrubCredentialRequestBody } from './sentry-provider'
+import { CREDENTIAL_BODY_ROUTE, createServerProvider, redactBotTokens, scrubCredentialRequestBody } from './sentry-provider'
 
 const sentry = vi.hoisted(() => ({
   init: vi.fn<(options: NodeOptions) => void>(),
@@ -34,6 +34,12 @@ function initializationOptions() {
 function beforeSend() {
   const callback = initializationOptions().beforeSend
   if (!callback) throw new Error('Error reporting consent gate was not installed')
+  return callback
+}
+
+function beforeBreadcrumb() {
+  const callback = initializationOptions().beforeBreadcrumb
+  if (!callback) throw new Error('Breadcrumb redaction was not installed')
   return callback
 }
 
@@ -165,8 +171,79 @@ describe('credential request bodies in error reports', () => {
     expect(scrubCredentialRequestBody(event).request).toEqual({ url: '/api/agents/a1/sessions/s-1/fill-login' })
   })
 
+  it('matches the routes that take integration credentials: every integration route and the agent\'s add route', () => {
+    for (const path of ['/api/agent-integrations/test-credentials', '/api/agent-integrations/agents/a1', 'http://localhost:47891/api/chat-integrations/i-1', '/api/agent-integrations?x=1', '/api/x-agent/chat/add']) {
+      expect(CREDENTIAL_BODY_ROUTE.test(path)).toBe(true)
+    }
+    expect(CREDENTIAL_BODY_ROUTE.test('/api/x-agent/chat/send')).toBe(false)
+  })
+
   it('keeps other bodies', () => {
     const event = { request: { url: '/api/agents/a1/sessions/s-1/messages', data: '{"content":"hi"}' } }
     expect(scrubCredentialRequestBody(event).request?.data).toBe('{"content":"hi"}')
+  })
+})
+
+describe('Telegram bot tokens in error reports', () => {
+  const token = '123456789:AAHfake-token_secret0123456789abcdef'
+  const url = `https://api.telegram.org/bot${token}/sendMessage`
+  const redactedUrl = 'https://api.telegram.org/bot123456789:[redacted]/sendMessage'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    settings.getSettings.mockResolvedValue({})
+    sentry.httpIntegration.mockReturnValue({ name: 'Http' })
+  })
+
+  it('redacts the secret in a bare token and in an API URL, keeping the bot id', () => {
+    expect(redactBotTokens(url)).toBe(redactedUrl)
+    expect(redactBotTokens(`{"botToken":"${token}"}`)).toBe('{"botToken":"123456789:[redacted]"}')
+    expect(redactBotTokens('at 2026-11-16T15:19:34 run 4e7046fa0')).toBe('at 2026-11-16T15:19:34 run 4e7046fa0')
+  })
+
+  it('redacts every string of an allowed event before sending it', async () => {
+    initializeProvider()
+    const event = {
+      type: undefined,
+      exception: { values: [{ type: 'Error', value: `request to ${url} failed` }] },
+      breadcrumbs: [{ category: 'http', data: { url, status_code: 502 } }],
+      extra: { config: { botToken: token } },
+    }
+
+    expect(await beforeSend()(event, {})).toEqual({
+      exception: { values: [{ type: 'Error', value: `request to ${redactedUrl} failed` }] },
+      breadcrumbs: [{ category: 'http', data: { url: redactedUrl, status_code: 502 } }],
+      extra: { config: { botToken: '123456789:[redacted]' } },
+    })
+  })
+
+  it('redacts breadcrumbs as they are recorded, without touching the objects the app logged', () => {
+    initializeProvider()
+    const logged = new Error(`request to ${url} failed`)
+    const consoleData = { arguments: ['rich send failed:', logged], logger: 'console' }
+
+    expect(beforeBreadcrumb()({ category: 'console', message: `rich send failed: ${url}`, data: consoleData }, {})).toEqual({
+      category: 'console',
+      message: `rich send failed: ${redactedUrl}`,
+      data: { logger: 'console' },
+    })
+    expect(consoleData.arguments[1]).toBe(logged)
+    expect(beforeBreadcrumb()({ category: 'http', data: { url, status_code: 502 } }, {})).toEqual({
+      category: 'http',
+      data: { url: redactedUrl, status_code: 502 },
+    })
+    expect(beforeBreadcrumb()({ category: 'agent', message: 'turn started', data: { arguments: ['s-1'] } }, {})).toEqual({
+      category: 'agent',
+      message: 'turn started',
+      data: { arguments: ['s-1'] },
+    })
+  })
+
+  it('drops an event or breadcrumb it cannot redact instead of throwing', async () => {
+    initializeProvider()
+    const unreadable = Object.defineProperty({}, 'value', { enumerable: true, get: () => { throw new Error('unreadable') } })
+
+    expect(await beforeSend()({ type: undefined, extra: { unreadable } }, {})).toBeNull()
+    expect(beforeBreadcrumb()({ category: 'http', data: unreadable }, {})).toBeNull()
   })
 })
