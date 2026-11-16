@@ -312,6 +312,8 @@ export async function processSSEEvent(
         ? plainUserTags(accumulatedText, { streaming: true })
         : ''
       if (visibleText) {
+        // Spent on the attempt: a refused edit must not let the next text through at once.
+        managed.streamingState.lastUpdateTime = now
         try {
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
@@ -319,7 +321,6 @@ export async function processSSEEvent(
             managed.streamingState.currentMessageId ?? undefined,
           )
           managed.streamingState.currentMessageId = msgId
-          managed.streamingState.lastUpdateTime = now
         } catch (err) {
           console.error(`[ChatAgentIntegration] Streaming update failed:`, err)
           reportError(err, 'streaming-update', { integrationId: managed.integration.id, chatId: managed.chatId, provider: managed.integration.provider })

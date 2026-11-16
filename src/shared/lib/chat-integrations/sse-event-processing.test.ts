@@ -114,6 +114,22 @@ describe('processSSEEvent', () => {
       expect(getMock(managed).streamUpdates.map(u => u.existingMessageId)).toEqual([undefined, posted])
     })
 
+    it('spends the edit slot on a refused edit, so the next text waits for the next slot', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS) })
+      const edit = vi.spyOn(getMock(managed), 'sendStreamingUpdate').mockRejectedValueOnce(new Error('refused'))
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS + 50)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      expect(edit).toHaveBeenCalledTimes(1)
+
+      now.mockReturnValue(10_000 + 2 * STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '?' })
+      expect(edit.mock.calls.at(-1)?.[1]).toMatch(/!!\?$/)
+    })
+
     it('finalizes streaming on session_idle', async () => {
       managed.streamingState.accumulatedText = 'Final text'
       managed.streamingState.currentMessageId = 'msg-1'

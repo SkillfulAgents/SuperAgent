@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeOptions } from '@sentry/node'
+import { GrammyError, HttpError } from 'grammy'
 import { CREDENTIAL_BODY_ROUTE, createServerProvider, redactBotTokens, scrubCredentialRequestBody } from './sentry-provider'
 
 const sentry = vi.hoisted(() => ({
@@ -109,6 +110,15 @@ describe('server error reporting provider', () => {
     expect(await beforeSend()(event, {})).toEqual({
       request: { url: '/api/agents/a1/sessions/s-1/provide-secret' },
     })
+  })
+
+  it('reports a busy or unreachable Telegram as a warning, and other errors as they are', async () => {
+    initializeProvider()
+    const busy = new GrammyError("Call to 'sendRichMessage' failed!", { ok: false, error_code: 502, description: 'Bad Gateway' }, 'sendRichMessage', {})
+
+    expect(await beforeSend()({ type: undefined, level: 'error' }, { originalException: busy })).toEqual({ level: 'warning' })
+    expect(await beforeSend()({ type: undefined, level: 'error' }, { originalException: new HttpError("Network request for 'getMe' failed!", undefined) })).toEqual({ level: 'warning' })
+    expect(await beforeSend()({ type: undefined, level: 'error' }, { originalException: new Error('x') })).toEqual({ level: 'error' })
   })
 
   it('retains boot crash reports when settings cannot load without retaining credentials', async () => {
