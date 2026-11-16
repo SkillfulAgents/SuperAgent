@@ -70,6 +70,7 @@ export interface ApiKeySettings {
   composioUserId?: string
   browserbaseApiKey?: string
   browserbaseProjectId?: string
+  steelApiKey?: string
   deepgramApiKey?: string
   openaiApiKey?: string
   nangoSecretKey?: string
@@ -110,7 +111,7 @@ export interface AgentLimitsSettings {
   maxBudgetUsd?: number
 }
 
-export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel'
 
 export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
 
@@ -154,6 +155,13 @@ export interface AppPreferences {
   browserbaseProxyCountry?: string
   browserbaseProxyState?: string
   browserbaseProxyCity?: string
+
+  // Steel session settings
+  steelSolveCaptcha?: boolean
+  steelProxies?: boolean
+  steelProxyCountry?: string
+  steelProxyState?: string
+  steelProxyCity?: string
 }
 
 /** Default-on MicroVM preference; other runtimes ignore this setting. */
@@ -421,6 +429,7 @@ export interface GlobalSettingsResponse {
     composio: ApiKeyStatus
     nango: ApiKeyStatus
     browserbase: ApiKeyStatus
+    steel: ApiKeyStatus
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
     exa: ApiKeyStatus
@@ -1015,6 +1024,25 @@ export function effectiveBrowserbaseProjectIdFrom(settings: Pick<AppSettings, 'a
     return settings.apiKeys.browserbaseProjectId
   }
   return process.env.BROWSERBASE_PROJECT_ID
+}
+
+/** Where the Steel API key comes from: saved settings, else `STEEL_API_KEY`. */
+export function steelApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
+  if (settings.apiKeys?.steelApiKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.STEEL_API_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+/** The Steel API key to use: saved settings take precedence over `STEEL_API_KEY`. */
+export function effectiveSteelApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
+  if (settings.apiKeys?.steelApiKey) {
+    return settings.apiKeys.steelApiKey
+  }
+  return process.env.STEEL_API_KEY
 }
 
 /**

@@ -13,7 +13,7 @@ process is what every other process of the deployment reads next.
 | `auth-secret` | Better Auth's secret when `BETTER_AUTH_SECRET` is unset; also the root of the S3 volume credential key | `getOrCreateAuthSecret()` on first use |
 | `host-container-token:<agent>` | the per-agent token the host presents to the agent's container | `getOrCreateHostToken(agent)` on first use |
 | `platform-client-instance-id` | this deployment's client id for platform device login | `getOrCreatePlatformClientInstanceId()` on first use |
-| `browser-context:<provider>:<key>` | persistent Browserbase context ids of the host-browser providers | `getOrCreateMapping()` on first open |
+| `browser-context:<provider>:<key>` | persistent remote context ids of the cloud host-browser providers (Browserbase context ids; Steel profile ids) | `getOrCreateMapping()` on first open; `replaceContextMapping()` when Steel no longer has the profile |
 | `account-deletion-request:<userId>` | an account's deletion request: its id, when it was confirmed, and whether Amplitude acknowledged it ([account-deletion.md](account-deletion.md)) | `requestAccountDeletion()` on the first confirmed request |
 
 Values are validated with Zod on every read and write

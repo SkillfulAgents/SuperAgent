@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { BrowserbaseSettings } from '@renderer/components/settings/browser-tab'
+import { BrowserbaseSettings, SteelSettings } from '@renderer/components/settings/browser-tab'
+import { useSteelCredentials } from '@renderer/hooks/use-steel-credentials'
 import type { HostBrowserProviderId } from '@shared/lib/config/settings'
 
 const CONTAINER_VALUE = '__container__'
@@ -37,6 +38,13 @@ const BROWSER_HOST_OPTIONS: Array<{
     isAdvanced: true,
     description: 'Remote cloud browser. Requires a Browserbase account.',
   },
+  {
+    id: 'steel' as HostBrowserProviderId,
+    label: 'Steel',
+    recommended: false,
+    isAdvanced: true,
+    description: 'Remote cloud browser. Requires a Steel account.',
+  },
 ]
 
 interface BrowserSetupStepProps {
@@ -53,6 +61,7 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
   const [browserbaseProjectId, setBrowserbaseProjectId] = useState('')
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
+  const steelCredentials = useSteelCredentials()
 
   const providers = settings?.hostBrowserStatus?.providers ?? []
   const chromeProvider = providers.find((p) => p.id === 'chrome')
@@ -62,15 +71,19 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
 
   const browserbaseProvider = providers.find((p) => p.id === 'browserbase')
   const hasSavedBrowserbaseCredentials = !!browserbaseProvider?.available
+  const steelKeyStatus = settings?.apiKeyStatus?.steel
+  const hasSavedSteelKey = !!steelKeyStatus?.isConfigured
 
-  // If Browserbase is selected, can only proceed with valid credentials
+  // A cloud browser can only be picked with its credentials saved
   useEffect(() => {
     if (effectiveProvider === 'browserbase') {
       onCanProceedChange?.(hasSavedBrowserbaseCredentials)
+    } else if (effectiveProvider === 'steel') {
+      onCanProceedChange?.(hasSavedSteelKey)
     } else {
       onCanProceedChange?.(true)
     }
-  }, [effectiveProvider, hasSavedBrowserbaseCredentials, onCanProceedChange])
+  }, [effectiveProvider, hasSavedBrowserbaseCredentials, hasSavedSteelKey, onCanProceedChange])
 
   // Persist the auto-selected Chrome provider so that users who see Chrome
   // pre-selected and click Next without interacting still have the preference
@@ -224,6 +237,21 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
                     }}
                   />
                 </div>
+                  </div>
+                </div>
+              )}
+
+              {option.id === 'steel' && (
+                <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                  <div className="overflow-hidden">
+                    <div className="px-3 pb-3 pt-0">
+                      <SteelSettings
+                        form={steelCredentials}
+                        hasSavedCredentials={hasSavedSteelKey}
+                        credentialSource={steelKeyStatus?.source}
+                        disabled={false}
+                      />
+                    </div>
                   </div>
                 </div>
               )}

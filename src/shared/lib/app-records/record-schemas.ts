@@ -16,8 +16,11 @@ export function hostContainerTokenKey(agentSlug: string): string {
   return `${HOST_CONTAINER_TOKEN_KEY_PREFIX}${agentSlug}`
 }
 
-/** The host-browser providers that keep a persistent Browserbase context per key. */
-export type BrowserContextProvider = 'browserbase' | 'platform'
+/**
+ * The host-browser providers that keep a persistent remote context per key: a
+ * Browserbase context (Browserbase, platform) or a Steel profile (Steel).
+ */
+export type BrowserContextProvider = 'browserbase' | 'platform' | 'steel'
 export function browserContextKeyPrefix(provider: BrowserContextProvider): string {
   return `browser-context:${provider}:`
 }
