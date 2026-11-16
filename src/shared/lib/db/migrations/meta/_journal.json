@@ -484,6 +484,13 @@
       "when": 1794451767741,
       "tag": "0068_chat_sessions_by_session",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "6",
+      "when": 1794868843117,
+      "tag": "0069_query_indexes",
+      "breakpoints": true
     }
   ]
 }
