@@ -316,6 +316,23 @@ describe('initializeServices post-bind critical path', () => {
     expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
   })
 
+  it("runs the process setup's two halves apart, for a host that prepares its shared data once", async () => {
+    const { registerAllAccountProviders } = await import('./account-providers/register')
+    const { prepareDeploymentData, prepareProcessState } = await import('./startup')
+
+    await prepareDeploymentData()
+    expect(validateAuth).toHaveBeenCalledTimes(1)
+    expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
+    expect(registerAllAccountProviders).not.toHaveBeenCalled()
+
+    await prepareProcessState()
+    expect(registerAllAccountProviders).toHaveBeenCalledTimes(1)
+    expect(getPlatformAccessToken).toHaveBeenCalledTimes(1)
+    // The shared-data half is not run again by the in-memory half.
+    expect(validateAuth).toHaveBeenCalledTimes(1)
+    expect(ensureManagedPlatformConnection).toHaveBeenCalledTimes(1)
+  })
+
   it('afterBindInitialize marks bound, inits, then logs timing', async () => {
     const { afterBindInitialize, getServicesInitError } = await import('./startup')
     await afterBindInitialize()
