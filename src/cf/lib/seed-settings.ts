@@ -6,6 +6,16 @@
  */
 import type { AppSettings } from '@shared/lib/config/settings'
 
+/**
+ * Not something this runtime cannot work without, but a default it wants: here a session read is
+ * two round trips to D1 on every authenticated request, so a browser's session is read from its
+ * signed cookie for this long instead (auth.sessionCookieCacheSeconds). The price is that a
+ * revoked or banned session keeps working, and a changed app role keeps applying, for up to this
+ * long in a browser that already holds the cookie, so it is kept at a minute. An org that has a
+ * value, 0 (off) included, keeps it.
+ */
+export const SESSION_COOKIE_CACHE_SECONDS = 60
+
 /** Changes `settings` in place; true when anything changed. */
 export function seedSettings(settings: AppSettings, seedJson: string | undefined, origin: string | undefined): boolean {
   let changed = false
@@ -18,6 +28,10 @@ export function seedSettings(settings: AppSettings, seedJson: string | undefined
   const trusted = settings.auth?.trustedOrigins ?? []
   if (origin && !trusted.includes(origin)) {
     settings.auth = { ...settings.auth, trustedOrigins: [...trusted, origin] }
+    changed = true
+  }
+  if (settings.auth?.sessionCookieCacheSeconds === undefined) {
+    settings.auth = { ...settings.auth, sessionCookieCacheSeconds: SESSION_COOKIE_CACHE_SECONDS }
     changed = true
   }
   return changed

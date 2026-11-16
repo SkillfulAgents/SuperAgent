@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AppSettings } from '@shared/lib/config/settings'
-import { seedSettings } from './seed-settings'
+import { SESSION_COOKIE_CACHE_SECONDS, seedSettings } from './seed-settings'
 
 const ORIGIN = 'https://org.example.com'
 const SEED = JSON.stringify({
@@ -18,7 +18,7 @@ describe('seedSettings', () => {
     expect(settings).toMatchObject({
       llmProvider: 'platform',
       app: { theme: 'dark', setupCompleted: true, hostBrowserProvider: 'platform' },
-      auth: { allowLocalAuth: false, allowSocialAuth: true, trustedOrigins: [ORIGIN] },
+      auth: { allowLocalAuth: false, allowSocialAuth: true, trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: 60 },
     })
   })
 
@@ -26,7 +26,7 @@ describe('seedSettings', () => {
     const settings = {
       llmProvider: 'anthropic',
       app: { setupCompleted: true },
-      auth: { allowLocalAuth: true, trustedOrigins: [ORIGIN] },
+      auth: { allowLocalAuth: true, trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: 0 },
     } as unknown as AppSettings
 
     expect(seedSettings(settings, SEED, ORIGIN)).toBe(false)
@@ -39,7 +39,35 @@ describe('seedSettings', () => {
 
     expect(seedSettings(settings, undefined, ORIGIN)).toBe(true)
 
-    expect(settings).toEqual({ auth: { trustedOrigins: [ORIGIN] } })
+    expect(settings).toEqual({ auth: { trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: 60 } })
+  })
+
+  it('reads sessions from the signed cookie for a minute, so a request does not pay two D1 round trips for one', () => {
+    const settings = {} as AppSettings
+
+    seedSettings(settings, undefined, ORIGIN)
+
+    // A minute, written out: a longer window is a longer life for a revoked session, so changing it is a decision.
+    expect(SESSION_COOKIE_CACHE_SECONDS).toBe(60)
+    expect(settings.auth?.sessionCookieCacheSeconds).toBe(60)
+  })
+
+  it('turns the session cookie cache on for an org that finished setup without one', () => {
+    const settings = { app: { setupCompleted: true }, auth: { trustedOrigins: [ORIGIN] } } as unknown as AppSettings
+
+    expect(seedSettings(settings, SEED, ORIGIN)).toBe(true)
+    expect(settings.auth?.sessionCookieCacheSeconds).toBe(60)
+    expect(seedSettings(settings, SEED, ORIGIN)).toBe(false)
+  })
+
+  it.each([0, 300])("keeps an org's own session cookie cache window of %s seconds, from its seed or set later", (seconds) => {
+    const seeded = {} as AppSettings
+    seedSettings(seeded, JSON.stringify({ auth: { sessionCookieCacheSeconds: seconds } }), ORIGIN)
+    expect(seeded.auth?.sessionCookieCacheSeconds).toBe(seconds)
+
+    const existing = { app: { setupCompleted: true }, auth: { trustedOrigins: [ORIGIN], sessionCookieCacheSeconds: seconds } } as unknown as AppSettings
+    expect(seedSettings(existing, SEED, ORIGIN)).toBe(false)
+    expect(existing.auth?.sessionCookieCacheSeconds).toBe(seconds)
   })
 
   it('keeps the origins an admin already trusts and adds its own', () => {
