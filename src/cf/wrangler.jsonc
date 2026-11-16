@@ -2,7 +2,10 @@
 // `AUTH_MODE=true npm run build:web`:
 //   npx wrangler d1 create superagent          (put its id below)
 //   npx wrangler secret put SUPERAGENT_VAULT_KEY --config src/cf/wrangler.jsonc   (openssl rand -base64 32)
+//   npx wrangler secret put DEPLOY_TOKEN --config src/cf/wrangler.jsonc           (openssl rand -base64 32)
 //   npx wrangler deploy --config src/cf/wrangler.jsonc
+//   curl -fsS -X POST -H "Authorization: Bearer $DEPLOY_TOKEN" "$APP_ORIGIN/_deploy/prepare"
+//     (the deploy step: migrates the database for this deploy; every deploy must run it)
 // The org's sign-in and platform secrets (BETTER_AUTH_SECRET, AUTH_PROVIDERS_JSON, PLATFORM_TOKEN)
 // are set the same way.
 {
@@ -21,12 +24,13 @@
     "undici": "./workers-shims/node-only.ts",
     "@skillful-agents/agent-computer": "./workers-shims/node-only.ts"
   },
+  // SEED_SETTINGS (optional): the settings a new org starts from, as JSON, e.g. "{\"app\":{\"setupCompleted\":true}}".
   "vars": {
     "AUTH_MODE": "true",
     "APP_ORIGIN": "https://superagent.example.com"
   },
   // Set with `wrangler secret put` (above): a deploy fails while one is missing.
-  "secrets": { "required": ["SUPERAGENT_VAULT_KEY", "BETTER_AUTH_SECRET", "AUTH_PROVIDERS_JSON", "PLATFORM_TOKEN"] },
+  "secrets": { "required": ["SUPERAGENT_VAULT_KEY", "BETTER_AUTH_SECRET", "AUTH_PROVIDERS_JSON", "PLATFORM_TOKEN", "DEPLOY_TOKEN"] },
   "assets": {
     "directory": "../../dist/renderer",
     "binding": "ASSETS",
@@ -42,5 +46,7 @@
     ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject"] }],
+  // An object on older code restarts when a caller on a newer deploy reaches it (object-version.ts).
+  "version_metadata": { "binding": "VERSION" },
   "observability": { "enabled": true }
 }

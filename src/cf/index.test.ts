@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { withClientAddress } from './index'
+import { deployAuthorized, withClientAddress } from './index'
 
 describe('withClientAddress', () => {
   it("replaces the address a client sent with Cloudflare's", () => {
@@ -33,5 +33,21 @@ describe('withClientAddress', () => {
 
     expect(request.headers.get('x-forwarded-for')).toBeNull()
     expect(request.headers.get('x-real-ip')).toBeNull()
+  })
+})
+
+describe('deployAuthorized', () => {
+  const step = (authorization?: string) => new Request('https://org.example.com/_deploy/prepare', { method: 'POST', headers: authorization ? { authorization } : {} })
+
+  it('lets in only a request that carries the deploy secret', async () => {
+    expect(await deployAuthorized(step('Bearer deploy-secret'), 'deploy-secret')).toBe(true)
+    expect(await deployAuthorized(step('Bearer another-secret'), 'deploy-secret')).toBe(false)
+    expect(await deployAuthorized(step('deploy-secret'), 'deploy-secret')).toBe(false)
+    expect(await deployAuthorized(step(), 'deploy-secret')).toBe(false)
+  })
+
+  it('lets nobody in while no deploy secret is set', async () => {
+    expect(await deployAuthorized(step('Bearer '), undefined)).toBe(false)
+    expect(await deployAuthorized(step('Bearer '), '')).toBe(false)
   })
 })

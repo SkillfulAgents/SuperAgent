@@ -1,6 +1,8 @@
 /**
  * SuperAgent in this isolate, booted once, in src/web/server.ts's order: the database, AppState,
- * key custody, task dispatch, then the process setup (prepareProcess).
+ * key custody, task dispatch, then the process setup. The setup runs as its two halves
+ * (startup.ts): the shared-data half once per deploy, in the task manager object (prepareOrg), and
+ * the in-memory half in every isolate.
  * index.ts loads this module on the first API request. The Worker and the Durable Objects boot
  * the same way; only TaskManagerDurableObject starts the background services.
  */
@@ -14,7 +16,7 @@ import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { runWithBackground } from '@shared/lib/background'
 import { mutateSettings } from '@shared/lib/config/settings'
-import { initializeServices, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
+import { initializeServices, prepareDeploymentData, prepareProcessState, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { getErrorReporter, initErrorReporting } from '@shared/lib/error-reporting'
 import type { ExecutionContext } from 'cloudflare:workers'
@@ -22,19 +24,42 @@ import { CloudflareAppState } from './cloudflare-app-state'
 import { createCloudflareErrorReporter } from './cloudflare-error-reporting'
 import { CloudflareKeyManager } from './cloudflare-key-manager'
 import { CloudflareTaskManager } from './cloudflare-task-manager'
+import { seedSettings } from './seed-settings'
 import type { Env } from './index'
 
 let booted: Promise<void> | undefined
 let tasks: CloudflareTaskManager | undefined
-let fetchWrapped = false
-
+let fetchInstalled = false
 /** Boots SuperAgent in this isolate once; a failed boot is tried again by the next call. */
 export function boot(env: Env): Promise<void> {
-  booted ??= start(env).catch((error: unknown) => {
+  booted ??= bootIsolate(env).then(prepareProcessState).catch((error: unknown) => {
     booted = undefined
     throw error
   })
   return booted
+}
+
+let isolateBooted: Promise<void> | undefined
+/**
+ * A boot without the org's once-per-deploy setup and what follows it: the task manager object
+ * runs that setup on top of this (TaskManagerDurableObject.prepareOrg), so it must not wait for it.
+ */
+export function bootIsolate(env: Env): Promise<void> {
+  isolateBooted ??= start(env).catch((error: unknown) => {
+    isolateBooted = undefined
+    throw error
+  })
+  return isolateBooted
+}
+
+/**
+ * What a deploy does once for the org, in the task manager object: the settings a new org starts
+ * from, then the shared-data half of the process setup (the auth gate and the managed platform
+ * connection).
+ */
+export async function prepareOrg(env: Env): Promise<void> {
+  await mutateSettings((settings) => (seedSettings(settings, env.SEED_SETTINGS, env.APP_ORIGIN) ? undefined : false))
+  await prepareDeploymentData()
 }
 
 /** One API request; the work it leaves running keeps the invocation alive until it settles. */
@@ -61,53 +86,39 @@ export function startErrorReporting(): void {
   if (!getErrorReporter()) initErrorReporting(createCloudflareErrorReporter({ environment: 'cloudflare' }))
 }
 
+/** The schema and data migrations, for the one object that runs them (TaskManagerDurableObject.migrate). */
+export async function migrateDatabase(env: Env): Promise<void> {
+  // This can be the first thing the isolate does: a failed migration must reach error reporting.
+  startErrorReporting()
+  await migrateD1(env.DB, migrationBundle)
+  await runDataMigrations((await d1(env.DB).open()).db)
+}
+
 async function start(env: Env): Promise<void> {
   startErrorReporting()
-  // Its own step, not part of opening the database: D1 takes the schema migrations as one batch.
-  await migrateD1(env.DB, migrationBundle)
-  await runDataMigrations(await openDatabase({ driver: d1(env.DB), migrate: false }))
+  installFetch()
+  // The deploy step migrated the database (prepareDeploy); a boot neither migrates nor checks it.
+  await openDatabase({ driver: d1(env.DB), migrate: false })
   // A boot retried after a later step failed finds AppState installed.
-  if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE))
+  if (!isAppStateInitialized()) await initializeAppState(new CloudflareAppState(env.APP_STATE, { version: env.VERSION?.timestamp }))
   await ensureKeyManager(() => new CloudflareKeyManager({ env, probes: appKeyProbes }))
   // Then task dispatch, before anything is served: a request can schedule work. Every isolate registers
   // the services' Tasks; only TaskManagerDurableObject starts the services and runs the jobs.
   if (!isBackgroundWorkInitialized()) {
-    tasks = new CloudflareTaskManager(env.TASK_MANAGER)
+    tasks = new CloudflareTaskManager(env.TASK_MANAGER, env.VERSION?.timestamp)
     await initializeBackgroundWork(tasks)
   }
   registerBackgroundWork()
-  await seedSettings(env.APP_ORIGIN)
-
-  await prepareProcess()
-  if (!fetchWrapped) {
-    // Outermost: the wrappers inside (platform attribution) can build a Request, which refuses redirect: 'error' on Workers.
-    globalThis.fetch = errorOnRedirect(globalThis.fetch)
-    fetchWrapped = true
-  }
 }
 
 /**
- * What gamut-controller-ecs seeds on an org's first boot (seedSettingsJson): platform providers,
- * setup done, sign-in through the platform only. An org that finished setup keeps its settings.
+ * The one place this isolate's fetch is replaced: every call goes out through errorOnRedirect.
+ * The platform attribution that the process setup installs later wraps this fetch.
  */
-async function seedSettings(origin: string): Promise<void> {
-  await mutateSettings((settings) => {
-    if (settings.app?.setupCompleted) return false
-    settings.llmProvider = 'platform'
-    settings.voice = { ...settings.voice, sttProvider: 'platform' }
-    settings.app = { ...settings.app, hostBrowserProvider: 'platform', setupCompleted: true }
-    settings.shareAnalytics = true
-    settings.shareErrorReports = true
-    settings.auth = {
-      ...settings.auth,
-      requireAdminApproval: false,
-      allowLocalAuth: false,
-      allowSocialAuth: true,
-      trustedOrigins: [origin],
-      sessionMaxLifetimeHrs: 168,
-      sessionIdleTimeoutMin: 1440,
-    }
-  })
+function installFetch(): void {
+  if (fetchInstalled) return
+  fetchInstalled = true
+  globalThis.fetch = errorOnRedirect(globalThis.fetch)
 }
 
 /**

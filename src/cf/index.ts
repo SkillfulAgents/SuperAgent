@@ -8,8 +8,9 @@ import type { D1Database, DurableObjectNamespace, ExecutionContext, ExportedHand
 import { captureException, flushErrorReporting } from '@shared/lib/error-reporting'
 import { getServerFacts, withServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import type { AppStateDurableObject } from './cloudflare-app-state'
-import { taskManagerOf, type TaskManagerDurableObject } from './cloudflare-task-manager'
+import { prepareDeploy, startTaskManager, type TaskManagerDurableObject } from './cloudflare-task-manager'
 import { logErrorsAsText } from './error-logs'
+import type { VersionMetadata } from './object-version'
 
 export { AppStateDurableObject } from './cloudflare-app-state'
 export { TaskManagerDurableObject } from './cloudflare-task-manager'
@@ -27,16 +28,30 @@ export interface Env {
   SUPERAGENT_VAULT_KEY?: string
   /** The origin browsers reach this Worker at. */
   APP_ORIGIN: string
+  /** The settings a new org starts from, as JSON: its deployment's choice (seed-settings.ts). */
+  SEED_SETTINGS?: string
+  /** The secret the deploy step sends: a Worker secret. Without it the deploy step is refused. */
+  DEPLOY_TOKEN?: string
+  /** This deploy: an object on older code restarts when a caller on this one reaches it (object-version.ts). */
+  VERSION?: VersionMetadata
 }
 
 logErrorsAsText()
 
 const SERVICE_WORKER = '/sw.js'
+/** What the deploy step calls right after an upload (wrangler.jsonc). */
+const DEPLOY_PATH = '/_deploy/prepare'
 let taskManagerWoken = false
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (!new URL(request.url).pathname.startsWith('/api/')) return serveAppShell(request, env.ASSETS)
+    const { pathname } = new URL(request.url)
+    if (pathname === DEPLOY_PATH && request.method === 'POST') {
+      if (!(await deployAuthorized(request, env.DEPLOY_TOKEN))) return new Response('unauthorized', { status: 401 })
+      await prepareDeploy(env)
+      return Response.json({ version: env.VERSION?.id ?? null })
+    }
+    if (!pathname.startsWith('/api/')) return serveAppShell(request, env.ASSETS)
     try {
       const app = await import('./boot')
       const booting = app.boot(env)
@@ -53,6 +68,19 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>
+
+/**
+ * True when the request carries the deploy secret as a bearer token; with no secret set, nobody is
+ * let in. The digests are compared in full, so the answer takes the same time whatever was sent.
+ */
+export async function deployAuthorized(request: Request, token: string | undefined): Promise<boolean> {
+  if (!token) return false
+  const digest = async (text: string) => new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
+  const [sent, expected] = await Promise.all([digest(request.headers.get('authorization') ?? ''), digest(`Bearer ${token}`)])
+  let difference = 0
+  for (let i = 0; i < expected.length; i++) difference |= sent[i] ^ expected[i]
+  return difference === 0
+}
 
 /**
  * The client's address where SuperAgent reads it (x-forwarded-for, as the cloud load balancer sets
@@ -73,7 +101,7 @@ export function withClientAddress(request: Request): Request {
 function wakeTaskManager(env: Env, ctx: ExecutionContext): void {
   if (taskManagerWoken) return
   taskManagerWoken = true
-  ctx.waitUntil(taskManagerOf(env.TASK_MANAGER).wake().catch((error: unknown) => {
+  ctx.waitUntil(startTaskManager(env).catch((error: unknown) => {
     taskManagerWoken = false
     console.error('[cloudflare] waking the task manager failed:', error)
     captureException(error, { tags: { component: 'cloudflare', operation: 'wake-task-manager' } })
