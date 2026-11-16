@@ -27,7 +27,7 @@ import {
   decodeOrgIdFromToken,
   installPlatformFetchInterceptor,
 } from './platform-attribution'
-import { getPlatformAccessToken } from './services/platform-auth-service'
+import { getPlatformAccessToken, initEnvManagedPlatformStatus } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
 import { setupArtifactStreamProxy } from '../../main/artifact-stream-proxy'
@@ -212,70 +212,18 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
   }
 }
 
-let processPrepared: Promise<void> | null = null
-
 /**
- * The setup a process needs before it serves: account providers, the auth
- * gate, platform attribution and the managed platform connection.
- * Runs once per process. Service startup runs it alongside agent discovery and
- * joins both before any container starts; a
- * host that serves requests from processes that start no services (one per
- * request, or many short-lived ones) calls it after AppState and KeyManager.
- * A failure is not remembered, so the next call tries again.
- *
- * It has two halves, for a host that runs them apart: `prepareProcessState`
- * is this process's memory, and `prepareDeploymentData` is data that every
- * process of the deployment shares.
+ * The setup that lives in this process's memory: the analytics version, the
+ * account providers, the verified `PLATFORM_TOKEN` status and platform
+ * attribution. Every process that serves runs it, after AppState and
+ * KeyManager. Running it twice is harmless.
  */
-export function prepareProcess(): Promise<void> {
-  processPrepared ??= prepareProcessInner().catch((error: unknown) => {
-    processPrepared = null
-    throw error
-  })
-  return processPrepared
-}
-
-async function prepareProcessInner(): Promise<void> {
-  registerProcessIdentity()
-  await checkAuthGate()
-  await installPlatformAttribution()
-  await provisionManagedPlatformConnection()
-}
-
-/**
- * The half of the process setup that lives in this process's memory: the
- * analytics version, the account providers and platform attribution. Every
- * process that serves requests runs it.
- */
-export async function prepareProcessState(): Promise<void> {
-  registerProcessIdentity()
-  await installPlatformAttribution()
-}
-
-/**
- * The half of the process setup that checks or writes data all processes of
- * the deployment share: the auth gate and the managed platform connection.
- * `prepareProcess` runs it in every process. A host with many short-lived
- * processes over one database can run it once for all of them, before they
- * serve, and run only `prepareProcessState` in each.
- */
-export async function prepareDeploymentData(): Promise<void> {
-  await checkAuthGate()
-  await provisionManagedPlatformConnection()
-}
-
-function registerProcessIdentity(): void {
+export async function prepareProcess(): Promise<void> {
   setServerAnalyticsVersion(APP_VERSION)
   // Account providers (Composio, Nango if configured)
   registerAllAccountProviders()
-}
-
-async function checkAuthGate(): Promise<void> {
-  if (isAuthMode()) await validateAuthModeStartup()
-}
-
-/** Install fetch interceptor for org JWTs (opaque keys don't need attribution). */
-async function installPlatformAttribution(): Promise<void> {
+  await initEnvManagedPlatformStatus()
+  // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
   try {
     const platformToken = await getPlatformAccessToken()
     if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
@@ -287,10 +235,13 @@ async function installPlatformAttribution(): Promise<void> {
 }
 
 /**
- * Provision hosted Platform installs and later logins independently of legacy
- * data migrations, before any agent or helper resolves its initial model.
+ * Idempotent checks and writes on data every process of the deployment
+ * shares: the auth gate and the managed platform connection. Once per deploy
+ * is enough. The connection is provisioned before any agent or helper
+ * resolves its initial model.
  */
-async function provisionManagedPlatformConnection(): Promise<void> {
+export async function prepareDeployment(): Promise<void> {
+  if (isAuthMode()) await validateAuthModeStartup()
   const { ensureManagedPlatformConnection } = await import('./llm-provider/connection-settings')
   await ensureManagedPlatformConnection()
 }
@@ -325,8 +276,9 @@ async function initializeServicesInner() {
 
   // The process setup and agent discovery are independent reads. Run them
   // together, then join before container initialization so a failed auth gate
-  // still prevents any runtime side effects.
-  const [, agents] = await Promise.all([prepareProcess(), listAgents()])
+  // still prevents any runtime side effects. Memory goes first, so a server
+  // that keeps serving after a failed gate still has its account providers.
+  const [, agents] = await Promise.all([prepareProcess().then(prepareDeployment), listAgents()])
   if (isAuthMode()) {
     try {
       await clearPendingApprovalBans()
