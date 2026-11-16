@@ -78,6 +78,13 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
   app.post('/files/*', async (c, next) => {
     try {
       const filePath = routePath(c.req.url)
+      // Matched here by suffix: a `*` in the middle of a route pattern takes one path segment only,
+      // so a pattern like /files/*/mkdir never saw a nested folder.
+      if (filePath.endsWith('/mkdir')) {
+        const folder = normalizeWorkspaceFilePath(filePath.slice(0, -'/mkdir'.length), workspaceRoot)
+        await fs.promises.mkdir(folder.localPath, { recursive: true })
+        return c.json({ success: true, path: folder.relativePath })
+      }
       if (!filePath.endsWith('/upload')) return next()
       const file = await writeWorkspaceFile(filePath.slice(0, -'/upload'.length), c.req.raw.body, { workspaceRoot })
       return c.json({ success: true, path: file.relativePath })

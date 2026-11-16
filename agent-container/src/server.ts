@@ -420,19 +420,6 @@ app.delete('/files/*', async (c) => {
   }
 });
 
-app.post('/files/*/mkdir', async (c) => {
-  const dirPath = (c.req.param('*') || '').replace('/mkdir', '');
-  const fullPath = path.join('/workspace', dirPath);
-
-  try {
-    await fs.promises.mkdir(fullPath, { recursive: true });
-    return c.json({ success: true, path: dirPath });
-  } catch (error: any) {
-    console.error('Error creating directory:', error);
-    return c.json({ error: error.message || 'Failed to create directory' }, 500);
-  }
-});
-
 app.get('/files/tree', async (c) => {
   const depth = parseInt(c.req.query('depth') || '3');
   const startPath = c.req.query('path') || '';
