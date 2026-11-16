@@ -4720,6 +4720,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(typeof body.uuid).toBe('string')
     expect(body.queued).toBe(false)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, sent())
+    // The agent ResolveAgent() read is the one the route uses.
+    expect(getAgentRecord).not.toHaveBeenCalled()
 
     // No DB insert for message author outside auth mode
     expect(mockDbInsertValues).not.toHaveBeenCalled()
@@ -7478,6 +7480,8 @@ describe('mentions — POST /:id/sessions/:sessionId/messages and POST /:id/sess
 
     expect(res.status).toBe(400)
     expect(mockClientCreateSession).not.toHaveBeenCalled()
+    // The agent ResolveAgent() read is the one the route uses.
+    expect(getAgentRecord).not.toHaveBeenCalled()
   })
 })
 
