@@ -143,8 +143,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // The Gamut sign-in in a sheet on the app's window (ASWebAuthenticationSession).
   // Resolves when the sheet closes; 'browser' means there was no sheet to show
   // and the URL went to the default browser instead.
-  startPlatformSignIn: (url: string): Promise<'completed' | 'cancelled' | 'failed' | 'browser'> => {
-    return ipcRenderer.invoke('platform-sign-in-start', url)
+  // `withApple`: the native Sign in with Apple prompt runs first.
+  startPlatformSignIn: (url: string, withApple = false): Promise<'completed' | 'cancelled' | 'failed' | 'browser'> => {
+    return ipcRenderer.invoke('platform-sign-in-start', url, withApple)
   },
   cancelPlatformSignIn: (): Promise<void> => {
     return ipcRenderer.invoke('platform-sign-in-cancel')
@@ -567,7 +568,7 @@ declare global {
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
-      startPlatformSignIn?: (url: string) => Promise<'completed' | 'cancelled' | 'failed' | 'browser'>
+      startPlatformSignIn?: (url: string, withApple?: boolean) => Promise<'completed' | 'cancelled' | 'failed' | 'browser'>
       cancelPlatformSignIn?: () => Promise<void>
       openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>

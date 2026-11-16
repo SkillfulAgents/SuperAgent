@@ -55,12 +55,13 @@ export function useLoginWindow({ authSession = false }: { authSession?: boolean 
 
   const open = useCallback(async (
     requestLoginUrl: () => Promise<string | null | undefined>,
+    { withApple = false }: { withApple?: boolean } = {},
   ): Promise<LoginWindowOutcome> => {
     close()
     const attempt = attemptRef.current
     const stale = () => attempt !== attemptRef.current
     const popup = authSession
-      ? prepareAuthSession(() => { if (!stale()) close() })
+      ? prepareAuthSession(() => { if (!stale()) close() }, withApple)
       : prepareOAuthPopup()
     popupRef.current = popup
     cancelTimerRef.current = window.setTimeout(() => setCanCancel(true), LOGIN_WINDOW_CANCEL_DELAY_MS)
