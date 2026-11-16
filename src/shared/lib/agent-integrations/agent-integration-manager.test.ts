@@ -735,6 +735,17 @@ it('a health check keeps a chat whose session started a turn while it was read',
   }
 })
 
+it('asks for a pass, and connects nothing here, in a process that does not run the service', async () => {
+  const at = vi.spyOn(taskManager(), 'at')
+  const connect = vi.spyOn(adapter, 'connect')
+
+  // Not started: this process only serves requests.
+  await manager.addIntegration('installation-a')
+
+  expect(connect).not.toHaveBeenCalled()
+  expect(at).toHaveBeenCalledExactlyOnceWith(expect.any(Number), 'agent-integrations.connect-now', { taskType: 'agent-integrations.health-check', payload: {} })
+})
+
 it('does not load the chats whose session is idle when its integration connects', async () => {
   state.mappings.set('installation-a:object-7', { id: 'mapping-old', integrationId: 'installation-a', externalChatId: 'object-7', sessionId: 'old' })
   await manager.start()

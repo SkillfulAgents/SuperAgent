@@ -66,6 +66,8 @@ function breadcrumb(message: string, data?: Record<string, unknown>): void {
 // ── Constants ───────────────────────────────────────────────────────────
 
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
+/** The job of a pass asked for by a process that does not run this service. Its own id: the recurring pass keeps its schedule. */
+const CONNECT_NOW_JOB = 'agent-integrations.connect-now'
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 
@@ -449,6 +451,13 @@ export class AgentIntegrationManager implements Service {
   }
 
   async addIntegration(id: string): Promise<void> {
+    // Connections live where this service runs. A process that serves requests but does not run it
+    // (one of many short-lived ones) would hold the connection only until its request ends, so it
+    // asks for a pass now: the process that runs the service connects what is not connected.
+    if (!this.isRunning) {
+      await taskManager().at(Date.now(), CONNECT_NOW_JOB, this.healthCheckTask.spec)
+      return
+    }
     // Claim the integration before the read: a pause or removal that lands
     // while the row is being read must win, not be undone by this connect.
     const generation = this.bumpGeneration(id)
