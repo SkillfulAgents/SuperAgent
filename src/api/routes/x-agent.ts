@@ -16,9 +16,10 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq, isNotNull } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
+import { agentAcl } from '@shared/lib/db/schema'
+import { getLatestMessageAuthorUserId } from '@shared/lib/services/message-author-lookup'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { userExists } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -96,39 +97,6 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
     .from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), eq(agentAcl.role, 'owner')))
   return rows.map((r) => r.userId)
-}
-
-/**
- * Resolve the user who sent the message currently driving an agent session.
- * In shared sessions this can differ from the session creator, so invocation
- * attribution must prefer the latest per-message author record.
- */
-async function getLatestMessageAuthorUserId(
-  agentSlug: string,
-  sessionId: string,
-): Promise<string | undefined> {
-  try {
-    const rows = await db
-      .select({ userId: messageAuthor.userId })
-      .from(messageAuthor)
-      .where(and(
-        eq(messageAuthor.agentSlug, agentSlug),
-        eq(messageAuthor.sessionId, sessionId),
-        // An integration-delivered message has no user author.
-        isNotNull(messageAuthor.userId),
-      ))
-      .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
-      .limit(1)
-    return rows[0]?.userId ?? undefined
-  } catch (error) {
-    // Attribution is optional. A DB/read failure must never block the invoke.
-    console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
-      agentSlug,
-      sessionId,
-      error: error instanceof Error ? error.message : String(error),
-    })
-    return undefined
-  }
 }
 
 async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {

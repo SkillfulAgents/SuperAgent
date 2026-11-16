@@ -61,7 +61,7 @@ import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat
 import { listAgentIntegrationsTool } from './tools/integrations/list-agent-integrations'
 import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
-import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
+import { makeAddChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
 import { meetingTools } from './tools/meetings/meeting-tools'
 
@@ -193,7 +193,7 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
       listAgentIntegrationsTool,
       listChatUsersTool,
       listChatChannelsTool,
-      addChatIntegrationTool,
+      makeAddChatIntegrationTool(getCallerSessionId),
       makeSendChatMessageTool(getCallerSessionId),
     ],
   })

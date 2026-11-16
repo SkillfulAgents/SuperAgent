@@ -28,6 +28,8 @@ import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
+import { getLatestMessageAuthorUserId } from '@shared/lib/services/message-author-lookup'
+import { isAuthMode } from '@shared/lib/auth/mode'
 
 type XAgentChatVariables = { callerSlug: string }
 
@@ -83,7 +85,14 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug), true)
+    // The integration belongs to the user whose message the agent is acting on, as one made in
+    // the app belongs to the signed-in user: what is set up for it later (a webhook endpoint)
+    // is set up in that user's name.
+    const createdByUserId = isAuthMode() && typeof body.session_id === 'string'
+      ? await getLatestMessageAuthorUserId(callerSlug, body.session_id)
+      : undefined
+
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug, createdByUserId), true)
 
     let id: string
     try {
@@ -93,6 +102,7 @@ xAgentChat.post('/add', async (c) => {
         name,
         config: prepared.config,
         status: prepared.status,
+        ...(createdByUserId ? { createdByUserId } : {}),
       })
     } catch (err) {
       await prepared.release()

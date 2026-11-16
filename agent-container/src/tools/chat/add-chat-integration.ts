@@ -9,7 +9,12 @@ interface AddResult {
   name: string | null
 }
 
-export const addChatIntegrationTool = tool(
+/**
+ * @param getCallerSessionId - getter that returns the current Claude session ID; the host
+ *   records the integration under the user whose message this session is acting on
+ */
+export function makeAddChatIntegrationTool(getCallerSessionId: () => string) {
+  return tool(
   'add_chat_integration',
   `Add a new chat integration for this agent. Supports Telegram, Slack, and iMessage.
 
@@ -31,6 +36,7 @@ The config parameter should be a JSON object with the provider-specific fields.`
         provider,
         config,
         name,
+        session_id: getCallerSessionId(),
       })
       return textResult(
         `Chat integration created successfully.\n` +
@@ -45,3 +51,4 @@ The config parameter should be a JSON object with the provider-specific fields.`
     }
   },
 )
+}
