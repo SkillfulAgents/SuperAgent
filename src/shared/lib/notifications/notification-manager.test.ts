@@ -572,6 +572,7 @@ describe('triggerSessionMention', () => {
     expect(mockPublishGlobal).toHaveBeenCalledWith(expect.objectContaining({
       notificationType: 'session_mention',
       recipientUserId: 'user-b',
+      messageUuid: 'msg-1',
     }))
   })
 

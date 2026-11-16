@@ -14,13 +14,15 @@ export function buildDeclarativePushPayload(
   event: NotificationEvent,
   origin: string
 ): { web_push: 8030; notification: { title: string; body: string; navigate: string } } {
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- origin is zod-url-validated at the subscribe boundary; per-subscription failures are isolated in the channel
+  const navigate = new URL(event.navigatePath, origin)
+  if (event.messageUuid) navigate.searchParams.set('message', event.messageUuid)
   return {
     web_push: 8030,
     notification: {
       title: event.title,
       body: event.body,
-      // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- origin is zod-url-validated at the subscribe boundary; per-subscription failures are isolated in the channel
-      navigate: new URL(event.navigatePath, origin).toString(),
+      navigate: navigate.toString(),
     },
   }
 }

@@ -256,6 +256,17 @@ describe('auth-mode agent access gate', () => {
     const [target] = mocks.sendNotification.mock.calls[0] as unknown as [{ endpoint: string }]
     expect(target.endpoint).toBe('https://push/b')
   })
+
+  it("opens a mention on the message it tags, the id encoded once", async () => {
+    mocks.listPushSubscriptions.mockReturnValue([makeSubscription({ userId: 'user-b' })])
+    mocks.getPushableAgentSlugs.mockResolvedValue(['agent-x'])
+
+    await channel.deliver(makeEvent({ type: 'session_mention', recipientUserId: 'user-b', messageUuid: 'a&b#c' }))
+
+    const navigate = new URL(JSON.parse(mocks.sendNotification.mock.calls[0][1] as unknown as string).notification.navigate)
+    expect(navigate.pathname).toBe('/agents/agent-x/sessions/sess-1')
+    expect(navigate.searchParams.get('message')).toBe('a&b#c')
+  })
 })
 
 describe('failure handling', () => {
