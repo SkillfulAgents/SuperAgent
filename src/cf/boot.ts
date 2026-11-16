@@ -1,8 +1,8 @@
 /**
  * SuperAgent in this isolate, booted once, in src/web/server.ts's order: the database, AppState,
  * key custody, task dispatch, then the process setup. The setup runs as its two halves
- * (startup.ts): the shared-data half once per deploy, in the task manager object (prepareOrg), and
- * the in-memory half in every isolate.
+ * (startup.ts): prepareDeployment once per deploy, in the task manager object (prepareOrg), and
+ * prepareProcess in every isolate.
  * index.ts loads this module on the first API request. The Worker and the Durable Objects boot
  * the same way; only TaskManagerDurableObject starts the background services.
  */
@@ -18,7 +18,7 @@ import { ensureKeyManager } from '@shared/lib/keys/key-manager'
 import { appKeyProbes } from '@shared/lib/keys/app-key-probes'
 import { runWithBackground } from '@shared/lib/background'
 import { mutateSettings } from '@shared/lib/config/settings'
-import { initializeServices, prepareDeploymentData, prepareProcessState, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
+import { initializeServices, prepareDeployment, prepareProcess, registerBackgroundWork, shutdownServices } from '@shared/lib/startup'
 import { initializeBackgroundWork, isBackgroundWorkInitialized } from '@shared/lib/background-work'
 import { getErrorReporter, initErrorReporting } from '@shared/lib/error-reporting'
 import type { ExecutionContext } from 'cloudflare:workers'
@@ -36,7 +36,7 @@ let tasks: CloudflareTaskManager | undefined
 let fetchInstalled = false
 /** Boots SuperAgent in this isolate once; a failed boot is tried again by the next call. */
 export function boot(env: Env): Promise<void> {
-  booted ??= bootIsolate(env).then(prepareProcessState).catch((error: unknown) => {
+  booted ??= bootIsolate(env).then(prepareProcess).catch((error: unknown) => {
     booted = undefined
     throw error
   })
@@ -58,12 +58,11 @@ export function bootIsolate(env: Env): Promise<void> {
 
 /**
  * What a deploy does once for the org, in the task manager object: the settings a new org starts
- * from, then the shared-data half of the process setup (the auth gate and the managed platform
- * connection).
+ * from, then prepareDeployment (the auth gate and the managed platform connection).
  */
 export async function prepareOrg(env: Env): Promise<void> {
   await mutateSettings((settings) => (seedSettings(settings, env.SEED_SETTINGS, env.APP_ORIGIN) ? undefined : false))
-  await prepareDeploymentData()
+  await prepareDeployment()
 }
 
 /** One API request; the work it leaves running keeps the invocation alive until it settles. */
