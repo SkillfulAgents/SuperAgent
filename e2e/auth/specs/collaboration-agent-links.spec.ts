@@ -15,6 +15,10 @@ test('changing an agent link needs a User or Owner of both agents', async ({ use
   const stamp = Date.now()
   const ids: string[] = []
   for (const [page, name] of [[olivia, 'Olivia'], [uma, 'Uma']] as const) {
+    // The fixture's pages live for the whole worker and may still hold another
+    // spec's session. Better Auth refuses a POST that carries a session cookie
+    // and no Origin (403 MISSING_OR_NULL_ORIGIN), and page.request sends none.
+    await page.context().clearCookies()
     const response = await page.request.post('/api/auth/sign-up/email', {
       data: { name, email: `${name.toLowerCase()}-links-${stamp}@example.test`, password: 'AgentLinksTesting123!' },
     })
