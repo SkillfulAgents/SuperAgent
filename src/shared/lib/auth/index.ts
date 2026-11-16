@@ -33,9 +33,13 @@ interface AuthInputs {
   secret: string
 }
 
-/** Read the inputs fresh: settings, the trusted origins and base URL they give, the OIDC providers, the secret. */
+/**
+ * Read the inputs fresh: settings, the trusted origins and base URL they give, the OIDC providers, the secret.
+ * Settings and the secret are separate records and neither read needs the other, so they are read
+ * together: every authenticated request waits for this before its session is read.
+ */
 async function loadAuthInputs(): Promise<AuthInputs> {
-  const settings = await getSettings()
+  const [settings, secret] = await Promise.all([getSettings(), getOrCreateAuthSecret()])
   const trustedOrigins = trustedOriginsFrom(settings)
   const baseURL = appBaseUrlFrom(trustedOrigins)
   return {
@@ -43,7 +47,7 @@ async function loadAuthInputs(): Promise<AuthInputs> {
     trustedOrigins,
     baseURL,
     oauthProviders: getGenericOAuthProviderConfigs(baseURL),
-    secret: await getOrCreateAuthSecret(),
+    secret,
   }
 }
 
@@ -67,6 +71,11 @@ export function resetAuth() {
  * instance when they differ from the ones the current instance was built
  * from, so a settings change committed by any process takes effect here on
  * the next call. Only valid when isAuthMode() is true.
+ *
+ * A caller waits for this before it reads a session, and does not start the
+ * read on the instance it had: an instance built from older settings still
+ * writes with them (a session due for refresh gets its expiry from that
+ * instance's lifetime), even when the answer is thrown away.
  */
 export async function getAuth() {
   const inputs = await loadAuthInputs()
