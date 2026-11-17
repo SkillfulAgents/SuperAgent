@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { RoleSelectItems } from '@renderer/components/agents/agent-share-popover'
 import type { ChipContext, ChipSend } from './composer-chips'
 import { agentForSlug } from './mention-chip'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 type Decision = 'allow' | 'review' | 'block'
 type Operation = 'read' | 'invoke'
@@ -226,6 +227,7 @@ function ReachDialog({ agentSlug, agentName, agents, blocked, onDone }: {
     } finally {
       void queryClient.invalidateQueries({ queryKey: ['x-agent-policies', agentSlug] })
       void queryClient.invalidateQueries({ queryKey: ['home-graph'] })
+      void queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
     }
   }
   return (

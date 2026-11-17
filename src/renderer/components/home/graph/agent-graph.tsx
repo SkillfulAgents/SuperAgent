@@ -50,6 +50,7 @@ import { AgentGraphNode, ResourceGraphNode, openGraphNode } from './graph-nodes'
 import { ElbowEdge, type EdgeGeometryOverride, type GraphEdge } from './graph-edges'
 import { computeLayout, type XY } from './layout'
 import { useGraphData, savedEdgeGeometryFor, type GraphEdgeSpec, type GraphNodeData } from './use-graph-data'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 type RfNode = Node<GraphNodeData>
 
@@ -490,7 +491,10 @@ export function AgentGraph() {
   const onConnect: OnConnect = useCallback(
     (connection) => {
       void createDrawnConnection(connection.source, connection.target).then((created) => {
-        if (created) void queryClient.invalidateQueries({ queryKey: ['home-graph'] })
+        if (created) {
+          void queryClient.invalidateQueries({ queryKey: ['home-graph'] })
+          void queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
+        }
       })
     },
     [queryClient],
@@ -503,7 +507,10 @@ export function AgentGraph() {
       const spec = graph.edges.find((e) => e.id === edgeId)
       if (!spec?.deletable) return
       void deleteGraphConnection(spec).then((changed) => {
-        if (changed) void queryClient.invalidateQueries({ queryKey: ['home-graph'] })
+        if (changed) {
+          void queryClient.invalidateQueries({ queryKey: ['home-graph'] })
+          void queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
+        }
       })
     },
     [graph.edges, queryClient],

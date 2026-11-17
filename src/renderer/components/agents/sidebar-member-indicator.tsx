@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { UserPlus } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
+import { useAgentMemberAgents } from '@renderer/hooks/use-agent-member-agents'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSharePopover } from '@renderer/components/agents/agent-share-popover'
+import { AgentFace } from '@renderer/components/agents/agent-face'
 import { Button } from '@renderer/components/ui/button'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
-import { UserAvatarStack } from '@renderer/components/ui/user-avatar-stack'
+import { UserAvatarStack, type StackFace } from '@renderer/components/ui/user-avatar-stack'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
 const VARIANTS = {
@@ -21,10 +23,17 @@ const VARIANTS = {
   },
 } as const
 
-/** A compact member stack with roster and invite access, independent of navigation. */
+/**
+ * A compact member stack with roster and invite access, independent of
+ * navigation. Members are the agent's people, then the other agents that have
+ * a role on it. It shows once the agent is more than one person's: a second
+ * person, or any agent. A local install has no people to list, so its stack
+ * is the agents alone.
+ */
 export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 4, variant = 'sidebar', className }: {
   agentSlug: string
   agentName: string
+  /** How many people have access (0 outside auth mode). */
   memberCount: number
   /** Total circle limit, including the overflow circle when needed. */
   maxFaces?: number
@@ -32,19 +41,30 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
   variant?: keyof typeof VARIANTS
   className?: string
 }) {
-  const { data: members, isLoading, isError, refetch } = useAgentMembers(agentSlug, memberCount > 1)
+  const { isAuthMode, isAdmin, canAdminAgent } = useUser()
+  const memberAgents = useAgentMemberAgents(agentSlug)
+  // One person and no agents is a private agent: no stack, so no roster to
+  // fetch, and none left over from when it was shared is shown.
+  const hasRoster = isAuthMode && memberCount + memberAgents.length > 1
+  const roster = useAgentMembers(agentSlug, hasRoster)
+  const { isLoading, isError, refetch } = roster
+  const members = hasRoster ? roster.data : undefined
   const v = VARIANTS[variant]
   // Test ids keep the sidebar's names there; Agent Home's are its own, as both show at once.
   const testId = variant === 'sidebar' ? 'sidebar-members' : 'agent-members'
   const isMobile = useIsMobile()
-  const { isAuthMode, isAdmin, canAdminAgent } = useUser()
-  const canInvite = isAuthMode && (isAdmin || canAdminAgent(agentSlug))
+  const canInvite = !isAuthMode || isAdmin || canAdminAgent(agentSlug)
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
-  const count = members?.length ?? memberCount
+  const peopleCount = isAuthMode ? members?.length ?? memberCount : 0
+  const count = peopleCount + memberAgents.length
+  const agentFaces = memberAgents.map((agent): StackFace => ({
+    key: `agent:${agent.slug}`,
+    render: (face) => <AgentFace agent={agent} circled {...face} />,
+  }))
 
   function clearTimer() {
     if (timer.current !== null) clearTimeout(timer.current)
@@ -65,7 +85,7 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
     if (timer.current !== null) clearTimeout(timer.current)
   }, [])
 
-  if (count < 2) return null
+  if (isAuthMode ? count < 2 : count < 1) return null
 
   return (
     <Popover open={open} onOpenChange={next => next ? setOpen(true) : close()}>
@@ -74,7 +94,7 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
           ref={triggerRef}
           type="button"
           className={cn('relative z-10 inline-flex shrink-0 items-center justify-center rounded-control outline-none focus-visible:ring-2', variant === 'sidebar' ? 'h-6' : 'h-8', v.ring, className)}
-          aria-label={`${count} members of ${agentName}`}
+          aria-label={`${count} ${count === 1 ? 'member' : 'members'} of ${agentName}`}
           data-testid={`${testId}-${agentSlug}`}
           onPointerDown={event => event.stopPropagation()}
           onKeyDown={event => {
@@ -104,6 +124,7 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
         >
           <UserAvatarStack
             users={members ?? []}
+            others={agentFaces}
             count={count}
             maxFaces={maxFaces}
             size={variant === 'page' ? 'md' : 'sm'}
@@ -160,9 +181,9 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
         )}
         {isLoading && <p role="status" className="px-2 py-3 text-xs text-muted-foreground">Loading members…</p>}
         {isError && <button type="button" onClick={() => void refetch()} className="m-2 rounded text-xs text-muted-foreground underline outline-none focus-visible:ring-2 focus-visible:ring-ring">Retry members</button>}
-        {members && (
+        {(members || memberAgents.length > 0) && (
           <ul className="max-h-80 overflow-y-auto" aria-label="All agent members">
-            {members.map(member => (
+            {members?.map(member => (
               <li key={member.id} className="flex items-center gap-2 px-2 py-2">
                 <UserAvatar user={member} size={28} />
                 <div className="min-w-0 flex-1">
@@ -170,6 +191,14 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
                   <p className="truncate text-[11px] text-muted-foreground">{member.email}</p>
                 </div>
                 <span className="text-[11px] capitalize text-muted-foreground">{member.role}</span>
+              </li>
+            ))}
+            {memberAgents.map(agent => (
+              <li key={`agent:${agent.slug}`} className="flex items-center gap-2 px-2 py-2" data-testid={`${testId}-agent-${agent.slug}`}>
+                <AgentFace agent={agent} size={28} />
+                {/* The orb says it is an agent: no second line. */}
+                <p className="min-w-0 flex-1 truncate text-xs font-medium">{agent.name}</p>
+                <span className="text-[11px] capitalize text-muted-foreground">{agent.role}</span>
               </li>
             ))}
           </ul>

@@ -8,10 +8,28 @@ const state = vi.hoisted(() => ({
   members: [] as Array<Record<string, unknown>>,
   candidates: [] as Array<Record<string, unknown>>,
   posts: [] as Array<{ url: string; body: unknown }>,
+  authMode: true,
+  agents: [] as Array<Record<string, unknown>>,
+  agentRoles: [] as Array<{ slug: unknown; role: string | null }>,
   fullExport: { mutate: vi.fn(), isPending: false },
 }))
 
-vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ user: { id: 'ada' }, isAuthMode: true }) }))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({
+    user: state.authMode ? { id: 'ada' } : null,
+    isAuthMode: state.authMode,
+    canUseAgent: (slug: string) => slug !== 'not-mine',
+  }),
+}))
+vi.mock('@renderer/hooks/use-inbound-x-agent', () => {
+  const record = async ({ caller, role }: { caller: { slug: unknown }; role: string | null }) => {
+    state.agentRoles.push({ slug: caller.slug, role })
+  }
+  return {
+    useInboundXAgentDetails: () => ({ data: { sessions: [], callers: state.agents }, isLoading: false }),
+    useSetAgentAccessRole: () => ({ mutate: record, mutateAsync: record }),
+  }
+})
 vi.mock('@renderer/hooks/use-agent-members', () => ({
   useAgentMembers: () => ({ data: state.members, isLoading: false, isError: false, refetch: vi.fn() }),
 }))
@@ -43,6 +61,14 @@ function renderPopover() {
 
 beforeEach(() => {
   state.posts = []
+  state.authMode = true
+  state.agentRoles = []
+  state.agents = [
+    { slug: 'triage', displaySlug: 'inbox-triage', name: 'Inbox Triage', decision: 'allow', readDecision: 'review', avatar: null, canAccess: true },
+    { slug: 'notes', displaySlug: 'release-notes', name: 'Release Notes', decision: 'review', readDecision: 'allow', avatar: null, canAccess: true },
+    { slug: 'danube', displaySlug: 'danube', name: 'Danube Ops', decision: 'review', readDecision: 'review', avatar: null, canAccess: true },
+    { slug: 'not-mine', displaySlug: 'dan-private', name: 'Dan Private', decision: 'review', readDecision: 'review', avatar: null, canAccess: true },
+  ]
   state.fullExport = { mutate: vi.fn(), isPending: false }
   state.members = [
     { id: 'ada', name: 'Ada Admin', email: 'ada@acme.test', image: null, role: 'owner' },
@@ -83,6 +109,54 @@ describe('sharing an agent with people not on Gamut yet', () => {
       { url: '/api/agents/support/access', body: { directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, role: 'user' } },
       { url: '/api/agents/support/access', body: { userId: 'dan-id', role: 'user' } },
     ]))
+  })
+})
+
+describe('sharing an agent with other agents', () => {
+  it('lists agents with access after the people, in the roles people have', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+
+    expect(await screen.findByTestId('access-agent-triage')).toHaveTextContent('Inbox TriageAgentUser')
+    expect(screen.getByTestId('access-agent-notes')).toHaveTextContent('Release NotesAgentViewer')
+    // An agent that still asks first is not a member.
+    expect(screen.queryByTestId('access-agent-danube')).toBeNull()
+    const rows = screen.getAllByTestId(/^access-(entry|agent)-(?!role-)/).map((row) => row.getAttribute('data-testid'))
+    expect(rows).toEqual(['access-entry-ada', 'access-entry-lee', 'access-agent-triage', 'access-agent-notes'])
+  })
+
+  it('finds agents beside people and invites both in one batch', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    await userEvent.type(screen.getByTestId('invite-search-input'), 'dan')
+
+    // Linking two agents takes someone who uses both, so the other one is not offered.
+    expect(screen.queryByTestId('invite-agent-result-not-mine')).toBeNull()
+    await userEvent.click(await screen.findByTestId('invite-agent-result-danube'))
+    expect(screen.getByTestId('invite-chip-agent:danube')).toHaveTextContent('Danube Ops')
+    await userEvent.type(screen.getByTestId('invite-search-input'), 'dan')
+    await userEvent.click(await screen.findByTestId('invite-user-result-dan-id'))
+    await userEvent.click(screen.getByTestId('invite-add-button'))
+
+    await waitFor(() => expect(state.agentRoles).toEqual([{ slug: 'danube', role: 'user' }]))
+    expect(state.posts).toEqual([{ url: '/api/agents/support/access', body: { userId: 'dan-id', role: 'user' } }])
+  })
+
+  it('still invites agents on a local install, and points at Cloud for people', async () => {
+    state.authMode = false
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+
+    expect(await screen.findByTestId('access-entry-you')).toHaveTextContent('You')
+    expect(screen.getByTestId('access-agent-triage')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-invite-cloud-row')).toHaveTextContent('Switch to Gamut Cloud')
+    expect(screen.getByTestId('invite-search-input')).toHaveAttribute('placeholder', 'Invite agents...')
+
+    await userEvent.type(screen.getByTestId('invite-search-input'), 'dan')
+    await userEvent.click(await screen.findByTestId('invite-agent-result-danube'))
+    await userEvent.click(screen.getByTestId('invite-add-button'))
+    await waitFor(() => expect(state.agentRoles).toEqual([{ slug: 'danube', role: 'user' }]))
+    expect(state.posts).toEqual([])
   })
 })
 
