@@ -38,6 +38,9 @@ vi.mock('./platform-provider', () => ({
 vi.mock('./steel-provider', () => ({
   SteelProvider: h.makeProviderClass('steel', () => false),
 }))
+vi.mock('./tabtender-provider', () => ({
+  TabtenderProvider: h.makeProviderClass('tabtender', () => false),
+}))
 
 // The active provider is NOT chrome — proves the stop is provider-independent.
 vi.mock('@shared/lib/config/settings', () => ({
@@ -54,11 +57,13 @@ describe('stopInstanceOnAllProviders', () => {
     const browserbase = h.created.find((p) => p.id === 'browserbase')!
     const platform = h.created.find((p) => p.id === 'platform')!
     const steel = h.created.find((p) => p.id === 'steel')!
+    const tabtender = h.created.find((p) => p.id === 'tabtender')!
 
     expect(chrome.stop).toHaveBeenCalledWith('agent1')
     expect(browserbase.stop).not.toHaveBeenCalled()
     expect(platform.stop).not.toHaveBeenCalled()
     expect(steel.stop).not.toHaveBeenCalled()
+    expect(tabtender.stop).not.toHaveBeenCalled()
   })
 
   it('is a no-op for an instance no provider is running', async () => {

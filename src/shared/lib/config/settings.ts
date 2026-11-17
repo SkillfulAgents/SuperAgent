@@ -71,6 +71,9 @@ export interface ApiKeySettings {
   browserbaseApiKey?: string
   browserbaseProjectId?: string
   steelApiKey?: string
+  /** Base URL of a Tab Tender server (e.g. https://browsers.example.com); not secret, saved with its key. */
+  tabtenderUrl?: string
+  tabtenderApiKey?: string
   deepgramApiKey?: string
   openaiApiKey?: string
   nangoSecretKey?: string
@@ -111,7 +114,7 @@ export interface AgentLimitsSettings {
   maxBudgetUsd?: number
 }
 
-export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel' | 'tabtender'
 
 export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
 
@@ -430,6 +433,8 @@ export interface GlobalSettingsResponse {
     nango: ApiKeyStatus
     browserbase: ApiKeyStatus
     steel: ApiKeyStatus
+    /** Configured only with both a server URL and a key. */
+    tabtender: ApiKeyStatus
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
     exa: ApiKeyStatus
@@ -437,6 +442,8 @@ export interface GlobalSettingsResponse {
   composioUserId?: string
   /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */
   genericBaseUrl?: string
+  /** The Tab Tender server in use, saved or from `TABTENDER_URL`. Not a secret — echoed so Settings can show it. */
+  tabtenderUrl?: string
   accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings
@@ -1043,6 +1050,24 @@ export function effectiveSteelApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>)
     return settings.apiKeys.steelApiKey
   }
   return process.env.STEEL_API_KEY
+}
+
+/** The Tab Tender server to use: a saved URL takes precedence over `TABTENDER_URL`. */
+export function effectiveTabtenderUrlFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
+  return settings.apiKeys?.tabtenderUrl || process.env.TABTENDER_URL || undefined
+}
+
+/** The Tab Tender API key to use: a saved key takes precedence over `TABTENDER_API_KEY`. */
+export function effectiveTabtenderApiKeyFrom(settings: Pick<AppSettings, 'apiKeys'>): string | undefined {
+  return settings.apiKeys?.tabtenderApiKey || process.env.TABTENDER_API_KEY || undefined
+}
+
+/** Where the Tab Tender credentials come from: configured only with both a URL and a key. */
+export function tabtenderApiKeyStatusFrom(settings: Pick<AppSettings, 'apiKeys'>): ApiKeyStatus {
+  if (!effectiveTabtenderUrlFrom(settings) || !effectiveTabtenderApiKeyFrom(settings)) {
+    return { isConfigured: false, source: 'none' }
+  }
+  return { isConfigured: true, source: settings.apiKeys?.tabtenderApiKey ? 'settings' : 'env' }
 }
 
 /**

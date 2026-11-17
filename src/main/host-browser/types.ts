@@ -1,4 +1,4 @@
-export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform' | 'steel' | 'tabtender'
 
 export interface BrowserConnectionInfo {
   /** Full CDP WebSocket URL (for remote providers like Browserbase and Steel) */

@@ -25,6 +25,7 @@ const mockGetCustomEnvVars = vi.fn()
 const mockGetVoiceSettings = vi.fn()
 const mockGetBrowserbaseApiKeyStatus = vi.fn()
 const mockGetSteelApiKeyStatus = vi.fn()
+const mockGetTabtenderApiKeyStatus = vi.fn()
 const mockGetNangoApiKeyStatus = vi.fn()
 const mockGetAccountProviderUserId = vi.fn()
 const mockGetDefaultAccountProviderType = vi.fn()
@@ -90,6 +91,8 @@ vi.mock('@shared/lib/config/settings', () => ({
   effectiveModelsFrom: (...args: unknown[]) => mockGetEffectiveModels(...args),
   browserbaseApiKeyStatusFrom: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
   steelApiKeyStatusFrom: (...args: unknown[]) => mockGetSteelApiKeyStatus(...args),
+  tabtenderApiKeyStatusFrom: (...args: unknown[]) => mockGetTabtenderApiKeyStatus(...args),
+  effectiveTabtenderUrlFrom: (settings: { apiKeys?: { tabtenderUrl?: string } }) => settings.apiKeys?.tabtenderUrl,
   nangoApiKeyStatusFrom: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
   accountProviderUserIdFrom: (...args: unknown[]) => mockGetAccountProviderUserId(...args),
   getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
@@ -321,6 +324,7 @@ function setupDefaults() {
   mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetBrowserbaseApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetSteelApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
+  mockGetTabtenderApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetComposioUserId.mockReturnValue(undefined)
   mockGetNangoApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetAccountProviderUserId.mockReturnValue(undefined)
@@ -1493,6 +1497,75 @@ describe('settings route', () => {
       expect(body.valid).toBe(false)
       expect(body.error).toContain('503')
       expect(body.error).toContain('Back soon')
+    })
+  })
+
+  describe('POST /validate-tabtender', () => {
+    async function validate(body: unknown) {
+      return app.request('http://localhost/api/settings/validate-tabtender', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+    const serverAnswers = (status: number, body: unknown) => {
+      const fetchMock = vi.fn(async () => Response.json(body, { status }))
+      vi.stubGlobal('fetch', fetchMock)
+      return fetchMock
+    }
+    const healthy = { status: 'ok', browser: { runtime: 'chrome', available: true } }
+    afterEach(() => { vi.unstubAllGlobals() })
+
+    it('returns 400 without a URL and a key', async () => {
+      expect((await validate({ apiKey: 'tt_key' })).status).toBe(400)
+      expect((await validate({ url: 'https://tt.example.com' })).status).toBe(400)
+    })
+
+    it('refuses a URL that is not http(s) without asking anything', async () => {
+      const fetchMock = serverAnswers(200, healthy)
+      const body = await (await validate({ url: 'ftp://tt.example.com', apiKey: 'tt_key' })).json()
+      expect(body.valid).toBe(false)
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('checks URL and key with one authenticated health read, and answers the URL to save', async () => {
+      const fetchMock = serverAnswers(200, healthy)
+      const res = await validate({ url: ' https://tt.example.com/ ', apiKey: 'tt_good' })
+      expect(await res.json()).toEqual({ valid: true, url: 'https://tt.example.com' })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe('https://tt.example.com/v1/health')
+      expect(init.method).toBe('GET')
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer tt_good' })
+    })
+
+    it('reports a key the server refuses as invalid', async () => {
+      serverAnswers(401, { error: { code: 'unauthorized', message: 'missing or invalid API key' } })
+      expect(await (await validate({ url: 'https://tt.example.com', apiKey: 'tt_bad' })).json())
+        .toEqual({ valid: false, error: 'Invalid API key' })
+    })
+
+    it('reports a server that cannot start a browser', async () => {
+      serverAnswers(200, { status: 'degraded', browser: { runtime: 'chrome', available: false, error: 'Chrome not found' } })
+      const body = await (await validate({ url: 'https://tt.example.com', apiKey: 'tt_good' })).json()
+      expect(body.valid).toBe(false)
+      expect(body.error).toContain('Chrome not found')
+    })
+
+    it('reports a server it cannot reach', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed', { cause: new Error('ECONNREFUSED') }) }))
+      const body = await (await validate({ url: 'http://192.168.1.20:3000', apiKey: 'tt_good' })).json()
+      expect(body).toEqual({ valid: false, error: 'Could not reach http://192.168.1.20:3000 (ECONNREFUSED)' })
+    })
+
+    it('refuses a loopback URL, which agent containers cannot reach, without asking anything', async () => {
+      const fetchMock = serverAnswers(200, healthy)
+      for (const url of ['http://127.0.0.1:3000', 'http://localhost:3000', 'http://[::1]:3000']) {
+        const body = await (await validate({ url, apiKey: 'tt_good' })).json()
+        expect(body.valid).toBe(false)
+        expect(body.error).toContain('localhost')
+      }
+      expect(fetchMock).not.toHaveBeenCalled()
     })
   })
 
