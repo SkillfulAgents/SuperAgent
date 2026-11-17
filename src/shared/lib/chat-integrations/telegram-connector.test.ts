@@ -338,6 +338,21 @@ describe('TelegramConnector — received mark', () => {
   })
 })
 
+describe('TelegramConnector — quoted replies', () => {
+  it('quotes on a new reply and on a group stream, and still sends if the quoted message is gone', async () => {
+    const connector = makeConnector()
+    const { sent } = attachFakeBot(connector)
+
+    await connector.sendMessage('123', { text: 'hi', replyToExternalId: '42' })
+    await connector.sendStreamingUpdate('-100', 'working on it', undefined, '43')
+
+    expect(sent.map(s => s.reply_parameters)).toEqual([
+      { message_id: 42, allow_sending_without_reply: true },
+      { message_id: 43, allow_sending_without_reply: true },
+    ])
+  })
+})
+
 describe('TelegramConnector — AskUserQuestion multi-select', () => {
   let connector: TelegramConnector
   let sent: any[]
