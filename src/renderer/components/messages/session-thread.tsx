@@ -4,6 +4,7 @@ import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
+import { MessageReplyProvider, useMessageReplies } from '@renderer/components/messages/use-message-replies'
 import type { MessageTarget } from './locate-message'
 
 interface SessionThreadProps {
@@ -25,6 +26,8 @@ interface SessionThreadProps {
   pendingRequestCount?: number
   onPendingMessageAppeared?: (localId: string) => void
   suppressScrollToBottom?: boolean
+  /** Selected agent text can be replied to; the replies go into the composer draft. */
+  allowReplies?: boolean
   messageTarget?: MessageTarget
 }
 
@@ -49,9 +52,12 @@ export function SessionThread({
   pendingRequestCount,
   onPendingMessageAppeared,
   suppressScrollToBottom,
+  allowReplies = false,
   messageTarget,
 }: SessionThreadProps) {
   const footerRef = useRef<HTMLDivElement>(null)
+  const mainRef = useRef<HTMLDivElement>(null)
+  const replies = useMessageReplies(mainRef, sessionId, allowReplies)
   const [footerHeight, setFooterHeight] = useState(0)
 
   useLayoutEffect(() => {
@@ -85,6 +91,7 @@ export function SessionThread({
       {/* Interactive sessions overlay the footer so transcript content can pass
           underneath it; read-only consumers retain the in-flow grid layout. */}
       <div
+        ref={mainRef}
         className={cn(
           'flex-1 min-w-0 min-h-0',
           overlayFooter ? 'relative flex' : 'grid grid-rows-[1fr_auto]',
@@ -92,18 +99,20 @@ export function SessionThread({
         data-testid="session-thread-main"
       >
         {sessionId && (
-          <MessageList
-            key={sessionId}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={readOnly}
-            pendingUserMessages={pendingUserMessages}
-            pendingRequestCount={pendingRequestCount}
-            onPendingMessageAppeared={onPendingMessageAppeared}
-            suppressScrollToBottom={suppressScrollToBottom}
-            bottomInset={overlayFooter ? footerHeight : 0}
-            messageTarget={messageTarget}
-          />
+          <MessageReplyProvider value={replies.open}>
+            <MessageList
+              key={sessionId}
+              sessionId={sessionId}
+              agentSlug={agentSlug}
+              readOnly={readOnly}
+              pendingUserMessages={pendingUserMessages}
+              pendingRequestCount={pendingRequestCount}
+              onPendingMessageAppeared={onPendingMessageAppeared}
+              suppressScrollToBottom={suppressScrollToBottom}
+              bottomInset={overlayFooter ? footerHeight : 0}
+              messageTarget={messageTarget}
+            />
+          </MessageReplyProvider>
         )}
         <div
           ref={footerRef}
@@ -116,8 +125,10 @@ export function SessionThread({
           data-overlay-footer={overlayFooter || undefined}
         >
           {sessionId && <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />}
+          {replies.bar}
           {footer}
         </div>
+        {replies.box}
       </div>
       {/* Side tray (browser, file preview) */}
       {sessionId && <TrayManager agentSlug={agentSlug} sessionId={sessionId} browserActive={browserActive} />}

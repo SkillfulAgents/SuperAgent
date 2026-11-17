@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 import { mediaKeyAction } from '../renderers/use-media-keys'
 import { locateAnchor, markerOf, placeMarkers, prepareAnchor, refineAnchor, resolveAnchor, type Placed } from './anchor'
 import { CommentOverlay } from './comment-overlay'
@@ -33,7 +33,7 @@ function visibleTop(el: HTMLElement | null): number {
 const OWN_UI = '[data-comment-overlay], [data-comment-marker]'
 
 /** The text selected in the file, outside the comment box. */
-function selectionIn(container: HTMLElement | null): SelectionAt | null {
+export function selectionIn(container: HTMLElement | null): SelectionAt | null {
   const selection = window.getSelection()
   if (!container || !selection || selection.isCollapsed || !selection.rangeCount) return null
   const range = selection.getRangeAt(0)
@@ -44,19 +44,57 @@ function selectionIn(container: HTMLElement | null): SelectionAt | null {
   return { on: 'selection', range, text }
 }
 
-/**
- * Comments on a viewer, from what the viewer offers (`surface`). Owns the C / M keys,
- * clicks on the file, the open comment, its box, and every marker. A `null` surface
- * turns comments off for this viewer.
- */
+/** Where a box's comments live: the ones it draws markers for, and where an added one goes. */
+export interface CommentStore {
+  enabled: boolean
+  comments: { id: string; anchor: CommentAnchor }[]
+  add: (anchor: CommentAnchor, text: string) => void
+}
+
+/** The file drawer's comments on one agent's copy of a file. */
+function useFileCommentStore(filePath: string, agentSlug: string): CommentStore {
+  const { commentsEnabled, commentsFor, addComment } = useFilePreview()
+  const comments = commentsFor(filePath, agentSlug)
+  return useMemo<CommentStore>(() => ({
+    enabled: commentsEnabled,
+    comments,
+    add: (anchor, text) => addComment({ filePath, agentSlug, text, anchor }),
+  }), [commentsEnabled, comments, addComment, filePath, agentSlug])
+}
+
+interface CommentBoxOptions {
+  /**
+   * Selecting text, clicks and the C / M keys open a comment. Off, only `open` does:
+   * for a surface whose own menu offers commenting.
+   */
+  gestures?: boolean
+}
+
+type CommentBoxResult = { box: ReactNode; open: (at?: Situation) => void; enabled: boolean; isOpen: boolean }
+
+/** Comments on a file viewer, kept with the file drawer's comments on that file. */
 export function useCommentBox(
   containerRef: RefObject<HTMLElement | null>,
   surface: CommentSurface | null,
   filePath: string,
   agentSlug: string,
-): { box: ReactNode; open: (at?: Situation) => void; enabled: boolean; isOpen: boolean } {
-  const { commentsEnabled, commentsFor } = useFilePreview()
-  const enabled = !!commentsEnabled && surface != null
+): CommentBoxResult {
+  const store = useFileCommentStore(filePath, agentSlug)
+  return useCommentLayer(containerRef, surface, store)
+}
+
+/**
+ * Comments on a viewer, from what the viewer offers (`surface`). Owns the C / M keys,
+ * clicks on the file, the open comment, its box, and every marker. A `null` surface
+ * turns comments off for this viewer.
+ */
+export function useCommentLayer(
+  containerRef: RefObject<HTMLElement | null>,
+  surface: CommentSurface | null,
+  store: CommentStore,
+  { gestures = true }: CommentBoxOptions = {},
+): CommentBoxResult {
+  const enabled = store.enabled && surface != null
   const [pending, setPending] = useState<Pending | null>(null)
   const pointer = useRef<PointerAt | null>(null)
   /** A chip opens only for a press that can start a selection: a button or the line gutter keeps the old one live. */
@@ -153,6 +191,7 @@ export function useCommentBox(
         else close()
         return
       }
+      if (!gestures) return
       const action = mediaKeyAction(e)
       if (action?.type !== 'comment' || (pending && !pending.chip)) return
       e.preventDefault()
@@ -178,12 +217,14 @@ export function useCommentBox(
       const selected = selectionIn(containerRef.current)
       if (selected) begin([selected], false, true)
     })
-    window.addEventListener('click', onClick)
-    window.addEventListener('pointermove', onPointerMove)
-    window.addEventListener('pointerout', onPointerOut)
     window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('mousedown', onMouseDown)
-    window.addEventListener('mouseup', onMouseUp)
+    if (gestures) {
+      window.addEventListener('click', onClick)
+      window.addEventListener('pointermove', onPointerMove)
+      window.addEventListener('pointerout', onPointerOut)
+      window.addEventListener('mousedown', onMouseDown)
+      window.addEventListener('mouseup', onMouseUp)
+    }
     return () => {
       window.removeEventListener('mousedown', onMouseDown)
       window.removeEventListener('mouseup', onMouseUp)
@@ -192,19 +233,17 @@ export function useCommentBox(
       window.removeEventListener('pointerout', onPointerOut)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [enabled, containerRef, begin, refine, close])
+  }, [enabled, gestures, containerRef, begin, refine, close])
 
-  const comments = commentsFor(filePath, agentSlug)
   const box = enabled && surface && (
     <>
-      <CommentMarkers surface={surface} comments={comments} pending={pending?.chip ? null : pending} refine={refine} />
+      <CommentMarkers surface={surface} comments={store.comments} pending={pending?.chip ? null : pending} refine={refine} />
       {pending && (
         <CommentOverlay
           key={pending.chip ? 'chip' : 'box'}
           anchor={pending.anchor}
           rect={pending.rect}
-          filePath={filePath}
-          agentSlug={agentSlug}
+          onAdd={(text) => store.add(pending.anchor, text)}
           autoEdit={!pending.chip}
           autoListen={pending.listen}
           onEdit={() => setPending({ ...pending, chip: false })}
@@ -227,7 +266,7 @@ function samePlaces(a: Placed[], b: Placed[]): boolean {
 /** Asks each comment's kind where its markers go, after the viewer has drawn, and draws them there. */
 function CommentMarkers({ surface, comments, pending, refine }: {
   surface: CommentSurface
-  comments: FileComment[]
+  comments: CommentStore['comments']
   pending: Pending | null
   refine: (at: PointerAt) => void
 }) {

@@ -110,6 +110,7 @@ export function SessionChatColumn({
       suppressScrollToBottom={staleSession.popoverOpen}
       messageTarget={messageTarget}
       overlayFooter
+      allowReplies={!isViewOnly}
       footerClassName="max-w-[740px] mx-auto w-full"
       footer={
         <>

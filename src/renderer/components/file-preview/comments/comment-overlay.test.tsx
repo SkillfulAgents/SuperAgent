@@ -18,9 +18,6 @@ const voice = vi.hoisted(() => ({
   stopRecording: vi.fn(async (): Promise<string | undefined> => undefined),
 }))
 
-vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ addComment }),
-}))
 vi.mock('@renderer/hooks/use-voice-input', () => ({
   useVoiceInput: ({ onTranscriptUpdate }: { onTranscriptUpdate: (text: string) => void }) => {
     voice.transcribe = onTranscriptUpdate
@@ -56,14 +53,14 @@ afterEach(() => {
 })
 
 const open = (props: { autoListen?: boolean; onClose?: () => void } = {}) => render(
-  <CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} filePath="/workspace/clip.mp4" agentSlug="test-agent" onClose={() => {}} autoEdit {...props} />,
+  <CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} onAdd={addComment} onClose={() => {}} autoEdit {...props} />,
 )
 // The mic starts a tick after the box opens.
 const tick = () => act(() => new Promise((resolve) => setTimeout(resolve)))
 
 describe('CommentOverlay', () => {
   it('heads the box with the anchor description', () => {
-    render(<CommentOverlay anchor={{ kind: 'time', seconds: 4.2, point: { x: 40, y: 60 } }} rect={new DOMRect()} filePath="/workspace/clip.mp4" agentSlug="test-agent" onClose={() => {}} autoEdit />)
+    render(<CommentOverlay anchor={{ kind: 'time', seconds: 4.2, point: { x: 40, y: 60 } }} rect={new DOMRect()} onAdd={addComment} onClose={() => {}} autoEdit />)
     expect(screen.getByText('At 0:04.20 at position (40%, 60%)')).toBeVisible()
   })
 
@@ -71,8 +68,7 @@ describe('CommentOverlay', () => {
     render(
       <CommentOverlay
         anchor={{ kind: 'file' }} rect={new DOMRect()}
-        filePath="/workspace/clip.mp4"
-        agentSlug="test-agent"
+        onAdd={addComment}
         onClose={() => {}}
         autoEdit
       />,
@@ -86,13 +82,13 @@ describe('CommentOverlay', () => {
     expect(addComment).not.toHaveBeenCalled()
 
     expect(fireEvent.keyDown(box, { key: 'Enter' })).toBe(false)
-    expect(addComment).toHaveBeenCalledWith(expect.objectContaining({ text: '日本' }))
+    expect(addComment).toHaveBeenCalledWith('日本')
   })
 
   it('keeps the box open when Escape cancels an input-method candidate', () => {
     const onClose = vi.fn()
     render(
-      <CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} filePath="/workspace/a.md" agentSlug="test-agent" onClose={onClose} autoEdit />,
+      <CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} onAdd={addComment} onClose={onClose} autoEdit />,
     )
     const box = screen.getByPlaceholderText('Add your comment...')
 
@@ -111,7 +107,7 @@ describe('CommentOverlay', () => {
     await act(async () => { fireEvent.keyDown(screen.getByPlaceholderText('Add your comment...'), { key: 'Enter' }) })
 
     expect(voice.stopRecording).toHaveBeenCalled()
-    expect(addComment).toHaveBeenCalledWith(expect.objectContaining({ text: 'trim the intro' }))
+    expect(addComment).toHaveBeenCalledWith('trim the intro')
   })
 
   it('keeps typed text when the mic heard nothing', async () => {
@@ -124,7 +120,7 @@ describe('CommentOverlay', () => {
     act(() => voice.transcribe(''))
     expect(box).toHaveValue('trim the intro')
     await act(async () => { fireEvent.keyDown(box, { key: 'Enter' }) })
-    expect(addComment).toHaveBeenCalledWith(expect.objectContaining({ text: 'trim the intro' }))
+    expect(addComment).toHaveBeenCalledWith('trim the intro')
   })
 
   it('stops the mic on Escape from anywhere instead of closing the box', () => {
@@ -165,7 +161,7 @@ describe('CommentOverlay', () => {
     expect(onClose).not.toHaveBeenCalled()
 
     voice.isFinalizing = true
-    view.rerender(<CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} filePath="/workspace/clip.mp4" agentSlug="test-agent" onClose={onClose} autoEdit />)
+    view.rerender(<CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} onAdd={addComment} onClose={onClose} autoEdit />)
     // Adding now would drop the last words, so Add waits for them.
     fireEvent.change(box, { target: { value: 'trim' } })
     expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled()
@@ -227,7 +223,7 @@ describe('CommentOverlay', () => {
     voice.configured = false
     const view = open({ autoListen: true })
     voice.configured = true
-    view.rerender(<CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} filePath="/workspace/clip.mp4" agentSlug="test-agent" onClose={() => {}} autoEdit autoListen />)
+    view.rerender(<CommentOverlay anchor={{ kind: 'file' }} rect={new DOMRect()} onAdd={addComment} onClose={() => {}} autoEdit autoListen />)
     await tick()
     expect(voice.startRecording).not.toHaveBeenCalled()
   })
