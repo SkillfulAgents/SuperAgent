@@ -111,12 +111,30 @@ function wakeTaskManager(env: Env, ctx: ExecutionContext): void {
   }))
 }
 
-/** The UI's HTML entry and service worker with this server's facts filled in, as src/web/web-build.ts does. */
-async function serveAppShell(request: Request, assets: Fetcher): Promise<Response> {
+/**
+ * How long a browser keeps a static file, by the rule of src/web/web-build.ts: a bundle under
+ * /assets/ has its content's hash in its name, so it never changes; a file with a fixed name
+ * (an icon, the manifest) is asked for again after an hour.
+ */
+const staticCacheControl = (pathname: string) => (pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600, must-revalidate')
+
+/**
+ * The UI's files. Its HTML entry and service worker get this server's facts filled in, as
+ * src/web/web-build.ts does; every other file is passed on with the time a browser may keep it.
+ */
+export async function serveAppShell(request: Request, assets: Fetcher): Promise<Response> {
   const response = await assets.fetch(request)
-  const isServiceWorker = new URL(request.url).pathname === SERVICE_WORKER
+  const { pathname } = new URL(request.url)
+  const isServiceWorker = pathname === SERVICE_WORKER
   const isHtml = response.headers.get('content-type')?.startsWith('text/html') ?? false
-  if (!response.ok || (!isServiceWorker && !isHtml)) return response
+  if (!isServiceWorker && !isHtml) {
+    // Not on an error: a missing file must not be remembered as missing.
+    if (!response.ok && response.status !== 304) return response
+    const kept = new Response(response.body, response)
+    kept.headers.set('cache-control', staticCacheControl(pathname))
+    return kept
+  }
+  if (!response.ok) return response
 
   const facts = getServerFacts()
   const body = isServiceWorker ? withServerFactsRevision(await response.text(), facts) : withServerFacts(await response.text(), facts)
