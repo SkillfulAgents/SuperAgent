@@ -5,7 +5,7 @@ import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 
 // Tints a bundled monochrome brand glyph (same mask approach as the Usage tab). `color` defaults to the
 // text color, so marks whose brand is black/white follow the theme.
-// provider-icons/ holds Simple Icons glyphs (CC0): anthropic/openrouter from 16.32.0, aws from 10.x (removed
+// provider-icons/ holds Simple Icons glyphs (CC0): anthropic/openrouter/cloudflare from 16.32.0, aws from 10.x (removed
 // later) recolored to AWS's squid-ink wordmark and orange smile. model-icons/anthropic.svg is the Claude spark;
 // provider-icons/gamut.svg is the Gamut logomark (build/icon.icon).
 function BrandMark({ src, color = 'currentColor', className }: { src: string; color?: string; className: string }) {
@@ -31,6 +31,7 @@ const GLYPHS: Record<Exclude<LlmProviderId, 'generic'>, string> = {
   'qwen-subscription': 'model-icons/qwen.svg',
   bedrock: 'provider-icons/aws.svg',
   openrouter: 'provider-icons/openrouter.svg',
+  cloudflare: 'provider-icons/cloudflare.svg',
   ollama: 'model-icons/ollama.svg',
 }
 
@@ -65,6 +66,8 @@ export function ProviderLogo({ provider, className = 'h-5 w-5', monochrome = fal
       return <img src={`${import.meta.env.BASE_URL}provider-icons/aws.svg`} alt="" aria-hidden="true" className={cn('shrink-0 object-contain', className)} />
     case 'openrouter':
       return <BrandMark src="provider-icons/openrouter.svg" color="#94A3B8" className={className} />
+    case 'cloudflare':
+      return <BrandMark src="provider-icons/cloudflare.svg" color="#F38020" className={className} />
     case 'ollama':
       return <ModelIcon icon="ollama" className={cn('shrink-0', className)} />
     case 'generic':

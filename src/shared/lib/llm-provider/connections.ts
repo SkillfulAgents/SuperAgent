@@ -190,6 +190,7 @@ async function connectionInfos(
       apiFormat: config.apiFormat,
       chatTokenLimitField: config.chatTokenLimitField,
       region: config.apiKeys.bedrockRegion ?? config.oauth?.region,
+      accountId: config.apiKeys.cloudflareAccountId,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,
       deletionBlockedReason,

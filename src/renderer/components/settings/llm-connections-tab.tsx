@@ -63,6 +63,7 @@ const providers = {
   'minimax-subscription': 'MiniMax Subscription',
   'qwen-subscription': 'Qwen Subscription',
   openrouter: 'OpenRouter',
+  cloudflare: 'Cloudflare Workers AI',
   bedrock: 'AWS Bedrock',
   ollama: 'Ollama',
   generic: 'Generic',
@@ -77,6 +78,7 @@ const nameExamples: Record<keyof typeof providers, string> = {
   'minimax-subscription': 'Personal MiniMax',
   'qwen-subscription': 'Personal Token Plan',
   openrouter: 'Shared OpenRouter',
+  cloudflare: 'Team Workers AI',
   bedrock: 'Bedrock us-east-1',
   ollama: 'Local Ollama',
   generic: 'Local vLLM server',
@@ -91,6 +93,7 @@ const providerDescriptions: Record<keyof typeof providers, string> = {
   'minimax-subscription': 'Sign in with your MiniMax account to use your Token Plan.',
   'qwen-subscription': 'Use your Alibaba Cloud Token Plan with its plan API key.',
   openrouter: 'Multi-model access through a single API key.',
+  cloudflare: 'Open models on your Cloudflare account with an API token.',
   bedrock: 'AWS managed Claude inference with IAM or API key credentials.',
   ollama: 'Run open models on your own hardware, with no API key.',
   generic: 'Any Anthropic- or OpenAI-compatible endpoint at a base URL.',
@@ -534,6 +537,7 @@ export function ConnectionEditor({
     setEnvValue('')
   }
   const [region, setRegion] = useState(existing?.region ?? 'us-east-1')
+  const [accountId, setAccountId] = useState(existing?.accountId ?? '')
   const [overrides, setOverrides] = useState<CatalogOverrideEntry[]>(existing?.modelOverrides ?? [])
   const isOllama = provider === 'ollama'
   // Only Ollama's address: another provider's saved URL need not pass Ollama's rules.
@@ -555,7 +559,9 @@ export function ConnectionEditor({
       if (provider === 'generic') apiKeys.genericApiKey = apiKey
       if (provider === 'bedrock') apiKeys.bedrockApiKey = apiKey
       if (provider === 'qwen-subscription') apiKeys.planApiKey = apiKey.trim()
+      if (provider === 'cloudflare') apiKeys.cloudflareApiToken = apiKey.trim()
     }
+    if (provider === 'cloudflare' && (!existing || accountId !== (existing.accountId ?? ''))) apiKeys.cloudflareAccountId = accountId.trim()
     if (provider === 'generic' && (!existing || baseUrl !== (existing.baseUrl ?? ''))) apiKeys.genericBaseUrl = baseUrl
     if (isOllama && (!existing || ollamaUrl !== existing.baseUrl)) apiKeys.ollamaBaseUrl = ollamaUrl
     if (provider === 'bedrock') {
@@ -647,7 +653,7 @@ export function ConnectionEditor({
       )}
       {provider !== 'platform' && !isOAuthProvider(provider) && !isOllama && (
         <div className="grid gap-2 text-sm">
-          <label htmlFor={`${formId}-apiKey`}>{provider === 'claude-subscription' ? 'Subscription token' : 'API key'}</label>
+          <label htmlFor={`${formId}-apiKey`}>{provider === 'claude-subscription' ? 'Subscription token' : provider === 'cloudflare' ? 'API token' : 'API key'}</label>
           <div className="flex gap-2">
             <Input
               id={`${formId}-apiKey`}
@@ -714,6 +720,17 @@ export function ConnectionEditor({
             required
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
+          />
+        </label>
+      )}
+      {provider === 'cloudflare' && (
+        <label htmlFor={`${formId}-accountId`} className="grid gap-2 text-sm">
+          Account ID
+          <Input
+            id={`${formId}-accountId`}
+            required
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
           />
         </label>
       )}
@@ -830,7 +847,7 @@ export function ConnectionEditor({
             <CatalogEditor
               providerId={provider}
               llmProviderId={existing?.id}
-              supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'generic' || isOAuthProvider(provider))}
+              supportsModelSearch={!!existing && (provider === 'openrouter' || provider === 'cloudflare' || provider === 'generic' || isOAuthProvider(provider))}
               managedModels={isOllama ? { description: 'Every model Ollama has downloaded is listed here. Uncheck any agents should not use.', sectionLabel: 'Downloaded', priceText: 'Runs locally', addLabel: admin ? 'Download models' : 'View models', onAdd: () => setOllamaModelsOpen(true) } : undefined}
               builtinCatalog={catalogFor(provider)}
               effectiveCatalog={catalog}

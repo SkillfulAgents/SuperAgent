@@ -58,6 +58,8 @@ export const MINIMAX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'minim
 
 export const QWEN_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'qwen', summarizerModel: 'qwen', browserModel: 'qwen', dashboardBuilderModel: 'qwen' }
 
+export const CLOUDFLARE_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'glm', summarizerModel: 'glm', browserModel: 'glm', dashboardBuilderModel: 'glm' }
+
 const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   anthropic: ANTHROPIC_CATALOG_DEFAULT_MODELS,
   'claude-subscription': ANTHROPIC_CATALOG_DEFAULT_MODELS,
@@ -67,6 +69,7 @@ const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   'minimax-subscription': MINIMAX_DEFAULT_MODELS,
   'qwen-subscription': QWEN_DEFAULT_MODELS,
   openrouter: OPENROUTER_CATALOG_DEFAULT_MODELS,
+  cloudflare: CLOUDFLARE_DEFAULT_MODELS,
   bedrock: BEDROCK_CATALOG_DEFAULT_MODELS,
   platform: PLATFORM_CATALOG_DEFAULT_MODELS,
   ollama: OLLAMA_CATALOG_DEFAULT_MODELS,

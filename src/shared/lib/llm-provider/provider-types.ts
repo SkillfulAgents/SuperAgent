@@ -7,6 +7,7 @@ export const LLM_PROVIDER_IDS = [
   'minimax-subscription',
   'qwen-subscription',
   'openrouter',
+  'cloudflare',
   'bedrock',
   'platform',
   'ollama',

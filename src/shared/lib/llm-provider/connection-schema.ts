@@ -33,6 +33,8 @@ export const connectionConfigSchema = z.object({
       claudeSubscriptionToken: z.string().trim().optional(),
       planApiKey: z.string().trim().optional(),
       openrouterApiKey: z.string().optional(),
+      cloudflareApiToken: z.string().trim().optional(),
+      cloudflareAccountId: z.string().trim().optional(),
       genericApiKey: z.string().optional(),
       genericBaseUrl: z.string().optional(),
       ollamaBaseUrl: z.string().optional(),
@@ -53,7 +55,7 @@ export type ConnectionConfig = z.infer<typeof connectionConfigSchema>
 /** The fields that hold a connection's endpoint. A provider uses at most one. */
 const BASE_URL_KEYS = ['genericBaseUrl', 'ollamaBaseUrl'] as const
 /** Fields that are not credentials: editing one keeps the runtime's auth overrides. */
-const NON_SECRET_KEYS = new Set<string>([...BASE_URL_KEYS, 'bedrockRegion'])
+const NON_SECRET_KEYS = new Set<string>([...BASE_URL_KEYS, 'bedrockRegion', 'cloudflareAccountId'])
 
 export function connectionBaseUrl(config: Pick<ConnectionConfig, 'apiKeys'>): string | undefined {
   return BASE_URL_KEYS.map(key => config.apiKeys[key]).find(Boolean)
@@ -172,6 +174,7 @@ export const connectionInfoSchema = z.object({
   apiFormat: apiFormatSchema.optional(),
   chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
   region: z.string().optional(),
+  accountId: z.string().optional(),
   customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),
   canDelete: z.boolean(),
