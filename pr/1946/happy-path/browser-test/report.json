@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "QA test for browser use feature - agent successfully opened a browser, navigated to example.com, retrieved the page title \"Example Domain\", and provided the correct response.",
+  "steps": [
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut application home page with the agent list visible in the sidebar.",
+    "Found and clicked on \"QA-20261117-005720-10ma\" agent in the sidebar - Successfully opened the agent page showing the chat interface at URL /agents/qa-20261117-005720-10ma-5o4g71cvwo.",
+    "Clicked on the message input textbox and typed \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully typed in the textbox, send button enabled.",
+    "Clicked the send button - Message successfully sent, agent transitioned to \"working\" status and created a new session at /sessions/5c745ab3-6e17-43a2-af2b-df6701135f09.",
+    "Waited for response - Agent completed the task in 4 seconds with 3 tool calls and 160,716 tokens.",
+    "Verified response mentions \"Example Domain\" - CONFIRMED: Response displays \"The page title is \"Example Domain\". The page loaded normally, and I closed the browser afterward.\" which explicitly mentions the expected \"Example Domain\" text from the page title."
+  ],
+  "bugs": [],
+  "durationMs": 90683,
+  "sessionId": "0f2cadc4-e366-4965-ae18-1dcea4877a0f",
+  "cost": {
+    "inputTokens": 498,
+    "outputTokens": 13206,
+    "cacheCreationTokens": 85955,
+    "cacheReadTokens": 1526547,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.326626
+  }
+}
