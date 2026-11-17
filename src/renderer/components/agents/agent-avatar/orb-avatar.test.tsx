@@ -2,9 +2,9 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { DEFAULT_ORBS } from './avatar-orbs'
+import { DEFAULT_ORBS } from '@shared/lib/types/agent-avatar-orbs'
 import { OrbAvatar, type AvatarMotionState } from './orb-avatar'
-import { orbShape, shapePath, type OrbShapeName } from './orb-shapes'
+import { orbShape, shapePath, type OrbShapeName } from '@shared/lib/types/agent-avatar-shapes'
 
 const layer = (name: string) => document.querySelector(`[data-orb-layer="${name}"]`) as HTMLElement
 const body = () => layer('glow').parentElement as HTMLElement

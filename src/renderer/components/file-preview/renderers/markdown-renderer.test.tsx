@@ -113,6 +113,19 @@ describe('MarkdownRenderer', () => {
     ])
   })
 
+  it('draws checklist items with the shared read-only checkbox and keeps their comment lines', () => {
+    text = '- [x] Done\n- [ ] Open\n- Note\n\n3. [x] Third'
+    render(<MarkdownRenderer url="/doc.md" filePath="/workspace/doc.md" agentSlug="test-agent" />)
+
+    const boxes = screen.getAllByRole('checkbox')
+    expect(boxes.map(box => [box.getAttribute('aria-checked'), box.hasAttribute('disabled')])).toEqual([['true', true], ['false', true], ['true', true]])
+    // jsdom has no Tailwind, so the class is what keeps each checklist item's bullet hidden.
+    expect(boxes[0].className).toContain('[li:has(>&)]:list-none')
+    expect(boxes[0].className).toContain('[li:has(>p>&)]:list-none')
+    const view = screen.getByTestId('markdown-renderer')
+    expect([...view.querySelectorAll('ul > li')].map(li => li.getAttribute('data-comment-lines'))).toEqual(['1-1', '2-2', '3-3'])
+  })
+
   it('leaves chat code blocks bare: only the drawer stamps lines', () => {
     const { container } = render(<AgentMarkdown text={'| a |\n|---|\n| 1 |\n\n```ts\nconst x = 1\n```'} mode="settled" />)
 

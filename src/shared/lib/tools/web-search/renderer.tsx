@@ -97,7 +97,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
           </div>
         )}
         {result && (
-          <pre className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto card-scrollbar">
+          <pre className="bg-background text-red-800 dark:text-red-200 rounded-item p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto card-scrollbar">
             {result}
           </pre>
         )}

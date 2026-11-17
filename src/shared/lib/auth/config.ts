@@ -2,17 +2,14 @@ import type { Context } from 'hono'
 import { getTrustedOrigins } from './trusted-origins'
 import { isAuthMode } from './mode'
 
-export { getTrustedOrigins } from './trusted-origins'
+export { getTrustedOrigins, trustedOriginsFrom } from './trusted-origins'
 
 /**
- * Get the app's external base URL (no trailing slash).
- * Priority: trustedOrigins (first entry) > HOST/PORT/USE_HTTPS env vars > defaults.
- *
- * Used for Better Auth baseURL, OAuth callback URLs, and anywhere
- * we need the externally-reachable origin of this server.
+ * The app's external base URL (no trailing slash), from trusted origins
+ * already resolved. Priority: trustedOrigins (first entry) >
+ * HOST/PORT/USE_HTTPS env vars > defaults.
  */
-export function getAppBaseUrl(): string {
-  const origins = getTrustedOrigins()
+export function appBaseUrlFrom(origins: readonly string[]): string {
   if (origins.length > 0) {
     return origins[0]
   }
@@ -23,17 +20,26 @@ export function getAppBaseUrl(): string {
 }
 
 /**
+ * Get the app's external base URL (no trailing slash), from the current
+ * settings. Used for Better Auth baseURL, OAuth callback URLs, and anywhere
+ * we need the externally-reachable origin of this server.
+ */
+export async function getAppBaseUrl(): Promise<string> {
+  return appBaseUrlFrom(await getTrustedOrigins())
+}
+
+/**
  * Get the app's base URL from a request context.
  * Uses getAppBaseUrl() when configured, otherwise falls back to the
  * request's origin header or URL — useful for OAuth callbacks.
  */
-export function getAppBaseUrlFromRequest(c: Context): string {
-  const configured = getTrustedOrigins()
+export async function getAppBaseUrlFromRequest(c: Context): Promise<string> {
+  const configured = await getTrustedOrigins()
   if (configured.length > 0) {
     return configured[0]
   }
   if (process.env.HOST) {
-    return getAppBaseUrl()
+    return appBaseUrlFrom(configured)
   }
   // Fall back to request origin (same as current behavior for unconfigured setups)
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL

@@ -51,6 +51,9 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 }))
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { agentExists } from '@shared/lib/services/agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {

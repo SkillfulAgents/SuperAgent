@@ -29,7 +29,7 @@ function loadConfig(env: Record<string, string | undefined> = {}): MasConfig {
 const regular = require('../../package.json') as {
   version: string
   scripts: Record<string, string>
-  build: { appId: string; mac: { extraResources: Resource[]; extendInfo: Record<string, unknown> } }
+  build: { appId: string; files: string[]; mac: { extraResources: Resource[]; extendInfo: Record<string, unknown> } }
 }
 
 afterEach(() => {
@@ -37,12 +37,14 @@ afterEach(() => {
 })
 
 describe('the Mac App Store build config', () => {
-  it('ships what the regular build does, minus the private-framework music adapter and Spotlight', () => {
+  it('ships what the regular build does, minus the private-framework music adapter, Spotlight and computer use', () => {
+    const leftOut = ['mediaremote-adapter', 'spotlight-bridge', 'agent-desktop/agent-desktop', 'agent-desktop/agent-desktop-macos-helper']
     const shipped = loadConfig().mac.extraResources.map((resource) => resource.to)
-    expect(shipped).not.toContain('mediaremote-adapter')
-    expect(shipped).not.toContain('spotlight-bridge')
+    for (const to of leftOut) expect(shipped).not.toContain(to)
+    // The Store build signs in through this bridge (App Review guideline 4).
+    expect(shipped).toContain('web-auth-bridge')
     expect(shipped).toEqual(
-      regular.build.mac.extraResources.map((resource) => resource.to).filter((to) => to !== 'mediaremote-adapter' && to !== 'spotlight-bridge'),
+      regular.build.mac.extraResources.map((resource) => resource.to).filter((to) => !leftOut.includes(to)),
     )
   })
 
@@ -58,7 +60,11 @@ describe('the Mac App Store build config', () => {
   })
 
   it('leaves out computer use’s native binary', () => {
-    expect(loadConfig().mac.files).toContain('!node_modules/@skillful-agents/agent-computer/bin/ac-core-darwin-*')
+    // The regular build ships it as an extra resource, under the name the CLI
+    // must have; no build packs the npm package's copies into the app.
+    expect(regular.build.mac.extraResources.map((resource) => resource.to)).toContain('agent-desktop/agent-desktop')
+    expect(regular.build.files).toContain('!node_modules/agent-desktop/bin/**')
+    expect(loadConfig().mac.extraResources.map((resource) => resource.to)).not.toContain('agent-desktop/agent-desktop')
   })
 
   it('names no other product as the app, and declares the deep-link scheme it can’t register at runtime', () => {

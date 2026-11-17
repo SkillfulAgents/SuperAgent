@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import { type ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider } from './base-llm-provider'
+import { BaseLlmProvider, type AgentIdentity, type ProviderSettings } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { BEDROCK_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { BEDROCK_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -22,14 +22,13 @@ export class BedrockLlmProvider extends BaseLlmProvider {
   // Used for simple Bedrock API Key auth (AWS_BEARER_TOKEN_BEDROCK)
   // Bedrock serves Claude models, and the CLI's own guard (which only fires
   // for custom first-party base URLs) never applies in Bedrock mode.
-  override toolSearchEnv() { return 'true' as const }
+  override async toolSearchEnv() { return 'true' as const }
   protected readonly settingsKeyField = 'bedrockApiKey' as const
   protected readonly envVarName = 'AWS_BEARER_TOKEN_BEDROCK'
 
-  /** Get the configured AWS region (settings > env > default). */
-  private getRegion(): string {
-    const settings = { apiKeys: this.configuredKeys() }
-    return settings.apiKeys?.bedrockRegion ?? this.envValue('AWS_REGION') ?? 'us-east-1'
+  /** The configured AWS region (settings > env > default), from global settings already read. */
+  private regionFrom(settings: ProviderSettings | undefined): string {
+    return this.keysFrom(settings).bedrockRegion ?? this.envValue('AWS_REGION') ?? 'us-east-1'
   }
 
   /**
@@ -37,14 +36,14 @@ export class BedrockLlmProvider extends BaseLlmProvider {
    * 1. Bedrock API Key is set (simple auth), OR
    * 2. AWS access key + secret are set (advanced auth)
    */
-  getApiKeyStatus(): ApiKeyStatus {
+  override apiKeyStatusFrom(settings: ProviderSettings | undefined): ApiKeyStatus {
     // Check simple Bedrock API Key first
-    const simpleStatus = super.getApiKeyStatus()
+    const simpleStatus = super.apiKeyStatusFrom(settings)
     if (simpleStatus.isConfigured) return simpleStatus
 
     // Check full AWS credentials
-    const settings = { apiKeys: this.configuredKeys() }
-    if (settings.apiKeys?.bedrockAccessKeyId && settings.apiKeys?.bedrockSecretAccessKey) {
+    const keys = this.keysFrom(settings)
+    if (keys.bedrockAccessKeyId && keys.bedrockSecretAccessKey) {
       return { isConfigured: true, source: 'settings' }
     }
     if (this.envValue('AWS_ACCESS_KEY_ID') && this.envValue('AWS_SECRET_ACCESS_KEY')) {
@@ -53,19 +52,20 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     return { isConfigured: false, source: 'none' }
   }
 
-  createClient(): Anthropic {
-    const settings = { apiKeys: this.configuredKeys() }
-    const region = this.getRegion()
+  async createClientFrom(given?: ProviderSettings): Promise<Anthropic> {
+    const settings = await this.ambientSettings(given)
+    const keys = this.keysFrom(settings)
+    const region = this.regionFrom(settings)
 
     // Pass bearer credentials directly; different connections can run concurrently.
-    const bearerToken = this.getEffectiveApiKey()
+    const bearerToken = this.effectiveApiKeyFrom(settings)
     if (bearerToken) {
       return new AnthropicBedrock({ awsRegion: region, apiKey: bearerToken, defaultHeaders: BEDROCK_VERSION }) as unknown as Anthropic
     }
 
     // Advanced auth: AWS access key credentials
-    const accessKeyId = settings.apiKeys?.bedrockAccessKeyId || this.envValue('AWS_ACCESS_KEY_ID')
-    const secretAccessKey = settings.apiKeys?.bedrockSecretAccessKey || this.envValue('AWS_SECRET_ACCESS_KEY')
+    const accessKeyId = keys.bedrockAccessKeyId || this.envValue('AWS_ACCESS_KEY_ID')
+    const secretAccessKey = keys.bedrockSecretAccessKey || this.envValue('AWS_SECRET_ACCESS_KEY')
 
     if (accessKeyId && secretAccessKey) {
       return new AnthropicBedrock({
@@ -86,10 +86,11 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     return BEDROCK_CATALOG
   }
 
-  async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
-    const settings = { apiKeys: this.configuredKeys() }
-    const region = this.getRegion()
-    const bearerToken = this.getEffectiveApiKey()
+  async getContainerEnvVars(_agent?: AgentIdentity, given?: ProviderSettings): Promise<Record<string, string | undefined>> {
+    const settings = await this.ambientSettings(given)
+    const keys = this.keysFrom(settings)
+    const region = this.regionFrom(settings)
+    const bearerToken = this.effectiveApiKeyFrom(settings)
 
     return {
       // Enable Bedrock mode in Claude Code SDK
@@ -98,8 +99,8 @@ export class BedrockLlmProvider extends BaseLlmProvider {
       // Simple auth
       AWS_BEARER_TOKEN_BEDROCK: bearerToken || undefined,
       // Advanced auth (only if no bearer token)
-      AWS_ACCESS_KEY_ID: !bearerToken ? (settings.apiKeys?.bedrockAccessKeyId || this.envValue('AWS_ACCESS_KEY_ID')) : undefined,
-      AWS_SECRET_ACCESS_KEY: !bearerToken ? (settings.apiKeys?.bedrockSecretAccessKey || this.envValue('AWS_SECRET_ACCESS_KEY')) : undefined,
+      AWS_ACCESS_KEY_ID: !bearerToken ? (keys.bedrockAccessKeyId || this.envValue('AWS_ACCESS_KEY_ID')) : undefined,
+      AWS_SECRET_ACCESS_KEY: !bearerToken ? (keys.bedrockSecretAccessKey || this.envValue('AWS_SECRET_ACCESS_KEY')) : undefined,
       AWS_SESSION_TOKEN: !bearerToken ? this.envValue('AWS_SESSION_TOKEN') : undefined,
       // Clear Anthropic API key so container uses Bedrock
       ANTHROPIC_API_KEY: undefined,
@@ -108,7 +109,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
-      const region = this.getRegion()
+      const region = this.regionFrom(await this.ambientSettings())
       const client = new AnthropicBedrock({ awsRegion: region, apiKey, defaultHeaders: BEDROCK_VERSION })
       await client.messages.create({
         model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', max_tokens: 1,

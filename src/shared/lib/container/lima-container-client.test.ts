@@ -411,7 +411,9 @@ describe('ensureLimaReady', () => {
     const p1 = ensureLimaReady()
     const p2 = ensureLimaReady()
 
-    // Only one should be in-flight (the first list call)
+    // Only one should be in-flight (the first list call), once the settings
+    // read ahead of it has landed.
+    await vi.waitFor(() => expect(resolveList).not.toBeNull())
     expect(callCount).toBe(1)
 
     resolveList!({ stdout: runningJson, stderr: '' })

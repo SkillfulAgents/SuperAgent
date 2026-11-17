@@ -42,7 +42,7 @@ function TimeMarker({ slice, anchor, site, numbers, isOpen, refine }: MarkerProp
         x={site.x}
         y={site.y}
         onMove={(clientX, clientY) => refine({ on: 'click', target: site.host, clientX, clientY })}
-        className="w-9 h-9 rounded-md border-2 border-primary bg-primary/20 shadow-md flex items-center justify-center"
+        className="w-9 h-9 rounded-control border-2 border-primary bg-primary/20 shadow-md flex items-center justify-center"
       >
         <span className="w-1.5 h-1.5 rounded-full bg-primary" />
       </DragHandle>

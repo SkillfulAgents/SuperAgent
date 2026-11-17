@@ -18,6 +18,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
 import { MockChatAgentIntegration } from './mock-connector'
 import { isMultiPartyChatType } from './chat-agent-integration'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 
 // ── Test state ─────────────────────────────────────────────────────────
 
@@ -68,6 +69,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
 
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+  }),
+  effectiveModelsFrom: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
   }),
@@ -133,6 +138,9 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { buildSlackSystemPrompt } from './slack-connector'
 import {
   buildTelegramSystemPrompt,
@@ -183,6 +191,7 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('chat id: D0AAA111')
     expect(prompt).not.toContain('Iddo Gino')
     expect(prompt).not.toContain('[Jane Doe]')
+    expect(prompt).not.toContain(NO_REPLY_TOKEN)
   })
 
   it('describes the channel and the attribution prefix for channel sessions', async () => {
@@ -190,6 +199,7 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('a channel (id C0BBB222)')
     expect(prompt).not.toContain('#office')
     expect(prompt).toContain('[Jane Doe]')
+    expect(prompt).toContain(NO_REPLY_TOKEN)
     const positions = [DELIVERY, NO_DOUBLE_POST, ATTRIBUTION, CONCISE, NORMAL_CAPABILITIES]
       .map((rule) => prompt.indexOf(rule))
     expect(positions.every((position) => position >= 0)).toBe(true)
@@ -228,6 +238,12 @@ describe('buildSlackSystemPrompt', () => {
     }
   })
 
+  it('tells the agent to mention people with their Slack user id', async () => {
+    const prompt = buildSlackSystemPrompt({ chatId: 'C0BBB222|1784571878.344849', userName: 'Iddo Gino' })
+    expect(prompt).toContain('list_chat_users')
+    expect(prompt).toContain('<@user_id>')
+  })
+
   it('includes conversational framing (concise replies and normal capabilities)', async () => {
     const prompt = buildSlackSystemPrompt({ chatId: 'D0AAA111', userName: 'Iddo Gino' })
     expect(prompt).toContain('Keep responses concise and conversational')
@@ -250,10 +266,11 @@ describe('buildTelegramSystemPrompt', () => {
 })
 
 describe('buildIMessageSystemPrompt', () => {
-  it('keeps reaction-tag and voice-note lines', async () => {
+  it('keeps reaction-tag, voice-note and link-preview lines', async () => {
     const prompt = buildIMessageSystemPrompt({ chatId: '+15559876543', userName: 'Iddo Gino' })
-    expect(prompt).toContain('[[reaction:heart]]')
+    expect(prompt).toContain('[[reaction:<emoji>]]')
     expect(prompt).toContain('voice notes which are automatically transcribed')
+    expect(prompt).toContain('arrives as its own message after your text')
   })
 
   it('omits attribution when chatName is absent (fail-closed with classify)', async () => {
@@ -396,7 +413,7 @@ describe('chat session system prompt wiring', () => {
     })
     expect(args.systemPrompt).toContain('live iMessage conversation')
     expect(args.systemPrompt).not.toContain('[Jane Doe]')
-    expect(args.systemPrompt).toContain('[[reaction:heart]]')
+    expect(args.systemPrompt).toContain('[[reaction:<emoji>]]')
     expect(args.systemPrompt).toContain(NORMAL_CAPABILITIES)
     expect(args.message).toBe('hey')
   })

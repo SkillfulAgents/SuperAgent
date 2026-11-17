@@ -37,9 +37,11 @@ import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { captureException } from '@shared/lib/error-reporting'
+import { isTelegramBusy, telegramRetryAfter } from './telegram-error'
 import { background } from '@shared/lib/background'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
+import { getFileExtension } from '../utils/mime'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -160,6 +162,11 @@ export function buildTelegramSystemPrompt(message: SystemPromptContext): string 
     where: `a live Telegram conversation: you are responding inside ${whereDetail}`,
     multiParty: isMultiPartyChatType(kind),
   })
+}
+
+/** Telegram refused a photo itself (its size, dimensions or format), so it can still go as a document. */
+export function isTelegramPhotoRefusal(errorCode: number, description: string): boolean {
+  return errorCode === 413 || (errorCode === 400 && /PHOTO|IMAGE/.test(description))
 }
 
 /** Rejects after `ms`; `promise` still settles on its own, unobserved. */
@@ -288,6 +295,8 @@ export class TelegramConnector extends ChatAgentIntegration {
   // Latest activity per chat, so each render (driven by the manager's tick) shows
   // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
+  // Per chat, the time until which Telegram asked the bot to stop calling.
+  private rateLimitedUntil: Map<string, number> = new Map()
 
   /** Bumped by each connect and disconnect; relayed updates for an older connection are retried. */
   private generation = 0
@@ -536,6 +545,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // Open cards stay with the installation, for the next connection.
     this.activeDrafts.clear()
     this.workingActivity.clear()
+    this.releaseAllAcknowledgements()
 
     // Relayed updates mid-handling finish before the next connection starts. A message the
     // manager no longer takes comes back as a retry; a button tap is lost, as when polling.
@@ -575,18 +585,52 @@ export class TelegramConnector extends ChatAgentIntegration {
     return lastMessageId
   }
 
-  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: { asImage?: boolean }): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
-    const { InputFile } = await import('grammy')
+    const { InputFile, GrammyError } = await import('grammy')
+    const file = () => new InputFile(new Uint8Array(fileData), filename)
+    if (options?.asImage) {
+      try {
+        // A GIF sent as a photo arrives frozen.
+        const sent = getFileExtension(filename) === 'gif'
+          ? await this.bot.api.sendAnimation(chatId, file())
+          : await this.bot.api.sendPhoto(chatId, file())
+        return String(sent.message_id)
+      } catch (err) {
+        // Only Telegram refusing the photo itself falls back; the file still arrives.
+        if (!(err instanceof GrammyError && isTelegramPhotoRefusal(err.error_code, err.description))) throw err
+        console.warn('[TelegramConnector] Telegram refused the photo, sending it as a document:', err.description)
+      }
+    }
     const result = await this.bot.api.sendDocument(
       chatId,
-      new InputFile(new Uint8Array(fileData), filename),
+      file(),
       caption ? { caption } : undefined,
     )
     return String(result.message_id)
   }
 
   async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
+    // While Telegram asked this chat to wait, a streaming frame or pill edit is skipped.
+    if (this.isRateLimited(chatId)) return existingMessageId ?? ''
+    try {
+      return await this.updateStream(chatId, text, existingMessageId)
+    } catch (err) {
+      this.noteRateLimit(chatId, err)
+      throw err
+    }
+  }
+
+  private isRateLimited(chatId: string): boolean {
+    return (this.rateLimitedUntil.get(chatId) ?? 0) > Date.now()
+  }
+
+  private noteRateLimit(chatId: string, err: unknown): void {
+    const seconds = telegramRetryAfter(err)
+    if (seconds !== undefined) this.rateLimitedUntil.set(chatId, Math.max(this.rateLimitedUntil.get(chatId) ?? 0, Date.now() + seconds * 1000))
+  }
+
+  private async updateStream(chatId: string, text: string, existingMessageId?: string): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
     const body = text || 'Thinking...'
 
@@ -605,8 +649,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // Group/channel edit path.
     if (!existingMessageId) {
       if (this.useRich) {
-        // Via sendRichOrHtml so a rich-send failure falls back to HTML like every
-        // other send path, instead of throwing and aborting the stream.
+        // Via sendRichOrHtml, like every other send path.
         return this.sendRichOrHtml(chatId, body)
       }
       const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(body), { parse_mode: 'HTML' })
@@ -652,10 +695,17 @@ export class TelegramConnector extends ChatAgentIntegration {
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       if (!errMsg.includes('message is not modified')) {
+        this.noteRateLimit(chatId, err)
         console.error('[TelegramConnector] Failed to finalize message:', err)
         captureException(err, { tags: { component: 'chat-integration', operation: 'finalize-message' }, extra: { provider: 'telegram', chatId, messageId } })
       }
     }
+  }
+
+  async retireStreamingMessage(chatId: string, messageId: string): Promise<void> {
+    // A DM draft is ephemeral: the next draft replaces it.
+    if (!this.bot || messageId.startsWith(RICH_DRAFT_SENTINEL_PREFIX)) return
+    await this.bot.api.deleteMessage(chatId, Number(messageId))
   }
 
   private draftIdFor(chatId: string): number {
@@ -700,6 +750,16 @@ export class TelegramConnector extends ChatAgentIntegration {
     // so the clear yields the surface — there is nothing else to tear down.
   }
 
+  protected async addAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.bot) return
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [{ type: 'emoji', emoji: '👀' }])
+  }
+
+  protected async removeAcknowledgement(chatId: string, messageId: string): Promise<void> {
+    if (!this.bot) return
+    await this.bot.api.setMessageReaction(chatId, Number(messageId), [])
+  }
+
   /** The native-draft label for a busy activity (`<tg-thinking>` inner HTML). */
   private workingLabel(activity: SessionActivity | undefined): string {
     switch (activity) {
@@ -712,7 +772,7 @@ export class TelegramConnector extends ChatAgentIntegration {
 
   /** Post the "working" indicator once: a native draft in rich DMs, else typing. */
   private async sendWorkingIndicator(chatId: string): Promise<void> {
-    if (!this.bot) return
+    if (!this.bot || this.isRateLimited(chatId)) return
     try {
       if (this.useRich && this.config.draftStreaming !== false && this.isPrivateChat(chatId)) {
         // Native Telegram placeholder (RichBlockThinking / <tg-thinking>), labeled
@@ -730,8 +790,9 @@ export class TelegramConnector extends ChatAgentIntegration {
         return
       }
       await this.bot.api.sendChatAction(chatId, 'typing')
-    } catch {
-      // Non-critical; the manager's tick re-sends on the next tick.
+    } catch (err) {
+      // Non-critical; the manager's tick re-sends, and a refusal holds the chat.
+      this.noteRateLimit(chatId, err)
     }
   }
 
@@ -1176,7 +1237,7 @@ export class TelegramConnector extends ChatAgentIntegration {
 
   private report(error: unknown, operation: string): void {
     // A network failure's cause carries the request URL, which holds the bot token.
-    if (error instanceof HttpError) error = new Error(error.message)
+    if (error instanceof HttpError) error = new HttpError(error.message, undefined)
     console.error(`[TelegramConnector] ${operation} failed:`, error)
     captureException(error, { tags: { component: 'chat-integration', operation }, extra: { provider: 'telegram', integrationId: this.integration?.id } })
   }
@@ -1212,7 +1273,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     return markdownToRichMessage(md, { skipEntityDetection: this.config.skipEntityDetection === true })
   }
 
-  /** Send a new rich message; on any rich-send failure, resend via legacy HTML. */
+  /** Send a new rich message; unless Telegram is busy, a rich-send failure resends via legacy HTML. */
   private async sendRichOrHtml(
     chatId: string,
     md: string,
@@ -1228,6 +1289,7 @@ export class TelegramConnector extends ChatAgentIntegration {
         })
         return String(sent.message_id)
       } catch (err) {
+        if (isTelegramBusy(err)) throw err
         console.error('[TelegramConnector] rich send failed, falling back to HTML:', err)
         captureException(err, { tags: { component: 'chat-integration', operation: 'rich-send-fallback' }, extra: { provider: 'telegram', chatId } })
       }
@@ -1247,7 +1309,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     return lastId
   }
 
-  /** Edit a message to rich; on any rich-edit failure, edit via legacy HTML. */
+  /** Edit a message to rich; unless Telegram is busy, a rich-edit failure edits via legacy HTML. */
   private async editRichOrHtml(chatId: string, messageId: string, md: string): Promise<void> {
     if (!this.bot) return
     if (this.useRich) {
@@ -1261,6 +1323,7 @@ export class TelegramConnector extends ChatAgentIntegration {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         if (errMsg.includes('message is not modified')) return
+        if (isTelegramBusy(err)) throw err
         console.error('[TelegramConnector] rich edit failed, falling back to HTML:', err)
       }
     }

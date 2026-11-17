@@ -59,7 +59,7 @@ function SettingRow({ name, subtitle, right, htmlFor }: SettingRowProps) {
   )
 }
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 
 type DevicePushState = 'loading' | 'unsubscribed' | 'subscribed' | 'denied' | 'error'
 

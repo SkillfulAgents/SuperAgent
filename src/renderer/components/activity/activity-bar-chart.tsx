@@ -40,11 +40,15 @@ export function ActivityBarChart({ label, data, className }: ActivityBarChartPro
     <ChartContainer
       config={activityChartConfig}
       className={cn('h-[150px] w-full aspect-auto', className)}
-      role="img"
+      role="group"
       aria-label={accessibleLabel}
       data-testid="activity-bar-chart"
     >
-      <BarChart data={data} margin={{ top: 8, right: 4, bottom: 0, left: 4 }}>
+      <BarChart
+        data={data}
+        margin={{ top: 8, right: 4, bottom: 0, left: 4 }}
+        aria-label={`${label} daily activity`}
+      >
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
         <XAxis
           dataKey="date"

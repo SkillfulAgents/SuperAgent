@@ -68,10 +68,11 @@ describe('single-session read — small profile', () => {
     expect(body).toMatchObject({ id: sessionId, name: inList.name, createdAt: inList.createdAt, lastActivityAt: inList.lastActivityAt })
     expect(body).not.toHaveProperty('messageCount')
     // Was 168 ops (162 handle.read), 10.5MB read and ~1.7s: the whole transcript
-    // streamed for a count no client read, plus a second metadata read.
+    // streamed for a count no client read, plus a second metadata read. The
+    // metadata is read from the session index now, not from a file.
     expectWithinBudget('small: GET session (10MB transcript)', measurement, {
-      totalOps: 4,
-      ops: { realpath: 2, stat: 1, readFile: 1 },
+      totalOps: 3,
+      ops: { realpath: 2, stat: 1, readFile: 0 },
       bytesRead: 0,
       wallMs: 100,
     })
@@ -89,13 +90,15 @@ describe('single-session read — small profile', () => {
     const body = await result.json()
     expect(body).toMatchObject({ id: sessionId, name: 'Renamed' })
     expect(body).not.toHaveProperty('messageCount')
-    // Was 173 ops (162 handle.read), 10.5MB read and ~1.8s. The rename's
-    // atomic write counts its data write and its two fsyncs.
+    // Was 173 ops (162 handle.read), 10.5MB read and ~1.8s, then 12 while a
+    // rename rewrote the metadata document (its data write, two fsyncs and a
+    // rename). It is one row of the session index now: what is left is the
+    // "is this the agent's session" check and the stat for the response.
     expectWithinBudget('small: PATCH session rename (10MB transcript)', measurement, {
-      totalOps: 12,
-      ops: { stat: 1, readFile: 2, open: 2, realpath: 2, lstat: 1, rename: 1, 'handle.write': 1, 'handle.sync': 2 },
+      totalOps: 3,
+      ops: { stat: 1, realpath: 2, readFile: 0, open: 0, rename: 0, 'handle.write': 0, 'handle.sync': 0 },
       bytesRead: 0,
-      wallMs: 230,
+      wallMs: 100,
     })
   })
 })

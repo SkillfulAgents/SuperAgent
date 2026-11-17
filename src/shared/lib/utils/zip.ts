@@ -66,6 +66,13 @@ export async function openZipFromFile(filePath: string): Promise<ZipReader> {
   return openZipReader((callback) => yauzl.open(filePath, { ...ZIP_OPEN_OPTIONS, autoClose: false }, callback))
 }
 
+/** A ZIP as bytes, or as a path to one on disk (read on demand; prefer it when the ZIP is a file). */
+export type ZipSource = Buffer | { filePath: string }
+
+export function openZipSource(zip: ZipSource): Promise<ZipReader> {
+  return Buffer.isBuffer(zip) ? openZipFromBuffer(zip) : openZipFromFile(zip.filePath)
+}
+
 async function openZipReader(open: (callback: ZipOpenCallback) => void): Promise<ZipReader> {
   const { zipFile, entries: entryMetas, rawEntries } = await openAndCollectEntries(open)
   let closed = false

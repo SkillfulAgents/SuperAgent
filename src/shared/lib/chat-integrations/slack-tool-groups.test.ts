@@ -43,7 +43,7 @@ describe('SlackConnector tool groups', () => {
     await start(connector, 't2')
     await settle(connector, 't1', 'success')
 
-    const groupPosts = postMessage.mock.calls.filter((c: any) => c[0].blocks)
+    const groupPosts = postMessage.mock.calls.filter((c: any) => c[0].blocks?.[0]?.type === 'task_card')
     expect(groupPosts.map(cardsIn)).toEqual([['t1:in_progress'], ['t2:in_progress']])
     expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ ts: '1001.000' }))
 
@@ -64,7 +64,7 @@ describe('SlackConnector tool groups', () => {
     await post(connector)
     await start(connector, 't2')
 
-    expect(postMessage.mock.calls.filter((c: any) => c[0].blocks).map(cardsIn)).toEqual([['t1:in_progress'], ['t2:in_progress']])
+    expect(postMessage.mock.calls.filter((c: any) => c[0].blocks?.[0]?.type === 'task_card').map(cardsIn)).toEqual([['t1:in_progress'], ['t2:in_progress']])
   })
 
   it.each([

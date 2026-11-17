@@ -20,7 +20,7 @@ export function spotlightIdentifier(userInfo: unknown): string | null {
 
 export interface SpotlightActivationDeps {
   /** Which Superagent the app is driving now. */
-  activeTarget(): ApiTarget
+  activeTarget(): Promise<ApiTarget>
   openAgent(agentSlug: string, sessionId: string | null): void
   openDashboard(agentSlug: string, dashboardSlug: string): void
   showMainWindow(): void
@@ -40,6 +40,8 @@ export interface SpotlightActivationDeps {
 export function createSpotlightActivation(deps: SpotlightActivationDeps) {
   const now = deps.now ?? Date.now
   let pending: { ref: SpotlightRef; at: number } | null = null
+  // The latest click: one answered after a newer click asks nothing of the app.
+  let clicks = 0
 
   function open(ref: SpotlightRef): void {
     switch (ref.kind) {
@@ -59,14 +61,17 @@ export function createSpotlightActivation(deps: SpotlightActivationDeps) {
   }
 
   return {
-    activate(identifier: string): void {
+    async activate(identifier: string): Promise<void> {
+      const click = ++clicks
       const ref = parseSpotlightId(identifier)
       pending = null
       if (!ref) {
         deps.showMainWindow()
         return
       }
-      if (ref.target === deps.activeTarget()) {
+      const active = await deps.activeTarget()
+      if (click !== clicks) return
+      if (ref.target === active) {
         open(ref)
         return
       }
@@ -79,18 +84,21 @@ export function createSpotlightActivation(deps: SpotlightActivationDeps) {
      * commands. Opens the result that was waiting on a switch, if the app is
      * now driving its Superagent.
      */
-    resumeAfterSwitch(): void {
+    async resumeAfterSwitch(): Promise<void> {
       if (!pending) return
       if (now() - pending.at > PENDING_SWITCH_TTL_MS) {
         pending = null
         return
       }
+      const waiting = pending
+      const active = await deps.activeTarget()
+      // Declined, opened or replaced by a newer click while the target was read.
+      if (pending !== waiting) return
       // Not switched (yet): a renderer mounting on the old side, such as a
       // window recreated to carry the switch request itself.
-      if (pending.ref.target !== deps.activeTarget()) return
-      const { ref } = pending
+      if (waiting.ref.target !== active) return
       pending = null
-      open(ref)
+      open(waiting.ref)
     },
 
     /**

@@ -18,8 +18,8 @@ export type WebhookTrigger = PublicWebhookTrigger
 
 const TYPE = 'webhook-triggers' as const
 
-export function useWebhookTriggers(agentSlug: string | null, status?: 'active' | 'cancelled') {
-  return useAutomationList<WebhookTrigger>(TYPE, agentSlug, status, { refetchInterval: 120_000 })
+export function useWebhookTriggers(agentSlug: string | null) {
+  return useAutomationList<WebhookTrigger>(TYPE, agentSlug, undefined, { refetchInterval: 120_000 })
 }
 
 export function useWebhookTrigger(triggerId: string | null) {

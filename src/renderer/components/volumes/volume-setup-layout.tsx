@@ -21,7 +21,7 @@ export function VolumeSetupHeader({ title, description, Logo, steps, step }: {
       </li>)}
     </ol>
     <div className="flex items-center gap-3">
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/40"><Logo className="h-6 w-6" /></div>
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-control border bg-muted/40"><Logo className="h-6 w-6" /></div>
       <div className="space-y-1.5"><DialogTitle ref={titleRef} tabIndex={-1} className="outline-none">{title}</DialogTitle><DialogDescription data-volume-setup-description>{description}</DialogDescription></div>
     </div>
   </DialogHeader>

@@ -96,6 +96,8 @@ vi.mock('./tools/browser', () => ({
 }))
 
 vi.mock('./tools/computer-use', () => ({
+  COMPUTER_USE_SERVER: 'agent-desktop',
+  COMPUTER_USE_TOOL_PREFIX: 'mcp__agent-desktop__',
   computerUseTools: [],
 }))
 
@@ -378,17 +380,61 @@ describe('ClaudeCodeProcess model context windows', () => {
     expect(maxContextOf(calls[0])).toBe('500000')
   })
 
-  it('leaves the env var unset for a model without a catalog window', async () => {
+  it('leaves the env var unset for a Claude lead with no non-Claude subagents', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-ctx-2',
       workingDirectory: '/tmp',
       model: 'claude-sonnet-4-6',
+      browserModel: 'claude-haiku-4-5',
+      subagentModels: [{ id: 'us.anthropic.claude-opus-4-8', label: 'Opus' }],
       modelContextWindows: windows,
     })
 
     await process.start()
     expect(calls).toHaveLength(1)
     expect(maxContextOf(calls[0])).toBeUndefined()
+  })
+
+  // CLI 2.1.323+ assumes 1M for a model it does not know; the old 200K keeps a
+  // smaller one compacting instead of failing every turn once full.
+  it('gives a non-Claude lead without a catalog window 200K', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-6',
+      workingDirectory: '/tmp',
+      model: 'llama3.3:70b',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(maxContextOf(calls[0])).toBe('200000')
+  })
+
+  it('gives a Claude lead the smallest window of its non-Claude subagents', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-7',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      browserModel: 'grok-4.6',
+      subagentModels: [{ id: 'gpt-5.5', label: 'GPT-5.5' }, { id: 'claude-haiku-4-5', label: 'Haiku' }],
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(maxContextOf(calls[0])).toBe('500000')
+  })
+
+  it('counts a non-Claude subagent without a catalog window as 200K', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-8',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      browserModel: 'grok-4.6',
+      dashboardBuilderModel: 'custom-model',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(maxContextOf(calls[0])).toBe('200000')
   })
 
   it('lets a user-set custom env var win over the catalog value', async () => {

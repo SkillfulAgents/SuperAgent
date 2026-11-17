@@ -2,7 +2,7 @@ import { agentRegistry } from '@shared/lib/agent-actor'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getApnsRelayConfig } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { getAccessibleAgentSlugs } from '@shared/lib/services/notification-service'
+import { getPushableAgentSlugs } from '@shared/lib/services/notification-service'
 import {
   listDeliverableApnsDevices,
   deleteApnsDeviceById,
@@ -96,7 +96,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       return
     }
 
-    const { url } = getApnsRelayConfig()
+    const { url } = await getApnsRelayConfig()
     if (!url) {
       return
     }
@@ -165,7 +165,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       }
       let access = accessCache.get(device.userId)
       if (!access) {
-        access = getAccessibleAgentSlugs(device.userId)
+        access = getPushableAgentSlugs(device.userId)
         accessCache.set(device.userId, access)
       }
       // No access to the agent means no push at all — a silent push still

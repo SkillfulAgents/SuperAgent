@@ -158,7 +158,6 @@ describe('buildGraph', () => {
     // The user owns 'mine', has user role on 'shared', viewer on 'theirs'.
     const roles = {
       canUse: (slug: string) => slug === 'mine' || slug === 'shared',
-      canAdmin: (slug: string) => slug === 'mine',
     }
     const graph = buildGraph({
       agents: [agent('mine'), agent('shared'), agent('theirs')],
@@ -175,6 +174,7 @@ describe('buildGraph', () => {
           { caller: 'mine', target: 'shared' },
           { caller: 'shared', target: 'mine' },
           { caller: 'theirs', target: 'shared' },
+          { caller: 'shared', target: 'theirs' },
         ],
       },
     })
@@ -183,12 +183,10 @@ describe('buildGraph', () => {
     const theirsLink = graph.edges.find((e) => e.source === nodeId.agent('theirs') && e.variant === 'resource')
     expect(sharedLink?.deletable).toBe(true)
     expect(theirsLink?.deletable).toBe(false)
-    // Mixed-role pair: only the direction whose caller the user owns is
-    // editable — delete must attempt exactly that direction, and the edit
-    // target must be an agent whose settings the user can actually open.
+    // A pair the user uses on both ends is editable in both directions.
     const mixed = graph.edges.find((e) => e.id.includes('mine') && e.variant === 'permission')
-    expect(mixed).toMatchObject({ deletable: true, policyAgentSlug: 'mine', policyCallers: ['mine'] })
-    // A pair the user admins in neither direction gets no affordance at all.
+    expect(mixed).toMatchObject({ deletable: true, policyAgentSlug: 'mine', policyCallers: ['mine', 'shared'] })
+    // A pair with an agent the user only views gets no affordance at all.
     const foreign = graph.edges.find((e) => e.id.includes('theirs') && e.variant === 'permission')
     expect(foreign).toMatchObject({ deletable: false, policyCallers: [] })
     expect(foreign?.policyAgentSlug).toBeUndefined()

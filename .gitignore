@@ -17,6 +17,7 @@ build/mediaremote-adapter/
 build/spotlight-bridge/
 build/notification-bridge/
 build/glass-bridge/
+build/web-auth-bridge/
 
 # Test coverage
 coverage/

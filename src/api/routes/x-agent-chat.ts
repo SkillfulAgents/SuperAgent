@@ -6,7 +6,7 @@ import { emailThreadRoute } from '@shared/lib/email-integrations/routing'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { Hono } from 'hono'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import {
   getAgentIntegration,
   createAgentIntegration,
@@ -15,10 +15,11 @@ import {
   DuplicateIntegrationIdentityError,
 } from '@shared/lib/services/agent-integration-service'
 import {
-  listAgentIntegrationSessions,
+  listActiveAgentIntegrationSessions,
   getAgentIntegrationSessionBySessionId,
 } from '@shared/lib/services/agent-integration-session-service'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
+import { UndeliveredMessageError } from '@shared/lib/chat-integrations/chat-delivery'
 import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
 import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
 import { z } from 'zod'
@@ -32,18 +33,7 @@ type XAgentChatVariables = { callerSlug: string }
 
 const xAgentChat = new Hono<{ Variables: XAgentChatVariables }>()
 
-xAgentChat.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  const callerSlug = await validateProxyToken(token)
-  if (!callerSlug) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgentChat.use('*', requireAgentCaller)
 
 function getCallerSlug(c: { get: (k: 'callerSlug') => string }): string {
   return c.get('callerSlug')
@@ -61,17 +51,10 @@ xAgentChat.post('/list', async (c) => {
       // type where the provider's ids encode one, and advertise discovery
       // capabilities so agents know which discovery tools apply here.
       const connectorClass = await agentIntegrationManager.getDefinition(i.provider)
-      const sessions = await listAgentIntegrationSessions(i.id)
-      const activeChats = await Promise.all(sessions
-        .filter((s) => !s.archivedAt)
-        .map(async (s) => {
-          const { type } = await agentIntegrationManager.describeTarget(i.provider, s.externalChatId)
-          return {
-            chatId: s.externalChatId,
-            displayName: s.displayName,
-            ...(type ? { type } : {}),
-          }
-        }))
+      const sessions = await listActiveAgentIntegrationSessions(i.id)
+      const asChat = ({ externalId, displayName, type }: { externalId: string; displayName: string | null; type?: string }) => ({ chatId: externalId, displayName, ...(type ? { type } : {}) })
+      const activeChats = (await agentIntegrationRegistry.conversations(i, sessions, { threads: true }))
+        .map(({ threads, ...chat }) => ({ ...asChat(chat), ...(threads ? { threads: threads.map(asChat) } : {}) }))
       return {
         id: i.id,
         provider: i.provider,
@@ -100,7 +83,7 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, callerSlug), true)
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug), true)
 
     let id: string
     try {
@@ -154,12 +137,16 @@ xAgentChat.post('/send', async (c) => {
     const callerSlug = getCallerSlug(c)
     const body = await c.req.json()
     const { integration_id, message, chat_id, user_id, context, session_id } = body
+    const alsoSendToChannel = body.also_send_to_channel === true
 
     if (!integration_id || !message) {
       return c.json({ error: 'Missing required fields: integration_id, message' }, 400)
     }
     if (chat_id && user_id) {
       return c.json({ error: 'Pass either chat_id or user_id, not both.' }, 400)
+    }
+    if (alsoSendToChannel && user_id) {
+      return c.json({ error: 'Not sent: also_send_to_channel works only for a thread in a channel, not a user_id.' }, 400)
     }
 
     const integration = await getAgentIntegration(integration_id)
@@ -172,8 +159,8 @@ xAgentChat.post('/send', async (c) => {
 
     if (integration.provider === 'platform-email') {
       const config = emailConfigSchema.parse(JSON.parse(integration.config))
-      if (!body.email || chat_id || user_id) return c.json({
-        error: 'Email requires the email object: {to: ["recipient@example.com"], subject: "Subject", idempotency_key: "unique-send-key"}, with the body in message. For a reply, use email.reply_to_message_id. Do not pass chat_id/user_id. If your send_chat_message tool has no email parameter, restart the agent with an updated container image. Nothing was sent.',
+      if (!body.email || chat_id || user_id || alsoSendToChannel) return c.json({
+        error: 'Email requires the email object: {to: ["recipient@example.com"], subject: "Subject", idempotency_key: "unique-send-key"}, with the body in message. For a reply, use email.reply_to_message_id. Do not pass chat_id, user_id or also_send_to_channel. If your send_chat_message tool has no email parameter, restart the agent with an updated container image. Nothing was sent.',
       }, 400)
       const parsed = emailToolSchema.safeParse(body.email)
       if (!parsed.success) return c.json({ error: `Invalid email parameters: ${parsed.error.issues.map(issue => `${issue.path.join('.') || 'email'}: ${issue.message}`).join('; ')}. Nothing was sent.` }, 400)
@@ -182,7 +169,7 @@ xAgentChat.post('/send', async (c) => {
       const client = clientFor(integration)
       if (currentSession && !currentSession.archivedAt && currentSession.integrationId === integration.id && email.reply_to_message_id) {
         const parent = await client.message(config.mailboxId, email.reply_to_message_id)
-        if (await emailThreadRoute(integration, parent.threadId) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
+        if (await emailThreadRoute(integration, parent) === currentSession.externalChatId) return c.json({ error: 'Your final response is already delivered to this email thread automatically' }, 400)
       }
       const connector = await resolveLiveConnector(integration.id, integration.status)
       const tool = connector?.getTools({ integration, externalId: '' }).find(tool => tool.name === 'send_email')
@@ -203,6 +190,12 @@ xAgentChat.post('/send', async (c) => {
         }, 400)
       }
     }
+    if (alsoSendToChannel) {
+      const connectorClass = await agentIntegrationManager.getDefinition(integration.provider)
+      if (!connectorClass?.capabilities?.includes('thread_broadcast')) {
+        return c.json({ error: `Not sent: the ${integration.provider} provider does not support also_send_to_channel.` }, 400)
+      }
+    }
 
     const connector = await resolveLiveConnector(integration_id, integration.status)
     if (!connector) {
@@ -213,6 +206,7 @@ xAgentChat.post('/send', async (c) => {
     // conversation up front so the own-chat guard below sees the REAL chat id —
     // a DM addressed by user id can still land in the caller's own chat.
     let resolvedChatId: string | undefined = chat_id
+    let sendsToOwnChat = false
     if (user_id) {
       const directChat = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === 'dm_by_user_id')
       if (!directChat) {
@@ -247,17 +241,23 @@ xAgentChat.post('/send', async (c) => {
         && callerChatSession.integrationId === integration_id
         && (!resolvedChatId || resolvedChatId === callerChatSession.externalChatId)
       ) {
-        const label = callerChatSession.displayName ? ` (${callerChatSession.displayName})` : ''
-        return c.json({
-          error: `Not sent: this session IS the live conversation for chat ${callerChatSession.externalChatId}${label}. Everything you write in your response is delivered to that chat automatically — sending it here too would post it twice. To message a different chat, pass its chat_id (see list_agent_integrations).`,
-        }, 400)
+        if (!alsoSendToChannel) {
+          const label = callerChatSession.displayName ? ` (${callerChatSession.displayName})` : ''
+          return c.json({
+            error: `Not sent: this session IS the live conversation for chat ${callerChatSession.externalChatId}${label}. Everything you write in your response is delivered to that chat automatically — sending it here too would post it twice. To message a different chat, pass its chat_id (see list_agent_integrations).`,
+          }, 400)
+        }
+        // A takeaway for the channel is a new message, not the reply again.
+        resolvedChatId = callerChatSession.externalChatId
+        sendsToOwnChat = true
       }
     }
 
+    const active = await listActiveAgentIntegrationSessions(integration_id)
+    const activeChats = await agentIntegrationRegistry.conversations(integration, active)
+
     // No explicit target: fall back to the integration's single active chat
     if (!resolvedChatId) {
-      const sessions = await listAgentIntegrationSessions(integration_id)
-      const activeChats = sessions.filter((s) => !s.archivedAt)
       if (activeChats.length === 0) {
         return c.json({
           error: 'No active chats found for this integration. Someone needs to message the bot first, or specify a chat_id directly.',
@@ -265,13 +265,17 @@ xAgentChat.post('/send', async (c) => {
       }
       if (activeChats.length > 1) {
         const chatList = activeChats.map((s) =>
-          `  - chatId: ${s.externalChatId}${s.displayName ? ` (${s.displayName})` : ''}`,
+          `  - chatId: ${s.externalId}${s.displayName ? ` (${s.displayName})` : ''}`,
         ).join('\n')
         return c.json({
           error: `Multiple active chats — specify chat_id. Available:\n${chatList}`,
         }, 400)
       }
-      resolvedChatId = activeChats[0].externalChatId
+      resolvedChatId = activeChats[0].externalId
+    }
+
+    if (alsoSendToChannel && (await agentIntegrationRegistry.describeTarget(integration.provider, resolvedChatId)).type !== 'thread') {
+      return c.json({ error: 'Not sent: also_send_to_channel works only for a thread in a channel. Pass a thread chat_id, or omit the flag.' }, 400)
     }
 
     if (!(await isChatAllowed(integration_id, resolvedChatId))) {
@@ -280,13 +284,17 @@ xAgentChat.post('/send', async (c) => {
 
     const send = connector.getTools({ integration, externalId: resolvedChatId }).find(tool => tool.name === 'send_message')
     if (!send) return c.json({ error: 'Integration does not support sending messages.' }, 400)
-    await send.execute({ text: message })
+    await send.execute({ text: message, alsoSendToChannel })
 
     // Notify the chat session's agent so it knows a message was sent on its behalf.
     // Uses shouldQuery: false so the message enters the agent's context without
-    // triggering a new assistant turn.
+    // triggering a new assistant turn. A channel known only through its threads
+    // already has its conversations there, so none is opened for the channel
+    // itself; a target with no conversation at all still gets one, as before.
     try {
-      await notifySessionOfOutboundMessage(integration_id, integration.agentSlug, resolvedChatId, message, context)
+      const onlyThroughThreads = !active.some((s) => s.externalChatId === resolvedChatId)
+        && activeChats.some((c) => c.externalId === resolvedChatId)
+      if (!onlyThroughThreads && !sendsToOwnChat) await notifySessionOfOutboundMessage(integration_id, integration.agentSlug, resolvedChatId, message, context)
     } catch (err) {
       // Best-effort — don't fail the send if notification fails
       captureException(err, {
@@ -300,6 +308,12 @@ xAgentChat.post('/send', async (c) => {
   } catch (error) {
     if (error instanceof z.ZodError) return c.json({ error: error.issues[0]?.message ?? 'Invalid email' }, 400)
     if (error instanceof EmailPolicyError) return c.json({ error: error.message }, 403)
+    if (error instanceof UndeliveredMessageError) {
+      captureException(error.cause, { tags: { component: 'x-agent-chat', operation: 'send' } })
+      // The chat's own reason (Slack's not_in_channel, Telegram's chat not found) lets the agent act on it.
+      const reason = (error.cause instanceof Error ? error.cause.message : String(error.cause ?? '')).trim().slice(0, 300)
+      return c.json({ error: `Not sent${reason ? ` (${reason})` : ''}: ${error.undeliveredText}` }, 500)
+    }
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'send' } })
     return c.json({ error: 'Failed to send chat message' }, 500)
   }

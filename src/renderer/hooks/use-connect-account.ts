@@ -37,7 +37,7 @@ export function useConnectAccount({
   const loginWindow = useLoginWindow()
   const closeLoginWindow = loginWindow.close
   const [launchedSlug, setLaunchedSlug] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Error | null>(null)
   const connecting = loginWindow.pending ? launchedSlug : null
   const connectingRef = useRef(connecting)
   connectingRef.current = connecting
@@ -133,7 +133,7 @@ export function useConnectAccount({
       })
       if (outcome === 'waiting') connectionIdRef.current = connectionId
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect')
+      setError(err instanceof Error ? err : new Error('Failed to connect'))
     }
   }, [loginWindow, initiateConnection, location])
 

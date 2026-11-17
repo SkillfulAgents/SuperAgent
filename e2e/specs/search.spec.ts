@@ -54,6 +54,12 @@ function searchSessionRow(
   )
 }
 
+function searchSection(page: Page, label: string) {
+  return searchResults(page).locator(
+    `[data-testid="search-section"][data-section="${label}"]`,
+  )
+}
+
 async function openSearchWithKeyboard(page: Page) {
   await page.keyboard.press('ControlOrMeta+k')
   await expect(searchInput(page)).toBeVisible()
@@ -189,12 +195,12 @@ test.describe('Search palette', () => {
     await openSearchWithKeyboard(page)
     await searchInput(page).fill(`refactor login session ${suffix}`)
 
-    await expect(searchAgentRow(page, createdAgent)).toBeVisible()
+    // The query matches only the session, so its agent is not listed and the
+    // session is the first result.
     await expect(searchSessionRow(page, createdAgent, session)).toBeVisible()
+    await expect(searchAgentRow(page, createdAgent)).toHaveCount(0)
+    await expect(searchSection(page, 'Sessions')).toBeVisible()
 
-    // The query matches only the session. The grouped result keeps the agent
-    // at index 0 and the matching session at index 1.
-    await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Enter')
 
     await expect(searchInput(page)).not.toBeVisible()
@@ -208,10 +214,9 @@ test.describe('Search palette', () => {
     await openSearchWithKeyboard(page)
     await searchInput(page).fill(`durable session ${suffix}`)
 
-    await expect(searchAgentRow(page, agent)).toBeVisible()
     await expect(searchSessionRow(page, agent, session)).toBeVisible()
+    await expect(searchAgentRow(page, agent)).toHaveCount(0)
 
-    await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Enter')
     await expectSessionRoute(page, agent, session)
 
@@ -243,38 +248,38 @@ test.describe('Search palette', () => {
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
   })
 
-  test('API: empty query recent agent expands, collapses, and opens a targeted session', async ({ page, request }, testInfo) => {
-    const { agent, session } = await createSearchData(request, testInfo, 'Recent')
+  test('API: empty query lists recent agents and recent sessions, and opens a recent session', async ({ page, request }, testInfo) => {
+    const { agent } = await createSearchData(request, testInfo, 'Recent')
 
     await appPage.reload()
     await openSearchWithKeyboard(page)
 
-    const agentRow = searchAgentRow(page, agent)
-    const sessionRow = searchSessionRow(page, agent, session)
+    // The recent lists are short (five agents, ten sessions) and sibling workers
+    // keep creating newer agents and sessions, so this asserts on whatever is
+    // listed rather than on the agent created above staying in it.
+    const recentAgents = searchSection(page, 'Recent agents')
+    const recentSessions = searchSection(page, 'Recent sessions')
+    await expect(recentAgents).toBeVisible({ timeout: 15000 })
+    await expect(recentSessions).toBeVisible({ timeout: 15000 })
+    await expect(recentAgents.getByTestId('search-agent-row')).not.toHaveCount(0)
+    expect(await recentAgents.getByTestId('search-agent-row').count()).toBeLessThanOrEqual(5)
+    expect(await recentSessions.getByTestId('search-session-row').count()).toBeLessThanOrEqual(10)
 
-    // Empty-query search intentionally exercises the top-10 recent-agent list.
-    // With workers=4, only a few sibling agents can become newer than this one;
-    // revisit this if main-suite parallelism approaches that recent-list width.
-    await expect(agentRow).toBeVisible({ timeout: 15000 })
+    // Typing renames the sections; clearing the box brings the recent ones back.
+    await searchInput(page).fill(agent.name.toLowerCase())
+    await expect(searchSection(page, 'Agents')).toBeVisible()
+    await expect(searchAgentRow(page, agent)).toBeVisible()
+    await expect(recentAgents).toHaveCount(0)
+    await searchInput(page).fill('')
+    await expect(recentSessions).toBeVisible()
 
-    const expand = agentRow.getByTestId('search-agent-expand')
-    await expect(expand).toBeVisible({ timeout: 15000 })
-    await expect(sessionRow).not.toBeVisible()
-
-    await agentRow.hover()
-    await page.keyboard.press('ArrowRight')
-    await expect(sessionRow).toBeVisible()
-
-    await page.keyboard.press('ArrowLeft')
-    await expect(sessionRow).not.toBeVisible()
-
-    await expand.click()
-    await expect(sessionRow).toBeVisible()
-
+    const sessionRow = recentSessions.getByTestId('search-session-row').first()
+    const agentSlug = await sessionRow.getAttribute('data-agent-slug')
+    const sessionId = await sessionRow.getAttribute('data-session-id')
     await sessionRow.hover()
     await page.keyboard.press('Enter')
     await expect(searchInput(page)).not.toBeVisible()
-    await expectSessionRoute(page, agent, session)
+    await expect(page).toHaveURL(new RegExp(`/agents/${agentSlug}/sessions/${sessionId}$`))
   })
 
   test('API: unmatched query shows an empty state without stale rows', async ({ page }, testInfo) => {

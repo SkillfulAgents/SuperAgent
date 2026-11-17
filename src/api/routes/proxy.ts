@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { routePath } from 'hono/route'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
@@ -13,6 +13,7 @@ import { awaitReauth } from '@shared/lib/proxy/reauth-request'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
+import { getSettings } from '@shared/lib/config/settings'
 import { writeProxyAuditEntry, type ProxyAuditEntry } from '@shared/lib/proxy/audit'
 import { hasDotSegment } from '@shared/lib/proxy/rules/patterns'
 import { buildApiRuleInput } from '@shared/lib/proxy/rules/input'
@@ -34,11 +35,16 @@ import { awaitReview } from '@shared/lib/proxy/review-request'
 
 const proxy = new Hono()
 
-proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
+interface ProxyTarget {
+  agentSlug: string
+  accountId: string
+  rest: string
+  /** The session the call came from, when its URL named one. */
+  callerSessionId?: string
+}
+
+async function handleProxyRequest(c: Context, { agentSlug, accountId, rest, callerSessionId }: ProxyTarget) {
   const startTime = Date.now()
-  const agentSlug = c.req.param('agentSlug')
-  const accountId = c.req.param('accountId')
-  const rest = c.req.param('rest') || ''
 
   // Stamp elapsed time (request entry → now) onto every audit entry. Every exit
   // path logs through this, so the API Logs Duration column is always populated.
@@ -161,6 +167,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       accountId,
       toolkit: account!.toolkitSlug,
       accountStatus: status,
+      callerSessionId,
     }, c.req.raw.signal)
     if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementAccountId: wait.replacementId }
     // A person pressing Dismiss is a decision the agent must respect; a
@@ -357,6 +364,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         endpointAmbiguous: policyResult.endpointAmbiguous,
         requestBody: requestBodyPreview(textBody),
         ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
+        callerSessionId,
       }, raise), {
         signal: c.req.raw.signal,
         // When an "always" decision on another card changes the policy, this
@@ -440,87 +448,100 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   const queryString = new URL(c.req.url).search
   const targetUrl = `https://${targetHost}/${target.encodedPath}${queryString}`
 
-  // 5. Verify remote connection status before forwarding
-  let provider = getAccountProviderByName(account.providerName)
-
-  let remoteConnection: Awaited<ReturnType<typeof provider.getConnection>> | null = null
-  try {
-    remoteConnection = await provider.getConnection(
-      account.providerConnectionId,
-      account.toolkitSlug,
-    )
-  } catch (statusCheckErr) {
-    console.warn('[proxy] Remote status check failed, proceeding with request:', statusCheckErr)
-  }
-
-  if (remoteConnection && remoteConnection.status !== 'ACTIVE') {
-    const newStatus = remoteConnection.status === 'EXPIRED' ? 'expired' as const : 'revoked' as const
-    try {
-      await db.update(connectedAccounts)
-        .set({ status: newStatus, updatedAt: new Date() })
-        .where(eq(connectedAccounts.id, accountId))
-    } catch (statusUpdateErr) {
-      console.warn('[proxy] Failed to persist non-active account status:', statusUpdateErr)
+  // 5-6 take the provider's credentials and the platform connection from one
+  // settings read: the status check and the forward both use them, under the
+  // account owner's attribution built from the same read. A wait for
+  // re-authentication (it can last minutes) takes them again.
+  const takeCallContext = async () => {
+    const settings = await getSettings()
+    const provider = getAccountProviderByName(account.providerName)
+    return {
+      provider,
+      credentials: provider.credentialsFrom(settings),
+      owner: await attribution.fromResourceCreator(account.userId, settings),
     }
-
-    const reauthResult = await holdForReauth(newStatus)
-    if (!reauthResult.ok) {
-      return reauthFailureResponse(reauthResult, newStatus, (errorMessage, statusCode) =>
-        audit({ statusCode, errorMessage }))
-    }
-    provider = getAccountProviderByName(account.providerName)
   }
+  let call = await takeCallContext()
 
-  // 6. Forward via account provider (handles token retrieval/proxy internally)
+  // 5. Forward via account provider (handles token retrieval/proxy internally)
   const requestBody = await readBody()
 
   const forwardRequest = async () => runWithAttribution(
-      await attribution.fromResourceCreator(account.userId),
-      () => provider.makeApiCall({
+      call.owner,
+      () => call.provider.makeApiCall({
         providerConnectionId: account.providerConnectionId,
         toolkitSlug: account.toolkitSlug,
         targetUrl,
         method,
         headers: c.req.raw.headers,
         body: requestBody,
+        credentials: call.credentials,
       }),
     )
 
-  let response: Response
+  let response: Response | null = null
+  let forwardError: unknown
   try {
     response = await forwardRequest()
   } catch (error) {
-    const isTokenError = String(error).includes('token') || String(error).includes('Token')
+    forwardError = error
+  }
+
+  // 6. Verify remote connection status, only when the forward failed or the
+  // upstream refused the credentials: asking before every call cost one
+  // provider request per call for an answer that is nearly always "active".
+  if (!response || response.status === 401 || response.status === 403) {
+    const isTokenError = !response && (String(forwardError).includes('token') || String(forwardError).includes('Token'))
     const errorLabel = isTokenError ? 'Failed to fetch access token' : 'Proxy request failed'
 
-    if (isTokenError) {
+    let remoteConnection: Awaited<ReturnType<typeof call.provider.getConnection>> | null = null
+    try {
+      remoteConnection = await runWithAttribution(call.owner, () => call.provider.getConnection(
+        account.providerConnectionId,
+        account.toolkitSlug,
+        call.credentials,
+      ))
+    } catch (statusCheckErr) {
+      console.warn('[proxy] Remote status check failed:', statusCheckErr)
+    }
+
+    // A token that could not be fetched means an expired account when the
+    // provider does not say otherwise.
+    let newStatus: 'expired' | 'revoked' | null = isTokenError ? 'expired' : null
+    if (remoteConnection && remoteConnection.status !== 'ACTIVE') {
+      newStatus = remoteConnection.status === 'EXPIRED' ? 'expired' : 'revoked'
+    }
+
+    if (newStatus) {
+      // The refused answer is not sent: the call is made again after the reconnect.
+      await response?.body?.cancel().catch(() => {})
       try {
         await db.update(connectedAccounts)
-          .set({ status: 'expired', updatedAt: new Date() })
+          .set({ status: newStatus, updatedAt: new Date() })
           .where(eq(connectedAccounts.id, accountId))
       } catch (statusUpdateErr) {
-        console.warn('[proxy] Failed to persist expired account status:', statusUpdateErr)
+        console.warn('[proxy] Failed to persist non-active account status:', statusUpdateErr)
       }
 
-      const reauthResult = await holdForReauth('expired')
+      const reauthResult = await holdForReauth(newStatus)
       if (!reauthResult.ok) {
-        return reauthFailureResponse(reauthResult, 'expired', (errorMessage, statusCode) =>
+        return reauthFailureResponse(reauthResult, newStatus, (errorMessage, statusCode) =>
           audit({ statusCode, errorMessage }))
       }
-      provider = getAccountProviderByName(account.providerName)
+      call = await takeCallContext()
       try {
         response = await forwardRequest()
       } catch (retryError) {
         await audit({ errorMessage: `${errorLabel} after re-authentication: ${retryError}` })
         return c.json(
-          { error: errorLabel, details: String(retryError), accountStatus: 'expired' },
+          { error: errorLabel, details: String(retryError), accountStatus: newStatus },
           502,
         )
       }
-    } else {
-      await audit({ errorMessage: `${errorLabel}: ${error}` })
+    } else if (!response) {
+      await audit({ errorMessage: `${errorLabel}: ${forwardError}` })
       return c.json(
-        { error: errorLabel, details: String(error) },
+        { error: errorLabel, details: String(forwardError) },
         502
       )
     }
@@ -531,6 +552,24 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     ...(response.status >= 400 ? { errorMessage: `Upstream returned ${response.status}` } : {}),
   })
   return response
-})
+}
+
+// A container that knows which session made a call puts it in the path, so a
+// card the call raises (re-auth, API review) shows in that session only. The
+// session is not an auth input: the token and account checks are the same.
+// Registered before the route below, which would also match it with `s` read
+// as the account id.
+proxy.all('/:agentSlug/s/:sessionId/:accountId/:rest{.+}', (c) => handleProxyRequest(c, {
+  agentSlug: c.req.param('agentSlug'),
+  accountId: c.req.param('accountId'),
+  rest: c.req.param('rest'),
+  callerSessionId: c.req.param('sessionId'),
+}))
+
+proxy.all('/:agentSlug/:accountId/:rest{.+}', (c) => handleProxyRequest(c, {
+  agentSlug: c.req.param('agentSlug'),
+  accountId: c.req.param('accountId'),
+  rest: c.req.param('rest'),
+}))
 
 export default proxy

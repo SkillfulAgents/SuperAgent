@@ -11,6 +11,8 @@ export const volumesEnvSchema = z.array(z.object({
   ignoreSize: z.boolean().optional(),
   dirCacheSeconds: z.number().int().positive().optional(),
   readOnly: z.boolean().optional(),
+  sourceLabel: z.string().optional(),
+  agentNote: z.string().optional(),
 }));
 
 export type ContainerMount = z.infer<typeof volumesEnvSchema>[number];

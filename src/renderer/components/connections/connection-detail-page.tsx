@@ -54,7 +54,7 @@ export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Con
 
       {/* Header */}
       <div className="flex items-center gap-3">
-        <div className="h-10 w-10 rounded-md bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
+        <div className="h-10 w-10 rounded-control bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
           <ServiceIcon
             slug={row.iconSlug}
             fallback={row.iconFallback}
@@ -103,7 +103,7 @@ export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Con
           ) : (
             <section className="space-y-2 min-w-0">
               <h3 className="text-xs font-normal text-muted-foreground">Permissions</h3>
-              <div className="rounded-xl border bg-background py-2 overflow-hidden">
+              <div className="rounded-card border bg-background py-2 overflow-hidden">
                 {row.type === 'mcp' ? (
                   <div className="px-3">
                     <ToolPolicyEditorBody

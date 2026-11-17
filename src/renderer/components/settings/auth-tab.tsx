@@ -110,7 +110,7 @@ export function AuthTab({ hideLocalAuthSections = false }: AuthTabProps) {
                     {domains.map((domain) => (
                       <div
                         key={domain}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded border bg-muted/30 text-sm"
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-item border bg-muted/30 text-sm"
                       >
                         <span className="flex-1 font-mono text-xs truncate">{domain}</span>
                         <Button
@@ -381,7 +381,7 @@ export function AuthTab({ hideLocalAuthSections = false }: AuthTabProps) {
             {origins.map((origin) => (
               <div
                 key={origin}
-                className="flex items-center gap-2 px-3 py-1.5 rounded border bg-muted/30 text-sm"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-item border bg-muted/30 text-sm"
               >
                 <Globe className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <span className="flex-1 font-mono text-xs truncate">{origin}</span>

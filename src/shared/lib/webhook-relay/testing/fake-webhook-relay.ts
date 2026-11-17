@@ -38,6 +38,7 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
   let snapshot = AVAILABLE
 
   return {
+    id: 'webhook-relay',
     kind: 'platform',
     consumers,
     log,

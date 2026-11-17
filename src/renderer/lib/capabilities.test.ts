@@ -14,6 +14,8 @@ import {
   listsRecentFiles,
   offersComputerUseSettings,
   offersPrivateSkillsets,
+  signsInWithApple,
+  signsInWithAuthSession,
   usesHostFolderPaths,
 } from './capabilities'
 import { _setFactsForTest } from './facts'
@@ -134,6 +136,20 @@ describe('what the App Sandbox leaves out', () => {
     _setFactsForTest({ client: store, server: { os: 'linux', distribution: 'deployment' } })
     expect(keepsMacAwake()).toBe(false)
     expect(addsToDock()).toBe(false)
+  })
+
+  it('signs in to the Gamut account in a sheet in the Store build only, whichever server it drives', () => {
+    asStoreBuild()
+    expect(signsInWithAuthSession()).toBe(true)
+    expect(signsInWithApple()).toBe(true)
+    _setFactsForTest({ client: store, server: { os: 'linux', distribution: 'deployment' } })
+    expect(signsInWithAuthSession()).toBe(true)
+
+    _setFactsForTest({ client: direct, server: { os: 'darwin', distribution: 'direct' } })
+    expect(signsInWithAuthSession()).toBe(false)
+    expect(signsInWithApple()).toBe(false)
+    _setFactsForTest({ client: { shell: 'browser', os: null, distribution: null }, server: { os: 'darwin', distribution: 'mac-app-store' } })
+    expect(signsInWithAuthSession()).toBe(false)
   })
 
   it('lists recent files only where the bridge has them and the sandbox doesn’t hide them', () => {

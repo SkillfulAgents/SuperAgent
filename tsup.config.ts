@@ -48,7 +48,6 @@ const lazyDashboardSdkPlugin: Plugin = {
 // Stay in node_modules: natives, Electron, and packages that patch require/import.
 const externalExact = new Set([
   'better-sqlite3',
-  '@skillful-agents/agent-computer',
   'electron',
   'heic-decode',
   'jpeg-js',

@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { createAgent, deleteAgentViaApi, uniqueName } from '../helpers/agents'
 import { mockDropboxVolumes } from '../helpers/dropbox-volumes'
+import { openHomeSection } from '../helpers/agent-home'
 
 test.setTimeout(60_000)
 
@@ -39,6 +40,7 @@ test('creates and attaches the Dropbox root from Add Drive', async ({ page, requ
   try {
     const state = await mockDropboxVolumes(page, agent.slug)
     await page.goto(`/agents/${agent.slug}`)
+    await openHomeSection(page, 'Drives')
     await page.getByRole('button', { name: 'Add Drive', exact: true }).click()
     await chooseAccount(page)
     await page.getByRole('button', { name: 'Use all of Dropbox' }).click()
@@ -48,6 +50,7 @@ test('creates and attaches the Dropbox root from Add Drive', async ({ page, requ
     await expect(page.getByText('Dropbox · /', { exact: true })).toBeVisible()
     expect(state.created).toEqual([{ type: 'dropbox', config: { accountId: 'dropbox-test', path: '' }, name: 'Dropbox', visibility: 'public' }])
     expect(state.mounts).toHaveLength(1)
+    await openHomeSection(page, 'Drives')
     await page.getByTestId('add-mount-menu').click()
     const create = page.getByRole('menuitem', { name: 'New Drive' })
     await expect(create).toBeVisible()

@@ -109,7 +109,7 @@ describe('configured issuer pin', () => {
   it.each(['redirect', 'id-token'] as const)('checks discovery recovered on the same %s request', async (mode) => {
     configureProvider(WRONG_ISSUER)
     oidc.state.discoveryUnavailable = true
-    const context = await getAuth().$context
+    const context = await (await getAuth()).$context
     expect(context.socialProviders).toHaveLength(0)
     expect(oidc.state.discoveryRequests).toBe(0)
     const unavailable = await signIn(mode)
@@ -125,7 +125,7 @@ describe('configured issuer pin', () => {
 
   it('also enforces the pin on server-side SSO initiation', async () => {
     configureProvider(WRONG_ISSUER)
-    await expect(getAuth().api.signInSocial({
+    await expect((await getAuth()).api.signInSocial({
       body: { provider: 'platform', callbackURL: `${BASE}/` },
     })).rejects.toMatchObject({ body: { code: 'OIDC_ISSUER_MISMATCH' } })
   })

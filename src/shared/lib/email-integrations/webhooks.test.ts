@@ -26,6 +26,7 @@ vi.mock('../webhook-relay', async (importOriginal) => ({
 }))
 
 import { createAgentIntegration, getAgentIntegration } from '../services/agent-integration-service'
+import { captureException } from '../error-reporting'
 import { verificationProfileSchema } from '../services/webhook-endpoint-schema'
 import { releaseIntegrationTransport } from '../agent-integrations/relay-transport'
 import { createFakeWebhookRelay, type FakeWebhookRelay } from '../webhook-relay/testing/fake-webhook-relay'
@@ -117,13 +118,53 @@ describe('ensureEmailWebhook', () => {
     expect(relayEndpoints.create).toHaveBeenCalledOnce()
   })
 
-  it('shares one endpoint between mailboxes in the same scope, even when they connect together', async () => {
+  it('reuses an existing endpoint between mailboxes in the same scope', async () => {
     const [a, b] = await Promise.all([install(MAILBOX_A), install(MAILBOX_B)])
-    const [webhookA, webhookB] = await Promise.all([ensureEmailWebhook({ id: a, createdByUserId: null }), ensureEmailWebhook({ id: b, createdByUserId: null })])
+    const webhookA = await ensureEmailWebhook({ id: a, createdByUserId: null })
+    const webhookB = await ensureEmailWebhook({ id: b, createdByUserId: null })
 
     expect(relayEndpoints.create).toHaveBeenCalledOnce()
     expect(webhookB).toEqual(webhookA)
     expect(await storedConfig(b)).toMatchObject({ relay: webhookA!.relay, webhookSecret: webhookA!.secret })
+  })
+
+  it('keeps valid mailbox bindings when concurrent first connections mint redundant endpoints', async () => {
+    const ids = await Promise.all([install(MAILBOX_A), install(MAILBOX_B)])
+    const webhooks = await Promise.all(ids.map(id => ensureEmailWebhook({ id, createdByUserId: null })))
+    const created = await Promise.all(relayEndpoints.create.mock.results.map(result => result.value))
+
+    expect(created.length).toBeGreaterThanOrEqual(1)
+    expect(created.length).toBeLessThanOrEqual(2)
+    for (const [index, id] of ids.entries()) {
+      const webhook = webhooks[index]!
+      expect(await storedConfig(id)).toMatchObject({ relay: webhook.relay, webhookSecret: webhook.secret })
+      const endpointIndex = created.findIndex(endpoint => endpoint.id === webhook.relay.endpointId)
+      expect(created[endpointIndex]).toMatchObject({ url: webhook.relay.url })
+      expect(relayEndpoints.create.mock.calls[endpointIndex]).toEqual([
+        webhook.relay.scope, { name: 'Email inboxes', verification: emailVerificationProfile(webhook.secret) },
+      ])
+      expect(await ensureEmailWebhook({ id, createdByUserId: null })).toEqual(webhook)
+    }
+    expect(relayEndpoints.create).toHaveBeenCalledTimes(created.length)
+    expect(relayEndpoints.disable).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('keeps the winning binding and cleans up the unused endpoint (cleanup fails: %s)', async (cleanupFails) => {
+    const id = await install(MAILBOX_A)
+    let winner: EmailWebhook | null = null
+    relayEndpoints.create.mockImplementationOnce(async () => {
+      winner = await ensureEmailWebhook({ id, createdByUserId: null })
+      return { id: 'whep_unused', url: 'https://relay.test/v1/hooks/whep_unused', name: 'Email inboxes', status: 'active' }
+    })
+    const error = new Error('relay unavailable')
+    if (cleanupFails) relayEndpoints.disable.mockRejectedValueOnce(error)
+
+    const webhook = await ensureEmailWebhook({ id, createdByUserId: null })
+    expect(webhook).toEqual(winner)
+    expect(await storedConfig(id)).toMatchObject({ relay: webhook!.relay, webhookSecret: webhook!.secret })
+    expect(relayEndpoints.create).toHaveBeenCalledTimes(2)
+    expect(relayEndpoints.disable).toHaveBeenCalledExactlyOnceWith('sub_owner', 'whep_unused')
+    if (cleanupFails) expect(captureException).toHaveBeenCalledWith(error, expect.objectContaining({ extra: { integrationId: id } }))
   })
 
   it('mints a separate endpoint for a mailbox claimed under another scope', async () => {

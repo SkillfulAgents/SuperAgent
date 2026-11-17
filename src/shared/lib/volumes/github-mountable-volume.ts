@@ -1,10 +1,13 @@
 import path from 'node:path'
+import { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import type { VolumeAttention } from '@shared/lib/types/mount'
 import { githubBrowseSchema, type GithubVolumeConfig } from './github-schema'
-import { githubBranches, githubFolder, githubHead, githubRepo, githubRepos, requireGithubAccount } from './github-client'
+import { githubBranches, githubCreateRepo, githubFolder, githubHead, githubRepo, githubRepos, requireGithubAccount } from './github-client'
 import { githubSync } from './github-sync'
-import { volumeFolderBrowser } from './volume-folder-browser'
+import { GITHUB_PUSH_BYTES } from './github-merge'
+import { volumeFolderBrowser, volumeFolderCreator } from './volume-folder-browser'
+import { volumeFolderNameSchema } from './volume-folders-schema'
 import { guardDelete, guardedUpload } from './guarded-upload'
 
 export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfig> {
@@ -21,6 +24,13 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
       .map(entry => ({ id: entry.path, name: path.posix.basename(entry.path) })) }
   })
 
+  // Git has no empty folders, so the one thing the picker makes is a repository, at its top level.
+  static readonly createFolder = volumeFolderCreator(z.object({ accountId: z.string().min(1), name: volumeFolderNameSchema }), async ({ accountId, name }, viewer) => {
+    await requireGithubAccount(accountId, viewer)
+    const repo = await githubCreateRepo(accountId, name)
+    return { folder: { id: String(repo.id), name: `${repo.owner.login}/${repo.name}` } }
+  })
+
   readonly type = 'github'
   readonly cacheMode = 'local'
   readonly sync
@@ -33,6 +43,11 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
   override get attention(): VolumeAttention | null { return this.sync.attention }
 
   override get sourceLabel(): string { return `GitHub · ${this.config.owner}/${this.config.repo}@${this.config.branch}${this.config.path ? `/${this.config.path}` : ''}` }
+
+  override get agentNote(): string {
+    return 'GitHub drives commit and push changes straight to their branch. ' +
+      `Files over ${GITHUB_PUSH_BYTES / 1000} KB, empty folders, and the repository's .github/workflows/ stay local.`
+  }
 
   async list(name: string): Promise<VolumeEntry[]> {
     await this.sync.fresh()

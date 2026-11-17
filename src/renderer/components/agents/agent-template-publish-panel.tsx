@@ -225,7 +225,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
                   aria-checked={isSelected}
                   disabled={!publishable}
                   className={cn(
-                    'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left',
+                    'flex w-full items-center gap-3 rounded-item px-2 py-2 text-left',
                     publishable ? 'hover:bg-accent' : 'cursor-not-allowed opacity-70',
                   )}
                   onClick={() => setSelectedSkillsetId(ss.id)}

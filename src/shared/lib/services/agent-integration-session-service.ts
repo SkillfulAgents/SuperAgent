@@ -5,7 +5,7 @@
  * externalChatId field names are retained for storage and API compatibility.
  */
 
-import { eq, and, isNull, desc } from 'drizzle-orm'
+import { eq, and, isNull, isNotNull, ne, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { chatIntegrationSessions, chatIntegrations } from '@shared/lib/db/schema'
@@ -72,9 +72,10 @@ export async function listAgentIntegrationSessions(integrationId: string): Promi
  * List only the ACTIVE (non-archived) sessions for an integration.
  *
  * Used by the reconnect/restore path so archived/cleared/timed-out sessions are
- * not re-subscribed for SSE forwarding (SUP-233). `listAgentIntegrationSessions`
- * intentionally returns archived rows too — the UI/x-agent surfaces filter at
- * the call site — so it is left unchanged.
+ * not re-subscribed for SSE forwarding (SUP-233), and by the x-agent chat routes
+ * and the integration inventory, which show active chats only.
+ * `listAgentIntegrationSessions` returns archived rows too, for the callers
+ * that need every row (the sessions route of the UI).
  */
 export async function listActiveAgentIntegrationSessions(integrationId: string): Promise<AgentIntegrationSession[]> {
   return db.select().from(chatIntegrationSessions)
@@ -136,20 +137,21 @@ export async function touchAgentIntegrationSession(id: string): Promise<boolean>
  * Returns the active session, or null if there is none (or it was rotated).
  *
  * When a session is rotated, it is archived and the returned null signals
- * the caller to create a new session. The archived session's ID is returned
- * via `onArchive` so the caller can do additional cleanup (e.g. SSE teardown).
+ * the caller to create a new session. The archived row's ID and its runtime
+ * session ID are passed to `onArchive` so the caller can clean up (e.g. SSE
+ * teardown) and carry the conversation into the new session.
  */
 export async function resolveActiveSession(
   integrationId: string,
   externalId: string,
   timeoutHours: number | null | undefined,
-  onArchive?: (archivedSessionId: string) => void,
+  onArchive?: (archivedRowId: string, archivedSessionId: string) => void,
 ): Promise<AgentIntegrationSession | null> {
   const session = await getAgentIntegrationSession(integrationId, externalId)
   if (!session) return null
 
   if (isSessionTimedOut(session, timeoutHours)) {
-    onArchive?.(session.id)
+    onArchive?.(session.id, session.sessionId)
     await archiveAgentIntegrationSession(session.id)
     return null
   }
@@ -172,11 +174,18 @@ function isSessionTimedOut(
  * Falls back to undefined if no prior sessions exist.
  */
 export async function getLastDisplayName(integrationId: string, externalId: string): Promise<string | undefined> {
-  const allSessions = await listAgentIntegrationSessions(integrationId)
-  return allSessions
-    .filter((s) => s.externalChatId === externalId && s.displayName)
-    .sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0]
-    ?.displayName ?? undefined
+  const [latest] = await db.select({ displayName: chatIntegrationSessions.displayName })
+    .from(chatIntegrationSessions)
+    .where(and(
+      eq(chatIntegrationSessions.integrationId, integrationId),
+      eq(chatIntegrationSessions.externalChatId, externalId),
+      isNotNull(chatIntegrationSessions.displayName),
+      ne(chatIntegrationSessions.displayName, ''),
+    ))
+    .orderBy(desc(chatIntegrationSessions.updatedAt), desc(chatIntegrationSessions.createdAt))
+    .limit(1)
+    .all()
+  return latest?.displayName ?? undefined
 }
 
 // ── Archive ────────────────────────────────────────────────────────────

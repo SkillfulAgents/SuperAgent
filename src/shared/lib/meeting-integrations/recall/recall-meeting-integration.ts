@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { AgentIntegrationRecord } from '../../agent-integrations/types'
 import type { MeetingBotHost, MeetingBotJoinRequest, MeetingBotStatus, MeetingRecordingLink } from '../bot-host'
-import type { MeetingIntegrationSettings, MeetingParticipantEvent } from '../schemas'
+import type { MeetingIntegrationSettings, MeetingParticipantEvent, MeetingScreenFrame } from '../schemas'
 import { MeetingAgentIntegration, MEETING_RECORDING_RETENTION_HOURS } from '../meeting-agent-integration'
 import { RecallApiError, RecallClient, type RecallBot } from './client'
 import { parseRecallConfig, type RecallConfig } from './config'
@@ -34,8 +34,10 @@ const RECALL_RECORDING_LINK_TTL_MS = 6 * 60 * 60 * 1000
 
 export function recallRecordingLink(bot: RecallBot, now = Date.now()): MeetingRecordingLink | null {
   for (const recording of bot.recordings) {
-    const url = recording.media_shortcuts?.video_mixed?.data?.download_url
-    if (!url || recording.media_shortcuts?.video_mixed?.status?.code !== 'done') continue
+    // Calls with frames keep their audio as an MP3; older calls as an audio-only MP4.
+    const media = recording.media_shortcuts?.audio_mixed ?? recording.media_shortcuts?.video_mixed
+    const url = media?.data?.download_url
+    if (!url || media?.status?.code !== 'done') continue
     const retained = recording.expires_at ? Date.parse(recording.expires_at) : NaN
     if (Number.isFinite(retained) && retained <= now) continue
     return { url, linkExpiresAt: now + RECALL_RECORDING_LINK_TTL_MS }
@@ -58,6 +60,10 @@ export class RecallBotHost implements MeetingBotHost {
   constructor(private readonly client: RecallClient) {}
 
   async createBot(request: MeetingBotJoinRequest): Promise<{ botId: string }> {
+    const realtimeEndpoints = [
+      ...(request.eventsUrl ? [{ type: 'webhook', url: request.eventsUrl, events: RECALL_PARTICIPANT_EVENTS }] : []),
+      ...(request.framesUrl ? [{ type: 'websocket', url: request.framesUrl, events: [RECALL_FRAME_EVENT] }] : []),
+    ]
     const bot = await this.client.createBot({
       meeting_url: request.meetingUrl,
       bot_name: request.botName,
@@ -66,12 +72,14 @@ export class RecallBotHost implements MeetingBotHost {
       variant: { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' },
       // The bot records the room's mixed audio: Recall only reports who is in
       // the call (participant events) while it records, and the recording is
-      // what the integration page later links to. Video is not captured, and
-      // the audio is deleted after the retention window. The family discloses
-      // this in the call.
+      // what the integration page later links to. The audio is deleted after
+      // the retention window. The family discloses this in the call. With a
+      // frames URL the bot also streams shared screens there; no meeting video
+      // is kept.
       recording_config: {
         video_mixed_layout: 'audio_only', retention: { type: 'timed', hours: MEETING_RECORDING_RETENTION_HOURS },
-        ...(request.eventsUrl ? { realtime_endpoints: [{ type: 'webhook', url: request.eventsUrl, events: RECALL_PARTICIPANT_EVENTS }] } : {}),
+        ...(request.framesUrl ? RECALL_FRAMES_RECORDING : {}),
+        ...(realtimeEndpoints.length > 0 ? { realtime_endpoints: realtimeEndpoints } : {}),
       },
       automatic_leave: RECALL_AUTOMATIC_LEAVE,
     })
@@ -80,7 +88,6 @@ export class RecallBotHost implements MeetingBotHost {
   async getBotStatus(botId: string): Promise<MeetingBotStatus> { return recallBotStatus(await this.client.getBot(botId)) }
   leaveCall(botId: string): Promise<void> { return this.client.leaveCall(botId) }
   sendChatMessage(botId: string, message: string): Promise<void> { return this.client.sendChatMessage(botId, message) }
-  parseEvent(body: unknown): MeetingParticipantEvent | null { return recallParticipantEvent(body) }
   async recordingLink(botId: string): Promise<MeetingRecordingLink | null> {
     try {
       return recallRecordingLink(await this.client.getBot(botId))
@@ -93,8 +100,11 @@ export class RecallBotHost implements MeetingBotHost {
   }
 }
 
-/** Real-time webhook events the host asks Recall for. Speech events can be added here when the room needs them. */
-export const RECALL_PARTICIPANT_EVENTS = ['participant_events.join', 'participant_events.leave', 'participant_events.update'] as const
+/** Real-time webhook events the host asks Recall for. Speech events say who is talking, which names the lines of the meeting's transcript. */
+export const RECALL_PARTICIPANT_EVENTS = [
+  'participant_events.join', 'participant_events.leave', 'participant_events.update',
+  'participant_events.speech_on', 'participant_events.speech_off',
+] as const
 
 const recallParticipantEventSchema = z.object({
   event: z.string(),
@@ -124,9 +134,40 @@ export function recallParticipantEvent(body: unknown): MeetingParticipantEvent |
   return { kind, participant: { id: String(participant.id), name: participant.name?.trim() || 'Unknown participant', isHost: participant.is_host === true } }
 }
 
+/**
+ * Frames of shared screens. Recall emits none with an audio_only layout, so
+ * the bot uses a gallery layout but keeps no meeting video (no mixed MP4) and
+ * keeps the call's audio as an MP3 instead. The platform proxy enforces the
+ * same settings. Frames arrive as PNGs over a websocket, cameras included.
+ */
+export const RECALL_FRAMES_RECORDING = {
+  video_mixed_layout: 'gallery_view_v2', video_mixed_mp4: null, audio_mixed_mp3: {}, video_separate_png: {},
+} as const
+export const RECALL_FRAME_EVENT = 'video_separate_png.data'
+
+const recallFrameEventSchema = z.object({
+  event: z.literal(RECALL_FRAME_EVENT),
+  data: z.object({
+    data: z.object({
+      buffer: z.string(),
+      type: z.string(),
+      timestamp: z.object({ absolute: z.string() }).nullable().optional(),
+    }),
+  }),
+})
+
+/** Recall's per-participant video frame, kept only when it is a shared screen. */
+export function recallScreenFrame(message: unknown): MeetingScreenFrame | null {
+  const parsed = recallFrameEventSchema.safeParse(message)
+  if (!parsed.success || parsed.data.data.data.type !== 'screenshare') return null
+  const { buffer, timestamp } = parsed.data.data.data
+  const at = new Date(timestamp?.absolute ?? Date.now())
+  return { png: Buffer.from(buffer, 'base64'), at: Number.isNaN(at.getTime()) ? new Date() : at }
+}
+
 /** The host for one installation, over whatever transport this deployment has; null when it has none. */
-export function recallBotHostFor(record: Pick<AgentIntegrationRecord, 'agentSlug' | 'createdByUserId'>): RecallBotHost | null {
-  const transport = resolveRecallTransport()
+export async function recallBotHostFor(record: Pick<AgentIntegrationRecord, 'agentSlug' | 'createdByUserId'>): Promise<RecallBotHost | null> {
+  const transport = await resolveRecallTransport()
   return transport ? new RecallBotHost(new RecallClient(transport, record)) : null
 }
 
@@ -136,12 +177,13 @@ export class RecallMeetingIntegration extends MeetingAgentIntegration {
   private readonly config: RecallConfig | null
   protected readonly bots: MeetingBotHost
 
+  /** `host`: the deployment's bot host (`recallBotHostFor`); without one, every operation refuses. */
   constructor(record: AgentIntegrationRecord, host?: MeetingBotHost) {
     super(record)
     let config: RecallConfig | null = null
     try { config = parseRecallConfig(record.config) } catch { config = null }
     this.config = config
-    this.bots = host ?? recallBotHostFor(record) ?? UNREACHABLE_HOST
+    this.bots = host ?? UNREACHABLE_HOST
   }
   protected isAvailable(): boolean { return this.bots !== UNREACHABLE_HOST }
   protected configuredSettings(): MeetingIntegrationSettings { return this.config ?? {} }
@@ -153,5 +195,4 @@ const UNREACHABLE_HOST: MeetingBotHost = {
   async getBotStatus() { throw new Error('Meetings are not available on this deployment.') },
   async leaveCall() { throw new Error('Meetings are not available on this deployment.') },
   async sendChatMessage() { throw new Error('Meetings are not available on this deployment.') },
-  parseEvent: () => null,
 }

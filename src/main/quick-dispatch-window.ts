@@ -10,6 +10,7 @@ import {
   loadQuickDispatchGlass,
   quickDispatchGlassAvailable,
 } from './quick-dispatch-glass'
+import { releaseQuickDispatchCapture } from './quick-dispatch-capture'
 
 // The quick-dispatch launcher: a frameless, translucent, always-on-top panel
 // (Spotlight/Raycast style) that floats over whatever the user is doing. It is
@@ -155,6 +156,9 @@ function buildQuickDispatchWindow(): BrowserWindow {
   // survives. Tell the renderer to reset when it hides so the next open is
   // fresh — fires for every dismiss path (Esc, blur, post-dispatch).
   win.on('hide', () => {
+    // A screenshot still flying into the composer has nowhere to land, and the
+    // overlay kept for the next one goes with the panel.
+    releaseQuickDispatchCapture()
     if (!win.isDestroyed()) win.webContents.send('quick-dispatch:reset')
   })
 

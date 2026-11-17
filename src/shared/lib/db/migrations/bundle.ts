@@ -711,5 +711,86 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1793208365492,
     "hash": "2c09aa6052f6f77e0b64de33853598c4420a21aa2d310d299f44b11b1693111d"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `chat_integrations` ADD `version` integer DEFAULT 0 NOT NULL;",
+      "\n-- Hand-written: drizzle-kit does not model triggers. Every update of a row that\n-- does not raise its version itself moves it by one, in the same statement, so\n-- no writer can leave a changed row at an old version. A migration that rebuilds\n-- this table drops the trigger; integration-row-version.test.ts fails until it\n-- is created again.\nCREATE TRIGGER `chat_integrations_version_bump` AFTER UPDATE ON `chat_integrations` FOR EACH ROW WHEN NEW.`version` <= OLD.`version` BEGIN UPDATE `chat_integrations` SET `version` = OLD.`version` + 1 WHERE `id` = NEW.`id`; END;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793838676102,
+    "hash": "9bbcfdae2f84b66afa662edee0c052af30c5fabdec6ad3169fec8f0201a0c0fb"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `app_records` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` text NOT NULL,\n\t`revision` integer NOT NULL,\n\t`updated_at` integer NOT NULL\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793840639365,
+    "hash": "773815730f63f226f64dd501cff54a9a75589b604f237b97f210d3a108d5faa5"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `team_directories` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`provider` text NOT NULL,\n\t`tenant_id` text NOT NULL,\n\t`tenant_name` text NOT NULL,\n\t`credentials` text NOT NULL,\n\t`revision` integer DEFAULT 1 NOT NULL,\n\t`status` text DEFAULT 'active' NOT NULL,\n\t`error_message` text,\n\t`created_by_user_id` text,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`created_by_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE UNIQUE INDEX `team_directories_provider_tenant_unique` ON `team_directories` (`provider`,`tenant_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794169367052,
+    "hash": "dd3f35ee6a917dce7b6bf20edbada511911eaca7a2bd40917a23f3e3c7b90ab5"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `user` ADD `status` text DEFAULT 'active' NOT NULL;",
+      "\nALTER TABLE `user` ADD `invited_by_user_id` text;",
+      "\nALTER TABLE `user` ADD `directory_provider` text;",
+      "\nALTER TABLE `user` ADD `directory_tenant_id` text;",
+      "\nALTER TABLE `user` ADD `directory_remote_id` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794181010721,
+    "hash": "60f97691dde6e559399e2e3d2f0db962c3d13672349219e264aa7a3489727339"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `team_directories` ADD `provisioning_credentials` text;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_revision` integer DEFAULT 0 NOT NULL;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_status` text;",
+      "\nALTER TABLE `team_directories` ADD `provisioning_error` text;",
+      "\nALTER TABLE `team_directories` ADD `directory_app` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794182726903,
+    "hash": "4a2c26f37c2e6aee059d42d42d98e38f4513afa1fdefee3f9600896ec4151401"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_sessions` (\n\t`agent_slug` text NOT NULL,\n\t`session_id` text NOT NULL,\n\t`metadata` text,\n\t`transcript_mtime_ms` real,\n\t`transcript_birthtime_ms` real,\n\t`transcript_size` integer,\n\tPRIMARY KEY(`agent_slug`, `session_id`)\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1794261056427,
+    "hash": "00ee07e7ef2c3cfc242f056c6d8da8fd74ad5f00a0809ec22bf057f0b283710a"
+  },
+  {
+    "sql": [
+      "CREATE INDEX `chat_integration_sessions_session_id_idx` ON `chat_integration_sessions` (`session_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794451767741,
+    "hash": "2c87583b4f97fb0437d89d54aaecc08d1d02381685edfc04c15ebaebde39e8c3"
+  },
+  {
+    "sql": [
+      "DROP INDEX `audit_log_object_idx`;",
+      "\nCREATE INDEX `audit_log_object_created_at_idx` ON `audit_log` (`object`,`created_at`);",
+      "\nDROP INDEX `chat_integration_sessions_integration_id_idx`;",
+      "\nCREATE INDEX `chat_integration_sessions_integration_chat_idx` ON `chat_integration_sessions` (`integration_id`,`external_chat_id`);",
+      "\nDROP INDEX `notifications_agent_slug_is_read_idx`;",
+      "\nCREATE INDEX `notifications_agent_read_type_idx` ON `notifications` (`agent_slug`,`is_read`,`type`,`recipient_user_id`,`session_id`);",
+      "\nCREATE INDEX `notifications_agent_created_at_idx` ON `notifications` (`agent_slug`,`created_at`);",
+      "\nCREATE INDEX `scheduled_tasks_agent_slug_status_idx` ON `scheduled_tasks` (`agent_slug`,`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1794868843117,
+    "hash": "d4ce1cca596492dca6fbeaf7f86ba65f0471fa7e9950d4e6906753b058969861"
   }
 ]

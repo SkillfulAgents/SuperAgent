@@ -1072,9 +1072,10 @@ export function getContainerClientClass(runner: ContainerRunner): ConcreteContai
 }
 
 /**
- * Creates a ContainerClient based on the configured container runner.
+ * Creates a ContainerClient for `runner` (the configured container runner,
+ * which the caller reads from the settings and keeps to know when it changed).
  */
-export function createContainerClient(config: ContainerConfig): ContainerClient {
+export function createContainerClient(config: ContainerConfig, runner: ContainerRunner): ContainerClient {
   // In E2E test mode, use mock client
   if (process.env.E2E_MOCK === 'true') {
     console.log('[ContainerClient] E2E_MOCK=true, using MockContainerClient')
@@ -1082,8 +1083,7 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
   }
   console.log('[ContainerClient] Using real container client, E2E_MOCK:', process.env.E2E_MOCK)
 
-  const settings = getSettings()
-  const ClientClass = getContainerClientClass(settings.container.containerRunner as ContainerRunner)
+  const ClientClass = getContainerClientClass(runner)
   return new ClientClass(config)
 }
 
@@ -1093,7 +1093,7 @@ export function createContainerClient(config: ContainerConfig): ContainerClient 
  * Called during app shutdown from startup.ts.
  */
 export async function shutdownActiveRunner(): Promise<void> {
-  const settings = getSettings()
+  const settings = await getSettings()
   const runner = settings.container.containerRunner as ContainerRunner
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (entry?.shutdownRuntime) {

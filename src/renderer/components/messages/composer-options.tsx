@@ -456,6 +456,8 @@ interface ComposerOptionsProps {
   includeEffort?: boolean
   /** Optional caller-owned content rendered after the picker sections. */
   footer?: ReactNode
+  /** The trigger's size: 34px tall ('default'), or 28px with 6px padding ('sm', the chat composers' action rows). */
+  size?: 'default' | 'sm'
 }
 
 /**
@@ -463,13 +465,14 @@ interface ComposerOptionsProps {
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
-export function ComposerOptions({ state, disabled, includeEffort, footer }: ComposerOptionsProps) {
+export function ComposerOptions({ state, disabled, includeEffort, footer, size }: ComposerOptionsProps) {
   return (
     <ComposerOptionsPopover
       state={state}
       disabled={disabled}
       includeEffort={includeEffort}
       footer={footer}
+      size={size}
     />
   )
 }

@@ -114,7 +114,7 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
       <div
         role="status"
         aria-live="polite"
-        className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
+        className="flex items-center gap-2 rounded-item border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
       >
         <ImageOff className="h-3.5 w-3.5 shrink-0" />
         <span>Couldn&apos;t load image</span>
@@ -148,7 +148,7 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
 
   return (
     <div
-      className="relative overflow-hidden rounded border"
+      className="relative overflow-hidden rounded-item border"
       style={
         sized
           ? // The exact box, held from first paint: the width the image will
@@ -230,7 +230,7 @@ function ToolResultDocument({ document }: { document: ParsedToolResultDocument }
       <div
         role="status"
         aria-live="polite"
-        className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
+        className="flex items-center gap-2 rounded-item border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
       >
         <FileText className="h-3.5 w-3.5 shrink-0" />
         <span>Couldn&apos;t load {label}</span>
@@ -246,7 +246,7 @@ function ToolResultDocument({ document }: { document: ParsedToolResultDocument }
   }
 
   return (
-    <div className="overflow-hidden rounded border" data-testid="tool-result-document">
+    <div className="overflow-hidden rounded-item border" data-testid="tool-result-document">
       <div className="flex items-center gap-2 border-b border-border/70 bg-background px-2 py-1 text-xs text-muted-foreground">
         <FileText className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{label}</span>
@@ -359,6 +359,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
               result={resultStr}
               isError={toolCall.isError ?? false}
               agentSlug={agentSlug}
+              unansweredQuestions={toolCall.unansweredQuestions}
             />
           ) : (
             // Fallback: generic JSON display
@@ -366,7 +367,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
               {/* Input */}
               <div>
                 <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
-                <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
+                <pre className="bg-background rounded-item p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
                   {inputStr}
                 </pre>
               </div>
@@ -379,7 +380,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
                   </div>
                   <pre
                     className={cn(
-                      'bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto',
+                      'bg-background rounded-item p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto',
                       toolCall.isError && 'text-red-800 dark:text-red-200'
                     )}
                   >
@@ -464,7 +465,7 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
           <div className="space-y-2">
             <div>
               <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
-              <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
+              <pre className="bg-background rounded-item p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
                 {displayInput || <span className="text-muted-foreground italic">Waiting for input...</span>}
                 <span className="animate-pulse">|</span>
               </pre>

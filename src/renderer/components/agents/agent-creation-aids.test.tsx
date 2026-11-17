@@ -9,7 +9,7 @@ const mockOnImportComplete = vi.fn()
 let mockCanUseVoiceMode = true
 
 vi.mock('@renderer/hooks/use-agent-templates', () => ({
-  useDiscoverableAgents: () => ({ data: [{ skillsetId: 's1', path: 'agents/x/' }] }),
+  useHasDiscoverableAgents: () => true,
   useImportAgentTemplate: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),

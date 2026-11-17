@@ -13,7 +13,8 @@ import type {
  * Headers that must NEVER be forwarded to the upstream (either directly or via
  * Composio's proxy `parameters` array). `host` and `content-length` would be
  * wrong; `authorization` is replaced by Composio's injected token; the
- * `connection`/`transfer-encoding`/`accept-encoding` triplet is hop-by-hop.
+ * `connection`/`transfer-encoding`/`accept-encoding` triplet is hop-by-hop, and
+ * fetch refuses `expect`, which curl adds to large uploads.
  */
 export const PROXY_SKIP_REQUEST_HEADERS = new Set([
   'host',
@@ -22,6 +23,7 @@ export const PROXY_SKIP_REQUEST_HEADERS = new Set([
   'content-length',
   'transfer-encoding',
   'accept-encoding',
+  'expect',
 ])
 
 /**

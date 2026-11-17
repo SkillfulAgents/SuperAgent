@@ -35,7 +35,7 @@ export function VolumeFileBrowser({ volumeId, copying = false }: { volumeId: str
         setRefreshed(count => count + 1)
       }}><RefreshCw className="h-3.5 w-3.5" /></Button>
     </div>
-    <div className="flex h-[min(44rem,75dvh)] min-h-80 flex-col rounded-xl border bg-background overflow-hidden" data-testid="volume-file-preview">
+    <div className="flex h-[min(44rem,75dvh)] min-h-80 flex-col rounded-card border bg-background overflow-hidden" data-testid="volume-file-preview">
       {copying
         ? <p className="m-auto px-6 text-center text-sm text-muted-foreground">Copying the drive’s files. They show here once the copy is done.</p>
         : <FileBrowser key={volumeId} source={source} />}

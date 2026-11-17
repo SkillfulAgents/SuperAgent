@@ -1083,6 +1083,56 @@ describe('transformMessages', () => {
     })
   })
 
+  describe('TaskCreate saved description', () => {
+    const taskCreateEntries = (toolUseResult: unknown): JsonlMessageEntry[] => [
+      createAssistantMessage('uuid-1', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'TaskCreate', input: { subject: 'Draft the plan', description: 'as sent' } },
+      ]),
+      createUserMessage(
+        'uuid-2',
+        [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Task #1 created successfully: Draft the plan' }],
+        '2026-01-24T10:00:02.000Z',
+        { toolUseResult: toolUseResult as JsonlMessageEntry['toolUseResult'] }
+      ),
+    ]
+
+    it('carries the description the CLI saved (CLI 2.1.317+)', () => {
+      const toolCall = asMessage(transformMessages(taskCreateEntries({ task: { id: '1', subject: 'Draft the plan', description: 'as saved' } }))[0]).toolCalls[0]
+      expect(toolCall.taskDescription).toBe('as saved')
+      expect(toolCall.result).toBe('Task #1 created successfully: Draft the plan')
+    })
+
+    it('omits the field when an older CLI leaves it out of the result', () => {
+      const toolCall = asMessage(transformMessages(taskCreateEntries({ task: { id: '1', subject: 'Draft the plan' } }))[0]).toolCalls[0]
+      expect(toolCall).not.toHaveProperty('taskDescription')
+    })
+  })
+
+  describe('AskUserQuestion unanswered annotations', () => {
+    // Result shape from a live CLI 2.1.318 run answered with an annotation.
+    const askEntries = (annotations: unknown): JsonlMessageEntry[] => [
+      createAssistantMessage('uuid-1', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'AskUserQuestion', input: { questions: [{ question: 'Which color?', header: 'Color' }, { question: 'Which size?', header: 'Size' }] } },
+      ]),
+      createUserMessage(
+        'uuid-2',
+        [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'The user answered: "Which color?"="Not now". "Which size?"="Large".' }],
+        '2026-01-24T10:00:02.000Z',
+        { toolUseResult: { answers: { 'Which color?': 'Not now', 'Which size?': 'Large' }, annotations } as unknown as JsonlMessageEntry['toolUseResult'] }
+      ),
+    ]
+
+    it('names the questions that ended unanswered, and how', () => {
+      const toolCall = asMessage(transformMessages(askEntries({ 'Which color?': { unanswered: 'skipped' }, 'Which size?': { notes: 'x' } }))[0]).toolCalls[0]
+      expect(toolCall.unansweredQuestions).toEqual({ 'Which color?': 'skipped' })
+    })
+
+    it('treats an unknown unanswered value as absent, and omits the field when nothing is left', () => {
+      const toolCall = asMessage(transformMessages(askEntries({ 'Which color?': { unanswered: 'shrugged' } }))[0]).toolCalls[0]
+      expect(toolCall).not.toHaveProperty('unansweredQuestions')
+    })
+  })
+
   describe('Monitor watches', () => {
     // Shapes from a live CLI 2.1.303 session: the call, its result naming the
     // watch, an event batch, then the batch that ends it.

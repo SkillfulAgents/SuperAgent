@@ -46,7 +46,7 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
  *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
  *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
  *   - xAI grok: `service_tier` priority only (2x when granted) → normal/fast.
- *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 / 4.8 → normal/fast.
+ *   - Anthropic: fast mode (research preview) on Opus 5.5 / 5 → normal/fast.
  *   - Z.AI GLM: no request-level tier → normal only.
  *   - Fireworks (kimi-k3): fast is a separate `-fast` router resource, not a
  *     request param — the proxy swaps the outbound model id → normal/fast.
@@ -54,8 +54,12 @@ const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
 const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 
-// Anthropic fast mode covers Opus 5.5, 5 and 4.8 (4.7's was removed 2026-07-24).
-const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5'])
+// Anthropic fast mode covers Opus 5.5 and 5, and Fable 5.2 (not 5.1 or 5).
+// Opus 4.7's was removed 2026-07-24; Opus 4.8's is deprecated and is removed
+// 2026-11-30, after which a fast request errors instead of falling back, so the
+// picker stopped offering it early. Must match the Platform proxy's
+// FAST_MODE_MODELS (apps/proxy/src/gateway/speed-mapping.ts).
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-5', 'claude-opus-5-5', 'claude-fable-5-2'])
 
 /** Claude entries with the speed tiers the Platform proxy can request. */
 function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
@@ -241,10 +245,21 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     id: 'claude-fable-5-1',
     label: 'Fable 5.1',
     family: 'fable',
-    isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-fable-5-1'),
+  },
+  {
+    // Fable 5.2 (2026-11-09): the CLI's bare `fable` alias resolves here from
+    // 2.1.321, at $8/$40 per Mtok against Fable 5.1's $10/$50. Same surface as
+    // 5.1 (thinking always on, effort is the only depth control).
+    id: 'claude-fable-5-2',
+    label: 'Fable 5.2',
+    family: 'fable',
+    isLatest: true,
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-fable-5-2'),
   },
 ]
 
@@ -375,6 +390,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
     pricing: pricingFor('z-ai/glm-5.2'),
+    // OpenRouter's live model list context_length, fetched 2026-11-11.
+    contextWindow: 1_048_576,
   },
   {
     id: 'x-ai/grok-4.5',
@@ -595,6 +612,25 @@ const MUSE_WONDER_MODELS: ModelDefinition[] = [
 ]
 
 /**
+ * Meta's small tier, same route and traits as Spark (research.meta.ai/blog/muse-ember).
+ * Prompts over 200K input tokens bill the whole request at 3x.
+ */
+const MUSE_EMBER_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    family: 'muse-ember',
+    id: 'muse-ember-1.0',
+    pricing: pricingFor('muse-ember-1.0'),
+    label: 'Muse Ember 1.0',
+    blurb: 'Meta small model, served via Platform',
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    contextWindow: 1_048_576,
+    longContextPriceCliff: { thresholdTokens: 200_000, inputMultiplier: 3, outputMultiplier: 3 },
+  },
+]
+
+/**
  * OpenAI names GPT models version-then-tier ("GPT-6.1 Sol"), so each tier is
  * its own family: the bare `gpt-sol` alias rides Sol releases the way `opus`
  * rides Opus. `gpt` predates the split and still resolves to Sol.
@@ -769,6 +805,25 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {
+    // Same route and limits as gemini-4-argon below; measured 2026-11-10:
+    // efforts low/medium/high only (xhigh/max 400). Listed first so it is the
+    // Google tab default, as Google's strongest model.
+    id: 'gemini-4-carbon',
+    label: 'Gemini 4 Carbon',
+    blurb: 'Google strongest model, served via Platform',
+    family: 'gemini-carbon',
+    isLatest: true,
+    isDefault: true,
+    icon: 'gemini',
+    supportedEfforts: STANDARD_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
+    pricing: pricingFor('gemini-4-carbon'),
+    contextWindow: 1_048_576,
+  },
+  {
     // Bare id matches the platform proxy's gemini-* → gemini route (Gemini API
     // OpenAI-compatible chat). Measured against gemini-4-argon on 2026-10-14:
     // efforts are low/medium/high only (xhigh/max 400, so the proxy caps them);
@@ -779,7 +834,6 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Google flagship, served via Platform',
     family: 'gemini-argon',
     isLatest: true,
-    isDefault: true,
     icon: 'gemini',
     supportedEfforts: STANDARD_EFFORTS,
     supportsWebSearch: false,
@@ -788,6 +842,22 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
     pricing: pricingFor('gemini-4-argon'),
     // Unified input + output limit (ai.google.dev/gemini-api/docs/models/gemini-4-argon).
+    contextWindow: 1_048_576,
+  },
+  {
+    // Same route as gemini-4-argon; measured 2026-11-12: efforts low through
+    // xhigh (max 400). Flat price across the 1M window.
+    id: 'gemini-4-hydrogen',
+    label: 'Gemini 4 Hydrogen',
+    blurb: 'Google fast model, served via Platform',
+    family: 'gemini-hydrogen',
+    isLatest: true,
+    icon: 'gemini',
+    supportedEfforts: XHIGH_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    pricing: pricingFor('gemini-4-hydrogen'),
     contextWindow: 1_048_576,
   },
   {
@@ -815,6 +885,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   },
   ...MUSE_WONDER_MODELS,
   ...MUSE_SPARK_MODELS,
+  ...MUSE_EMBER_MODELS,
   {
     // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.
     id: 'glm-5.3-flash',

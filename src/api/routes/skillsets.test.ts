@@ -13,16 +13,21 @@ const mockIsGitAvailable = vi.fn()
 const mockGetPlatformProxyBaseUrl = vi.fn()
 const mockGetPlatformAccessToken = vi.fn()
 const mockGetPlatformAuthStatus = vi.fn()
+/** How many discarded attempts the mocked mutateSettings runs before the committed one. */
+const mutateRetries = vi.hoisted(() => ({ count: 0 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: (...args: unknown[]) => mockGetSettings(...args),
-  updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
-  // routes now persist via the serialized fresh-read mutateSettings.
-  // Faithfully reproduce its observable effect against the seeded mock settings
-  // so existing assertions on mockUpdateSettings keep working.
-  mutateSettings: (mutator: (s: Record<string, unknown>) => void) => {
+  getSettings: async (...args: unknown[]) => mockGetSettings(...args),
+  // routes persist via the compare-and-set mutateSettings. Reproduce its
+  // observable effect against the seeded mock settings (mockUpdateSettings
+  // records each committed write), including a retry: the mutator runs again
+  // on a fresh copy when `mutateRetries` asks for it.
+  mutateSettings: async (mutator: (s: Record<string, unknown>) => void | false) => {
+    for (let attempt = 0; attempt < mutateRetries.count; attempt++) {
+      mutator(structuredClone(mockGetSettings() ?? {}))
+    }
     const s = structuredClone(mockGetSettings() ?? {})
-    mutator(s)
+    if (mutator(s) === false) return s
     mockUpdateSettings(s)
     return s
   },
@@ -44,8 +49,10 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getPlatformAccessToken: (...args: unknown[]) => mockGetPlatformAccessToken(...args),
-  getPlatformAuthStatus: (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
+  getPlatformAccessToken: async (...args: unknown[]) => mockGetPlatformAccessToken(...args),
+  getPlatformAuthStatus: async (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
+  // The pure form the provider applies to the settings a mutator hands it.
+  platformAuthStatusFrom: (...args: unknown[]) => mockGetPlatformAuthStatus(...args),
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -58,6 +65,7 @@ import skillsets from './skillsets'
 describe('skillsets routes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mutateRetries.count = 0
     mockGetPlatformAuthStatus.mockReturnValue({
       connected: true,
       source: 'settings',
@@ -170,6 +178,39 @@ describe('skillsets routes', () => {
         orgId: 'org_current',
       },
     })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('sync-remote reports each added skillset once when the settings write retries', async () => {
+    mockGetSettings.mockReturnValue({ skillsets: [] })
+    mutateRetries.count = 2
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        skillsets: [
+          { name: 'alpha', path: 'alpha', repoId: 'repo-1', description: '', skill_count: 1, agent_count: 0 },
+          { name: 'beta', path: 'beta', repoId: 'repo-1', description: '', skill_count: 1, agent_count: 0 },
+        ],
+      }),
+    }))
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets/sync-remote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'platform' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ synced: 2, skillsets: ['alpha', 'beta'] })
+    expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
+    expect(mockUpdateSettings.mock.calls[0][0].skillsets.map((s: { id: string }) => s.id)).toEqual([
+      'platform--repo-1--alpha',
+      'platform--repo-1--beta',
+    ])
 
     vi.unstubAllGlobals()
   })
@@ -427,7 +468,7 @@ describe('skillsets routes', () => {
   })
 
   it('PATCH /:id/credential returns 404 when the skillset is deleted concurrently', async () => {
-    let settingsState: Record<string, unknown> = {
+    const settingsState: Record<string, unknown> = {
       skillsets: [{
         id: 'private-repo',
         url: 'https://github.com/Org/private-repo',
@@ -444,10 +485,10 @@ describe('skillsets routes', () => {
         },
       },
     }
-    mockGetSettings.mockImplementation(() => settingsState)
-    mockUpdateSettings.mockImplementation(() => {
-      settingsState = { skillsets: [], skillsetCredentials: {} }
-    })
+    // Another writer deletes it after the route's first read, before its write.
+    mockGetSettings
+      .mockReturnValueOnce(settingsState)
+      .mockReturnValue({ skillsets: [], skillsetCredentials: {} })
 
     const app = new Hono()
     app.route('/api/skillsets', skillsets)
@@ -459,6 +500,100 @@ describe('skillsets routes', () => {
 
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'Skillset not found' })
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
+  })
+
+  describe('settings reads', () => {
+    const credentialBearing = (n: number) => {
+      const skillsets = Array.from({ length: n }, (_, i) => ({
+        id: `private-${i}`,
+        url: `https://github.com/Org/private-${i}`,
+        name: `Private ${i}`,
+        description: '',
+        addedAt: '2026-01-01T00:00:00.000Z',
+        provider: 'github',
+        providerData: { credentialId: `skillcred_${i}` },
+      }))
+      const skillsetCredentials = Object.fromEntries(skillsets.map((_, i) => [`skillcred_${i}`, {
+        id: `skillcred_${i}`, type: 'token', token: `github_pat_${i}`, tokenPreview: `••••000${i}`,
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      }]))
+      return { skillsets, skillsetCredentials }
+    }
+
+    it('GET / reads settings once, however many credential-bearing skillsets it lists', async () => {
+      const app = new Hono()
+      app.route('/api/skillsets', skillsets)
+      const readsFor = async (n: number) => {
+        mockGetSettings.mockReset()
+        mockGetSettings.mockReturnValue(credentialBearing(n))
+        const body = await (await app.request('/api/skillsets')).json() as Array<{ credential?: { tokenPreview: string } }>
+        expect(body.map((item) => item.credential?.tokenPreview)).toEqual(
+          Array.from({ length: n }, (_, i) => `••••000${i}`),
+        )
+        return mockGetSettings.mock.calls.length
+      }
+
+      expect(await readsFor(1)).toBe(1)
+      expect(await readsFor(6)).toBe(1)
+    })
+
+    it('PATCH /:id/credential answers from the settings its write committed', async () => {
+      let settingsState: any = credentialBearing(1)
+      mockGetSettings.mockImplementation(() => settingsState)
+      mockUpdateSettings.mockImplementation((next) => { settingsState = next })
+      mockValidateSkillsetUrl.mockResolvedValue({ skillset_name: 'Renamed', skills: [], description: '', version: '1.0.0' })
+
+      const app = new Hono()
+      app.route('/api/skillsets', skillsets)
+      const res = await app.request('/api/skillsets/private-0/credential', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'github_pat_rotated_9999' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ name: 'Renamed', credential: { tokenPreview: '••••9999' } })
+      // The route's own read, then the write's.
+      expect(mockGetSettings).toHaveBeenCalledTimes(2)
+      // Rotated in place: same opaque id and creation time, from the write's own draft.
+      expect(settingsState.skillsetCredentials.skillcred_0).toMatchObject({
+        id: 'skillcred_0', token: 'github_pat_rotated_9999', createdAt: '2026-01-01T00:00:00.000Z',
+      })
+    })
+
+    it('sync-remote judges every remote skillset against one auth state per write attempt', async () => {
+      const app = new Hono()
+      app.route('/api/skillsets', skillsets)
+      const authDerivationsFor = async (remotes: number, retries: number) => {
+        mutateRetries.count = retries
+        mockGetSettings.mockReturnValue({ skillsets: [] })
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            skillsets: Array.from({ length: remotes }, (_, i) => ({
+              name: `s${i}`, path: `s${i}`, repoId: 'repo-1', description: '', skill_count: 1, agent_count: 0,
+            })),
+          }),
+        }))
+        mockGetPlatformAuthStatus.mockClear()
+        const res = await app.request('/api/skillsets/sync-remote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: 'platform' }),
+        })
+        expect(await res.json()).toMatchObject({ synced: remotes })
+        vi.unstubAllGlobals()
+        // Less the one status read of the sync preconditions.
+        return mockGetPlatformAuthStatus.mock.calls.length - 1
+      }
+
+      expect(await authDerivationsFor(1, 0)).toBe(1)
+      expect(await authDerivationsFor(5, 0)).toBe(1)
+      // A retried write derives it again from its own, newer draft.
+      expect(await authDerivationsFor(5, 2)).toBe(3)
+    })
   })
 
   it('DELETE / removes the credential owned by the skillset', async () => {

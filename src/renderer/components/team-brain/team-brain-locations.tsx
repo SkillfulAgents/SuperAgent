@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
-import type { TeamBrainLocationId } from '@renderer/lib/team-brain/team-brain-schema'
+import type { TeamBrainLocationId } from '@shared/lib/config/team-brain-schema'
 
 /**
  * Where Team Brain can keep its files: the first question in set-up. Every drive type there is, straight from the

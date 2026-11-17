@@ -68,6 +68,9 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('file:///workspace/reports/chart 1.png', 'src', node)).toBe(
       '/api/agents/my%20agent/files/reports/chart%201.png?inline=true'
     )
+    expect(transform('/workspace/reports/chart 1.png', 'src', node)).toBe(
+      '/api/agents/my%20agent/files/reports/chart%201.png?inline=true'
+    )
   })
 
   it('does not widen traversals, non-images, or file URLs outside the workspace', () => {
@@ -77,6 +80,21 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('file:///etc/passwd.png', 'src', node)).toBe('')
     // a sibling directory, not the workspace
     expect(transform('file:///workspaceX/chart.png', 'src', node)).toBe('')
+    expect(transform('/workspace/../secrets.png', 'src', node)).toBe('')
+    expect(transform('/workspace/report.txt', 'src', node)).toBe('')
+    expect(transform('/workspaceX/chart.png', 'src', node)).toBe('')
+    // relative to the document, or naming a host, is not a workspace path
+    expect(transform('workspace/chart.png', 'src', node)).toBe('')
+    expect(transform('//localhost/workspace/chart.png', 'src', node)).toBe('')
+  })
+
+  // A relative src loads from the app's own origin with the user's session.
+  it('loads an unresolved image only from an absolute web URL', () => {
+    expect(onSrc('/api/agents/a/files/chart.png')).toBe('')
+    expect(onSrc('media/chart.png')).toBe('')
+    expect(onSrc('//example.com/chart.png')).toBe('')
+    const transform = createMarkdownUrlTransform({ agentSlug: 'a' })
+    expect(transform('/api/agents/a/files/chart.png', 'src', node)).toBe('')
   })
 
   // This used to carry its own extension list, and it had drifted from the one

@@ -19,7 +19,7 @@ export const DEFAULT_GLOBAL_DISPATCH_SHORTCUT = 'Control+Shift+Space'
 
 /**
  * Earlier out-of-box defaults. Every settings write persists the merged
- * defaults, so these sit in existing settings.json files without the user ever
+ * defaults, so these sit in existing stored settings without the user ever
  * choosing them; loading rewrites them to the current default. The recorder
  * never produces `CommandOrControl` (it writes `Command` or `Control`), so a
  * stored value in this list was not picked by hand.

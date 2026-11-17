@@ -1,12 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockCaptureException = vi.fn()
+// The app base URL the provider configs are built for.
 let mockAppBaseUrl = 'https://deployment.example.com'
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
-}))
-vi.mock('./config', () => ({
-  getAppBaseUrl: () => mockAppBaseUrl,
 }))
 
 import { getGenericOAuthProviderConfigs, getPublicAuthProviders } from './provider-config'
@@ -130,7 +128,7 @@ describe('getPublicAuthProviders', () => {
     ])
 
     expect(getPublicAuthProviders().map((provider) => provider.id)).toEqual(['enabled-sso'])
-    expect(getGenericOAuthProviderConfigs().map((provider) => provider.providerId)).toEqual(['enabled-sso'])
+    expect(getGenericOAuthProviderConfigs(mockAppBaseUrl).map((provider) => provider.providerId)).toEqual(['enabled-sso'])
   })
 
   it('rejects the whole AUTH_PROVIDERS_JSON when any entry is malformed', () => {
@@ -181,7 +179,7 @@ describe('getPublicAuthProviders', () => {
         scopes: ['openid', 'profile', 'email', 'offline_access'],
       },
     ])
-    expect(getGenericOAuthProviderConfigs()).toEqual([
+    expect(getGenericOAuthProviderConfigs(mockAppBaseUrl)).toEqual([
       {
         providerId: 'company-sso',
         discoveryUrl: 'https://auth.env.example.com/.well-known/openid-configuration',
@@ -209,7 +207,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'derived', type: 'oidc', issuer: 'https://auth.example.com/tenant/', clientId: 'client' },
     ])
 
-    const [explicit, derived] = getGenericOAuthProviderConfigs()
+    const [explicit, derived] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(explicit.discoveryUrl).toBe('https://discovery.example.com/oidc.json')
     expect(derived.discoveryUrl).toBe('https://auth.example.com/tenant/.well-known/openid-configuration')
     expect(explicit).not.toHaveProperty('issuer')
@@ -220,7 +218,7 @@ describe('getPublicAuthProviders', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'company/sso?next=other', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'client' },
     ])
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(config.redirectURI).toBe(
       'https://deployment.example.com/api/auth/oauth2/callback/company%2Fsso%3Fnext%3Dother',
     )
@@ -232,7 +230,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'company-sso', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'client' },
     ])
 
-    expect(getGenericOAuthProviderConfigs()[0].redirectURI).toBe(
+    expect(getGenericOAuthProviderConfigs(mockAppBaseUrl)[0].redirectURI).toBe(
       'https://deployment.example.com/api/auth/oauth2/callback/company-sso',
     )
   })
@@ -241,7 +239,7 @@ describe('getPublicAuthProviders', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'client' },
     ])
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(config.accountSubject({ profile: { sub: 'member-123', id: 'mutable-user-id' } })).toBe('member-123')
     for (const sub of [undefined, null, '', 123]) {
       expect(() => config.accountSubject({ profile: { sub, id: 'fallback-id' } })).toThrow(/missing its subject/)
@@ -252,7 +250,7 @@ describe('getPublicAuthProviders', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(config.mapProfileToUser!({
       sub: 'sub_member_123',
       email: 'user@example.com',
@@ -279,7 +277,7 @@ describe('getPublicAuthProviders', () => {
     ])
     delete process.env.PLATFORM_TOKEN
 
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     const mapped = config.mapProfileToUser!({
       sub: MEMBER_ID,
       email: 'user@example.com',
@@ -313,7 +311,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
     delete process.env.PLATFORM_TOKEN
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(() =>
       config.mapProfileToUser!({
         sub: 'sub_member_123',
@@ -328,7 +326,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'company-sso', type: 'oidc', issuer: 'https://sso.example.com', clientId: 'c' },
     ])
     delete process.env.PLATFORM_TOKEN
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(
       config.mapProfileToUser!({
         sub: 'user-123',
@@ -342,7 +340,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
     process.env.PLATFORM_TOKEN = makeOrgToken('org_AAA')
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(() =>
       config.mapProfileToUser!({
         sub: 'sub_member_123',
@@ -357,7 +355,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
     process.env.PLATFORM_TOKEN = makeOrgToken('org_AAA')
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(
       config.mapProfileToUser!({
         sub: 'sub_member_123',
@@ -372,7 +370,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
     process.env.PLATFORM_TOKEN = makeOrgToken('org_AAA')
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(() =>
       config.mapProfileToUser!({
         sub: 'sub_member_123',
@@ -387,7 +385,7 @@ describe('getPublicAuthProviders', () => {
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
     delete process.env.PLATFORM_TOKEN
-    const [config] = getGenericOAuthProviderConfigs()
+    const [config] = getGenericOAuthProviderConfigs(mockAppBaseUrl)
     expect(
       config.mapProfileToUser!({
         sub: 'sub_member_123',

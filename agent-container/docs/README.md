@@ -44,6 +44,12 @@ itself important.
 - `in-app-links.md`
 - `agent-and-skill-packages.md`
 
+`computer-use.md` and everything under `computer-use/` are generated from the
+skills of the installed agent-desktop (`npm run docs:computer-use`); edit the
+header template in `scripts/lib/computer-use-docs.ts`, never the files.
+`scripts/generate-computer-use-docs.test.ts` fails when they describe a
+different agent-desktop version than `package.json` pins.
+
 `session-history.md` is the one guide with executable companions: the two
 readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the
 guide's flags and the scripts' argument parsers in step —

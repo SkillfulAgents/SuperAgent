@@ -69,7 +69,7 @@ export function requestCardFromRegistry(request: PendingUserInputRequest): UserR
 }
 
 /**
- * The synthetic Allow/Deny question card for an agent-scoped review.
+ * The synthetic Allow/Deny question card for a review raised by the chat's session.
  *
  * `toolUseId` keeps the `review:<id>:<agent>` convention byte-for-byte: it is
  * what `handleInteractiveResponse` splits on to route the press back to

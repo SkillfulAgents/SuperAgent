@@ -47,7 +47,7 @@ export function RunHistorySection({
           pageSize={pageSize}
         />
       ) : (
-        <div className="rounded-lg border border-dashed p-4 mt-3 text-sm text-muted-foreground">
+        <div className="rounded-card border border-dashed p-4 mt-3 text-sm text-muted-foreground">
           {emptyMessage}
         </div>
       )}

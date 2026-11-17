@@ -1,0 +1,38 @@
+{
+  "sessionId": "ca54f2e6-37a8-41bf-b4a0-38f6ff9c3718",
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.318",
+  "cliVersion": "2.1.318",
+  "capturedAt": "2026-11-04",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [
+    {
+      "parentToolId": "toolu_01LeBhM9FdXBebkiU9Lb98G9",
+      "taskId": "a21671b6927258c34",
+      "agentId": "a21671b6927258c34",
+      "subagentType": "fork",
+      "description": "fork probe"
+    }
+  ],
+  "source": "capture-fixtures.mjs (.claude/skills/update-claude-deps): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; host capture wrapper (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (SDK 0.3.318 / CLI 2.1.318). A fork completes, then the lead resumes it with SendMessage; the second run appends to the fork transcript after its first.",
+  "backgroundTasks": [
+    {
+      "taskId": "a21671b6927258c34",
+      "taskType": "local_agent",
+      "startedT": 4165,
+      "prematureIdleT": null,
+      "realCompletionT": 4975
+    },
+    {
+      "taskId": "a21671b6927258c34",
+      "taskType": "local_agent",
+      "startedT": 7373,
+      "prematureIdleT": null,
+      "realCompletionT": 9467
+    }
+  ],
+  "settledT": 10540,
+  "totalEntries": 176
+}

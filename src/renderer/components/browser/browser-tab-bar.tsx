@@ -116,7 +116,7 @@ export function BrowserTabBar({
                       aria-label={`Close ${label}`}
                       onClick={() => onCloseTab(tab.targetId)}
                       className={cn(
-                        'shrink-0 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-muted-foreground/20 hover:text-foreground group-hover:opacity-100 touch:opacity-100',
+                        'shrink-0 rounded-icon p-0.5 text-muted-foreground transition-opacity hover:bg-muted-foreground/20 hover:text-foreground group-hover:opacity-100 touch:opacity-100',
                         isViewing ? 'opacity-100' : 'opacity-0',
                       )}
                     >

@@ -1,4 +1,5 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
+import { localFilePath } from '@shared/lib/utils/workspace-file-url'
 import { isPreviewableImage } from './file-types'
 import { getAgentFileUrl, isSafeWorkspaceFilePath } from './workspace-file-url'
 
@@ -35,12 +36,16 @@ export function safeHref(url: string): string {
  * (javascript:, file:, data:, vbscript:, custom protocols, …) are still blanked
  * exactly as before — and additionally permits tel:/sms: on link hrefs.
  *
- * Scoped to `key === 'href'` on purpose: it widens what links may point at, not
- * what images/other resources may load.
+ * The href branch widens what links may point at. The src branch narrows what
+ * images may load to absolute web URLs: a relative src would load from the
+ * app's own origin with the user's session.
  */
 export const markdownUrlTransform: UrlTransform = (url, key) => {
   if (key === 'href' && typeof url === 'string') {
     return safeHref(url)
+  }
+  if (key === 'src' && typeof url === 'string') {
+    return /^https?:\/\//i.test(url) ? url : ''
   }
   return defaultUrlTransform(url)
 }
@@ -54,14 +59,8 @@ export interface MarkdownImageContext {
 
 /** Resolve an agent-workspace file without ever handing `file:` to Chromium. */
 function workspaceImageUrl(url: string, agentSlug: string): string | null {
-  let pathname: string
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'file:' || parsed.hostname !== '') return null
-    pathname = decodeURIComponent(parsed.pathname)
-  } catch {
-    return null
-  }
+  const pathname = localFilePath(url)
+  if (pathname === null) return null
 
   // Both questions are answered where they are answered for every other
   // surface: whether the path is inside the workspace and free of traversal,
@@ -75,9 +74,10 @@ function workspaceImageUrl(url: string, agentSlug: string): string | null {
 
 /**
  * Per-message Markdown policy for embedded images. Links and ordinary images
- * retain the shared default policy. A blocked `file:` image is widened only
- * when it resolves to a verified tool-result alias or an authenticated file in
- * that agent's `/workspace`; arbitrary host/container paths stay blocked.
+ * retain the shared default policy. A blocked `file:` or bare `/workspace` image
+ * is widened only when it resolves to a verified tool-result alias or an
+ * authenticated file in that agent's `/workspace`; arbitrary host/container
+ * paths stay blocked.
  */
 export function createMarkdownUrlTransform(context: MarkdownImageContext = {}): UrlTransform {
   return (url, key, node) => {

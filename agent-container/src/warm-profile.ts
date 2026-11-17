@@ -6,6 +6,7 @@ import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-po
 import { globalInstructionsSchema } from './global-instructions';
 import type { CreateSessionRequest } from './types';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
+import { preloadToolsetsSchema } from './preload-toolsets';
 
 /**
  * The subset of a create-session request that a pre-warmed CLI subprocess
@@ -39,6 +40,7 @@ export const warmProfileSchema = z.object({
   customEnvVars: z.record(z.string(), z.string()).transform(withoutProviderCredentials).optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   speed: speedLevelSchema,
+  preloadToolsets: preloadToolsetsSchema,
   capabilityPolicies: agentCapabilityPoliciesSchema,
   globalInstructions: globalInstructionsSchema,
 });
@@ -59,10 +61,12 @@ export function sessionProfileFromRequest(request: CreateSessionRequest): WarmPr
  * default is what the next session will almost always ask for; warming for a
  * one-off pick instead would cost both a wasted spawn and a cold start.
  * Callers that send no hint (cron, chat, cross-agent) fall back to this
- * session's own shape.
+ * session's own shape. Never with toolsets preloaded: that is one session's
+ * choice (the launcher's computer-use toggle), and the next session's process
+ * must not carry them.
  */
 export function nextWarmProfileFromRequest(request: CreateSessionRequest): WarmProfile {
-  return buildProfile(request, request.prewarmDefaults);
+  return buildProfile({ ...request, preloadToolsets: undefined }, request.prewarmDefaults);
 }
 
 function buildProfile(
@@ -93,6 +97,7 @@ function buildProfile(
     customEnvVars: request.customEnvVars,
     effort: defaults ? defaults.effort : request.effort,
     speed: defaults ? defaults.speed : request.speed,
+    preloadToolsets: request.preloadToolsets,
     capabilityPolicies: request.capabilityPolicies,
     globalInstructions: request.globalInstructions,
   });

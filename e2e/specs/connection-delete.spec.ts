@@ -16,6 +16,7 @@ import {
   listRemoteMcps,
 } from '../helpers/connections'
 import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-server'
+import { openHomeSection } from '../helpers/agent-home'
 
 interface TestConnectedAccount {
   id: string
@@ -145,8 +146,10 @@ test.describe('Connection deletion cascade', () => {
     try {
       // The agent-home card lists the mapped account before deletion.
       await gotoAgentHome(page, agent)
+      await openHomeSection(page, 'Connections')
       await expect(page.getByText(account.displayName)).toBeVisible()
 
+      await openHomeSection(page, 'Connections')
       await page.locator('[data-testid="home-connections-open-page"]').click()
       await expect(page.locator('[data-testid="connections-add-button"]')).toBeVisible()
       await detailRowButton(page, account.displayName).click()
@@ -179,7 +182,8 @@ test.describe('Connection deletion cascade', () => {
 
       // The agent-home card no longer lists it.
       await gotoAgentHome(page, agent)
-      await expect(page.getByText('No connections yet')).toBeVisible()
+      await openHomeSection(page, 'Connections')
+      await expect(page.getByText('Connect APIs or MCP servers')).toBeVisible()
       await expect(page.getByText(account.displayName)).toHaveCount(0)
     } finally {
       await request.delete(`/api/connected-accounts/${account.id}`).catch(() => {})

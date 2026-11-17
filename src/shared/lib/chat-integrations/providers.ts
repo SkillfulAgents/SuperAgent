@@ -1,3 +1,4 @@
+import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
 import { chatProviderSetup } from './setup'
 import { chatIntegrationAccess, chatIntegrationSessions, slackThreadState } from '../db/schema'
 import { z, type ZodType } from 'zod'
@@ -57,7 +58,7 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
         throw new Error(`Invalid config for ${provider} integration ${record.id}`)
       }
       const Connector = await load()
-      const appLink = resolveAppLinkContext(record.agentSlug)
+      const appLink = await resolveAppLinkContext(record.agentSlug)
       return instantiate ? instantiate(Connector, config, appLink, record) : new Connector(config, appLink)
     },
     cleanup,
@@ -65,6 +66,13 @@ function chatProvider<Config, Connector extends ConnectorConstructor<Config>>(
     async describeTarget(externalId) {
       const Connector = await load()
       return { type: Connector.classifyChatId?.({ chatId: externalId }) }
+    },
+    async conversationOf(externalId, displayName) {
+      const parent = (await load()).parentChatId?.(externalId)
+      if (!parent) return { externalId, displayName }
+      // A thread's name is its channel's name with the thread's start time after it.
+      const cut = displayName?.lastIndexOf(THREAD_NAME_SEPARATOR) ?? -1
+      return { externalId: parent, displayName: cut > 0 ? displayName!.slice(0, cut) : null }
     },
   }
 }

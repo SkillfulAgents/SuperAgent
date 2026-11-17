@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { requireAgentCaller } from '../middleware/agent-caller'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { IntegrationPolicyError } from '@shared/lib/agent-integrations/errors'
@@ -28,13 +28,7 @@ import { background } from '@shared/lib/background'
 type Variables = { callerSlug: string }
 const xAgentMeetings = new Hono<{ Variables: Variables }>()
 
-xAgentMeetings.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  const callerSlug = token ? await validateProxyToken(token) : null
-  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
-  c.set('callerSlug', callerSlug)
-  await next()
-})
+xAgentMeetings.use('*', requireAgentCaller)
 
 const joinSchema = z.object({
   meeting_url: z.string().trim().min(1).max(2048),
@@ -67,7 +61,7 @@ async function ensureMeetingIntegration(callerSlug: string, request: Request): P
   }
   if (!provider) throw new IntegrationPolicyError('Meetings are unavailable on this host: it needs a public https address (HOST_PUBLIC_URL) and a Platform connection or a Recall.ai key.')
   const definition = agentIntegrationRegistry.getDefinition(provider)!
-  const prepared = await prepareIntegrationSetup(provider, {}, integrationSetupContext(provider, request, callerSlug), true)
+  const prepared = await prepareIntegrationSetup(provider, {}, await integrationSetupContext(provider, request, callerSlug), true)
   let id: string
   try {
     id = await createAgentIntegration({ agentSlug: callerSlug, provider, name: definition.name, config: prepared.config, status: prepared.status })

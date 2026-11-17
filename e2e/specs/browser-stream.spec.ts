@@ -62,6 +62,21 @@ test.describe('Browser Streaming', () => {
     )
   })
 
+  test('tells the stream the canvas width once the drawer has opened', async ({ page }) => {
+    const stream = await mockBrowserStream(page, 800, 450)
+    await sessionPage.sendMessage('browse data:text/html,<h1>Canvas width</h1>')
+    const canvas = page.getByTestId('browser-canvas')
+    await expect(canvas).toHaveAttribute('width', '800')
+
+    await expect
+      .poll(async () => {
+        const reported = stream.messages.findLast((message) => message.includes('"viewport"'))?.match(/"width":(\d+)/)?.[1]
+        const shown = await canvas.evaluate((element) => element.getBoundingClientRect().width * window.devicePixelRatio)
+        return Math.abs(Number(reported) - shown)
+      })
+      .toBeLessThanOrEqual(1)
+  })
+
   test('keeps the browser controls reachable for a tall page in a short drawer', async ({ page }) => {
     await page.setViewportSize({ width: 1200, height: 600 })
     await mockBrowserStream(page, 600, 800)

@@ -143,7 +143,10 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
     setTimeout(() => textareaRef.current?.focus(), 0)
   }, [])
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
-  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
+  // The catalog only resolves a handoff's template slug: read it while one is armed.
+  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents({
+    enabled: handoffTemplateSlug !== null,
+  })
 
   const activeProvider = modelSettings?.llmProvider
   const catalog = useMemo(
@@ -474,21 +477,23 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
           onKeyDown={handleKeyDown}
           placeholder={displayedPlaceholder}
           disabled={isDisabled}
-          rows={3}
+          rows={2}
           autoFocus={!templateToInstall && !handoffTemplateSlug}
           dataTestId="create-agent-prompt"
-          // One line taller on phones: the typewriter placeholder wraps to
-          // three lines in a narrow composer, which reads as already full.
-          textareaClassName="min-h-[80px] sm:min-h-[60px]"
+          // Two lines, one taller on phones: there the typewriter placeholder
+          // wraps to three lines, which would otherwise fill it.
+          textareaClassName="min-h-[60px] sm:min-h-[40px]"
           leftActions={(
-            <ComposerOptions state={composerOptions} disabled={isDisabled} />
+            <ComposerOptions state={composerOptions} disabled={isDisabled} size="sm" />
           )}
           rightActions={(
             <>
-              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} size="compact" />
               <Button
                 type="submit"
                 size="sm"
+                // The composer's 28px row, 6px off the plain mic (chat-composer-box.tsx).
+                className="ml-1.5 h-7"
                 data-testid="create-agent-submit"
               >
                 {isDisabled ? (

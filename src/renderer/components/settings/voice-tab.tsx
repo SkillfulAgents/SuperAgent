@@ -217,7 +217,7 @@ function VoiceTest() {
       </div>
 
       {(transcript || voiceInput.isRecording) && (
-        <div className="rounded-md border bg-muted/50 p-3 text-sm min-h-[60px]">
+        <div className="rounded-card border bg-muted/50 p-3 text-sm min-h-[60px]">
           {!transcript && voiceInput.isRecording && (
             <span className="text-muted-foreground/60 italic animate-pulse">
               Listening... speak now

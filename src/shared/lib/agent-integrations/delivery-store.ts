@@ -72,6 +72,12 @@ export const deliveryStore = {
         exceptId ? sql`${rows.id} != ${exceptId}` : undefined,
         or(inArray(rows.state, unfinished), inArray(rows.noticeState, ['pending', 'sending'])))).run()
   },
+  /** Cancels an integration's unfinished work while it takes no input (its authorization was lost), but not once it is active again. */
+  async cancelStopped(integrationId: string) {
+    await db.update(rows).set({ state: 'cancelled', noticeState: 'none', owner: null, envelope: null, updatedAt: new Date() })
+      .where(and(eq(rows.integrationId, integrationId), sql`not (${runnable()})`,
+        or(inArray(rows.state, unfinished), inArray(rows.noticeState, ['pending', 'sending'])))).run()
+  },
   async cancelSession(rowId: string) {
     await db.update(rows).set({ state: 'cancelled', noticeState: 'none', owner: null, envelope: null, updatedAt: new Date() })
       .where(and(or(inArray(rows.state, unfinished), inArray(rows.noticeState, ['pending', 'sending'])),

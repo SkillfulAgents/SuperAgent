@@ -26,6 +26,7 @@ import {
   syncConnectedAccountAgents,
 } from '@shared/lib/services/connection-sync-service'
 import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import type { BaseAccountProvider } from '@shared/lib/account-providers/base-account-provider'
 
 const connectedAccountsRouter = new Hono()
@@ -185,7 +186,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       reconnecting = existing
     }
 
-    const provider = getDefaultAccountProvider()
+    const provider = await getDefaultAccountProvider()
 
     if (!isProviderSupported(providerSlug, provider.name)) {
       return c.json(
@@ -202,13 +203,13 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
       callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     } else {
-      const origin = getAppBaseUrlFromRequest(c)
+      const origin = await getAppBaseUrlFromRequest(c)
       callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     }
 
     const userId = isAuthMode()
       ? getCurrentUserId(c)
-      : getAccountProviderUserId()
+      : await getAccountProviderUserId()
 
     const startConnect = getServerAdapter(providerSlug)?.startConnect
     const started = startConnect
@@ -226,6 +227,9 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     })
   } catch (error: any) {
     console.error('Failed to initiate connection:', error)
+
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
 
     // Detect "no managed credentials" error from Composio and return a friendly message
     const slug = typeof error.details?.error === 'object' ? error.details.error.slug : undefined

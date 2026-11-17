@@ -291,7 +291,7 @@ describe('setup_trigger', () => {
       return 'composio_trigger_id'
     })
 
-    resolvedOf(await runWithAttribution(attribution.fromMemberId('sub_ambient'), () =>
+    resolvedOf(await runWithAttribution(await attribution.fromMemberId('sub_ambient'), () =>
       setupTrigger(request('setup_trigger', 'tool-setup-ambient', {
         connected_account_id: 'ca_1',
         trigger_type: 'GMAIL_NEW_EMAIL',

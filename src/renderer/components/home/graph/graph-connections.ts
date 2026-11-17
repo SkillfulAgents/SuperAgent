@@ -56,7 +56,7 @@ export async function deleteGraphConnection(edge: GraphEdgeSpec): Promise<boolea
     }
     // Atomic per-target revoke of every direction the user can edit (the
     // drawn line is unordered; buildGraph pre-filtered `policyCallers` to
-    // directions with a policy row on a caller the user admins). Directions
+    // directions with a policy row, on a pair the user uses both ends of). Directions
     // are independent: one failing must not abort the rest, and any success
     // must still report `changed` so the graph refetches — otherwise a
     // half-removed pair renders stale. The endpoint PRESERVES explicit

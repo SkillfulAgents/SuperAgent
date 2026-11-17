@@ -3,6 +3,7 @@ import type { DOMOutputSpec } from 'prosemirror-model'
 import type { QueryClient } from '@tanstack/react-query'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { appendMentions, parseMentions, type Mention } from '@shared/lib/utils/mentions'
+import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
 import { CHIP_MARKER, CHIP_MARKER_STICKY, chipFromMatch, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
 import { secretChip } from './secret-chip'
@@ -213,12 +214,12 @@ export const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g
 
 /**
  * A sent message as a draft again, for one that comes back to the composer:
- * the dictation note goes, each `@Name` its mentions block lists is the chip
- * it was, and the block goes. `agentId` turns the slug the block gives an
- * agent back into its id.
+ * the computer-use and dictation notes go, each `@Name` its mentions block
+ * lists is the chip it was, and the block goes. `agentId` turns the slug the
+ * block gives an agent back into its id.
  */
 export function draftFromAgentText(text: string, agentId: (slug: string) => string): string {
-  const { cleanText: sent } = parseDictationNote(text)
+  const { cleanText: sent } = parseDictationNote(parseComputerUseNote(text).cleanText)
   const { cleanText, mentions } = parseMentions(sent)
   if (mentions.length === 0) return sent
   const markers = new Map(mentions.map((mention) => [mention.name, formatChipMarker(mention.kind === 'user'

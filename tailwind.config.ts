@@ -3,6 +3,8 @@ import plugin from 'tailwindcss/plugin'
 
 const config: Config = {
   darkMode: ['class'],
+  // Re-registered below so `h-*` also sets --control-h.
+  corePlugins: { height: false },
   content: [
     './src/renderer/**/*.{js,ts,jsx,tsx,mdx}',
     './src/shared/**/*.{js,ts,jsx,tsx,mdx}',
@@ -78,7 +80,14 @@ const config: Config = {
 		borderRadius: {
 			lg: 'var(--radius)',
 			md: 'calc(var(--radius) - 2px)',
-			sm: 'calc(var(--radius) - 4px)'
+			sm: 'calc(var(--radius) - 4px)',
+			// The radius scale - defined and explained in globals.css (:root).
+			control: 'calc(var(--control-h) * var(--control-radius-ratio))',
+			icon: 'var(--radius-icon)',
+			item: 'var(--radius-item)',
+			popover: 'var(--radius-popover)',
+			card: 'var(--radius-card)',
+			dialog: 'var(--radius-dialog)'
 		},
 		// Slussen is declared in globals.css (@font-face) and set on <body> from
 		// this stack, so `font-sans` (e.g. on <kbd> chips, which default to
@@ -171,6 +180,10 @@ const config: Config = {
 					boxShadow: '0 0 6px 1px rgba(30, 64, 175, 0.25), 0 0 16px 3px rgba(37, 99, 235, 0.12), 0 0 32px 6px rgba(59, 130, 246, 0.06)',
 				},
 			},
+			'progress-indeterminate': {
+				'0%': { transform: 'translateX(-100%)' },
+				'100%': { transform: 'translateX(250%)' },
+			},
 			'dot-wave': {
 				'0%, 40%, 100%': {
 					opacity: '0.25',
@@ -183,6 +196,7 @@ const config: Config = {
 		animation: {
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
 			'dot-wave': 'dot-wave 2s ease-in-out infinite',
+			'progress-indeterminate': 'progress-indeterminate 1.4s ease-in-out infinite',
 		}
 	}
   },
@@ -216,6 +230,16 @@ const config: Config = {
         '@media not all and (hover: none) and (pointer: coarse) { .group\\/context-menu[data-state="open"] & }',
         '@media not all and (hover: none) and (pointer: coarse) { .group\\/context-menu:has(:focus-visible) & }',
       ])
+    }),
+    // Core `height`, re-registered so every `h-*` also publishes its value as
+    // --control-h, which `rounded-control` reads. It has to replace the core
+    // plugin (corePlugins.height is off) rather than add a second `h` utility:
+    // two plugins matching `h-[34px]` make it ambiguous and Tailwind drops it.
+    plugin(({ matchUtilities, theme }) => {
+      matchUtilities(
+        { h: (value) => ({ height: value, '--control-h': value }) },
+        { values: theme('height') },
+      )
     }),
   ],
 }

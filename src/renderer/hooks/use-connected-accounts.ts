@@ -5,6 +5,8 @@ import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
+import { agentRuntimeErrorBodySchema } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { AgentRuntimeRequestError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import type {
   AgentConnectedAccountDto,
   PublicAgentConnectedAccount,
@@ -92,8 +94,10 @@ export function useInitiateConnection() {
       })
 
       if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.error || 'Failed to initiate connection')
+        const body = await res.json().catch(() => ({}))
+        const runtimeError = agentRuntimeErrorBodySchema.safeParse(body)
+        if (runtimeError.success) throw new AgentRuntimeRequestError(res.status, runtimeError.data)
+        throw new Error(body.error || 'Failed to initiate connection')
       }
 
       return res.json()

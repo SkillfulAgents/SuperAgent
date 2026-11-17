@@ -62,6 +62,7 @@ type Groups = (typeof ACTOR_GROUPS)[number]
 type Verdicts =
   | { [K in Groups]: GroupVerdicts<AgentActor[K], K> }[Groups]
   | OpVerdict<AgentActor['live'], 'live', never>
+  | OpVerdict<AgentActor['listing'], 'listing', never>
 
 /** Fails to compile, naming each op, unless every verdict is true. */
 const everyOpIsAsyncAndDataOnly: Exclude<Verdicts, true> extends never ? true : Exclude<Verdicts, true> = true

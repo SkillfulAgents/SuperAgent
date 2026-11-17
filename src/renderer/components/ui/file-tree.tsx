@@ -87,7 +87,7 @@ function FileTreeNode({ entry, depth, selectedPath, onSelectFile }: FileTreeNode
       <div>
         <button
           className={cn(
-            'flex items-center gap-1 w-full text-left py-1 px-1.5 rounded text-sm hover:bg-accent transition-colors',
+            'flex items-center gap-1 w-full text-left py-1 px-1.5 rounded-item text-sm hover:bg-accent transition-colors',
           )}
           style={{ paddingLeft: `${depth * 12 + 4}px` }}
           onClick={() => setIsOpen(!isOpen)}
@@ -121,7 +121,7 @@ function FileTreeNode({ entry, depth, selectedPath, onSelectFile }: FileTreeNode
   return (
     <button
       className={cn(
-        'flex items-center gap-1 w-full text-left py-1 px-1.5 rounded text-sm hover:bg-accent transition-colors',
+        'flex items-center gap-1 w-full text-left py-1 px-1.5 rounded-item text-sm hover:bg-accent transition-colors',
         selectedPath === entry.path && 'bg-accent'
       )}
       style={{ paddingLeft: `${depth * 12 + 4}px` }}

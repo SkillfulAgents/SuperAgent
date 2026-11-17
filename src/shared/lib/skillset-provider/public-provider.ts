@@ -41,8 +41,8 @@ export class PublicSkillsetProvider extends BaseSkillsetProvider {
     if (!ref.skillsetUrl) {
       throw new Error('Public skillset provider requires a URL')
     }
-    const zipballUrl = buildZipballUrl(ref.skillsetUrl)
-    const zipBuffer = await downloadZip(zipballUrl, ref.skillsetUrl)
+    const archiveUrl = buildArchiveUrl(ref.skillsetUrl)
+    const zipBuffer = await downloadZip(archiveUrl, ref.skillsetUrl)
     await extractZipToDir(zipBuffer, cacheDir)
     await writeCacheMeta(cacheDir, ref.skillsetUrl)
   }
@@ -65,7 +65,8 @@ export class PublicSkillsetProvider extends BaseSkillsetProvider {
   }
 }
 
-function buildZipballUrl(repoUrl: string): string {
+// GitHub's "Download ZIP" link, not the API's zipball: unauthenticated API calls share a 60/hour limit per IP address.
+function buildArchiveUrl(repoUrl: string): string {
   let parsed: URL
   try {
     parsed = new URL(repoUrl)
@@ -80,18 +81,17 @@ function buildZipballUrl(repoUrl: string): string {
     throw new Error('Invalid GitHub URL: expected https://github.com/{owner}/{repo}')
   }
   const [owner, repo] = parts
-  return `https://api.github.com/repos/${owner}/${repo}/zipball`
+  return `https://github.com/${owner}/${repo}/archive/HEAD.zip`
 }
 
-async function downloadZip(zipballUrl: string, originalUrl: string): Promise<Buffer> {
-  validateSafeCloneUrl(zipballUrl, {
-    allowedHostPrefixes: ['https://api.github.com'],
+async function downloadZip(archiveUrl: string, originalUrl: string): Promise<Buffer> {
+  validateSafeCloneUrl(archiveUrl, {
+    allowedHostPrefixes: ['https://github.com'],
   })
 
   return withRetry(async () => {
-    const response = await fetch(zipballUrl, {
+    const response = await fetch(archiveUrl, {
       headers: {
-        'Accept': 'application/vnd.github+json',
         'User-Agent': 'Superagent-App',
       },
       redirect: 'follow',
@@ -104,9 +104,9 @@ async function downloadZip(zipballUrl: string, originalUrl: string): Promise<Buf
           'Make sure the repository exists and is public.',
         )
       }
-      if (response.status === 403) {
+      if (response.status === 403 || response.status === 429) {
         throw new NonRetryableError(
-          'GitHub API rate limit exceeded. Please try again later.',
+          'GitHub rate limit exceeded. Please try again later.',
         )
       }
       if (response.status >= 500) {

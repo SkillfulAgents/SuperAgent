@@ -219,7 +219,7 @@ describe('agent-integration-session-service', () => {
       const onArchive = vi.fn()
       await resolveActiveSession(integrationId, 'chat-1', 1, onArchive)
 
-      expect(onArchive).toHaveBeenCalledWith(sessionId)
+      expect(onArchive).toHaveBeenCalledWith(sessionId, 'session-1')
     })
 
     it('does not call onArchive when session is valid', async () => {
@@ -390,6 +390,47 @@ describe('agent-integration-session-service', () => {
       })
 
       expect((await getLastDisplayName(integrationId, 'chat-1'))).toBe('Named Session')
+    })
+
+    it('takes the name from an archived session too', async () => {
+      const archivedId = await createAgentIntegrationSession({
+        integrationId,
+        externalChatId: 'chat-1',
+        sessionId: 'session-1',
+        displayName: 'Archived Name',
+      })
+      await testDb.update(schema.chatIntegrationSessions)
+        .set({ archivedAt: new Date() })
+        .where(eq(schema.chatIntegrationSessions.id, archivedId))
+        .run()
+
+      expect((await getLastDisplayName(integrationId, 'chat-1'))).toBe('Archived Name')
+    })
+
+    it('takes the newer session when two were last updated at the same time', async () => {
+      const olderId = await createAgentIntegrationSession({
+        integrationId,
+        externalChatId: 'chat-1',
+        sessionId: 'session-1',
+        displayName: 'Older Name',
+      })
+      const newerId = await createAgentIntegrationSession({
+        integrationId,
+        externalChatId: 'chat-1',
+        sessionId: 'session-2',
+        displayName: 'Newer Name',
+      })
+      const updatedAt = new Date()
+      await testDb.update(schema.chatIntegrationSessions)
+        .set({ updatedAt, createdAt: new Date(updatedAt.getTime() - 60 * 60 * 1000) })
+        .where(eq(schema.chatIntegrationSessions.id, olderId))
+        .run()
+      await testDb.update(schema.chatIntegrationSessions)
+        .set({ updatedAt, createdAt: updatedAt })
+        .where(eq(schema.chatIntegrationSessions.id, newerId))
+        .run()
+
+      expect((await getLastDisplayName(integrationId, 'chat-1'))).toBe('Newer Name')
     })
 
     it('does not return display names from other chats', async () => {

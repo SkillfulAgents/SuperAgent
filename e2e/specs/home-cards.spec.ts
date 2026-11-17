@@ -52,6 +52,50 @@ function seedDashboard(agentSlug: string) {
 }
 
 test.describe('home card arrangement', () => {
+  for (const widths of [[1], [2, 2]]) {
+    test(`a sparse board of ${widths.join('+')} columns can drop at its right edge without shifting`, async ({ page, request }, testInfo) => {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      const agents = await Promise.all(widths.map((_, index) => createAgent(request, uniqueName(testInfo, `Sparse ${index}`))))
+      // Other workers' agents must not fill the columns this regression leaves empty.
+      await page.route('**/api/agents', async route => {
+        const response = await route.fetch()
+        const all = await response.json() as Array<{ slug: string }>
+        await route.fulfill({ response, json: all.filter(agent => agents.some(own => own.slug === agent.slug)) })
+      })
+      let x = 0
+      const layout = Object.fromEntries(agents.map((agent, index) => {
+        const rect = { x, y: 0, w: widths[index], h: 1 }
+        x += rect.w
+        return [agent.slug, rect]
+      }))
+      expect((await request.put('/api/user-settings', { data: { homeGridLayout: layout } })).ok()).toBeTruthy()
+      await page.goto('/')
+      const last = agents[agents.length - 1]
+      const tile = page.locator(`[data-widget-id="${last.slug}"]`)
+      await expect(tile).toBeVisible()
+      const box = (await tile.boundingBox())!
+      // The page's available space, not the board's possibly narrowed box.
+      const right = await tile.evaluate(element => element.parentElement!.parentElement!.getBoundingClientRect().right)
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(right - box.width / 2, box.y + box.height / 2, { steps: 8 })
+      const preview = page.getByTestId('widget-drop-preview')
+      await expect(preview).toBeVisible()
+      await expect.poll(async () => {
+        const rect = (await preview.boundingBox())!
+        return Math.abs(rect.x + rect.width - right)
+      }).toBeLessThan(1)
+      const target = (await preview.boundingBox())!
+      const saved = page.waitForResponse(response => response.url().endsWith('/api/user-settings') && response.request().method() === 'PUT' && response.ok())
+      await page.mouse.up()
+      await saved
+      await expect.poll(async () => Math.abs((await tile.boundingBox())!.x - target.x)).toBeLessThan(1)
+      await page.reload()
+      await expect(tile).toBeVisible()
+      await expect.poll(async () => Math.abs((await tile.boundingBox())!.x - target.x)).toBeLessThan(1)
+    })
+  }
+
   test('desktop Arrange persists independently from the mobile layout', async ({
     page,
     request,

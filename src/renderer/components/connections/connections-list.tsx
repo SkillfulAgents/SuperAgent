@@ -447,7 +447,7 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLab
             {grantedRows.length > 0 ? (
               <IntegrationList>{grantedRows.map(renderRow)}</IntegrationList>
             ) : (
-              <div className="rounded-xl border border-dashed bg-background px-4 py-6 text-center">
+              <div className="rounded-card border border-dashed bg-background px-4 py-6 text-center">
                 <p className="text-xs text-muted-foreground">
                   This agent can&apos;t access any connections yet. Toggle one on below.
                 </p>

@@ -2,10 +2,11 @@ import { useMemo } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillsetConfig } from '@shared/lib/types/api'
-import type { SkillsetIndex } from '@shared/lib/types/skillset'
+import type { SkillProvider, SkillsetIndex } from '@shared/lib/types/skillset'
 
 export type SkillsetMutationInput = {
   url: string
+  provider?: SkillProvider
   token?: string
 }
 
@@ -55,9 +56,11 @@ export function useAddSkillset() {
       }
       return res.json()
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['skillsets'] })
-    },
+    // Settles once both lists are read again. With no skillsets before, the template list is not read until the skillset list re-enables it.
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['skillsets'] }),
+      queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] }),
+    ]),
   })
 }
 
@@ -80,6 +83,7 @@ export function useUpdateSkillsetCredential() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['skillsets'] })
+      queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
     },
   })
 }
@@ -94,6 +98,7 @@ export function useRemoveSkillset() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['skillsets'] })
+      queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
     },
   })
 }
@@ -123,6 +128,7 @@ export function useRefreshSkillset() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['skillsets'] })
+      queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-skills'] })
       queryClient.invalidateQueries({ queryKey: ['agent-skills'] })
     },

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { createAgent, createSession, type TestAgent } from '../helpers/agents'
-import type { ApiAgent } from '../../src/shared/lib/types/api'
+import type { ApiAgent, ApiNotification } from '../../src/shared/lib/types/api'
 
 // Bulk reads share server state; don't overlap this file's fixtures.
 test.describe.configure({ mode: 'serial' })
@@ -76,7 +76,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
             await expect(ordinaryBadge).toHaveAccessibleName('unread notifications')
             await expect(markAll).toBeEnabled()
           }
-          expect(reads).toEqual([])
+          if (succeeds) expect(reads).toEqual([])
+          else await expect.poll(() => reads.some(url => url.endsWith('/api/notifications/unread-count'))).toBe(true)
         } finally {
           release()
           await page.unrouteAll({ behavior: 'wait' })
@@ -87,3 +88,36 @@ for (const colorScheme of ['light', 'dark'] as const) {
     }
   })
 }
+
+test('notification reads and deletions reach another open window over SSE', async ({ page, context, request }) => {
+  test.setTimeout(60_000)
+  const agent = await createAgent(request, 'Notification Sync')
+  const other = await context.newPage()
+  try {
+    const session = await createSession(request, agent, 'Summarize this week’s next steps')
+    let notification: ApiNotification | undefined
+    await expect.poll(async () => {
+      const result = await (await request.get('/api/notifications?limit=100')).json() as { items: ApiNotification[] }
+      notification = result.items.find(row => row.sessionId === session.id)
+      return Boolean(notification)
+    }, { timeout: 30_000 }).toBe(true)
+    await page.goto('/notifications')
+    await other.goto('/notifications')
+    const row = (window: typeof page) => window.getByTestId('notification-row').filter({ has: window.locator(`a[href$="/sessions/${session.id}"]`) })
+    for (const window of [page, other]) {
+      await expect(row(window).getByTestId('notification-mark-read')).toHaveCount(1)
+    }
+    await row(page).getByTestId('notification-mark-read').dispatchEvent('click')
+    // Five seconds is below both notification polling intervals: this must
+    // arrive through the live change feed, without navigating or refocusing.
+    await expect(row(other).getByTestId('notification-mark-read')).toHaveCount(0, { timeout: 5_000 })
+    await expect(other.getByTestId(`agent-notification-preview-${agent.slug}`)).toHaveCount(0)
+    expect((await request.delete(`/api/notifications/${notification!.id}`)).status()).toBe(204)
+    await expect(row(other)).toHaveCount(0, { timeout: 5_000 })
+    await expect(row(page)).toHaveCount(0, { timeout: 5_000 })
+  } finally {
+    await other.close()
+    await page.close()
+    await request.delete(`/api/agents/${agent.slug}`)
+  }
+})

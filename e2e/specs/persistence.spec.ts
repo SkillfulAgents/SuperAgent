@@ -39,7 +39,7 @@ async function openApp(page: Page) {
 // Aside from the deletion case itself, these tests leave their uniquely named
 // agents in the per-run data dir and let setup-e2e-data reset them before the
 // next run. Deleting agents while sibling workers list /api/agents can race
-// session-summary file reads under load.
+// session-summary reads under load.
 test.describe('Persistence', () => {
   test('UI-created agent persists after page reload', async ({ page, request }, testInfo) => {
     const appPage = await openApp(page)

@@ -26,7 +26,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'scripts/**/*.test.ts'],
     setupFiles: ['src/renderer/test/setup.ts'],
     testTimeout: 15_000,
     // Many suites import the app (db, auth, routes) in beforeAll, after stubbing

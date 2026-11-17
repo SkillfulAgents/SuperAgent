@@ -138,8 +138,8 @@ export function RuleProposalRequestItem({
     >
       <div className="mt-3 space-y-3 text-sm">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="inline-flex h-6 items-center rounded-md bg-muted px-2 font-medium text-foreground/80">{proposal.targetName}</span>
-          <span className="inline-flex h-6 items-center rounded-md border px-2 font-medium text-foreground/80" data-testid="rule-proposal-effect">
+          <span className="inline-flex h-6 items-center rounded-control bg-muted px-2 font-medium text-foreground/80">{proposal.targetName}</span>
+          <span className="inline-flex h-6 items-center rounded-control border px-2 font-medium text-foreground/80" data-testid="rule-proposal-effect">
             {ruleEffectLabel(proposal.effect)}
           </span>
           <span>{proposal.appliesTo === 'agent' ? 'Applies to this agent only' : 'Applies to every agent using this connection'}</span>
@@ -164,7 +164,7 @@ export function RuleProposalRequestItem({
         )}
 
         {proposal.warnings.length > 0 && (
-          <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2" data-testid="rule-proposal-warnings">
+          <div className="space-y-1 rounded-item border border-amber-500/40 bg-amber-500/10 px-3 py-2" data-testid="rule-proposal-warnings">
             {proposal.warnings.map((warning) => (
               <p key={warning} className="flex gap-2 text-xs leading-5 text-foreground">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
@@ -206,7 +206,7 @@ export function RuleProposalRequestItem({
             Show code
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <pre className="mt-2 max-h-72 overflow-auto rounded-md border border-border bg-muted/50 p-3 font-mono text-[11px] leading-5">{proposal.code}</pre>
+            <pre className="mt-2 max-h-72 overflow-auto rounded-item border border-border bg-muted/50 p-3 font-mono text-[11px] leading-5">{proposal.code}</pre>
           </CollapsibleContent>
         </Collapsible>
       </div>

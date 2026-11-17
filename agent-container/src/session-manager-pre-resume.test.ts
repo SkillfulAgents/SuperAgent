@@ -19,6 +19,9 @@ vi.mock('./session-persistence', () => ({
     saveSession(meta: { sessionId: string } & Record<string, unknown>) {
       persistedSessions.set(meta.sessionId, meta)
     }
+    saveSessionChecked(meta: { sessionId: string } & Record<string, unknown>) {
+      persistedSessions.set(meta.sessionId, meta)
+    }
     getSession(id: string) { return persistedSessions.get(id) ?? null }
     deleteSession(id: string) { persistedSessions.delete(id) }
     updateLastActivity() {}
@@ -153,6 +156,76 @@ describe('SessionManager.warmSession', () => {
     expect(created.proc.isRunning()).toBe(false)
     return created
   }
+
+  function retainedTranscript(id: string): string {
+    const dir = path.join(workDir, '.claude', 'projects', '-workspace')
+    fs.mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, `${id}.jsonl`)
+    fs.writeFileSync(file, '{"type":"user","message":{"role":"user","content":"hi"}}\n')
+    return file
+  }
+
+  it('retains a released session for an explicit send after the host keeps its file', async () => {
+    persist('retained')
+    retainedTranscript('retained')
+    await manager.getSession('retained')
+    const original = spawned[0]
+
+    await manager.releaseSession('retained')
+    expect(original.running).toBe(false)
+    expect(persistedSessions.get('retained')?.releasedForDeletion).toBe(true)
+    expect(await manager.warmSession('retained')).toBe('skipped')
+    // A reconnect can attach, but cannot start a writer before the host has
+    // decided whether the files go. Sending after a failed delete can resume.
+    expect(await manager.getSession('retained')).not.toBeNull()
+    expect(spawned[1].startCalls).toBe(0)
+    await manager.sendMessage('retained', 'continue')
+    expect(spawned[1].running).toBe(true)
+    expect(persistedSessions.get('retained')?.releasedForDeletion).toBe(false)
+  })
+
+  it('does not resurrect a released session after file deletion when final cleanup is lost', async () => {
+    persist('deleted')
+    const file = retainedTranscript('deleted')
+    await manager.getSession('deleted')
+    await manager.releaseSession('deleted')
+    // A viewer may reconnect before the host's unlink. It holds no process.
+    await manager.getSession('deleted')
+    fs.unlinkSync(file)
+
+    expect(await manager.getSession('deleted')).toBeNull()
+    expect(await manager.warmSession('deleted')).toBe('skipped')
+    await expect(manager.sendMessage('deleted', 'stale send')).rejects.toThrow('not found')
+    expect(spawned.every((proc) => !proc.running)).toBe(true)
+
+    // The flag also survives replacing the manager (a container restart).
+    await manager.stopAll()
+    manager = new SessionManager(workDir, { prewarmEnabled: false, idleEvictionMs: -1, automatedIdleEvictionMs: -1 })
+    expect(await manager.getSession('deleted')).toBeNull()
+    expect(fs.existsSync(file)).toBe(false)
+  })
+
+  it('waits for a release whose response timed out before resuming a retained session', async () => {
+    persist('slow-release')
+    retainedTranscript('slow-release')
+    await manager.getSession('slow-release')
+    let finish!: () => void
+    vi.spyOn(spawned[0], 'dispose').mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { finish = resolve })
+      spawned[0].running = false
+    })
+    const releasing = manager.releaseSession('slow-release')
+    await vi.waitFor(() => expect(spawned[0].dispose).toHaveBeenCalled())
+    let resumed = false
+    const reading = manager.getSession('slow-release').then((session) => { resumed = true; return session })
+    await Promise.resolve()
+    expect(resumed).toBe(false)
+    finish()
+    await releasing
+    expect(await reading).not.toBeNull()
+    await manager.sendMessage('slow-release', 'try again')
+    expect(spawned[1].running).toBe(true)
+  })
 
   it('reports an unknown session without creating anything', async () => {
     expect(manager.hasSession('nope')).toBe(false)

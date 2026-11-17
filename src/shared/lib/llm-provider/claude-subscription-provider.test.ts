@@ -15,9 +15,9 @@ describe('Claude Subscription', () => {
       env: { ANTHROPIC_API_KEY: 'stale-key' },
     })
     expect(await provider.getContainerEnvVars()).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'subscription-token' })
-    expect(provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
-    expect(new ClaudeSubscriptionLlmProvider().getApiKeyStatus().isConfigured).toBe(false)
-    expect(createLlmProvider('claude-subscription', { apiKeys: {}, env: {} }).getEffectiveApiKey()).toBeUndefined()
+    expect(await provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+    expect((await new ClaudeSubscriptionLlmProvider().getApiKeyStatus()).isConfigured).toBe(false)
+    expect(await createLlmProvider('claude-subscription', { apiKeys: {}, env: {} }).getEffectiveApiKey()).toBeUndefined()
     expect(await new AnthropicLlmProvider({ apiKeys: { anthropicApiKey: 'direct-key' }, env: {} }).getContainerEnvVars()).toEqual({
       ANTHROPIC_API_KEY: 'direct-key', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: undefined,
     })
@@ -27,7 +27,7 @@ describe('Claude Subscription', () => {
     const provider = new ClaudeSubscriptionLlmProvider()
     expect(provider.getBuiltinCatalog()).toBe(CLAUDE_BARE_CATALOG)
     expect(provider.supportsDirectApi).toBe(false)
-    expect(() => provider.createClient()).toThrow('API-capable')
+    await expect(provider.createClient()).rejects.toThrow('API-capable')
     expect(await provider.validateKey()).toMatchObject({ valid: false, error: expect.stringContaining('agent message') })
   })
 
@@ -40,15 +40,15 @@ describe('Claude Subscription', () => {
     [undefined, 'OAuth token has expired'],
     [undefined, 'Access token has been revoked'],
     [undefined, 'Expired OAuth token'],
-  ])('makes authentication failures actionable (%s, %j)', (status, body) => {
+  ])('makes authentication failures actionable (%s, %j)', async (status, body) => {
     const provider = new ClaudeSubscriptionLlmProvider()
-    expect(provider.presentationForTurnError(status, body, 'unknown')?.message).toContain('claude setup-token')
+    expect((await provider.presentationForTurnError(status, body, 'unknown'))?.message).toContain('claude setup-token')
   })
 
-  it('uses the SDK authentication code when no status or recognizable text is supplied', () => {
+  it('uses the SDK authentication code when no status or recognizable text is supplied', async () => {
     const provider = new ClaudeSubscriptionLlmProvider()
-    expect(provider.presentationForTurnError(undefined, 'Invalid credential', 'authentication_failed')?.message).toContain('claude setup-token')
-    expect(provider.presentationForTurnError(undefined, 'Invalid value for max_tokens', 'invalid_request')?.message).not.toContain('claude setup-token')
+    expect((await provider.presentationForTurnError(undefined, 'Invalid credential', 'authentication_failed'))?.message).toContain('claude setup-token')
+    expect((await provider.presentationForTurnError(undefined, 'Invalid value for max_tokens', 'invalid_request'))?.message).not.toContain('claude setup-token')
   })
 
   it.each<[number | undefined, unknown]>([
@@ -58,8 +58,8 @@ describe('Claude Subscription', () => {
     [400, 'max_tokens exceeds the limit; this value is invalid'],
     [429, 'Quota exhausted'],
     [403, 'Model not permitted'],
-  ])('does not mislabel ordinary errors as expired credentials (%s, %j)', (status, body) => {
+  ])('does not mislabel ordinary errors as expired credentials (%s, %j)', async (status, body) => {
     const provider = new ClaudeSubscriptionLlmProvider()
-    expect(provider.presentationForTurnError(status, body, 'unknown')).toBeNull()
+    expect(await provider.presentationForTurnError(status, body, 'unknown')).toBeNull()
   })
 })

@@ -85,6 +85,11 @@ describe('parseVolumes', () => {
     expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'docs' }]))[0].readOnly).toBeUndefined()
   })
 
+  it("carries a drive's source and agent note, and neither when the host sends none", () => {
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'repo', sourceLabel: 'GitHub · a/b@main', agentNote: 'Writes are commits.' }]))[0]).toMatchObject({ sourceLabel: 'GitHub · a/b@main', agentNote: 'Writes are commits.' })
+    expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'docs' }]))[0]).not.toHaveProperty('agentNote')
+  })
+
   it('accepts a remote cache policy and rejects unknown modes', () => {
     expect(parseVolumes(JSON.stringify([{ volumeId: 'v1', name: 'cloud', cacheMode: 'remote' }]))).toEqual([
       { volumeId: 'v1', name: 'cloud', cacheMode: 'remote' },

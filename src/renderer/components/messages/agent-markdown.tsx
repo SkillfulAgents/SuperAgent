@@ -4,8 +4,10 @@ import type { Components } from 'react-markdown'
 import type { Element, ElementContent } from 'hast'
 import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components/ui/markdown'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
-import { MENTION_TAG, mentionOf } from '@renderer/lib/rehype-mentions'
+import { MENTION_TAG, mentionOf, rehypeMentions } from '@renderer/lib/rehype-mentions'
+import { parseUserTags, plainUserTags, type Mention } from '@shared/lib/utils/mentions'
 import { CodeCopyButton } from './code-copy-button'
 import { MentionChip } from './mention-chip'
 import { HtmlBlock } from './html-block'
@@ -18,7 +20,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
   const getText = useCallback(() => extractText(children), [children])
   return (
     <pre className={cn(
-      'relative group rounded-md p-3 text-sm leading-relaxed border code-scrollbar',
+      'relative group rounded-card p-3 text-sm leading-relaxed border code-scrollbar',
       'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
     )}>
       <CodeCopyButton getText={getText} />
@@ -59,7 +61,7 @@ function ExpandingTable({ children }: { children: ReactNode }) {
   )
 }
 
-/** A `@Name` that rehypeMentions lifted out of a sent message. */
+/** A `@Name` that rehypeMentions lifted out of the text. */
 function MentionElement({ node, children }: { node?: Element; children?: ReactNode }) {
   const lifted = mentionOf(node)
   return lifted ? <MentionChip mention={lifted.mention} agentSlug={lifted.agentSlug} /> : <>{children}</>
@@ -112,7 +114,16 @@ const STREAMING_COMPONENTS: Components = {
       alt={alt ?? ''}
       loading="lazy"
       decoding="async"
-      className="h-auto max-w-full rounded-md"
+      className="h-auto max-w-full rounded-card"
+    />
+  ),
+  // remark-gfm's only input is a checklist box, in its item (tight list) or the item's first
+  // paragraph (loose list). It takes the marker's place in the gutter. Read-only, full contrast.
+  input: ({ checked }) => (
+    <Checkbox
+      checked={!!checked}
+      disabled
+      className="float-start -ms-6 mt-[calc(0.5lh-0.5rem)] disabled:cursor-default disabled:opacity-100 [li:has(>&)]:list-none [li:has(>p>&)]:list-none"
     />
   ),
 }
@@ -182,6 +193,8 @@ export type AgentMarkdownProps = {
   agentSlug?: string
   imageAliases?: EmbeddedImageAliases
   rehypePlugins?: MarkdownProps['rehypePlugins']
+  /** The people the text tags, when the caller has read them already (chat). Otherwise read from an agent's `[@Name](user:<id>)` tags. */
+  mentions?: readonly Mention[]
 } & (
   // `streaming` keeps fences as code while text still arrives; `settled` draws them.
   // A `link` rebuilds the components on every render, so streaming text cannot take one.
@@ -195,14 +208,17 @@ export type AgentMarkdownProps = {
 )
 
 // Memoized so a settled block parses once while later text streams in.
-export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, link, rehypePlugins, htmlPreview }: AgentMarkdownProps) {
+export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, link, rehypePlugins, htmlPreview, mentions }: AgentMarkdownProps) {
+  // A tag draws as a person's chip. Text still streaming in holds back a tag it has not finished.
+  const tagged = mentions ? { text, mentions } : mode === 'streaming' ? { text: plainUserTags(text, { streaming: true }), mentions: [] } : parseUserTags(text)
+  const plugins: MarkdownProps['rehypePlugins'] = tagged.mentions.length === 0 ? rehypePlugins : [[rehypeMentions, { mentions: tagged.mentions, agentSlug }], ...(rehypePlugins ?? [])]
   const base = htmlPreview ? HTML_PREVIEW_COMPONENTS : MODE_COMPONENTS[mode]
   const components = link
     ? { ...base, a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} /> }
     : base
   return (
-    <Markdown components={components} rehypePlugins={rehypePlugins} imageAliases={imageAliases} agentSlug={agentSlug}>
-      {text}
+    <Markdown components={components} rehypePlugins={plugins} imageAliases={imageAliases} agentSlug={agentSlug}>
+      {tagged.text}
     </Markdown>
   )
 })

@@ -1,4 +1,8 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import sharp from 'sharp'
 import {
   BROWSER_USE_GUIDANCE_HINT,
   createBrowserTools,
@@ -254,18 +258,20 @@ describe('browser_eval return note', () => {
   })
 
   it('does not attach the note to falsy-but-real values', async () => {
-    for (const out of ['0', 'false', '""', '{}', '[]']) {
+    // `null` is a value the body returned: the CLI prints `undefined` for a
+    // body without `return` (0.41.1+).
+    for (const out of ['0', 'false', '""', '{}', '[]', 'null']) {
       expect(await evalWith(out, true)).not.toContain('add `return`')
     }
   })
 
-  it('attaches the note only when a wrapped body produced null or nothing', async () => {
-    expect(await evalWith('null', true)).toContain('add `return`')
+  it('attaches the note only when a wrapped body produced undefined or nothing', async () => {
+    expect(await evalWith('undefined', true)).toContain('yields undefined — add `return`')
     expect(await evalWith('', true)).toContain('add `return`')
   })
 
   it('never attaches the note to an unwrapped expression', async () => {
-    expect(await evalWith('null', false)).not.toContain('add `return`')
+    expect(await evalWith('undefined', false)).not.toContain('add `return`')
     expect(await evalWith('', false)).toBe('(no output)')
   })
 })
@@ -476,6 +482,22 @@ describe('SUP-1265 tools', () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ success: true, path: '/nonexistent/s-2.png' })))
     const result = await toolNamed('browser_screenshot').handler({})
     expect(result.content.at(-1).text).toBe('Screenshot saved to: /nonexistent/s-2.png')
+  })
+
+  it('browser_screenshot attaches the image at the CSS size the server names, and leaves the file as captured', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'browser-screenshot-'))
+    const file = join(dir, 'shot.png')
+    const png = await sharp({ create: { width: 2560, height: 1440, channels: 3, background: '#123456' } }).png().toBuffer()
+    await writeFile(file, png)
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => json({ success: true, path: file, cssScale: 1 / 2 })))
+      const result = await toolNamed('browser_screenshot').handler({})
+      const attached = Buffer.from(result.content[0].data, 'base64')
+      expect(await sharp(attached).metadata()).toMatchObject({ width: 1280, height: 720 })
+      expect(await readFile(file)).toEqual(png)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 
   it('browser_read forwards outline/section and returns the text', async () => {

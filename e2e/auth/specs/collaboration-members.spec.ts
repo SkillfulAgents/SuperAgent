@@ -32,7 +32,8 @@ test('members share one live roster while invitation and revocation follow permi
     const agent = await created.json()
     const endpoint = `/api/agents/${agent.slug}`
     await page.goto(`/agents/${agent.slug}`)
-    const ownerStack = page.getByTestId('agent-member-stack')
+    // Agent Home's member stack: the sidebar row's, a size up, with the same roster on hover or click.
+    const ownerStack = page.getByTestId(`agent-members-${agent.slug}`)
     await expect(page.getByTestId('agent-share-button')).toHaveText('Share', { timeout: 15_000 })
     await expect(ownerStack).toHaveCount(0)
     await expect(page.getByTestId(`sidebar-members-${agent.slug}`)).toHaveCount(0)
@@ -60,14 +61,14 @@ test('members share one live roster while invitation and revocation follow permi
     await sharing.getByRole('combobox').first().click()
     await page.getByRole('option', { name: 'Viewer Can view sessions only' }).click()
     await sharing.getByRole('button', { name: 'Invite', exact: true }).click()
-    await expect(ownerStack.getByTestId(`agent-member-${users[1].id}`)).toBeVisible()
+    await expect(ownerStack.locator('[role="img"]')).toHaveCount(2)
     await expect(sharing).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(sharing).not.toBeVisible()
 
     const viewer = await users[1].context.newPage()
     await viewer.goto(`/agents/${agent.slug}`)
-    await expect(viewer.getByTestId('agent-member-stack')).toBeVisible()
+    await expect(viewer.getByTestId(`agent-members-${agent.slug}`)).toBeVisible()
     await expect(viewer.getByTestId('agent-share-button')).toHaveCount(0)
     await expect(viewer.getByTestId('view-only-banner')).toBeVisible()
     expect((await viewer.request.get(`${endpoint}/access`)).status()).toBe(403)
@@ -106,11 +107,11 @@ test('members share one live roster while invitation and revocation follow permi
     for (const member of users.slice(3, 7)) {
       expect((await page.request.post(`${endpoint}/access`, { data: { userId: member.id, role: 'user' } })).ok()).toBeTruthy()
     }
-    await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveText('+2')
-    await expect(viewer.getByTestId('agent-members-overflow')).toHaveText('+2')
-    await viewer.getByTestId('agent-members-overflow').click()
-    await expect(viewer.getByTestId('agent-members-list').getByRole('listitem')).toHaveCount(7)
-    await expect(viewer.getByTestId('agent-members-list')).toContainText(users[6].email)
+    await expect(page.getByTestId(`agent-members-count-${agent.slug}`)).toHaveText('7')
+    await expect(viewer.getByTestId(`agent-members-count-${agent.slug}`)).toHaveText('7')
+    await viewer.getByTestId(`agent-members-${agent.slug}`).click()
+    await expect(viewer.getByTestId(`agent-members-list-${agent.slug}`).getByRole('listitem')).toHaveCount(7)
+    await expect(viewer.getByTestId(`agent-members-list-${agent.slug}`)).toContainText(users[6].email)
     await viewer.keyboard.press('Escape')
 
     const image = new PNG({ width: 32, height: 32 })
@@ -119,16 +120,17 @@ test('members share one live roster while invitation and revocation follow permi
     expect((await viewer.request.post('/api/auth/update-user', { headers: { Origin: baseURL! }, data: { name: 'Victoria Viewer' } })).ok()).toBeTruthy()
     // Other members see the updated photo and name on their next reload.
     await page.reload()
-    const viewerFace = ownerStack.getByTestId(`agent-member-${users[1].id}`)
+    const viewerFace = ownerStack.locator('[role="img"][aria-label="Victoria Viewer"]')
     await expect(viewerFace.locator('img')).toHaveAttribute('src', /\/api\/profile\/images\//)
-    await expect(viewerFace).toHaveAttribute('aria-label', /Victoria Viewer/)
-    await ownerStack.getByTestId(`agent-member-${users[0].id}`).hover()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[0].email })).toBeVisible()
-    await viewerFace.hover()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[1].email })).toBeVisible()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[0].email })).toHaveCount(0)
-    await viewerFace.focus()
-    await expect(page.getByRole('tooltip').filter({ hasText: users[1].email })).toBeVisible()
+    // Hovering the stack, or focusing it, opens the roster with names and emails.
+    const ownerRoster = page.getByTestId(`agent-members-list-${agent.slug}`)
+    await ownerStack.hover()
+    await expect(ownerRoster).toContainText(users[0].email)
+    await expect(ownerRoster).toContainText('Victoria Viewer')
+    await page.mouse.move(0, 0)
+    await expect(ownerRoster).toHaveCount(0)
+    await ownerStack.focus()
+    await expect(ownerRoster).toContainText(users[1].email)
     await page.keyboard.press('Escape')
 
     expect((await page.request.patch(`${endpoint}/access/${users[1].id}`, { data: { role: 'owner' } })).ok()).toBeTruthy()
@@ -137,18 +139,27 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(viewer.getByTestId('agent-share-button')).toHaveCount(0)
     await expect(viewer.getByTestId('view-only-banner')).toHaveCount(0)
 
-    // A touch viewport can inspect names, respects reduced motion, and keeps + reachable.
+    // A touch viewport can inspect names and keeps Share reachable.
     const touch = await browser.newContext({ baseURL, storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' })
     contexts.push(touch)
     const mobile = await touch.newPage()
     await mobile.goto(`/agents/${agent.slug}`)
-    const mobileFace = mobile.getByTestId(`agent-member-${users[1].id}`)
-    await mobileFace.tap()
-    await expect(mobile.getByRole('tooltip')).toContainText(users[1].email)
-    expect(await mobileFace.getByTestId('member-avatar-visual').evaluate((element) => getComputedStyle(element).transitionProperty)).toBe('none')
+    await mobile.getByTestId(`agent-members-${agent.slug}`).tap()
+    await expect(mobile.getByTestId(`agent-members-list-${agent.slug}`)).toContainText(users[1].email)
     const inviteBounds = await mobile.getByTestId('agent-share-button').boundingBox()
     expect(inviteBounds!.x).toBeGreaterThanOrEqual(0)
     expect(inviteBounds!.x + inviteBounds!.width).toBeLessThanOrEqual(390)
+    await mobile.keyboard.press('Escape')
+    const menuBounds = (await mobile.getByTestId('agent-settings-button').boundingBox())!
+    expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(390)
+    const composerBounds = (await mobile.getByTestId('home-message-input').boundingBox())!
+    expect(composerBounds.x + composerBounds.width).toBeLessThanOrEqual(390)
+    // Narrow, the settings follow the page's content in its one column.
+    const sections = mobile.getByTestId('home-sections-panel')
+    await sections.scrollIntoViewIfNeeded()
+    await expect(sections).toBeVisible()
+    const sectionsBounds = (await sections.boundingBox())!
+    expect(sectionsBounds.x + sectionsBounds.width).toBeLessThanOrEqual(390)
 
     // A finger can open the sidebar roster without hitting the hidden pen.
     await mobile.keyboard.press('Escape')
@@ -161,11 +172,11 @@ test('members share one live roster while invitation and revocation follow permi
 
     expect((await page.request.delete(`${endpoint}/access/${users[1].id}`)).ok()).toBeTruthy()
     await expect(viewer).toHaveURL(`${baseURL}/`)
-    await expect(viewer.getByTestId('agent-member-stack')).toHaveCount(0)
+    await expect(viewer.getByTestId(`agent-members-${agent.slug}`)).toHaveCount(0)
     expect((await viewer.request.get(`${endpoint}/members`)).status()).toBe(403)
-    await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveText('+1')
+    await expect(page.getByTestId(`agent-members-count-${agent.slug}`)).toHaveText('6')
     expect((await users[2].context.request.post(`${endpoint}/leave`)).ok()).toBeTruthy()
-    await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveCount(0)
+    await expect(page.getByTestId(`agent-members-count-${agent.slug}`)).toHaveCount(0)
 
     // Other specs may have created the deployment's first user. Check the
     // actual deployment role instead of treating the agent owner as an admin.
@@ -176,8 +187,8 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(agentLink).toHaveCount(0)
     if (isDeploymentAdmin) {
       await expect(page).toHaveURL(new RegExp(`/agents/[^/]*${agent.slug}$`))
-      await expect(ownerStack.getByTestId(`agent-member-${users[0].id}`)).toHaveCount(0)
-      await expect(ownerStack.getByTestId(`agent-member-${users[3].id}`)).toBeVisible()
+      await expect(ownerStack.locator(`[role="img"][aria-label="${users[0].name}"]`)).toHaveCount(0)
+      await expect(ownerStack.locator(`[role="img"][aria-label="${users[3].name}"]`)).toBeVisible()
     } else {
       await expect(page).toHaveURL(`${baseURL}/`)
       await expect(ownerStack).toHaveCount(0)

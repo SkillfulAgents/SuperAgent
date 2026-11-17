@@ -1,5 +1,9 @@
 import { z } from 'zod'
 
+/** A consumer's retry wakeup. In memory, like the queue it wakes: the key is one registration's. */
+export const relayConsumerRetryPayloadSchema = z.object({ consumerKey: z.string() })
+export type RelayConsumerRetryPayload = z.infer<typeof relayConsumerRetryPayloadSchema>
+
 /**
  * Responses from the platform proxy's `/v1/webhook-events` routes. Loose, so a
  * field the proxy adds later doesn't fail every claim.

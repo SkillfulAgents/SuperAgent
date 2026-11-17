@@ -1,4 +1,14 @@
 import { useLayoutEffect, useRef, useState } from 'react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
 import { Button } from '@renderer/components/ui/button'
 import { DisplacedDotField } from '@renderer/components/ui/displaced-dot-field'
 import { FOLDER_FADE_SHARE, TeamBrainDiagram } from './team-brain-diagram'
@@ -17,9 +27,11 @@ function dotFade(fadeStart: number, end: number) {
  * The page before anyone has opted in. One calm screen: the picture, a line
  * on what it is, one button. Someone arriving from the sidebar should get it
  * at a glance and know what they are turning on. Without `onStart` (a
- * member, not an admin) it says to ask an admin.
+ * member, not an admin) it says to ask an admin. With `resume`, a set-up an
+ * admin started and left, the button gives way to Resume set-up and Discard
+ * set-up.
  */
-export function TeamBrainIntro({ onStart }: { onStart?: () => void }) {
+export function TeamBrainIntro({ onStart, resume }: { onStart?: () => void; resume?: TeamBrainResume }) {
   // Where the picture ends and its folder fade begins, in the scrolling page's coordinates.
   const pictureRef = useRef<HTMLDivElement>(null)
   const [fade, setFade] = useState<{ start: number; end: number } | null>(null)
@@ -69,7 +81,9 @@ export function TeamBrainIntro({ onStart }: { onStart?: () => void }) {
         </p>
 
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-          {onStart ? (
+          {resume ? (
+            <ResumeSetup resume={resume} />
+          ) : onStart ? (
             <Button size="lg" onClick={onStart} data-testid="team-brain-start" className="bg-brand text-white shadow-md hover:bg-brand/90">
               Set up Team Brain
             </Button>
@@ -78,6 +92,49 @@ export function TeamBrainIntro({ onStart }: { onStart?: () => void }) {
           )}
         </div>
       </section>
+    </div>
+  )
+}
+
+/** A set-up in progress, as the page offers it to any admin. */
+export interface TeamBrainResume {
+  /** Whether Discard has an agent or a drive to remove. */
+  madeSomething: boolean
+  onResume: () => void
+  onDiscard: () => Promise<void>
+}
+
+function ResumeSetup({ resume }: { resume: TeamBrainResume }) {
+  const [confirming, setConfirming] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  const discard = async () => {
+    setDiscarding(true)
+    try { await resume.onDiscard() } finally { setDiscarding(false) }
+  }
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div className="flex flex-wrap items-center justify-center gap-3">
+        <Button size="lg" onClick={resume.onResume} data-testid="team-brain-resume" className="bg-brand text-white shadow-md hover:bg-brand/90">
+          Resume set-up
+        </Button>
+        <Button size="lg" variant="outline" onClick={() => setConfirming(true)} disabled={discarding} data-testid="team-brain-discard">
+          Discard set-up
+        </Button>
+      </div>
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard Team Brain set-up?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {resume.madeSomething ? 'The Team Brain agent and drive made so far will be removed.' : 'Nothing has been created yet.'} Its choices will be forgotten; you can start again any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep set-up</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void discard()} data-testid="team-brain-discard-confirm">Discard set-up</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

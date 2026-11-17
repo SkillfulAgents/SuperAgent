@@ -123,7 +123,7 @@ it('sets webhooks up on a Socket Mode installation, and removes them again', asy
   const removed = await patch(row.id, { settings: { webhooks: false } })
   expect(removed.status).toBe(200)
   expect(relay.disable).toHaveBeenCalledWith(expect.any(String), 'whep_1')
-  expect((await stored(row.id)).config).toEqual({ botToken: 'xoxb-1', appToken: 'xapp-1', signingSecret: 'signing-secret' })
+  expect((await stored(row.id)).config).toEqual({ botToken: 'xoxb-1', appToken: 'xapp-1', signingSecret: 'signing-secret', answerInThread: true, newSessionPerThread: true })
 })
 
 it('explains what is missing instead of setting webhooks up or removing them', async () => {
@@ -141,5 +141,5 @@ it('explains what is missing instead of setting webhooks up or removing them', a
   // Supplied with the removal, the token is what the installation receives with afterwards.
   const withToken = await patch(webhookOnly.id, { settings: { webhooks: false }, config: { appToken: 'xapp-2' } })
   expect(withToken.status).toBe(200)
-  expect((await stored(webhookOnly.id)).config).toEqual({ botToken: 'xoxb-2', signingSecret: 'secret', appToken: 'xapp-2' })
+  expect((await stored(webhookOnly.id)).config).toEqual({ botToken: 'xoxb-2', signingSecret: 'secret', appToken: 'xapp-2', answerInThread: true, newSessionPerThread: true })
 })

@@ -45,6 +45,7 @@ vi.mock('@renderer/hooks/use-browser-stream', () => ({
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({ browserActive: true, isActive: true, streamingToolUses: [], activeSubagents: [] }),
+  isSessionStreamOpen: () => false,
 }))
 
 vi.mock('@shared/lib/tools/request-browser-input/use-browser-input-actions', () => ({

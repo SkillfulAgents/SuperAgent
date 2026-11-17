@@ -34,13 +34,15 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = KIMI_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override toolSearchEnv() { return 'true' as const }
+  override async toolSearchEnv() { return 'true' as const }
   override readonly supportsModelSearch = true
   override readonly supportsUsage = true
 
-  override getEffectiveApiKey() { return this.configuration?.oauth?.accessToken }
-  override getApiKeyStatus() {
-    return this.getEffectiveApiKey() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
+  // Credentials come only from the connection, never from global settings.
+  protected override async ambientSettings() { return undefined }
+  protected override effectiveApiKeyFrom() { return this.configuration?.oauth?.accessToken }
+  override apiKeyStatusFrom() {
+    return this.effectiveApiKeyFrom() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
   }
   private get apiBase() { return KIMI_HOSTS[kimiRegion(this.configuration?.oauth?.region)].api }
   private async credential(rejectedGeneration?: number) {
@@ -71,7 +73,7 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
     }
     return response
   }
-  createClient(): Anthropic {
+  async createClientFrom(): Promise<Anthropic> {
     return new Anthropic({ authToken: 'app-managed', baseURL: this.apiBase, fetch: (input, init) => this.fetch(input, init) })
   }
   override async getUsage() {
@@ -101,7 +103,7 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
       supportedEfforts: kimiEfforts(model.think_efforts?.valid_efforts), supportsWebSearch: false,
     }))
   }
-  protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
+  protected override async parseErrorResponseOverride(status: number | undefined, body: unknown) {
     const actual = status ?? inferErrorStatus(extractErrorMessage(body))
     const message = extractErrorMessage(body)
     if (KIMI_PLAN_LIMIT.test(message)) return { severity: 'error' as const, icon: 'info' as const, message: `**Your Kimi plan does not include this request.** ${message}` }

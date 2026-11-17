@@ -10,6 +10,7 @@ import { ModelFamilyList, findCatalogModel } from './model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from './effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from './speed-section'
 import { ModelTooltip } from './model-tooltip'
+import { cn } from '@shared/lib/utils/cn'
 
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
@@ -18,9 +19,11 @@ interface ComposerOptionsPopoverProps {
   includeEffort?: boolean
   /** Optional caller-owned content rendered after the picker sections. */
   footer?: ReactNode
+  /** The trigger's size: 34px tall with 8px padding ('default'), or 28px with 6px ('sm'). */
+  size?: 'default' | 'sm'
 }
 
-function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer }: ComposerOptionsPopoverProps) {
+function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer, size = 'default' }: ComposerOptionsPopoverProps) {
   const { effort, setEffort, speed, setSpeed, model, setModel, catalog, defaultModel, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
@@ -72,7 +75,10 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
             // Collapses on the width the composer row leaves for it, not the window's: a drawer
             // can squeeze the row in a wide window. Under 160px the label is cut into the model
             // name, so the icon reads better.
-            className="h-[34px] min-w-0 gap-1.5 px-2 text-xs font-medium aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-background aria-disabled:hover:text-foreground [@container(max-width:160px)]:w-[34px] [@container(max-width:160px)]:shrink-0 [@container(max-width:160px)]:px-0"
+            className={cn(
+              'min-w-0 gap-1.5 text-xs font-medium aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-background aria-disabled:hover:text-foreground [@container(max-width:160px)]:shrink-0 [@container(max-width:160px)]:px-0',
+              size === 'sm' ? 'h-7 px-1.5 [@container(max-width:160px)]:w-7' : 'h-[34px] px-2 [@container(max-width:160px)]:w-[34px]',
+            )}
             aria-label={`${includeEffort ? 'Model and effort' : 'Model'}: ${triggerAriaLabel}. Click to change.`}
             data-testid="composer-options-trigger"
           >

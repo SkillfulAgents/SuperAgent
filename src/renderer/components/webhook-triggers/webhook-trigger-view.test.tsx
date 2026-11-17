@@ -25,7 +25,8 @@ vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
       status: 'active',
       fireCount: 0,
       lastFiredAt: null,
-      model: null,
+      llmProviderId: 'conn-claude-subscription',
+      model: 'claude-opus-4-5',
       effort: null,
       speed: null,
       createdAt: new Date('2026-07-17T00:00:00Z'),
@@ -83,7 +84,13 @@ vi.mock('@renderer/components/triggers/collapsible-prompt-text', () => ({
   CollapsiblePromptText: ({ text }: { text: string }) => <span>{text}</span>,
 }))
 vi.mock('@renderer/components/triggers/edit-prompt-dialog', () => ({ EditPromptDialog: () => null }))
-vi.mock('@renderer/components/triggers/runtime-options-card', () => ({ RuntimeOptionsCard: () => null }))
+const runtimeCardProps = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }))
+vi.mock('@renderer/components/triggers/runtime-options-card', () => ({
+  RuntimeOptionsCard: (props: Record<string, unknown>) => {
+    runtimeCardProps.current = props
+    return null
+  },
+}))
 
 vi.mock('@renderer/components/ui/popover', () => ({
   Popover: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -160,5 +167,15 @@ describe('WebhookTriggerView relay notices', () => {
     relayState.kind = 'composio'
     render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
     expect(screen.getByText(/personal Composio API key/)).toBeInTheDocument()
+  })
+})
+
+describe('WebhookTriggerView runtime options', () => {
+  it('passes the saved connection to the model card', () => {
+    render(<WebhookTriggerView triggerId="trigger-1" agentSlug="agent-1" />)
+    expect(runtimeCardProps.current).toMatchObject({
+      llmProviderId: 'conn-claude-subscription',
+      model: 'claude-opus-4-5',
+    })
   })
 })

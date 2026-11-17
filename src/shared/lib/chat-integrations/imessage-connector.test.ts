@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { IMessageConnector } from './imessage-connector'
+import { IMessageConnector, markdownToIMessage } from './imessage-connector'
 
 vi.mock('ws', () => {
   const MockWebSocket = vi.fn() as any
@@ -108,6 +108,21 @@ describe('IMessageConnector', () => {
       const result = extract('Hello world')
       expect(result.reactions).toEqual([])
       expect(result.cleanText).toBe('Hello world')
+    })
+
+    it('keeps one emoji, including flags and keycaps, and drops text around an emoji', () => {
+      expect(extract('[[reaction:🇺🇸]]').reactions).toEqual(['🇺🇸'])
+      expect(extract('[[reaction:1️⃣]]').reactions).toEqual(['1️⃣'])
+      expect(extract('[[reaction:hello🔍]]').reactions).toEqual([])
+      expect(extract('[[reaction:👍👍]]').reactions).toEqual([])
+      expect(extract('[[reaction:a\u20E3]]').reactions).toEqual([])
+      expect(extract('[[reaction:🇺]]').reactions).toEqual([])
+    })
+
+    it('keeps an emoji as itself, for a custom tapback', () => {
+      const result = extract('[[reaction:✍️]] Drafting it now')
+      expect(result.reactions).toEqual(['✍️'])
+      expect(result.cleanText).toBe('Drafting it now')
     })
 
     it('ignores unknown reaction names (no mapping)', () => {
@@ -601,7 +616,7 @@ describe('IMessageConnector', () => {
       expect(msg.files).toBeUndefined()
     })
 
-    it('tracks lastReceivedMessageId', async () => {
+    it('tracks each chat\'s newest message', async () => {
       const handler = vi.fn()
       connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
@@ -613,12 +628,13 @@ describe('IMessageConnector', () => {
       })
       await Promise.resolve()
 
-      expect((connector as any).lastReceivedMessageId).toBe('msg-abc')
+      expect((connector as any).latestMessages.get('chat-1')?.id).toBe('msg-abc')
     })
 
-    it('sends mark_read on receiving a message', async () => {
+    it('sends mark_read once the host accepts the message, not on receipt', async () => {
       const ws = (connector as any).ws as MockWs
-      connector.onEvent(vi.fn())
+      const handler = vi.fn()
+      connector.onEvent(event => { if (event.type === 'input') handler(event) })
 
       ;(connector as any).handleMessageReceived({
         messageId: 'msg-6',
@@ -627,9 +643,10 @@ describe('IMessageConnector', () => {
         parts: [{ type: 'text', value: 'hi' }],
       })
       await Promise.resolve()
+      expect(parseSent(ws).some((m) => m.type === 'mark_read')).toBe(false)
 
-      const messages = parseSent(ws)
-      expect(messages.some((m) => m.type === 'mark_read')).toBe(true)
+      await connector.acknowledgeInput(handler.mock.calls[0][0])
+      expect(parseSent(ws)).toContainEqual({ type: 'mark_read', data: { chatId: 'chat-1' } })
     })
   })
 
@@ -653,9 +670,22 @@ describe('IMessageConnector', () => {
       expect((messages[0].data as any).parts[0].value).toBe('Hello there')
     })
 
+    it('sends markdown as plain text with its styles as decorations', async () => {
+      await connector.sendMessage('chat-1', { text: 'Ship **today**' })
+
+      const data = parseSent(ws)[0].data as any
+      expect(data.parts).toEqual([{ type: 'text', value: 'Ship today' }])
+      expect(data.textDecorations).toEqual([{ type: 'bold', range: { start: 5, length: 5 } }])
+    })
+
+    it('keeps links in the text over the socket, whose sends are not awaited', async () => {
+      await connector.sendMessage('chat-1', { text: 'See [the menu](https://a.com)' })
+
+      expect(parseSent(ws).map(m => (m.data as any).parts)).toEqual([[{ type: 'text', value: 'See the menu (https://a.com)' }]])
+    })
+
     it('sends reaction-only without a text message', async () => {
-      // Set up lastReceivedMessageId so reactions can be sent
-      ;(connector as any).lastReceivedMessageId = 'incoming-msg-1'
+      ;(connector as any).latestMessages.set('chat-1', { id: 'incoming-msg-1', at: 0 })
 
       const id = await connector.sendMessage('chat-1', { text: '[[reaction:heart]]' })
 
@@ -668,7 +698,7 @@ describe('IMessageConnector', () => {
     })
 
     it('sends reaction + text message for mixed content', async () => {
-      ;(connector as any).lastReceivedMessageId = 'incoming-msg-2'
+      ;(connector as any).latestMessages.set('chat-1', { id: 'incoming-msg-2', at: 0 })
 
       await connector.sendMessage('chat-1', { text: '[[reaction:thumbs_up]] Nice work!' })
 
@@ -680,8 +710,8 @@ describe('IMessageConnector', () => {
       expect((messages[1].data as any).parts[0].value).toBe('Nice work!')
     })
 
-    it('does not send reaction when there is no lastReceivedMessageId', async () => {
-      // lastReceivedMessageId is null by default
+    it('does not send reaction when the chat has no message yet', async () => {
+      ;(connector as any).latestMessages.set('chat-2', { id: 'other-chat-msg', at: 0 })
       await connector.sendMessage('chat-1', { text: '[[reaction:heart]] Hello' })
 
       const messages = parseSent(ws)
@@ -692,7 +722,7 @@ describe('IMessageConnector', () => {
     })
 
     it('sends multiple reactions', async () => {
-      ;(connector as any).lastReceivedMessageId = 'incoming-msg-3'
+      ;(connector as any).latestMessages.set('chat-1', { id: 'incoming-msg-3', at: 0 })
 
       await connector.sendMessage('chat-1', { text: '[[reaction:heart]][[reaction:haha]]' })
 
@@ -702,6 +732,40 @@ describe('IMessageConnector', () => {
       expect((messages[0].data as any).reactionType).toBe('love')
       expect(messages[1].type).toBe('send_reaction')
       expect((messages[1].data as any).reactionType).toBe('laugh')
+    })
+  })
+
+  describe('markdownToIMessage', () => {
+    it('drops markdown syntax and styles ranges in UTF-16 offsets', () => {
+      const md = '# Plan\n\nHi 👋 **Ana**, read *this*:\n\n- one\n- see [docs](https://e.com) or https://x.com\n  - nested\n\n1. a\n2. ~~b~~\n\n| A | B |\n|---|---|\n| `1` | 2 |'
+      const { text, decorations } = markdownToIMessage(md)
+
+      expect(text).toBe('Plan\n\nHi 👋 Ana, read this:\n\n• one\n• see docs (https://e.com) or https://x.com\n  • nested\n\n1. a\n2. b\n\nA · B\n1 · 2')
+      expect(decorations.map(d => [d.type, text.slice(d.range.start, d.range.start + d.range.length)])).toEqual([
+        ['bold', 'Plan'], ['bold', 'Ana'], ['italic', 'this'], ['strikethrough', 'b'],
+      ])
+    })
+
+    it('spaces a list with a blank line between items once any item runs past a phone line', () => {
+      const long = 'Zuni Cafe is a classic on Market St, known for the roast chicken'
+      expect(markdownToIMessage(`- ${long}\n- Nopa`).text).toBe(`• ${long}\n\n• Nopa`)
+      expect(markdownToIMessage('- Table for 2\n- Patio').text).toBe('• Table for 2\n• Patio')
+    })
+
+    it('moves https links out once each and leaves no empty lines or bullets', () => {
+      const md = 'See [the guide](HTTPS://a.com) and https://b.com\n\n*https://d.com*\n\nSources:\n\n1. https://c.com\n2. **Old**: http://plain.com'
+      expect(markdownToIMessage(md, { previews: true })).toEqual({
+        text: 'See the guide and \n\nSources:\n\n1. Old: http://plain.com',
+        decorations: [{ type: 'bold', range: { start: 33, length: 3 } }],
+        links: ['HTTPS://a.com', 'https://b.com', 'https://d.com', 'https://c.com'],
+      })
+      expect(markdownToIMessage('- Sources:\n  - https://e.com\n- next', { previews: true }).text).toBe('• Sources:\n• next')
+      expect(markdownToIMessage('- **see https://e.com**', { previews: true })).toMatchObject({ text: '• see ', decorations: [{ type: 'bold', range: { start: 2, length: 4 } }] })
+    })
+
+    it('keeps task boxes on their line, link addresses unless autolinked, image alt text, and drops link definitions', () => {
+      const md = '- [x] done\n- [ ] todo\n\n0. zero\n\n- [x] loose\n\n- [ ] list\n\nMail ana@example.com, read [docs](https://e.com/docs) ![chart](https://e.com/c.png) ![](https://e.com/e.png)\n\n[d]: https://e.com'
+      expect(markdownToIMessage(md).text).toBe('• ☑ done\n• ☐ todo\n\n0. zero\n\n• ☑ loose\n• ☐ list\n\nMail ana@example.com, read docs (https://e.com/docs) chart (https://e.com/c.png) https://e.com/e.png')
     })
   })
 

@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import fs from 'fs'
 import path from 'path'
+import { readSessionMetadata } from '../helpers/session-metadata'
 
 // The mock container reports dashboards that exist under the agent's
 // workspace artifacts dir as running, so seeding one lets the standalone
@@ -14,20 +15,6 @@ function seedDashboard(agentSlug: string) {
     path.join(dashboardDir, 'package.json'),
     JSON.stringify({ name: 'Test Dashboard', version: '1.0.0' })
   )
-}
-
-// The provenance fields are metadata-only (not projected into the session
-// API), so assert against the persisted per-agent metadata map itself.
-function readSessionMetadata(agentSlug: string): Record<string, Record<string, unknown>> {
-  const dataDir = process.env.SUPERAGENT_DATA_DIR
-  if (!dataDir) throw new Error('SUPERAGENT_DATA_DIR is required for metadata assertions')
-  const metadataPath = path.join(dataDir, 'agents', agentSlug, 'workspace', 'session-metadata.json')
-  try {
-    return JSON.parse(fs.readFileSync(metadataPath, 'utf-8'))
-  } catch {
-    // Not written yet (or torn mid-write) — let the caller's poll retry.
-    return {}
-  }
 }
 
 async function startDispatchFromFrame(page: Page, url: string) {
@@ -158,9 +145,10 @@ test.describe('standalone /view wrapper dispatch host', () => {
     const sessions = await sessionsResp.json() as Array<{ id: string }>
     expect(sessions.some((s) => s.id === result.sessionId)).toBe(true)
 
-    // Provenance must be persisted with the session's registration.
+    // Provenance must be persisted with the session's registration. The
+    // fields are metadata-only (not projected into the session API).
     await expect
-      .poll(() => readSessionMetadata(agentSlug)[result.sessionId!])
+      .poll(async () => (await readSessionMetadata(page.request, agentSlug))[result.sessionId!])
       .toMatchObject({
         dispatchedByDashboardSlug: 'test-dashboard',
         dispatchedByDashboardAgentSlug: agentSlug,
@@ -215,7 +203,7 @@ test.describe('in-app dashboard dispatch', () => {
     expect(sessions.some((s) => s.id === result.sessionId)).toBe(true)
 
     await expect
-      .poll(() => readSessionMetadata(agentSlug)[result.sessionId!])
+      .poll(async () => (await readSessionMetadata(page.request, agentSlug))[result.sessionId!])
       .toMatchObject({
         dispatchedByDashboardSlug: 'test-dashboard',
         dispatchedByDashboardAgentSlug: agentSlug,

@@ -32,7 +32,7 @@ async function responseError(response: Response): Promise<Error> {
   }
   if (response.status >= 500) return unavailable(503)
   const error = githubErrorSchema.safeParse(await response.json().catch(() => null))
-  return new WorkspaceFileError('not-accessible', error.success ? error.data.message : response.statusText)
+  return new WorkspaceFileError('not-accessible', error.success ? error.data.errors?.find(detail => detail.message)?.message ?? error.data.message : response.statusText)
 }
 
 /** A request with a body is a mutation, so the pacer never replays it. `observe` sees each answer's HTTP status. */
@@ -61,6 +61,17 @@ async function json<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
 
 export async function githubRepo(config: Pick<GithubVolumeConfig, 'accountId' | 'repoId'>) {
   return json(await githubRequest(config.accountId, `repositories/${config.repoId}`), githubRepoSchema)
+}
+
+/** Makes a private repository on the account's own user, with GitHub's first commit so it has a branch to open. */
+export async function githubCreateRepo(accountId: string, name: string) {
+  let status: number | undefined
+  try {
+    return await json(await githubRequest(accountId, 'user/repos', { name, private: true, auto_init: true }, code => { status = code }), githubRepoSchema)
+  } catch (error) {
+    if (status === 422 && error instanceof Error && error.message.includes('already exists')) throw new WorkspaceFileError('already-exists', `“${name}” is already used here.`)
+    throw error
+  }
 }
 
 export async function githubHead(config: Pick<GithubVolumeConfig, 'accountId' | 'repoId' | 'branch'>) {

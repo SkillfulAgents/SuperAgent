@@ -44,7 +44,7 @@ interface SessionInfo {
 /** The Better Auth session for this request (cookie or bearer), or null. */
 async function getRequestSession(c: Context): Promise<SessionInfo | null> {
   const { getAuth } = await import('@shared/lib/auth/index')
-  const session = await getAuth().api.getSession({ headers: c.req.raw.headers })
+  const session = await (await getAuth()).api.getSession({ headers: c.req.raw.headers })
   // Widen: additional fields (creationMethod, deviceId) are persisted on the
   // row and returned by getSession, but not part of the base inferred type.
   return (session as SessionInfo | null) ?? null
@@ -82,7 +82,7 @@ mobilePairing.post('/pairing-token', async (c) => {
     const { getAppBaseUrl } = await import('@shared/lib/auth/config')
     const { token, expiresAt } = await mintPairingToken(info.user.id)
     return c.json(
-      { token, expiresAt: expiresAt.toISOString(), deploymentUrl: getAppBaseUrl() },
+      { token, expiresAt: expiresAt.toISOString(), deploymentUrl: await getAppBaseUrl() },
       200,
       NO_STORE_HEADERS,
     )

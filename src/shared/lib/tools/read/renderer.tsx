@@ -12,7 +12,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {file_path && (
         <div>
           <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
-          <div className="bg-background rounded p-2 text-xs font-mono truncate">
+          <div className="bg-background rounded-item p-2 text-xs font-mono truncate">
             {file_path}
             {(offset !== undefined || limit !== undefined) && (
               <span className="text-muted-foreground ml-2">
@@ -32,7 +32,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
             {isError ? 'Error' : 'Content'}
           </div>
           <pre
-            className={`bg-background rounded p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
+            className={`bg-background rounded-item p-2 text-xs overflow-x-auto max-h-60 overflow-y-auto font-mono ${
               isError ? 'text-red-800 dark:text-red-200' : ''
             }`}
           >
@@ -56,7 +56,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
     <div className="space-y-2">
       <div>
         <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">File</div>
-        <pre className="bg-background rounded p-2 text-xs overflow-x-auto font-mono whitespace-pre-wrap break-all">
+        <pre className="bg-background rounded-item p-2 text-xs overflow-x-auto font-mono whitespace-pre-wrap break-all">
           {parsed.file_path || <span className="text-muted-foreground italic">...</span>}
           <span className="animate-pulse">|</span>
         </pre>

@@ -1,5 +1,6 @@
 
-import { AtSign, Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { AtSign, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, AlertTriangle, Loader2, SquareMousePointer, MoonStar, SquarePen } from 'lucide-react'
+import { AnimatedNavIcon } from '@renderer/components/ui/animated-nav-icon'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -142,8 +143,7 @@ import {
   type TreeOperation,
 } from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useHasDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
@@ -168,8 +168,8 @@ function VersionBehindDot({
   )
 }
 
-// 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
-// agents-list group; pull out as a constant so the call site stays readable.
+// 4px-wide thin scrollbar with a muted-foreground/20 thumb, for the sidebar's
+// scrolling content; a constant so the call site stays readable.
 const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
@@ -231,7 +231,7 @@ function SessionSubItem({
   return (
     <SidebarMenuSubItem
       {...dragHandlers}
-      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+      className={cn('rounded-item', SIDEBAR_FILE_DROP_CUE)}
     >
       <SessionContextMenu
         sessionId={session.id}
@@ -344,26 +344,30 @@ function DashboardSubItem({
           isActive={isSelected}
           title={`${artifact.description || artifact.name} (double-click to open in new window)`}
         >
-          <AppLink
-            ref={hintRef}
-            to="/agents/$slug/dashboards/$dashSlug"
-            params={{ slug: agentSlug, dashSlug: artifact.slug }}
-            onDoubleClick={handleDoubleClick}
-            className="flex items-center gap-2 w-full"
-          >
-            <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
-            {isRenaming ? (
+          {/* Not inside the link while renaming: a click in the input would follow its href (a full reload on web). */}
+          {isRenaming ? (
+            <div className="flex items-center gap-2 w-full">
+              <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
               <InlineRenameInput
                 agentSlug={agentSlug}
                 artifactSlug={artifact.slug}
                 currentName={artifact.name}
                 onDone={() => setIsRenaming(false)}
               />
-            ) : (
+            </div>
+          ) : (
+            <AppLink
+              ref={hintRef}
+              to="/agents/$slug/dashboards/$dashSlug"
+              params={{ slug: agentSlug, dashSlug: artifact.slug }}
+              onDoubleClick={handleDoubleClick}
+              className="flex items-center gap-2 w-full"
+            >
+              <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
               <span className="truncate">{artifact.name}</span>
-            )}
-            {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
-          </AppLink>
+              {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
+            </AppLink>
+          )}
         </SidebarMenuSubButton>
       </DashboardContextMenu>
     </SidebarMenuSubItem>
@@ -430,7 +434,7 @@ function InlineRenameInput({
       onBlur={submit}
       onClick={(e) => e.stopPropagation()}
       autoFocus
-      className="w-full bg-background border border-input rounded px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
+      className="w-full bg-background border border-input rounded-item px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
     />
   )
 }
@@ -677,7 +681,7 @@ const AgentMenuItemInner = React.forwardRef<
                 params={{ slug: agent.displaySlug }}
                 data-testid={`agent-item-${agent.slug}`}
                 data-active={isSelected}
-                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-item focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                 {/* The orb is decorative; its state still needs a text equivalent. */}
@@ -782,7 +786,7 @@ const AgentMenuItemInner = React.forwardRef<
                   onClick={handleChevronClick}
                   aria-label={isOpen ? 'Collapse' : 'Expand'}
                   aria-expanded={isOpen}
-                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-control outline-none before:absolute before:inset-1 before:rounded hover:before:bg-sidebar-foreground/10 focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
                   <AvatarCutout cutout={avatarCutout}>
                     <AgentAvatar
@@ -928,7 +932,7 @@ function NotificationsMenuButton() {
   return (
     <SidebarMenuButton asChild data-testid="notifications-button" isActive={isActive}>
       <AppLink to="/notifications">
-        <Bell className="h-4 w-4" />
+        <AnimatedNavIcon name="bell" className="h-4 w-4" />
         <span>Notifications</span>
         {unreadMentions > 0 ? (
           <UnreadDot mention className="ml-auto" />
@@ -956,7 +960,7 @@ function TodoMenuButton() {
   return (
     <SidebarMenuButton asChild data-testid="todo-button" isActive={pathname === '/todo'}>
       <AppLink to="/todo">
-        <ListTodo className="h-4 w-4" />
+        <AnimatedNavIcon name="todo" className="h-4 w-4" />
         <span>Todo</span>
         {needsInput > 0 && (
           <span
@@ -989,7 +993,7 @@ function TeamBrainMenuButton() {
 
   const label = (
     <>
-      <Brain className="h-4 w-4" />
+      <AnimatedNavIcon name="brain" className="h-4 w-4" />
       <span>Team Brain</span>
       {!seen && !visited && !brainAgent && (
         <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
@@ -1006,7 +1010,7 @@ function TeamBrainMenuButton() {
 }
 
 const userMenuItemClassName =
-  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
+  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-item hover:bg-accent transition-colors disabled:opacity-60'
 
 /**
  * The footer's primary button. With a signed-in user it is their avatar and
@@ -1028,7 +1032,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
         style={{ paddingLeft: AGENT_AVATAR_LEFT }}
         data-testid="settings-button"
       >
-        <Settings className="h-4 w-4" />
+        <AnimatedNavIcon name="settings" className="h-4 w-4" />
         <span>Settings</span>
       </SidebarMenuButton>
     )
@@ -1055,7 +1059,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
           className={userMenuItemClassName}
           data-testid="settings-button"
         >
-          <Settings className="h-4 w-4" />
+          <AnimatedNavIcon name="settings" className="h-4 w-4" />
           Settings
         </button>
         <div className="-mx-1 my-1 h-px bg-border" role="separator" />
@@ -1066,7 +1070,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="sign-out-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Sign out
           </button>
         ) : (
@@ -1081,7 +1085,7 @@ function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
             className={userMenuItemClassName}
             data-testid="switch-to-local-button"
           >
-            <LogOut className="h-4 w-4" />
+            <AnimatedNavIcon name="logout" className="h-4 w-4" />
             Use this computer
           </button>
         )}
@@ -1127,7 +1131,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 function HistoryNavigationButtons() {
   const { canGoBack, canGoForward, back, forward } = useHistoryNavigation()
   const buttonClassName =
-    'h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors ' +
+    'h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground transition-colors ' +
     'hover:bg-foreground/10 hover:text-foreground disabled:cursor-default disabled:text-muted-foreground/30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/30'
 
   return (
@@ -1188,21 +1192,11 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
   const { data: agents, isLoading, error } = useListedAgents()
-  // Whether to offer Explore is two round trips deep — skillsets, and only then
-  // the discoverable agents they contain — so the item arrives after the rest of
-  // the nav and pushes it down on the way in. Remember the last answer for this
-  // Superagent and show that until the real one lands; `null` means "still
-  // asking", which is not the same as "no" and must not render as one.
-  const { data: skillsets } = useSkillsets()
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const marketplaceAnswer =
-    skillsets === undefined
-      ? null
-      : skillsets.length === 0
-        ? false // no skillsets, so the discoverable query never runs at all
-        : discoverableAgents === undefined
-          ? null
-          : discoverableAgents.length > 0
+  // Whether to offer Explore waits on the skillsets, so the item arrives after
+  // the rest of the nav and pushes it down on the way in. Remember the last
+  // answer for this Superagent and show that until the real one lands; `null`
+  // means "still asking", which is not the same as "no" and must not render as one.
+  const marketplaceAnswer = useHasDiscoverableAgents()
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const todoBoardEnabled = useExperiment('todo-board')
   const teamBrainEnabled = useExperiment('team-brain')
@@ -1772,7 +1766,7 @@ export function AppSidebar() {
 
           {isWindowsElectron && (
             <button
-              className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              className="app-no-drag shrink-0 p-0.5 rounded-icon hover:bg-foreground/10 transition-colors cursor-default"
               aria-label="Application menu"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect()
@@ -1797,10 +1791,10 @@ export function AppSidebar() {
                     type="button"
                     onClick={openSearch}
                     aria-label="Search"
-                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-control text-muted-foreground hover:bg-foreground/10 transition-colors"
                     data-testid="search-button"
                   >
-                    <Search className="h-4 w-4 -translate-y-[1px]" />
+                    <AnimatedNavIcon name="search" className="h-4 w-4" style={{ translate: '0 -1px' }} />
                   </button>
                 </TooltipTrigger>
                 {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
@@ -1818,7 +1812,13 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="gap-0 overflow-visible">
+        {/* Everything between the title bar and the footer scrolls as one:
+            the nav rows travel with the agent list rather than pinning above
+            it, so a short window gives the list the full height. */}
+        <SidebarContent
+          className={cn('gap-0 overflow-y-auto overflow-x-hidden', THIN_SCROLLBAR)}
+          data-testid="agent-list-scroll"
+        >
           <SidebarGroup className="shrink-0 p-0">
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
@@ -1863,7 +1863,7 @@ export function AppSidebar() {
                     data-testid="home-button"
                   >
                     <AppLink to="/">
-                      <LayoutGrid className="h-4 w-4" />
+                      <AnimatedNavIcon name="home" className="h-4 w-4" />
                       <span>Home</span>
                     </AppLink>
                   </SidebarMenuButton>
@@ -1890,7 +1890,7 @@ export function AppSidebar() {
                       data-testid="marketplace-button"
                     >
                       <AppLink to="/explore">
-                        <Compass className="h-4 w-4" />
+                        <AnimatedNavIcon name="compass" className="h-4 w-4" />
                         <span>Discover New Agents</span>
                       </AppLink>
                     </SidebarMenuButton>
@@ -1902,17 +1902,16 @@ export function AppSidebar() {
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
-                    <Plus className="h-4 w-4" />
+                    {isCreatingAgent
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <AnimatedNavIcon name="plus" className="h-4 w-4" />}
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup
-            className={cn('group/agents-group flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}
-            data-testid="agent-list-scroll"
-          >
+          <SidebarGroup className="group/agents-group shrink-0 p-0">
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (
@@ -2010,7 +2009,7 @@ export function AppSidebar() {
                       data-testid="add-section-button"
                     >
                       <span className="flex shrink-0 items-center">
-                        <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                        <AnimatedNavIcon name="plus" className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
                       </span>
                       <span>Add section</span>
                     </SidebarMenuButton>

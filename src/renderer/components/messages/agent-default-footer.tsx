@@ -118,7 +118,7 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
             data-testid="composer-agent-default"
             disabled={updatePreferences.isPending}
             onClick={promote}
-            className="flex min-w-0 items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
+            className="flex min-w-0 items-center gap-1.5 rounded-item px-2 py-1 text-left text-xs text-muted-foreground enabled:hover:bg-accent enabled:hover:text-foreground disabled:opacity-50"
           >
             <Pin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">Set as Agent Default</span>
@@ -139,7 +139,7 @@ export function AgentDefaultFooter({ agentSlug, state, agentHomeLink = true }: A
             aria-label="Change agent default in Agent Home"
             title="Change agent default in Agent Home"
             onClick={() => void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })}
-            className="shrink-0 rounded-sm p-1 text-muted-foreground/70 hover:text-foreground"
+            className="shrink-0 rounded-icon p-1 text-muted-foreground/70 hover:text-foreground"
           >
             <Settings className="h-3.5 w-3.5" aria-hidden="true" />
           </button>

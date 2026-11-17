@@ -6,19 +6,21 @@ const llm = vi.hoisted(() => ({
   summarize: vi.fn(),
 }))
 
+const getSettings = vi.hoisted(() => vi.fn(async () => ({})))
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ agentModel: 'opus', summarizerModel: 'haiku' }),
+  getSettings,
+  effectiveModelsFrom: () => ({ agentModel: 'opus', summarizerModel: 'haiku' }),
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({
+  activeLlmProviderFrom: () => ({
     supportsDirectApi: llm.direct,
-    getApiKeyStatus: () => ({ isConfigured: true }),
-    createClient: () => ({ messages: { create: llm.create } }),
+    apiKeyStatusFrom: () => ({ isConfigured: true }),
+    createClientFrom: async () => ({ messages: { create: llm.create } }),
   }),
-  resolveActiveProviderModel: (model: string) => `model-${model}`,
+  resolveModelForProviderFrom: (model: string) => `model-${model}`,
 }))
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
-  getConfiguredLlmClient: async () => ({ helper: true }),
+  configuredLlmClientFrom: async () => ({ client: { helper: true }, model: 'model-haiku' }),
   createSummarizerText: llm.summarize,
 }))
 
@@ -28,6 +30,7 @@ const draft = { kind: 'api' as const, effect: 'allow' as const, patterns: ['GET 
 const answer = JSON.stringify({ name: 'Reads of x', restatement: 'Lets GET /x through. Everything else goes to review.' })
 
 beforeEach(() => {
+  getSettings.mockClear()
   llm.direct = true
   llm.create.mockReset()
   llm.summarize.mockReset()
@@ -47,6 +50,8 @@ describe('restatement model', () => {
     llm.summarize.mockResolvedValue(answer)
     expect(await restateRule(draft)).toMatchObject({ name: 'Reads of x' })
     expect(llm.summarize.mock.calls[0][1].model).toBe('model-haiku')
+    // The fallback uses the settings the restatement already read.
+    expect(getSettings).toHaveBeenCalledTimes(1)
   })
 
   it('uses the summarizer model when the provider has no direct API', async () => {

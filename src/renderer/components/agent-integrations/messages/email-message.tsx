@@ -9,7 +9,7 @@ export function EmailIntegrationMessage({ display, message, iconClassName }: Int
   const sentAt = sentAtOf(display, message.createdAt)
   return (
     <div className="flex w-full max-w-[600px] flex-col items-end gap-1.5" data-testid="integration-message" data-provider="platform-email">
-      <article className="w-full min-w-0 overflow-hidden rounded-xl border border-border bg-background text-left shadow-sm" aria-label="Email message">
+      <article className="w-full min-w-0 overflow-hidden rounded-card border border-border bg-background text-left shadow-sm" aria-label="Email message">
         <header className="border-b border-border bg-muted/20 px-4 py-3">
           <IntegrationEventLine display={display} iconClassName={iconClassName} />
           <h3 className="mt-2 break-words text-base font-semibold leading-snug text-foreground" data-testid="email-subject">{source.title || '(No subject)'}</h3>
@@ -28,7 +28,7 @@ export function EmailIntegrationMessage({ display, message, iconClassName }: Int
                     <span className="min-w-0 truncate">To {email.to[0] || 'undisclosed recipients'}{email.to.length > 1 && ` +${email.to.length - 1}`}{email.cc.length > 0 && ` · ${email.cc.length} Cc`}</span>
                     <ChevronDown className="h-3 w-3 shrink-0 transition-transform group-open:rotate-180" aria-hidden />
                   </summary>
-                  <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-md bg-muted/40 p-2.5 leading-relaxed">
+                  <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-item bg-muted/40 p-2.5 leading-relaxed">
                     <dt>From</dt><dd className="break-words text-foreground">{email.from}</dd>
                     <dt>To</dt><dd className="break-words">{email.to.join(', ') || 'Undisclosed recipients'}</dd>
                     {!!email.cc.length && <><dt>Cc</dt><dd className="break-words">{email.cc.join(', ')}</dd></>}
@@ -44,7 +44,7 @@ export function EmailIntegrationMessage({ display, message, iconClassName }: Int
           ) : <p className="mt-4 text-sm italic text-muted-foreground">{email?.attachmentCount ? 'See attached files.' : 'No message body.'}</p>}
           {email?.quotedText && (
             <details className="mt-3 text-xs text-muted-foreground" data-testid="email-quoted-history">
-              <summary className="w-fit cursor-pointer rounded px-1 py-0.5 hover:bg-muted hover:text-foreground">Quoted history</summary>
+              <summary className="w-fit cursor-pointer rounded-icon px-1 py-0.5 hover:bg-muted hover:text-foreground">Quoted history</summary>
               <div className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-sm leading-relaxed">{email.quotedText}</div>
             </details>
           )}

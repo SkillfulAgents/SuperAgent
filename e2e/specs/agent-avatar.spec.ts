@@ -53,11 +53,11 @@ test('older deployments without avatar metadata remain navigable', async ({ page
 
     await link.click()
     await expect(page.getByTestId('home-message-input')).toBeVisible({ timeout: 15000 })
-    await expect(page.getByTestId('agent-avatar-picker')).toHaveCount(0)
+    await expect(page.getByTestId('agent-identity-trigger').locator('[data-avatar-orb]')).toHaveCount(0)
     await expect(page.getByTestId('agent-home-layout').locator('[data-avatar-orb]')).toHaveCount(0)
     await page.reload()
     await expect(page.getByTestId('home-message-input')).toBeVisible({ timeout: 15000 })
-    await expect(page.getByTestId('agent-avatar-picker')).toHaveCount(0)
+    await expect(page.getByTestId('agent-identity-trigger').locator('[data-avatar-orb]')).toHaveCount(0)
     await expect(page.getByText('Something went wrong', { exact: true })).toHaveCount(0)
     expect(errors).toEqual([])
     expect(avatarWrites).toEqual([])
@@ -75,7 +75,7 @@ test('avatar changes persist across reloads and reach another browser', async ({
   try {
     const initial = await readAvatar(request, agent.slug)
     await page.goto(`/agents/${agent.slug}`)
-    const picker = page.getByTestId('agent-avatar-picker')
+    const picker = page.getByTestId('agent-identity-trigger')
     await expectAvatar(picker, initial)
 
     // A fresh browser has no local storage or shared query cache.
@@ -83,7 +83,7 @@ test('avatar changes persist across reloads and reach another browser', async ({
     const streamReady = otherPage.waitForResponse(response => response.url().endsWith('/api/notifications/stream'))
     await otherPage.goto(`/agents/${agent.slug}`)
     await streamReady
-    const otherPicker = otherPage.getByTestId('agent-avatar-picker')
+    const otherPicker = otherPage.getByTestId('agent-identity-trigger')
     await expectAvatar(otherPicker, initial)
 
     await picker.click()

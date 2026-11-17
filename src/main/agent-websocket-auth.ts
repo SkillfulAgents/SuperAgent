@@ -27,7 +27,7 @@ export async function authenticateAgentWebSocket(
   try {
     // Lazy import avoids pulling Better Auth's ESM graph into desktop startup.
     const { getAuth } = await import('@shared/lib/auth/index')
-    const auth = getAuth()
+    const auth = await getAuth()
     const headers = new Headers()
     for (const [key, value] of Object.entries(request.headers)) {
       if (value) headers.set(key, Array.isArray(value) ? value[0] : value)

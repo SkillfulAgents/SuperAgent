@@ -71,7 +71,7 @@ export function McpAdvancedClientFields({
 
   return (
     <details
-      className={`group rounded-md ${labeled ? 'pt-2' : ''}`}
+      className={`group rounded-card ${labeled ? 'pt-2' : ''}`}
       open={defaultOpen}
       data-testid={`${testIdPrefix}-advanced`}
     >

@@ -85,7 +85,7 @@ function SendChatMessageExpandedView({ input, result, isError }: ToolRendererPro
         </div>
       )}
       {message && (
-        <div className="rounded border border-dashed border-border bg-background p-3 text-xs whitespace-pre-wrap">
+        <div className="rounded-item border border-dashed border-border bg-background p-3 text-xs whitespace-pre-wrap">
           {message}
         </div>
       )}

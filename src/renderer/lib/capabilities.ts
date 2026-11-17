@@ -30,7 +30,7 @@ import { clientFacts, serverFacts } from './facts'
  *
  * Note what is deliberately NOT gated on this. Where the answer comes from the
  * *server*, it already comes from the machine that owns it and needs no gate:
- * the host-browser providers and their Chrome profiles (`detectAllProviders()`),
+ * the host-browser providers (`detectAllProviders()`),
  * STT availability (`/api/voice/configured`), and runtime readiness all describe
  * whichever Superagent is being driven.
  *
@@ -88,6 +88,15 @@ export function offersComputerUseSettings(): boolean {
 }
 
 /**
+ * Whether the dispatch launcher offers its computer-use toggle: it screenshots
+ * this computer and lets the agent use its apps, so the agents must run on
+ * this computer, and that computer must run computer use.
+ */
+export function offersLauncherComputerUse(): boolean {
+  return canUseHostFeatures() && computerUseSupported()
+}
+
+/**
  * Whether this window hands the server a dropped folder by its path alone, to
  * mount it or copy it in. That needs the desktop app driving its own machine,
  * outside the sandbox, which reads a folder only through the bookmark of a
@@ -138,4 +147,25 @@ export function capturesOwnWindow(): boolean {
 /** Whether the attachment menus list recently used files, which Spotlight finds. */
 export function listsRecentFiles(): boolean {
   return !!window.electronAPI?.getRecentFiles && !runsInAppSandbox(clientFacts())
+}
+
+/**
+ * Whether signing in to the Gamut account happens in a sheet on the app's own
+ * window (macOS's ASWebAuthenticationSession) rather than in the person's
+ * browser. App Review requires it of the Mac App Store build (guideline 4);
+ * the direct build keeps the browser, where the person is usually signed in
+ * already. A question about the client: the sheet belongs to this window.
+ */
+export function signsInWithAuthSession(): boolean {
+  const client = clientFacts()
+  return client.shell === 'electron' && client.os === 'darwin' && runsInAppSandbox(client)
+}
+
+/**
+ * Whether the first screen offers the native Sign in with Apple prompt: the
+ * Mac App Store build, which carries the entitlement, and where the prompt's
+ * hand-off sheet exists.
+ */
+export function signsInWithApple(): boolean {
+  return signsInWithAuthSession()
 }

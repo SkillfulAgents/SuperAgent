@@ -1,6 +1,6 @@
 import { CalendarDays, Clock, Sunrise, type LucideIcon } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId, type TeamBrainSchedule } from '@renderer/lib/team-brain/team-brain-schema'
+import { TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId, type TeamBrainSchedule } from '@shared/lib/config/team-brain-schema'
 import { SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
 import { TEAM_BRAIN_LOCATIONS, type TeamBrainLocation } from './team-brain-locations'
 

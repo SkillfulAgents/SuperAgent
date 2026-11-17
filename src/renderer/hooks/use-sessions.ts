@@ -1,3 +1,4 @@
+import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
@@ -44,15 +45,16 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
       return res.json()
     },
     enabled: !!resolvedSlug,
-    staleTime: options?.staleTime,
+    // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
+    ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
 }
 
 /**
  * Notable-only slice (live or carrying unread notifications) for badge and
- * toolbar consumers. The full list makes the server stat every transcript in
- * the agent's directory — 20k stats for a 20k-session agent — where this
- * path stats only the handful of notable ids. Keyed under the same
+ * toolbar consumers. The full list makes the server read every entry of the
+ * agent's session index — 20k rows for a 20k-session agent — where this
+ * path reads only the handful of notable ids. Keyed under the same
  * ['sessions', slug] prefix so SSE-driven invalidations reach it too.
  */
 export function useNotableSessions(agentSlug: string | null, options?: { limit?: number; staleTime?: number }) {
@@ -66,7 +68,8 @@ export function useNotableSessions(agentSlug: string | null, options?: { limit?:
       return res.json()
     },
     enabled: !!resolvedSlug,
-    staleTime: options?.staleTime,
+    // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
+    ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
 }
 
@@ -108,6 +111,8 @@ export function useCreateSession(options: {
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
+      // The launcher's computer-use toggle: the session may use any app without asking.
+      computerUse?: boolean
       // Analytics-only: distinguishes auto-started sessions (template onboarding,
       // todo dispatch) from user-typed ones. Not sent to the server.
       origin?: 'user' | 'onboarding' | 'todo'
@@ -125,6 +130,7 @@ export function useCreateSession(options: {
           ...(data.model ? { model: data.model } : {}),
           ...(data.llmProviderId !== undefined ? { llmProviderId: data.llmProviderId } : {}),
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
+          ...(data.computerUse ? { computerUse: true } : {}),
         }),
       })
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
@@ -180,9 +186,7 @@ export function useDeleteSession() {
       // 204 No Content - no body to parse
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
-      })
+      invalidateNotificationCaches(queryClient, resolveAgentSlugFromCache(queryClient, variables.agentSlug))
       // A Todo item started in it lets go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
@@ -243,8 +247,8 @@ export function useSetSessionMarkedUnread() {
     },
     onSuccess: (data, variables) => {
       // The clear fires on every session open, and almost always clears a flag
-      // that was never set. Refetching on that no-op would re-stat every
-      // session in the agent's directory (the sessions list) and re-enrich
+      // that was never set. Refetching on that no-op would re-read every
+      // session of the agent (the sessions list) and re-enrich
       // every agent (the agents list) for nothing, so the server reports
       // whether it actually wrote and we invalidate only then.
       if (!data.changed) return

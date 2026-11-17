@@ -27,6 +27,11 @@ let mockContainerClient: any
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
+vi.mock('@shared/lib/services/session-activity', () => ({
+  recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: (_store: unknown, _id: string, at: number) => ({ recordedAtMs: at, previousMs: null }),
+  revertSessionActivity: vi.fn(),
+}))
 vi.mock('../db', () => ({
   get db() { return testDb },
 }))
@@ -83,6 +88,11 @@ vi.mock('@shared/lib/config/settings', () => ({
     browserModel: 'claude-sonnet-4-5',
     summarizerModel: 'claude-haiku-4-5',
   }),
+  effectiveModelsFrom: () => ({
+    agentModel: 'claude-sonnet-4-5',
+    browserModel: 'claude-sonnet-4-5',
+    summarizerModel: 'claude-haiku-4-5',
+  }),
   getSettings: () => ({}),
   getAgentCapabilitySettings: () => ({ ...mockAgentCapabilities }),
   getModelCatalogSettings: () => ({}),
@@ -121,6 +131,9 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
 import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 import { createAgentIntegration, getAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { listAgentIntegrationSessions } from '@shared/lib/services/agent-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
@@ -592,11 +605,6 @@ describe('Chat integration E2E', () => {
       vi.mocked(containerManager.ensureRunning).mockReset()
       vi.mocked(containerManager.ensureRunning).mockResolvedValue(mockContainerClient)
 
-      // start() arms this in production; this harness drives addIntegration
-      // directly, and without it the review card has no wire to arrive on.
-      ;(agentIntegrationManager as unknown as { subscribeGlobalNotifications(): void })
-        .subscribeGlobalNotifications()
-
       // Two kinds the shared scenario table has no trigger for.
       MockContainerClient.registerScenario('need a file', new UserInputRequestScenario([
         { name: 'mcp__user-input__request_file', input: { description: 'A CSV of last quarter' } },
@@ -638,11 +646,10 @@ describe('Chat integration E2E', () => {
       if (row.expect) expect(sent.event).toMatchObject(row.expect)
     })
 
-    it('a parked proxy review reaches chat as the Allow/Deny card off the global wire', async () => {
-      // Reviews are agent-scoped, so they never touch a session SSE stream —
-      // this is the only path that carries them, and it is a different one from
-      // every row above.
-      const sent = await cardFor('proxy review please')
+    it("a proxy review from the chat's session reaches chat as the Allow/Deny card, and takes the received mark off", async () => {
+      const removed = vi.spyOn(mockConnector as any, 'removeAcknowledgement')
+      const sent = await cardFor('proxy review please scope=session')
+      await waitForCondition(() => removed.mock.calls.some(([chatId]) => chatId === 'chat-1'), 3000)
 
       expect(sent.event.type).toBe('question_request')
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId
@@ -654,6 +661,19 @@ describe('Chat integration E2E', () => {
       // back to the entry that is actually parked.
       const reviewId = toolUseId.split(':')[1]
       expect(userInputRequestManager.getOpenRequest('test-agent', reviewId)?.kind).toBe('proxy_review')
+    })
+
+    it('an agent-wide proxy review stays in the app and never reaches chat', async () => {
+      const integrationId = await createTestIntegration()
+      await agentIntegrationManager.addIntegration(integrationId)
+      mockConnector.simulateIncomingMessage('proxy review please', 'chat-1', 'user-1')
+      await waitForCondition(
+        () => userInputRequestManager.getOpenRequestsForAgent('test-agent').some((r) => r.kind === 'proxy_review'),
+        8000,
+      )
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      expect(mockConnector.sentCards).toHaveLength(0)
     })
 
     it('a press on a card settled elsewhere is refused instead of buffered in the container', async () => {

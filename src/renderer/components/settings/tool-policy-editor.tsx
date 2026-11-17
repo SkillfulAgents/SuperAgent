@@ -173,14 +173,14 @@ export function ToolPolicyEditorBody({
   return (
     <div className="flex flex-col gap-3 min-h-0 flex-1">
       {fetchError && (
-        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-md px-2 py-1.5">
+        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-item px-2 py-1.5">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           {fetchError}
         </div>
       )}
 
       {/* MCP default */}
-      <div className="flex items-center justify-between rounded-md border p-2">
+      <div className="flex items-center justify-between rounded-card border p-2">
         <div>
           <span className="text-sm font-medium">MCP Default</span>
           <p className="text-xs text-muted-foreground">
@@ -242,7 +242,7 @@ export function ToolPolicyEditorBody({
                 <div
                   key={p.toolName}
                   data-testid={`tool-row-${p.toolName}`}
-                  className="flex items-center justify-between rounded border px-2 py-1.5"
+                  className="flex items-center justify-between rounded-item border px-2 py-1.5"
                 >
                   <div className="flex-1 min-w-0 mr-2">
                     <span className="text-xs font-mono font-medium">

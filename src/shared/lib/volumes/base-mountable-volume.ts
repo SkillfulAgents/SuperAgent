@@ -66,6 +66,11 @@ export abstract class BaseMountableVolume<C> {
     return null
   }
 
+  /** What an agent must know before writing to a drive of this type, said once in its prompt, or null. The same for every drive of the type. */
+  get agentNote(): string | null {
+    return null
+  }
+
   abstract list(path: string): Promise<VolumeEntry[]>
   abstract stat(path: string): Promise<VolumeEntry>
   /** Advisory root health for settings and mount status. Remote drivers may cache it. */

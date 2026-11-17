@@ -6,6 +6,9 @@ import { inputEvent, mockChatIntegration } from '../chat-integrations/test-helpe
 import type { IntegrationInputEvent } from './types'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { agentIntegrationManager } from './agent-integration-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(agentIntegrationManager))
 
 // ---------------------------------------------------------------------------
 // SUP-234 — message queue entries were never reclaimed.

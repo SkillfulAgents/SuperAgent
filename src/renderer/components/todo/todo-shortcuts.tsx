@@ -80,7 +80,7 @@ export function ShortcutTooltip({ label, keys, side = 'bottom', children }: {
         <TooltipTrigger asChild>{children}</TooltipTrigger>
         <TooltipContent
           side={side}
-          className="flex items-center gap-3 rounded-lg border bg-popover px-2.5 py-1.5 text-sm text-popover-foreground shadow-md"
+          className="flex items-center gap-3 rounded-popover border bg-popover px-2.5 py-1.5 text-sm text-popover-foreground shadow-md"
         >
           <span>{label}</span>
           {keys && keys.length > 0 && (
@@ -139,7 +139,7 @@ const GROUPS: { title: string; rows: { label: string; keys: string[][] }[] }[] =
 export function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md gap-0 p-0 sm:rounded-xl" data-testid="todo-shortcuts-dialog">
+      <DialogContent className="max-w-md gap-0 p-0 sm:rounded-dialog" data-testid="todo-shortcuts-dialog">
         <div className="border-b px-5 py-4">
           <DialogTitle className="text-sm font-medium">Keyboard shortcuts</DialogTitle>
           <DialogDescription className="mt-0.5 text-xs text-muted-foreground">

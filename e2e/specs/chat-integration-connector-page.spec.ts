@@ -15,6 +15,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { createAgentWithTelegramIntegration } from '../helpers/chat-integrations'
+import { openHomeSection } from '../helpers/agent-home'
 
 test.describe('Chat integration connector page', () => {
   let appPage: AppPage
@@ -43,6 +44,7 @@ test.describe('Chat integration connector page', () => {
     const mainContent = appPage.getMainContent()
     // Exact: until the list loads, the card's empty state also mentions "external integrations".
     await expect(mainContent.getByText('External Integrations', { exact: true })).toBeVisible()
+    await openHomeSection(page, 'External Integrations')
     await expect(mainContent.getByText('E2E Overhaul Bot')).toBeVisible({ timeout: 10000 })
 
     // Click the integration row - IntegrationRow renders role="button" when interactive.

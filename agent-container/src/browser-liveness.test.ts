@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   PAGE_TARGET_RECHECK_MS,
   confirmNoPagesLeft,
+  listPageTargetsExcept,
   readTabSources,
   recheckPageTarget,
 } from './browser-liveness'
@@ -55,6 +56,29 @@ describe('readTabSources', () => {
     expect(listDaemonTabs).toHaveBeenCalledTimes(1)
     expect(result.allTargets).toHaveLength(1)
     expect(result.daemonTabs).toHaveLength(1)
+  })
+})
+
+describe('listPageTargetsExcept', () => {
+  it('drops a closed tab that Chrome still lists right after the close', async () => {
+    const listPageTargets = listPageTargetsExcept(
+      async () => [{ id: 'A', url: 'https://example.com/' }, { id: 'B', url: 'https://example.org/' }],
+      'B',
+    )
+
+    const result = await readTabSources(listPageTargets, async () => [])
+
+    expect(result.allTargets.map(target => target.id)).toEqual(['A'])
+  })
+
+  it('does not ask the daemon for tabs when the closed tab was the last page', async () => {
+    const listDaemonTabs = vi.fn().mockResolvedValue([{ tabId: 't2', url: 'about:blank' }])
+    const listPageTargets = listPageTargetsExcept(async () => [{ id: 'A', url: 'https://example.com/' }], 'A')
+
+    const result = await readTabSources(listPageTargets, listDaemonTabs)
+
+    expect(listDaemonTabs).not.toHaveBeenCalled()
+    expect(result).toEqual({ allTargets: [], daemonTabs: [] })
   })
 })
 

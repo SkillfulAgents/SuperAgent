@@ -3,6 +3,7 @@ import { test, expect, type Locator } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { mockRecorder } from '../helpers/mock-recorder'
+import { openHomeAdvancedSettings } from '../helpers/agent-home'
 
 /**
  * Agent secrets (the hardened `.env` store) end-to-end.
@@ -54,6 +55,7 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
     const expectedEnvVar = `E2E_SECRET_${tag.toUpperCase()}`
 
     // 1. Add the secret through the standalone Agent Secrets page.
+    await openHomeAdvancedSettings(page)
     await page.getByTestId('home-secrets-open-page').click()
     await expect(page).toHaveURL(/\/secrets$/)
     await page.getByTestId('secrets-add-button').click()
@@ -104,6 +106,7 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
     const expectedEnvVar = `E2E_SECRET_${tag.toUpperCase()}`
 
     // Add then immediately delete the secret on the standalone page.
+    await openHomeAdvancedSettings(page)
     await page.getByTestId('home-secrets-open-page').click()
     await page.getByTestId('secrets-add-button').click()
     await page.getByTestId('secret-dialog-key').fill(secretKey)
@@ -157,6 +160,7 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
 
     await test.step('DialogContent: an overlong secret key leaves the dialog controls reachable', async () => {
       const envVar = longToken.toUpperCase()
+      await openHomeAdvancedSettings(page)
       await page.getByTestId('home-secrets-open-page').click()
       await page.getByTestId('secrets-add-button').click()
       await page.getByTestId('secret-dialog-key').fill(longToken)

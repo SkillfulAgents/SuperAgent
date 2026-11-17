@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { openHomeSection, openSkillBrowse } from '../helpers/agent-home'
 
 test.describe('Public Skillset Provider', () => {
   let appPage: AppPage
@@ -29,9 +30,8 @@ test.describe('Public Skillset Provider', () => {
   test('skills from public skillset appear in agent discoverable skills', async ({ page }) => {
     await agentPage.createAgent(`Public Skills Browse ${Date.now()}`)
 
-    const addSkillButton = page.locator('[data-testid="add-skill-button"]')
-    await expect(addSkillButton).toBeVisible({ timeout: 10000 })
-    await addSkillButton.click()
+    await openHomeSection(page, 'Skills')
+    await openSkillBrowse(page)
 
     const skillDialog = page.locator('[data-testid="skills-browse-dialog"]')
     await expect(skillDialog).toBeVisible()
@@ -42,7 +42,8 @@ test.describe('Public Skillset Provider', () => {
   test('installing a skill from public skillset works', async ({ page }) => {
     await agentPage.createAgent(`Public Skills Install ${Date.now()}`)
 
-    await page.locator('[data-testid="add-skill-button"]').click()
+    await openHomeSection(page, 'Skills')
+    await openSkillBrowse(page)
     const dialog = page.locator('[data-testid="skills-browse-dialog"]')
     await expect(dialog).toBeVisible()
 
@@ -52,6 +53,7 @@ test.describe('Public Skillset Provider', () => {
     await page.keyboard.press('Escape')
     await expect(dialog).toBeHidden()
 
+    await openHomeSection(page, 'Skills')
     const installedSkill = page.locator('[data-testid="installed-skill-row"][data-skill-path="e2e-public-skill"]')
     await expect(installedSkill).toBeVisible({ timeout: 10000 })
   })
@@ -59,7 +61,8 @@ test.describe('Public Skillset Provider', () => {
   test('publish buttons do not appear for skills from public skillset', async ({ page }) => {
     await agentPage.createAgent(`Public Skills NoPublish ${Date.now()}`)
 
-    await page.locator('[data-testid="add-skill-button"]').click()
+    await openHomeSection(page, 'Skills')
+    await openSkillBrowse(page)
     const dialog = page.locator('[data-testid="skills-browse-dialog"]')
     await expect(dialog).toBeVisible()
 
@@ -69,6 +72,7 @@ test.describe('Public Skillset Provider', () => {
     await page.keyboard.press('Escape')
     await expect(dialog).toBeHidden()
 
+    await openHomeSection(page, 'Skills')
     const installedSkill = page.locator('[data-testid="installed-skill-row"][data-skill-path="e2e-public-skill"]')
     await expect(installedSkill).toBeVisible({ timeout: 10000 })
 

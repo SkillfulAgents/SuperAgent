@@ -84,7 +84,7 @@ async function revokeRemotely(account: ConnectedAccount, memberId: string | null
   try {
     // Remove-user has no request user, and the platform proxy deletes a
     // connection only for the member who owns it: act as the removed member.
-    await runWithAttribution(memberId ? attribution.fromMemberId(memberId) : null, () =>
+    await runWithAttribution(memberId ? await attribution.fromMemberId(memberId) : null, () =>
       getAccountProviderByName(account.providerName).deleteConnection(account.providerConnectionId, account.toolkitSlug))
   } catch (error) {
     console.warn(`[user-removal] Failed to revoke the ${account.providerName} connection of account ${account.id}:`, error)

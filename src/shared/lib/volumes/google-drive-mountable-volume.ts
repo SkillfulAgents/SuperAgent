@@ -170,6 +170,11 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     return `Google Drive · ${this.config.driveName} / ${this.config.folderName}`
   }
 
+  override get agentNote(): string {
+    return 'Google Drive drives show Google Docs, Sheets and Slides as .md, .xlsx and .pptx copies. ' +
+      'Saving one updates the original Google file, and saving a Doc drops its fonts, colors and alignment.'
+  }
+
   private request(request: DriveRequest) {
     return driveRequest(this.config.accountId, request, { agentSlug: this.agentSlug })
   }

@@ -31,6 +31,8 @@ const mockInterruptSession = vi.fn((..._args: unknown[]) => Promise.resolve({ in
 const mockSendMessage = vi.fn((..._args: unknown[]) => Promise.resolve(undefined))
 const mockContainerFetch = vi.fn((..._args: unknown[]) => Promise.resolve({ ok: true, json: async () => ({}) }))
 const mockCreateSession = vi.fn((..._args: unknown[]) => Promise.resolve({ id: 'container-session', slashCommands: [] }))
+vi.mock('@shared/lib/agent-actor/db-session-index-storage', async () =>
+  (await import('@shared/lib/agent-actor/testing/in-memory-session-index-storage')).inMemorySessionIndexModule())
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
   return {

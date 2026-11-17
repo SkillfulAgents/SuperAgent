@@ -73,7 +73,7 @@ export function StaleSessionNotice({
   return (
     <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
       <div
-        className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-2xl bg-muted/80 p-4 backdrop-blur-md"
+        className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-dialog bg-muted/80 p-4 backdrop-blur-md"
         data-testid="stale-toast-card"
       >
         <div className="flex min-w-0 grow basis-40 flex-col gap-0.5">
@@ -94,7 +94,7 @@ export function StaleSessionNotice({
                 <TooltipContent
                   side="top"
                   align="start"
-                  className="flex w-80 flex-col gap-1.5 rounded-lg border bg-popover px-4 py-3 text-popover-foreground shadow-md"
+                  className="flex w-80 flex-col gap-1.5 rounded-popover border bg-popover px-4 py-3 text-popover-foreground shadow-md"
                   data-testid="stale-learn-more-tooltip"
                 >
                   <TeachingPoint lead="Agents re-read the whole conversation every reply.">

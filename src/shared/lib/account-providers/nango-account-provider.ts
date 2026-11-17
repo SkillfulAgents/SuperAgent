@@ -1,5 +1,12 @@
+import { getNangoSecretKey, nangoSecretKeyFrom } from '@shared/lib/config/settings'
 import { BaseAccountProvider } from './base-account-provider'
-import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
+import type {
+  AccountProviderSettings,
+  InitiateConnectionResult,
+  ProviderConnection,
+  ProviderConnectionListItem,
+  ProviderCredentials,
+} from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
 import { getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
 
@@ -26,7 +33,26 @@ interface CachedToken {
   expiresAt: number
 }
 
+interface TokenCache {
+  secretKey: string
+  tokens: Map<string, CachedToken>
+  pending: Map<string, Promise<CachedToken>>
+}
+
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
+
+interface NangoCredentials extends ProviderCredentials {
+  readonly provider: 'nango'
+  readonly secretKey: string | undefined
+}
+
+/** A secret key the operation already took, or null to read the current one. */
+type SecretKeySource = { secretKey: string | undefined } | null
+
+/** The secret key in `credentials` when this provider made them. */
+function secretKeyOf(credentials?: ProviderCredentials): SecretKeySource {
+  return credentials?.provider === 'nango' ? { secretKey: (credentials as NangoCredentials).secretKey } : null
+}
 
 class NangoApiError extends Error {
   constructor(
@@ -41,12 +67,40 @@ class NangoApiError extends Error {
 export class NangoAccountProvider extends BaseAccountProvider {
   readonly name = 'nango' as const
 
-  private secretKey: string
-  private tokenCache = new Map<string, CachedToken>()
+  /** Resolves the secret key on every use, so a key changed or removed in settings applies at once. */
+  private readonly readSecretKey: () => Promise<string | undefined>
+  /**
+   * Connection tokens, cached per secret key (one Nango account): a key
+   * change starts a new cache, and a token fetch still in flight under the
+   * old key lands in the old one, which nothing reads any more. `pending`
+   * holds the fetches in flight, shared by the calls that miss together.
+   */
+  private tokenCache: TokenCache | null = null
 
-  constructor(opts: { secretKey: string }) {
+  constructor(opts: { secretKey?: () => Promise<string | undefined> } = {}) {
     super()
-    this.secretKey = opts.secretKey
+    this.readSecretKey = opts.secretKey ?? getNangoSecretKey
+  }
+
+  override async isConfigured(): Promise<boolean> {
+    return Boolean(await this.readSecretKey())
+  }
+
+  credentialsFrom(settings: AccountProviderSettings): ProviderCredentials {
+    const credentials: NangoCredentials = { provider: 'nango', secretKey: nangoSecretKeyFrom(settings) }
+    return credentials
+  }
+
+  /**
+   * The secret key (the operation's when it took one, else the current one)
+   * and the tokens cached under it; throws when none is saved. Tokens cached
+   * under a different key (another Nango account) are dropped.
+   */
+  private async credentials(source: SecretKeySource = null): Promise<TokenCache> {
+    const key = source ? source.secretKey : await this.readSecretKey()
+    if (!key) throw new NangoApiError('Nango is not configured. Add a Nango secret key in Settings.', 400)
+    if (this.tokenCache?.secretKey !== key) this.tokenCache = { secretKey: key, tokens: new Map(), pending: new Map() }
+    return this.tokenCache
   }
 
   async listConnections(userId?: string): Promise<ProviderConnectionListItem[]> {
@@ -128,11 +182,11 @@ export class NangoAccountProvider extends BaseAccountProvider {
     }
   }
 
-  async getConnection(connectionId: string, toolkitSlug?: string): Promise<ProviderConnection> {
+  async getConnection(connectionId: string, toolkitSlug?: string, credentials?: ProviderCredentials): Promise<ProviderConnection> {
     try {
       const nangoSlug = toolkitSlug ? getProviderSlug(toolkitSlug, 'nango') : undefined
       const qs = nangoSlug ? `?provider_config_key=${encodeURIComponent(nangoSlug)}` : ''
-      const response = await this.nangoFetch(`/connections/${encodeURIComponent(connectionId)}${qs}`) as {
+      const response = await this.nangoFetch(`/connections/${encodeURIComponent(connectionId)}${qs}`, {}, secretKeyOf(credentials)) as {
         connection_id: string
         errors?: Array<{ type: string }>
       }
@@ -167,8 +221,9 @@ export class NangoAccountProvider extends BaseAccountProvider {
     method: string
     headers: Headers
     body: ArrayBuffer | null
+    credentials?: ProviderCredentials
   }): Promise<Response> {
-    const { accessToken } = await this.resolveToken(params.providerConnectionId, params.toolkitSlug)
+    const { accessToken } = await this.resolveToken(params.providerConnectionId, params.toolkitSlug, secretKeyOf(params.credentials))
 
     const forwardHeaders = new Headers()
     params.headers.forEach((value, key) => {
@@ -211,15 +266,38 @@ export class NangoAccountProvider extends BaseAccountProvider {
     )
   }
 
-  private async resolveToken(connectionId: string, toolkitSlug: string): Promise<{ accessToken: string; providerConfigKey: string }> {
-    const cached = this.tokenCache.get(connectionId)
+  private async resolveToken(
+    connectionId: string,
+    toolkitSlug: string,
+    source: SecretKeySource = null,
+  ): Promise<{ accessToken: string; providerConfigKey: string }> {
+    // Before the cache: a removed or changed key must not keep serving tokens.
+    // The key is read once here, and used for the fetch below too.
+    const { secretKey, tokens, pending } = await this.credentials(source)
+    const cached = tokens.get(connectionId)
     if (cached && cached.expiresAt > Date.now()) {
       return { accessToken: cached.accessToken, providerConfigKey: cached.providerConfigKey }
     }
 
+    let request = pending.get(connectionId)
+    if (!request) {
+      request = this.fetchToken(connectionId, toolkitSlug, secretKey)
+        .then((token) => { tokens.set(connectionId, token); return token })
+        .finally(() => pending.delete(connectionId))
+      pending.set(connectionId, request)
+    }
+    const { accessToken, providerConfigKey } = await request
+    return { accessToken, providerConfigKey }
+  }
+
+  private async fetchToken(connectionId: string, toolkitSlug: string, secretKey: string): Promise<CachedToken> {
     const nangoSlug = getProviderSlug(toolkitSlug, 'nango')
+    // Fetched with the key whose cache it goes into, so the token and the
+    // cache it lands in always belong to the same account.
     const response = await this.nangoFetch(
-      `/connections/${encodeURIComponent(connectionId)}?provider_config_key=${encodeURIComponent(nangoSlug)}&force_refresh=true`
+      `/connections/${encodeURIComponent(connectionId)}?provider_config_key=${encodeURIComponent(nangoSlug)}&force_refresh=true`,
+      {},
+      { secretKey },
     ) as {
       provider_config_key: string
       credentials: {
@@ -229,6 +307,14 @@ export class NangoAccountProvider extends BaseAccountProvider {
         api_key?: string
         expires_at?: string
       }
+      errors?: Array<{ type: string }>
+    }
+
+    // A connection with errors is not active (see getConnection) and has no
+    // token to use, whatever the response still carries. The message names the
+    // token on purpose: the proxy takes a token error as a reason to reconnect.
+    if (Array.isArray(response.errors) && response.errors.length > 0) {
+      throw new NangoApiError(`No access token: Nango connection ${connectionId} is not active`, 409)
     }
 
     const creds = response.credentials
@@ -245,18 +331,17 @@ export class NangoAccountProvider extends BaseAccountProvider {
     }
     ttl = Math.max(ttl, 30_000)
 
-    this.tokenCache.set(connectionId, {
+    return {
       accessToken,
       providerConfigKey: response.provider_config_key,
       expiresAt: Date.now() + ttl,
-    })
-
-    return { accessToken, providerConfigKey: response.provider_config_key }
+    }
   }
 
-  private async nangoFetch(endpoint: string, options: RequestInit = {}): Promise<unknown> {
+  /** `source`: the key to sign with; the current one by default. */
+  private async nangoFetch(endpoint: string, options: RequestInit = {}, source: SecretKeySource = null): Promise<unknown> {
     const headers = new Headers(options.headers)
-    headers.set('Authorization', `Bearer ${this.secretKey}`)
+    headers.set('Authorization', `Bearer ${(await this.credentials(source)).secretKey}`)
     if (!headers.has('Content-Type') && options.body) {
       headers.set('Content-Type', 'application/json')
     }

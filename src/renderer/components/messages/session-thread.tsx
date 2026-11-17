@@ -5,6 +5,7 @@ import { AgentActivityIndicator } from '@renderer/components/messages/agent-acti
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import { MessageReplyProvider, useMessageReplies } from '@renderer/components/messages/use-message-replies'
+import type { MessageTarget } from './locate-message'
 
 interface SessionThreadProps {
   sessionId: string | null
@@ -27,6 +28,7 @@ interface SessionThreadProps {
   suppressScrollToBottom?: boolean
   /** Selected agent text can be replied to; the replies go into the composer draft. */
   allowReplies?: boolean
+  messageTarget?: MessageTarget
 }
 
 /**
@@ -51,6 +53,7 @@ export function SessionThread({
   onPendingMessageAppeared,
   suppressScrollToBottom,
   allowReplies = false,
+  messageTarget,
 }: SessionThreadProps) {
   const footerRef = useRef<HTMLDivElement>(null)
   const mainRef = useRef<HTMLDivElement>(null)
@@ -107,6 +110,7 @@ export function SessionThread({
               onPendingMessageAppeared={onPendingMessageAppeared}
               suppressScrollToBottom={suppressScrollToBottom}
               bottomInset={overlayFooter ? footerHeight : 0}
+              messageTarget={messageTarget}
             />
           </MessageReplyProvider>
         )}

@@ -4,8 +4,8 @@
  *
  * One `*.perf.ts` file per fixture profile calls `defineHomeScenarios`. Each
  * file runs in its own fork (the perf config uses the forks pool with
- * isolation), so profiles never share the sqlite singleton, the ownership
- * index, or any module state, and a scenario's numbers cannot depend on
+ * isolation), so profiles never share the sqlite singleton or any module
+ * state, and a scenario's numbers cannot depend on
  * what ran before it.
  *
  * Budgets are stated per profile and are meant to be tightened in the same PR
@@ -20,9 +20,10 @@ import type { PROFILES } from './fixtures'
 export type ProfileName = keyof typeof PROFILES
 
 export interface HomeScenarioBudgets {
-  agentsCold: Budget
+  /** The first read by a new actor: what a restart of the app costs. */
+  agentsRestarted: Budget
   agentsWarm: Budget
-  homeCold: Budget
+  homeRestarted: Budget
   homeWarm: Budget
   sessionsPage: Budget
   sessionsNotable: Budget
@@ -42,24 +43,24 @@ export function defineHomeScenarios(profileName: ProfileName, budgets: HomeScena
       await perf?.dispose()
     })
 
-    it('GET /api/agents — cold summary cache', async () => {
-      await perf.invalidateSummaryCaches()
+    it('GET /api/agents — after a restart', async () => {
+      await perf.restartActors()
       const { result, measurement } = await measure(() => perf.request('/api/agents'))
       expect(result.status).toBe(200)
       const body = await result.json()
       expect(body).toHaveLength(perf.profile.agents)
-      expectWithinBudget(`${profileName}: GET /api/agents (cold)`, measurement, budgets.agentsCold)
+      expectWithinBudget(`${profileName}: GET /api/agents (after a restart)`, measurement, budgets.agentsRestarted)
     })
 
-    it('GET /api/agents — warm summary cache', async () => {
+    it('GET /api/agents — warm', async () => {
       await perf.request('/api/agents')
       const { result, measurement } = await measure(() => perf.request('/api/agents'))
       expect(result.status).toBe(200)
       expectWithinBudget(`${profileName}: GET /api/agents (warm)`, measurement, budgets.agentsWarm)
     })
 
-    it('home expansion — cold summary cache', async () => {
-      await perf.invalidateSummaryCaches()
+    it('home expansion — after a restart', async () => {
+      await perf.restartActors()
       const { result, measurement } = await measure(() => perf.request(HOME_URL))
       expect(result.status).toBe(200)
       const body = await result.json()
@@ -71,10 +72,10 @@ export function defineHomeScenarios(profileName: ProfileName, budgets: HomeScena
         expect(agent.latestVisibleSession.messageTail.messages.length).toBeGreaterThan(0)
         expect(agent.attentionOutsideLatest).toEqual({ hasUnreadNotification: false, hasPendingInput: false })
       }
-      expectWithinBudget(`${profileName}: home expansion (cold)`, measurement, budgets.homeCold)
+      expectWithinBudget(`${profileName}: home expansion (after a restart)`, measurement, budgets.homeRestarted)
     })
 
-    it('home expansion — warm summary cache (the iOS poll)', async () => {
+    it('home expansion — warm (the iOS poll)', async () => {
       await perf.request(HOME_URL)
       const { result, measurement } = await measure(() => perf.request(HOME_URL))
       expect(result.status).toBe(200)

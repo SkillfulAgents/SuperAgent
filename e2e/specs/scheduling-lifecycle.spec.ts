@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
-import { sessionMetadataMapSchema } from '../../src/shared/lib/services/session-metadata-schema'
+import { readSessionMetadata } from '../helpers/session-metadata'
 import { AppPage } from '../pages/app.page'
 import { SessionPage } from '../pages/session.page'
 
@@ -147,10 +147,10 @@ test.describe('Scheduling lifecycle with the real parser and scheduler', () => {
     }
   })
 
-  test('the real poll dispatches a due task and preserves the planned slot through successful history', async ({ page, request }) => {
-    // The application polls every 60 seconds, and activity intentionally waits
-    // 60 seconds before classifying a slot. Exercise those real clocks rather
-    // than exposing a special test-only scheduler trigger.
+  test('the real scheduler dispatches a due task and preserves the planned slot through successful history', async ({ page, request }) => {
+    // The schedule's own wakeup fires it, and activity intentionally waits 60
+    // seconds before classifying a slot. Exercise those real clocks rather than
+    // exposing a special test-only scheduler trigger.
     test.setTimeout(150_000)
     const task = await createTask(page, request)
     try {
@@ -165,13 +165,9 @@ test.describe('Scheduling lifecycle with the real parser and scheduler', () => {
       expect(new Date(fired.nextExecutionAt).getTime()).toBeGreaterThan(new Date(due.nextExecutionAt).getTime())
       expect((await request.post(`/api/scheduled-tasks/${task.id}/pause`)).ok()).toBe(true)
 
-      const dataDir = process.env.SUPERAGENT_DATA_DIR
-      expect(dataDir).toBeTruthy()
-      const metadataPath = path.join(dataDir!, 'agents', task.agentSlug, 'workspace', 'session-metadata.json')
-      await expect.poll(async () => {
-        const metadata = sessionMetadataMapSchema.parse(JSON.parse(await readFile(metadataPath, 'utf8')))
-        return metadata[fired.lastSessionId!]
-      }).toMatchObject({
+      await expect.poll(async () =>
+        (await readSessionMetadata(request, task.agentSlug))[fired.lastSessionId!],
+      ).toMatchObject({
         isScheduledExecution: true,
         scheduledTaskId: task.id,
         scheduledExecutionAt: due.nextExecutionAt,

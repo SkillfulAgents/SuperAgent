@@ -46,16 +46,9 @@ function authHeaderValue(headers: Record<string, string> | undefined): string | 
 }
 
 function fakeResponse(opts: { status: number; location?: string; body?: Buffer }): Response {
-  const headers = new Map<string, string>()
+  const headers = new Headers()
   if (opts.location) headers.set('location', opts.location)
-  const body = opts.body ?? Buffer.alloc(0)
-  return {
-    status: opts.status,
-    ok: opts.status >= 200 && opts.status < 300,
-    headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null },
-    arrayBuffer: async () =>
-      body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
-  } as unknown as Response
+  return new Response(new Uint8Array(opts.body ?? Buffer.alloc(0)), { status: opts.status, headers })
 }
 
 function installFetch(responses: Response[]): FetchCall[] {

@@ -72,7 +72,7 @@ function Column({ label, dot, count, action, children, testId }: {
   return (
     <section
       aria-label={label}
-      className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl bg-muted/50"
+      className="flex min-h-0 min-w-0 flex-1 flex-col rounded-card bg-muted/50"
       data-testid={testId}
     >
       <header className="flex h-12 shrink-0 items-center gap-2 px-3">
@@ -88,7 +88,7 @@ function Column({ label, dot, count, action, children, testId }: {
 
 function Empty({ children }: { children: ReactNode }) {
   return (
-    <p className="m-1 rounded-lg border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
+    <p className="m-1 rounded-item border border-dashed border-border/60 px-3 py-6 text-center text-xs text-muted-foreground">
       {children}
     </p>
   )
@@ -118,7 +118,7 @@ function DoneColumn({ open, view, doneCount, archivedCount, onOpen, onCollapse, 
   // The same segmented control as Settings → Appearance, with text for icons.
   const toggleItem = (active: boolean) =>
     cn(
-      'inline-flex h-7 items-center justify-center rounded-md px-2.5 text-xs font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+      'inline-flex h-7 items-center justify-center rounded-control px-2.5 text-xs font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
       active ? 'bg-background text-foreground shadow' : 'hover:text-foreground',
     )
 
@@ -126,7 +126,7 @@ function DoneColumn({ open, view, doneCount, archivedCount, onOpen, onCollapse, 
     <section
       aria-label="Done"
       className={cn(
-        'relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl bg-muted/50 transition-[flex-grow,flex-basis,background-color] duration-300 motion-reduce:transition-none',
+        'relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-card bg-muted/50 transition-[flex-grow,flex-basis,background-color] duration-300 motion-reduce:transition-none',
         EASE,
         open ? 'grow basis-0' : 'shrink-0 grow-0 basis-11 hover:bg-muted/70',
       )}
@@ -142,7 +142,7 @@ function DoneColumn({ open, view, doneCount, archivedCount, onOpen, onCollapse, 
           aria-hidden="true"
           onClick={onCollapse}
           title="Collapse"
-          className="absolute inset-0 cursor-default rounded-xl"
+          className="absolute inset-0 cursor-default rounded-card"
           data-testid="todo-done-backdrop"
         />
       )}
@@ -175,7 +175,7 @@ function DoneColumn({ open, view, doneCount, archivedCount, onOpen, onCollapse, 
               aria-label="Show"
               aria-hidden={!open}
               className={cn(
-                'inline-flex h-8 items-center justify-start justify-self-start rounded-lg bg-muted p-0.5 text-muted-foreground transition-opacity duration-150 motion-reduce:transition-none',
+                'inline-flex h-8 items-center justify-start justify-self-start rounded-control bg-muted p-0.5 text-muted-foreground transition-opacity duration-150 motion-reduce:transition-none',
                 open ? 'opacity-100 delay-150' : 'pointer-events-none opacity-0',
               )}
             >
@@ -242,7 +242,7 @@ function DoneColumn({ open, view, doneCount, archivedCount, onOpen, onCollapse, 
         <button
           type="button"
           onClick={onOpen}
-          className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="absolute inset-0 rounded-card focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={`Show Done, ${doneCount} items`}
           title="Show Done"
         />

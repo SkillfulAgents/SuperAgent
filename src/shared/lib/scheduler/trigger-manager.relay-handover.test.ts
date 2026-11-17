@@ -25,6 +25,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
   getEffectiveModels: () => ({ agentModel: 'm', browserModel: 'm', agentEffort: 'low' }),
+  effectiveModelsFrom: () => ({ agentModel: 'm', browserModel: 'm', agentEffort: 'low' }),
 }))
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble(),
@@ -70,6 +71,9 @@ vi.mock('@shared/lib/webhook-relay', async (importOriginal) => {
 import type { RelayEvent } from '@shared/lib/webhook-relay'
 import { PlatformWebhookRelayService } from '@shared/lib/webhook-relay/platform-webhook-relay-service'
 import { triggerManager } from './trigger-manager'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(triggerManager))
 
 let pending: RelayEvent[]
 let acked: string[]
@@ -104,13 +108,14 @@ beforeEach(() => {
       acked.push(...ids)
     },
     endpoints: {} as never,
-    getToken: () => 'opaque_key',
+    getToken: async () => 'opaque_key',
     requiresMemberScope: () => false,
     createRealtime: () => {
       throw new Error('no realtime in this test')
     },
     detach: (fn) => fn(),
   })
+  registerTasks(relay)
   relayHolder.relay = relay
   relay.start()
   mockGetDistinctMemberIds.mockReturnValue([])

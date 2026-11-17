@@ -5,7 +5,7 @@
  * everything that reads or edits them — the session service, the transcript
  * appends, the media and workflow readers, the usage loaders — works on a
  * `SessionStore`: the workspace file operations, the configuration documents,
- * and the directory the CLI writes transcripts to. A local actor and a remote
+ * the session index, and the directory the CLI writes transcripts to. A local actor and a remote
  * one differ only in the `FileOps` they hold; the transcript code is the same.
  *
  * The transcripts directory is the store's to know. The CLI names its project
@@ -13,7 +13,7 @@
  * the workspace is mounted at `/workspace`), so a runtime that mounts it
  * elsewhere answers with a different directory, and nothing else spells it.
  */
-import type { SessionSummaryCache } from '@shared/lib/services/session-summary-slot'
+import type { SessionIndex } from './session-index'
 import type { AgentSlug, StoreConfigOps, StoreFileOps } from './types'
 import { WorkspaceFileError, joinWorkspacePath } from './workspace-path'
 
@@ -32,20 +32,17 @@ export interface SessionStore {
   /** Workspace path of the directory the CLI writes transcripts to. */
   readonly transcriptsDir: string
   /**
-   * Identifies the storage behind `files`, so that state cached per workspace
-   * (the session summary) is shared by two stores over the same storage and
-   * never by two over different ones. For a workspace on this machine it is
-   * the workspace directory.
+   * Identifies the storage behind `files`, so that what the index learned
+   * from one transcripts directory is never applied to another. For a
+   * workspace on this machine it is the workspace directory.
    */
   readonly key: string
   /**
-   * The store's warm session summary (see `session-summary-cache`): built
-   * from the transcripts directory on first read and kept current by the
-   * writes recorded through the store. It is the store's, so it lives and
-   * dies with the agent's actor and is never shared with another agent's
-   * store, and it follows `key`: a store whose storage moved starts fresh.
+   * The agent's session index (see `session-index`): what the app keeps
+   * about each session and each transcript as last seen. It is the store's,
+   * so it lives and dies with the agent's actor.
    */
-  readonly summaryCache: SessionSummaryCache
+  readonly index: SessionIndex
   /**
    * Told the epoch ms of every activity recorded against a session of this
    * store — a message sent to it, a frame received from it, a transcript

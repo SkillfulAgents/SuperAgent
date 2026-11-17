@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { openHomeSection, openSkillBrowse } from '../helpers/agent-home'
 
 test.describe('Discoverable Skills - Browse & Install', () => {
   let appPage: AppPage
@@ -17,9 +18,8 @@ test.describe('Discoverable Skills - Browse & Install', () => {
   test('Add Skill button opens browse dialog with the seeded skills', async ({ page }) => {
     await agentPage.createAgent(`Skills Browse ${Date.now()}`)
 
-    const addSkillButton = page.locator('[data-testid="add-skill-button"]')
-    await expect(addSkillButton).toBeVisible({ timeout: 10000 })
-    await addSkillButton.click()
+    await openHomeSection(page, 'Skills')
+    await openSkillBrowse(page)
 
     const dialog = page.locator('[data-testid="skills-browse-dialog"]')
     await expect(dialog).toBeVisible()
@@ -35,7 +35,8 @@ test.describe('Discoverable Skills - Browse & Install', () => {
   test('installs a discoverable skill directly into the agent', async ({ page }) => {
     await agentPage.createAgent(`Skills Plain ${Date.now()}`)
 
-    await page.locator('[data-testid="add-skill-button"]').click()
+    await openHomeSection(page, 'Skills')
+    await openSkillBrowse(page)
     const dialog = page.locator('[data-testid="skills-browse-dialog"]')
     await expect(dialog).toBeVisible()
 
@@ -49,6 +50,7 @@ test.describe('Discoverable Skills - Browse & Install', () => {
     await page.keyboard.press('Escape')
     await expect(dialog).toBeHidden()
 
+    await openHomeSection(page, 'Skills')
     const installedRow = page.locator('[data-testid="installed-skill-row"][data-skill-path="e2e-plain-skill"]')
     await expect(installedRow).toBeVisible({ timeout: 10000 })
   })

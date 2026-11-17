@@ -168,6 +168,7 @@ Both regular and auth-enabled images are published on every push to `main` and o
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `BETTER_AUTH_SECRET` | Secret key for signing session cookies (min 32 chars). If not set, a secret is auto-generated and persisted to `$SUPERAGENT_DATA_DIR/.auth-secret`. | Auto-generated |
+| `SUPERAGENT_VAULT_KEY` / `SUPERAGENT_VAULT_KEY_FILE` | The Browser Vault's encryption key (32 random bytes, base64), or the path of a mounted secret file that holds it. Set one. Unlike `BETTER_AUTH_SECRET`, it cannot be changed once logins are saved. If neither is set, the key is made on first use and kept in `$SUPERAGENT_DATA_DIR/.vault-key`. See [Browser Vault § Key custody](docs/browser-vault.md#key-custody). | `$SUPERAGENT_DATA_DIR/.vault-key` |
 | `TRUSTED_ORIGINS` | Comma-separated list of allowed origins for CORS and CSRF protection. The first origin is also used as the app's base URL for OAuth callbacks. Example: `https://superagent.example.com` | None (permissive CORS) |
 | `HOST` | Server hostname, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `localhost` |
 | `PORT` | Server port, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `47891` |

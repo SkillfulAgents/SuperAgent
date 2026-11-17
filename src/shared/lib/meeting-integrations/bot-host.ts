@@ -1,5 +1,6 @@
+import type { IntegrationProvider } from '../agent-integrations/registry'
 import type { MeetingPlatform } from './meeting-url'
-import type { MeetingParticipantEvent, MeetingStatus } from './schemas'
+import type { MeetingParticipantEvent, MeetingScreenFrame, MeetingStatus } from './schemas'
 
 /** What the family asks a provider for; the family never sees provider payloads. */
 export interface MeetingBotJoinRequest {
@@ -10,6 +11,8 @@ export interface MeetingBotJoinRequest {
   participantPageUrl: string
   /** Where the host may POST in-call events (who joined, left, is speaking), if it can. */
   eventsUrl?: string
+  /** Where the host may stream frames of shared screens over a websocket, if it can. */
+  framesUrl?: string
 }
 
 export interface MeetingBotStatus {
@@ -35,8 +38,18 @@ export interface MeetingBotHost {
   getBotStatus(botId: string): Promise<MeetingBotStatus>
   leaveCall(botId: string): Promise<void>
   sendChatMessage(botId: string, message: string): Promise<void>
-  /** Reduce an in-call callback body to a participant event, or null when it is something else. */
-  parseEvent(body: unknown): MeetingParticipantEvent | null
   /** A link to the call's recording while the host still keeps it; null once gone or not yet ready. */
   recordingLink?(botId: string): Promise<MeetingRecordingLink | null>
+}
+
+/**
+ * A meeting provider's registry entry. Reading its host's in-call callbacks
+ * needs no live connection, so the callback route applies them in whichever
+ * process the host's request reaches, connector or not.
+ */
+export interface MeetingIntegrationProvider extends IntegrationProvider {
+  /** Reduce an in-call callback body to a participant event, or null when it is something else. */
+  parseBotEvent(body: unknown): Promise<MeetingParticipantEvent | null>
+  /** Reduce a frames-socket message to a shared-screen frame, or null for anything else (camera frames included). Absent: the host sends no frames. */
+  parseScreenFrame?(message: unknown): Promise<MeetingScreenFrame | null>
 }

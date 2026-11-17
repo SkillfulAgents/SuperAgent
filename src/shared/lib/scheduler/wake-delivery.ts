@@ -3,7 +3,7 @@
  * shared by the scheduler's wake branch and the manual "Wake now" route.
  *
  * A per-task claim, a lock the task's agent holds, makes check-status → send
- * → record a critical section: a scheduler poll and a "Wake now" click landing
+ * → record a critical section: a scheduled wakeup and a "Wake now" click landing
  * simultaneously can never both deliver. The claim is taken before delivery
  * and the task status is re-read under it, while the durable status flip
  * (markTaskExecuted) stays AFTER the send — a crash between send and record is

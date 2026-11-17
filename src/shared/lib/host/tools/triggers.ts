@@ -25,8 +25,8 @@ import { agentModelChoice, errorMessage, parseToolInput, rejected, resolved, ses
 import { resolvePlatformMemberForSession } from './platform-member'
 
 /** Composio triggers need platform Composio, and their events arrive through the webhook relay. */
-function composioTriggersUnavailable(): string | null {
-  if (!isPlatformComposioActive()) return 'Webhook triggers are only available with platform Composio'
+async function composioTriggersUnavailable(): Promise<string | null> {
+  if (!(await isPlatformComposioActive())) return 'Webhook triggers are only available with platform Composio'
   return webhooksUnavailableMessage('Webhook triggers')
 }
 
@@ -37,7 +37,7 @@ async function findConnectedAccount(accountId: string) {
 
 export async function getAvailableTriggersTool({ input: raw }: HostToolRequest): Promise<HostToolResult> {
   try {
-    const unavailable = composioTriggersUnavailable()
+    const unavailable = await composioTriggersUnavailable()
     if (unavailable) return rejected(unavailable)
 
     const input = parseToolInput<{ connected_account_id: string }>(raw)
@@ -83,7 +83,7 @@ interface SetupTriggerInput {
 /** Subscribe on Composio, then save the trigger locally; a failed save unsubscribes again. */
 export async function setupTrigger({ agentSlug, sessionId, toolUseId, input: raw }: HostToolRequest): Promise<HostToolResult> {
   try {
-    const unavailable = composioTriggersUnavailable()
+    const unavailable = await composioTriggersUnavailable()
     if (unavailable) return rejected(unavailable)
 
     const input = parseToolInput<SetupTriggerInput>(raw)
@@ -120,7 +120,7 @@ export async function setupTrigger({ agentSlug, sessionId, toolUseId, input: raw
     const mintAttribution =
       (await attribution.current()) ??
       // Never mint as the opaque-key 'local' placeholder — that would send `token::local`.
-      (sessionMemberId === 'local' ? null : attribution.fromMemberId(sessionMemberId))
+      (sessionMemberId === 'local' ? null : await attribution.fromMemberId(sessionMemberId))
     const mintedByMemberId = mintAttribution?.actingMemberId() ?? undefined
 
     // Under mintAttribution, so the recorded member is the one the proxy

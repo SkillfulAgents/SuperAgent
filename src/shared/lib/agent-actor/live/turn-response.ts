@@ -29,7 +29,8 @@ export class TurnResponse {
   /** The completion notification's body: the newest message group's text. */
   answer = ''
   private answerMessageId: string | null = null
-  private readonly messageIds = new Set<string>()
+  /** Each message id, with the entry uuid of its first frame: the id the transcript shows the message under. */
+  private readonly messageIds = new Map<string, string | null>()
   private readonly entryUuids = new Set<string>()
   /**
    * Messages accepted into the running turn that may each become a turn of
@@ -43,6 +44,10 @@ export class TurnResponse {
   streamedText = ''
   /** How the last turn ended, replayed to clients that connect later. */
   outcome: SessionTurnOutcome | undefined = undefined
+  /** The people this turn's messages tagged. */
+  readonly taggedUserIds = new Set<string>()
+  /** Each message and person already told, so a message's later frames tell no one twice. */
+  readonly toldInMessage = new Set<string>()
 
   /**
    * The response a reattach starts from. Mid-turn the answer and the queued
@@ -57,9 +62,11 @@ export class TurnResponse {
     if (turnInProgress) {
       next.answer = prior.answer
       next.answerMessageId = prior.answerMessageId
-      for (const id of prior.messageIds) next.messageIds.add(id)
+      for (const [id, uuid] of prior.messageIds) next.messageIds.set(id, uuid)
       for (const uuid of prior.entryUuids) next.entryUuids.add(uuid)
       next.queuedTurns = prior.queuedTurns
+      for (const id of prior.taggedUserIds) next.taggedUserIds.add(id)
+      for (const key of prior.toldInMessage) next.toldInMessage.add(key)
       next.resetBeforeNextOutput = prior.resetBeforeNextOutput
     }
     return next
@@ -68,6 +75,8 @@ export class TurnResponse {
   /** A new turn: no answer yet, nothing queued. */
   newTurn(): void {
     this.clearAnswer()
+    this.taggedUserIds.clear()
+    this.toldInMessage.clear()
     this.queuedTurns = 0
     this.resetBeforeNextOutput = false
   }
@@ -123,9 +132,14 @@ export class TurnResponse {
       this.answerMessageId = messageId
       this.answer = text
     }
-    if (messageId) this.messageIds.add(messageId)
+    if (messageId && !this.messageIds.has(messageId)) this.messageIds.set(messageId, entryUuid)
     if (entryUuid) this.entryUuids.add(entryUuid)
     return text
+  }
+
+  /** The entry uuid the transcript shows this message under, when its first frame was seen. */
+  firstEntryUuid(messageId: string): string | undefined {
+    return this.messageIds.get(messageId) ?? undefined
   }
 
   /** A new response started streaming. */

@@ -24,7 +24,7 @@ import { z } from 'zod'
 import { createAgentIntegration, getAgentIntegration } from '../../services/agent-integration-service'
 import { integrationSetupContext, prepareIntegrationSetup } from '../../agent-integrations/setup'
 async function createLinearSetup(agentSlug: string, name: string, userId: string, origin: string, input: Record<string, unknown> = {}) {
-  const prepared = await prepareIntegrationSetup('linear', input, integrationSetupContext('linear', origin, agentSlug, userId))
+  const prepared = await prepareIntegrationSetup('linear', input, await integrationSetupContext('linear', origin, agentSlug, userId))
   const id = await createAgentIntegration({ agentSlug, provider: 'linear', name, createdByUserId: userId, config: prepared.config, status: prepared.status })
   return publicLinearIntegration((await getAgentIntegration(id))!)
 }

@@ -8,7 +8,7 @@
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import { background } from '@shared/lib/background'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatAgentIntegration, type OutgoingMessage } from './chat-agent-integration'
+import { ChatAgentIntegration, type OutgoingMessage, type SendFileOptions } from './chat-agent-integration'
 
 export class MockChatAgentIntegration extends ChatAgentIntegration {
   readonly provider = 'telegram' as const // Arbitrary, just needs a valid value
@@ -19,7 +19,7 @@ export class MockChatAgentIntegration extends ChatAgentIntegration {
 
   sentMessages: { chatId: string; message: OutgoingMessage }[] = []
   sentCards: { chatId: string; event: UserRequestEvent; sessionId?: string }[] = []
-  sentFiles: { chatId: string; filename: string; size: number; caption?: string }[] = []
+  sentFiles: { chatId: string; filename: string; size: number; caption?: string; options?: SendFileOptions }[] = []
   streamUpdates: { chatId: string; text: string; existingMessageId?: string }[] = []
   finalizedMessages: { chatId: string; messageId: string; finalText: string }[] = []
   typingIndicators: string[] = []
@@ -104,9 +104,9 @@ export class MockChatAgentIntegration extends ChatAgentIntegration {
     return id
   }
 
-  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string, options?: SendFileOptions): Promise<string> {
     const id = `mock-file-${this.nextMessageId++}`
-    this.sentFiles.push({ chatId, filename, size: fileData.length, caption })
+    this.sentFiles.push({ chatId, filename, size: fileData.length, caption, ...(options ? { options } : {}) })
     return id
   }
 

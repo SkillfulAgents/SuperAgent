@@ -1,3 +1,4 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 /**
  * Fire-and-forget notify coverage on the real modules.
  *
@@ -10,6 +11,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { closeDatabase, openDatabase } from '@shared/lib/db'
 
 let tempDataDir: string
 let prevDataDir: string | undefined
@@ -18,9 +20,13 @@ beforeAll(async () => {
   prevDataDir = process.env.SUPERAGENT_DATA_DIR
   tempDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'platform-notify-'))
   process.env.SUPERAGENT_DATA_DIR = tempDataDir
+  // Settings (where the platform connection lives) are in the app database:
+  // the real one, in the temp data dir.
+  await openDatabase()
 })
 
 afterAll(async () => {
+  await closeDatabase()
   if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = prevDataDir
   await fs.promises.rm(tempDataDir, { recursive: true, force: true }).catch(() => {})
@@ -29,6 +35,7 @@ afterAll(async () => {
 describe('platform-service auth-change notify (unmocked)', () => {
   it('completes the fire-and-forget platform-service import on disconnect', async () => {
     const logSpy = vi.spyOn(console, 'log')
+    const publish = vi.spyOn(globalFeed, 'publish')
     const { revokePlatformToken } = await import('./platform-auth-service')
 
     // No stored token in the temp data dir: the remote revoke short-circuits
@@ -46,6 +53,8 @@ describe('platform-service auth-change notify (unmocked)', () => {
       { timeout: 10000, interval: 50 }
     )
 
+    expect(publish).toHaveBeenCalledWith({ type: 'platform_notifications_changed' })
+    publish.mockRestore()
     logSpy.mockRestore()
   })
 

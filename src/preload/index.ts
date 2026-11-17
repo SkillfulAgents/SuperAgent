@@ -4,6 +4,7 @@ import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extens
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
+import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -139,6 +140,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-external', url)
   },
 
+  // The Gamut sign-in in a sheet on the app's window (ASWebAuthenticationSession).
+  // Resolves when the sheet closes; 'browser' means there was no sheet to show
+  // and the URL went to the default browser instead.
+  // `withApple`: the native Sign in with Apple prompt runs first.
+  startPlatformSignIn: (url: string, withApple = false): Promise<'completed' | 'cancelled' | 'failed' | 'browser'> => {
+    return ipcRenderer.invoke('platform-sign-in-start', url, withApple)
+  },
+  cancelPlatformSignIn: (): Promise<void> => {
+    return ipcRenderer.invoke('platform-sign-in-cancel')
+  },
+
   openApplePasswordsExtension: (): Promise<void> => {
     return ipcRenderer.invoke('open-apple-passwords-extension')
   },
@@ -149,9 +161,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Navigation from tray menu or deep links.
-  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void): (() => void) => {
-    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown) =>
-      callback(agentSlug as string, sessionId as string | null | undefined)
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void): (() => void) => {
+    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown, messageUuid: unknown) =>
+      callback(agentSlug as string, sessionId as string | null | undefined, typeof messageUuid === 'string' ? messageUuid : undefined)
     ipcRenderer.on('navigate-to-agent', handler)
     return () => {
       ipcRenderer.removeListener('navigate-to-agent', handler)
@@ -470,6 +482,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('quick-dispatch:attach-pending', handler)
     }
   },
+  // Computer-use toggle: screenshot the screen under the launcher (and play the
+  // shutter that carries it into the composer).
+  quickDispatchCaptureScreen: (): Promise<QuickDispatchCaptureResult> => ipcRenderer.invoke('quick-dispatch:capture-screen'),
+  // The pointer is on the toggle: get the shutter ready so the click answers at once.
+  quickDispatchCapturePrepare: () => {
+    ipcRenderer.send('quick-dispatch:capture-prepare')
+  },
+  // Where the screenshot's chip rendered, in the launcher's viewport (null: nowhere).
+  quickDispatchCaptureTarget: (rect: CaptureRect | null) => {
+    ipcRenderer.send('quick-dispatch:capture-target', rect)
+  },
+  // Main → launcher: the shutter landed (or ended) — show the chip it covered.
+  onQuickDispatchCaptureLanded: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:capture-landed', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:capture-landed', handler)
+    }
+  },
   // Main → launcher: the panel was hidden — reset transient state (attachments).
   onQuickDispatchReset: (callback: () => void): (() => void) => {
     const handler = () => callback()
@@ -537,9 +568,11 @@ declare global {
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
+      startPlatformSignIn?: (url: string, withApple?: boolean) => Promise<'completed' | 'cancelled' | 'failed' | 'browser'>
+      cancelPlatformSignIn?: () => Promise<void>
       openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null, messageUuid?: string) => void) => () => void
       removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => () => void
       removeOpenSettings: () => void
@@ -610,6 +643,10 @@ declare global {
       onQuickDispatchToggleDictation: (callback: () => void) => () => void
       quickDispatchDrainAttach: () => Promise<string[]>
       onQuickDispatchAttachPending: (callback: () => void) => () => void
+      quickDispatchCaptureScreen: () => Promise<QuickDispatchCaptureResult>
+      quickDispatchCapturePrepare: () => void
+      quickDispatchCaptureTarget: (rect: CaptureRect | null) => void
+      onQuickDispatchCaptureLanded: (callback: () => void) => () => void
       onQuickDispatchReset: (callback: () => void) => () => void
       setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
       importPackagesDrain: () => Promise<ClassifiedImportPackage[]>

@@ -58,7 +58,7 @@ function upstreamUrlFor(target: CloudProxyTarget, pathAndQuery: string): string 
  * answered the browser `101` the only thing left to say is a close code. Doing
  * it in this order, a re-mint is invisible — the browser is still waiting.
  */
-function connectUpstream(pathAndQuery: string): Promise<WebSocket> {
+async function connectUpstream(pathAndQuery: string): Promise<WebSocket> {
   const attempt = (target: CloudProxyTarget, retryOn401: boolean): Promise<WebSocket> =>
     new Promise((resolve, reject) => {
       const upstream = new WebSocket(upstreamUrlFor(target, pathAndQuery), {
@@ -102,8 +102,8 @@ function connectUpstream(pathAndQuery: string): Promise<WebSocket> {
       })
     })
 
-  const target = resolveCloudProxyTarget()
-  if (!target) return Promise.reject(new Error('no cloud workspace token is available'))
+  const target = await resolveCloudProxyTarget()
+  if (!target) throw new Error('no cloud workspace token is available')
   return attempt(target, true)
 }
 

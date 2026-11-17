@@ -23,6 +23,30 @@ beforeEach(() => {
   })
 })
 
+// Server code reads shared state through AppState, which throws until an entry
+// point initializes it. Node-environment tests (the server's) get a fresh
+// LocalAppState per test here, so no state or listener crosses tests. A test
+// of the uninitialized path calls closeAppState() first. Imported in the hook,
+// not up here: by then the test file's vi.mock()s are in place, so AppState's
+// own imports (background, error reporting) are the ones the test file sees.
+if (typeof window === 'undefined') {
+  beforeEach(async () => {
+    // The holder module itself, so a test that mocks @shared/lib/app-state cannot break this.
+    const { closeAppState, initializeLocalAppState } = await import('@shared/lib/app-state/app-state')
+    await closeAppState()
+    await initializeLocalAppState()
+  })
+
+  // The same for scheduled work: a fresh manager with nothing registered and
+  // dispatch on, so no timer crosses tests. A test registers the tasks it uses.
+  beforeEach(async () => {
+    const { closeBackgroundWork, initializeBackgroundWork } = await import('@shared/lib/background-work/global')
+    const { LocalTaskManager } = await import('@shared/lib/background-work/local-task-manager')
+    await closeBackgroundWork()
+    await initializeBackgroundWork(new LocalTaskManager())
+  })
+}
+
 // jsdom has no matchMedia; components read it via useIsMobile() and
 // prefers-reduced-motion. Default to "no match" (desktop, motion allowed) with
 // no-op listeners. Node-env (non-renderer) tests have no window — guard for it.

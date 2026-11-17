@@ -127,7 +127,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: vi.fn(() => ({
+  activeLlmProviderFrom: vi.fn(() => ({
     getContainerEnvVars: () => ({}),
   })),
 }))
@@ -214,6 +214,22 @@ describe('ensureImageExists via start()', () => {
     expect(pullImageMock).not.toHaveBeenCalled()
     expect(buildImageMock).not.toHaveBeenCalled()
     expect(buildExecAttempted()).toBe(false)
+  })
+
+  it('reads the settings once per start, and none when the caller hands in what it read for the start', async () => {
+    const { getSettings } = await import('@shared/lib/config/settings')
+    const reads = vi.mocked(getSettings)
+    const startSettings = await reads()
+    // The image is missing, so the create path (runner, image) runs too.
+    inspectScript = [IMAGE_MISSING_INSPECT_MSG]
+    reads.mockClear()
+    await makeClient().start({ settings: startSettings })
+    expect(reads).not.toHaveBeenCalled()
+    expect(pullImageMock).toHaveBeenCalledWith('docker', IMAGE)
+
+    inspectScript = [IMAGE_MISSING_INSPECT_MSG]
+    await makeClient().start()
+    expect(reads).toHaveBeenCalledTimes(1)
   })
 
   it('returns the health-validated port and clears stale state with one force-remove', async () => {

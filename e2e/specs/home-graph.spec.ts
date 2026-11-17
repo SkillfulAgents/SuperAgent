@@ -17,8 +17,37 @@
  * in-test pin/zoom/retry armor below predates that isolation and stays as a
  * second line of defense against the file's own re-layouts.
  */
-import { test, expect, type Page } from '@playwright/test'
+import { test as base, expect, type Page } from '@playwright/test'
 import { createAgent, uniqueName, type TestAgent } from '../helpers/agents'
+import { fitGraphViewport, graphSettingsSchema } from '../helpers/home-graph-interactions'
+
+// A prior draw/drag leaves saved pins that can cover a later test's new node.
+// Keep the isolated server's real API, but scope agents and graph settings to
+// each case so desktop/touch and Chromium/WebKit can share this config safely.
+const test = base.extend<{ graphAgent: (name: string) => Promise<TestAgent> }>({
+  graphAgent: async ({ page, request }, provide) => {
+    const response = await request.get('/api/user-settings')
+    expect(response.ok()).toBe(true)
+    const before = graphSettingsSchema.parse(await response.json())
+    const created: TestAgent[] = []
+    await provide(async name => {
+      const agent = await createAgent(request, name)
+      created.push(agent)
+      return agent
+    })
+    await page.goto('/')
+    await expect(page.getByTestId('agent-graph')).toHaveCount(0)
+    for (const agent of created) {
+      const deleted = await request.delete(`/api/agents/${agent.slug}`)
+      expect(deleted.ok()).toBe(true)
+    }
+    const restored = await request.put('/api/user-settings', { data: {
+      graphNodePositions: before.graphNodePositions ?? {},
+      graphEdgeGeometry: before.graphEdgeGeometry ?? {},
+    } })
+    expect(restored.ok()).toBe(true)
+  },
+})
 
 function collectPageErrors(page: Page) {
   const errors: string[] = []
@@ -34,8 +63,8 @@ async function createInvokePolicy(request: Parameters<typeof createAgent>[0], ca
 }
 
 test.describe('home connections graph', () => {
-  test('toggle is URL-driven: back/forward and deep links restore the view', async ({ page, request }, testInfo) => {
-    const agent = await createAgent(request, uniqueName(testInfo, 'Graph Toggle'))
+  test('toggle is URL-driven: back/forward and deep links restore the view', async ({ page, graphAgent }, testInfo) => {
+    const agent = await graphAgent(uniqueName(testInfo, 'Graph Toggle'))
     const errors = collectPageErrors(page)
 
     await page.goto('/')
@@ -58,8 +87,8 @@ test.describe('home connections graph', () => {
     expect(errors).toEqual([])
   })
 
-  test('a right-click on an agent node opens the unified agent menu', async ({ page, request }, testInfo) => {
-    const agent = await createAgent(request, uniqueName(testInfo, 'Graph Menu'))
+  test('a right-click on an agent node opens the unified agent menu', async ({ page, graphAgent }, testInfo) => {
+    const agent = await graphAgent(uniqueName(testInfo, 'Graph Menu'))
     const errors = collectPageErrors(page)
 
     await page.goto('/?view=graph')
@@ -83,9 +112,9 @@ test.describe('home connections graph', () => {
     expect(errors).toEqual([])
   })
 
-  test('renders topology edges between agents and navigates on node click', async ({ page, request }, testInfo) => {
-    const caller = await createAgent(request, uniqueName(testInfo, 'Graph Caller'))
-    const target = await createAgent(request, uniqueName(testInfo, 'Graph Target'))
+  test('renders topology edges between agents and navigates on node click', async ({ page, request, graphAgent }, testInfo) => {
+    const caller = await graphAgent(uniqueName(testInfo, 'Graph Caller'))
+    const target = await graphAgent(uniqueName(testInfo, 'Graph Target'))
     await createInvokePolicy(request, caller, target)
     const errors = collectPageErrors(page)
 
@@ -121,10 +150,10 @@ test.describe('home connections graph', () => {
     expect(errors).toEqual([])
   })
 
-  test('hovering a node fades everything outside its neighborhood', async ({ page, request }, testInfo) => {
-    const caller = await createAgent(request, uniqueName(testInfo, 'Graph Focus Src'))
-    const target = await createAgent(request, uniqueName(testInfo, 'Graph Focus Dst'))
-    const bystander = await createAgent(request, uniqueName(testInfo, 'Graph Focus Odd'))
+  test('hovering a node fades everything outside its neighborhood', async ({ page, request, graphAgent }, testInfo) => {
+    const caller = await graphAgent(uniqueName(testInfo, 'Graph Focus Src'))
+    const target = await graphAgent(uniqueName(testInfo, 'Graph Focus Dst'))
+    const bystander = await graphAgent(uniqueName(testInfo, 'Graph Focus Odd'))
     await createInvokePolicy(request, caller, target)
 
     await page.goto('/?view=graph')
@@ -162,15 +191,15 @@ test.describe('home connections graph', () => {
     await expect(page.getByTestId('agent-graph')).not.toHaveClass(/graph-focusing/)
   })
 
-  test('the fade survives a selection change under the cursor', async ({ page, request }, testInfo) => {
+  test('the fade survives a selection change under the cursor', async ({ page, request, graphAgent }, testInfo) => {
     // React Flow folds `selected` into the node wrapper's className and
     // rewrites the whole attribute when it flips, which is why the fade is
     // marked with an attribute React never renders. Selecting one card and
     // then clicking another while hovering it deselects the first mid-focus
     // — the sequence that dropped a class-based mark.
-    const caller = await createAgent(request, uniqueName(testInfo, 'Graph Select Src'))
-    const target = await createAgent(request, uniqueName(testInfo, 'Graph Select Dst'))
-    const bystander = await createAgent(request, uniqueName(testInfo, 'Graph Select Odd'))
+    const caller = await graphAgent(uniqueName(testInfo, 'Graph Select Src'))
+    const target = await graphAgent(uniqueName(testInfo, 'Graph Select Dst'))
+    const bystander = await graphAgent(uniqueName(testInfo, 'Graph Select Odd'))
     await createInvokePolicy(request, caller, target)
 
     await page.goto('/?view=graph')
@@ -197,19 +226,17 @@ test.describe('home connections graph', () => {
     await expect(page.getByTestId('agent-graph')).toHaveClass(/graph-focusing/)
   })
 
-  test('dragging a node persists its position; reset layout clears saved positions', async ({ page, request }, testInfo) => {
-    const agent = await createAgent(request, uniqueName(testInfo, 'Graph Drag'))
+  test('dragging a node persists its position; reset layout clears saved positions', async ({ page, request, graphAgent }, testInfo) => {
+    const agent = await graphAgent(uniqueName(testInfo, 'Graph Drag'))
 
     await page.goto('/?view=graph')
     const node = page.getByTestId(`graph-node-agent-${agent.slug}`)
     await expect(node).toBeVisible()
 
-    // Sibling specs share this server: their agents fill the graph, and while
-    // they keep creating more, every structural change re-solves the layout
-    // and shifts every unpinned node. A bounding box measured before a
-    // reshuffle dangles — the mouse grabs empty canvas and pans instead of
-    // dragging. Re-fit, re-measure and retry until the settings write proves
-    // THIS node's position landed.
+    // Fit View settles on animation frames after its button click returns.
+    // Raw mouse gestures skip locator stability checks, so measuring too early
+    // grabs the node's old position and pans empty canvas. Wait for the fit,
+    // then retry any later layout changes until THIS node's position is saved.
     const savedPosition = async () => {
       const settings = await (await request.get('/api/user-settings')).json() as {
         graphNodePositions?: Record<string, { x: number; y: number }>
@@ -218,9 +245,7 @@ test.describe('home connections graph', () => {
     }
     let landed = false
     for (let attempt = 0; attempt < 5 && !landed; attempt++) {
-      // Late-created agents can push the grid past the initial viewport;
-      // re-fitting keeps the target node on screen for the grab.
-      await page.getByRole('button', { name: 'Fit View' }).click()
+      await fitGraphViewport(page)
       const box = await node.boundingBox()
       if (!box) continue
       const persisted = page
@@ -252,15 +277,15 @@ test.describe('home connections graph', () => {
     expect(after.graphNodePositions ?? {}).toEqual({})
   })
 
-  test('drawing an edge between agents creates the invoke permission; deleting it revokes', async ({ page, request }, testInfo) => {
+  test('drawing an edge between agents creates the invoke permission; deleting it revokes', async ({ page, request, graphAgent }, testInfo) => {
     // This case deliberately retries imprecise canvas gestures while sibling
     // workers keep reshaping the shared graph. The bounded retry paths can
     // legitimately exceed Playwright's 30s default on CI; all three attempts in
     // the observed failure exhausted that global budget at different actions.
     test.slow()
 
-    const source = await createAgent(request, uniqueName(testInfo, 'Graph Draw Src'))
-    const target = await createAgent(request, uniqueName(testInfo, 'Graph Draw Dst'))
+    const source = await graphAgent(uniqueName(testInfo, 'Graph Draw Src'))
+    const target = await graphAgent(uniqueName(testInfo, 'Graph Draw Dst'))
 
     const policyTargets = async () => {
       const res = await request.get(`/api/agents/${source.slug}/x-agent-policies`)

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
 import type { ApiTarget } from '@shared/lib/api-target'
 import type { SpotlightChanges, SpotlightIndex } from './spotlight-bridge'
 import { itemsForTarget, parseSpotlightId, workspaceItems } from './spotlight-items'
-import { FIRST_PASS_DELAY_MS, SESSIONS_MAX_AGE_MS, SESSIONS_PER_AGENT, SpotlightSync } from './spotlight-sync'
+import { FIRST_PASS_DELAY_MS, SESSIONS_MAX_AGE_MS, SESSIONS_PER_AGENT, SpotlightSync, SYNC_DEBOUNCE_MS, SYNC_INTERVAL_MS } from './spotlight-sync'
 
 const LOCAL = 'http://localhost:4000'
 // The real cloud base carries the per-boot proxy key in its path.
@@ -105,11 +106,12 @@ function setup(options: { cloud?: boolean; active?: ApiTarget } = {}) {
 
   const sync = new SpotlightSync({
     index,
-    baseUrl: (target) => bases[target],
-    activeTarget: () => state.active,
+    baseUrl: async (target) => bases[target],
+    activeTarget: async () => state.active,
     fetch: servers.fetch,
     now: () => now,
   })
+  registerTasks(sync)
   return {
     sync,
     servers,
@@ -133,6 +135,63 @@ afterEach(() => {
 })
 
 describe('SpotlightSync', () => {
+  describe('its schedule', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('makes its first pass after the delay, then one per interval, until stopped', async () => {
+      const { sync, servers } = setup()
+      sync.start()
+      sync.start()
+      await vi.advanceTimersByTimeAsync(FIRST_PASS_DELAY_MS - 1)
+      expect(servers.agentRequests(LOCAL)).toBe(0)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(servers.agentRequests(LOCAL)).toBe(1)
+      await vi.advanceTimersByTimeAsync(SYNC_INTERVAL_MS)
+      expect(servers.agentRequests(LOCAL)).toBe(2)
+      sync.stop()
+      sync.stop()
+      await vi.advanceTimersByTimeAsync(SYNC_INTERVAL_MS * 3)
+      expect(servers.agentRequests(LOCAL)).toBe(2)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('ignores a request before the first pass', async () => {
+      const { sync, servers } = setup()
+      sync.start()
+      sync.requestSync()
+      await vi.advanceTimersByTimeAsync(SYNC_DEBOUNCE_MS)
+      expect(servers.agentRequests(LOCAL)).toBe(0)
+      sync.stop()
+    })
+
+    it('covers a burst of requests with one sync, the debounce after the last', async () => {
+      const { sync, servers } = setup()
+      sync.start()
+      await vi.advanceTimersByTimeAsync(FIRST_PASS_DELAY_MS)
+      expect(servers.agentRequests(LOCAL)).toBe(1)
+      sync.requestSync()
+      await vi.advanceTimersByTimeAsync(SYNC_DEBOUNCE_MS - 1)
+      sync.requestSync()
+      await vi.advanceTimersByTimeAsync(SYNC_DEBOUNCE_MS - 1)
+      expect(servers.agentRequests(LOCAL)).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(servers.agentRequests(LOCAL)).toBe(2)
+      sync.stop()
+    })
+
+    it('forgets a request waiting on the debounce when stopped', async () => {
+      const { sync, servers } = setup()
+      sync.start()
+      await vi.advanceTimersByTimeAsync(FIRST_PASS_DELAY_MS)
+      sync.requestSync()
+      sync.stop()
+      sync.requestSync()
+      await vi.advanceTimersByTimeAsync(SYNC_DEBOUNCE_MS * 2)
+      expect(servers.agentRequests(LOCAL)).toBe(1)
+    })
+  })
+
   it('replaces each domain whole on its first pass', async () => {
     const { sync, applied } = setup()
     await sync.sync()
@@ -142,6 +201,15 @@ describe('SpotlightSync', () => {
       { deleteDomains: ['cloud'], index: itemsForTarget('cloud', [research], new Map([['research', []]])) },
       { deleteDomains: ['workspace'], index: workspaceItems() },
     ])
+  })
+
+  it('changes nothing on a pass whose Superagents cannot be resolved', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { sync, applied, state } = setup()
+    Object.defineProperty(state, 'active', { get: () => { throw new Error('database is locked') } })
+    await sync.sync()
+
+    expect(applied).toEqual([])
   })
 
   it('sends nothing on a pass where nothing changed, and only the difference after a change', async () => {

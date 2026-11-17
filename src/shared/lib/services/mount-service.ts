@@ -177,7 +177,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
         ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
         ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
         ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}),
-        ...(row.readOnly || driver?.readOnly ? { readOnly: true } : {}) }]
+        ...(row.readOnly || driver?.readOnly ? { readOnly: true } : driver?.agentNote && driver.sourceLabel ? { sourceLabel: driver.sourceLabel, agentNote: driver.agentNote } : {}) }]
     }),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }

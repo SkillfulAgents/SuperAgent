@@ -7,7 +7,12 @@ vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
   IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
-vi.mock('@shared/lib/agent-actor', () => ({ containerHost: { getReadiness: () => ({ status: 'READY' }) } }))
+const mockReadMetadata = vi.fn()
+vi.mock('@shared/lib/agent-actor', () => ({
+  containerHost: { getReadiness: () => ({ status: 'READY' }) },
+  agentCatalog: { resolve: async (input: string) => (input === 'known-agent' || input === 'Known Agent' ? 'known-agent' : null) },
+  agentRegistry: { get: (slug: string) => ({ sessions: { readMetadata: () => mockReadMetadata(slug) } }) },
+}))
 vi.mock('@shared/lib/container/client-factory', () => ({ checkAllRunnersAvailability: async () => [] }))
 vi.mock('@shared/lib/config/settings', () => ({ getSettings: () => ({ container: { containerRunner: 'lima' } }) }))
 vi.mock('@shared/lib/container/base-container-client', () => ({
@@ -59,5 +64,30 @@ describe('debug routes on the Lima runner', () => {
       "LIMACTL shell vm-under-test -- sudo nerdctl ps -a --format '{{json .}}'",
       'LIMACTL shell vm-under-test -- sudo nerdctl logs --tail 5 superagent-abc',
     ])
+  })
+})
+
+describe('debug session metadata', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('answers what the agent\'s session index keeps, by slug or display slug', async () => {
+    const metadata = { s1: { name: 'Named', starred: true }, s2: { isWidgetRepair: true, widgetRepairSlug: 'macros' } }
+    mockReadMetadata.mockResolvedValue(metadata)
+
+    for (const id of ['known-agent', 'Known%20Agent']) {
+      const res = await createApp().request(`http://localhost/api/debug/agents/${id}/session-metadata`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual(metadata)
+    }
+    expect(mockReadMetadata.mock.calls).toEqual([['known-agent'], ['known-agent']])
+  })
+
+  it('answers 404 for an agent that does not exist, and reads nothing', async () => {
+    const res = await createApp().request('http://localhost/api/debug/agents/nobody/session-metadata')
+
+    expect(res.status).toBe(404)
+    expect(mockReadMetadata).not.toHaveBeenCalled()
   })
 })

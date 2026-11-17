@@ -39,7 +39,7 @@ export function TodoCardMenu({ todo, runners, onRename, children }: {
       <ContextMenuTrigger asChild>
         <div>{children}</div>
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-56 rounded-xl p-2" data-testid="todo-card-menu">
+      <ContextMenuContent className="w-56 rounded-popover p-2" data-testid="todo-card-menu">
         {canRename && (
           <ContextMenuItem data-testid="todo-rename-item" onClick={() => onRename(todo)}>
             <Pencil className="h-4 w-4 mr-2" />

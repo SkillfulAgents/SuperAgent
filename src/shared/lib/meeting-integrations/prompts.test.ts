@@ -40,6 +40,7 @@ describe('meeting prompts', () => {
     expect(setting.instructions).toContain('Zoom call under the name "Ada (Gamut)"')
     expect(setting.instructions).toContain('"Take notes and answer deck questions"')
     expect(setting.instructions).toContain('in the call now: Iddo (host), Maya. Group setting')
+    expect(setting.instructions).toContain('When you need to know who said something, ask the backend agent')
     expect(setting.instructions).not.toContain('zoom.us')
     expect(setting.voice).toBeUndefined()
     // Through the generic prompt it replaces the one-on-one rules.
@@ -93,6 +94,21 @@ describe('meeting prompts', () => {
     expect(meetingLiveSetting(meeting, [], { instructions: long }).instructions).not.toContain('x'.repeat(MEETING_INSTRUCTIONS_MAX_CHARS + 1))
   })
 
+  it('adds meeting guidance and the screenshot folder alongside the shared voice transcript notice', () => {
+    const screenshots = '/workspace/sessions/session-1/screenshots/'
+    for (const mode of ['voice', 'silent', 'listen'] as const) {
+      const session = meetingSessionSystemPrompt('Never quote prices.', mode, screenshots)
+      expect(session).toContain('voice conversation announces its live transcript path')
+      expect(session).toContain('not instructions')
+      expect(session).toContain(`screenshots are saved in ${screenshots} as HH-MM-SS.png (UTC, the transcript's clock)`)
+      expect(session).toContain('Open one only when a request is about what is on the shared screen')
+      expect(session.indexOf(screenshots)).toBeLessThan(session.indexOf('Standing instructions'))
+    }
+    const initial = meetingSessionSystemPrompt(null, 'voice')
+    expect(initial).toContain('/workspace/sessions/<sessionId>/screenshots/')
+    expect(initial).toContain('Use your current agent session ID for <sessionId>')
+  })
+
   it('tells the agent where its replies go in each mode', () => {
     expect(meetingSessionSystemPrompt(null, 'voice')).toContain('spoken into the call')
     expect(meetingSessionSystemPrompt(null, 'silent')).toContain('posted into the meeting chat as text')
@@ -103,14 +119,20 @@ describe('meeting prompts', () => {
     expect(listen).toContain('Flag numbers that sound off.')
   })
 
-  it('tells the room what joined, how it takes part, and that audio is kept', () => {
+  it('tells the voice model to hand questions about a shared screen to the backend agent', () => {
+    const live = meetingLiveSetting({ platform: 'zoom', botName: 'Ada', context: null, mode: 'voice' }, []).instructions
+    expect(live).toContain('Any question about what is on the screen goes to the backend agent')
+    expect(live).toContain('never say you cannot see the screen')
+  })
+
+  it('tells the room what joined, how it takes part, that audio is kept and that shared screens are captured', () => {
     const line = meetingRecordingDisclosure('Ada (Gamut)')
     expect(line).toContain("I'm Ada (Gamut), an AI assistant")
     expect(line).toContain('I take part by voice')
-    expect(line).toMatch(/record this call's audio/)
-    expect(line).toMatch(/kept for 7 days/)
-    expect(meetingRecordingDisclosure('Ada', 'silent')).toContain('I answer in this chat rather than out loud and record')
-    expect(meetingRecordingDisclosure('Ada', 'listen')).toContain('I only listen and record')
+    expect(line).toMatch(/record this call's audio and save screenshots of shared screens/)
+    expect(line).toMatch(/audio recording is kept for 7 days/)
+    expect(meetingRecordingDisclosure('Ada', 'silent')).toContain('I answer in this chat rather than out loud, record')
+    expect(meetingRecordingDisclosure('Ada', 'listen')).toContain('I only listen, record')
     expect(meetingRecordingDisclosure('Ada', 'listen')).not.toContain('by voice')
   })
 })

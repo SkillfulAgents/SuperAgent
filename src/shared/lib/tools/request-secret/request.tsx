@@ -109,7 +109,7 @@ export function SecretRequestItem({
   const readOnlyConfig = readOnly
     ? {
         extraContent: (
-          <code className="mt-3 inline-flex h-7 items-center rounded-md bg-muted px-2.5 font-mono text-xs font-medium text-foreground/80">
+          <code className="mt-3 inline-flex h-7 items-center rounded-control bg-muted px-2.5 font-mono text-xs font-medium text-foreground/80">
             {secretName}
           </code>
         ),

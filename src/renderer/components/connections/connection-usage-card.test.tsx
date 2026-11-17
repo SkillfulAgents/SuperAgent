@@ -50,7 +50,7 @@ describe('ConnectionUsageCard', () => {
     expect(screen.getByText('6 calls')).toBeInTheDocument()
     expect(screen.getByText('5 succeeded')).toBeInTheDocument()
     expect(screen.getByText('1 failed')).toBeInTheDocument()
-    expect(screen.getByRole('img', {
+    expect(screen.getByRole('group', {
       name: 'Work GitHub activity: 6 calls over 2 days, 5 succeeded and 1 failed.',
     })).toBeInTheDocument()
 

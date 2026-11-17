@@ -133,6 +133,32 @@ async function resolveMicrosoftDisplayName(
   }
 }
 
+// Name a YouTube connection after its channel, e.g. "Artificial Iddo": one
+// Google login can own several channels, so the email doesn't tell them apart.
+async function resolveYouTubeChannelName(
+  makeApiCall: MakeApiCallFn,
+  connectionId: string,
+): Promise<string | null> {
+  try {
+    const response = await makeApiCall({
+      providerConnectionId: connectionId,
+      toolkitSlug: 'youtube',
+      targetUrl: 'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true',
+      method: 'GET',
+      headers: new Headers(),
+      body: null,
+    })
+    if (!response.ok) return null
+    const data = await response.json()
+    const channel = isRecord(data) && Array.isArray(data.items) ? data.items[0] : undefined
+    const snippet = isRecord(channel) ? channel.snippet : undefined
+    return isRecord(snippet) && typeof snippet.title === 'string' && snippet.title ? snippet.title : null
+  } catch (error) {
+    console.warn('Could not fetch the YouTube channel for display name:', error)
+    return null
+  }
+}
+
 // Plaid is POST-only JSON; the bridge injects client_id/secret/access_token.
 async function plaidPost(
   makeApiCall: MakeApiCallFn,
@@ -210,6 +236,11 @@ export async function resolveDisplayName(
   fallbackName: string,
 ): Promise<string> {
   const slug = toolkitSlug.toLowerCase()
+
+  if (slug === 'youtube') {
+    const channel = await resolveYouTubeChannelName(makeApiCall, connectionId)
+    if (channel) return channel
+  }
 
   if (GOOGLE_TOOLKITS.includes(slug)) {
     const email = await resolveGoogleDisplayName(makeApiCall, connectionId, slug)

@@ -1,4 +1,5 @@
-import { readCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
+import type { AppSettings, CloudWorkspaceSettings } from '@shared/lib/config/settings'
+import { cloudWorkspaceRecordFrom, readCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 import { getCloudWorkspace, isDeploymentUrlAllowed } from './cloud-workspace-service'
 
 /** Where the cloud proxy forwards to, and the credential it presents. */
@@ -20,11 +21,19 @@ export interface CloudProxyTarget {
  * once, versus a class of failure that only reproduces on a skewed machine.
  *
  * The URL is re-checked on every read rather than trusted from the mint: it
- * comes back from `settings.json`, which is on disk and outlives the process
- * that wrote it.
+ * comes back from the stored settings, which outlive the process that wrote
+ * them.
  */
-export function resolveCloudProxyTarget(): CloudProxyTarget | null {
-  const record = readCloudWorkspaceRecord()
+export async function resolveCloudProxyTarget(): Promise<CloudProxyTarget | null> {
+  return targetOf(await readCloudWorkspaceRecord())
+}
+
+/** {@link resolveCloudProxyTarget} from settings already read. */
+export function cloudProxyTargetFrom(settings: Pick<AppSettings, 'cloudWorkspace'>): CloudProxyTarget | null {
+  return targetOf(cloudWorkspaceRecordFrom(settings))
+}
+
+function targetOf(record: CloudWorkspaceSettings | null): CloudProxyTarget | null {
   if (!record?.token || !record.deploymentUrl) return null
   if (!isDeploymentUrlAllowed(record.deploymentUrl)) return null
   return {
@@ -67,7 +76,7 @@ export function refreshCloudProxyTarget(): Promise<CloudProxyTarget | null> {
     // A refresh that *failed* still declines: the mint is what we are protecting
     // the platform from, but replaying against a token we just watched be
     // rejected only doubles the traffic to the deployment.
-    return Promise.resolve(lastRefreshSucceeded ? resolveCloudProxyTarget() : null)
+    return lastRefreshSucceeded ? resolveCloudProxyTarget() : Promise.resolve(null)
   }
 
   lastRefreshStartedAt = Date.now()

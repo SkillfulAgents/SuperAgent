@@ -47,7 +47,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           // wide layouts show the panel-hide button (see globals.css).
           <div className="flex items-center gap-1" data-testid="file-preview-header">
             <button
-              className="file-preview-compact-close hidden p-0.5 rounded hover:bg-muted transition-colors"
+              className="file-preview-compact-close hidden p-0.5 rounded-icon hover:bg-muted transition-colors"
               onClick={onClose}
               title="Close file preview"
               aria-label="Close file preview"
@@ -55,7 +55,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
               <X className="h-4 w-4" />
             </button>
             <button
-              className="file-preview-wide-close inline-flex p-0.5 rounded hover:bg-muted transition-colors"
+              className="file-preview-wide-close inline-flex p-0.5 rounded-icon hover:bg-muted transition-colors"
               onClick={onClose}
               title="Hide files panel"
               aria-label="Hide files panel"

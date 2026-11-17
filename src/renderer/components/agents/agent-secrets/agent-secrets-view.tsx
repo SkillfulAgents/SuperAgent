@@ -161,7 +161,7 @@ export function AgentSecretsView({ agentSlug }: AgentSecretsViewProps) {
         {isAuthMode && !rolesReady ? (
           <p className="text-sm text-muted-foreground">Checking permissions...</p>
         ) : !canManage ? (
-          <div className="rounded-xl border bg-background px-6 py-10 text-center">
+          <div className="rounded-card border bg-background px-6 py-10 text-center">
             <p className="text-sm font-medium">Owner access required</p>
             <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
               Only agent owners can view and manage saved secrets.
@@ -170,7 +170,7 @@ export function AgentSecretsView({ agentSlug }: AgentSecretsViewProps) {
         ) : isLoading ? (
           <p className="text-sm text-muted-foreground">Loading secrets...</p>
         ) : isError ? (
-          <div className="rounded-xl border bg-background px-6 py-10 text-center" role="alert">
+          <div className="rounded-card border bg-background px-6 py-10 text-center" role="alert">
             <p className="text-sm font-medium">Couldn&apos;t load secrets</p>
             <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
               {error instanceof Error ? error.message : 'Please try again.'}
@@ -267,7 +267,7 @@ function SecretsHelpText({ className = '' }: { className?: string }) {
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
   return (
-    <div className="rounded-xl border border-dashed bg-background px-6 py-10 text-center">
+    <div className="rounded-card border border-dashed bg-background px-6 py-10 text-center">
       <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
         <KeyRound className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
       </div>
@@ -301,7 +301,7 @@ function SecretsTable({
   onDelete,
 }: SecretsTableProps) {
   return (
-    <div className="rounded-xl border bg-background overflow-hidden">
+    <div className="rounded-card border bg-background overflow-hidden">
       <div className="divide-y divide-border/50">
         {secrets.map((secret) => (
           <SecretRow
@@ -343,7 +343,7 @@ function SecretRow({
   return (
     <div data-testid={`secret-row-${secret.envVar}`}>
       <div className="flex items-center gap-3 px-4 py-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-control bg-muted">
           <KeyRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
         </div>
         <div className="flex-1 min-w-0">
@@ -416,7 +416,7 @@ function SecretRowMenu({
             setOpen(false)
             onEdit()
           }}
-          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left"
+          className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted text-left"
         >
           <Pencil className="h-4 w-4" />
           Edit
@@ -427,7 +427,7 @@ function SecretRowMenu({
             setOpen(false)
             onDelete()
           }}
-          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted text-left text-destructive"
+          className="flex w-full items-center gap-2 rounded-item px-2 py-1.5 text-sm hover:bg-muted text-left text-destructive"
           data-testid={`delete-secret-${envVar}`}
         >
           <Trash2 className="h-4 w-4" />

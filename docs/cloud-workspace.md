@@ -90,9 +90,12 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
   fingerprint of the platform credential** it was minted under, is only reused
   while all three still match, is cleared whenever the acting **org OR
   user/member** changes (`savePlatformAuth`) or on disconnect, and the account is
-  re-checked immediately before the write so a refresh still in flight across an
-  account change can't resurrect the old token. A same-user metadata refresh does
-  not churn it.
+  re-checked as part of the write so a refresh still in flight across an
+  account change can't resurrect the old token: `writeCloudWorkspaceRecord` /
+  `clearCloudWorkspaceRecord` take an `onlyIf(settings)` guard that runs inside
+  the settings compare-and-set (see [settings-storage.md](settings-storage.md)),
+  so no account change can commit between the check and the write. A same-user
+  metadata refresh does not churn it.
 - **One account snapshot per cycle.** `getCloudWorkspace` reads the bearer, the
   acting org, and the identity **together, once** (`readAccount`), presents that
   bearer, and re-checks the snapshot after every await — after discovery and
@@ -257,7 +260,7 @@ process** (`main/api-target.ts`). `initApiBaseUrl()` asks for the answer
 prefixes; that single value is what moves the whole UI.
 
 - **The preference is main-owned, not renderer-owned**
-  (`services/api-target-preference.ts`, stored in `settings.json`). The app has
+  (`services/api-target-preference.ts`, stored in settings). The app has
   more than one renderer — the main window and the quick-dispatch launcher are
   separate `BrowserWindow`s — and they must never disagree about which machine
   executes work. Everything the decision rests on (the deployment token, the
@@ -511,6 +514,7 @@ somewhere else.
 | Reveal a workspace file (`folder-file-context-menu.tsx`) | The deployment returns *its* host path; opening it here lands nowhere, or on a same-named folder of yours |
 | Reveal a workspace folder in Finder/Explorer (`folder-host-actions.tsx`) | The folder panel's header action. Same reasoning as revealing a file: the deployment returns *its* host path. The Copy-path action beside it stays everywhere, since a path is just text |
 | Computer Use — the settings tab (`global-settings-page.tsx`, through `offersComputerUseSettings()`) and the System Settings recovery link (`computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
+| The dispatch launcher's computer-use toggle (`quick-dispatch.tsx`, through `offersLauncherComputerUse()`) | It screenshots this computer and grants the session its apps; remotely the agent would get a picture of one machine and permission on another |
 | Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`, `todo-draft-dialog.tsx`), through `usesHostFolderPaths()` | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
 
 The ones marked "through" ask a narrower capability built on this one, which
@@ -550,8 +554,8 @@ it.
 | `mobile-tab.tsx` | Pairing links out to `{deploymentUrl}/settings/mobile` instead of minting. The proxy's session is a `token-exchange` one, and `POST /api/auth/mobile/pairing-token` admits only `password`/`oidc` sessions, so a minted credential can't fan out into device credentials. The URL is `ResolvedApiTarget.deploymentUrl` (`getRemoteDeploymentUrl()`) |
 
 **Not gated at all, deliberately.** Where the answer comes from the *server* it
-already comes from the machine that owns it: the host-browser providers and their
-Chrome profiles (`detectAllProviders()`), STT availability
+already comes from the machine that owns it: the host-browser providers
+(`detectAllProviders()`), STT availability
 (`/api/voice/configured`), and runtime readiness all describe whichever Superagent
 is being driven. The runtime banner in the sidebar keeps reporting an unavailable
 cloud runtime — that is true wherever it comes from; only the offer to fix it

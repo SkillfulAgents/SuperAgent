@@ -14,7 +14,7 @@ import { buildWorkflowTree } from '@shared/lib/workflows/workflow-tree'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { JsonlEntry } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
-import { isAbsentFile, readJsonl, streamJsonl } from './jsonl-files'
+import { chunksOf, isAbsentFile, readJsonl, streamJsonl, streamLines } from './jsonl-files'
 import { sessionDirPath, sessionFilePath, transcriptPath, type SessionStore } from './session-store'
 import type { FileEntry, MediaBlob, SubagentRef } from './types'
 import { WorkspaceFileError, joinWorkspacePath } from './workspace-path'
@@ -185,14 +185,21 @@ async function repointForkContextRefs(store: SessionStore, sourceSessionId: stri
   let copiedUuids: Map<string, string> | undefined
   for (const entry of entries) {
     if (entry.kind !== 'file' || !/^agent-[\w-]+\.jsonl$/.test(entry.name)) continue
-    const raw = await store.files.getDoc(entry.path)
-    if (raw === null) continue
-    const text = Buffer.from(raw).toString('utf8')
-    const newline = text.indexOf('\n')
-    const firstLine = newline === -1 ? text : text.slice(0, newline)
+    // Only the first line: a subagent transcript can be tens of MB.
+    let firstLine: Buffer | undefined
+    try {
+      for await (const line of streamLines(store.files, entry.path)) {
+        firstLine = line
+        break
+      }
+    } catch (error) {
+      if (isAbsentFile(error)) continue
+      throw error
+    }
+    if (firstLine === undefined) continue
     let ref: z.infer<typeof forkContextRefSchema>
     try {
-      const parsed = forkContextRefSchema.safeParse(JSON.parse(firstLine))
+      const parsed = forkContextRefSchema.safeParse(JSON.parse(firstLine.toString('utf8')))
       if (!parsed.success) continue
       ref = parsed.data
     } catch {
@@ -204,22 +211,36 @@ async function repointForkContextRefs(store: SessionStore, sourceSessionId: stri
     if (!parentLastUuid) continue
     const repointed = JSON.stringify(forkContextRefSchema.parse({ ...ref, parentSessionId: targetSessionId, parentLastUuid }))
     const stat = await store.files.stat(entry.path)
+    if (stat === null) continue
+    // The rest (from the first newline on) is streamed behind the new first line.
+    const rest = stat.size > firstLine.length
+      ? await store.files.read(entry.path, { start: firstLine.length, end: stat.size - 1 })
+      : null
     await store.files.write(
       entry.path,
-      Buffer.from(repointed + (newline === -1 ? '' : text.slice(newline)), 'utf8'),
-      stat?.mode === undefined ? undefined : { mode: stat.mode },
+      Readable.toWeb(Readable.from(withFirstLine(Buffer.from(repointed, 'utf8'), rest))) as ReadableStream<Uint8Array>,
+      stat.mode === undefined ? undefined : { mode: stat.mode },
     )
   }
+}
+
+async function* withFirstLine(firstLine: Buffer, rest: ReadableStream<Uint8Array> | null): AsyncGenerator<Buffer> {
+  yield firstLine
+  if (rest) yield* chunksOf(rest)
 }
 
 /** Source uuid → its copy's uuid, from the copied transcript. */
 async function copiedEntryUuids(store: SessionStore, sourceSessionId: string, targetSessionId: string): Promise<Map<string, string>> {
   const uuids = new Map<string, string>()
-  for (const entry of await readJsonl<unknown>(store.files, transcriptPath(store, targetSessionId))) {
-    const parsed = forkedEntrySchema.safeParse(entry)
-    if (parsed.success && parsed.data.forkedFrom.sessionId === sourceSessionId) {
-      uuids.set(parsed.data.forkedFrom.messageUuid, parsed.data.uuid)
+  try {
+    for await (const entry of streamJsonl<unknown>(store.files, transcriptPath(store, targetSessionId))) {
+      const parsed = forkedEntrySchema.safeParse(entry)
+      if (parsed.success && parsed.data.forkedFrom.sessionId === sourceSessionId) {
+        uuids.set(parsed.data.forkedFrom.messageUuid, parsed.data.uuid)
+      }
     }
+  } catch (error) {
+    if (!isAbsentFile(error)) throw error
   }
   return uuids
 }

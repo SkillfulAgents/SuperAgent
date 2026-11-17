@@ -18,5 +18,5 @@ export function handleAuthRequest(request: Request): Promise<Response> {
     url.pathname = `/api/auth/callback/${legacyCallback[1]}`
     request = new Request(url, request)
   }
-  return runAuthRequest(() => getAuth().handler(request))
+  return runAuthRequest(async () => (await getAuth()).handler(request))
 }

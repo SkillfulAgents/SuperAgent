@@ -291,7 +291,7 @@ describe.each(['headers', 'body'] as const)('OIDC discovery with stalled %s', (s
     expect(authority.oidc.state.tokenExchanges).toHaveLength(1)
     // Reset must create independent pending state and rediscover on first SSO.
     resetAuth()
-    await within(getAuth().$context)
+    await within((await getAuth()).$context)
     expect(authority.state.discoveryRequests).toBe(2)
     await completeSso()
     expect(authority.state.discoveryRequests).toBe(3)

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { AudioLines, ArrowDownToLine, Shapes } from 'lucide-react'
 import { OptionCard } from '@renderer/components/ui/option-card'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
+import { useHasDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dialog'
 import { useCanUseVoiceMode } from '@renderer/hooks/use-voice-input'
 import type { ApiAgentTemplateInstallResult } from '@shared/lib/types/api'
@@ -24,8 +24,7 @@ export interface AgentCreationAidsProps {
 export function AgentCreationAids({ onStartVoiceMode, onImportComplete }: AgentCreationAidsProps) {
   const navigate = useNavigate()
   const canUseVoiceMode = useCanUseVoiceMode()
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
+  const hasMarketplace = useHasDiscoverableAgents() === true
 
   // --- Import flow (dialog extracted to ImportAgentDialog) ---
   const [showImportDialog, setShowImportDialog] = useState(false)

@@ -11,6 +11,8 @@ const toastError = vi.fn()
 let mockDiscoverableAgents: ApiDiscoverableAgent[] | undefined
 let mockDiscoverableAgentsFailed = false
 let mockDiscoverableAgentsLoading = false
+// What the consumer last asked the catalog hook for.
+let mockCatalogOptions: { enabled?: boolean } | undefined
 let mockSetupCompleted = true
 let mockGlobalSetupCompleted = true
 let mockIsAuthMode = true
@@ -30,11 +32,14 @@ vi.mock('@renderer/hooks/use-agent-templates', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@renderer/hooks/use-agent-templates')>()
   return {
     ...actual,
-    useDiscoverableAgents: () => ({
-      data: mockDiscoverableAgents,
-      isError: mockDiscoverableAgentsFailed,
-      isLoading: mockDiscoverableAgentsLoading,
-    }),
+    useDiscoverableAgents: (options?: { enabled?: boolean }) => {
+      mockCatalogOptions = options
+      return {
+        data: mockDiscoverableAgents,
+        isError: mockDiscoverableAgentsFailed,
+        isLoading: mockDiscoverableAgentsLoading,
+      }
+    },
   }
 })
 vi.mock('@renderer/hooks/use-complete-template-install', () => ({
@@ -201,6 +206,8 @@ describe('SignupHandoffConsumer', () => {
     })
     expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toBeNull()
     expect((router.state.location.search as { view?: string }).view).toBe('cards')
+    // Mounted on every page: with no template to resolve, the catalog is not read.
+    expect(mockCatalogOptions).toEqual({ enabled: false })
   })
 
   it('truncates prompt and drops an invalid model before writing the one-shot', async () => {
@@ -251,6 +258,7 @@ describe('SignupHandoffConsumer template-only first run', () => {
     await waitFor(() => expect(completeInstall).toHaveBeenCalledWith({ slug: 'seo-agent' }))
     expect(mutateAsync).toHaveBeenCalledWith({ setupCompleted: true, onboardingProgress: null })
     expect(toastError).not.toHaveBeenCalled()
+    expect(mockCatalogOptions).toEqual({ enabled: true })
   })
 
   it('populated, no match → toast, no dialog', async () => {

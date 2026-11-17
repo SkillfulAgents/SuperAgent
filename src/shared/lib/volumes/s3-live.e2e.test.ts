@@ -43,11 +43,11 @@ describe.skipIf(!enabled)('live S3 bucket and mounted filesystem', () => {
   let config: S3InputConfig, client: S3VolumeClient
   let server: ServerType | undefined
   let container: string | undefined
-  beforeAll(() => {
+  beforeAll(async () => {
     const input = s3InputConfigSchema.parse(JSON.parse(readFileSync(process.env.S3_TEST_CONFIG!, 'utf8')))
     if (!input.prefix) throw new Error('Live testing requires an explicit test prefix')
     config = { ...input, prefix: `${input.prefix}/run-${randomUUID()}` }
-    client = new S3VolumeClient(sealedS3Access(config))
+    client = new S3VolumeClient(await sealedS3Access(config))
     volume = new S3MountableVolume(randomUUID(), 'S3 Test', config)
     console.log('Live S3 test prefix:', config.prefix)
   })

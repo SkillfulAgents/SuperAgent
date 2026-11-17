@@ -153,6 +153,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
     'EventSource — global notification stream',
+  'components/notifications/notification-stream.ts':
+    'EventSource — global notification stream, opened at sign-in',
   'hooks/use-message-stream.ts': 'EventSource — per-session message stream',
   'hooks/use-browser-stream.ts': 'WebSocket — browser view frames',
   'components/meeting/meeting-participant-page.tsx':

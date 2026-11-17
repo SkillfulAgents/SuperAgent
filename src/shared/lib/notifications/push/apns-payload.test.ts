@@ -56,6 +56,11 @@ describe('buildApnsAlertPush', () => {
     })
   })
 
+  it('carries the message a mention tags, so the tap lands on it', () => {
+    const push = buildApnsAlertPush(makeEvent({ type: 'session_mention', messageUuid: 'msg-7' }), makeDevice(), NOW_MS)
+    expect(push.data.messageUuid).toBe('msg-7')
+  })
+
   it('echoes the device workspaceTag as workspaceId; a null tag becomes undefined', () => {
     const push = buildApnsAlertPush(makeEvent(), makeDevice({ workspaceTag: null }), NOW_MS)
     expect(push.data.workspaceId).toBeUndefined()

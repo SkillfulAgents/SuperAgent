@@ -1,4 +1,6 @@
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -40,6 +42,7 @@ vi.mock('../agent-integrations/agent-integration-manager', () => ({ agentIntegra
 vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 import { createAgentIntegration, getAgentIntegration } from './agent-integration-service'
 import { cleanupAgentData } from './agent-cleanup-service'
+import { getSettings, mutateSettings } from '../config/settings'
 
 const AGENT_SLUG = 'test-agent'
 const OTHER_AGENT_SLUG = 'other-agent'
@@ -263,6 +266,7 @@ describe('agent-cleanup-service', () => {
       await cleanupAgentData(AGENT_SLUG)
 
       expect(testDb.select().from(schema.proxyRules).all().map((r) => r.id)).toEqual(['rule-shared'])
+      await backgroundSettled()
       const audit = testDb.select().from(schema.auditLog).all().filter((row) => row.object === 'proxy_rule')
       expect(audit).toHaveLength(1)
       expect(audit[0]).toMatchObject({ action: 'deleted', objectId: 'acct-1' })
@@ -390,7 +394,8 @@ describe('agent-cleanup-service', () => {
       expect(countRows(schema.scheduledTasks, OTHER_AGENT_SLUG)).toBe(1)
     })
 
-    it('deletes notifications', async () => {
+    it('deletes notifications and refreshes caches after the ACL is removed', async () => {
+      const publish = vi.spyOn(globalFeed, 'publish')
       insertNotification('n-1', AGENT_SLUG)
       insertNotification('n-other', OTHER_AGENT_SLUG)
 
@@ -398,6 +403,8 @@ describe('agent-cleanup-service', () => {
 
       expect(countRows(schema.notifications, AGENT_SLUG)).toBe(0)
       expect(countRows(schema.notifications, OTHER_AGENT_SLUG)).toBe(1)
+      expect(publish).toHaveBeenCalledWith({ type: 'notifications_changed' })
+      publish.mockRestore()
     })
 
     it('deletes agent remote MCP mappings but not the MCP server', async () => {
@@ -518,6 +525,23 @@ describe('agent-cleanup-service', () => {
         .where(eq(schema.webhookTriggers.agentSlug, AGENT_SLUG))
         .all()
       expect(triggers.every(t => t.status === 'cancelled')).toBe(true)
+    })
+
+    it('drops the agent\'s computer-use "always" grants and keeps other agents\' grants', async () => {
+      await mutateSettings((settings) => {
+        settings.computerUse = {
+          ...settings.computerUse,
+          agentPermissions: {
+            [AGENT_SLUG]: { grants: [{ level: 'use_application', appName: 'Notes', grantType: 'always' }] },
+            [OTHER_AGENT_SLUG]: { grants: [{ level: 'list_apps_windows', grantType: 'always' }] },
+          },
+        }
+      })
+
+      await cleanupAgentData(AGENT_SLUG)
+
+      const agentPermissions = (await getSettings()).computerUse?.agentPermissions ?? {}
+      expect(Object.keys(agentPermissions)).toEqual([OTHER_AGENT_SLUG])
     })
 
     it('is a no-op for an agent with no peripherals', async () => {

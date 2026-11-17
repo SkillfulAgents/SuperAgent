@@ -128,7 +128,7 @@ export function DrawerTabStrip({
             onClick={() => slide(-1)}
             disabled={atStart}
             aria-label="Earlier tabs"
-            className="rounded p-0.5 transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+            className="rounded-icon p-0.5 transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
@@ -137,7 +137,7 @@ export function DrawerTabStrip({
             onClick={() => slide(1)}
             disabled={atEnd}
             aria-label="Later tabs"
-            className="rounded p-0.5 transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+            className="rounded-icon p-0.5 transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
           >
             <ChevronRight className="h-4 w-4" />
           </button>
@@ -155,7 +155,7 @@ export function DrawerTabStrip({
 /** Shared tab geometry; icons, menus, and close behavior belong to each caller. */
 export function drawerTabClassName(index: number, activeIndex: number) {
   return cn(
-    'group relative flex h-8 flex-[0_1_160px] items-center rounded-t-lg pr-2 text-left text-xs transition-colors',
+    'group relative flex h-8 flex-[0_1_160px] items-center rounded-t-control pr-2 text-left text-xs transition-colors',
     index === activeIndex
       ? 'z-10 min-w-[9.5rem] -mb-px border border-b-0 border-black/5 bg-background text-foreground shadow-[0_-1px_2px_rgba(0,0,0,0.04)] dark:border-white/5'
       : 'min-w-[4.25rem] text-foreground hover:bg-background/60',

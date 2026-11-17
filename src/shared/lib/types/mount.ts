@@ -75,6 +75,10 @@ export interface ContainerVolume {
   dirCacheSeconds?: number
   /** Older hosts omit this, and the volume mounts read and write. */
   readOnly?: boolean
+  /** Where a drive with an agent note lives. Read-only drives omit it. */
+  sourceLabel?: string
+  /** The drive type's agent note. Read-only drives omit it. */
+  agentNote?: string
 }
 
 /** Why a volume is not in the container. */

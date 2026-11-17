@@ -96,7 +96,7 @@ async function verifyGrant(assertion: string): Promise<DeploymentGrantClaims> {
   // Same canonical form the platform signs (origin + path, no trailing slash),
   // so neither an operator-supplied trailing slash nor an explicit default port
   // can break verification.
-  const audience = canonicalAudience(getAppBaseUrl())
+  const audience = canonicalAudience(await getAppBaseUrl())
 
   let payload: unknown
   try {
@@ -190,7 +190,7 @@ async function consumeJti(jti: string, expSec: number): Promise<void> {
   }
 }
 
-type AuthContext = Awaited<ReturnType<typeof getAuth>['$context']>
+type AuthContext = Awaited<Awaited<ReturnType<typeof getAuth>>['$context']>
 
 /**
  * Resolve the Better Auth user for the grant, provisioning on first exchange.
@@ -342,7 +342,7 @@ export async function exchangeDeploymentGrant(
   // Only after full cryptographic + claim validation: burn the jti.
   await consumeJti(claims.jti, claims.exp)
 
-  const auth = getAuth()
+  const auth = await getAuth()
   const ctx = await auth.$context
 
   const user = await runPlatformSignIn(claims.role, () => resolveUser(ctx, claims))

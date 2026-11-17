@@ -122,10 +122,6 @@ vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
 
-vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  copyChromeProfileData: vi.fn().mockReturnValue(false),
-}))
-
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 
 vi.mock('node:fs/promises', () => ({
@@ -139,7 +135,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 vi.mock('@shared/lib/composio/client', () => ({
-  isPlatformComposioActive: () => false,
+  isPlatformComposioActive: () => false, isPlatformComposioActiveFrom: () => false,
 }))
 
 const relayState = vi.hoisted(() => ({ available: false }))

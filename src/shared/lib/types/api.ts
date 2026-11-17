@@ -9,6 +9,7 @@ import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/co
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionOrigin, SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { UnansweredReason } from '@shared/lib/tools/types'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import type { AgentAvatar } from './agent-avatar'
 
@@ -29,6 +30,8 @@ export interface ApiAgent {
   name: string
   /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
   teamBrain?: { volumeId: string }
+  /** The agent of a Team Brain set-up still in progress: no list shows it. */
+  teamBrainSettingUp?: true
   /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
   avatar?: AgentAvatar | null
   description?: string
@@ -186,6 +189,8 @@ export interface ApiSession {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  /** Auth mode, list only: the people who wrote in it, in the order they first did. */
+  participants?: ApiMessageSender[]
 }
 
 // ============================================================================
@@ -210,6 +215,10 @@ export interface ApiToolCall {
   }
   /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
   backgroundTaskId?: string
+  /** A TaskCreate call's description as the CLI saved it (CLI 2.1.317+). */
+  taskDescription?: string
+  /** An AskUserQuestion call's questions that ended without an answer, by question text. */
+  unansweredQuestions?: Record<string, UnansweredReason>
 }
 
 /**

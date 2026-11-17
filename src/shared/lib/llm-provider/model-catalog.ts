@@ -3,10 +3,14 @@ import { normalizeCatalog, mergeCatalog } from './catalog-merge'
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import {
   isFamilyAlias,
+  type ModelCatalogSettings,
   type ModelDefinition,
 } from './model-catalog-schema'
 import { getLlmProvider } from './index'
-import { getModelCatalogSettings, getSettings } from '../config/settings'
+import { getSettings, type AppSettings } from '../config/settings'
+
+/** The global settings a provider's effective catalog is built from. */
+export type CatalogSettings = Pick<AppSettings, 'modelCatalog' | 'modelPricing'>
 
 /**
  * Host-side source of truth for which concrete models a provider offers and
@@ -34,24 +38,29 @@ export function getProviderCatalog(providerId: LlmProviderId): ModelDefinition[]
   return normalizeCatalog(getLlmProvider(providerId).getBuiltinCatalog())
 }
 
-export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[] {
-  return withGlobalModelPricing(mergeCatalog(getProviderCatalog(providerId), getModelCatalogSettings()[providerId]?.overrides ?? []), getSettings().modelPricing)
+export async function getEffectiveCatalog(providerId: LlmProviderId): Promise<ModelDefinition[]> {
+  return effectiveCatalogFrom(providerId, await getSettings())
+}
+
+/** {@link getEffectiveCatalog} from global settings already read. */
+export function effectiveCatalogFrom(providerId: LlmProviderId, settings: CatalogSettings): ModelDefinition[] {
+  return withGlobalModelPricing(mergeCatalog(getProviderCatalog(providerId), settings.modelCatalog?.[providerId]?.overrides ?? []), settings.modelPricing)
 }
 
 /** Look up a concrete model definition by id within a provider's catalog. */
-export function getModelDefinition(
+export async function getModelDefinition(
   id: string,
   providerId: LlmProviderId,
-): ModelDefinition | undefined {
-  return getEffectiveCatalog(providerId).find(model => model.id === id)
+): Promise<ModelDefinition | undefined> {
+  return (await getEffectiveCatalog(providerId)).find(model => model.id === id)
 }
 
 /** Static catalog context-window for a model, or undefined if unset. */
-export function getModelContextWindow(
+export async function getModelContextWindow(
   id: string,
   providerId: LlmProviderId,
-): number | undefined {
-  return getModelDefinition(id, providerId)?.contextWindow
+): Promise<number | undefined> {
+  return (await getModelDefinition(id, providerId))?.contextWindow
 }
 
 /**
@@ -70,11 +79,11 @@ export function getModelContextWindowMap(
 }
 
 /** Static catalog prompt hints for a model, or an empty list if unset. */
-export function getModelPromptHints(
+export async function getModelPromptHints(
   id: string,
   providerId: LlmProviderId,
-): string[] {
-  return getModelDefinition(id, providerId)?.promptHints ?? []
+): Promise<string[]> {
+  return (await getModelDefinition(id, providerId))?.promptHints ?? []
 }
 
 /**
@@ -90,13 +99,36 @@ export function getModelPromptHints(
  * so step 4 alias-resolves the default too — e.g. Bedrock's 'sonnet' default
  * resolves to 'us.anthropic.claude-sonnet-5', never reaching the SDK bare.
  */
-export function resolveModelForProvider(
+export async function resolveModelForProvider(
   selection: string,
   providerId: LlmProviderId,
   purpose: ModelPurpose,
-): string {
-  const catalog = getEffectiveCatalog(providerId)
+): Promise<string> {
+  return resolveModelForProviderFrom(selection, providerId, purpose, await getSettings())
+}
 
+/** {@link resolveModelForProvider} from global settings already read. */
+export function resolveModelForProviderFrom(
+  selection: string,
+  providerId: LlmProviderId,
+  purpose: ModelPurpose,
+  settings: CatalogSettings,
+): string {
+  return resolveModelInCatalog(selection, providerId, purpose, effectiveCatalogFrom(providerId, settings), settings.modelCatalog)
+}
+
+/**
+ * {@link resolveModelForProviderFrom} against the provider's effective catalog
+ * the caller already built from the same settings ({@link effectiveCatalogFrom}),
+ * so resolving several selections builds it once.
+ */
+export function resolveModelInCatalog(
+  selection: string,
+  providerId: LlmProviderId,
+  purpose: ModelPurpose,
+  catalog: readonly ModelDefinition[],
+  modelCatalog: ModelCatalogSettings | undefined,
+): string {
   // exact concrete id (pin/passthrough), else bare family alias → its isLatest id
   const resolveExactOrAlias = (s: string): string | undefined => {
     if (catalog.some(model => model.id === s)) return s
@@ -111,6 +143,6 @@ export function resolveModelForProvider(
   if (hasVersionSegment(selection)) return selection
 
   // 4. Fall back to the provider default (a bare alias), alias-resolved to a concrete id.
-  const fallback = getLlmProvider(providerId).getDefaultModel(purpose)
+  const fallback = getLlmProvider(providerId).getDefaultModel(purpose, modelCatalog)
   return resolveExactOrAlias(fallback) ?? fallback
 }

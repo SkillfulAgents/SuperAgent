@@ -31,6 +31,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 }))
 vi.mock('@shared/lib/account-providers', () => ({
   getAccountProviderByName: () => ({
+    credentialsFrom: () => ({ provider: 'composio' }),
     getConnection: async () => ({ status: 'ACTIVE' }),
     makeApiCall: async (call: { method: string; targetUrl: string }) => {
       upstreamCalls.push({ method: call.method, targetUrl: call.targetUrl })

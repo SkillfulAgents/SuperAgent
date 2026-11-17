@@ -182,8 +182,8 @@ describe('the actors\' state survives a backend module reload', () => {
     const reloaded = await reload()
     const after = reloaded.agentRegistry.get('a') as LocalAgentActor
 
-    // The summary cache is per store: a second store would never see the
-    // activity the adopted sessions record.
+    // What the session index holds in memory is per store: a second store
+    // would never see the activity the adopted sessions have yet to store.
     expect(after.store).toBe(before.store)
     expect(after.state.store).toBe(after.store)
   })

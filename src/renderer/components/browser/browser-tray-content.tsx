@@ -100,7 +100,7 @@ export function BrowserTrayContent({
               // The drawer's own control, at the strip's right end like the file drawer's.
               <button
                 type="button"
-                className="inline-flex p-0.5 rounded hover:bg-muted transition-colors"
+                className="inline-flex p-0.5 rounded-icon hover:bg-muted transition-colors"
                 onClick={onClose}
                 title="Hide browser panel"
                 aria-label="Hide browser panel"
@@ -121,7 +121,7 @@ export function BrowserTrayContent({
       >
         <div
           className={cn(
-            'flex w-full shrink-0 flex-col rounded-lg border border-black/5 bg-background shadow-[0_1px_3px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.03)] dark:border-white/5 dark:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_2px_8px_rgba(0,0,0,0.15)]',
+            'flex w-full shrink-0 flex-col rounded-card border border-black/5 bg-background shadow-[0_1px_3px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.03)] dark:border-white/5 dark:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_2px_8px_rgba(0,0,0,0.15)]',
             // Square only where a tab actually meets the corner.
             leadingTabFlush && 'rounded-tl-none',
             isExpanded && 'self-center',
@@ -153,7 +153,7 @@ export function BrowserTrayContent({
           {/* Action bar */}
           {stream.needsAttention && latestRequest && (
             <div className="shrink-0 px-4 py-3 border-t border-border/40">
-              <div className="rounded-lg border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
+              <div className="rounded-card border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
                 <span className="text-xs font-medium text-foreground flex-1 truncate">
                   {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
                 </span>

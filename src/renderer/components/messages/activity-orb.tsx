@@ -6,7 +6,8 @@ import { useIsDark } from '@renderer/hooks/use-theme'
 /**
  * The thought orbs used by the activity indicator (AgentActivityIndicator):
  * per-state canvas animations plus the status-text/orb-state derivation. The
- * orbs render inside the card above the composer.
+ * card above the composer shows the agent's avatar instead, falling back to
+ * these orbs for an agent without one.
  */
 
 // ── Shared 3D primitives ─────────────────────────────────────────────────────

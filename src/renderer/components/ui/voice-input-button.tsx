@@ -9,11 +9,12 @@ import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import { cn } from '@shared/lib/utils'
 import type { useVoiceInput } from '@renderer/hooks/use-voice-input'
 
-type VoiceInputSize = 'default' | 'sm' | 'xs'
+type VoiceInputSize = 'default' | 'sm' | 'compact' | 'xs'
 
 const SIZE_CONFIG = {
   default: { button: 'h-[34px] w-[34px]', pill: 'h-[34px] w-[102px]', waveform: { width: 56, height: 18 } },
   sm: { button: 'h-8 w-8', pill: 'h-8 w-[92px]', waveform: { width: 48, height: 16 } },
+  compact: { button: 'h-7 w-7', pill: 'h-7 w-[88px]', waveform: { width: 44, height: 14 } },
   xs: { button: 'h-6 w-6', pill: 'h-6 w-[84px]', waveform: { width: 40, height: 12 } },
 } as const
 
@@ -104,12 +105,16 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
       onClick={handleToggle}
       disabled={disabled && !active}
       data-testid="voice-input-button"
+      // An outline button like the shared Button's, so surfaces that restyle those (Agent Home's glass) include it,
+      // except while recording, when it is the tinted pill.
+      data-variant="outline"
+      data-active={active || undefined}
       className={cn(
         buttonVariants({ variant: 'outline', size: 'icon' }),
         'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',
         active
-          ? `${config.pill} gap-2 justify-between rounded-md border-primary/30 bg-primary/10 px-2 text-foreground hover:bg-primary/15 dark:border-primary/40 dark:bg-primary/15 dark:hover:bg-primary/20`
-          : `gap-0 rounded-md ${config.button}`,
+          ? `${config.pill} gap-2 justify-between border-primary/30 bg-primary/10 px-2 text-foreground hover:bg-primary/15 dark:border-primary/40 dark:bg-primary/15 dark:hover:bg-primary/20`
+          : `gap-0 ${config.button}`,
         glass && 'rounded-full',
         glass && !active && GLASS_IDLE,
       )}

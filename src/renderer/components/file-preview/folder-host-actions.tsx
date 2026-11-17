@@ -83,7 +83,7 @@ export function FolderHostActions({ folder }: FolderHostActionsProps) {
       <button
         type="button"
         onClick={handleCopyPath}
-        className="p-0.5 rounded hover:bg-muted transition-colors"
+        className="p-0.5 rounded-icon hover:bg-muted transition-colors"
         title="Copy folder path"
         aria-label="Copy folder path"
         data-testid="folder-copy-path"
@@ -94,7 +94,7 @@ export function FolderHostActions({ folder }: FolderHostActionsProps) {
         <button
           type="button"
           onClick={handleReveal}
-          className="p-0.5 rounded hover:bg-muted transition-colors"
+          className="p-0.5 rounded-icon hover:bg-muted transition-colors"
           title={revealFolderLabel()}
           aria-label={revealFolderLabel()}
           data-testid="folder-reveal"

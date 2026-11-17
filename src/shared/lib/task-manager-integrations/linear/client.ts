@@ -1,19 +1,27 @@
 import { z } from 'zod'
-import { LINEAR_SCOPES, linearTokensSchema, type LinearTokens, type LinearIdentity } from './config'
+import { appState, defineLease, defineNamespace, digestKeyPart, type LeaseHolding, type Revision } from '../../app-state'
+import { LINEAR_SCOPES, linearTokensSchema, type LinearConfig, type LinearTokens, type LinearIdentity } from './config'
 import { getLinearConfig, updateLinearConfig, revokeLinearAuthorization } from './store'
 
 export class LinearAuthorizationError extends Error {}
 export class LinearAccessError extends Error {}
 export class LinearNotFoundError extends LinearAccessError {}
 export class LinearServerError extends Error {}
+/**
+ * Linear refused a refresh token that an earlier exchange spent without a
+ * recorded outcome. Transient: the authorization stays while that exchange's
+ * result can still be saved (see `exchangeUnderClaim`).
+ */
+export class LinearRenewalPendingError extends Error {}
 const tokenResponseSchema = z.object({
   access_token: z.string().min(1), refresh_token: z.string().min(1),
   expires_in: z.number().positive(), scope: z.string(),
 })
+const EXCHANGE_TIMEOUT_MS = 15_000
 export async function exchangeLinearToken(params: Record<string, string>): Promise<LinearTokens> {
   const response = await fetch('https://api.linear.app/oauth/token', {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(params), signal: AbortSignal.timeout(15000),
+    body: new URLSearchParams(params), signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
   })
   // OAuth error bodies can contain credentials. Keep them out of logs and responses.
   if (!response.ok) {
@@ -27,29 +35,195 @@ export async function exchangeLinearToken(params: Record<string, string>): Promi
     expiresAt: Date.now() + token.expires_in * 1000, scope: token.scope })
 }
 type Authorization = { tokens: LinearTokens; authorizationVersion: string | undefined }
+/** Tokens are renewed once less than this is left of them. */
+const REFRESH_BEFORE_EXPIRY_MS = 60_000
+const changedDuringRenewal = () => new Error('Linear authorization changed during renewal')
+
+/**
+ * One process exchanges an authorization's rotating refresh token at a time:
+ * `claim:linear-token-refresh/{integrationId}:{authorizationVersion}`. The
+ * exchange is sent only while the lease is held for its whole 15 s timeout,
+ * and the lease is renewed until the result is saved. Tokens live only in the
+ * integration row: everyone else waits for the row.
+ */
+const refreshClaims = defineLease({ name: 'claim:linear-token-refresh', ttlMs: 30_000 })
+/** Long enough for a dead holder's claim to lapse and one more exchange to run. */
+const REFRESH_WAIT_MS = refreshClaims.ttlMs + EXCHANGE_TIMEOUT_MS
+/** How much of the lease a holder needs left to save or revoke: a few database round trips. */
+const WRITE_MARGIN_MS = 5_000
+
+/**
+ * Exchanges whose outcome nobody has recorded, by the refresh token they spent
+ * (a digest, never the token): `linear:unresolved-exchange/{integrationId}:
+ * {authorizationVersion}:{digest}`. Written before an exchange is sent, cleared
+ * once its result is saved or Linear refuses the token. One that stays (the
+ * request failed or timed out, or its holder lost the claim or died) means
+ * Linear may have rotated that token for a result nobody saved yet.
+ *
+ * It sits beside the claim, not in it, because it must outlast the claim it
+ * was written under. `keep`: the window runs from the first unresolved
+ * exchange of a token, however many tries follow it, so it always ends.
+ */
+const UNRESOLVED_WINDOW_MS = 2 * refreshClaims.ttlMs
+const unresolvedExchanges = defineNamespace({
+  name: 'linear:unresolved-exchange',
+  consistency: 'strong',
+  schema: z.object({ owner: z.string().min(1) }),
+  expiry: { ttlMs: UNRESOLVED_WINDOW_MS, onUpdate: 'keep' },
+})
+const versionPart = (version: string | undefined) => version ?? 'unversioned'
+
+/**
+ * The row's tokens while they are fresh for `version`; undefined once they
+ * need renewal. Throws when the row no longer holds that authorization.
+ */
+function freshAuthorization(config: LinearConfig, version: string | undefined): Authorization | undefined {
+  if (config.authorizationVersion !== version || config.authorizationError || config.authorizationPending || !config.tokens) throw changedDuringRenewal()
+  return config.tokens.expiresAt > Date.now() + REFRESH_BEFORE_EXPIRY_MS ? { tokens: config.tokens, authorizationVersion: version } : undefined
+}
+
+// Same-process callers share one renewal instead of each asking AppState.
 const refreshes = new Map<string, Promise<Authorization>>()
 async function tokenFor(id: string): Promise<Authorization> {
   const config = await getLinearConfig(id)
   if (config.authorizationError || config.authorizationPending || !config.tokens || !config.clientId || !config.clientSecret) throw new Error('Linear is not authorized')
-  if (config.tokens.expiresAt > Date.now() + 60000) return { tokens: config.tokens, authorizationVersion: config.authorizationVersion }
-  const existing = refreshes.get(id)
+  if (config.tokens.expiresAt > Date.now() + REFRESH_BEFORE_EXPIRY_MS) return { tokens: config.tokens, authorizationVersion: config.authorizationVersion }
+  const version = config.authorizationVersion
+  const key = `${id}:${versionPart(version)}`
+  const existing = refreshes.get(key)
   if (existing) return existing
-  const oldRefresh = config.tokens.refreshToken
-  const refresh = exchangeLinearToken({ grant_type: 'refresh_token', refresh_token: oldRefresh,
-    client_id: config.clientId, client_secret: config.clientSecret }).then(async tokens => {
-    await updateLinearConfig(id, latest => {
-      if (latest.tokens?.refreshToken !== oldRefresh || latest.authorizationVersion !== config.authorizationVersion) throw new Error('Linear authorization changed during renewal')
-      return { ...latest, tokens }
-    })
-    return { tokens, authorizationVersion: config.authorizationVersion }
-  }).catch(async error => {
-    if (error instanceof LinearAuthorizationError) {
-      await revokeLinearAuthorization(id, { refreshToken: oldRefresh, authorizationVersion: config.authorizationVersion })
-    }
-    throw error
-  }).finally(() => { if (refreshes.get(id) === refresh) refreshes.delete(id) })
-  refreshes.set(id, refresh)
+  const refresh = underClaim(id, version, holding => exchangeUnderClaim(id, version, holding))
+    .finally(() => { if (refreshes.get(key) === refresh) refreshes.delete(key) })
+  refreshes.set(key, refresh)
   return refresh
+}
+
+/**
+ * Runs `work` as the claim's holder, or, while another process holds it,
+ * re-reads the row until that process has saved fresh tokens there.
+ */
+async function underClaim(id: string, version: string | undefined, work: (holding: LeaseHolding) => Promise<Authorization>): Promise<Authorization> {
+  const turn = await refreshClaims.acquireWhenFree(refreshClaims.key(id, versionPart(version)), {
+    timeoutMs: REFRESH_WAIT_MS,
+    whileWaiting: async () => freshAuthorization(await getLinearConfig(id), version),
+  })
+  return turn.acquired ? refreshClaims.hold(turn.lease, work) : turn.result
+}
+
+/**
+ * The exchange, by the claim's holder. A holder sends the exchange and writes
+ * only while it holds the claim: it confirms the lease (renews it) right before
+ * sending and right before each write. The row's conditional
+ * update (same refresh token, same authorization) is what keeps a write that
+ * lands late anyway from overwriting newer credentials.
+ *
+ * Losing the claim cannot cancel an exchange Linear already received, and an
+ * exchange whose result is lost may have rotated the token, which Linear then
+ * refuses to the next holder. So:
+ * - The exchange is not aborted when the claim is lost; that would only throw
+ *   its result away. A holder that lost the claim with tokens in hand waits
+ *   for the claim again and saves them as its holder (`saveLate`).
+ * - When Linear refuses a token that an earlier exchange spent with no recorded
+ *   outcome, the holder looks for that exchange's result in the row. Finding
+ *   none, it throws `LinearRenewalPendingError` and keeps the authorization,
+ *   since the result can still arrive. Once the window
+ *   (`UNRESOLVED_WINDOW_MS` from the first unresolved exchange) has passed
+ *   with nothing saved, the next refusal revokes, as every refusal did before.
+ */
+async function exchangeUnderClaim(id: string, version: string | undefined, holding: LeaseHolding): Promise<Authorization> {
+  const latest = await getLinearConfig(id)
+  // Another process renewed while this one waited for the claim.
+  const fresh = freshAuthorization(latest, version)
+  if (fresh) return fresh
+  const { clientId, clientSecret, tokens: current } = latest
+  if (!clientId || !clientSecret || !current) throw changedDuringRenewal()
+  const refreshToken = current.refreshToken
+  const unresolved = unresolvedExchanges.key(id, versionPart(version), digestKeyPart(refreshToken))
+  holding.signal.throwIfAborted()
+  // Recorded before the exchange is sent. A conflict is a write that landed
+  // between the read and this one (a holder that has since lost the claim);
+  // it is an earlier exchange of the same token too, so decide from it.
+  let earlier = await appState().get(unresolved)
+  let record: Revision
+  for (;;) {
+    const recorded = await appState().compareAndSet(unresolved, earlier?.revision ?? null, { owner: holding.owner })
+    if (recorded.ok) {
+      record = recorded.entry.revision
+      break
+    }
+    earlier = recorded.current
+  }
+  // A renewal, not the abort flag: the reads and writes above can stall past
+  // the lease while another process takes the claim and spends this token.
+  // It must leave the lease held for the exchange's whole timeout, and nothing
+  // is awaited between this confirmation and the send, so the exchange cannot
+  // outlive the lease even if no renewal lands after it.
+  try {
+    await holding.confirm({ minRemainingMs: EXCHANGE_TIMEOUT_MS })
+  } catch (lost) {
+    // Nothing was sent. A record this attempt created would make a later
+    // refusal look uncertain; one it took over still stands for the earlier
+    // exchange. Conditional: a successor's record is left alone.
+    if (!earlier) await appState().consume(unresolved, { revision: record }).catch(() => undefined)
+    throw lost
+  }
+  let tokens: LinearTokens
+  try {
+    tokens = await exchangeLinearToken({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId, client_secret: clientSecret })
+  } catch (error) {
+    // Any other failure leaves the record: Linear may have rotated the token.
+    if (!(error instanceof LinearAuthorizationError)) throw error
+    if (earlier) return reconcileRefusal(id, version, refreshToken)
+    await holding.confirm({ minRemainingMs: WRITE_MARGIN_MS })
+    await revokeLinearAuthorization(id, { refreshToken, authorizationVersion: version })
+    await appState().consume(unresolved)
+    throw error
+  }
+  try {
+    await holding.confirm({ minRemainingMs: WRITE_MARGIN_MS })
+  } catch {
+    return saveLate(id, version, refreshToken, tokens)
+  }
+  return save(id, version, refreshToken, tokens)
+}
+
+/** Saves renewed tokens in place of `refreshToken`, unless the row has moved on. */
+async function save(id: string, version: string | undefined, refreshToken: string, tokens: LinearTokens): Promise<Authorization> {
+  await updateLinearConfig(id, latest => {
+    if (latest.tokens?.refreshToken !== refreshToken || latest.authorizationVersion !== version) throw changedDuringRenewal()
+    return { ...latest, tokens }
+  })
+  // The row no longer holds the spent token, so no exchange of it is unresolved.
+  await appState().consume(unresolvedExchanges.key(id, versionPart(version), digestKeyPart(refreshToken)))
+  return { tokens, authorizationVersion: version }
+}
+
+/**
+ * A holder lost the claim after Linear rotated the token for it. Its tokens
+ * may be the only ones Linear still honours, so it takes the claim again,
+ * waiting for any holder that took over, and saves them unless the row has
+ * moved on meanwhile.
+ */
+async function saveLate(id: string, version: string | undefined, refreshToken: string, tokens: LinearTokens): Promise<Authorization> {
+  return underClaim(id, version, async holding => {
+    const fresh = freshAuthorization(await getLinearConfig(id), version)
+    if (fresh) return fresh
+    await holding.confirm({ minRemainingMs: WRITE_MARGIN_MS })
+    return save(id, version, refreshToken, tokens)
+  })
+}
+
+/**
+ * Linear refused a token that an earlier exchange spent with no recorded
+ * outcome: that exchange may have rotated it, and its result may still be
+ * saved. The row says whether it has been.
+ */
+async function reconcileRefusal(id: string, version: string | undefined, refreshToken: string): Promise<Authorization> {
+  const latest = await getLinearConfig(id)
+  const fresh = freshAuthorization(latest, version)
+  if (fresh) return fresh
+  if (latest.tokens?.refreshToken !== refreshToken) throw changedDuringRenewal()
+  throw new LinearRenewalPendingError('Linear token renewal was interrupted and is being reconciled. Retry shortly.')
 }
 
 export class LinearClient {

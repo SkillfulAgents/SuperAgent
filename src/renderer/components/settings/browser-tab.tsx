@@ -17,9 +17,9 @@ import { apiFetch } from '@renderer/lib/api'
 import { Check, Loader2, Lock } from 'lucide-react'
 import { RequestError } from '@shared/lib/tools/requests/request-error'
 import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/config/settings'
-import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import { PasswordManagersSettings } from './password-managers-settings'
+import { useSteelCredentials, type SteelCredentialsForm } from '@renderer/hooks/use-steel-credentials'
 
 // Value used for "Container (built-in)" — no host browser provider
 const CONTAINER_VALUE = '__container__'
@@ -27,12 +27,12 @@ const CONTAINER_VALUE = '__container__'
 // Preset tiers for the max-tabs picker. No 1: popup/OAuth flows need a second tab.
 const MAX_TABS_OPTIONS = [5, 10, 20]
 
-const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const CARD_CLASS = 'rounded-card border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
 
 const HOST_DESCRIPTIONS: Record<string, ReactNode> = {
-  [CONTAINER_VALUE]: 'Built-in headless browser. No stored passwords or cookies — agents need you to log in to sites.',
-  chrome: "Your agents can use sites you're already logged into Chrome.",
+  [CONTAINER_VALUE]: 'Built-in headless browser that runs inside each agent’s container.',
+  chrome: 'Google Chrome on this computer, with a separate profile for each agent. Nothing from your own Chrome profiles is shared.',
   browserbase: (
     <>
       Remote cloud browser that reduces bot detection and supports persistent sessions.
@@ -41,6 +41,13 @@ const HOST_DESCRIPTIONS: Record<string, ReactNode> = {
     </>
   ),
   platform: 'Managed cloud browser using your Platform account.',
+  steel: (
+    <>
+      Remote cloud browser with a persistent profile for each agent, so agents stay signed in.
+      <br />
+      Requires a Steel account.
+    </>
+  ),
 }
 
 interface FieldRowProps {
@@ -108,7 +115,7 @@ function HostCard({
 }: HostCardProps) {
   return (
     <div
-      className={`rounded-xl border bg-background transition-colors ${
+      className={`rounded-card border bg-background transition-colors ${
         selected ? 'border-primary' : disabled ? 'opacity-60' : 'hover:border-muted-foreground/40'
       }`}
       data-testid={`browser-host-card-${id === CONTAINER_VALUE ? 'container' : id}`}
@@ -170,18 +177,15 @@ export function BrowserTab() {
 
   // Optimistic local state
   const [hostProvider, setHostProvider] = useState<string | null>(null)
-  const [chromeProfileId, setChromeProfileId] = useState<string | null>(null)
   const [browserbaseApiKey, setBrowserbaseApiKey] = useState('')
   const [browserbaseProjectId, setBrowserbaseProjectId] = useState('')
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
+  const steelCredentials = useSteelCredentials()
 
   const effectiveProvider = hostProvider ?? settings?.app?.hostBrowserProvider ?? CONTAINER_VALUE
-  const effectiveChromeProfileId = chromeProfileId ?? settings?.app?.chromeProfileId ?? ''
 
   const providers = settings?.hostBrowserStatus?.providers ?? []
-  const chromeProvider = providers.find((p) => p.id === 'chrome')
-  const chromeProfiles = chromeProvider?.profiles ?? []
 
   // Values stored by the old free-form input (1–20) may fall outside the presets;
   // surface them so the trigger doesn't render empty.
@@ -272,7 +276,23 @@ export function BrowserTab() {
             selected={effectiveProvider === CONTAINER_VALUE}
             disabled={isLoading}
             onSelect={() => handleSelectProvider(CONTAINER_VALUE)}
-          />
+          >
+            <FieldRow
+              name="High-Resolution Rendering"
+              subtitle="Render pages at 2x for a sharper live preview. Uses more CPU and bandwidth, and websites see a 2x display. Applies the next time an agent starts."
+              htmlFor="container-browser-high-dpi"
+              right={
+                <Switch
+                  id="container-browser-high-dpi"
+                  checked={settings?.app?.containerBrowserHighDpi ?? false}
+                  onCheckedChange={(checked) => {
+                    updateSettings.mutate({ app: { containerBrowserHighDpi: checked } })
+                  }}
+                  disabled={isLoading}
+                />
+              }
+            />
+          </HostCard>
 
           {providers.map((provider) => {
             const unavailable =
@@ -289,45 +309,21 @@ export function BrowserTab() {
                 onSelect={() => handleSelectProvider(provider.id)}
               >
                 {provider.id === 'chrome' ? (
-                  <div className="space-y-4">
-                    {chromeProfiles.length > 0 && (
-                      <FieldRow
-                        name="Chrome Profile"
-                        subtitle="Browse with an existing profile's logins and cookies"
-                        htmlFor="chrome-profile-select"
-                        stack
-                        right={
-                          <div className="w-full md:w-[260px]">
-                            <ChromeProfileSelect
-                              profiles={chromeProfiles}
-                              value={effectiveChromeProfileId}
-                              onValueChange={(profileId) => {
-                                setChromeProfileId(profileId)
-                                updateSettings.mutate({ app: { chromeProfileId: profileId } })
-                              }}
-                              idPrefix="chrome-profile"
-                              disabled={isLoading}
-                            />
-                          </div>
-                        }
+                  <FieldRow
+                    name="Headless Mode"
+                    subtitle="Run Chrome without a visible window. Prevents Chrome from stealing focus."
+                    htmlFor="chrome-headless"
+                    right={
+                      <Switch
+                        id="chrome-headless"
+                        checked={settings?.app?.chromeHeadless ?? false}
+                        onCheckedChange={(checked) => {
+                          updateSettings.mutate({ app: { chromeHeadless: checked } })
+                        }}
+                        disabled={isLoading}
                       />
-                    )}
-                    <FieldRow
-                      name="Headless Mode"
-                      subtitle="Run Chrome without a visible window. Prevents Chrome from stealing focus."
-                      htmlFor="chrome-headless"
-                      right={
-                        <Switch
-                          id="chrome-headless"
-                          checked={settings?.app?.chromeHeadless ?? false}
-                          onCheckedChange={(checked) => {
-                            updateSettings.mutate({ app: { chromeHeadless: checked } })
-                          }}
-                          disabled={isLoading}
-                        />
-                      }
-                    />
-                  </div>
+                    }
+                  />
                 ) : provider.id === 'browserbase' ? (
                   <div className="space-y-4">
                     <BrowserbaseSettings
@@ -397,6 +393,25 @@ export function BrowserTab() {
                     />
                     {sessionSettings}
                   </div>
+                ) : provider.id === 'steel' ? (
+                  <div className="space-y-4">
+                    <SteelSettings
+                      layout="rows"
+                      form={steelCredentials}
+                      hasSavedCredentials={!!settings?.apiKeyStatus?.steel?.isConfigured}
+                      credentialSource={settings?.apiKeyStatus?.steel?.source}
+                      disabled={isLoading}
+                    />
+                    <SteelSessionSettings
+                      solveCaptcha={settings?.app?.steelSolveCaptcha ?? false}
+                      proxies={settings?.app?.steelProxies ?? false}
+                      proxyCountry={settings?.app?.steelProxyCountry ?? ''}
+                      proxyState={settings?.app?.steelProxyState ?? ''}
+                      proxyCity={settings?.app?.steelProxyCity ?? ''}
+                      disabled={isLoading}
+                      onUpdate={(updates) => updateSettings.mutate({ app: updates })}
+                    />
+                  </div>
                 ) : provider.id === 'platform' ? (
                   <div className="space-y-4">
                     <p className="text-xs text-muted-foreground">
@@ -424,6 +439,84 @@ const STEALTH_OS_OPTIONS: Array<{ value: BrowserbaseStealthOs; label: string }> 
 ]
 
 const NO_OS_VALUE = '__none__'
+
+interface ProxyLocation {
+  country: string
+  state: string
+  city: string
+}
+
+interface ProxySettingsProps {
+  /** Prefix of the controls' ids: `${idPrefix}-proxies`, `${idPrefix}-proxy-country`, … */
+  idPrefix: string
+  subtitle: ReactNode
+  locationHint: string
+  enabled: boolean
+  location: ProxyLocation
+  disabled: boolean
+  onEnabledChange: (enabled: boolean) => void
+  /** One field changed, upper-cased. */
+  onLocationChange: (location: Partial<ProxyLocation>) => void
+}
+
+const PROXY_LOCATION_FIELDS: Array<{ part: keyof ProxyLocation; label: string; placeholder: string; maxLength?: number }> = [
+  { part: 'country', label: 'Country Code', placeholder: 'e.g. US', maxLength: 2 },
+  { part: 'state', label: 'State', placeholder: 'e.g. NY', maxLength: 2 },
+  { part: 'city', label: 'City', placeholder: 'e.g. NEW_YORK' },
+]
+
+/** A cloud browser's proxy switch and, while it is on, the optional proxy location (Browserbase, Steel). */
+function ProxySettings({
+  idPrefix,
+  subtitle,
+  locationHint,
+  enabled,
+  location,
+  disabled,
+  onEnabledChange,
+  onLocationChange,
+}: ProxySettingsProps) {
+  return (
+    <>
+      <FieldRow
+        name="Enable Proxies"
+        subtitle={subtitle}
+        htmlFor={`${idPrefix}-proxies`}
+        right={
+          <Switch
+            id={`${idPrefix}-proxies`}
+            checked={enabled}
+            onCheckedChange={onEnabledChange}
+            disabled={disabled}
+          />
+        }
+      />
+
+      {/* Proxy Geolocation (only when proxies are on) */}
+      {enabled && (
+        <div className="space-y-3">
+          <p className="text-[11px] text-muted-foreground">{locationHint}</p>
+          <div className="grid grid-cols-3 gap-3">
+            {PROXY_LOCATION_FIELDS.map(({ part, label, placeholder, maxLength }) => (
+              <div key={part} className="space-y-1">
+                <Label htmlFor={`${idPrefix}-proxy-${part}`} className="text-xs">{label}</Label>
+                <Input
+                  id={`${idPrefix}-proxy-${part}`}
+                  placeholder={placeholder}
+                  value={location[part]}
+                  onChange={(e) => onLocationChange({ [part]: e.target.value.toUpperCase() })}
+                  disabled={disabled}
+                  maxLength={maxLength}
+                  className="h-8"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
 
 interface BrowserbaseSessionSettingsProps {
   advancedStealth: boolean
@@ -509,75 +602,24 @@ function BrowserbaseSessionSettings({
         />
       )}
 
-      <FieldRow
-        name="Enable Proxies"
+      <ProxySettings
+        idPrefix="bb"
         subtitle="Route traffic through residential proxies for higher CAPTCHA success rates and geo-targeting"
-        htmlFor="bb-proxies"
-        right={
-          <Switch
-            id="bb-proxies"
-            checked={proxies}
-            onCheckedChange={(checked) => {
-              onUpdate({
-                browserbaseProxies: checked,
-                // Clear geolocation when disabling
-                ...(!checked && {
-                  browserbaseProxyCountry: '',
-                  browserbaseProxyState: '',
-                  browserbaseProxyCity: '',
-                }),
-              })
-            }}
-            disabled={disabled}
-          />
-        }
+        locationHint="Optionally specify a proxy location. Leave empty for best-effort US proxy."
+        enabled={proxies}
+        location={{ country: proxyCountry, state: proxyState, city: proxyCity }}
+        disabled={disabled}
+        onEnabledChange={(checked) => onUpdate({
+          browserbaseProxies: checked,
+          // Clear geolocation when disabling
+          ...(!checked && { browserbaseProxyCountry: '', browserbaseProxyState: '', browserbaseProxyCity: '' }),
+        })}
+        onLocationChange={(location) => onUpdate({
+          ...(location.country !== undefined && { browserbaseProxyCountry: location.country }),
+          ...(location.state !== undefined && { browserbaseProxyState: location.state }),
+          ...(location.city !== undefined && { browserbaseProxyCity: location.city }),
+        })}
       />
-
-      {/* Proxy Geolocation (only when proxies are on) */}
-      {proxies && (
-        <div className="space-y-3">
-          <p className="text-[11px] text-muted-foreground">
-            Optionally specify a proxy location. Leave empty for best-effort US proxy.
-          </p>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1">
-              <Label htmlFor="bb-proxy-country" className="text-xs">Country Code</Label>
-              <Input
-                id="bb-proxy-country"
-                placeholder="e.g. US"
-                value={proxyCountry}
-                onChange={(e) => onUpdate({ browserbaseProxyCountry: e.target.value.toUpperCase() })}
-                disabled={disabled}
-                maxLength={2}
-                className="h-8"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="bb-proxy-state" className="text-xs">State</Label>
-              <Input
-                id="bb-proxy-state"
-                placeholder="e.g. NY"
-                value={proxyState}
-                onChange={(e) => onUpdate({ browserbaseProxyState: e.target.value.toUpperCase() })}
-                disabled={disabled}
-                maxLength={2}
-                className="h-8"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="bb-proxy-city" className="text-xs">City</Label>
-              <Input
-                id="bb-proxy-city"
-                placeholder="e.g. NEW_YORK"
-                value={proxyCity}
-                onChange={(e) => onUpdate({ browserbaseProxyCity: e.target.value.toUpperCase() })}
-                disabled={disabled}
-                className="h-8"
-              />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -712,6 +754,161 @@ export function BrowserbaseSettings({
         <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
           <Check className="h-3 w-3" />
           Credentials saved
+        </p>
+      )}
+    </div>
+  )
+}
+
+interface SteelSessionSettingsProps {
+  solveCaptcha: boolean
+  proxies: boolean
+  proxyCountry: string
+  proxyState: string
+  proxyCity: string
+  disabled: boolean
+  onUpdate: (updates: Partial<{
+    steelSolveCaptcha: boolean
+    steelProxies: boolean
+    steelProxyCountry: string
+    steelProxyState: string
+    steelProxyCity: string
+  }>) => void
+}
+
+/** Steel session config, rendered in the expanded Steel card below the API key. */
+function SteelSessionSettings({
+  solveCaptcha,
+  proxies,
+  proxyCountry,
+  proxyState,
+  proxyCity,
+  disabled,
+  onUpdate,
+}: SteelSessionSettingsProps) {
+  return (
+    <div className="space-y-4">
+      <FieldRow
+        name="CAPTCHA Solving"
+        subtitle="Steel solves CAPTCHAs it finds on a page. On Steel's Launch plan this needs paid credits."
+        htmlFor="steel-captcha"
+        right={
+          <Switch
+            id="steel-captcha"
+            checked={solveCaptcha}
+            onCheckedChange={(checked) => onUpdate({ steelSolveCaptcha: checked })}
+            disabled={disabled}
+          />
+        }
+      />
+
+      <ProxySettings
+        idPrefix="steel"
+        subtitle="Route traffic through Steel's residential proxies for geo-targeting and fewer blocks. On Steel's Launch plan this needs paid credits."
+        locationHint="Optionally specify a proxy location. Leave empty to let Steel choose. State applies to the US only."
+        enabled={proxies}
+        location={{ country: proxyCountry, state: proxyState, city: proxyCity }}
+        disabled={disabled}
+        onEnabledChange={(checked) => onUpdate({
+          steelProxies: checked,
+          // Clear geolocation when disabling
+          ...(!checked && { steelProxyCountry: '', steelProxyState: '', steelProxyCity: '' }),
+        })}
+        onLocationChange={(location) => onUpdate({
+          ...(location.country !== undefined && { steelProxyCountry: location.country }),
+          ...(location.state !== undefined && { steelProxyState: location.state }),
+          ...(location.city !== undefined && { steelProxyCity: location.city }),
+        })}
+      />
+    </div>
+  )
+}
+
+export interface SteelSettingsProps {
+  form: SteelCredentialsForm
+  hasSavedCredentials: boolean
+  credentialSource?: 'settings' | 'env' | 'none'
+  disabled: boolean
+  /** 'rows' puts label + supporting text left, input right (settings tab).
+      'stacked' (default) keeps label-above-input for the setup wizard's narrow column. */
+  layout?: 'stacked' | 'rows'
+}
+
+/** The Steel API key: enter and connect (checked with Steel before it is saved), or remove the saved one. */
+export function SteelSettings({
+  form,
+  hasSavedCredentials,
+  credentialSource,
+  disabled,
+  layout = 'stacked',
+}: SteelSettingsProps) {
+  const { apiKey, setApiKey, isValidating, validationResult, validateAndSave, remove } = form
+  const hasInput = apiKey.trim().length > 0
+
+  const apiKeyInput = (
+    <Input
+      id="steel-api-key"
+      type="password"
+      placeholder={hasSavedCredentials ? '••••••••••••••••' : 'ste-...'}
+      value={apiKey}
+      onChange={(e) => setApiKey(e.target.value)}
+      disabled={disabled || isValidating}
+      className={cn('bg-background', layout === 'rows' && 'h-8 w-full md:w-[340px]')}
+    />
+  )
+
+  return (
+    <div className="space-y-4">
+      {hasSavedCredentials && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400">
+            {credentialSource === 'env' ? 'Using environment variable' : 'API key saved'}
+          </span>
+        </div>
+      )}
+
+      {layout === 'rows' ? (
+        <FieldRow
+          name="API Key"
+          subtitle="From the API Keys page of your Steel dashboard"
+          htmlFor="steel-api-key"
+          stack
+          right={apiKeyInput}
+        />
+      ) : (
+        <div className="space-y-2">
+          <Label htmlFor="steel-api-key" className="font-normal text-muted-foreground">Steel API Key</Label>
+          {apiKeyInput}
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2">
+        {hasInput && (
+          <Button size="sm" onClick={validateAndSave} disabled={isValidating}>
+            {isValidating ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Validating...
+              </>
+            ) : (
+              'Connect'
+            )}
+          </Button>
+        )}
+        {hasSavedCredentials && credentialSource !== 'env' && (
+          <Button size="sm" variant="outline" onClick={remove} disabled={isValidating}>
+            Remove Saved Key
+          </Button>
+        )}
+      </div>
+
+      {validationResult && !validationResult.valid && (
+        <RequestError message={validationResult.error || 'Invalid API key'} />
+      )}
+      {validationResult?.valid && (
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          API key saved
         </p>
       )}
     </div>

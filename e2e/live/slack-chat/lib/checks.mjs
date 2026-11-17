@@ -12,6 +12,7 @@
  */
 
 import { messageText, buttonActionIds, buttonLabels, buttonValues } from './conversation.mjs'
+import { messagesSince } from './slack.mjs'
 
 /** Distinct per run so an assertion can never match an earlier run's message. */
 export function nonce() {
@@ -19,6 +20,30 @@ export function nonce() {
 }
 
 const contains = (needle) => (_message, text) => text.includes(needle)
+
+/** Whether a message shows an image: an image block or an uploaded image file. */
+const showsImage = (message) =>
+  (message.blocks ?? []).some((block) => block.type === 'image') ||
+  (message.files ?? []).some((file) => (file.mimetype ?? '').startsWith('image/'))
+
+/**
+ * Why a reply's image is not between the text before it and the text after it,
+ * or null when it is. `messages` is a conversations.history list in any order.
+ * A reply that posts its text first and the image last fails here, as does one
+ * that leaves the diagram as a code block inside a single message.
+ */
+export function imageOrderProblem(messages, before, after) {
+  const ordered = [...messages].sort((a, b) => (a.ts < b.ts ? -1 : 1))
+  const first = ordered.findIndex((m) => messageText(m).includes(before))
+  const last = ordered.findIndex((m) => messageText(m).includes(after))
+  if (first === -1 || last === -1) return `No message contains "${first === -1 ? before : after}"`
+  if (first === last) return `"${before}" and "${after}" are one message: the reply was not split around an image`
+  if (!ordered.slice(first + 1, last).some(showsImage)) {
+    const shapes = ordered.map((m) => (showsImage(m) ? 'image' : JSON.stringify(messageText(m).slice(0, 40))))
+    return `No image between "${before}" and "${after}". Messages in order: ${shapes.join(', ')}`
+  }
+  return null
+}
 
 /**
  * The exact tail describeUnsupportedRequest() appends, rebuilt from the host
@@ -395,6 +420,29 @@ export const CHECKS = [
     },
     async cleanup(ctx) {
       await clearPending(ctx)
+    },
+  },
+
+  {
+    id: 'reply-image-order',
+    title: "a reply's diagram posts as an image between the text before and after it",
+    tags: ['visuals'],
+    async run(ctx) {
+      const tag = nonce()
+      await ctx.conv.say(
+        `Reply with exactly three parts and nothing else: the line BEFORE ${tag}, then a fenced ` +
+          '```mermaid code block containing "flowchart LR" and "A --> B", then the line ' +
+          `AFTER ${tag}.`,
+      )
+      // The closing text can show in a streamed draft before the reply settles,
+      // so judge the messages as they stand once the turn has had time to finish.
+      const since = ctx.conv.since
+      await ctx.conv.awaitBot(`AFTER ${tag}`, (_message, text) => text.includes(`AFTER ${tag}`), 300_000)
+      await new Promise((resolve) => setTimeout(resolve, 15_000))
+      const reply = (await messagesSince(ctx.conv.botToken, ctx.conv.channelId, since)).filter((m) => m.user === ctx.conv.botUserId)
+      const problem = imageOrderProblem(reply, `BEFORE ${tag}`, `AFTER ${tag}`)
+      if (problem) throw new Error(problem)
+      return `${reply.length} messages, image between the two texts`
     },
   },
 

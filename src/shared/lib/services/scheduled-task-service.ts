@@ -13,6 +13,9 @@ import { eq, and, lte, inArray, isNotNull, isNull, desc, sql } from 'drizzle-orm
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { serializeByKey } from '@shared/lib/utils/keyed-queue'
+import { background } from '@shared/lib/background'
+import { isBackgroundWorkInitialized, taskManager } from '@shared/lib/background-work'
+import { AGENT_CRON_TASK_TYPE, agentCronJobId, type AgentCronPayload } from '../scheduler/agent-cron-schema'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -65,6 +68,53 @@ export interface ScheduledTaskPatch {
 }
 
 // ============================================================================
+// Local Wakeups
+// ============================================================================
+
+const SYNC_RETRY_MS = 60_000
+
+/**
+ * Brings a schedule's local wakeup into line with its record: set for when the
+ * record says while it is pending, gone otherwise. The record is read here, in
+ * order per schedule, so writes landing close together end with the wakeup the
+ * last of them asks for, whatever order their callers get here in. A process
+ * that dispatches no scheduled work (a script, or a test without the task
+ * registered) has no wakeups to keep.
+ */
+export async function syncScheduleWakeup(taskId: string): Promise<void> {
+  if (!isBackgroundWorkInitialized() || !taskManager().handles(AGENT_CRON_TASK_TYPE)) return
+  await serializeByKey(`schedule-wakeup:${taskId}`, async () => {
+    const task = await getScheduledTask(taskId)
+    if (task?.status !== 'pending') {
+      await taskManager().cancel(agentCronJobId(taskId))
+      return
+    }
+    const scheduledFor = task.nextExecutionAt.getTime()
+    const payload: AgentCronPayload = { scheduleId: taskId, scheduledFor }
+    await taskManager().at(scheduledFor, agentCronJobId(taskId), { taskType: AGENT_CRON_TASK_TYPE, payload })
+  })
+}
+
+/**
+ * After a write that landed. A wakeup that could not be brought into line is
+ * reported and does not fail the write. It looks at the record again in a minute,
+ * so a pending schedule is not left without one.
+ */
+async function afterScheduleWrite(taskId: string): Promise<void> {
+  try {
+    await syncScheduleWakeup(taskId)
+  } catch (error) {
+    console.error(`[ScheduledTasks] Could not update the wakeup of schedule ${taskId}; looking again in a minute:`, error)
+    const lookAgain: AgentCronPayload = { scheduleId: taskId, scheduledFor: Date.now() }
+    background(taskManager().at(Date.now() + SYNC_RETRY_MS, agentCronJobId(taskId), { taskType: AGENT_CRON_TASK_TYPE, payload: lookAgain }), { name: 'scheduled-task-service.retry-wakeup' })
+    // Loaded on a failure, not with this module: error reporting brings the
+    // Sentry SDK, which most of this module's importers never otherwise load.
+    const { captureException } = await import('@shared/lib/error-reporting')
+    captureException(error, { tags: { component: 'task-scheduler', phase: 'sync-wakeup' }, extra: { taskId } })
+  }
+}
+
+// ============================================================================
 // Create Operations
 // ============================================================================
 
@@ -100,7 +150,7 @@ export async function createScheduledTask(
     createdBySessionId: params.createdBySessionId,
     createdByUserId: params.createdByUserId,
     timezone: params.timezone || null,
-    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? (await getSettings()).llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model || null,
     effort: params.effort || null,
     speed: params.speed || null,
@@ -108,6 +158,7 @@ export async function createScheduledTask(
   }
 
   await db.insert(scheduledTasks).values(newTask)
+  await afterScheduleWrite(id)
 
   trackServerEvent('task_scheduled', {
     scheduleType: params.scheduleType,
@@ -200,6 +251,8 @@ async function replaceSessionWake(
     try {
       const results = await batch([...cancelExisting, db.insert(scheduledTasks).values(newTask)])
       replaced = existing && changesOf(results[0]) > 0 ? existing : null
+      if (existing) await afterScheduleWrite(existing.id)
+      await afterScheduleWrite(id)
       break
     } catch (error) {
       if (attempt >= MAX_WAKE_REPLACE_ATTEMPTS || !isPendingWakeConflict(error)) throw error
@@ -288,6 +341,15 @@ export async function listScheduledTasks(agentSlug: string): Promise<ScheduledTa
     .select()
     .from(scheduledTasks)
     .where(eq(scheduledTasks.agentSlug, agentSlug))
+}
+
+/** The ids of every schedule waiting to fire, across agents: what startup sets wakeups for. */
+export async function listPendingScheduledTaskIds(): Promise<string[]> {
+  const rows = await db
+    .select({ id: scheduledTasks.id })
+    .from(scheduledTasks)
+    .where(eq(scheduledTasks.status, 'pending'))
+  return rows.map((row) => row.id)
 }
 
 /**
@@ -404,7 +466,9 @@ export async function cancelScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return changesOf(result) > 0
+  const cancelled = changesOf(result) > 0
+  if (cancelled) await afterScheduleWrite(taskId)
+  return cancelled
 }
 
 /**
@@ -439,7 +503,9 @@ export async function pauseScheduledTask(taskId: string): Promise<boolean> {
       )
     )
 
-  return changesOf(result) > 0
+  const paused = changesOf(result) > 0
+  if (paused) await afterScheduleWrite(taskId)
+  return paused
 }
 
 /**
@@ -464,7 +530,9 @@ export async function resumeScheduledTask(taskId: string): Promise<boolean> {
     })
     .where(eq(scheduledTasks.id, taskId))
 
-  return changesOf(result) > 0
+  const resumed = changesOf(result) > 0
+  if (resumed) await afterScheduleWrite(taskId)
+  return resumed
 }
 
 /**
@@ -512,7 +580,7 @@ export async function updateNextExecution(
 /**
  * Record that a recurring task's fire was held this cycle because its previous
  * run is still busy (the scheduler's overlap guard). Leaves nextExecutionAt
- * alone so the task stays due and fires on the first poll after the run
+ * alone so the task stays due and fires on the first look after the run
  * settles; updateNextExecution clears the streak on that fire.
  */
 export async function recordTaskSkip(taskId: string): Promise<void> {
@@ -578,7 +646,9 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
     })
     .where(eq(scheduledTasks.id, taskId))
 
-  return changesOf(result) > 0
+  const reset = changesOf(result) > 0
+  if (reset) await afterScheduleWrite(taskId)
+  return reset
 }
 
 /**
@@ -601,7 +671,9 @@ export async function updateTaskTimezone(taskId: string, timezone: string): Prom
     .set({ timezone, nextExecutionAt })
     .where(eq(scheduledTasks.id, taskId))
 
-  return changesOf(result) > 0
+  const updated = changesOf(result) > 0
+  if (updated) await afterScheduleWrite(taskId)
+  return updated
 }
 
 // ============================================================================
@@ -635,7 +707,10 @@ export async function patchScheduledTask(
       inArray(scheduledTasks.status, ['pending', 'paused']),
     ))
 
-  return changesOf(result) > 0
+  const patched = changesOf(result) > 0
+  // Only a new time moves the wakeup; a new prompt is read when it fires.
+  if (patched && updates.nextExecutionAt) await afterScheduleWrite(taskId)
+  return patched
 }
 
 /**
@@ -725,7 +800,10 @@ export async function updateTaskRuntimeOptions(
   if ('model' in options) {
     updates.model = options.model ?? null
     if (!options.model) updates.llmProviderId = null
-    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = task.llmProviderId ?? getSettings().llmDefault!.llmProviderId
+    else if (options.llmProviderId === undefined) {
+      const llmDefault = (await getSettings()).llmDefault
+      if (llmDefault) updates.llmProviderId = task.llmProviderId ?? llmDefault.llmProviderId
+    }
   }
   if ('effort' in options) updates.effort = options.effort ?? null
   if ('speed' in options) updates.speed = options.speed ?? null
@@ -746,5 +824,7 @@ export async function deleteScheduledTask(taskId: string): Promise<boolean> {
     .delete(scheduledTasks)
     .where(eq(scheduledTasks.id, taskId))
 
-  return changesOf(result) > 0
+  const deleted = changesOf(result) > 0
+  if (deleted) await afterScheduleWrite(taskId)
+  return deleted
 }

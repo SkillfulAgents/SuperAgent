@@ -38,7 +38,7 @@ vi.mock('drizzle-orm', () => ({
 // The agent's container runtime, as the actor hands it to a sync.
 const runtime = {
   getCachedInfo: (...args: unknown[]) => mockGetCachedInfo(...args),
-  getClient: () => ({
+  getClient: async () => ({
     fetch: (...args: unknown[]) => mockFetch(...args),
     getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
   }),
@@ -132,11 +132,11 @@ describe('connection runtime synchronization', () => {
     mockWhere.mockResolvedValue([])
     const owned = { id: 'integration:id', name: 'agent_integration_id', proxyUrl: 'http://host/api/mcp-proxy/agent-1/integration:id', status: 'active', tools: [], integration: { id: 'id', provider: 'Linear', name: 'Agent', workspace: 'Test' } }
     integrations.projection.mockResolvedValue([owned])
-    await updateRemoteMcpEnvironment('agent-1', runtime.getClient())
+    await updateRemoteMcpEnvironment('agent-1', await runtime.getClient())
     expect(JSON.parse(JSON.parse(mockFetch.mock.calls[0][1].body).value)).toEqual([owned])
     expect(integrations.projection).toHaveBeenCalledWith('agent-1', 'http://10.20.30.40:3000')
     integrations.projection.mockResolvedValue([])
-    await updateRemoteMcpEnvironment('agent-1', runtime.getClient())
+    await updateRemoteMcpEnvironment('agent-1', await runtime.getClient())
     expect(JSON.parse(JSON.parse(mockFetch.mock.calls[1][1].body).value)).toEqual([])
   })
 

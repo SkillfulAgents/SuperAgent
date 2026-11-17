@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => ({ data: state.settings }),
+  useModelSettings: () => ({ data: state.settings }),
   useUpdateSettings: () => ({ mutate: state.mutate }),
 }))
 

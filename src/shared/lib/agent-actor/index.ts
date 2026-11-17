@@ -37,6 +37,7 @@ export type {
   AgentActor,
   AgentCatalog,
   AgentIdentityChanges,
+  AgentListing,
   AgentLiveSummary,
   AgentPlacement,
   AgentRecord,

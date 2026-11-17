@@ -7,6 +7,7 @@
  * Runs on both SQLite and libsql.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
@@ -51,8 +52,8 @@ import { getAuth, resetAuth } from './index'
 const BASE = 'http://localhost:47891'
 const signedUpSchema = z.object({ user: z.object({ id: z.string() }) })
 
-function request(endpoint: string, body: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return getAuth().handler(new Request(`${BASE}/api/auth/${endpoint}`, {
+async function request(endpoint: string, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  return (await getAuth()).handler(new Request(`${BASE}/api/auth/${endpoint}`, {
     method: 'POST',
     headers: { origin: BASE, 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
@@ -134,6 +135,7 @@ describe('removing a user', () => {
     expect((await testDb.select().from(agentAcl)).map(row => row.userId)).toEqual([grace.id])
     expect((await testDb.select().from(userSettings)).map(row => row.userId).sort()).toEqual([grace.id, 'local'].sort())
 
+    await backgroundSettled()
     const [removal] = await testDb.select().from(auditLog).where(and(eq(auditLog.object, 'user'), eq(auditLog.action, 'removed')))
     expect(removal).toMatchObject({ userId: admin.id, objectId: ada.id })
     expect(JSON.parse(removal.details ?? '{}')).toEqual({

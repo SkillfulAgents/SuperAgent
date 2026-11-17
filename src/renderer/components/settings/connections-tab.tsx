@@ -154,7 +154,7 @@ export function ConnectionsTab() {
     <div className="space-y-6">
       <div className="space-y-2">
         <h3 className="text-xs font-normal text-muted-foreground">Default Policies</h3>
-        <div className="rounded-xl border bg-background divide-y divide-border/50 overflow-hidden">
+        <div className="rounded-card border bg-background divide-y divide-border/50 overflow-hidden">
           <div data-testid="default-policy-api" className="py-3 px-4 flex items-center gap-3">
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium">Default API Request Policy</div>
@@ -215,7 +215,7 @@ export function ConnectionsTab() {
 function ConnectionsEmptyState() {
   return (
     <div
-      className="rounded-xl border border-dashed bg-background px-6 py-10 text-center"
+      className="rounded-card border border-dashed bg-background px-6 py-10 text-center"
       data-testid="connections-empty-state"
     >
       <FeaturedServicesStack size="md" className="justify-center mb-4" />

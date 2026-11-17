@@ -134,7 +134,7 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
               {runtimeStatuses.map((runtime) => (
                 <div
                   key={runtime.runner}
-                  className="flex items-start gap-3 p-3 rounded-lg border bg-card"
+                  className="flex items-start gap-3 p-3 rounded-card border bg-card"
                 >
                   <span className="text-2xl">{runtime.info.icon}</span>
                   <div className="flex-1 min-w-0">

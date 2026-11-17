@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
+import { signsInWithAuthSession } from '@renderer/lib/capabilities'
 import type {
   PlatformAuthSource,
   PlatformAuthStatus as SharedPlatformAuthStatus,
@@ -33,7 +34,10 @@ function triggerPlatformSkillsetSync(queryClient: QueryClient): void {
     method: 'POST',
     body: JSON.stringify({ provider: 'platform' }),
   })
-    .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+    .then(() => {
+      queryClient.invalidateQueries({ queryKey: ['skillsets'] })
+      queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
+    })
     .catch(() => {})
 }
 
@@ -265,7 +269,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const { open, close, pending, canCancel } = useLoginWindow()
+  const { open, close, pending, canCancel } = useLoginWindow({ authSession: signsInWithAuthSession() })
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const wasConnected = !!platformAuth?.connected
@@ -314,7 +318,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
     setError(params.error || 'Platform login failed.')
   })
 
-  const handleConnect = useCallback(async () => {
+  const connect = useCallback(async (withApple: boolean) => {
     setError(null)
     setMessage(null)
 
@@ -323,14 +327,18 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
         // Starting or cancelling login must not revoke the working key.
         // The platform cleans up prior keys for this client instance during issuance.
         return (await initiateLogin.mutateAsync()).loginUrl
-      })
+      }, { withApple })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
     }
   }, [open, initiateLogin])
+  const handleConnect = useCallback(() => connect(false), [connect])
+  // The same sign-in, with the native Sign in with Apple prompt first (`signsInWithApple()`).
+  const handleConnectWithApple = useCallback(() => connect(true), [connect])
 
   return {
     handleConnect,
+    handleConnectWithApple,
     cancelConnect: close,
     canCancel,
     isLaunching: pending,

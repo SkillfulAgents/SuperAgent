@@ -1,12 +1,13 @@
 /** Real Docker + Anthropic + browser probe. See README.md for prerequisites. */
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createWriteStream, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { chromium, expect, type Browser, type Page } from '@playwright/test'
 import { z } from 'zod'
 import { SessionPage } from '../../pages/session.page'
+import { readInstallSettings } from '../lib/install-settings.mjs'
 
 const args = Object.fromEntries(process.argv.slice(2).map(arg => {
   const [key, ...value] = arg.replace(/^--/, '').split('=')
@@ -15,7 +16,7 @@ const args = Object.fromEntries(process.argv.slice(2).map(arg => {
 const mode = z.enum(['bug', 'fixed']).parse(args.expect ?? 'fixed')
 const image = args.image ?? 'superagent-container:thinking-followup'
 const source = args.source
-assert(source, 'Pass --source=/path/to/install containing settings.json with an Anthropic API key')
+assert(source, 'Pass --source=/path/to/install whose settings hold an Anthropic API key')
 const port = Number(args.port ?? 3476)
 const base = `http://127.0.0.1:${port}`
 const runDir = path.resolve(args.output ?? `test-results/live-thinking-${mode}-${Date.now()}`)
@@ -50,8 +51,9 @@ async function main() {
   const output = createWriteStream(path.join(runDir, 'host.log'), { mode: 0o600 })
   try {
     // Copy only the required key; never print it or copy the source database.
-    const settings = JSON.parse(readFileSync(path.join(source, 'settings.json'), 'utf8'))
-    const key = settings.apiKeys?.anthropicApiKey
+    // From the source's database, or its settings.json before it imported it.
+    const settings = readInstallSettings(source)
+    const key = settings?.apiKeys?.anthropicApiKey
     assert(typeof key === 'string' && key.length > 0, 'Source has no Anthropic API key')
     writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({
       apiKeys: { anthropicApiKey: key }, llmProvider: 'anthropic',

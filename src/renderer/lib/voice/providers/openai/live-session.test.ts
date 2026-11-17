@@ -704,3 +704,42 @@ describe('Live WebRTC lifecycle', () => {
   })
 
 })
+
+describe('Live speech', () => {
+  it('hands each transcribed piece of what it hears and what it says aloud to onSpeech, in order', async () => {
+    const callbacks = { onReady: vi.fn(), onClosed: vi.fn(), onError: vi.fn(), onSpeaking: vi.fn(), onInputSpeaking: vi.fn(), onUtterance: vi.fn(), onRequest: vi.fn(async () => true), onSpeech: vi.fn() }
+    const adapter = new OpenAILiveConversation(callbacks, [])
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    channel.receive({ type: 'session.input_transcript.delta', delta: 'We ship' })
+    channel.receive({ type: 'session.input_transcript.delta', delta: ' on Friday?' })
+    channel.receive({ type: 'session.output_transcript.delta', delta: 'Yes,' })
+    // A request card pauses the microphone, but the reply goes on playing and is still heard.
+    adapter.setPaused(true)
+    channel.receive({ type: 'session.input_transcript.delta', delta: 'Ignored while paused' })
+    channel.receive({ type: 'session.output_transcript.delta', delta: ' Friday.' })
+    adapter.setPaused(false)
+    adapter.close()
+    channel.receive({ type: 'session.input_transcript.delta', delta: 'Ignored after close' })
+    expect(callbacks.onSpeech.mock.calls).toEqual([
+      [{ role: 'user', text: 'We ship' }], [{ role: 'user', text: ' on Friday?' }],
+      [{ role: 'assistant', text: 'Yes,' }], [{ role: 'assistant', text: ' Friday.' }],
+    ])
+  })
+
+  it('reports nothing it says while its voice is muted, since nobody hears it', async () => {
+    const callbacks = { onReady: vi.fn(), onClosed: vi.fn(), onError: vi.fn(), onSpeaking: vi.fn(), onInputSpeaking: vi.fn(), onUtterance: vi.fn(), onRequest: vi.fn(async () => true), onSpeech: vi.fn() }
+    const adapter = new OpenAILiveConversation(callbacks, [])
+    await adapter.start()
+    const channel = FakePeer.last.channel
+    channel.receive({ type: 'session.started' })
+    adapter.setOutputMuted(true)
+    channel.receive({ type: 'session.input_transcript.delta', delta: 'Can you hear me?' })
+    channel.receive({ type: 'session.output_transcript.delta', delta: 'Muted reply.' })
+    adapter.setOutputMuted(false)
+    channel.receive({ type: 'session.output_transcript.delta', delta: 'Spoken reply.' })
+    adapter.close()
+    expect(callbacks.onSpeech.mock.calls).toEqual([[{ role: 'user', text: 'Can you hear me?' }], [{ role: 'assistant', text: 'Spoken reply.' }]])
+  })
+})

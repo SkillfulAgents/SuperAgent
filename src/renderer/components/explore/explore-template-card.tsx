@@ -22,7 +22,7 @@ function ToolStack({ template }: { template: ApiDiscoverableAgent }) {
       {shown.map((connection) => (
         <span
           key={`${connection.type}-${connection.slug}`}
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-1.5 text-[11px] text-muted-foreground"
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-control px-1.5 text-[11px] text-muted-foreground"
         >
           <ServiceIcon
             slug={connection.slug}
@@ -35,7 +35,7 @@ function ToolStack({ template }: { template: ApiDiscoverableAgent }) {
       {overflow > 0 && (
         <span
           title={connections.slice(MAX_NAMED_CONNECTIONS).map((c) => connectionLabel(c.slug)).join(', ')}
-          className="inline-flex h-7 shrink-0 items-center rounded-lg px-1.5 text-[11px] text-muted-foreground"
+          className="inline-flex h-7 shrink-0 items-center rounded-control px-1.5 text-[11px] text-muted-foreground"
         >
           +{overflow}
         </span>
@@ -108,7 +108,7 @@ export function ExploreTemplateCard({
       // longer curve spends its tail finishing a sub-pixel move that already
       // looks arrived — which reads as lag. Matches the renderer's dominant
       // duration and the see-more tile beside it.
-      className={`flex h-[180px] w-full flex-col items-start gap-5 rounded-2xl border border-black/[0.06] bg-card p-4 text-left shadow-none transition-[box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/[0.06] dark:hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)]`}
+      className={`flex h-[180px] w-full flex-col items-start gap-5 rounded-card border border-black/[0.06] bg-card p-4 text-left shadow-none transition-[box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-white/[0.06] dark:hover:shadow-[0_8px_20px_-6px_rgba(0,0,0,0.5)]`}
     >
       <span className="flex w-full items-center gap-2">
         <TemplateAvatar template={template} size={40} />
@@ -150,7 +150,7 @@ export function SeeMoreCard({ rest, onClick }: { rest: ApiDiscoverableAgent[]; o
       type="button"
       data-testid="explore-see-more"
       onClick={onClick}
-      className="group flex h-[180px] w-full flex-col gap-3 rounded-2xl bg-muted/50 p-4 text-left transition-colors duration-200 hover:bg-muted"
+      className="group flex h-[180px] w-full flex-col gap-3 rounded-card bg-muted/50 p-4 text-left transition-colors duration-200 hover:bg-muted"
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-2">
         {rest.slice(0, SEE_MORE_NAMED_COUNT).map((template) => (
@@ -165,7 +165,7 @@ export function SeeMoreCard({ rest, onClick }: { rest: ApiDiscoverableAgent[]; o
         {/* The glyph sits in the same column as the orbs above, so the label
             lines up with the names. */}
         <span className="flex min-w-0 items-center gap-2">
-          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-control bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
             {unnamed > 0 ? (
               <Plus className="size-4 text-muted-foreground/50" aria-hidden />
             ) : (

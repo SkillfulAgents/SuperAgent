@@ -148,7 +148,7 @@ export function TodoDraftDialog({ target, onClose }: {
         className={cn(
           // Flex, not the base grid: a grid track sizes to its content, so the
           // body could never shrink to the box and spilled out of it.
-          'flex flex-col gap-0 overflow-hidden p-0 transition-[height,max-width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none sm:rounded-2xl',
+          'flex flex-col gap-0 overflow-hidden p-0 transition-[height,max-width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none sm:rounded-dialog',
           expanded ? 'h-[70vh] max-w-4xl' : 'h-[340px] max-w-3xl',
         )}
         hideClose
@@ -642,7 +642,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
 
   return (
     <div
-      className={cn('relative flex min-h-0 flex-1 flex-col rounded-2xl', fields.agentSlug && files.isDragOver && 'ring-2 ring-primary')}
+      className={cn('relative flex min-h-0 flex-1 flex-col rounded-dialog', fields.agentSlug && files.isDragOver && 'ring-2 ring-primary')}
       onPaste={pasteFiles}
       {...(finishing || saveBlocked ? holdFileDrop : fields.agentSlug ? files.dragHandlers : holdFileDrop)}
     >

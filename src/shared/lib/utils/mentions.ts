@@ -81,3 +81,40 @@ export function parseMentions(text: string): ParsedMentions {
   if (mentions.length === 0 || lines.slice(end).join('\n').trim()) return { cleanText: text, ...NO_MENTIONS }
   return { cleanText: text.slice(0, start).trimEnd(), mentions, silent }
 }
+
+/** An agent tags a member inline, as `[@Name](user:<id>)`. */
+const USER_TAG = /(?<![\\!])\[@([^\]\n]+)\]\(user:([A-Za-z0-9_-]+)\)/g
+/** Code shows the syntax, it does not tag: fences and inline spans. */
+const CODE = /(```|~~~)[\s\S]*?(?:\1|$)|``[^`]*?``|`[^`\n]*`/g
+/** The end of text that may still become a tag: `[@Name`, `[@Name](us`, `[@Name](user:5bw7`. */
+const FORMING_TAG = /\[@[^\]\n]*(?:\](?:\((?:u(?:s(?:e(?:r(?::[A-Za-z0-9_-]*)?)?)?)?)?)?)?$/
+
+/**
+ * An agent's message with each tag read as `@Name`, and the people it tags,
+ * once each: the same text and list a person's tagged message gives, so it
+ * draws the same chips. Code is left as written, since it tags no one.
+ */
+export function parseUserTags(text: string): { text: string; mentions: Extract<Mention, { kind: 'user' }>[] } {
+  const byId = new Map<string, Extract<Mention, { kind: 'user' }>>()
+  const tag = (prose: string) => prose.replace(USER_TAG, (_match, name: string, id: string) => {
+    if (!byId.has(id)) byId.set(id, { kind: 'user', id, name })
+    return `@${name}`
+  })
+  let plain = ''
+  let last = 0
+  for (const code of text.matchAll(CODE)) {
+    plain += tag(text.slice(last, code.index)) + code[0]
+    last = code.index + code[0].length
+  }
+  return { text: plain + tag(text.slice(last)), mentions: [...byId.values()] }
+}
+
+/**
+ * The message as it reads outside the chat (a bridge, an email, a stream):
+ * each tag as `@Name`. Text still streaming in also holds back a tag it has
+ * not finished writing.
+ */
+export function plainUserTags(text: string, { streaming = false } = {}): string {
+  const plain = parseUserTags(text).text
+  return streaming ? plain.replace(FORMING_TAG, '') : plain
+}

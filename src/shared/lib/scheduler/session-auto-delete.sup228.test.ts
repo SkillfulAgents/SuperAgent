@@ -20,8 +20,8 @@ import type { AgentConfig } from '@shared/lib/types/agent'
 // factory, so they must be available before the (hoisted) module imports run —
 // hence vi.hoisted, which is lifted above everything.
 const tables = vi.hoisted(() => ({
-  notifications: { sessionId: 'notifications.session_id' },
-  messageAuthor: { sessionId: 'message_author.session_id' },
+  notifications: { sessionId: 'notifications.session_id', agentSlug: 'notifications.agent_slug' },
+  messageAuthor: { sessionId: 'message_author.session_id', agentSlug: 'message_author.agent_slug' },
   agentAcl: { agentSlug: 'agent_acl.agent_slug', userId: 'agent_acl.user_id' },
 }))
 
@@ -34,7 +34,7 @@ const mockDeleteCalls: DeleteCall[] = []
 const mockDbDelete = vi.fn((table: unknown) => ({
   where: (predicate: unknown) => {
     mockDeleteCalls.push({ table, predicate })
-    return { changes: 0 }
+    return { returning: async () => [] }
   },
 }))
 
@@ -61,7 +61,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-preferences-service', () => ({
-  readAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
+  readStoredAgentPreferences: (slug: string) => mockReadAgentPreferences(slug),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -71,6 +71,11 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
+
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ getClient: () => ({ releaseSession: async () => true, deleteSession: async () => true }) }) }
+})
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
@@ -110,6 +115,9 @@ vi.mock('drizzle-orm', () => ({
 
 // Import after mocks are set up.
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
+import { registerTasks } from '@shared/lib/background-work/testing/register-tasks'
+
+beforeEach(() => registerTasks(sessionAutoDeleteMonitor))
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 
 // ============================================================================
@@ -185,7 +193,7 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
     mockListSessions.mockResolvedValue([s1, s2, s3])
     mockReadSessionMetadata.mockResolvedValue({})
     // s3 simulates a filesystem-delete failure: deletedIds excludes it.
-    mockDeleteSessionsBatch.mockResolvedValue(['s1', 's2'])
+    mockDeleteSessionsBatch.mockImplementation(async (_store: unknown, ids: string[]) => ids.filter((id) => id !== 's3'))
     // Cleanup must run unconditionally, NOT gated on auth mode.
     mockIsAuthMode.mockReturnValue(false)
 
@@ -195,11 +203,7 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
     expect(notifCalls).toHaveLength(1)
     // The predicate is built over exactly the deletedIds [s1, s2] — not s3,
     // and not the full toDelete list [s1, s2, s3].
-    expect(notifCalls[0].predicate).toEqual({
-      __pred: 'inArray',
-      col: tables.notifications.sessionId,
-      vals: ['s1', 's2'],
-    })
+    expect(notifCalls[0].predicate).toEqual({ __pred: 'and', a: [{ __pred: 'eq', col: tables.notifications.agentSlug, val: expect.any(String) }, { __pred: 'inArray', col: tables.notifications.sessionId, vals: ['s1', 's2'] }] })
     expect(mockInArray).toHaveBeenCalledWith(tables.notifications.sessionId, ['s1', 's2'])
   })
 
@@ -229,20 +233,16 @@ describe('SUP-228: deleteNotificationsBySessionIds helper', () => {
     mockDeleteCalls.length = 0
   })
 
-  it('deletes notification rows by session id with an inArray predicate', async () => {
-    await deleteNotificationsBySessionIds(['a', 'b'])
+  it('deletes one agent\'s notification rows by session id', async () => {
+    await deleteNotificationsBySessionIds('agent-1', ['a', 'b'])
 
     const notifCalls = notificationDeleteCalls()
     expect(notifCalls).toHaveLength(1)
-    expect(notifCalls[0].predicate).toEqual({
-      __pred: 'inArray',
-      col: tables.notifications.sessionId,
-      vals: ['a', 'b'],
-    })
+    expect(notifCalls[0].predicate).toEqual({ __pred: 'and', a: [{ __pred: 'eq', col: tables.notifications.agentSlug, val: 'agent-1' }, { __pred: 'inArray', col: tables.notifications.sessionId, vals: ['a', 'b'] }] })
   })
 
   it('is a no-op on an empty session id list', async () => {
-    const deleted = await deleteNotificationsBySessionIds([])
+    const deleted = await deleteNotificationsBySessionIds('agent-1', [])
 
     expect(deleted).toBe(0)
     expect(mockDbDelete).not.toHaveBeenCalled()

@@ -40,6 +40,8 @@ export type LoginRequestState =
   | { status: 'via'; provider: string }
   /** The browser had closed: nothing went into a page. `kept`: what the agent's next try signs in with. */
   | { status: 'browser_closed'; kept: LoginKept | null }
+  /** The picked account's saved session went in instead of its values (`restored` false: tried, and it did not). */
+  | { status: 'session'; restored: boolean; username: string | null }
   | { status: 'manual' }
   | { status: 'declined' }
   /** Answered elsewhere (another window, or it ended) before this one acted. */

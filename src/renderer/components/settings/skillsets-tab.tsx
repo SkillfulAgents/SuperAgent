@@ -163,7 +163,7 @@ export function SkillsetsTab() {
               }}
             />
 
-            <div className="rounded-md border bg-muted/30 p-3 text-xs">
+            <div className="rounded-card border bg-muted/30 p-3 text-xs">
               <p className="font-medium">Private GitHub repository token</p>
               <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-muted-foreground">
                 <li>
@@ -234,7 +234,7 @@ export function SkillsetsTab() {
           skillsets.map((ss) => (
             <div
               key={ss.id}
-              className="flex items-start gap-3 p-3 rounded-lg border bg-card"
+              className="flex items-start gap-3 p-3 rounded-card border bg-card"
             >
               <Library className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
               <div className="flex-1 min-w-0">

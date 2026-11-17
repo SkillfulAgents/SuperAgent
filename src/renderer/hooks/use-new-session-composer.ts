@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useComposerOptions, type UseComposerOptionsArgs } from '@renderer/components/messages/composer-options'
 import type { Attachment, ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
 import { apiFetch } from '@renderer/lib/api'
+import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useAgentPreferences } from './use-agent-preferences'
 import { useMessageComposer } from './use-message-composer'
@@ -21,6 +22,12 @@ interface NewSessionComposerOptions {
   waitForAgentDefaults?: boolean
   /** Surface-specific guards, such as runtime readiness. */
   submitDisabled?: boolean
+  /**
+   * Start the session with computer use on (the launcher's toggle): it may use
+   * any app without asking, and the agent is told so, and which attachment is
+   * the screenshot of the screen.
+   */
+  computerUse?: { screenshotName?: string }
   agentRuntimeErrorsShownInline?: boolean
   onSessionCreated: (result: { agentSlug: string; session: CreatedSession; content: string }) => void | Promise<void>
   onError?: (error: unknown) => void
@@ -40,6 +47,7 @@ export function useNewSessionComposer({
   followDefaults,
   waitForAgentDefaults = false,
   submitDisabled = false,
+  computerUse,
   agentRuntimeErrorsShownInline,
   onSessionCreated,
   onError,
@@ -76,13 +84,18 @@ export function useNewSessionComposer({
     onSubmit: useCallback(async (content: string) => {
       if (!agentSlug) throw new Error('No agent selected')
       try {
-        const session = await createSession.mutateAsync({ agentSlug, message: content, ...composerOptions.toRuntimeOptions() })
+        const session = await createSession.mutateAsync({
+          agentSlug,
+          message: computerUse ? appendComputerUseNote(content, computerUse.screenshotName) : content,
+          ...composerOptions.toRuntimeOptions(),
+          ...(computerUse ? { computerUse: true } : {}),
+        })
         await onSessionCreated({ agentSlug, session, content })
       } catch (error) {
         onError?.(error)
         throw error // useMessageComposer preserves the draft on failure.
       }
-    }, [agentSlug, createSession, composerOptions, onSessionCreated, onError]),
+    }, [agentSlug, createSession, composerOptions, computerUse, onSessionCreated, onError]),
     submitDisabled: disabled,
     keepMessageUntilComplete: true,
     draftKey,

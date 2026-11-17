@@ -47,17 +47,17 @@ vi.mock('@shared/lib/services/platform-auth-service', async (importOriginal) => 
 vi.mock('@shared/lib/config/settings', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   getEffectiveComposioApiKey: () => null,
-  getEffectiveModels: () => ({ agentModel: authorModel, summarizerModel: authorModel, browserModel: authorModel, dashboardBuilderModel: authorModel }),
+  effectiveModelsFrom: () => ({ agentModel: authorModel, summarizerModel: authorModel, browserModel: authorModel, dashboardBuilderModel: authorModel }),
 }))
 vi.mock('@shared/lib/llm-provider', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  getActiveLlmProvider: () => ({
+  activeLlmProviderFrom: () => ({
     id: 'anthropic',
     supportsDirectApi: true,
-    getApiKeyStatus: () => ({ isConfigured: true }),
-    createClient: () => new Anthropic({ apiKey: process.env.LIVE_ANTHROPIC_API_KEY }),
+    apiKeyStatusFrom: () => ({ isConfigured: true }),
+    createClientFrom: async () => new Anthropic({ apiKey: process.env.LIVE_ANTHROPIC_API_KEY }),
   }),
-  resolveActiveProviderModel: (model: string) => model,
+  resolveModelForProviderFrom: (model: string) => model,
 }))
 // The read-only guard: wrap the real provider so nothing but a GET leaves.
 vi.mock('@shared/lib/account-providers', async (importOriginal) => {

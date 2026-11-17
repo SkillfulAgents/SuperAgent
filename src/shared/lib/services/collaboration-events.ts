@@ -1,29 +1,28 @@
 import type { CollaborationEvent } from '@shared/lib/agent-members-schema'
-import { background } from '@shared/lib/background'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 
-type Listener = (event: CollaborationEvent) => void | Promise<void>
-const listeners = new Map<string, Set<Listener>>()
-
-/** One subscription per existing global SSE connection, keyed by verified user. */
-export function subscribeCollaborationEvents(userId: string, listener: Listener): () => void {
-  const clients = listeners.get(userId) ?? new Set<Listener>()
-  clients.add(listener)
-  listeners.set(userId, clients)
-  return () => {
-    clients.delete(listener)
-    if (!clients.size) listeners.delete(userId)
-  }
+/**
+ * A membership hint, on each recipient's own feed channel: a user removed
+ * from the agent no longer follows its channel and must still hear of it.
+ * Recipients are resolved by the service at the mutation boundary.
+ */
+export function publishCollaborationEvent(userIds: Iterable<string>, event: CollaborationEvent): void {
+  globalFeed.publishToUsers(userIds, event)
 }
 
-/** Recipients are resolved by the service at the mutation boundary. */
-export function publishCollaborationEvent(userIds: Iterable<string>, event: CollaborationEvent): void {
-  for (const userId of new Set(userIds)) {
-    for (const listener of listeners.get(userId) ?? []) {
-      try {
-        background(Promise.resolve(listener(event)).catch((error) => console.error('Collaboration stream write failed:', error)), { name: 'collaboration-events.notify-listener' })
-      } catch (error) {
-        console.error('Collaboration stream write failed:', error)
-      }
-    }
-  }
+/** A membership hint: it can grant or revoke the reader's access, so a stream reloads its agents on it. */
+export function isCollaborationEvent(event: GlobalFeedEvent): boolean {
+  return event.type === 'agent_members_changed' || event.type === 'agent_access_revoked'
+}
+
+/**
+ * A new agent, to the members it was created with, once their access rows
+ * exist: their streams do not follow its channel yet, and load their agents
+ * again on this. In local mode every stream already carries every agent.
+ */
+export function announceAgentCreated(agentSlug: string, memberIds: Iterable<string>): void {
+  const event: GlobalFeedEvent = { type: 'agent_created', agentSlug }
+  if (isAuthMode()) globalFeed.publishToUsers(memberIds, event)
+  else globalFeed.publish(event)
 }

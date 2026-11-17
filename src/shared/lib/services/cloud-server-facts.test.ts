@@ -10,10 +10,13 @@ import { readCloudServerFacts, refreshCloudServerFacts } from './cloud-server-fa
 const state = vi.hoisted(() => ({ settings: {} as Record<string, unknown>, writes: 0 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => state.settings,
-  mutateSettings: (mutator: (settings: Record<string, unknown>) => void) => {
+  getSettings: async () => state.settings,
+  // A mutator that returns false writes nothing, as with the real one.
+  mutateSettings: async (mutator: (settings: Record<string, unknown>) => void | false) => {
+    const draft = structuredClone(state.settings)
+    if (mutator(draft) === false) return state.settings
     state.writes += 1
-    mutator(state.settings)
+    state.settings = draft
     return state.settings
   },
 }))
@@ -47,7 +50,7 @@ describe('refreshCloudServerFacts', () => {
     expect(url).toBe(`${DEPLOYMENT}/api/server-facts`)
     expect(init?.headers).toBeUndefined()
     expect(init?.signal).toBeInstanceOf(AbortSignal)
-    expect(readCloudServerFacts(DEPLOYMENT)).toEqual(FACTS)
+    expect(await readCloudServerFacts(DEPLOYMENT)).toEqual(FACTS)
   })
 
   it('writes settings only when the answer changed', async () => {
@@ -59,7 +62,7 @@ describe('refreshCloudServerFacts', () => {
     fetchMock.mockImplementation(async () => answer({ ...FACTS, os: 'win32' }))
     await refreshCloudServerFacts(DEPLOYMENT)
     expect(state.writes).toBe(2)
-    expect(readCloudServerFacts(DEPLOYMENT)?.os).toBe('win32')
+    expect((await readCloudServerFacts(DEPLOYMENT))?.os).toBe('win32')
   })
 
   it.each([
@@ -72,25 +75,25 @@ describe('refreshCloudServerFacts', () => {
 
     fetchMock.mockImplementationOnce(respond)
     await expect(refreshCloudServerFacts(DEPLOYMENT)).resolves.toBeUndefined()
-    expect(readCloudServerFacts(DEPLOYMENT)).toEqual(FACTS)
+    expect(await readCloudServerFacts(DEPLOYMENT)).toEqual(FACTS)
   })
 })
 
 describe('readCloudServerFacts', () => {
-  it('has nothing for a deployment it never heard from', () => {
-    expect(readCloudServerFacts(DEPLOYMENT)).toBeNull()
+  it('has nothing for a deployment it never heard from', async () => {
+    expect(await readCloudServerFacts(DEPLOYMENT)).toBeNull()
   })
 
   it('answers only for the deployment the facts came from', async () => {
     fetchMock.mockResolvedValue(answer(FACTS))
     await refreshCloudServerFacts(DEPLOYMENT)
 
-    expect(readCloudServerFacts(`${DEPLOYMENT}/`)).toEqual(FACTS)
-    expect(readCloudServerFacts('https://other.example')).toBeNull()
+    expect(await readCloudServerFacts(`${DEPLOYMENT}/`)).toEqual(FACTS)
+    expect(await readCloudServerFacts('https://other.example')).toBeNull()
   })
 
-  it('reads a corrupt record as nothing', () => {
+  it('reads a corrupt record as nothing', async () => {
     state.settings.cloudServerFacts = { deploymentUrl: DEPLOYMENT, facts: { os: 'beos' } }
-    expect(readCloudServerFacts(DEPLOYMENT)).toBeNull()
+    expect(await readCloudServerFacts(DEPLOYMENT)).toBeNull()
   })
 })

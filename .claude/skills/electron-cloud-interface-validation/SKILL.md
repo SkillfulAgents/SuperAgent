@@ -221,7 +221,7 @@ temp dirs and touches no settings — keep it that way).
 | ⑥ | A token inside the 1 h buffer is re-minted | Refresh-buffer arithmetic |
 | ⑦ | A token bound to another deployment URL is discarded | Deployment rebinding |
 | ⑧ | Discovery **rejects an org-runtime JWT** | The member-bound-token requirement |
-| ⑨ | The fingerprint round-trips through real `settings.json` | Zod `nullish().transform()` persistence |
+| ⑨ | The fingerprint round-trips through the real stored settings (the `settings` app record) | Zod `nullish().transform()` persistence |
 | ⑩ | A record fingerprinted to another credential is re-minted | Cross-account token reuse |
 | ⑪ | A **packaged** build refuses the loopback target, via the real DNS/SSRF policy | An SSRF gate that only works against a stub |
 | ⑫ | The token minted **through the pinned fetch** authenticates at `/api/auth/get-session` | `mcpSafeFetch`'s undici agent mangling the form POST |

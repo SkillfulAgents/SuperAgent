@@ -23,6 +23,8 @@ export interface AgentIntegrationRecord {
   speed: string | null
   createdAt: Date
   updatedAt: Date
+  /** Raised by every write to the row: which write this copy was read after. */
+  version: number
   /** Optional family-specific settings. Legacy chat rows keep their existing columns. */
   settings?: unknown
 }

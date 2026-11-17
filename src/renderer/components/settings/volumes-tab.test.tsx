@@ -23,7 +23,6 @@ vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileB
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }], isLoading: false }) }))
 vi.mock('@renderer/hooks/use-mounts', () => ({ useAddMount: () => ({}), useRemoveMount: () => ({}) }))
 import { agentBackPath, VolumesTab } from './volumes-tab'
-import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -81,19 +80,12 @@ describe('volume settings', () => {
     expect(screen.getByText('Every agent has this drive')).toBeInTheDocument()
     expect(screen.queryByText('Agents Without This Drive')).not.toBeInTheDocument()
   })
-  it('returns Back to an agent page only when the agent home opened the drive', () => {
+  it('returns Back to the page that opened the drive from its home', () => {
     expect(agentBackPath('home', '/agents/a1')).toBe('/agents/a1')
-    expect(agentBackPath('home', '/settings/general')).toBeNull()
-    expect(agentBackPath('home', '/agents/a1/sessions/s1')).toBeNull()
+    expect(agentBackPath('home', '/team-brain')).toBe('/team-brain')
     expect(agentBackPath(undefined, '/agents/a1')).toBeNull()
     expect(agentBackPath('home', undefined)).toBeNull()
     expect(agentBackPath('list', '/agents/a1')).toBeNull()
-    expect(agentBackPath('home', '/agents/')).toBeNull()
-    expect(agentBackPath('home', '/agents/a1?tab=files')).toBeNull()
-    // The Team Brain agent's Agent Home, which only that search opens.
-    expect(agentBackPath('home', `/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}`)).toBe(`/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}`)
-    expect(agentBackPath('home', `${`/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}`}?x`)).toBeNull()
-    expect(agentBackPath('home', '/agents/a1?from=%2Fsettings')).toBeNull()
   })
   it('shows a read-only title to people who cannot manage the drive', () => {
     state.selectedId = 'v1'
@@ -115,6 +107,11 @@ describe('volume settings', () => {
     expect(screen.getByText('This drive is no longer available.')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Back to Ada' }))
     expect(state.push).toHaveBeenCalledWith('/agents/a1')
+    cleanup()
+    state.from = '/team-brain'
+    render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(state.push).toHaveBeenCalledWith('/team-brain')
   })
   it('returns Back to the agent the page was opened from, else to the list', async () => {
     state.selectedId = 'v1'
@@ -123,6 +120,12 @@ describe('volume settings', () => {
     render(<VolumesTab />)
     await userEvent.click(screen.getByRole('button', { name: 'Ada' }))
     expect(state.push).toHaveBeenCalledWith('/agents/a1')
+    cleanup()
+    // A page that is not an agent's own is Back, as a connection's detail has it.
+    state.from = '/team-brain'
+    render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(state.push).toHaveBeenCalledWith('/team-brain')
     cleanup()
     state.navigate.mockClear()
     state.source = undefined

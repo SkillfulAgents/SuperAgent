@@ -29,11 +29,11 @@ export interface CloudEndpoint {
  * for a stored "cloud" preference, so a disconnected account degrades to a
  * working local app rather than a wall of failures.
  */
-export function resolveApiTargetForRenderer(
+export async function resolveApiTargetForRenderer(
   localBaseUrl: string,
   cloud: CloudEndpoint | null,
-): ResolvedApiTarget {
-  const { target, fallback } = resolveApiTarget(readPreferredApiTarget(), cloud?.baseUrl ?? null)
+): Promise<ResolvedApiTarget> {
+  const { target, fallback } = resolveApiTarget(await readPreferredApiTarget(), cloud?.baseUrl ?? null)
   const remote = target === 'cloud' ? cloud : null
   return {
     target,
@@ -64,12 +64,15 @@ export function resolveApiTargetForRenderer(
  * reload has not started yet — so it is where the workspace's first round trips
  * begin. See `cloud-boot-prefetch.ts`.
  */
-export function applyPreferredApiTarget(target: unknown): void {
+export async function applyPreferredApiTarget(target: unknown): Promise<void> {
   const next = coerceApiTarget(target)
-  writePreferredApiTarget(next)
+  // Awaited before anything is torn down: a failed write rejects to the
+  // renderer with nothing changed, so its switch control can recover.
+  await writePreferredApiTarget(next)
   closeQuickDispatchWindow()
   closeAllDashboardWindows()
-  if (next === 'cloud') startCloudBootPrefetch()
+  // Awaited so the flights are registered before the renderer reloads into them.
+  if (next === 'cloud') await startCloudBootPrefetch()
   // The tray and the app menu's Agents submenu resolve the effective base URL
   // on every fetch, so the preference write above is all they need — but they
   // poll on a 30s interval, which would leave the previous Superagent's agents

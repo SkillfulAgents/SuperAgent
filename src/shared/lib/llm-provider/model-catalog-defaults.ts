@@ -45,6 +45,9 @@ export const GENERIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   dashboardBuilderModel: GENERIC_FALLBACK_MODEL,
 }
 
+// No built-ins, as for Generic: a connection falls back to the first model its server has installed.
+export const OLLAMA_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = GENERIC_CATALOG_DEFAULT_MODELS
+
 export const GROK_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'grok', summarizerModel: 'grok', browserModel: 'grok', dashboardBuilderModel: 'grok' }
 
 export const CODEX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'gpt-sol', summarizerModel: 'gpt-sol', browserModel: 'gpt-sol', dashboardBuilderModel: 'gpt-sol' }
@@ -53,6 +56,8 @@ export const KIMI_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'kimi', s
 
 export const MINIMAX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'minimax', summarizerModel: 'minimax', browserModel: 'minimax', dashboardBuilderModel: 'minimax' }
 
+export const QWEN_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'qwen', summarizerModel: 'qwen', browserModel: 'qwen', dashboardBuilderModel: 'qwen' }
+
 const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   anthropic: ANTHROPIC_CATALOG_DEFAULT_MODELS,
   'claude-subscription': ANTHROPIC_CATALOG_DEFAULT_MODELS,
@@ -60,9 +65,11 @@ const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   'codex-subscription': CODEX_DEFAULT_MODELS,
   'kimi-subscription': KIMI_DEFAULT_MODELS,
   'minimax-subscription': MINIMAX_DEFAULT_MODELS,
+  'qwen-subscription': QWEN_DEFAULT_MODELS,
   openrouter: OPENROUTER_CATALOG_DEFAULT_MODELS,
   bedrock: BEDROCK_CATALOG_DEFAULT_MODELS,
   platform: PLATFORM_CATALOG_DEFAULT_MODELS,
+  ollama: OLLAMA_CATALOG_DEFAULT_MODELS,
   generic: GENERIC_CATALOG_DEFAULT_MODELS,
 }
 

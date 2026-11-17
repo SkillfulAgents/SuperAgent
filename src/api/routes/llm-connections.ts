@@ -1,9 +1,9 @@
 import { readConnectionUsage } from '@shared/lib/llm-provider/connection-usage'
 import { resolveConnectionCredential } from '@shared/lib/llm-provider/connection-credentials'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
-import { startOAuthLogin, pollOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
+import { startOAuthLogin, pollOAuthLogin, cancelOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
 import { isOAuthProvider, OAUTH_PROVIDER_IDS } from '@shared/lib/llm-provider/provider-types'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -11,17 +11,16 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
   canSelectConnection,
-  listConnections,
+  listConnectionsWithSelection,
   saveConnection,
   deleteConnection,
   shareConnection,
   setGlobalSelection,
   compareAndSetGlobalDefault,
-  globalSelectionState,
   getConnection,
   assertManageConnection,
   providerForConnection,
-  connectionCatalog,
+  connectionCatalogFrom,
   prepareConnection,
   type ConnectionViewer,
 } from '@shared/lib/llm-provider/connections'
@@ -55,16 +54,22 @@ routes.post('/oauth/:provider/start', async c => {
   c.header('Cache-Control', 'no-store')
   return c.json(await startOAuthLogin(actor, input.userId, input.id, providerId, { region: input.region }))
 })
+routes.delete('/oauth/:id', async c => {
+  c.header('Cache-Control', 'no-store')
+  return c.json({ cancelled: await cancelOAuthLogin(c.req.param('id'), viewer(c)) })
+})
 routes.post('/oauth/:id/poll', async c => {
   c.header('Cache-Control', 'no-store')
   return c.json(await pollOAuthLogin(c.req.param('id'), viewer(c)))
 })
 routes.get('/', async (c) => {
-  const connections = await listConnections(viewer(c))
+  // One settings read for the listing, however many connections it has.
+  const settings = await getSettings()
+  const { connections, ...selection } = await listConnectionsWithSelection(viewer(c), settings)
   return c.json({
     connections,
-    legacyLlmProviderId: getSettings().llmLegacyProviderId,
-    ...await globalSelectionState(),
+    legacyLlmProviderId: settings.llmLegacyProviderId,
+    ...selection,
   })
 })
 routes.post('/', async (c) =>
@@ -100,7 +105,7 @@ routes.post('/validate', async (c) => {
     provider: input.provider,
     config: JSON.stringify(config),
   })
-  if (provider instanceof BedrockLlmProvider && !provider.getEffectiveApiKey()) {
+  if (provider instanceof BedrockLlmProvider && !(await provider.getEffectiveApiKey())) {
     const env = await provider.getContainerEnvVars()
     return c.json(
       await provider.validateAwsCredentials(
@@ -111,10 +116,44 @@ routes.post('/validate', async (c) => {
     )
   }
   return c.json(
-    await provider.validateKey(provider.getEffectiveApiKey() ?? '', {
+    await provider.validateKey((await provider.getEffectiveApiKey()) ?? '', {
       baseUrl: config.apiKeys.genericBaseUrl,
     })
   )
+})
+// A provider's own model server (supportsServerStatus, supportsModelDownloads), for a
+// connection saved or still being set up: the provider reads where it is from the draft.
+const draftBody = z.object({ id: z.string().optional(), connection: z.unknown(), model: z.string().optional() })
+async function draftProvider(c: Context, capability: 'supportsServerStatus' | 'supportsModelDownloads') {
+  const body = draftBody.parse(await c.req.json())
+  const { input, config } = await prepareConnection(body.connection, viewer(c), body.id, { draft: true })
+  const provider = providerForConnection({ id: body.id, provider: input.provider, config: JSON.stringify(config) })
+  if (!provider[capability]) throw new Error(`${provider.name} does not support this`)
+  return { provider, model: body.model ?? '' }
+}
+routes.post('/server-status', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const { provider } = await draftProvider(c, 'supportsServerStatus')
+  const status = await provider.getServerStatus()
+  // Why an address failed (a timeout, a 404, something else answering) would map the server's network.
+  if (status.state !== 'running' && !viewer(c).admin) return c.json({ ...status, error: `Could not reach ${provider.name} at ${status.baseUrl}` })
+  return c.json(status)
+})
+routes.post('/model-downloads/list', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const { provider } = await draftProvider(c, 'supportsModelDownloads')
+  return c.json({ data: await provider.listModelDownloads() })
+})
+// A download writes to the server's disk.
+routes.post('/model-downloads', IsAdmin(), async (c) => {
+  const { provider, model } = await draftProvider(c, 'supportsModelDownloads')
+  await provider.startModelDownload(model)
+  return c.json({ success: true }, 202)
+})
+routes.post('/model-downloads/cancel', IsAdmin(), async (c) => {
+  const { provider, model } = await draftProvider(c, 'supportsModelDownloads')
+  await provider.cancelModelDownload(model)
+  return c.json({ success: true })
 })
 routes.get('/:id/usage', async c => {
   c.header('Cache-Control', 'no-store')
@@ -137,8 +176,9 @@ routes.get('/:id/model-availability', async c => {
   if (!row || !canSelectConnection(row, actor)) return c.json({ error: 'Connection not found' }, 404)
   // `fresh=1` re-reads the provider's source (after an upgrade, or a refusal).
   const fresh = c.req.query('fresh') === '1'
+  const settings = await getSettings()
   return c.json(await runWithOptionalUser(actor.userId,
-    () => providerForConnection(row).getModelAvailability(connectionCatalog(row), { fresh })))
+    async () => providerForConnection(row).getModelAvailability(connectionCatalogFrom(row, settings), { fresh, settings })))
 })
 routes.get('/:id/models/search', async (c) => {
   const row = await getConnection(c.req.param('id'))

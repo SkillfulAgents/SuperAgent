@@ -93,7 +93,7 @@ export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) 
           src={url}
           playsInline
           preload="metadata"
-          className="max-w-full max-h-[60vh] rounded bg-black block"
+          className="max-w-full max-h-[60vh] rounded-card bg-black block"
           data-testid="video-element"
           onLoadedMetadata={e => setDuration(e.currentTarget.duration || 0)}
           onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
@@ -142,7 +142,7 @@ export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) 
                 <button
                   type="button"
                   onClick={enterFullscreen}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background transition-colors hover:bg-muted"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-control border border-border bg-background transition-colors hover:bg-muted"
                   title="Full screen"
                   aria-label="Full screen"
                 >
@@ -154,7 +154,7 @@ export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) 
                   type="button"
                   onClick={() => open()}
                   disabled={isOpen}
-                  className="flex shrink-0 items-center gap-1 whitespace-nowrap px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
+                  className="flex shrink-0 items-center gap-1 whitespace-nowrap px-2.5 py-1 text-xs rounded-item border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
                   data-testid="video-add-comment"
                 >
                   <MessageSquarePlus className="h-3.5 w-3.5" />

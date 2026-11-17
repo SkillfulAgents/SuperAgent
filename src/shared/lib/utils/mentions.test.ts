@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendMentions, parseMentions, type Mention } from './mentions'
+import { appendMentions, parseMentions, parseUserTags, plainUserTags, type Mention } from './mentions'
 
 const mike: Mention = { kind: 'user', id: 'u_mike1', name: 'Mike Smith', email: 'mike@acme.com' }
 const billing: Mention = { kind: 'agent', slug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }
@@ -74,5 +74,32 @@ describe('parseMentions', () => {
 
   it('leaves text without a block untouched', () => {
     expect(parseMentions('plain @Mike')).toEqual({ cleanText: 'plain @Mike', mentions: [], silent: false })
+  })
+})
+
+describe('agent tags', () => {
+  const tagged = 'Thanks [@Mike Smith](user:u_mike1), ping [@Dana Lee](user:u_dana2) and [@Mike Smith](user:u_mike1) again'
+
+  it("reads an agent's tags as the text and people a person's tag gives", () => {
+    expect(parseUserTags(tagged)).toEqual({
+      text: 'Thanks @Mike Smith, ping @Dana Lee and @Mike Smith again',
+      mentions: [{ kind: 'user', id: 'u_mike1', name: 'Mike Smith' }, { kind: 'user', id: 'u_dana2', name: 'Dana Lee' }],
+    })
+    expect(parseUserTags('see [docs](https://x.dev) or [@Mike](mailto:m@x.dev)').mentions).toEqual([])
+    for (const text of ['', '  ', '[@](user:)', '`[@Mike](user:u_mike1)`', '```\n[@Mike](user:u_mike1)\n```', '\\[@Mike](user:u_mike1)', '![@Mike](user:u_mike1)', '~~~\n[@Mike](user:u_mike1)\n~~~', '``[@Mike](user:u_mike1)``']) {
+      expect(parseUserTags(text)).toEqual({ text, mentions: [] })
+    }
+  })
+
+  it('reads each tag as a plain @Name outside the app', () => {
+    expect(plainUserTags(tagged)).toBe('Thanks @Mike Smith, ping @Dana Lee and @Mike Smith again')
+  })
+
+  it('holds back a tag still streaming in, and only while streaming', () => {
+    for (const tail of ['[@', '[@Mike Sm', '[@Mike Smith]', '[@Mike Smith](', '[@Mike Smith](us', '[@Mike Smith](user:u_mi']) {
+      expect(plainUserTags(`Look ${tail}`, { streaming: true })).toBe('Look ')
+    }
+    expect(plainUserTags('Look [@Mike Smith]', { streaming: false })).toBe('Look [@Mike Smith]')
+    expect(plainUserTags('see [docs](https://x.dev)', { streaming: true })).toBe('see [docs](https://x.dev)')
   })
 })

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { buildSkillZip } from '../helpers/skill-zip'
+import { openHomeSection, openSkillUpload } from '../helpers/agent-home'
 import DOMPurify from 'dompurify'
 
 // Monaco owns this DOM and provides no app test IDs for its rendered lines.
@@ -19,6 +20,7 @@ test.describe('Local skill code editor', () => {
   let diagnostics: string[]
 
   async function openFiles(page: Page) {
+    await openHomeSection(page, 'Skills')
     const row = page.getByTestId('installed-skill-row').filter({ hasText: skillName })
     await row.hover()
     await row.getByRole('button', { name: `Actions for ${skillName}` }).click()
@@ -64,7 +66,7 @@ test.describe('Local skill code editor', () => {
         'index.html': '<div class="example">Hello</div>\n',
       },
     })
-    await page.getByTestId('import-skill-button').click()
+    await openSkillUpload(page)
     const dialog = page.getByRole('dialog')
     await dialog.locator('input[type="file"]').setInputFiles(file)
     await dialog.locator('button[type="submit"]').click()

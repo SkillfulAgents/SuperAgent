@@ -12,6 +12,7 @@ vi.mock('@renderer/hooks/use-agent-integrations', () => ({
   useAgentIntegrationStatus: () => ({ data: undefined }),
 }))
 vi.mock('@renderer/hooks/use-webhook-relay', () => ({ useWebhookRelay: () => ({ data: undefined }) }))
+vi.mock('@renderer/hooks/use-agents', () => ({ useAgent: () => ({ data: undefined }) }))
 vi.mock('./integration-settings-controls', () => ({
   ToggleRow: ({ label, onCheckedChange }: any) => (
     <button aria-label={label} onClick={() => onCheckedChange(true)}>{label}</button>

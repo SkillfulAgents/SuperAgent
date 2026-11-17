@@ -11,13 +11,21 @@ import { cn } from '@shared/lib/utils'
 import type { VoiceModePhase } from '@renderer/hooks/use-voice-mode'
 import { VoiceOrb } from './voice-orb'
 import type { DotOrbState } from '@renderer/lib/voice/orb/dot-orb'
+import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
+import type { ApiAgent } from '@shared/lib/types/api'
+import { VoiceBars } from './voice-bars'
+import { AgentCallOrb, callOrbState } from './agent-call-orb'
 
 interface VoiceModeComposerProps {
   phase: VoiceModePhase
-  /** The voice connection is up; until then the orb assembles, grey, over "Initializing…". */
+  /** The voice connection is up; until then the orb assembles, grey, with "Initializing…" beneath it. */
   ready: boolean
   /** The agent's display name, labelling its lines in the transcript. */
   agentName?: string
+  /** With an avatar, the agent's own orb takes the dot orb's place, over both voices' bars. */
+  agent?: Pick<ApiAgent, 'slug' | 'avatar'>
+  /** A request card is up and the conversation waits on it. */
+  waitingForInput?: boolean
   /** The person is talking now (the mic's turn or over the agent). */
   userSpeaking: boolean
   /** What the person has said so far; shown while they are talking. */
@@ -58,9 +66,10 @@ const MIC_LABEL: Record<VoiceModePhase, string> = {
 
 /**
  * The composer while voice mode is on: the same frame as the text composer,
- * with the dot orb where the editor was, held still and stirred by the
- * person's voice while it is their turn and ringing outward while the reply
- * is spoken. What is being said runs beside it. The action row is the text
+ * with the agent's own orb over both voices' bars where the editor was (the
+ * dot orb, held still and stirred by the person's voice while it is their
+ * turn and ringing outward while the reply is spoken, for an agent without
+ * an avatar). What is being said runs beside it. The action row is the text
  * composer's: attachments and model on the left, voice's own controls and
  * the exit on the right where the mic and send would be.
  */
@@ -68,6 +77,8 @@ export function VoiceModeComposer({
   phase,
   ready,
   agentName = 'Agent',
+  agent,
+  waitingForInput = false,
   userSpeaking,
   utterance,
   transcript,
@@ -100,18 +111,15 @@ export function VoiceModeComposer({
     >
       <div className={cn(COMPOSER_BOX_CLASS, FLOATING_COMPOSER_CLASS, 'composer-enter-contents')}>
         <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
-        {/* The orb takes the editor's place. While the voice connection comes
-            up it sits centred with "Initializing…" beneath it; once it is up
-            the transcript column grows from nothing, which slides the orb to
-            the right where it stays. */}
+        {/* The orb takes the editor's place, at the right where it stays from
+            the first moment of the call, with "Initializing…" under it while
+            the voice connection comes up. Once it is up the column beside it
+            holds what is being said. */}
         <div className={cn('flex items-center justify-center gap-3', attachments.length > 0 && 'mt-2')}>
           {/* The row's height is the orb's alone. The strip is taken out of
               flow and pinned to it, so a long conversation scrolls inside the
               frame instead of growing it, and its fades sit at the frame's edges. */}
-          <div
-            className="relative min-w-0 basis-0 self-stretch transition-[flex-grow] duration-[600ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
-            style={{ flexGrow: ready ? 1 : 0 }}
-          >
+          <div className="relative min-w-0 flex-1 basis-0 self-stretch">
             {ready && (
               <div className="voice-strip-enter absolute inset-0 flex flex-col justify-center pl-3">
                 {transcript ? <VoiceConversationPreview transcript={transcript} agentName={agentName} /> : (
@@ -127,19 +135,34 @@ export function VoiceModeComposer({
             )}
           </div>
           <div className="relative shrink-0">
-            <VoiceMicButton
-              phase={phase}
-              ready={ready}
-              userSpeaking={userSpeaking}
-              getAnalyser={getAnalyser}
-              getOutputAnalyser={getOutputAnalyser}
-              onClick={onPressMic}
-            />
-            {/* In the canvas's clear band under the sphere, so the row's height
-                does not change; it fades and drops away as the orb slides. */}
+            {agent?.avatar ? (
+              <VoiceAgentOrb
+                agent={agent}
+                phase={phase}
+                ready={ready}
+                waitingForInput={waitingForInput}
+                micMuted={micMuted}
+                getAnalyser={getAnalyser}
+                getOutputAnalyser={getOutputAnalyser}
+                onClick={onPressMic}
+              />
+            ) : (
+              <VoiceMicButton
+                phase={phase}
+                ready={ready}
+                userSpeaking={userSpeaking}
+                getAnalyser={getAnalyser}
+                getOutputAnalyser={getOutputAnalyser}
+                onClick={onPressMic}
+              />
+            )}
+            {/* In the canvas's clear band under the sphere (or where the bars
+                will be), so the row's height does not change; it fades and
+                drops away once the call is up. */}
             <div
               className={cn(
-                'pointer-events-none absolute inset-x-0 -bottom-3 text-center text-sm leading-5 transition-all duration-300 ease-out',
+                'pointer-events-none absolute inset-x-0 text-center text-sm leading-5 transition-all duration-300 ease-out',
+                agent?.avatar ? 'bottom-3' : '-bottom-3',
                 ready ? 'translate-y-1 opacity-0' : 'opacity-100',
               )}
               data-testid="voice-mode-initializing"
@@ -240,5 +263,50 @@ function VoiceMicButton({ phase, ready, userSpeaking, getAnalyser, getOutputAnal
       {/* Greyscale until the connection is up. */}
       <VoiceOrb state={orbState} monochrome={!ready} size={MIC_SIZE} getAnalyser={levelSource} />
     </button>
+  )
+}
+
+const AGENT_ORB_SIZE = 96
+
+/**
+ * The iOS call screen's orb and bars, at composer size: the agent's own orb
+ * over both voices as one row of bars. The orb is the mic button, as the dot
+ * orb is.
+ */
+function VoiceAgentOrb({ agent, phase, ready, waitingForInput, micMuted, getAnalyser, getOutputAnalyser, onClick }: {
+  agent: Pick<ApiAgent, 'slug' | 'avatar'>
+  phase: VoiceModePhase
+  ready: boolean
+  waitingForInput: boolean
+  micMuted: boolean
+  getAnalyser: () => AnalyserNode | null
+  getOutputAnalyser: () => AnalyserNode | null
+  onClick: () => void
+}) {
+  const state = callOrbState({ ready, waitingForInput, busy: phase !== 'listening' })
+  const color = agent.avatar ? avatarSource(agent.avatar).orb.core : 'currentColor'
+  return (
+    <div className="mx-1 my-2 flex flex-col items-center gap-3">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={MIC_LABEL[phase]}
+        title={MIC_LABEL[phase]}
+        data-testid="voice-mode-mic"
+        data-phase={phase}
+        data-orb-state={state}
+        className="flex shrink-0 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      >
+        <AgentCallOrb agent={agent} state={state} size={AGENT_ORB_SIZE} />
+      </button>
+      <VoiceBars
+        agentColor={color}
+        getAgentAnalyser={getOutputAnalyser}
+        getPersonAnalyser={getAnalyser}
+        agentSpeaking={phase === 'speaking'}
+        personMuted={micMuted}
+        className={cn('transition-opacity duration-300', ready ? 'opacity-100' : 'opacity-0')}
+      />
+    </div>
   )
 }

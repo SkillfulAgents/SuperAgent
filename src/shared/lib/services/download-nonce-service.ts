@@ -234,7 +234,7 @@ export interface DownloadNonceOffer {
  * one-time channel scan and a non-consuming platform resolve on first call.
  */
 export async function getDownloadNonceOffer(): Promise<DownloadNonceOffer> {
-  if (isAuthMode() || getPlatformAuthStatus().connected) return { available: false }
+  if (isAuthMode() || (await getPlatformAuthStatus()).connected) return { available: false }
   if (cachedOffer !== undefined) {
     return cachedOffer ? offerFromIdentity(cachedOffer.identity) : { available: false }
   }
@@ -286,7 +286,7 @@ export async function redeemDownloadNonce(userId: string): Promise<PlatformAuthS
 
   const res = await postDownloadNonce('/api/download-nonce/redeem', {
     code: offer.code,
-    client_instance_id: getOrCreatePlatformClientInstanceId(),
+    client_instance_id: await getOrCreatePlatformClientInstanceId(),
     device_name: getPlatformDeviceName(),
   })
   if (!res) {

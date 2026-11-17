@@ -27,11 +27,11 @@ export function sessionEvents(live: LiveSessions, sessionId: string): ReadableSt
   return new ReadableStream<SessionEvent>({
     start(controller) {
       release = live.listen(sessionId, (event) => controller.enqueue(event))
-      // The agent let go of: no event will come.
+      // The agent let go of, or the session deleted: no event will come.
       unwatch = live.onDispose(() => {
         release?.()
         controller.close()
-      })
+      }, sessionId)
     },
     cancel() {
       release?.()
@@ -62,12 +62,12 @@ export async function sessionFrames(
     release?.()
     unwatch()
   }
-  // The agent let go of: no frame will come.
+  // The agent let go of, or the session deleted: no frame will come.
   const unwatch = live.onDispose(() => {
     if (ended) return
     end()
     controller.close()
-  })
+  }, sessionId)
   const stream = new ReadableStream<WireFrame>(
     { start: (c) => { controller = c }, cancel: end },
     new CountQueuingStrategy({ highWaterMark: maxPendingFrames }),

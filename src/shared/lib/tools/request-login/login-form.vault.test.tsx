@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { onlineManager } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { renderWithProviders as render } from '@renderer/test/test-utils'
 import { LoginRequestItem } from './request'
 import { resetLoginRequestStore } from './login-request-store'
@@ -78,6 +79,7 @@ describe('the sign-in form with the vault', () => {
   beforeEach(() => {
     resetLoginRequestStore()
     mockApiFetch.mockReset()
+    vi.mocked(toast.warning).mockClear()
     context = CONTEXT
     info = INFO
     mockApiFetch.mockImplementation((url: string) => {
@@ -140,6 +142,38 @@ describe('the sign-in form with the vault', () => {
     await user.click(screen.getByTestId('login-vault-account-acc-1'))
     await waitFor(() => expect(posted('/fill-login')).toHaveLength(1))
     expect(posted('/fill-login')[0]).toEqual({ toolUseId: 'tu-1', origin: 'https://github.com', values: ['', ''], accountId: 'acc-1' })
+  })
+
+  it('shows the picked account signed in with its saved session, not a fill', async () => {
+    const user = userEvent.setup()
+    info = { ...INFO, accounts: [offer()] }
+    const routed = mockApiFetch.getMockImplementation()!
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => (url === `${BASE}/fill-login`
+      ? Promise.resolve(json(200, { success: true, session: { restored: true, username: 'octocat' } }))
+      : routed(url, init)))
+    renderCard()
+    await choosing()
+    await user.click(screen.getByTestId('login-vault-account-acc-1'))
+    const completed = await screen.findByTestId('login-request-completed')
+    expect(completed).toHaveAttribute('data-status', 'session')
+    expect(completed).toHaveTextContent('Signed in with the saved session')
+    expect(toast.warning).not.toHaveBeenCalled()
+  })
+
+  it('says so where it outlives the card when the saved session of an account picked to go through its provider did not restore', async () => {
+    const user = userEvent.setup()
+    info = { ...INFO, accounts: [offer({ parts: [], via: { id: 'acc-g', site: 'google.com', username: 'me@gmail.com', name: 'Google' } })] }
+    const routed = mockApiFetch.getMockImplementation()!
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => (url === `${BASE}/login-via`
+      ? Promise.resolve(json(200, { success: true, session: { restored: false, username: 'octocat' } }))
+      : routed(url, init)))
+    renderCard()
+    await choosing()
+    await user.click(screen.getByTestId('login-vault-account-acc-1'))
+    const completed = await screen.findByTestId('login-request-completed')
+    expect(completed).toHaveAttribute('data-status', 'session')
+    expect(completed).toHaveTextContent('The saved session did not restore')
+    expect(toast.warning).toHaveBeenCalledWith('The saved session did not restore', expect.objectContaining({ description: expect.stringContaining('Nothing was filled') }))
   })
 
   it('shows only the saved accounts first, and the fields for a different account', async () => {

@@ -47,32 +47,35 @@ export type RefreshReason = 'stale' | 'after-run' | 'manual'
 
 export type RefreshOutcome = WidgetRefreshOutcome
 
+/** A filesystem listing of widgets, each flagged when it is one of `refreshing`. */
+export function withRefreshingFlags(widgets: ApiAgentWidget[], refreshing: string[]): ApiAgentWidget[] {
+  const inFlight = new Set(refreshing)
+  return widgets.map((w) => ({ ...w, refreshing: inFlight.has(w.slug) }))
+}
+
 class WidgetRefreshService {
-  private unsubscribe: (() => void) | null = null
+  private armed = false
   /** Bumped by `stop`: a post-run sweep scheduled before it does not run. */
   private generation = 0
 
   /**
    * Arm the after-run trigger. Idempotent; called once at route registration.
-   * Listens to the global feed for a session going idle, so nothing on the
-   * session path has to know widgets exist.
+   * The host calls `afterSessionSettled` when an actor says a session went
+   * idle (host/local-host-port.ts), so nothing on the session path has to
+   * know widgets exist, and the sweep never waits on a feed hint.
    */
   start(): void {
-    if (this.unsubscribe) return
-    // Route modules arm this at import time; route tests replace the feed
-    // with partial doubles that cannot be subscribed to, and must still load.
-    if (typeof globalFeed.subscribe !== 'function') return
-    this.unsubscribe = globalFeed.subscribe((event) => {
-      if (event.type === 'session_idle' && typeof event.agentSlug === 'string') {
-        this.schedulePostRun(event.agentSlug)
-      }
-    })
+    this.armed = true
   }
 
   stop(): void {
-    this.unsubscribe?.()
-    this.unsubscribe = null
+    this.armed = false
     this.generation++
+  }
+
+  /** A session of the agent settled: run the after-run sweep, once armed. */
+  afterSessionSettled(agentSlug: string): void {
+    if (this.armed) this.schedulePostRun(agentSlug)
   }
 
   async isRefreshing(agentSlug: string, widgetSlug: string): Promise<boolean> {
@@ -85,8 +88,7 @@ class WidgetRefreshService {
 
   /** Attach live `refreshing` flags to a filesystem listing. */
   async decorate(agentSlug: string, widgets: ApiAgentWidget[]): Promise<ApiAgentWidget[]> {
-    const refreshing = new Set(await this.refreshingSlugs(agentSlug))
-    return widgets.map((w) => ({ ...w, refreshing: refreshing.has(w.slug) }))
+    return withRefreshingFlags(widgets, await this.refreshingSlugs(agentSlug))
   }
 
   /**

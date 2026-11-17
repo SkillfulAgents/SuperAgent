@@ -182,15 +182,15 @@ export function getDashboardInspectorJs(): string {
     };
   }
 
-  // The web app shares the dashboard's origin. The desktop app's page is file:// (or a
-  // localhost dev server), which any downloaded file or local server could also claim,
-  // so those count only inside the desktop app itself.
+  // The web app shares the dashboard's origin. The desktop app's page is file://
+  // (serialized as "null" by Chromium's postMessage) or a localhost dev server.
+  // These origins count only inside the desktop app itself.
   var inDesktopApp = typeof navigator !== "undefined" && /\\bElectron\\//.test(navigator.userAgent || "");
   function trusted(origin) {
     if (origin === location.origin) return true;
-    return inDesktopApp && (origin === "file://" || /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/.test(origin));
+    return inDesktopApp && (origin === "null" || origin === "file://" || /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/.test(origin));
   }
-  function target(origin) { return origin === "file://" ? "*" : origin; }
+  function target(origin) { return origin === "null" || origin === "file://" ? "*" : origin; }
 
   function onContextMenu(e) {
     if (hostOrigin === null || e.defaultPrevented || e.shiftKey || window.parent === window) return;

@@ -31,3 +31,15 @@ export function getAgentFileApiPath(agentSlug: string, filePath: string): string
 export function publicWorkspaceFileUrl(baseUrl: string, agentSlug: string, filePath: string, { inline = true } = {}): string {
   return `${baseUrl.replace(/\/+$/, '')}${getAgentFileApiPath(agentSlug, filePath)}${inline ? '?inline=true' : ''}`
 }
+
+/** The absolute path a markdown url names as a local file (`/abs` or `file:///abs`), or null. */
+export function localFilePath(url: string): string | null {
+  try {
+    // Only an absolute path reads as its file: form. `//host/x` and relative paths stay unresolved.
+    const parsed = new URL(/^\/(?!\/)/.test(url) ? `file://${url}` : url)
+    if (parsed.protocol !== 'file:' || parsed.hostname !== '') return null
+    return decodeURIComponent(parsed.pathname)
+  } catch {
+    return null
+  }
+}

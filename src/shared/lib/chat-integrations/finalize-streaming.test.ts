@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { GrammyError, HttpError } from 'grammy'
 import { SlackConnector } from './slack-connector'
 import { TelegramConnector } from './telegram-connector'
 
@@ -46,7 +47,7 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
     expect(mockPostMessage).toHaveBeenCalledTimes(1)
     expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({
       channel: 'C123',
-      markdown_text: 'b'.repeat(7000),
+      blocks: [{ type: 'markdown', text: 'b'.repeat(7000) }],
     }))
   })
 
@@ -57,8 +58,8 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
 
     await connector.finalizeStreamingMessage('C123', '1000.001', longText)
 
-    const updateText: string = mockUpdate.mock.calls[0][0].markdown_text
-    const postText: string = mockPostMessage.mock.calls[0][0].markdown_text
+    const updateText: string = mockUpdate.mock.calls[0][0].blocks[0].text
+    const postText: string = mockPostMessage.mock.calls[0][0].blocks[0].text
     const combined = updateText + postText
 
     expect(combined).not.toContain('truncated')
@@ -196,6 +197,18 @@ describe('TelegramConnector.sendRichOrHtml', () => {
     expect(id).toBe('22')
   })
 
+  it('fails without an HTML retry when Telegram is busy', async () => {
+    const busy = new GrammyError("Call to 'sendRichMessage' failed!", { ok: false, error_code: 502, description: 'Bad Gateway' }, 'sendRichMessage', {})
+    mockSendRich.mockRejectedValueOnce(busy)
+    await expect((connector as any).sendRichOrHtml('123', 'hi')).rejects.toBe(busy)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('retries as HTML when the rich send got no answer', async () => {
+    mockSendRich.mockRejectedValueOnce(new HttpError("Network request for 'sendRichMessage' failed!", new Error('socket hang up')))
+    expect(await (connector as any).sendRichOrHtml('123', 'hi')).toBe('22')
+  })
+
   it('re-splits the HTML fallback to the 4096 sink limit for long bodies', async () => {
     // Body is chunked for the 32768 rich ceiling; the HTML sink caps at 4096, so a
     // long fallback must split into multiple sends instead of being rejected.
@@ -237,10 +250,85 @@ describe('TelegramConnector.editRichOrHtml', () => {
     expect(mockEditHtml).toHaveBeenCalledWith('123', 50, expect.stringContaining('<strong>hi</strong>'), expect.objectContaining({ parse_mode: 'HTML' }))
   })
 
+  it('fails without an HTML retry when Telegram rate limits the edit', async () => {
+    const busy = new GrammyError("Call to 'editMessageText' failed!", { ok: false, error_code: 429, description: 'Too Many Requests: retry after 9' }, 'editMessageText', {})
+    mockEditRich.mockRejectedValueOnce(busy)
+    await expect((connector as any).editRichOrHtml('123', '50', 'hi')).rejects.toBe(busy)
+    expect(mockEditHtml).not.toHaveBeenCalled()
+  })
+
   it('treats "message is not modified" as success without an HTML fallback', async () => {
     mockEditRich.mockRejectedValueOnce(new Error('Bad Request: message is not modified'))
     await (connector as any).editRichOrHtml('123', '50', 'same')
     expect(mockEditHtml).not.toHaveBeenCalled()
+  })
+})
+
+describe('TelegramConnector rate limits while streaming', () => {
+  const rateLimited = (seconds: number) =>
+    new GrammyError("Call to 'editMessageText' failed!", { ok: false, error_code: 429, description: `Too Many Requests: retry after ${seconds}`, parameters: { retry_after: seconds } }, 'editMessageText', {})
+  let connector: TelegramConnector
+  let editRich: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.useFakeTimers({ now: 100_000 })
+    connector = new TelegramConnector({ botToken: 'fake:token' })
+    editRich = vi.fn().mockResolvedValue(true)
+    ;(connector as any).bot = { api: { raw: { editMessageText: editRich }, editMessageText: vi.fn() } }
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('skips a chat\'s edits for as long as Telegram asks, then edits with the full text', async () => {
+    editRich.mockRejectedValueOnce(rateLimited(20))
+    await expect(connector.sendStreamingUpdate('-1001', 'a', '50')).rejects.toBeInstanceOf(GrammyError)
+
+    vi.setSystemTime(119_000)
+    expect(await connector.sendStreamingUpdate('-1001', 'ab', '50')).toBe('50')
+    expect(await connector.sendStreamingUpdate('-2002', 'other chat', '60')).toBe('60')
+    expect(editRich.mock.calls.map(([args]) => args.chat_id)).toEqual([-1001, -2002])
+
+    vi.setSystemTime(120_000)
+    await connector.sendStreamingUpdate('-1001', 'abc', '50')
+    expect(editRich.mock.calls.at(-1)?.[0]).toMatchObject({ chat_id: -1001, rich_message: { markdown: 'abc' } })
+  })
+
+  it('holds the working indicator and the reply alike after either is refused, then streams the full text', async () => {
+    const sendRichMessageDraft = vi.fn().mockRejectedValueOnce(rateLimited(10)).mockResolvedValue(true)
+    ;(connector as any).bot = { api: { raw: { sendRichMessageDraft } } }
+    await connector.startWorking('42', 'working')
+
+    vi.setSystemTime(109_000)
+    expect(await connector.sendStreamingUpdate('42', 'hi')).toBe('')
+    await connector.startWorking('42', 'working')
+    expect(sendRichMessageDraft).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(110_000)
+    await connector.sendStreamingUpdate('42', 'hi there')
+    expect(sendRichMessageDraft.mock.calls.at(-1)?.[0]).toMatchObject({ chat_id: 42, rich_message: { markdown: 'hi there' } })
+  })
+})
+
+describe('TelegramConnector send_message tool', () => {
+  it('starts the working indicator but answers without waiting for it to start or clear', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new TelegramConnector({ botToken: 'fake:token' })
+      const sendRichMessage = vi.fn().mockResolvedValue({ message_id: 9 })
+      const sendRichMessageDraft = vi.fn(() => new Promise(() => {}))
+      ;(connector as any).bot = { api: { raw: { sendRichMessage, sendRichMessageDraft } } }
+      vi.spyOn(connector, 'isAllowed').mockResolvedValue(true)
+      vi.spyOn(connector, 'stopWorking').mockReturnValue(new Promise(() => {}))
+      const send = connector.getTools({ integration: { agentSlug: 'agent' } as any, externalId: '42' }).find((tool) => tool.name === 'send_message')!
+
+      let answer: unknown
+      void send.execute({ text: 'hi', alsoSendToChannel: false }).then((id) => { answer = id })
+      await vi.advanceTimersByTimeAsync(1300)
+
+      expect(sendRichMessageDraft).toHaveBeenCalled()
+      expect(answer).toBe('9')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

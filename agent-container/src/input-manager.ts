@@ -24,10 +24,32 @@ interface PendingInput<T extends InputValue = string> {
   sessionId?: string
 }
 
+/**
+ * How a person left a question unanswered, in the CLI's AskUserQuestion
+ * vocabulary (`annotations[question].unanswered`, capability
+ * `ask_user_question_unanswered_v1`).
+ */
+export const UNANSWERED_REASONS = ['skipped', 'replied_in_chat', 'dismissed'] as const
+export type UnansweredReason = (typeof UNANSWERED_REASONS)[number]
+
+/**
+ * A pending input the host rejected. `unanswered` is set when the rejection is
+ * the person's own choice not to answer (the card's Decline), as opposed to a
+ * request that was superseded, timed out or lost its session.
+ */
+export class InputRejectedError extends Error {
+  readonly unanswered?: UnansweredReason
+  constructor(message: string, unanswered?: UnansweredReason) {
+    super(message)
+    this.name = 'InputRejectedError'
+    this.unanswered = unanswered
+  }
+}
+
 // Buffered result for when resolve/reject arrives before createPending
 type EarlyResult =
   | { type: 'resolve'; value: InputValue; createdAt: Date }
-  | { type: 'reject'; error: string; createdAt: Date }
+  | { type: 'reject'; error: string; unanswered?: UnansweredReason; createdAt: Date }
 
 // Input types the HOST answers programmatically (host tool handlers
 // hitting the DB/scheduler) — normally within milliseconds. An entry this old
@@ -167,7 +189,7 @@ class InputManager {
         console.log(
           `[InputManager] Immediately rejecting ${inputType} request ${toolUseId} (early result): ${early.error}`
         )
-        return Promise.reject(new Error(early.error))
+        return Promise.reject(new InputRejectedError(early.error, early.unanswered))
       }
     }
 
@@ -267,9 +289,10 @@ class InputManager {
    * the rejection is buffered so createPending can reject immediately when called.
    * @param toolUseId - The tool_use_id to reject
    * @param error - Error message describing why the request was rejected
+   * @param unanswered - Set when the person chose not to answer (see InputRejectedError)
    * @returns true (always succeeds — either rejects immediately or buffers)
    */
-  reject(toolUseId: string, error: string): boolean {
+  reject(toolUseId: string, error: string, unanswered?: UnansweredReason): boolean {
     const pending = this.pending.get(toolUseId)
     if (!pending) {
       // The tool handler hasn't called createPending yet (race condition with
@@ -278,7 +301,7 @@ class InputManager {
       console.log(
         `[InputManager] No pending request found for ${toolUseId}, buffering early reject`
       )
-      this.earlyResults.set(toolUseId, { type: 'reject', error, createdAt: new Date() })
+      this.earlyResults.set(toolUseId, { type: 'reject', error, unanswered, createdAt: new Date() })
       return true
     }
 
@@ -286,7 +309,7 @@ class InputManager {
       `[InputManager] Rejecting ${pending.inputType} request ${toolUseId}: ${error}`
     )
     this.pending.delete(toolUseId)
-    pending.reject(new Error(error))
+    pending.reject(new InputRejectedError(error, unanswered))
     return true
   }
 

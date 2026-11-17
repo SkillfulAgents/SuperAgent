@@ -2,6 +2,7 @@ import { test, expect, type Page, type Request } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { isWebKitTeardownFetchError } from '../helpers/page-errors'
 import { pdfFixture } from '../helpers/pdf-fixture'
 import { timestampedUploadNamePattern } from '../helpers/upload-filename'
 
@@ -24,8 +25,12 @@ async function uploadPdfs(page: Page, files = [
   for (const file of files) {
     await expect(page.getByTestId('attachment-preview').filter({ hasText: file.name })).toBeVisible()
   }
+  const repliesBefore = await session.getAssistantMessages().count()
   await session.sendMessage('Review these documents')
-  await session.waitForResponse(15000)
+  // The initial "hello" already has a reply. Wait for this turn to finish
+  // before clicking a pill whose position changes as the transcript settles.
+  await session.waitForAssistantMessageCount(repliesBefore + 1, 15000)
+  await expect(session.getStopButton()).not.toBeVisible()
   for (const file of files) await expect(filePill(page, file.name)).toBeVisible()
 }
 
@@ -198,7 +203,9 @@ test.describe('PDF preview with the real PDF.js worker', () => {
 
   test('a malformed PDF shows an error and does not poison a valid document in another tab', async ({ page, browserName }, testInfo) => {
     const errors: string[] = []
-    page.on('pageerror', error => errors.push(error.message))
+    page.on('pageerror', error => {
+      if (!isWebKitTeardownFetchError(page, error)) errors.push(error.message)
+    })
     await uploadPdfs(page, [
       { name: 'broken.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nnot a PDF\n') },
       { name: 'report.pdf', mimeType: 'application/pdf', buffer: pdfFixture() },

@@ -1,11 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
+
+let handle: TestDatabase
+let testDb: TestDatabase['db']
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 const base = { slug: 'ada', name: 'Ada', appUrl: null }
 const originalHostPublicUrl = process.env.HOST_PUBLIC_URL
 const originalType = (process as { type?: string }).type
 
-afterEach(() => {
+// Settings and host records are in the app database: a fresh test database per test.
+beforeEach(async () => {
+  handle = await createTestDatabase()
+  testDb = handle.db
+})
+
+afterEach(async () => {
+  await handle.close()
   if (originalHostPublicUrl === undefined) delete process.env.HOST_PUBLIC_URL
   else process.env.HOST_PUBLIC_URL = originalHostPublicUrl
   if (originalType === undefined) delete (process as { type?: string }).type
@@ -79,21 +91,21 @@ describe('buildAgentContactCard', () => {
 })
 
 describe('resolveAgentWebUrl', () => {
-  it('returns null on desktop, where the app link is a superagent:// scheme no phone can open', () => {
+  it('returns null on desktop, where the app link is a superagent:// scheme no phone can open', async () => {
     ;(process as { type?: string }).type = 'browser'
     process.env.HOST_PUBLIC_URL = 'https://app.example.com'
-    expect(resolveAgentWebUrl('ada')).toBeNull()
+    expect(await resolveAgentWebUrl('ada')).toBeNull()
   })
 
-  it('returns the https agent URL on a public web host', () => {
+  it('returns the https agent URL on a public web host', async () => {
     delete (process as { type?: string }).type
     process.env.HOST_PUBLIC_URL = 'https://app.example.com'
-    expect(resolveAgentWebUrl('ada')).toBe('https://app.example.com/agents/ada')
+    expect(await resolveAgentWebUrl('ada')).toBe('https://app.example.com/agents/ada')
   })
 
-  it('returns null when the web host has no public URL', () => {
+  it('returns null when the web host has no public URL', async () => {
     delete (process as { type?: string }).type
     delete process.env.HOST_PUBLIC_URL
-    expect(resolveAgentWebUrl('ada')).toBeNull()
+    expect(await resolveAgentWebUrl('ada')).toBeNull()
   })
 })

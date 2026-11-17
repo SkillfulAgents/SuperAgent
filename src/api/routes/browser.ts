@@ -47,16 +47,13 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
     if ('error' in resolved) return resolved.error
     const agentId = resolved.agentId
 
-    const provider = getActiveProvider()
+    const provider = await getActiveProvider()
     if (!provider) {
       return c.json({ error: 'No host browser provider configured' }, 400)
     }
 
-    const settings = getSettings()
+    const settings = await getSettings()
     const options: Record<string, string> = {}
-    if (settings.app?.chromeProfileId) {
-      options.chromeProfileId = settings.app.chromeProfileId
-    }
     if (settings.app?.chromeHeadless) {
       options.chromeHeadless = 'true'
     }
@@ -100,7 +97,7 @@ browser.post('/stop-host-browser', IsAgent(), async (c) => {
     if ('error' in resolved) return resolved.error
     const agentId = resolved.agentId
 
-    const provider = getActiveProvider()
+    const provider = await getActiveProvider()
     if (provider) {
       await provider.stop(agentId)
     }
@@ -119,7 +116,7 @@ browser.post('/debug-info', IsAgent(), async (c) => {
     if ('error' in resolved) return resolved.error
     const agentId = resolved.agentId
 
-    const provider = getActiveProvider()
+    const provider = await getActiveProvider()
     if (!provider?.getDebugInfo) {
       return c.json({ pages: [] })
     }
