@@ -194,7 +194,7 @@ describe('schedule_resume', () => {
       note: 'Impossible wake',
     }))
 
-    expect(reasonOf(result)).toBe('Failed to schedule resume: Scheduled time "at yesterday" is in the past')
+    expect(reasonOf(result)).toBe('Scheduled time "at yesterday" is in the past')
     expect(publish).not.toHaveBeenCalled()
   })
 
@@ -299,7 +299,7 @@ describe('schedule_task', () => {
       prompt: 'Send the daily report',
     }))
 
-    expect(reasonOf(result)).toBe('Failed to schedule task: disk full')
+    expect(reasonOf(result)).toBe('disk full')
     expect(publish).not.toHaveBeenCalled()
   })
 

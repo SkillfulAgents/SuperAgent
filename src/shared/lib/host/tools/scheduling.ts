@@ -73,7 +73,7 @@ export async function scheduleTask({ agentSlug, sessionId, toolUseId, input: raw
     })
   } catch (error) {
     console.error('[HostTools] Error handling schedule task:', error)
-    return rejected(`Failed to schedule task: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 
   globalFeed.publish({ type: 'scheduled_task_created', taskId, agentSlug })
@@ -133,7 +133,7 @@ export async function scheduleResume({ agentSlug, sessionId, toolUseId, input: r
     }))
   } catch (error) {
     console.error('[HostTools] Error handling schedule resume:', error)
-    return rejected(`Failed to schedule resume: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 
   globalFeed.publish({ type: 'scheduled_task_created', taskId, agentSlug, resumeSessionId: sessionId })
@@ -246,7 +246,7 @@ export async function updateScheduledTask({ agentSlug, toolUseId, input: raw }: 
     return resolved(result, [{ type: 'scheduled_task_updated', toolUseId, taskId: input.task_id, agentSlug }])
   } catch (error) {
     console.error('[HostTools] Error handling update_scheduled_task:', error)
-    return rejected(`Failed to update scheduled task: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }
 
@@ -270,7 +270,7 @@ export async function cancelScheduledTaskTool({ agentSlug, toolUseId, input: raw
     ])
   } catch (error) {
     console.error('[HostTools] Error handling cancel_scheduled_task:', error)
-    return rejected(`Failed to cancel scheduled task: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }
 
@@ -312,7 +312,7 @@ async function pauseOrResume(
     )
   } catch (error) {
     console.error(`[HostTools] Error handling ${action}_scheduled_task:`, error)
-    return rejected(`Failed to ${action} scheduled task: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }
 

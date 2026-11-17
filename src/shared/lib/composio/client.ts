@@ -117,10 +117,19 @@ export async function composioFetch<T>(
     throw new ComposioApiError('Composio API key is not configured', 401)
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  })
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+    })
+  } catch (error) {
+    // Node's fetch gives up when response headers take over 300 s; Composio may still be doing the work.
+    if (error instanceof TypeError && error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'UND_ERR_HEADERS_TIMEOUT') {
+      throw new ComposioApiError('Composio did not answer within 5 minutes and may still be working on the request.', 504, undefined, { cause: error })
+    }
+    throw error
+  }
 
   if (!response.ok) {
     let errorDetails: ComposioError | undefined
@@ -130,10 +139,11 @@ export async function composioFetch<T>(
       // Ignore JSON parse errors
     }
     // Extract message from nested error object if present
-    const errorMessage =
+    const errorMessage = String(
       errorDetails?.message ||
       (typeof errorDetails?.error === 'object' ? errorDetails.error.message : undefined) ||
       `Composio API error: ${response.status}`
+    ).slice(0, 300)
 
     // The platform's own auth check failed, not Composio's: the platform key is dead.
     const platformKeyRejected =

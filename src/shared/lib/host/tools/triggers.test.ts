@@ -166,6 +166,17 @@ describe('setup_trigger', () => {
     expect(publish).toHaveBeenCalledExactlyOnceWith({ type: 'webhook_trigger_created', triggerId: 'trigger_new_id', agentSlug: AGENT_SLUG })
   })
 
+  it("returns Composio's reason without a prefix of its own, which the container adds", async () => {
+    mockEnableComposioTrigger.mockRejectedValueOnce(new Error('Invalid trigger configuration: owner Required'))
+    const result = await setupTrigger(request('setup_trigger', 'tool-setup-fail', {
+      connected_account_id: 'ca_1',
+      trigger_type: 'GMAIL_NEW_EMAIL',
+      prompt: 'Summarize this email',
+    }))
+
+    expect(reasonOf(result)).toBe('Invalid trigger configuration: owner Required')
+  })
+
   it('validates trigger type against available triggers', async () => {
     const result = await setupTrigger(request('setup_trigger', 'tool-setup-bad', {
       connected_account_id: 'ca_1',

@@ -35,7 +35,9 @@ import {
   listAuthConfigs,
   ComposioApiError,
   ComposioRedactedTokenError,
+  composioFetch,
 } from './client'
+import { enableComposioTrigger } from './triggers'
 import { envelopeToResponse } from '../proxy/composio-envelope'
 import { findAgentRuntimeError } from '../agent-runtime-errors/agent-runtime-error'
 import { PlatformReconnectRequiredError } from '../agent-runtime-errors/platform-reconnect-required/platform-reconnect-required-error'
@@ -1051,5 +1053,53 @@ describe('getOrCreateAuthConfig', () => {
 
     expect(result.id).toBe('ac_first')
     expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('trigger calls', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetPlatformAccessToken.mockReturnValue('platform-token')
+    mockGetEffectiveComposioApiKey.mockReturnValue(null)
+  })
+
+  it("throws Composio's nested reason", async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { message: 'The connected account cannot run polling trigger: API rate limit exceeded', code: 1211 },
+    }), { status: 422 }))
+
+    await expect(enableComposioTrigger('GITHUB_REPOSITORY_TAG_CREATED_TRIGGER', 'ca_1', { owner: 'o', repo: 'r' }))
+      .rejects.toMatchObject({ message: 'The connected account cannot run polling trigger: API rate limit exceeded', statusCode: 422 })
+  })
+
+  it('caps the reason at 300 characters', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'x'.repeat(301) } }), { status: 422 }))
+
+    await expect(enableComposioTrigger('GITHUB_COMMIT_EVENT', 'ca_1')).rejects.toMatchObject({ message: 'x'.repeat(300) })
+  })
+})
+
+describe('composioFetch transport failures', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetPlatformAccessToken.mockReturnValue('platform-token')
+    mockGetEffectiveComposioApiKey.mockReturnValue(null)
+  })
+
+  it('says Composio did not answer when response headers time out', async () => {
+    const cause = Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' })
+    mockFetch.mockRejectedValueOnce(new TypeError('fetch failed', { cause }))
+
+    await expect(composioFetch('/triggers/X/enable', { method: 'POST' })).rejects.toMatchObject({
+      message: 'Composio did not answer within 5 minutes and may still be working on the request.',
+      statusCode: 504,
+    })
+  })
+
+  it('keeps other network failures as they are', async () => {
+    const cause = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })
+    mockFetch.mockRejectedValueOnce(new TypeError('fetch failed', { cause }))
+
+    await expect(composioFetch('/triggers/X/enable', { method: 'POST' })).rejects.toThrow('fetch failed')
   })
 })

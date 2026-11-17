@@ -175,7 +175,7 @@ export async function createWebhookEndpoint({ agentSlug, sessionId, toolUseId, i
       tags: { area: 'webhook-endpoints', op: 'create' },
       extra: { agentSlug, sessionId, toolUseId },
     })
-    return rejected(`Failed to create webhook endpoint: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }
 
@@ -236,7 +236,7 @@ export async function updateWebhookEndpoint({ agentSlug, sessionId, toolUseId, i
       tags: { area: 'webhook-endpoints', op: 'update' },
       extra: { agentSlug, sessionId, toolUseId },
     })
-    return rejected(`Failed to update webhook endpoint: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }
 
@@ -291,6 +291,6 @@ export async function inspectWebhookEvents({ agentSlug, sessionId, toolUseId, in
       tags: { area: 'webhook-endpoints', op: 'inspect' },
       extra: { agentSlug, sessionId, toolUseId },
     })
-    return rejected(`Failed to inspect webhook events: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }

@@ -27,19 +27,16 @@ vi.mock('../analytics/server-analytics', () => ({
 }))
 
 const mockIsPlatformComposioActive = vi.fn()
-vi.mock('@shared/lib/composio/client', () => ({
+// Real error classes so a constructor change here fails these tests.
+vi.mock('@shared/lib/composio/client', async (importOriginal) => ({
+  ComposioApiError: (await importOriginal<typeof import('@shared/lib/composio/client')>()).ComposioApiError,
   isPlatformComposioActive: () => mockIsPlatformComposioActive(),
 }))
 
-// Real error classes so a constructor change here fails these tests.
 const mockDeleteComposioTrigger = vi.fn()
-vi.mock('@shared/lib/composio/triggers', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@shared/lib/composio/triggers')>()
-  return {
-    ComposioTriggerError: actual.ComposioTriggerError,
-    deleteComposioTrigger: (...args: unknown[]) => mockDeleteComposioTrigger(...args),
-  }
-})
+vi.mock('@shared/lib/composio/triggers', () => ({
+  deleteComposioTrigger: (...args: unknown[]) => mockDeleteComposioTrigger(...args),
+}))
 
 const mockDisableEndpoint = vi.fn()
 vi.mock('@shared/lib/webhook-relay', () => ({
@@ -64,7 +61,7 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 }))
 
 import { attribution } from '@shared/lib/platform-attribution'
-import { ComposioTriggerError } from '@shared/lib/composio/triggers'
+import { ComposioApiError } from '@shared/lib/composio/client'
 import { WebhookEndpointsApiError } from '@shared/lib/webhook-relay/platform-endpoints-client'
 import {
   createWebhookTrigger,
@@ -331,7 +328,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
     // live" 404 identically, so the known-member case is reported (at info, not
     // as an error) rather than swallowed — otherwise the orphan is invisible.
     it('accepts a 404 under the recorded minting member but reports it as a possible orphan', async () => {
-      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioApiError('Trigger not found', 404))
       const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
 
       expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
@@ -347,7 +344,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
 
     it('is silent on a 404 in opaque-access-key mode (the proxy ignores members)', async () => {
       mockGetPlatformAccessToken.mockReturnValue('plat_sa_opaque_key')
-      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioApiError('Trigger not found', 404))
       const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
 
       expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
@@ -367,7 +364,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       mockDeleteComposioTrigger.mockImplementation(async () => {
         const key = (await attribution.current())?.getKey() ?? null
         keys.push(key)
-        if (key !== 'member:sub_owner') throw new ComposioTriggerError('Trigger not found', 404)
+        if (key !== 'member:sub_owner') throw new ComposioApiError('Trigger not found', 404)
       })
       const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator', connectedAccountId: 'ca_1' })
 
@@ -381,7 +378,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       await insertUser('user-creator')
       await insertPlatformAccount('user-creator', 'sub_creator')
       mockGetStoredPlatformMemberId.mockReturnValue('sub_stored')
-      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioApiError('Trigger not found', 404))
       const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
 
       expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
@@ -395,7 +392,7 @@ describe('upstream teardown attribution (SUP-765)', () => {
       await insertUser('user-creator')
       await insertPlatformAccount('user-creator', 'sub_creator')
       mockGetStoredPlatformMemberId.mockReturnValue('sub_stored')
-      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('upstream 502', 502))
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioApiError('upstream 502', 502))
       const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
 
       expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)

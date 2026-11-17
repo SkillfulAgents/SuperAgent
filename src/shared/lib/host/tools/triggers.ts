@@ -65,7 +65,7 @@ export async function getAvailableTriggersTool({ input: raw }: HostToolRequest):
     )
   } catch (error) {
     console.error('[HostTools] Error handling get_available_triggers:', error)
-    return rejected(String(error))
+    return rejected(errorMessage(error))
   }
 }
 
@@ -161,7 +161,7 @@ export async function setupTrigger({ agentSlug, sessionId, toolUseId, input: raw
     )
   } catch (error) {
     console.error('[HostTools] Error handling setup_trigger:', error)
-    return rejected(`Failed to set up trigger: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }
 
@@ -181,7 +181,7 @@ export async function listTriggers({ agentSlug }: HostToolRequest): Promise<Host
     )
   } catch (error) {
     console.error('[HostTools] Error handling list_triggers:', error)
-    return rejected(String(error))
+    return rejected(errorMessage(error))
   }
 }
 
@@ -208,7 +208,7 @@ export async function updateTrigger({ agentSlug, toolUseId, input: raw }: HostTo
     ])
   } catch (error) {
     console.error('[HostTools] Error handling update_trigger:', error)
-    return rejected(`Failed to update trigger: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }
 
@@ -232,6 +232,6 @@ export async function cancelTrigger({ agentSlug, toolUseId, input: raw }: HostTo
     ])
   } catch (error) {
     console.error('[HostTools] Error handling cancel_trigger:', error)
-    return rejected(`Failed to cancel trigger: ${errorMessage(error)}`)
+    return rejected(errorMessage(error))
   }
 }

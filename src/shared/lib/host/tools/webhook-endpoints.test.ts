@@ -254,7 +254,7 @@ describe('create_webhook_endpoint', () => {
       prompt: 'Handle it',
     }))
 
-    expect(reasonOf(result)).toBe('Failed to create webhook endpoint: Webhook endpoints API error 503')
+    expect(reasonOf(result)).toBe('Webhook endpoints API error 503')
     expect(mockCreateWebhookTrigger).not.toHaveBeenCalled()
     expect(mockCaptureException).toHaveBeenCalledExactlyOnceWith(mintError, {
       tags: { area: 'webhook-endpoints', op: 'create' },
@@ -487,7 +487,7 @@ describe('update_webhook_endpoint', () => {
       name: 'renamed',
     }))
 
-    expect(reasonOf(result)).toBe('Failed to update webhook endpoint: Webhook endpoints API error 404')
+    expect(reasonOf(result)).toBe('Webhook endpoints API error 404')
     expect(mockUpdateWebhookTriggerName).not.toHaveBeenCalled()
     expect(mockCaptureException).toHaveBeenCalledExactlyOnceWith(relayError, {
       tags: { area: 'webhook-endpoints', op: 'update' },
