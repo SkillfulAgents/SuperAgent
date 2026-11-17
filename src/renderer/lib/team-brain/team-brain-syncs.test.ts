@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { latestSummaryFiles, parseSyncSummary, summaryLink } from './team-brain-syncs'
 
+/** `text` starting on line `line` of its file, as each part of a summary keeps it. */
+const onLine = (line: number, text: string) => '\n'.repeat(line - 1) + text
+
 const SUMMARY = `---
 type: team-brain-sync
 at: 2026-10-23T03:00:00-07:00
@@ -29,7 +32,7 @@ The brief landed.
 `
 
 describe('parseSyncSummary', () => {
-  it('reads the header and every section', () => {
+  it('reads the header and every section, each on its lines in the file', () => {
     expect(parseSyncSummary('_brain/syncs/2026-10-23 0300.md', SUMMARY)).toEqual({
       id: '_brain/syncs/2026-10-23 0300.md',
       at: '2026-10-23T03:00:00-07:00',
@@ -38,13 +41,13 @@ describe('parseSyncSummary', () => {
       added: 3,
       updated: 9,
       highlights: [
-        { title: "Acme's renewal moves to Q1", body: 'Acme asked to move it.\n[Acme Corp](../../customers/acme.md) has the date.' },
-        { title: 'Launch plan', body: 'The brief landed.' },
+        { title: "Acme's renewal moves to Q1", line: 10, body: onLine(11, 'Acme asked to move it.\n[Acme Corp](../../customers/acme.md) has the date.') },
+        { title: 'Launch plan', line: 14, body: onLine(15, 'The brief landed.') },
       ],
-      changes: '- Cycle 14 closed; [Roadmap](../../product/roadmap.md) marks it.\n- Four new bugs.',
+      changes: onLine(18, '- Cycle 14 closed; [Roadmap](../../product/roadmap.md) marks it.\n- Four new bugs.'),
       needsYou: {
-        blocked: '- Reconnect Slack. #sales and #eng were not read this run.',
-        toDecide: "- Is Acme's renewal Q1 or Q2? Two threads disagree. Filed as Q1.",
+        blocked: onLine(23, '- Reconnect Slack. #sales and #eng were not read this run.'),
+        toDecide: onLine(25, "- Is Acme's renewal Q1 or Q2? Two threads disagree. Filed as Q1."),
       },
     })
   })
@@ -57,18 +60,25 @@ describe('parseSyncSummary', () => {
   it('reads lines under no heading in Needs you as to decide, as summaries before the split wrote them', () => {
     expect(parseSyncSummary('o', '---\ntype: team-brain-sync\nat: 2026-10-22T03:00:00-07:00\n---\n## Needs you\n- Reconnect Slack.\n### To decide\n- Q1 or Q2?\n')?.needsYou).toEqual({
       blocked: '',
-      toDecide: '- Reconnect Slack.\n\n- Q1 or Q2?',
+      toDecide: onLine(6, '- Reconnect Slack.\n\n- Q1 or Q2?'),
+    })
+  })
+
+  it('stitches repeated groups on their lines, and reads a group of only blank lines as nothing', () => {
+    expect(parseSyncSummary('r', '---\ntype: team-brain-sync\nat: 2026-10-22T03:00:00-07:00\n---\n## Needs you\n### To decide\n- A\n### Blocked\n   \n### To decide\n- B\n')?.needsYou).toEqual({
+      blocked: '',
+      toDecide: onLine(7, '- A\n\n\n\n- B'),
     })
   })
 
   it('keeps each part as written: indentation, and a heading with nothing under it', () => {
     const sync = parseSyncSummary('k', '---\ntype: team-brain-sync\nat: 2026-10-22T03:00:00-07:00\n---\n## Highlights\n### Launch plan\n## Changes\n\n    npm run build\n')
-    expect(sync).toMatchObject({ highlights: [{ title: 'Launch plan', body: '' }], changes: '\n    npm run build' })
+    expect(sync).toMatchObject({ highlights: [{ title: 'Launch plan', body: '' }], changes: onLine(8, '\n    npm run build') })
   })
 
   it('reads what agents and editors write loosely: CRLF lines, bad counts, repeated sources', () => {
     const sync = parseSyncSummary('w', '---\r\ntype: team-brain-sync\r\nat: 2026-10-23T00:00:00-07:00\r\nsources: [slack, slack]\r\nadded: two\r\nupdated: -1\r\n---\r\n## Changes\r\n* Starred.\r\n')
-    expect(sync).toMatchObject({ sources: ['slack'], added: 0, updated: 0, changes: '* Starred.' })
+    expect(sync).toMatchObject({ sources: ['slack'], added: 0, updated: 0, changes: onLine(9, '* Starred.') })
   })
 
   it('reads no more than a run could have meant: no endless counts, and a time only with its offset', () => {
