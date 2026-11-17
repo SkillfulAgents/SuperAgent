@@ -100,6 +100,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   messageAuthor: { id: 'id', sessionId: 'session_id', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
 }))
 

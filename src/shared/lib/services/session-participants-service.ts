@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, min } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNotNull, min } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { maxBoundParameters } from '@shared/lib/db/bound-parameters'
 import { messageAuthor } from '@shared/lib/db/schema'
@@ -8,6 +8,28 @@ import { getUserSummaries } from '@shared/lib/services/user-profile-service'
 const MAX_SESSION_IDS_PER_STATEMENT = 500
 
 export type SessionParticipant = Awaited<ReturnType<typeof getUserSummaries>> extends Map<string, infer P> ? P : never
+
+/**
+ * The person who sent the session's latest message. In a shared session this
+ * can differ from who created it.
+ */
+export async function getLatestMessageAuthorUserId(
+  agentSlug: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  const rows = await db
+    .select({ userId: messageAuthor.userId })
+    .from(messageAuthor)
+    .where(and(
+      eq(messageAuthor.agentSlug, agentSlug),
+      eq(messageAuthor.sessionId, sessionId),
+      // An integration-delivered message has no user author.
+      isNotNull(messageAuthor.userId),
+    ))
+    .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
+    .limit(1)
+  return rows[0]?.userId ?? undefined
+}
 
 /**
  * The people who wrote in each session, in the order they first did. Read from

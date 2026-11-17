@@ -45,6 +45,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 }))
 vi.mock('@shared/lib/db', () => ({ db: {} }))
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   agentAcl: {}, connectedAccounts: {}, remoteMcpServers: {}, notifications: {},
 }))
 

@@ -21,7 +21,7 @@ export const requestFileDef = {
   getSummary,
   request: {
     kind: 'file',
-    getNotification: waitingInputNotification('needs a file from you'),
+    getNotification: waitingInputNotification((audience) => `needs a file from ${audience.name}`),
     describeVoice: (request) => `The agent needs a file uploaded through the application's file card: ${request.description}`,
   } satisfies RequestDefinition<'file'>,
 } as const

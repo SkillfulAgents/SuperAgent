@@ -95,6 +95,7 @@ vi.mock('@shared/lib/db', () => ({
 // notification-service imports `notifications` and `agentAcl`; the monitor
 // imports `messageAuthor`. Provide stable identities so we can match calls.
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   notifications: tables.notifications,
   messageAuthor: tables.messageAuthor,
   agentAcl: tables.agentAcl,

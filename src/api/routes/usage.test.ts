@@ -58,6 +58,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   agentAcl: { userId: 'user_id', agentSlug: 'agent_slug' },
 }))
 

@@ -50,7 +50,7 @@ export const askUserQuestionDef = {
   getSummary,
   request: {
     kind: 'question',
-    getNotification: waitingInputNotification('has a question for you'),
+    getNotification: waitingInputNotification((audience) => `has a question for ${audience.name}`),
     describeVoice: (request) => `The agent needs answers in the question card: ${request.questions.map(q => q.question).join(' ')}`,
   } satisfies RequestDefinition<'question'>,
 } as const

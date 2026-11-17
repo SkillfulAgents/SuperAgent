@@ -62,6 +62,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   connectedAccounts: { id: 'id', toolkitSlug: 'toolkit_slug', providerName: 'provider_name', providerConnectionId: 'provider_connection_id' },
   agentConnectedAccounts: {
     agentSlug: 'agent_slug',

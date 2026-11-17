@@ -32,7 +32,7 @@ export const requestScriptRunDef = {
   request: {
     kind: 'script_run',
     syncsAwaitingItself: true,
-    getNotification: waitingInputNotification('wants to run a script on your machine'),
+    getNotification: waitingInputNotification((audience) => `wants to run a script on ${audience.possessive} machine`),
     describeVoice: (request) => `The agent needs approval in the application's script card: ${request.explanation}`,
   } satisfies RequestDefinition<'script_run'>,
 } as const

@@ -72,6 +72,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
+  user: {},
   messageAuthor: { sessionId: 'message_author_session_id', agentSlug: 'message_author_agent_slug' },
   notifications: { sessionId: 'notifications_session_id', agentSlug: 'notifications_agent_slug' },
   agentAcl: { agentSlug: 'agent_acl_slug', userId: 'agent_acl_user_id' },
