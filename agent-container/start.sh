@@ -1,8 +1,9 @@
 #!/bin/sh
-# Starts the agent server as claude. A runtime whose /dev/fuse is root-only
-# (Apple Container) starts the image as root: open the device to all users so
-# claude can mount volumes, then drop to claude. If the drop fails, so does the start.
+# Starts the agent server, or the command given, as claude. A runtime whose /dev/fuse
+# is root-only (Apple Container) starts the image as root: open the device to all users
+# so claude can mount volumes, then drop to claude. If the drop fails, so does the start.
 set -e
+[ $# -gt 0 ] || set -- node dist/server.js
 if [ "$(id -u)" = 0 ]; then
   if [ -e /dev/fuse ]; then chmod 666 /dev/fuse; fi
   # No-new-privs (Lambda MicroVM) disables the setuid fusermount3, so a root helper mounts instead.
@@ -11,6 +12,6 @@ if [ "$(id -u)" = 0 ]; then
     env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/local/lib/gamut/fusermount-helper serve && mount --bind /usr/local/lib/gamut/fusermount-helper /usr/local/bin/fusermount3 ||
       echo "fusermount helper unavailable, volumes will not mount" >&2
   fi
-  exec setpriv --reuid=claude --regid=claude --init-groups node dist/server.js
+  exec setpriv --reuid=claude --regid=claude --init-groups "$@"
 fi
-exec node dist/server.js
+exec "$@"
