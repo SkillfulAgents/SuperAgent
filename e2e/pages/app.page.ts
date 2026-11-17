@@ -97,17 +97,30 @@ export class AppPage {
    * opens no wizard and completes the user's setup instead, so it reads as done.
    */
   private async wizardOwed(): Promise<boolean> {
-    const userSettings = await this.page.request.get('/api/user-settings')
+    const api = await this.apiBaseUrl()
+    if (api === null) return false
+    const userSettings = await this.page.request.get(`${api}/api/user-settings`)
     if (!userSettings.ok()) return false
     if ((await userSettings.json() as { setupCompleted?: boolean }).setupCompleted) return false
     // Local mode mounts no session endpoint, and there everyone gets the wizard.
-    const session = await this.page.request.get('/api/auth/get-session')
+    const session = await this.page.request.get(`${api}/api/auth/get-session`)
     const body = session.ok() ? await session.json().catch(() => null) as { user?: { role?: string } } | null : null
     const role = body?.user?.role
     if (role === undefined) return true
-    const settings = await this.page.request.get('/api/settings')
+    const settings = await this.page.request.get(`${api}/api/settings`)
     const workspaceDone = settings.ok() && !!(await settings.json() as { setupCompleted?: boolean }).setupCompleted
     return workspaceDone || role === 'admin'
+  }
+
+  /**
+   * Where this page's app sends its API calls: its own origin on the web, or, in
+   * Electron's built file:// renderer, the address its preload bridge gives the
+   * app. Null when the page has neither, so no app is loaded.
+   */
+  private async apiBaseUrl(): Promise<string | null> {
+    const origin = /^https?:\/\/[^/?#]+/.exec(this.page.url())?.[0]
+    if (origin) return origin
+    return this.page.evaluate(() => window.electronAPI?.getApiUrl() ?? null)
   }
 
   /**
