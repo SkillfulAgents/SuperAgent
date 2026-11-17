@@ -20,7 +20,7 @@ import {
   type AssembledUpload,
   type StoreChunkInput,
 } from './chunked-upload'
-import { localDiskUploadByteStore, setUploadByteStore, type UploadByteStore } from './chunked-upload-bytes'
+import { localDiskUploadByteStore, readPartsInOrder, setUploadByteStore, type UploadByteStore } from './chunked-upload-bytes'
 import { uploadManifestSchema, type UploadManifest } from './chunked-upload-schema'
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -62,6 +62,9 @@ function memoryByteStore(): UploadByteStore {
     stream: async (key) => {
       const bytes = blobs.get(key)
       return bytes ? (new Blob([new Uint8Array(bytes)]).stream() as ReadableStream<Uint8Array>) : null
+    },
+    streamInOrder(parts) {
+      return readPartsInOrder((key) => this.stream(key), parts)
     },
   }
 }
