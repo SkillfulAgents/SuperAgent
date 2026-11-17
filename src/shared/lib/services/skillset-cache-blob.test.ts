@@ -4,7 +4,7 @@ import path from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FileSystemBlobStore, setBlobStore, type BlobStore } from '@shared/lib/blob-store/blob-store'
 import { memoryBlobStore as memoryStore } from '@shared/lib/blob-store/testing/memory-blob-store'
-import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
+import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache, storedSkillsetIndexText } from './skillset-cache-blob'
 
 const KEY = 'skillset-cache-packs/platform--sales-playbooks'
 const tempDirs: string[] = []
@@ -46,10 +46,44 @@ describe('skillset cache in the blob store', () => {
     fs.rmSync(dir, { recursive: true, force: true })
 
     expect(await restoreSkillsetCache(dir)).toBe(true)
-    expect(store.keys()).toEqual([KEY, `${KEY}.version`])
+    expect(store.keys()).toEqual([KEY, `${KEY}.index`, `${KEY}.version`])
     expect(skillText(dir)).toBe('# Lead research\nFind the decision maker.\n')
     expect(fs.statSync(path.join(dir, 'skills', 'lead-research', 'run.sh')).mode & 0o777).toBe(0o755)
     expect(fs.existsSync(path.join(dir, '.git'))).toBe(false)
+  })
+
+  it('reads the index of a stored folder without restoring it or reading the folder\'s blob', async () => {
+    const store = memoryStore()
+    setBlobStore(store)
+    const dir = skillsetDir()
+    await saveSkillsetCache(dir)
+    fs.rmSync(dir, { recursive: true, force: true })
+    const read: string[] = []
+    const get = store.get.bind(store)
+    store.get = async (key: string) => (read.push(key), get(key))
+
+    const started = await otherProcess(store)
+
+    expect(await started.storedSkillsetIndexText(dir)).toBe('{"skills":[{"name":"lead-research","path":"skills/lead-research"}]}')
+    expect(read).toEqual([`${KEY}.version`, `${KEY}.index`])
+    expect(fs.existsSync(dir)).toBe(false)
+    // The same version again costs the marker read only.
+    await started.storedSkillsetIndexText(dir)
+    expect(read).toEqual([`${KEY}.version`, `${KEY}.index`, `${KEY}.version`])
+  })
+
+  it('leaves the index to the folder when it is on disk, and to a restore when it was stored before the index was', async () => {
+    const store = memoryStore()
+    setBlobStore(store)
+    const dir = skillsetDir()
+    await saveSkillsetCache(dir)
+
+    expect(await storedSkillsetIndexText(dir)).toBeNull()
+
+    fs.rmSync(dir, { recursive: true, force: true })
+    await store.delete(`${KEY}.index`)
+    expect(await storedSkillsetIndexText(dir)).toBeNull()
+    expect(await restoreSkillsetCache(dir)).toBe(true)
   })
 
   it('finds nothing to restore once the stored copy is deleted', async () => {

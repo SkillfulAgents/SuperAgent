@@ -7,7 +7,7 @@
  */
 
 import { execFile } from 'child_process'
-import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
+import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache, storedSkillsetIndexText } from './skillset-cache-blob'
 import { BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS, forgetSkillsetRefreshed, recordSkillsetRefreshed, skillsetRefreshedAt } from './skillset-refresh-times'
 import { promisify } from 'util'
 import crypto from 'crypto'
@@ -874,7 +874,10 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
   if (!content) {
     throw new Error(`index.json not found in skillset repository at ${indexPath}`)
   }
+  return parseIndexContent(content, indexPath)
+}
 
+function parseIndexContent(content: string, indexPath: string): SkillsetIndex {
   let raw: unknown
   try {
     raw = JSON.parse(content)
@@ -1094,6 +1097,26 @@ export async function getSkillsetIndex(
 }
 
 /**
+ * The index alone, for a caller that lists what a skillset holds and reads none of its files.
+ * A host whose cache folder is absent reads the stored index instead of restoring the whole
+ * folder; a caller that then needs the files makes them ready with `isCacheReady`.
+ */
+export async function getSkillsetIndexWithoutFiles(
+  ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>,
+): Promise<SkillsetIndex | null> {
+  if (!getSkillsetProvider(ref.provider).usesGitCache) {
+    const repoDir = getSkillsetRepoDirForRef(ref)
+    try {
+      const text = await storedSkillsetIndexText(repoDir)
+      if (text !== null) return parseIndexContent(text, path.join(repoDir, 'index.json'))
+    } catch (error) {
+      console.warn(`[skillsets] Could not read the stored index of ${repoDir}:`, error)
+    }
+  }
+  return getSkillsetIndex(ref)
+}
+
+/**
  * Remove a skillset cache directory.
  */
 export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
@@ -1273,7 +1296,7 @@ export async function getAgentSkillsWithStatus(
   // Build a map of skillset indexes for quick lookup
   const indexMap = new Map<string, SkillsetIndex>()
   for (const ss of skillsets) {
-    const index = await getSkillsetIndex(toSkillsetRefFromConfig(ss))
+    const index = await getSkillsetIndexWithoutFiles(toSkillsetRefFromConfig(ss))
     if (index) indexMap.set(ss.id, index)
   }
 
@@ -1373,6 +1396,8 @@ export async function getAgentSkillsWithStatus(
           status = { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
         } else {
           const skillRepoDir = getSkillsetRepoDirForRef(configRef ?? metaRef)
+          // The index was read without the skillset's files; this comparison needs them.
+          await isCacheReady(skillRepoDir, (configRef ?? metaRef).provider)
           const repoFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
           const remoteCacheHash = repoFiles ? hashSkillPackageFiles(repoFiles) : null
 

@@ -11,6 +11,7 @@ import {
   urlToSkillsetId,
   refreshSkillset,
   getSkillsetIndex,
+  getSkillsetIndexWithoutFiles,
   removeSkillsetCache,
   ensureSkillsetCached,
   isGitAvailable,
@@ -153,7 +154,7 @@ skillsets.get('/', async (c) => {
     const result: ApiSkillsetConfig[] = []
 
     for (const config of configs) {
-      let index = await getSkillsetIndex(toSkillsetRef(config))
+      let index = await getSkillsetIndexWithoutFiles(toSkillsetRef(config))
       let error: string | undefined
       if (!index) {
         try {
@@ -358,7 +359,7 @@ skillsets.get('/:id/skills', async (c) => {
     const id = c.req.param('id')
     const settings = await getSettings()
     const config = (settings.skillsets || []).find((s) => s.id === id)
-    const index = config ? await getSkillsetIndex(toSkillsetRef(config)) : null
+    const index = config ? await getSkillsetIndexWithoutFiles(toSkillsetRef(config)) : null
 
     if (!index) {
       return c.json({ error: 'Skillset not found or not cached' }, 404)
@@ -377,7 +378,7 @@ skillsets.get('/:id/agents', async (c) => {
     const id = c.req.param('id')
     const settings = await getSettings()
     const config = (settings.skillsets || []).find((s) => s.id === id)
-    const index = config ? await getSkillsetIndex(toSkillsetRef(config)) : null
+    const index = config ? await getSkillsetIndexWithoutFiles(toSkillsetRef(config)) : null
 
     if (!index) {
       return c.json({ error: 'Skillset not found or not cached' }, 404)
