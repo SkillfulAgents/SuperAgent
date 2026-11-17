@@ -2,7 +2,7 @@ import { invalidateNotificationCaches } from '@renderer/lib/notification-read-ca
 import { useCallback } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { isRetryableRequestError } from '@renderer/lib/http-error'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -135,6 +135,18 @@ export function useAgent(slug: string | null) {
   })
 }
 
+/**
+ * Whoever creates an agent owns it. Their roles are fetched again after a create, and until that
+ * answer arrives the list they hold has no entry for the new agent, which reads as view-only: on
+ * a host whose calls take hundreds of milliseconds, the new agent's page opened view-only first.
+ * So the owner role goes into the held list at once. Nothing is held outside auth mode.
+ */
+export function seedOwnerRole(queryClient: QueryClient, agentSlug: string): void {
+  queryClient.setQueryData<Record<string, { role: string; memberCount: number }>>(['my-agent-roles'], (roles) =>
+    roles && !roles[agentSlug] ? { ...roles, [agentSlug]: { role: 'owner', memberCount: 1 } } : roles,
+  )
+}
+
 export function useCreateAgent() {
   const queryClient = useQueryClient()
 
@@ -160,6 +172,7 @@ export function useCreateAgent() {
       if (agent.displaySlug !== agent.slug) {
         queryClient.setQueryData(['agents', agent.displaySlug], agent)
       }
+      seedOwnerRole(queryClient, agent.slug)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
