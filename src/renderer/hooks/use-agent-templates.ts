@@ -5,6 +5,7 @@ import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { seedOwnerRole } from '@renderer/hooks/use-agents'
 import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import {
@@ -213,6 +214,7 @@ export function useImportAgentTemplate() {
         source: 'file_import',
         has_template_prompt: Boolean(result.templatePrompt),
       })
+      seedOwnerRole(queryClient, result.slug)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -251,6 +253,7 @@ export function useInstallAgentFromSkillset() {
         source: 'skillset',
         has_template_prompt: Boolean(result.templatePrompt),
       })
+      seedOwnerRole(queryClient, result.slug)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
