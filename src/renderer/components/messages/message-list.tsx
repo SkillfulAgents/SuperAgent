@@ -863,6 +863,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     [peerUserMessages, messages, user?.id]
   )
 
+  // Our own ghosts, less any whose persisted copy (by its server uuid) is already
+  // in the transcript. The materialize effect drops that ghost too, but only after
+  // the commit that first draws the copy, so for one frame the message showed twice.
+  // Text-fallback matches stay with the effect, which claims each persisted copy once.
+  const visiblePendingMessages = useMemo(() => {
+    if (!pendingUserMessages?.some((p) => p.uuid)) return pendingUserMessages
+    const ids = new Set(messages?.map((m) => m.id))
+    return pendingUserMessages.filter((p) => !p.uuid || !ids.has(p.uuid))
+  }, [pendingUserMessages, messages])
+
 
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
@@ -1185,7 +1195,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             {renderPeerGhost(peer)}
           </Fragment>
         ))}
-        {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
+        {visiblePendingMessages?.filter((p) => !p.queued).map((pending) => (
           <Fragment key={pending.localId}>
             <div data-turn-anchor-id={pending.localId}>
               {renderPendingGhost(pending)}
@@ -1316,7 +1326,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         {/* Queued ghosts — waiting for the agent loop to pick them up, so they
             always sit below the current turn's streaming output and tools. */}
         {visiblePeerMessages.filter((p) => p.queued).map(renderPeerGhost)}
-        {pendingUserMessages?.filter((p) => p.queued).map(renderPendingGhost)}
+        {visiblePendingMessages?.filter((p) => p.queued).map(renderPendingGhost)}
 
         {/* Connection lost warning during active session */}
         {isActive && !isOnline && (

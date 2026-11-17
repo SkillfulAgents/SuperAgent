@@ -966,6 +966,30 @@ describe('MessageList', () => {
     expect(onAppeared).toHaveBeenCalledWith('uuid-1')
   })
 
+  // The owner drops the ghost only after the effect above reports it, a commit later:
+  // until then the persisted copy alone is drawn, not the message twice.
+  it.each([false, true])('draws a ghost whose uuid is already in the transcript only once (queued: %s)', (queued) => {
+    mockMessagesData.data = [
+      createUserMessage({
+        id: 'uuid-1',
+        content: { text: 'My message' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'local-1', uuid: 'uuid-1', text: 'My message', sentAt: new Date('2025-01-01T00:00:00Z').getTime(), queued }]}
+        onPendingMessageAppeared={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByText('My message')).toHaveLength(1)
+    expect(screen.queryByTestId(queued ? 'queued-user-message' : 'pending-user-message')).not.toBeInTheDocument()
+  })
+
   // The second transcript is a shared agent's, where the agent received the sender prefix.
   it.each(['My message', '\\[Ann]: My message'])('falls back to text+time matching when the uuid differs (queued/steering messages): %s', (transcriptText) => {
     // The CLI re-ids messages sent mid-turn (queued_command attachments), so
