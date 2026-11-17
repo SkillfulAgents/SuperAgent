@@ -90,3 +90,43 @@ it('refuses to create a folder outside the workspace', async () => {
   expect([400, 403]).toContain(response.status)
   expect(fs.existsSync(path.join(root, '../outside'))).toBe(false)
 })
+it('deletes a nested file and leaves the rest of the workspace', async () => {
+  await fs.promises.mkdir(path.join(root, '.claude/projects/-workspace'), { recursive: true })
+  await fs.promises.writeFile(path.join(root, '.claude/projects/-workspace/session.jsonl'), 'line')
+  await fs.promises.writeFile(path.join(root, 'AGENTS.md'), 'keep')
+  const response = await app.request('/files/.claude/projects/-workspace/session.jsonl', { method: 'DELETE' })
+  expect(response.status).toBe(200)
+  expect(fs.existsSync(path.join(root, '.claude/projects/-workspace/session.jsonl'))).toBe(false)
+  expect(await fs.promises.readFile(path.join(root, 'AGENTS.md'), 'utf8')).toBe('keep')
+})
+it('deletes a folder with what it holds', async () => {
+  await fs.promises.mkdir(path.join(root, 'notes/old'), { recursive: true })
+  await fs.promises.writeFile(path.join(root, 'notes/old/a.txt'), 'a')
+  expect((await app.request('/files/notes', { method: 'DELETE' })).status).toBe(200)
+  expect(fs.existsSync(path.join(root, 'notes'))).toBe(false)
+})
+it('answers 404 for a file that is not there', async () => {
+  expect((await app.request('/files/missing.txt', { method: 'DELETE' })).status).toBe(404)
+})
+it('never deletes the workspace itself or anything outside it', async () => {
+  await fs.promises.writeFile(path.join(root, 'AGENTS.md'), 'keep')
+  for (const target of ['/files/', '/files/.', `/files/${encodeURIComponent('../outside')}`]) {
+    const response = await app.request(target, { method: 'DELETE' })
+    expect([400, 403, 404]).toContain(response.status)
+  }
+  expect(await fs.promises.readFile(path.join(root, 'AGENTS.md'), 'utf8')).toBe('keep')
+})
+it('does not follow a linked folder out of the workspace', async () => {
+  const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'legacy-files-outside-'))
+  try {
+    await fs.promises.writeFile(path.join(outside, 'keep.txt'), 'keep')
+    await fs.promises.symlink(outside, path.join(root, 'link'))
+    expect((await app.request('/files/link/keep.txt', { method: 'DELETE' })).status).toBe(403)
+    expect(fs.existsSync(path.join(outside, 'keep.txt'))).toBe(true)
+    // The link itself is an entry of the workspace: deleting it removes the link only.
+    expect((await app.request('/files/link', { method: 'DELETE' })).status).toBe(200)
+    expect(fs.existsSync(path.join(outside, 'keep.txt'))).toBe(true)
+  } finally {
+    await fs.promises.rm(outside, { recursive: true, force: true })
+  }
+})

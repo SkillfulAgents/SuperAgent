@@ -94,4 +94,27 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
       return c.json({ error: 'Failed to upload file' }, 500)
     }
   })
+
+  app.delete('/files/*', async (c) => {
+    try {
+      // An empty path is refused by normalizeWorkspaceFilePath: this route never removes the workspace itself.
+      const target = normalizeWorkspaceFilePath(routePath(c.req.url), workspaceRoot)
+      if (!target.relativePath || target.relativePath === '.') throw new WorkspaceFileError('Invalid workspace file path', 400)
+      // The entry's folder is resolved, so a link inside the workspace cannot lead the delete out of it. The entry itself is not followed.
+      const root = await fs.promises.realpath(workspaceRoot)
+      const folder = path.relative(root, await fs.promises.realpath(path.dirname(target.localPath)))
+      if (folder === '..' || folder.startsWith(`..${path.sep}`) || path.isAbsolute(folder)) {
+        throw new WorkspaceFileError('File resolves outside /workspace', 403)
+      }
+      const stats = await fs.promises.lstat(target.localPath)
+      if (stats.isDirectory()) await fs.promises.rm(target.localPath, { recursive: true })
+      else await fs.promises.unlink(target.localPath)
+      return c.json({ success: true })
+    } catch (error) {
+      if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return c.json({ error: 'File or directory not found' }, 404)
+      console.error('Error deleting file:', error)
+      return c.json({ error: 'Failed to delete file' }, 500)
+    }
+  })
 }

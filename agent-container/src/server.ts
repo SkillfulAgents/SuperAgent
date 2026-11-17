@@ -399,27 +399,6 @@ app.delete('/workspace/entries', async (c) => {
 
 registerLegacyFileRoutes(app);
 
-app.delete('/files/*', async (c) => {
-  const filePath = c.req.param('*') || '';
-  const fullPath = path.join('/workspace', filePath);
-
-  try {
-    const stats = await fs.promises.stat(fullPath);
-    if (stats.isDirectory()) {
-      await fs.promises.rm(fullPath, { recursive: true });
-    } else {
-      await fs.promises.unlink(fullPath);
-    }
-    return c.json({ success: true });
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      return c.json({ error: 'File or directory not found' }, 404);
-    }
-    console.error('Error deleting file:', error);
-    return c.json({ error: error.message || 'Failed to delete file' }, 500);
-  }
-});
-
 app.get('/files/tree', async (c) => {
   const depth = parseInt(c.req.query('depth') || '3');
   const startPath = c.req.query('path') || '';
