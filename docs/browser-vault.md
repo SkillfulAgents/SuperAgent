@@ -171,7 +171,7 @@ card asks for every field rather than granting it again).
 
 ### When the browser closes first
 
-A card outlives its browser. Closing the browser, or a cloud browser (Browserbase, Steel) ending its
+A card outlives its browser. Closing the browser, or a cloud browser (Browserbase, Steel, Tab Tender) ending its
 session while the user is away, does not cancel a sign-in: the agent keeps
 waiting, and the card stays (up to the 24-hour limit on any request). Nothing
 can go into a page once the browser is gone (the container answers the fill
@@ -198,7 +198,8 @@ Only a one-time code is not kept: the user is asked again.
 
 Every browser type keeps a profile per agent (the container's in its
 workspace, Chrome's in the data dir, Browserbase's and the platform's in a
-persistent context, Steel's in a persistent profile), so an agent stays
+persistent context, Steel's in a persistent profile, Tab Tender's in a named profile on its
+server), so an agent stays
 signed in by itself. A saved session
 carries a sign-in to the account's other agents.
 

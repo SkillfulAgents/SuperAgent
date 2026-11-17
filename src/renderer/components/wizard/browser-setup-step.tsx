@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { BrowserbaseSettings, SteelSettings } from '@renderer/components/settings/browser-tab'
+import { BrowserbaseSettings, SteelSettings, TabtenderSettings } from '@renderer/components/settings/browser-tab'
 import { useSteelCredentials } from '@renderer/hooks/use-steel-credentials'
+import { useTabtenderCredentials } from '@renderer/hooks/use-tabtender-credentials'
 import type { HostBrowserProviderId } from '@shared/lib/config/settings'
 
 const CONTAINER_VALUE = '__container__'
@@ -45,6 +46,13 @@ const BROWSER_HOST_OPTIONS: Array<{
     isAdvanced: true,
     description: 'Remote cloud browser. Requires a Steel account.',
   },
+  {
+    id: 'tabtender' as HostBrowserProviderId,
+    label: 'Tab Tender',
+    recommended: false,
+    isAdvanced: true,
+    description: 'Your own browser server on a Mac or Windows machine. Requires a running Tab Tender server.',
+  },
 ]
 
 interface BrowserSetupStepProps {
@@ -62,6 +70,7 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
   const [isValidating, setIsValidating] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
   const steelCredentials = useSteelCredentials()
+  const tabtenderCredentials = useTabtenderCredentials()
 
   const providers = settings?.hostBrowserStatus?.providers ?? []
   const chromeProvider = providers.find((p) => p.id === 'chrome')
@@ -73,6 +82,8 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
   const hasSavedBrowserbaseCredentials = !!browserbaseProvider?.available
   const steelKeyStatus = settings?.apiKeyStatus?.steel
   const hasSavedSteelKey = !!steelKeyStatus?.isConfigured
+  const tabtenderStatus = settings?.apiKeyStatus?.tabtender
+  const hasSavedTabtender = !!tabtenderStatus?.isConfigured
 
   // A cloud browser can only be picked with its credentials saved
   useEffect(() => {
@@ -80,10 +91,12 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
       onCanProceedChange?.(hasSavedBrowserbaseCredentials)
     } else if (effectiveProvider === 'steel') {
       onCanProceedChange?.(hasSavedSteelKey)
+    } else if (effectiveProvider === 'tabtender') {
+      onCanProceedChange?.(hasSavedTabtender)
     } else {
       onCanProceedChange?.(true)
     }
-  }, [effectiveProvider, hasSavedBrowserbaseCredentials, hasSavedSteelKey, onCanProceedChange])
+  }, [effectiveProvider, hasSavedBrowserbaseCredentials, hasSavedSteelKey, hasSavedTabtender, onCanProceedChange])
 
   // Persist the auto-selected Chrome provider so that users who see Chrome
   // pre-selected and click Next without interacting still have the preference
@@ -249,6 +262,21 @@ export function BrowserSetupStep({ onCanProceedChange }: BrowserSetupStepProps) 
                         form={steelCredentials}
                         hasSavedCredentials={hasSavedSteelKey}
                         credentialSource={steelKeyStatus?.source}
+                        disabled={false}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {option.id === 'tabtender' && (
+                <div className={`grid transition-all duration-200 ease-in-out ${isSelected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                  <div className="overflow-hidden">
+                    <div className="px-3 pb-3 pt-0">
+                      <TabtenderSettings
+                        form={tabtenderCredentials}
+                        hasSavedCredentials={hasSavedTabtender}
+                        credentialSource={tabtenderStatus?.source}
                         disabled={false}
                       />
                     </div>

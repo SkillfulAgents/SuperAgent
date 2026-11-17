@@ -294,7 +294,7 @@ export const agentBrowserAccounts = sqliteTable('agent_browser_accounts', {
 export const browserAccountSessions = sqliteTable('browser_account_sessions', {
   id: text('id').primaryKey(),
   accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
-  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform', 'steel'] }).notNull(),
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform', 'steel', 'tabtender'] }).notNull(),
   bundle: text('bundle').notNull(), // Sealed JSON (vault-crypto, sessionBundleSchema)
   version: integer('version').notNull().default(1), // Bumped on every capture
   capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),

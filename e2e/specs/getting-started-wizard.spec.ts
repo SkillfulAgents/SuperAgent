@@ -167,6 +167,11 @@ test.describe('Getting Started Wizard', () => {
     await expect(page.locator('#steel-api-key')).toBeVisible()
     await expect(page.locator('[data-testid="wizard-next"]')).toBeDisabled()
 
+    await page.getByRole('button', { name: /^Tab Tender/ }).click()
+    await expect(page.locator('#tabtender-url')).toBeVisible()
+    await expect(page.locator('#tabtender-api-key')).toBeVisible()
+    await expect(page.locator('[data-testid="wizard-next"]')).toBeDisabled()
+
     await page.getByRole('button', { name: /^Built-in Browser/ }).click()
     await expect(page.locator('[data-testid="wizard-next"]')).toBeEnabled()
 

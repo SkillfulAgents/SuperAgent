@@ -3066,11 +3066,12 @@ const CDP_JSON_TIMEOUT_MS = 5_000;
 
 /**
  * Whether the browser may serve Chrome's HTTP /json: a local or host Chrome
- * does. A remote provider's TLS endpoint (wss://: Browserbase, Steel) does
+ * does, and its endpoint is Chrome's own `/devtools/browser/<id>`. A remote
+ * provider's (Browserbase, Steel, Tab Tender, over ws:// or wss://) does
  * not, and is not asked.
  */
 function cdpServesJson(): boolean {
-  return !browserState.cdpUrl?.startsWith('wss:');
+  return !browserState.cdpUrl || /^ws:\/\/[^/]+\/devtools\/browser\//.test(browserState.cdpUrl);
 }
 
 /**
