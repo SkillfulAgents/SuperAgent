@@ -378,7 +378,7 @@ describe('Halftone animation lifecycle', () => {
 
     renderWithProviders(<Halftone motif="flow_3d" />)
     act(() => callbacks.shift()?.(100))
-    act(() => callbacks.shift()?.(130))
+    act(() => callbacks.shift()?.(133.33))
     expect(draw).toHaveBeenCalledTimes(2)
 
     // Continuous resize events must leave a painted bitmap even between RAFs.
@@ -387,19 +387,19 @@ describe('Halftone animation lifecycle', () => {
       act(() => resizeCallback?.([], {} as ResizeObserver))
       expect(draw).toHaveBeenCalledTimes(previousDraws + 1)
       expect(ctx.clearRect).toHaveBeenLastCalledWith(0, 0, width, 120)
-      expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(3)
       expect(draw.mock.lastCall?.[6]).toBe(0)
       expect(callbacks).toHaveLength(1)
     }
 
     // Resizing must not reset the 30fps clock and advance on an early RAF.
-    act(() => callbacks.shift()?.(146))
+    act(() => callbacks.shift()?.(150))
     expect(draw).toHaveBeenCalledTimes(4)
-    act(() => callbacks.shift()?.(160))
+    act(() => callbacks.shift()?.(166.67))
     expect(draw).toHaveBeenCalledTimes(5)
-    expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
-    act(() => callbacks.shift()?.(190))
-    expect(draw.mock.lastCall?.[1]).toBeCloseTo(4.2)
+    expect(draw.mock.lastCall?.[1]).toBeCloseTo(3)
+    act(() => callbacks.shift()?.(200))
+    expect(draw.mock.lastCall?.[1]).toBeCloseTo(4.5)
   })
 
   it.each([[280, 120], [240, 160]])(
@@ -434,21 +434,21 @@ describe('Halftone animation lifecycle', () => {
       // Browser layout precedes RAF; ResizeObserver is delivered afterwards.
       width = nextWidth
       height = nextHeight
-      act(() => callbacks.shift()?.(130))
+      act(() => callbacks.shift()?.(133.33))
       expect(draw).toHaveBeenCalledTimes(1)
       act(() => resizeCallback?.([], {} as ResizeObserver))
       expect(draw).toHaveBeenCalledTimes(2)
       expect(ctx.clearRect).toHaveBeenLastCalledWith(0, 0, width, height)
-      expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(3)
       expect(draw.mock.lastCall?.[6]).toBe(0)
 
-      act(() => callbacks.shift()?.(146))
+      act(() => callbacks.shift()?.(150))
       expect(draw).toHaveBeenCalledTimes(2)
-      act(() => callbacks.shift()?.(160))
+      act(() => callbacks.shift()?.(166.67))
       expect(draw).toHaveBeenCalledTimes(3)
-      expect(draw.mock.lastCall?.[1]).toBeCloseTo(2.85)
-      act(() => callbacks.shift()?.(190))
-      expect(draw.mock.lastCall?.[1]).toBeCloseTo(4.2)
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(3)
+      act(() => callbacks.shift()?.(200))
+      expect(draw.mock.lastCall?.[1]).toBeCloseTo(4.5)
     }
   )
 
@@ -476,7 +476,7 @@ describe('Halftone animation lifecycle', () => {
     )
   })
 
-  it('caps draws near 30fps despite vsync jitter and advances from wall-clock time', () => {
+  it('draws 30 times a second on a 60 Hz display and advances from wall-clock time', () => {
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(240)
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(120)
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(createCanvasContext())
@@ -490,17 +490,17 @@ describe('Halftone animation lifecycle', () => {
     renderWithProviders(<Halftone motif="flow_3d" />)
 
     act(() => callbacks.shift()?.(100))
-    act(() => callbacks.shift()?.(116))
-    act(() => callbacks.shift()?.(130))
-    act(() => callbacks.shift()?.(160))
+    act(() => callbacks.shift()?.(116.67))
+    act(() => callbacks.shift()?.(133.33))
+    act(() => callbacks.shift()?.(166.67))
 
     expect(draw).toHaveBeenCalledTimes(3)
     expect(draw.mock.calls[0][1]).toBe(0)
     expect(draw.mock.calls[1][1]).toBeCloseTo(1.5)
-    expect(draw.mock.calls[2][1]).toBeCloseTo(1.5 + 0.75 * (30 / (1000 / 60)))
+    expect(draw.mock.calls[2][1]).toBeCloseTo(3)
     expect(draw.mock.calls[0][6]).toBeCloseTo(2)
-    expect(draw.mock.calls[1][6]).toBeCloseTo(30 / (1000 / 60))
-    expect(draw.mock.calls[2][6]).toBeCloseTo(30 / (1000 / 60))
+    expect(draw.mock.calls[1][6]).toBeCloseTo(2)
+    expect(draw.mock.calls[2][6]).toBeCloseTo(2)
   })
 
   it('suspends for background tabs and cleans up listeners and observers on unmount', () => {
@@ -569,69 +569,62 @@ describe('Halftone animation lifecycle', () => {
     expect(removeWindowListener).toHaveBeenCalledWith('pointermove', expect.any(Function))
   })
 
-  it('holds its frame while the window is not the one in use, and resumes with it', () => {
-    const environment = stubHalftoneEnvironment()
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(createCanvasContext())
-    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    let nextRaf = 1
-    const requestAnimationFrame = vi
-      .spyOn(window, 'requestAnimationFrame')
-      .mockImplementation(() => nextRaf++)
-    const cancelAnimationFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
-
-    const { unmount } = renderWithProviders(<Halftone motif="flow_3d" />)
-    act(() => environment.intersect?.(true))
-    expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
-
-    hasFocus.mockReturnValue(false)
-    act(() => window.dispatchEvent(new Event('blur')))
-    expect(cancelAnimationFrame).toHaveBeenCalledWith(1)
-    expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
-
-    hasFocus.mockReturnValue(true)
-    act(() => window.dispatchEvent(new Event('focus')))
-    expect(requestAnimationFrame).toHaveBeenCalledTimes(2)
-    unmount()
-  })
-
-  it('shows one still frame when it mounts in a window that is not in use', () => {
-    const environment = stubHalftoneEnvironment()
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(createCanvasContext())
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-    const requestAnimationFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
-    const draw = vi.spyOn(HalftoneFrameRenderer.prototype, 'draw')
-
-    const { unmount } = renderWithProviders(<Halftone motif="flow_3d" />)
-    act(() => environment.intersect?.(true))
-    act(() => environment.intersect?.(false))
-    act(() => environment.intersect?.(true))
-
-    expect(draw).toHaveBeenCalledTimes(1)
-    expect(requestAnimationFrame).not.toHaveBeenCalled()
-    unmount()
-  })
-
-  it('notices the window going out of use while focus is inside an embedded frame', () => {
-    vi.useFakeTimers()
+  it('holds its frame in a window that is not in use, and picks up where it stopped', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
     try {
       const environment = stubHalftoneEnvironment()
       vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(createCanvasContext())
       const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-      vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
-      const cancelAnimationFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+      let callbacks: FrameRequestCallback[] = []
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => callbacks.push(callback))
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {
+        callbacks = []
+      })
+      const frame = (now: number) => act(() => callbacks.splice(0).forEach((callback) => callback(now)))
+      const draw = vi.spyOn(HalftoneFrameRenderer.prototype, 'draw')
 
       const { unmount } = renderWithProviders(<Halftone motif="flow_3d" />)
       act(() => environment.intersect?.(true))
+      frame(1000)
+      frame(1033.33)
+      expect(draw).toHaveBeenCalledTimes(2)
 
-      // No blur reaches this window: the frame inside it had the focus.
       hasFocus.mockReturnValue(false)
-      expect(cancelAnimationFrame).not.toHaveBeenCalled()
-      act(() => vi.advanceTimersByTime(1000))
-      expect(cancelAnimationFrame).toHaveBeenCalledWith(1)
+      act(() => window.dispatchEvent(new Event('blur')))
+      frame(1066.67)
+      draw.mockClear()
+      // A minute in the background: no paints, no frames asked for, no timer left running.
+      act(() => vi.advanceTimersByTime(60_000))
+      expect(draw).not.toHaveBeenCalled()
+      expect(callbacks).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+
+      hasFocus.mockReturnValue(true)
+      act(() => window.dispatchEvent(new Event('focus')))
+      for (let now = 61_000; now < 61_500; now += 1000 / 120) frame(now)
+      expect(draw.mock.calls.length).toBeGreaterThanOrEqual(14)
+      // The minute away is not a minute of drift: the field takes a few frames' step.
+      expect(draw.mock.calls[0][6]).toBeLessThanOrEqual(4)
       unmount()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('paints when it mounts in a window that is not in use', () => {
+    const environment = stubHalftoneEnvironment()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(createCanvasContext())
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const callbacks: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => callbacks.push(callback))
+    const draw = vi.spyOn(HalftoneFrameRenderer.prototype, 'draw')
+
+    const { unmount } = renderWithProviders(<Halftone motif="flow_3d" />)
+    act(() => environment.intersect?.(true))
+    act(() => callbacks.shift()?.(1000))
+
+    expect(draw).toHaveBeenCalledTimes(1)
+    unmount()
   })
 })
 
