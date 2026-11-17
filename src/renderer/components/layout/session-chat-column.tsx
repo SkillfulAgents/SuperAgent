@@ -183,6 +183,16 @@ export function SessionChatColumn({
   )
 }
 
+// The fade behind each end of the hints row, as one plain gradient. Transcript
+// text scrolls under this row on every streamed token and scroll frame, so the
+// panels carry no backdrop-filter and no mask: either one is a surface the
+// compositor redoes each time what is behind it changes. The stops are the
+// opacity the old pair made together (a background -> 75% -> transparent
+// gradient under a mask that faded out from 55%), sampled every tenth.
+const HINT_FADE_STOPS = [
+  [1, 0], [0.75, 50], [0.675, 55], [0.533, 60], [0.3, 70], [0.133, 80], [0.033, 90], [0, 100],
+].map(([alpha, at]) => `hsl(var(--background) / ${alpha}) ${at}%`).join(', ')
+
 function SessionComposerHints({ contextPercent, isActive = false, voiceModeActive = false, notifiesOnly = null }: {
   contextPercent: number | null
   isActive?: boolean
@@ -194,19 +204,13 @@ function SessionComposerHints({ contextPercent, isActive = false, voiceModeActiv
     <div className="relative isolate flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5 overflow-hidden px-6 py-3">
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[52%] bg-gradient-to-r from-background via-background/75 to-transparent backdrop-blur-[2px]"
-        style={{
-          maskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
-        }}
+        className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[52%]"
+        style={{ backgroundImage: `linear-gradient(to right, ${HINT_FADE_STOPS})` }}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[52%] bg-gradient-to-l from-background via-background/75 to-transparent backdrop-blur-[2px]"
-        style={{
-          maskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
-        }}
+        className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[52%]"
+        style={{ backgroundImage: `linear-gradient(to left, ${HINT_FADE_STOPS})` }}
       />
       {/* Left: who a notify-only message reaches, in place of the context usage. */}
       {notifiesOnly ? (
