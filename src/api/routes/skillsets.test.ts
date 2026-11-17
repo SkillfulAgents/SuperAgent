@@ -38,6 +38,7 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   urlToSkillsetId: (...args: unknown[]) => mockUrlToSkillsetId(...args),
   refreshSkillset: (...args: unknown[]) => mockRefreshSkillset(...args),
   getSkillsetIndex: (...args: unknown[]) => mockGetSkillsetIndex(...args),
+  getSkillsetIndexWithoutFiles: (...args: unknown[]) => mockGetSkillsetIndex(...args),
   removeSkillsetCache: (...args: unknown[]) => mockRemoveSkillsetCache(...args),
   ensureSkillsetCached: (...args: unknown[]) => mockEnsureSkillsetCached(...args),
   isGitAvailable: (...args: unknown[]) => mockIsGitAvailable(...args),
