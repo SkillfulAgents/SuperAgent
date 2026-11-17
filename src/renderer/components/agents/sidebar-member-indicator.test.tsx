@@ -105,6 +105,15 @@ describe('SidebarMemberIndicator', () => {
     expect(within(trigger).getByTestId('sidebar-members-count-shared-agent')).toHaveTextContent('5')
   })
 
+  it('keeps a loaded roster for a viewer who is not one of the agent\'s people', () => {
+    // A deployment admin removed from the agent: no people count of their own.
+    roster(members.slice(0, 4))
+    render(<SidebarMemberIndicator {...props} memberCount={0} />)
+    expect(vi.mocked(useAgentMembers)).toHaveBeenCalledWith(props.agentSlug, false)
+    const trigger = screen.getByRole('button', { name: '4 members of Shared Agent' })
+    expect(within(trigger).getAllByRole('img', { hidden: true })).toHaveLength(4)
+  })
+
   it('stays hidden for one person and no agents', () => {
     roster(members.slice(0, 1))
     render(<SidebarMemberIndicator {...props} memberCount={1} />)

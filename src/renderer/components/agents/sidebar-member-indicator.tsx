@@ -44,11 +44,13 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
   const { isAuthMode, isAdmin, canAdminAgent } = useUser()
   const memberAgents = useAgentMemberAgents(agentSlug)
   // One person and no agents is a private agent: no stack, so no roster to
-  // fetch, and none left over from when it was shared is shown.
+  // fetch, and none left over from when it was shared is shown. A count of 0
+  // is a viewer who is not one of the agent's people (a deployment admin
+  // looking in): how many there are is unknown, so a loaded roster stands.
   const hasRoster = isAuthMode && memberCount + memberAgents.length > 1
   const roster = useAgentMembers(agentSlug, hasRoster)
   const { isLoading, isError, refetch } = roster
-  const members = hasRoster ? roster.data : undefined
+  const members = hasRoster || memberCount === 0 ? roster.data : undefined
   const v = VARIANTS[variant]
   // Test ids keep the sidebar's names there; Agent Home's are its own, as both show at once.
   const testId = variant === 'sidebar' ? 'sidebar-members' : 'agent-members'
