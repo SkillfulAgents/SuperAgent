@@ -60,9 +60,14 @@ export interface PreparedScreenshot {
   unalignedReason?: string
 }
 
-/** The longest edge and the pixel count the model takes without shrinking an image itself. */
+/** The longest edge the model takes without shrinking an image itself. */
 export const MAX_IMAGE_EDGE = 1568
-export const MAX_IMAGE_PIXELS = 1_200_000
+/**
+ * XGA's pixel count (1024x768), the size Anthropic recommends for computer
+ * use. Below the model's own 1.15 MP limit, because a desktop PNG is about
+ * twice the bytes of a browser one and the request has a byte limit.
+ */
+export const MAX_IMAGE_PIXELS = 1024 * 768
 
 /** The size an image is shown at: shrunk, keeping its shape, to fit both limits. */
 export function fitImageSize(width: number, height: number): { width: number; height: number } {
