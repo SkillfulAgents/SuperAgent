@@ -198,7 +198,7 @@ import {
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
+import { eq, and, inArray, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { validateCronExpression } from '@shared/lib/services/schedule-parser'
@@ -243,7 +243,7 @@ import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, 
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents } from '@shared/lib/services/session-unread-service'
 import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
-import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
+import { annotateMessageAuthors } from '@shared/lib/services/message-author-annotation-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
@@ -2438,59 +2438,46 @@ async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: stri
   }
 }
 
-function userAuthors(rows: { messageId: string; userId: string | null }[]): { messageId: string; userId: string }[] {
-  return rows.flatMap(row => row.userId ? [{ messageId: row.messageId, userId: row.userId }] : [])
-}
-
-// Integration cards are decoration: a lookup failure leaves the messages as text.
-async function annotateIntegrationMessagesBestEffort(
+// One message_author read for cards and senders. Integration cards are
+// decoration: without auth a failed read leaves the messages as text. With
+// auth the same read names who wrote each message, and its failure fails the
+// response as the sender lookup always has.
+async function annotateMessageAuthorsFor(
   transformed: TransformedItem[],
   agentSlug: string,
   sessionId: string,
+  scope: 'items' | 'session',
 ): Promise<void> {
+  const senders = isAuthMode()
   try {
-    await annotateIntegrationMessages(agentSlug, sessionId, transformed)
+    await annotateMessageAuthors(agentSlug, sessionId, transformed, { senders, scope })
   } catch (error) {
+    if (senders) throw error
     captureException(error, { tags: { component: 'agents', operation: 'annotate-integration-messages' }, level: 'warning' })
   }
 }
 
+// `items` reads the author rows of the messages in hand: a delta window is a
+// handful of items, and loading the whole session's author history per refetch
+// would erase the bounded-memory benefit. `session` is for the whole transcript.
 async function annotateAndRecoverMessages(
   transformed: TransformedItem[],
   agentSlug: string,
   sessionId: string,
+  scope: 'items' | 'session' = 'items',
 ): Promise<void> {
-  await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
-  await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-  await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
-
-  await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
-
-  if (!isAuthMode()) return
-
-  const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
-  if (userMessageIds.length === 0) return
-
-  // Scope the lookup to the ids actually in this response — a delta window is
-  // a handful of items, and loading the whole session's author history per
-  // refetch would erase the bounded-memory benefit on auth deployments.
-  const authors = userAuthors(await db
-    .select({
-      messageId: messageAuthor.id,
-      userId: messageAuthor.userId,
-    })
-    .from(messageAuthor)
-    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds), isNotNull(messageAuthor.userId))))
-
-  const profiles = await getUserSummaries(authors.map(author => author.userId))
-  const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
-  for (const msg of transformed) {
-    if (msg.type !== 'user') continue
-    const author = authorMap.get(msg.id)
-    if (author) {
-      msg.sender = author
-    }
-  }
+  // The actor steps write assistant items (errorPresentation, a tool call's
+  // subagent and result) and the author read writes user items (integration,
+  // sender); neither reads what the other writes, so the database round trip
+  // overlaps the actor's.
+  await Promise.all([
+    (async () => {
+      await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
+      await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+      await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
+    })(),
+    annotateMessageAuthorsFor(transformed, agentSlug, sessionId, scope),
+  ])
 }
 
 // Buffers, not strings: Readable.toWeb hands chunks straight to the web
@@ -2506,7 +2493,6 @@ function* messagesPageJsonChunks(page: {
   yield Buffer.from(`],"nextCursor":${JSON.stringify(page.nextCursor)}}`)
 }
 
-// Unpaginated path stays inlined so the stream-pipe PR can still land on `return c.json(transformed)`.
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
@@ -2613,41 +2599,10 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
-    await attachProviderErrorPresentations(transformed, agentSlug, sessionId)
-
-    // Discover subagent IDs for interrupted Task tool calls that have no result
-    await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
-    await reconcileOpenToolCalls(transformed, agentSlug, sessionId)
-
-    await annotateIntegrationMessagesBestEffort(transformed, agentSlug, sessionId)
-
-    // In auth mode, annotate user messages with sender info
-    if (isAuthMode()) {
-      const userMessageIds = transformed
-        .filter((m) => m.type === 'user')
-        .map((m) => m.id)
-
-      if (userMessageIds.length > 0) {
-        const authors = userAuthors(await db
-          .select({
-            messageId: messageAuthor.id,
-            userId: messageAuthor.userId,
-          })
-          .from(messageAuthor)
-          .where(and(eq(messageAuthor.sessionId, sessionId), isNotNull(messageAuthor.userId))))
-
-        const profiles = await getUserSummaries(authors.map(author => author.userId))
-        const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
-
-        for (const msg of transformed) {
-          if (msg.type !== 'user') continue
-          const author = authorMap.get(msg.id)
-          if (author) {
-            msg.sender = author
-          }
-        }
-      }
-    }
+    // Provider errors, interrupted subagents, open tool calls, then cards and
+    // senders: the whole transcript is here, so the author rows are read by
+    // session rather than by id.
+    await annotateAndRecoverMessages(transformed, agentSlug, sessionId, 'session')
 
     const source = Readable.from(transformed)
     const stringify = createJsonArrayStringifyTransform()
