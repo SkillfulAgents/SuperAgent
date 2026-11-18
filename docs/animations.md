@@ -160,7 +160,10 @@ What made the difference, measured:
   held still costs and saves nothing. For the avatar orbs this took the GPU
   process from 21% to 14%. Promoting
   each of an element's inner layers measured *worse* than promoting none: more
-  layers to composite than paint saved.
+  layers to composite than paint saved. **Measure it in the engine you ship it
+  to.** The orbs promote only in the desktop app: in WebKit, a page of promoted
+  orbs got the macOS CI runner shut down mid-suite in 21 of 22 runs, and the
+  same page without the layers passed 3 of 3 (drafts #2056–#2062).
 - **A live `filter: blur()` over something that moves is re-run every frame;
   `clip-path` is free.** Twelve shaped avatars, knocking at 60 a second:
   6% + 22%; with their blurs off, 9% + 14%, the same as twelve circles, which

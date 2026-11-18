@@ -5,6 +5,7 @@ import { createOrbPainter, type OrbLayers } from './orb-painter'
 import type { OrbShape } from '@shared/lib/types/agent-avatar-shapes'
 import type { OrbState } from './orb-states'
 import { subscribeToAmbientFrames, wakeAmbientFrames } from '@renderer/lib/ambient-frames'
+import { isElectron } from '@renderer/lib/env'
 import { observeOrbVisibility } from './orb-visibility'
 
 const layer = () => createRef<HTMLSpanElement>()
@@ -127,7 +128,9 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
       // Its own compositor layer while it moves: its frames then repaint these few pixels, not
       // the sidebar or card it sits in. Not for an orb held still, which would keep a layer for
       // nothing, and not its inner layers one by one, which measured worse (docs/animations.md).
-      root.style.willChange = 'transform'
+      // Only in the desktop app, whose Chromium is where the layer was measured. In WebKit a
+      // page of promoted orbs got the macOS CI runner shut down in nearly every run.
+      if (isElectron()) root.style.willChange = 'transform'
       const unsubscribe = subscribeToAmbientFrames(tick, {
         kind: 'status',
         measure: followPointer ? measure : undefined,

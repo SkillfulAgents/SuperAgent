@@ -240,6 +240,43 @@ describe('OrbAvatar visibility', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  describe('its own compositor layer', () => {
+    const root = () => document.querySelector('[data-avatar-orb]') as HTMLElement
+    const withElectron = (api: unknown) => {
+      const original = window.electronAPI
+      window.electronAPI = api as typeof window.electronAPI
+      return () => { window.electronAPI = original }
+    }
+
+    it('takes one while it moves in the desktop app, and gives it back offscreen', () => {
+      const restore = withElectron({})
+      try {
+        const visibility = intersections()
+        render(orb('working'))
+        visibility.set(true)
+        expect(root().style.willChange).toBe('transform')
+        visibility.set(false)
+        expect(root().style.willChange).toBe('')
+      } finally {
+        restore()
+      }
+    })
+
+    // A page of promoted orbs got WebKit's macOS CI runner shut down: browsers paint them in place.
+    it('takes none in a browser', () => {
+      const restore = withElectron(undefined)
+      try {
+        const visibility = intersections()
+        render(orb('working'))
+        visibility.set(true)
+        advance(500)
+        expect(root().style.willChange).toBe('')
+      } finally {
+        restore()
+      }
+    })
+  })
+
   it('uses the latest state when returning onscreen', () => {
     const visibility = intersections()
     const { rerender } = render(orb('working'))
