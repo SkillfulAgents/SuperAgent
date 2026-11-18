@@ -2,7 +2,9 @@ import { invalidateNotificationCaches } from '@renderer/lib/notification-read-ca
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, skipToken, type QueryClient } from '@tanstack/react-query'
+import { z } from 'zod'
+import { RECENT_SESSIONS_LIMIT, recentSessionsKey, seedCreatedSessionInRecent, sessionTotalKey } from '@renderer/lib/agent-cache'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
@@ -71,6 +73,58 @@ export function useNotableSessions(agentSlug: string | null, options?: { limit?:
     // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
     ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
+}
+
+/**
+ * The sidebar's read of an agent's sessions: the newest few rows and how many
+ * there are, in one bounded request. An unlimited read answers every session
+ * and, in auth mode, looks up the participants of every one; a row shows five.
+ *
+ * Shared by the row's query and its hover prefetch, so both land on one key.
+ * `slug` is the canonical agent id. The count goes to its own cache entry
+ * (`useSessionTotal`): the list entry stays a plain array, the shape every
+ * cache updater of session lists patches.
+ */
+export function recentSessionsQueryOptions(queryClient: QueryClient, slug: string | null) {
+  return {
+    queryKey: recentSessionsKey(slug),
+    queryFn: async (): Promise<ApiSession[]> => {
+      const res = await apiFetch(`/api/agents/${slug}/sessions?limit=${RECENT_SESSIONS_LIMIT}&with_total=true`)
+      if (!res.ok) throw new Error('Failed to fetch sessions')
+      const body = recentSessionsResponseSchema.parse(await res.json())
+      // A server from before `with_total` answers the limited rows alone.
+      if (Array.isArray(body)) {
+        queryClient.removeQueries({ queryKey: sessionTotalKey(slug), exact: true })
+        return body as ApiSession[]
+      }
+      queryClient.setQueryData(sessionTotalKey(slug), body.total)
+      return body.sessions as ApiSession[]
+    },
+  }
+}
+
+const recentSessionsResponseSchema = z.union([
+  z.array(z.unknown()),
+  z.object({ sessions: z.array(z.unknown()), total: z.number() }),
+])
+
+export function useRecentSessions(agentSlug: string | null) {
+  const resolvedSlug = useResolvedAgentSlug(agentSlug)
+  const queryClient = useQueryClient()
+  return useQuery<ApiSession[]>({
+    ...recentSessionsQueryOptions(queryClient, resolvedSlug),
+    enabled: !!resolvedSlug,
+  })
+}
+
+/**
+ * How many sessions the agent lists, as its last recent-slice read reported
+ * it; undefined until one has, or when the server does not report it. Never
+ * fetches: `recentSessionsQueryOptions` writes it.
+ */
+export function useSessionTotal(agentSlug: string | null): number | undefined {
+  const resolvedSlug = useResolvedAgentSlug(agentSlug)
+  return useQuery<number>({ queryKey: sessionTotalKey(resolvedSlug), queryFn: skipToken }).data
 }
 
 export function useSession(id: string | null, agentSlug: string | null = null) {
@@ -162,6 +216,7 @@ export function useCreateSession(options: {
           ? [created, ...sessions]
           : sessions
       ))
+      seedCreatedSessionInRecent(queryClient, resolvedSlug, created)
       // The seeds are create-TIME snapshots and setQueryData marks them fresh —
       // on a fast turn (E2E mock; a quick real reply) the session can change
       // (schedule a wake, go idle) BEFORE this onSuccess runs, and the

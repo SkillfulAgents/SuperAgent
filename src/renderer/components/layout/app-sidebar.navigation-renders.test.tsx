@@ -37,9 +37,15 @@ vi.mock('@renderer/hooks/use-agents', async (importOriginal) => ({
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: (slug: string | null) => ({
+  useSessions: () => ({ data: undefined, isLoading: false }),
+  useRecentSessions: (slug: string | null) => ({
     data: slug ? [{ id: `${slug}-s1`, agentSlug: slug, name: 'Session 1' }, { id: `${slug}-s2`, agentSlug: slug, name: 'Session 2' }] : undefined,
     isLoading: false,
+  }),
+  useSessionTotal: (slug: string | null) => (slug ? 2 : undefined),
+  recentSessionsQueryOptions: (_queryClient: unknown, slug: string) => ({
+    queryKey: ['sessions', slug, 'recent', 6],
+    queryFn: () => Promise.resolve([]),
   }),
 }))
 vi.mock('@renderer/hooks/use-artifacts', () => ({ useArtifacts: () => ({ data: [] }) }))
