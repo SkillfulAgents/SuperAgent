@@ -693,9 +693,14 @@ vi.mock('@shared/lib/services/todo-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-integration-message-service', () => ({
-  annotateIntegrationMessages: vi.fn(() => Promise.resolve()),
   hasIntegrationMessages: vi.fn(() => Promise.resolve(false)),
 }))
+
+// The read itself runs against a real database in message-author-annotation-service.test.ts.
+vi.mock('@shared/lib/services/message-author-annotation-service', () => ({
+  annotateMessageAuthors: vi.fn(() => Promise.resolve()),
+}))
+import { annotateMessageAuthors } from '@shared/lib/services/message-author-annotation-service'
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
   getContainerHostUrl: () => 'localhost',
@@ -5304,85 +5309,123 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     }
   })
 
-  it('does not query messageAuthor in non-auth mode', async () => {
+  // The author read is one call into message-author-annotation-service (one
+  // statement there); the route itself issues no select of its own.
+  it.each([
+    ['', 'session'],
+    ['?limit=2', 'items'],
+    ['?after=previous', 'items'],
+  ])('reads authors once, without senders, in non-auth mode (%s)', async (query, scope) => {
+    mockIsAuthMode.mockReturnValue(false)
+    const messages = [
+      { id: 'msg-1', type: 'user' as const, content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ]
+    mockTransformMessages.mockReturnValue(messages)
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null })
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages, anchor: null })
+
+    const res = await getReq(app, `${URL}${query}`)
+    expect(res.status).toBe(200)
+
+    const response = await res.json()
+    expect((query ? response.messages : response)[0].sender).toBeUndefined()
+    expect(annotateMessageAuthors).toHaveBeenCalledTimes(1)
+    // By id and type, not by reference: the read annotates the items in place, and through
+    // the actor transport the route holds copies of the ones this test made.
+    expect(annotateMessageAuthors).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      messages.map(({ id, type }) => expect.objectContaining({ id, type })),
+      { senders: false, scope },
+    )
+    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['', 'session'],
+    ['?limit=2', 'items'],
+    ['?after=previous', 'items'],
+  ])('annotates user messages with sender info in auth mode (%s)', async (query, scope) => {
+    mockIsAuthMode.mockReturnValue(true)
+    const messages = [
+      { id: 'msg-1', type: 'user' as const, content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+      { id: 'msg-2', type: 'assistant' as const, content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
+    ]
+    mockTransformMessages.mockReturnValue(messages)
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null })
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages, anchor: null })
+
+    const sender = { id: 'user-1', name: 'Alice', email: 'alice@example.com', image: 'https://example.com/alice.png' }
+    vi.mocked(annotateMessageAuthors).mockImplementationOnce(async (_agent, _session, items) => {
+      const first = items[0]
+      if (first?.type === 'user') first.sender = sender
+    })
+
+    const res = await getReq(app, `${URL}${query}`)
+    expect(res.status).toBe(200)
+
+    const response = await res.json()
+    const body = query ? response.messages : response
+    expect(body[0].sender).toEqual(sender)
+    // Assistant message should not have sender
+    expect(body[1].sender).toBeUndefined()
+    expect(annotateMessageAuthors).toHaveBeenCalledTimes(1)
+    // By id and type, not by reference: the read annotates the items in place, and through
+    // the actor transport the route holds copies of the ones this test made.
+    expect(annotateMessageAuthors).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      messages.map(({ id, type }) => expect.objectContaining({ id, type })),
+      { senders: true, scope },
+    )
+    // Cards, senders and profiles come from that one read: no select here, no profile lookup.
+    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+    expect(getUserSummaries).not.toHaveBeenCalled()
+  })
+
+  it('serves the messages as text when the author read fails in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
     mockTransformMessages.mockReturnValue([
       { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
     ])
+    vi.mocked(annotateMessageAuthors).mockRejectedValueOnce(new Error('database is locked'))
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // No sender field attached
-    expect(body[0].sender).toBeUndefined()
-    // DB select should not have been called for author lookup
-    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+    expect((await res.json())[0].id).toBe('msg-1')
   })
 
-  it.each(['', '?limit=2', '?after=previous'])(
-    'annotates user messages with sender info in auth mode (%s)', async (query) => {
-      mockIsAuthMode.mockReturnValue(true)
-      const messages = [
-        { id: 'msg-1', type: 'user' as const, content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
-        { id: 'msg-2', type: 'assistant' as const, content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
-      ]
-      mockTransformMessages.mockReturnValue(messages)
-      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null })
-      vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages, anchor: null })
-
-      mockDbSelectFrom.mockReturnValue({
-        where: () => Promise.resolve([{ messageId: 'msg-1', userId: 'user-1' }]),
-      })
-      vi.mocked(getUserSummaries).mockResolvedValue(new Map([['user-1', {
-        id: 'user-1', name: 'Alice', email: 'alice@example.com', image: 'https://example.com/alice.png',
-      }]]))
-
-      const res = await getReq(app, `${URL}${query}`)
-      expect(res.status).toBe(200)
-
-      const response = await res.json()
-      const body = query ? response.messages : response
-      // User message should have sender
-      expect(body[0].sender).toEqual({
-        id: 'user-1',
-        name: 'Alice',
-        email: 'alice@example.com',
-        image: 'https://example.com/alice.png',
-      })
-      // Assistant message should not have sender
-      expect(body[1].sender).toBeUndefined()
-    },
-  )
-
-  it('handles sessions with no author records gracefully', async () => {
+  it('fails the response when the author read fails in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockTransformMessages.mockReturnValue([
-      { id: 'msg-old', type: 'user', content: { text: 'old message' }, toolCalls: [], createdAt: new Date() },
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
     ])
-
-    // DB returns no author records (messages from before feature was added)
-    mockDbSelectFrom.mockReturnValue({ where: () => Promise.resolve([]) })
+    vi.mocked(annotateMessageAuthors).mockRejectedValueOnce(new Error('database is locked'))
 
     const res = await getReq(app, URL)
-    expect(res.status).toBe(200)
-
-    const body = await res.json()
-    // Message returned without sender — no crash
-    expect(body[0].sender).toBeUndefined()
+    expect(res.status).toBe(500)
   })
 
-  it('skips author query when there are no user messages', async () => {
+  it('starts the author read without waiting for the actor steps', async () => {
     mockIsAuthMode.mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      { id: 'msg-1', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
-    ])
+    const messages = [
+      { id: 'msg-1', type: 'user' as const, content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+      { id: 'msg-2', type: 'assistant' as const, content: { text: '' }, toolCalls: [{ id: 'tool-1', name: 'Bash', input: {} }], createdAt: new Date() },
+    ]
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null })
+    const order: string[] = []
+    // reconcileOpenToolCalls is the last actor step and reads the settled requests.
+    mockLiveSessions.settledRequests.mockImplementationOnce(() => {
+      order.push('actor')
+      return new Map()
+    })
+    vi.mocked(annotateMessageAuthors).mockImplementationOnce(async () => {
+      order.push('authors')
+    })
 
-    const res = await getReq(app, URL)
+    const res = await getReq(app, `${URL}?limit=2`)
     expect(res.status).toBe(200)
-
-    // No DB query since there are no user messages to look up
-    expect(mockDbSelectFrom).not.toHaveBeenCalled()
+    expect(order).toEqual(['authors', 'actor'])
   })
 })
 

@@ -133,3 +133,4 @@ src/shared/lib/services/session-deletion.test.ts
 src/shared/lib/config/settings-request-memo.test.ts
 src/shared/lib/services/audit-log-service.test.ts
 src/shared/lib/db/migrations/todos-connection-fk.test.ts
+src/shared/lib/services/message-author-annotation-service.test.ts
