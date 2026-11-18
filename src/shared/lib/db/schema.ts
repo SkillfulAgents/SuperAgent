@@ -68,9 +68,6 @@ export const llmConnections = sqliteTable('llm_connections', {
  * defaults, each null where nothing was picked. A table that keeps one spreads
  * this in, so a new knob reaches them all. Deleting a connection drops the
  * pick of it back to the default.
- *
- * `todos` keeps the same four but declares them itself for now: its effort
- * and speed columns are typed to the known levels.
  */
 export function runtimeOptionsColumns() {
   return {
@@ -1116,11 +1113,7 @@ export const todos = sqliteTable('todos', {
   // brief. Never set together with agentSlug: the start assigns the new agent.
   newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
   // What to start it on, where the person picked over the agent's defaults.
-  // Deleting the connection drops the pick of it, as on the other tables that keep one.
-  model: text('model'),
-  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
-  effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-  speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
+  ...runtimeOptionsColumns(),
   sessionId: text('session_id'),
   status: text('status', { enum: ['draft', 'active', 'done', 'archived'] }).notNull().default('draft'),
   // Where it sits in its column: highest first. New items and items that

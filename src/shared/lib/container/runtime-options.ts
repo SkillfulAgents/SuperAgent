@@ -103,6 +103,21 @@ export function pickRuntimeOptions<T extends CarriesRuntimeOptions>(source: T): 
   return picked as PickedRuntimeOptions<T>
 }
 
+/**
+ * Stored runtime options as a request takes them. A level this build does not
+ * know is dropped, and so is a connection with no model: a model is what is
+ * picked, on a connection. A model stored with no connection is a pick of none.
+ */
+export function fromStoredRuntimeOptions(stored: Partial<StoredRuntimeOptions>): RuntimeOptions {
+  const effort = optionalEffort(stored.effort)
+  const speed = optionalSpeed(stored.speed)
+  return {
+    ...(stored.model ? { model: stored.model, llmProviderId: stored.llmProviderId ?? null } : {}),
+    ...(effort ? { effort } : {}),
+    ...(speed ? { speed } : {}),
+  }
+}
+
 /** Agent preferences keep their runtime options as `defaultModel`, `defaultEffort`, …. */
 export type AgentDefaultRuntimeOptions = Pick<AgentPreferences, 'defaultLlmProviderId' | 'defaultModel' | 'defaultEffort' | 'defaultSpeed'>
 
