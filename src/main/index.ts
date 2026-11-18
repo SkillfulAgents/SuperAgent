@@ -47,6 +47,7 @@ import { isCaptureRect } from '@shared/lib/quick-dispatch-capture'
 import { loadQuickDispatchGlass } from './quick-dispatch-glass'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
+import { addImageThumbnails } from './recent-file-thumbnails'
 import { parseAgentDeepLink } from './agent-deep-link'
 import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oauth-callback'
 import { classifyImportPackage } from './import-packages'
@@ -940,8 +941,6 @@ const MIME_TYPES: Record<string, string> = {
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 }
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
-
 // Track paths returned by get-recent-files so read-local-file can validate (#1 security)
 const allowedRecentPaths = new Set<string>()
 // Paths the user explicitly opened via the OS (dock drop / "Open With"). Kept
@@ -973,21 +972,7 @@ ipcMain.handle('get-recent-files', async (_event, rawLimit: unknown): Promise<{ 
     allowedRecentPaths.clear()
     for (const f of files) allowedRecentPaths.add(f.path)
 
-    // Generate small thumbnails for image files using Electron's nativeImage
-    return files.map((f) => {
-      const ext = path.extname(f.name).toLowerCase()
-      if (!IMAGE_EXTS.has(ext)) return f
-      try {
-        const img = nativeImage.createFromPath(f.path)
-        if (img.isEmpty()) return f
-        // Only constrain width — let height scale to preserve aspect ratio (#4)
-        const resized = img.resize({ width: 32, quality: 'good' })
-        const png = resized.toPNG()
-        return { ...f, thumbnail: `data:image/png;base64,${png.toString('base64')}` }
-      } catch {
-        return f
-      }
-    })
+    return await addImageThumbnails(files, nativeImage)
   } catch (err) {
     console.error('Failed to get recent files:', err)
     return []
