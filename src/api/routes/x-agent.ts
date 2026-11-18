@@ -105,24 +105,18 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
 }
 
 /**
- * The person whose message the caller session acts on, when one is known: its
- * sender, or the person another agent sent it for. An integration message
- * names no app user: the newest person who wrote in the app stands in.
+ * The person behind the caller session's turn, when one is known: who sent the
+ * message it acts on, or the person another agent sent it for. A message that
+ * names no person (an integration's, an automation's, a system notice) leaves
+ * it to the newest person who wrote in the app.
  * Attribution is optional: a failed read must never block the invoke.
  */
 async function getTriggeringUserId(agentSlug: string, sessionId: string): Promise<string | undefined> {
   try {
     const sender = (await getMessageContext(agentSlug, sessionId))?.sender
-    switch (sender?.kind) {
-      case 'user':
-        return sender.userId
-      case 'agent':
-        return sender.onBehalfOf
-      case 'external':
-        return await getNewestAppSenderId(agentSlug, sessionId)
-      default:
-        return undefined
-    }
+    if (sender?.kind === 'user') return sender.userId
+    if (sender?.kind === 'agent' && sender.onBehalfOf) return sender.onBehalfOf
+    return await getNewestAppSenderId(agentSlug, sessionId)
   } catch (error) {
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
       agentSlug,
@@ -883,7 +877,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   }
 
   // Attribute to the person behind the caller's turn; with none known (an
-  // automation's turn, an old session), to its creator, then to the caller's owner.
+  // automation's own run, an old session), to its creator, then to the caller's owner.
   let attributedUserId: string | undefined = triggeringUserId
   if (!attributedUserId) {
     try {

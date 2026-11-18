@@ -20,6 +20,7 @@ import type { SessionMetadata } from '@shared/lib/types/agent'
 import { getAgentOwnerUserId } from './agent-owner'
 import { getAgentRecord } from './agent-service'
 import { sessionOrigin } from './session-visibility'
+import { getConnectedAccountOwnerUserId, resolveTriggerPrincipal } from './webhook-trigger-service'
 
 export type IntegrationFamily = 'chat' | 'email' | 'meeting' | 'task-manager'
 
@@ -41,7 +42,7 @@ export type SessionStart =
 /** The session. Set when it starts. */
 export interface SessionContext {
   origin: SessionStart
-  /** The session's creator; for a cron or webhook session, who made the cron or webhook. */
+  /** The session's creator; for a cron or webhook session, the user its run is billed to. */
   createdBy?: Sender
 }
 
@@ -175,7 +176,7 @@ async function readChatMapping(agentSlug: string, sessionId: string) {
     .get()
 }
 
-/** Who made the cron or webhook that started the session, when it did. */
+/** The user a cron's or webhook's own run is billed to, when one started the session. */
 async function automationCreator(meta: SessionMetadata | null): Promise<string | undefined> {
   const origin = sessionOrigin(meta)
   if (origin === 'scheduled' && meta?.scheduledTaskId) {
@@ -184,9 +185,17 @@ async function automationCreator(meta: SessionMetadata | null): Promise<string |
     return task?.userId ?? undefined
   }
   if (origin === 'webhook' && meta?.webhookTriggerId) {
-    const trigger = await db.select({ userId: webhookTriggers.createdByUserId }).from(webhookTriggers)
-      .where(eq(webhookTriggers.id, meta.webhookTriggerId)).get()
-    return trigger?.userId ?? undefined
+    const trigger = await db.select({
+      createdByUserId: webhookTriggers.createdByUserId,
+      connectedAccountId: webhookTriggers.connectedAccountId,
+    }).from(webhookTriggers).where(eq(webhookTriggers.id, meta.webhookTriggerId)).get()
+    if (!trigger) return undefined
+    // As TriggerManager runs it: a maker with no platform member gives way to
+    // the connected account's owner (SUP-226).
+    return (await resolveTriggerPrincipal(trigger))?.userId
+      ?? trigger.createdByUserId
+      ?? (await getConnectedAccountOwnerUserId(trigger.connectedAccountId))
+      ?? undefined
   }
   return undefined
 }

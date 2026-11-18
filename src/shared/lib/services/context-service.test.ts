@@ -95,6 +95,19 @@ describe('getSessionContext', () => {
     })
   })
 
+  it('names the user a webhook session runs as, not a maker with no platform member', async () => {
+    await testDb.insert(schema.connectedAccounts).values({
+      id: 'gmail-account', providerConnectionId: 'connection-1', toolkitSlug: 'gmail', displayName: 'Support inbox', userId: BEN, createdAt: new Date(), updatedAt: new Date(),
+    })
+    await testDb.insert(schema.authAccount).values({ id: 'ben-platform', accountId: 'member-ben', providerId: 'platform', userId: BEN, updatedAt: new Date() })
+    await testDb.insert(schema.webhookTriggers).values({
+      id: 'new-order', agentSlug: AGENT, triggerType: 'GMAIL_NEW_EMAIL', prompt: 'Handle the order', connectedAccountId: 'gmail-account', createdByUserId: DANA, createdAt: new Date(),
+    })
+    metadata.set('webhook-session', { isWebhookExecution: true, webhookTriggerId: 'new-order' })
+
+    expect(await getSessionContext(AGENT, 'webhook-session', ['createdBy'])).toEqual({ createdBy: { kind: 'user', userId: BEN } })
+  })
+
   it('returns only the asked fields', async () => {
     metadata.set('app-session', { createdByUserId: DANA })
     expect(await getSessionContext(AGENT, 'app-session', ['createdBy'])).toEqual({ createdBy: { kind: 'user', userId: DANA } })

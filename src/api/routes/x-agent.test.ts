@@ -1050,7 +1050,7 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([expect.objectContaining({ userId: OWNER_USER_ID })])
   })
 
-  it('falls back to the session creator when no person sent the message the caller turn runs on', async () => {
+  it('attributes a turn no person started to the newest person who wrote in the app', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
     const callerSessionId = 'woken-caller-session'
@@ -1068,7 +1068,7 @@ describe('/invoke', () => {
 
     expect(res.status).toBe(200)
     const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
-    expect(targetAuthors).toEqual([expect.objectContaining({ userId: OWNER_USER_ID })])
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: OTHER_USER_ID })])
   })
 
   it('attributes to the person another agent sent the message of the caller turn for', async () => {
