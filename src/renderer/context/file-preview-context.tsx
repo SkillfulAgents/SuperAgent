@@ -19,6 +19,8 @@ export type PreviewSource = z.infer<typeof previewSourceSchema>
 export interface FileTab extends PreviewFileTab {
   agentSlug: string
   source?: PreviewSource
+  /** The file's ETag when this tab last loaded it, once the drawer has asked. */
+  revision?: string
 }
 
 export interface FolderTab extends PreviewFolderTab {
@@ -90,6 +92,8 @@ interface FilePreviewContextType {
   closeTab: (tabKey: string) => void
   setActiveTab: (index: number) => void
   setPdfPage: (filePath: string, agentSlug: string, page: number) => void
+  /** The file is at `revision` now: reload its tab if that is not the one it loaded. */
+  reloadIfChanged: (filePath: string, agentSlug: string, revision: string) => void
   close: () => void
 
   /** Comments on one agent's copy of a path; the one place the key is composed. */
@@ -391,6 +395,17 @@ export function FilePreviewProvider({
     setPreviewPdfPage(`file:${getWorkspaceFileKey(agentSlug, filePath)}`, page)
   }, [setPreviewPdfPage])
 
+  const reloadIfChanged = useCallback((filePath: string, agentSlug: string, revision: string) => {
+    const version = nextFileVersion()
+    setOpenTabs(prev => {
+      const tab = prev.find(t => t.kind === 'file' && t.agentSlug === agentSlug && t.filePath === filePath)
+      if (tab?.kind !== 'file' || tab.revision === revision) return prev
+      // The first answer is what the tab already shows. A later one that differs is a change.
+      const next = tab.revision === undefined ? { ...tab, revision } : { ...tab, revision, version }
+      return prev.map(t => (t === tab ? next : t))
+    })
+  }, [setOpenTabs])
+
   const close = useCallback(() => {
     setIsOpen(false)
   }, [])
@@ -451,12 +466,13 @@ export function FilePreviewProvider({
     closeTab,
     setActiveTab,
     setPdfPage,
+    reloadIfChanged,
     close,
     commentsFor,
     addComment,
     removeComment,
     clearComments,
-  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, close, commentsFor, addComment, removeComment, clearComments])
+  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, reloadIfChanged, close, commentsFor, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>

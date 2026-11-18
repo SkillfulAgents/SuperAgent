@@ -263,6 +263,22 @@ test.describe('File Preview', () => {
     await expect(trayHeader).not.toBeVisible({ timeout: 5000 })
   })
 
+  test('an open file reloads when it changes on disk', async ({ page }) => {
+    await agentPage.createAgent(`FileReload ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+
+    // Written with no message sent and nothing clicked, like a job the agent left running.
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nNew line, longer.\n')
+    await expect(markdown(page).getByText('New line, longer.')).toBeVisible({ timeout: 10000 })
+    await expect(markdown(page).getByText('Old line.')).toHaveCount(0)
+  })
+
   test('re-delivering same file refreshes content', async ({ page }) => {
     await agentPage.createAgent(`FileRedeliver ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)

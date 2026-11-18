@@ -7,6 +7,7 @@ import { CommentBar } from './comments/comment-bar'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 import { withPreviewVersion } from '@renderer/lib/file-preview-url'
 import { useFileSize } from '@renderer/hooks/use-file-size'
+import { useReloadWhenChanged } from './use-reload-when-changed'
 
 interface FilePreviewTrayContentProps {
   sessionId: string
@@ -29,6 +30,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
       : describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
     : null
   const { data: fileSize } = useFileSize(file?.apiPath ?? null, activeFile?.version ?? 0)
+  useReloadWhenChanged(file && 'agentSlug' in file ? file : null)
   if (!activeTab) return null
 
   const activeComments = file && 'agentSlug' in file ? commentsFor(file.path, file.agentSlug) : []

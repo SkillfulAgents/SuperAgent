@@ -3097,6 +3097,18 @@ describe('path traversal security — GET /:id/files/*', () => {
       expect(res.status).toBe(404)
     })
 
+    // An open preview polls this to learn the file changed without reading it.
+    it('names the file\'s state in a weak ETag that moves when it is rewritten', async () => {
+      mockFsStat.mockResolvedValue({ ...fileStat(100), mtimeMs: 1_000 })
+      const first = await headReq(app, '/api/agents/test-agent/files/out/report.md?inline=true')
+      expect(first.headers.get('etag')).toBe('W/"1000-100"')
+      expect((await headReq(app, '/api/agents/test-agent/files/out/report.md?inline=true')).headers.get('etag')).toBe('W/"1000-100"')
+
+      mockFsStat.mockResolvedValue({ ...fileStat(100), mtimeMs: 2_000 })
+      expect((await headReq(app, '/api/agents/test-agent/files/out/report.md?inline=true')).headers.get('etag')).toBe('W/"2000-100"')
+      expect(mockCreateReadStream).not.toHaveBeenCalled()
+    })
+
     it('leaves the GET streaming the body', async () => {
       mockFsStat.mockResolvedValue(fileStat(100))
       mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })

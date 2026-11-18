@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FilePreviewProvider, useFilePreview, type PreviewSource } from '@renderer/context/file-preview-context'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
+import { CHANGE_CHECK_INTERVAL_MS } from './use-reload-when-changed'
 
 vi.mock('@renderer/router/use-route-location', () => ({
   useRouteLocation: () => ({ view: { kind: 'session', id: 'test-session' } }),
@@ -36,13 +37,17 @@ function PreviewHarness({ filePath, source }: { filePath: string; source?: Previ
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('file preview refresh', () => {
   it.each(['workspace', 'drive'] as const)('reloads an already-open %s file when opened again', async kind => {
     let contents = 'Original contents'
     const fetch = vi.fn(async (_url: string) => new Response(contents))
-    vi.stubGlobal('fetch', fetch)
+    // The change check's HEADs are the next test's subject; here they find nothing new.
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => (
+      init?.method === 'HEAD' ? Promise.resolve(new Response(null, { headers: { etag: 'W/"1-1"' } })) : fetch(url)
+    ))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const source = kind === 'drive' ? {
       inlineUrl: '/api/volume-definitions/v1/file?path=README.md&inline=true',
@@ -73,6 +78,43 @@ describe('file preview refresh', () => {
     const downloadUrl = new URL(download, window.location.href)
     expect(downloadUrl.searchParams.get('v')).toBe(previewUrl.searchParams.get('v'))
     expect(downloadUrl.searchParams.get('v')).not.toBeNull()
+    client.clear()
+  })
+
+  it('reloads an open workspace file when it changes, and not while it stays the same', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let file: { contents: string; etag: string } | null = { contents: 'Original contents', etag: 'W/"1-17"' }
+    const reads = vi.fn()
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      if (!file) return new Response(null, { status: 404 })
+      if (init?.method === 'HEAD') return new Response(null, { headers: { etag: file.etag } })
+      reads()
+      return new Response(file.contents)
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <FilePreviewProvider sessionId="test-session">
+          <PreviewHarness filePath="/workspace/README.md" />
+        </FilePreviewProvider>
+      </QueryClientProvider>,
+    )
+    const content = () => screen.getByTestId('file-content')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open file' }))
+    await waitFor(() => expect(content()).toHaveTextContent('Original contents'))
+    await act(() => vi.advanceTimersByTimeAsync(3 * CHANGE_CHECK_INTERVAL_MS))
+    expect(reads).toHaveBeenCalledTimes(1)
+
+    file = { contents: 'Updated contents', etag: 'W/"2-16"' }
+    await act(() => vi.advanceTimersByTimeAsync(CHANGE_CHECK_INTERVAL_MS))
+    await waitFor(() => expect(content()).toHaveTextContent('Updated contents'))
+    expect(reads).toHaveBeenCalledTimes(2)
+
+    // A deleted file is a change too: the old text does not stay up as if it were current.
+    file = null
+    await act(() => vi.advanceTimersByTimeAsync(CHANGE_CHECK_INTERVAL_MS))
+    await waitFor(() => expect(content()).toBeEmptyDOMElement())
     client.clear()
   })
 })

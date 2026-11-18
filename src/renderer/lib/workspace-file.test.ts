@@ -15,6 +15,7 @@ describe('describeWorkspaceFile', () => {
       preview: 'pdf',
       previewable: true,
       isImage: false,
+      reloadsInPlace: false,
       apiPath: '/api/agents/acme/files/reports/q3.pdf',
       downloadUrl: 'http://api.test/api/agents/acme/files/reports/q3.pdf',
       inlineUrl: 'http://api.test/api/agents/acme/files/reports/q3.pdf?inline=true',
@@ -51,6 +52,14 @@ describe('describeWorkspaceFile', () => {
       previewable: false,
       isImage: false,
     })
+  })
+
+  // A new URL restarts a video and resets a PDF or a page, so those wait to be reopened.
+  it('says which previews reload where they stand when the file changes', () => {
+    const reloads = (name: string) => describeWorkspaceFile(`/workspace/${name}`, 'acme').reloadsInPlace
+    expect(['notes.md', 'app.ts', 'rows.csv', 'shot.png'].map(reloads)).toEqual([true, true, true, true])
+    expect(['clip.mp4', 'talk.mp3', 'q3.pdf', 'page.html', 'bundle.zip', 'books.xlsx', 'out/'].map(reloads))
+      .toEqual([false, false, false, false, false, false, false])
   })
 
   it('reports a file the drawer cannot render but can still hand over', () => {
