@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import {
@@ -198,10 +199,11 @@ export function UsersTab({ platformControlled = false, platformInviteHref }: Use
     setActionLoading(user.id)
     setConfirmAction(null)
     try {
-      await authClient.admin.removeUser({ userId: user.id })
+      const { error } = await authClient.admin.removeUser({ userId: user.id })
+      if (error) throw new Error(error.message ?? 'Could not remove this user')
       invalidateUsers()
     } catch (err) {
-      console.error('Failed to delete user:', err)
+      toast.error(err instanceof Error ? err.message : 'Could not remove this user')
     } finally {
       setActionLoading(null)
     }

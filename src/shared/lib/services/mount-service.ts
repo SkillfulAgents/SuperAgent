@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, exists, isNotNull, isNull, sql } from 'drizzle-orm'
+import { and, asc, eq, exists, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
-import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
+import type { AgentMountSummary, ContainerVolume, MountedVolume, NotMountedVolume } from '@shared/lib/types/mount'
 import { parseMountPath } from '@shared/lib/utils/workspace-path'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
@@ -56,7 +56,7 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
   const [rows, globals] = await Promise.all([
     attachments().where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all(),
     db.select().from(volumeDefinitions)
-      .where(and(isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId)))
+      .where(and(isNotNull(volumeDefinitions.globalAccess), eq(volumeDefinitions.visibility, 'public')))
       .orderBy(asc(volumeDefinitions.createdAt), asc(volumeDefinitions.id)).all(),
   ])
   const own: MountedVolume[] = rows.flatMap(row => attachedMount(row) ?? [])
@@ -75,7 +75,7 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
 /** The agents `getMounts` gives this drive: those it is attached to, or every agent while it is global. */
 export async function agentsWithVolume(volumeId: string): Promise<string[]> {
   const global = await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions)
-    .where(and(eq(volumeDefinitions.id, volumeId), isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId))).get()
+    .where(and(eq(volumeDefinitions.id, volumeId), isNotNull(volumeDefinitions.globalAccess), eq(volumeDefinitions.visibility, 'public'))).get()
   const rows = global
     ? await db.select({ agentSlug: agents.slug }).from(agents).all()
     : await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(eq(agentVolumes.volumeId, volumeId)).all()
@@ -129,16 +129,21 @@ export async function attachMount(slug: string, volumeId: string, viewer: Volume
   return mount
 }
 
+function visibleAttachment(slug: string, mountId: string, viewer: VolumeViewer) {
+  return and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId),
+    inArray(agentVolumes.volumeId, db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selectableVolumes(viewer))))
+}
+
 /** False when the agent has no such mount. Like attach and remove, the mount takes the change on the next start. */
-export async function setMountReadOnly(slug: string, mountId: string, readOnly: boolean): Promise<boolean> {
+export async function setMountReadOnly(slug: string, mountId: string, readOnly: boolean, viewer: VolumeViewer): Promise<boolean> {
   const result = await db.update(agentVolumes).set({ readOnly })
-    .where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
+    .where(visibleAttachment(slug, mountId, viewer)).run()
   return changesOf(result) > 0
 }
 
 /** False when the agent has no such attachment, including a global drive. */
-export async function removeMount(slug: string, mountId: string): Promise<boolean> {
-  const result = await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
+export async function removeMount(slug: string, mountId: string, viewer: VolumeViewer): Promise<boolean> {
+  const result = await db.delete(agentVolumes).where(visibleAttachment(slug, mountId, viewer)).run()
   return changesOf(result) > 0
 }
 
@@ -159,12 +164,14 @@ export async function resolveVolume(slug: string, mountId: string) {
   return ops && { ops, readOnly: row.readOnly }
 }
 
-/** A path the agent sees under /mounts, read through the drive it names. The grant is resolveVolume's. */
-export async function resolveMountPath(slug: string, containerPath: string) {
+/** A person following a mount path needs direct access to the drive it resolves to. */
+export async function resolveMountPath(slug: string, containerPath: string, viewer: VolumeViewer) {
   const parsed = parseMountPath(containerPath)
   if (!parsed) throw new WorkspaceFileError('invalid-path')
   const row = (await getMounts(slug)).find(m => m.name === parsed.name)
-  const ops = row && instantiateVolume(row, slug)
+  if (!row || !await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions)
+    .where(and(eq(volumeDefinitions.id, row.volumeId), selectableVolumes(viewer))).get()) return null
+  const ops = instantiateVolume(row, slug)
   return ops ? { ops, path: parsed.path } : null
 }
 
@@ -202,9 +209,19 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
   }
 }
 
-export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
-  return (await judgeVolumes(slug)).map(({ row, reason }) => ({
-    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: volumeHealth(reason),
-    ...(row.global ? { global: true as const } : {}),
+export async function getMountsWithHealth(slug: string, viewer: VolumeViewer): Promise<AgentMountSummary[]> {
+  const mounts = await getMounts(slug)
+  if (!mounts.length) return []
+  const visible = await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(and(selectableVolumes(viewer),
+    or(isNotNull(volumeDefinitions.globalAccess), inArray(volumeDefinitions.id,
+      db.select({ id: agentVolumes.volumeId }).from(agentVolumes).where(eq(agentVolumes.agentSlug, slug)))))).all()
+  const ids = new Set(visible.map(volume => volume.id))
+  return Promise.all(mounts.map(async row => {
+    if (!ids.has(row.volumeId)) return { restricted: true as const, id: row.id, volumeName: row.volumeName }
+    const reason = await volumeProblem(row, slug)
+    return {
+      ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: volumeHealth(reason),
+      ...(row.global ? { global: true as const } : {}),
+    }
   }))
 }

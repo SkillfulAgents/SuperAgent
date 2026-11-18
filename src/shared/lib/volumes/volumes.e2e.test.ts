@@ -133,7 +133,7 @@ describe.skipIf(!ENABLED)('client folders as volumes, from the list to the mount
     fs.mkdirSync(docs)
     fs.writeFileSync(path.join(docs, 'a.txt'), 'hello')
     const { id } = await addMount('agent-a', 'local', { path: docs }, { userId: null, admin: true })
-    await setMountReadOnly('agent-a', id, true)
+    await setMountReadOnly('agent-a', id, true, { userId: null, admin: true })
 
     await client().stop()
     const { port } = server.address() as AddressInfo

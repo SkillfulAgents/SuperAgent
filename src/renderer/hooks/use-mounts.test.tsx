@@ -19,7 +19,10 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockApiFetch.mockReset()
+})
 
 describe('useAddMount', () => {
   it('adds a picked folder as a local volume', async () => {
@@ -58,6 +61,12 @@ describe('useAgentMounts', () => {
 })
 
 describe('useVolumesManager', () => {
+  it('hides paths and actions if the drive is missing from the current registry', async () => {
+    mockApiFetch.mockResolvedValueOnce(Response.json([{ id: 'm', volumeId: 'v', volumeName: 'Forecasts', hostPath: '/private', readOnly: true }]))
+    const { result } = renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper })
+    await waitFor(() => expect(result.current.mounts).toEqual([{ id: 'm', volumeName: 'Forecasts', restricted: true }]))
+  })
+
   it('asks for a restart while the agent is marked stale', () => {
     mockAgent = { slug: 'a1', status: 'running', stale: true }
     expect(renderHook(() => useVolumesManager('a1'), { wrapper: Wrapper }).result.current.pendingRestart).toBe(true)

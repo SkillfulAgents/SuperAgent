@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true; sourceReadOnly?: boolean }[],
+  mounts: [] as ({ restricted: true; id: string; volumeName: string } | { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true; sourceReadOnly?: boolean })[],
   definitions: [] as { id: string; name: string; hostPath: string; canManage?: boolean }[],
   canModifyMounts: true,
   operationError: null as string | null,
@@ -71,6 +71,13 @@ afterEach(() => {
 })
 
 describe('driving this computer', () => {
+  it('shows a restricted attachment only as a disabled name, even to someone who can edit the agent', () => {
+    volumes.mounts = [{ id: 'm1', volumeName: 'Forecasts', restricted: true }]
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.getByText('Forecasts').closest('[aria-disabled]')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.queryByRole('button', { name: /drive actions|open forecasts/i })).not.toBeInTheDocument()
+  })
+
   it('offers to add a drive', () => {
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByRole('button', { name: /add drive/i })).toBeInTheDocument()

@@ -31,9 +31,21 @@ export interface VolumeSummaryWithHealth extends VolumeSummary {
 
 export type GlobalAccess = 'read' | 'write'
 
+export interface VolumeOwner {
+  userId: string | null
+  name: string
+  email?: string
+  image?: string | null
+  invited?: true
+  role: 'owner'
+}
+
 /** The saved definition available in Settings and the attachment picker. */
 export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
-  userId: string | null
+  visibility: 'public' | 'private'
+  owners: VolumeOwner[]
+  /** Set by the renderer when connected to a workspace that predates owner sharing. */
+  supportsOwnerSharing?: false
   canManage: boolean
   attachmentCount: number
   globalAccess: GlobalAccess | null
@@ -49,7 +61,19 @@ export interface MountedVolume extends StoredVolume {
   global?: true // from the drive's global setting, not an attachment row
 }
 
+/** A teammate sees only the attachment identity and display name on agent home. */
+export type AgentMountSummary = MountSummaryWithHealth | {
+  restricted: true
+  id: string
+  volumeName: string
+  volumeId?: never
+  health?: never
+  readOnly?: never
+  global?: never
+}
+
 export interface MountSummaryWithHealth extends VolumeSummaryWithHealth {
+  restricted?: false
   volumeId: string
   volumeName: string
   readOnly: boolean

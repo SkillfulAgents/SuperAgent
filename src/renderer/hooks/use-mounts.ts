@@ -6,7 +6,7 @@ import { useAgent } from './use-agents'
 import { useVolumeDefinitions, type VolumeSettingsInput } from './use-volume-definitions'
 import { useUser } from '@renderer/context/user-context'
 import { volumeConfigSchema, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
-import type { VolumeSummary, MountSummaryWithHealth } from '@shared/lib/types/mount'
+import type { VolumeSummary, AgentMountSummary } from '@shared/lib/types/mount'
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -18,7 +18,7 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
 }
 
 export function useAgentMounts(agentSlug: string) {
-  return useQuery<MountSummaryWithHealth[]>({
+  return useQuery<AgentMountSummary[]>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
@@ -106,9 +106,14 @@ export function useSetMountReadOnly() {
 
 export function useVolumesManager(agentSlug: string) {
   const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
-  const mounts = Array.isArray(mountsData) ? mountsData : []
   const registry = useVolumeDefinitions()
   const definitions = registry.data ?? []
+  // The registry and mount list refresh independently, and older servers send
+  // full mount details for every attachment. Both lists must allow direct access.
+  const accessible = new Set(definitions.map(drive => drive.id))
+  const mounts = Array.isArray(mountsData) ? mountsData.map(mount =>
+    mount.restricted || accessible.has(mount.volumeId) ? mount : { restricted: true as const, id: mount.id, volumeName: mount.volumeName },
+  ) : []
   const { canUseAgent } = useUser()
   const canModifyMounts = canUseAgent(agentSlug)
   const canCreateMount = canModifyMounts
@@ -121,7 +126,7 @@ export function useVolumesManager(agentSlug: string) {
   const [operationError, setOperationError] = useState<string | null>(null)
 
   // The host marks a running agent stale on a drive change, and a stop clears it.
-  const pendingRestart = isAgentRunning && agent?.stale === true
+  const pendingRestart = canModifyMounts && isAgentRunning && agent?.stale === true
 
   const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
     if (!canModifyMounts) throw new Error('You do not have permission to add drives to this agent')

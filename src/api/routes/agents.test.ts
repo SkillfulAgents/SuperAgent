@@ -12203,7 +12203,7 @@ describe('files in the agent\'s drives, by mount path', () => {
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('notes')
     expect(res.headers.get('content-security-policy')).toBe('sandbox allow-scripts')
-    expect(resolveMountPath).toHaveBeenCalledWith('test-agent', '/mounts/team/notes/a.md')
+    expect(resolveMountPath).toHaveBeenCalledWith('test-agent', '/mounts/team/notes/a.md', expect.objectContaining({ admin: true }))
     expect(drive.read).toHaveBeenCalledWith('notes/a.md')
   })
 

@@ -6,7 +6,7 @@ import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/cr
 import { agents, user, volumeDefinitions } from '@shared/lib/db/schema'
 import { removeGithubSync } from '@shared/lib/volumes/github-sync'
 import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/local-folder-access'
-import { attachMount, removeMount } from './mount-service'
+import { attachMount, getMountsWithHealth, removeMount, resolveVolume } from './mount-service'
 import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, releaseVolume, updateVolumeDefinition } from './volume-service'
 
 let handle: TestDatabase
@@ -35,7 +35,7 @@ const input = () => ({ type: 'local', config: { path: folder }, name: 'Notes' })
 describe('volume ownership', () => {
   it('defaults to the creator and never accepts an owner supplied by the client', async () => {
     const id = await createVolumeDefinition(input(), alice)
-    expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, userId: 'alice', canManage: true, attachmentCount: 0 }])
+    expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, visibility: 'private', canManage: true, attachmentCount: 0 }])
     expect(await listVolumeDefinitions(bob)).toEqual([])
     expect(await listVolumeDefinitions(admin)).toEqual([])
     await expect(createVolumeDefinition({ ...input(), userId: 'bob' }, alice)).rejects.toThrow()
@@ -47,7 +47,7 @@ describe('volume ownership', () => {
   })
   it('allows everyone to attach public definitions, with management restricted to admins', async () => {
     const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
-    expect(await listVolumeDefinitions(bob)).toMatchObject([{ id, userId: null, canManage: false }])
+    expect(await listVolumeDefinitions(bob)).toMatchObject([{ id, visibility: 'public', canManage: false }])
     expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, canManage: true }])
     expect((await attachMount('agent', id, bob)).volumeId).toBe(id)
     await expect(updateVolumeDefinition(id, { name: 'Renamed' }, bob)).rejects.toMatchObject({ status: 404 })
@@ -55,6 +55,15 @@ describe('volume ownership', () => {
     await expect(createVolumeDefinition({ ...input(), visibility: 'public' }, bob)).rejects.toMatchObject({ status: 403 })
     const privateId = await createVolumeDefinition(input(), bob)
     await expect(updateVolumeDefinition(privateId, { name: 'Notes', visibility: 'public' }, bob)).rejects.toMatchObject({ status: 403 })
+  })
+  it('transfers a workspace-owned public drive to the admin making it private', async () => {
+    const id = await createVolumeDefinition(input(), local)
+    const mount = await attachMount('agent', id, bob)
+    expect((await listVolumeDefinitions(bob))[0].owners).toEqual([{ userId: null, name: 'Workspace admins', role: 'owner' }])
+    await updateVolumeDefinition(id, { visibility: 'private' }, admin)
+    expect((await listVolumeDefinitions(admin))[0].owners).toEqual([{ userId: 'admin', name: 'admin', email: 'admin@example.com', image: null, role: 'owner' }])
+    expect(await listVolumeDefinitions(bob)).toEqual([])
+    expect(await getMountsWithHealth('agent', bob)).toEqual([{ id: mount.id, volumeName: 'Notes', restricted: true }])
   })
   it('makes only public drives global, and keeps a global drive public until global is off', async () => {
     const privateId = await createVolumeDefinition(input(), alice)
@@ -65,10 +74,10 @@ describe('volume ownership', () => {
     await updateVolumeDefinition(id, { global: 'write' }, admin)
     expect(await listVolumeDefinitions(bob)).toMatchObject([{ id, globalAccess: 'write' }])
     await expect(updateVolumeDefinition(id, { visibility: 'private' }, admin)).rejects.toMatchObject({ status: 409, message: 'Turn off global before changing access' })
-    expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, userId: null, globalAccess: 'write' }])
+    expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, visibility: 'public', globalAccess: 'write' }])
     await updateVolumeDefinition(id, { global: null }, admin)
     await updateVolumeDefinition(id, { visibility: 'private' }, admin)
-    expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, userId: 'admin', globalAccess: null }])
+    expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, visibility: 'private', globalAccess: null }])
   })
   it('releases a drive from every agent but one and from global, whoever owns it', async () => {
     await handle.db.insert(agents).values([{ slug: 'brain', name: 'Brain', createdAt: new Date() }, { slug: 'reader', name: 'Reader', createdAt: new Date() }]).run()
@@ -89,16 +98,22 @@ describe('volume ownership', () => {
     await deleteVolumeDefinition(id, admin)
     expect(await listVolumeDefinitions(admin)).toEqual([])
   })
-  it('blocks deletion and changes of scope until attachments are removed, but permits renames', async () => {
+  it('changes visibility in both directions while preserving the agent’s mount and read-only access', async () => {
     const id = await createVolumeDefinition(input(), admin)
-    const mount = await attachMount('agent', id, admin)
-    expect(await listVolumeDefinitions(admin)).toMatchObject([{ attachmentCount: 1 }])
+    const mount = await attachMount('agent', id, admin, { readOnly: true })
+    fs.writeFileSync(path.join(folder, 'note.txt'), 'Agent note')
     await expect(deleteVolumeDefinition(id, admin)).rejects.toMatchObject({ status: 409 })
-    await expect(updateVolumeDefinition(id, { name: 'Notes', visibility: 'public' }, admin)).rejects.toMatchObject({ status: 409 })
-    await updateVolumeDefinition(id, { name: 'Renamed', visibility: 'private' }, admin)
-    await removeMount('agent', mount.id)
-    await updateVolumeDefinition(id, { visibility: 'public' }, admin)
-    expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, name: 'Renamed', userId: null, attachmentCount: 0 }])
+    await updateVolumeDefinition(id, { name: 'Renamed', visibility: 'public' }, admin)
+    expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, name: 'Renamed', visibility: 'public', attachmentCount: 1 }])
+    expect(await getMountsWithHealth('agent', alice)).toMatchObject([{ id: mount.id, name: 'Notes', readOnly: true }])
+    await updateVolumeDefinition(id, { visibility: 'private' }, admin)
+    expect(await listVolumeDefinitions(alice)).toEqual([])
+    expect(await getMountsWithHealth('agent', alice)).toEqual([{ id: mount.id, volumeName: 'Renamed', restricted: true }])
+    const runtime = await resolveVolume('agent', mount.id)
+    expect(runtime?.readOnly).toBe(true)
+    const file = await runtime!.ops.read('note.txt')
+    expect(await new Response(await file.stream()).text()).toBe('Agent note')
+    await removeMount('agent', mount.id, admin)
     await deleteVolumeDefinition(id, admin)
     expect(await listVolumeDefinitions(admin)).toEqual([])
     expect(fs.existsSync(folder)).toBe(true)
@@ -108,7 +123,7 @@ describe('volume ownership', () => {
     const copy = path.join(folder, 'volumes', 'github-volume', 'copy')
     fs.mkdirSync(copy, { recursive: true })
     await handle.db.insert(volumeDefinitions).values({
-      id: 'github-volume', name: 'Broken', type: 'github', config: '{}', userId: null,
+      id: 'github-volume', name: 'Broken', type: 'github', config: '{}', visibility: 'public',
       createdAt: new Date(), updatedAt: new Date(),
     }).run()
     await deleteVolumeDefinition('github-volume', local)
@@ -118,7 +133,7 @@ describe('volume ownership', () => {
   })
   it('lists how many files a GitHub drive has not synced, and deletes it on the first confirm', async () => {
     const config = JSON.stringify({ accountId: 'account', repoId: 1, owner: 'team', repo: 'project', branch: 'main', path: '' })
-    await handle.db.insert(volumeDefinitions).values({ id: 'github-volume', name: 'Project', type: 'github', config, userId: null, createdAt: new Date(), updatedAt: new Date() }).run()
+    await handle.db.insert(volumeDefinitions).values({ id: 'github-volume', name: 'Project', type: 'github', config, visibility: 'public', createdAt: new Date(), updatedAt: new Date() }).run()
     fs.mkdirSync(path.join(folder, 'volumes', 'github-volume'), { recursive: true })
     fs.writeFileSync(path.join(folder, 'volumes', 'github-volume', 'edits.json'), JSON.stringify({
       version: 1, unpushed: { 'notes.txt': { agents: ['agent'], n: 1, sha: null } }, held: {}, stopped: null, ignores: [], links: [],
@@ -129,20 +144,19 @@ describe('volume ownership', () => {
   })
   it('uses public definitions in single-user mode and rejects ownerless private definitions', async () => {
     const id = await createVolumeDefinition(input(), local)
-    expect(await listVolumeDefinitions(local)).toMatchObject([{ id, userId: null, canManage: true }])
+    expect(await listVolumeDefinitions(local)).toMatchObject([{ id, visibility: 'public', canManage: true }])
     await expect(createVolumeDefinition({ ...input(), visibility: 'private' }, local)).rejects.toMatchObject({ status: 400 })
   })
-  it('does not grant an attachment if visibility changes concurrently', async () => {
+  it('makes the drive private even when a workspace member concurrently tries to attach it', async () => {
     const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
     const [attachment, change] = await Promise.allSettled([
       attachMount('agent', id, bob), updateVolumeDefinition(id, { name: 'Notes', visibility: 'private' }, admin),
     ])
-    expect([attachment.status, change.status].sort()).toEqual(['fulfilled', 'rejected'])
-    if (attachment.status === 'fulfilled') {
-      expect(await listVolumeDefinitions(bob)).toMatchObject([{ id, userId: null, attachmentCount: 1 }])
-    } else {
-      expect(await listVolumeDefinitions(bob)).toEqual([])
-    }
+    expect(change.status).toBe('fulfilled')
+    if (attachment.status === 'rejected') expect(attachment.reason).toMatchObject({ status: 404 })
+    expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, visibility: 'private', attachmentCount: attachment.status === 'fulfilled' ? 1 : 0 }])
+    expect(await listVolumeDefinitions(bob)).toEqual([])
+    await expect(attachMount('agent', id, bob)).rejects.toMatchObject({ status: 404 })
   })
 })
 
@@ -225,7 +239,7 @@ describe('choosing a local drive’s folder again', () => {
   it('refuses a drive that is not a local folder, and a malformed pick', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const now = new Date()
-    await handle.db.insert(volumeDefinitions).values({ id: 'bucket', userId: 'alice', name: 'Bucket', type: 's3', config: '{}', globalAccess: null, createdAt: now, updatedAt: now }).run()
+    await handle.db.insert(volumeDefinitions).values({ id: 'bucket', createdBy: 'alice', visibility: 'private', name: 'Bucket', type: 's3', config: '{}', globalAccess: null, createdAt: now, updatedAt: now }).run()
     await expect(reconnectLocalVolume('bucket', { path: folder }, alice)).rejects.toMatchObject({ status: 400 })
     const id = await createVolumeDefinition(input(), alice)
     await expect(reconnectLocalVolume(id, { path: folder, extra: true }, alice)).rejects.toThrow()

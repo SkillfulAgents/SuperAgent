@@ -58,7 +58,12 @@ export function HomeVolumes({ agentSlug, hiddenVolumeId, className }: HomeVolume
     <HomeCollapsible id="drives" title="Drives" count={volumes.isLoading ? undefined : mounts.length} className={className}>
       {mounts.length > 0 ? (
         <div className="mt-2">
-          {mounts.map((mount) => (
+          {mounts.map((mount) => mount.restricted ? (
+            <div key={mount.id} className="flex items-center gap-2 px-4 py-3 text-xs text-muted-foreground" aria-disabled="true">
+              <Lock className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{mount.volumeName}</span>
+              <span className="ml-auto shrink-0">Restricted drive</span>
+            </div>
+          ) : (
             <VolumeRow
               key={mount.id}
               mount={mount}

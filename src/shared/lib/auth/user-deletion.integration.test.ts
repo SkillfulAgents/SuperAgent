@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
-import { agentAcl, agentConnectedAccounts, agentRemoteMcps, auditLog, authAccount, connectedAccounts, remoteMcpServers, userSettings } from '../db/schema'
+import { agentAcl, agentConnectedAccounts, agentRemoteMcps, auditLog, authAccount, connectedAccounts, remoteMcpServers, userSettings, volumeDefinitions, volumeAcl } from '../db/schema'
 import { attribution } from '../platform-attribution'
 
 let handle: TestDatabase
@@ -109,6 +109,36 @@ afterEach(async () => {
 })
 
 describe('removing a user', () => {
+  it('refuses removal before touching credentials until a sole drive owner has shared it', async () => {
+    const admin = await signUp('admin@example.org')
+    const owner = await signUp('owner@example.org')
+    const now = new Date()
+    await testDb.insert(volumeDefinitions).values({ id: 'v', name: 'Notes', type: 'local', config: '{}', createdBy: owner.id, visibility: 'private', createdAt: now, updatedAt: now }).run()
+    const remove = () => request('admin/remove-user', { userId: owner.id }, { cookie: admin.cookie })
+    expect((await remove()).status).toBe(409)
+    expect(await testDb.select().from(authAccount).where(eq(authAccount.userId, owner.id)).all()).toHaveLength(1)
+    await testDb.insert(volumeAcl).values({ id: 'second-owner', volumeId: 'v', userId: admin.id, role: 'owner', createdAt: now }).run()
+    expect((await remove()).status).toBe(200)
+    expect(await testDb.select().from(volumeDefinitions).all()).toMatchObject([{ id: 'v', createdBy: null, visibility: 'private' }])
+    expect(await testDb.select().from(volumeAcl).all()).toMatchObject([{ userId: admin.id, role: 'owner' }])
+  })
+
+  it('keeps the surviving co-owner signed in when both removals arrive together', async () => {
+    const admin = await signUp('admin@example.org')
+    const emails = ['alice@example.org', 'bob@example.org']
+    const owners = [await signUp(emails[0]), await signUp(emails[1])]
+    const now = new Date()
+    await testDb.insert(volumeDefinitions).values({ id: 'v', name: 'Notes', type: 'local', config: '{}', createdBy: owners[0].id, visibility: 'private', createdAt: now, updatedAt: now }).run()
+    await testDb.insert(volumeAcl).values({ id: 'co-owner', volumeId: 'v', userId: owners[1].id, role: 'owner', createdAt: now }).run()
+    const results = await Promise.all(owners.map(owner => request('admin/remove-user', { userId: owner.id }, { cookie: admin.cookie })))
+    expect(results.map(r => r.status).sort()).toEqual([200, 409])
+    const remaining = results.findIndex(r => r.status === 409)
+    expect(await testDb.select().from(volumeAcl).all()).toMatchObject([{ userId: owners[remaining].id }])
+    const session = await (await getAuth()).handler(new Request(`${BASE}/api/auth/get-session`, { headers: { cookie: owners[remaining].cookie } }))
+    expect(await session.json()).toMatchObject({ user: { id: owners[remaining].id } })
+    expect((await request('sign-in/email', { email: emails[remaining], password: 'UserDeletion123!' })).status).toBe(200)
+  })
+
   it('revokes their connections before the cascade, then removes, audits and refreshes only what was theirs', async () => {
     const admin = await signUp('admin@example.com')
     const ada = await signUp('ada@example.com')

@@ -75,7 +75,9 @@ export function VolumesTab() {
               subtitle={<>
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="min-w-0 truncate font-mono" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</span>}
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
-                <span className="inline-flex shrink-0 items-center gap-1">{volume.userId === null ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.userId === null ? 'Public' : 'Private'}</span>
+                <span className="inline-flex shrink-0 items-center gap-1">{volume.visibility === 'public' ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}{volume.visibility === 'public' ? 'Public' : 'Private'}</span>
+                <span className="shrink-0">·</span>
+                <span className="truncate">{volume.visibility === 'public' ? 'Everyone in this workspace' : volume.owners.map(owner => owner.name).join(', ')}</span>
                 <span className="shrink-0">·</span>
                 <span className="shrink-0">{volume.globalAccess ? 'Every agent' : volume.attachmentCount === 0 ? 'Not added' : `Used by ${volume.attachmentCount} ${volume.attachmentCount === 1 ? 'agent' : 'agents'}`}</span>
               </>}

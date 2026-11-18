@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { useReconnectLocalVolume } from './use-volume-definitions'
+import { useReconnectLocalVolume, useVolumeDefinitions } from './use-volume-definitions'
 
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
 
@@ -18,6 +18,15 @@ function setup() {
   const wrapper = ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
   return { client, invalidated, wrapper }
 }
+
+it('preserves visibility when connected to a workspace running the single-owner API', async () => {
+  vi.mocked(apiFetch).mockResolvedValue(Response.json([{ id: 'old-private', userId: 'alice' }, { id: 'old-public', userId: null }]))
+  const { result } = renderHook(() => useVolumeDefinitions(), { wrapper: setup().wrapper })
+  await waitFor(() => expect(result.current.data).toMatchObject([
+    { visibility: 'private', supportsOwnerSharing: false, owners: [{ userId: 'alice' }] },
+    { visibility: 'public', supportsOwnerSharing: false },
+  ]))
+})
 
 describe('choosing a drive’s folder again', () => {
   it('sends the pick, then refetches the drive and the agents whose restart prompt it changes', async () => {

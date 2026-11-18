@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, user } from '@shared/lib/db/schema'
-import { attachMount } from '@shared/lib/services/mount-service'
+import { attachMount, getMountsWithHealth, removeMount, resolveMountPath, resolveVolume, setMountReadOnly } from '@shared/lib/services/mount-service'
 
 let handle: TestDatabase
 let folder: string
@@ -68,7 +68,7 @@ describe('volume definition API', () => {
     const response = await request('', 'POST', input())
     expect(response.status).toBe(201)
     const { id } = await response.json()
-    expect(await (await request()).json()).toMatchObject([{ id, userId: 'alice', canManage: true }])
+    expect(await (await request()).json()).toMatchObject([{ id, visibility: 'private', canManage: true }])
     expect(await (await request('', 'GET', undefined, 'bob')).json()).toEqual([])
     expect((await request(`/${id}`, 'PATCH', { name: 'Stolen' }, 'bob')).status).toBe(404)
     expect((await request(`/${id}`, 'DELETE', undefined, 'admin')).status).toBe(404)
@@ -77,7 +77,7 @@ describe('volume definition API', () => {
   it('lists public definitions for everyone, with admin-only management', async () => {
     expect((await request('', 'POST', { ...input(), visibility: 'public' })).status).toBe(403)
     const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
-    expect(await (await request()).json()).toMatchObject([{ id, userId: null, canManage: false }])
+    expect(await (await request()).json()).toMatchObject([{ id, visibility: 'public', canManage: false }])
     expect((await request(`/${id}`, 'DELETE')).status).toBe(404)
     expect((await request(`/${id}`, 'PATCH', { name: 'Team notes' }, 'admin')).status).toBe(200)
     expect((await request(`/${id}`, 'DELETE', undefined, 'admin')).status).toBe(200)
@@ -93,7 +93,7 @@ describe('volume definition API', () => {
   it('defaults to a public definition in non-authenticated deployments', async () => {
     vi.stubEnv('AUTH_MODE', 'false')
     expect((await request('', 'POST', input())).status).toBe(201)
-    expect(await (await request()).json()).toMatchObject([{ userId: null, canManage: true }])
+    expect(await (await request()).json()).toMatchObject([{ visibility: 'public', canManage: true }])
   })
   it('chooses a local drive’s folder again in place, for its manager only', async () => {
     const { logAuditEvent } = await import('@shared/lib/services/audit-log-service')
@@ -179,6 +179,47 @@ describe('volume browsing', () => {
     }
     expect(await (await request(`/${id}/agents`)).json()).toMatchObject({ attachments: [{ agentSlug: 'agent' }] })
   })
+  it('grants and revokes direct ownership while the agent keeps using its mount', async () => {
+    fs.writeFileSync(path.join(folder, 'report'), 'Quarterly forecast')
+    const { id } = await (await request('', 'POST', input())).json()
+    const alice = { userId: 'alice', admin: false }
+    const bob = { userId: 'bob', admin: false }
+    const mount = await attachMount('agent', id, alice)
+    for (const stranger of ['bob', 'admin']) {
+      expect((await request(`/${id}/access/search-users`, 'GET', undefined, stranger)).status).toBe(404)
+      expect((await request(`/${id}/access`, 'POST', { userId: stranger }, stranger)).status).toBe(404)
+    }
+    expect((await request(`/${id}/access`, 'POST', { userId: 'bob', role: 'viewer' })).status).toBe(400)
+    expect((await request(`/${id}/access`, 'POST', { userId: 'bob', role: 'owner' })).status).toBe(201)
+    expect((await request(`/${id}/access`, 'POST', { userId: 'bob' })).status).toBe(409)
+    expect(await (await request('', 'GET', undefined, 'bob')).json()).toMatchObject([{ id, canManage: true, owners: [
+      { userId: 'alice', role: 'owner' }, { userId: 'bob', role: 'owner' },
+    ] }])
+    expect((await request(`/${id}`, 'PATCH', { name: 'Forecasts' }, 'bob')).status).toBe(200)
+    expect(await resolveMountPath('agent', '/mounts/Notes/report', bob)).not.toBeNull()
+    expect(await setMountReadOnly('agent', mount.id, true, bob)).toBe(true)
+
+    expect((await request(`/${id}/access/bob`, 'DELETE')).status).toBe(200)
+    expect(await (await request('', 'GET', undefined, 'bob')).json()).toEqual([])
+    expect(await getMountsWithHealth('agent', bob)).toEqual([{ id: mount.id, volumeName: 'Forecasts', restricted: true }])
+    expect(await resolveMountPath('agent', '/mounts/Notes/report', bob)).toBeNull()
+    expect(await removeMount('agent', mount.id, bob)).toBe(false)
+    expect(await setMountReadOnly('agent', mount.id, false, bob)).toBe(false)
+    await expect(attachMount('agent', id, bob)).rejects.toMatchObject({ status: 404 })
+    const runtime = await resolveVolume('agent', mount.id)
+    expect(runtime).toMatchObject({ readOnly: true })
+    const file = await runtime!.ops.read('report')
+    expect(await new Response(await file.stream()).text()).toBe('Quarterly forecast')
+    expect((await request(`/${id}/access/alice`, 'DELETE')).status).toBe(409)
+  })
+
+  it('keeps an owner under concurrent removals', async () => {
+    const { id } = await (await request('', 'POST', input())).json()
+    await request(`/${id}/access`, 'POST', { userId: 'bob' })
+    const responses = await Promise.all(['alice', 'bob'].map(person => request(`/${id}/access/${person}`, 'DELETE', undefined, person)))
+    expect(responses.map(r => r.status).sort()).toEqual([200, 409])
+  })
+
   it('serves public sources to other users and hides agents they cannot read', async () => {
     fs.writeFileSync(path.join(folder, 'shared.txt'), 'Shared')
     const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
