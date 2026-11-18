@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   sessionIsActive: true,
   forkedFromSessionId: undefined as string | undefined,
   forkedFromSessionName: undefined as string | undefined,
+  notableSessions: [] as { id: string; isActive?: boolean; isAwaitingInput?: boolean }[],
+  notableReads: [] as (string | null)[],
 }))
 
 const agent: ApiAgent = {
@@ -45,7 +47,11 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSessions: () => ({ data: [] }),
+  // No `useSessions` here: the header must not read the agent's whole list.
+  useNotableSessions: (slug: string | null) => {
+    mocks.notableReads.push(slug)
+    return { data: mocks.notableSessions }
+  },
   useSession: () => ({
     data: {
       id: 'session-1',
@@ -157,11 +163,29 @@ describe('AgentHeader breadcrumbs', () => {
     mocks.sessionIsActive = true
     mocks.forkedFromSessionId = undefined
     mocks.forkedFromSessionName = undefined
+    mocks.notableSessions = []
+    mocks.notableReads = []
     vi.clearAllMocks()
   })
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('takes its activity state from the notable sessions slice, not the full list', () => {
+    mocks.notableSessions = [{ id: 'session-9', isAwaitingInput: true }]
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    expect(mocks.notableReads).toContain('test-agent')
+    expect(screen.getAllByTestId('agent-status')[0]).toHaveTextContent('needs input')
   })
 
   it('reuses the agent and session context menus on their breadcrumbs', () => {

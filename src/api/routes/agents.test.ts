@@ -666,6 +666,11 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   listCancelledWebhookTriggers: vi.fn(() => Promise.resolve([])),
 }))
 
+const mockGetSessionParticipants = vi.hoisted(() => vi.fn(async (_agentSlug: string, _sessionIds: string[]) => new Map()))
+vi.mock('@shared/lib/services/session-participants-service', () => ({
+  getSessionParticipants: mockGetSessionParticipants,
+}))
+
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
@@ -10764,6 +10769,28 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     })
   })
 
+  it('answers the first rows and the visible total with with_total=true', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo('newest', '2026-01-03T00:00:00Z'),
+      sessionInfo('middle', '2026-01-02T00:00:00Z'),
+      sessionInfo('oldest', '2026-01-01T00:00:00Z'),
+    ])
+
+    const res = await getReq(app, URL + '?limit=2&with_total=true')
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    // The same two rows, in the same order, the unlimited list starts with.
+    expect(body.sessions.map((session: { id: string }) => session.id)).toEqual(['newest', 'middle'])
+    expect(body.total).toBe(3)
+    // The list is read whole for the count; only the returned rows are enriched.
+    expect(listSessions).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), {
+      excludeAutomated: true,
+    })
+    expect(mockGetSessionParticipants).toHaveBeenCalledWith('test-agent', ['newest', 'middle'])
+  })
+
   it('accepts notable=false as the ordinary visible-list path', async () => {
     const res = await getReq(app, URL + '?notable=false&limit=2')
 
@@ -10778,6 +10805,7 @@ describe('sessions list query contract — GET /:id/sessions', () => {
   it.each([
     ['unsupported sort', 'sort_by=created_at'],
     ['malformed boolean', 'notable=yes'],
+    ['malformed total flag', 'with_total=1'],
     ['numeric boolean', 'notable=1'],
     ['zero limit', 'limit=0'],
     ['negative limit', 'limit=-1'],

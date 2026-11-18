@@ -3,7 +3,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
-import { useSessions, useSession } from '@renderer/hooks/use-sessions'
+import { useNotableSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -79,7 +79,10 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const dashboardHeader = useDashboardHeader(slug, dashboardSlug)
 
   const { data: agent } = useAgent(slug)
-  const { data: sessions } = useSessions(slug)
+  // Only for the two activity flags below: the notable slice holds every live
+  // session, where the full list would read (and refetch, on every session
+  // event) every session the agent has.
+  const { data: sessions } = useNotableSessions(slug)
   const { data: session } = useSession(sessionId, slug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)

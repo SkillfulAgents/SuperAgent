@@ -1062,6 +1062,56 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       queries.unmount()
     })
 
+    it('treats a session the sidebar\'s recent slice holds as listed, where the tab has no full list', async () => {
+      const RECENT = ['sessions', 'agent-a', 'recent', 6]
+      const NOTABLE = ['sessions', 'agent-a', 'notable', 25]
+      const server = {
+        agents: [{ slug: 'agent-a', displaySlug: 'agent-a', status: 'running' }],
+        sessions: [{ id: 's1', agentSlug: 'agent-a', name: 'Weekly report', isActive: false, isAwaitingInput: false }],
+        notable: [] as unknown[],
+      }
+      // What a session page mounts: the row's slice and the header's.
+      const queries = mountQueries(
+        [['agents'], ['agents', 'agent-a'], RECENT, NOTABLE],
+        (key) => key[0] === 'agents' ? (key.length === 1 ? server.agents : server.agents[0]) : key[2] === 'notable' ? server.notable : server.sessions,
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      queries.reset()
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      const es = getLatestEventSource()
+
+      // It starts: the row and the agent flip in place, and only the slice of
+      // live sessions, which does not hold it yet, is read again. Without the
+      // recent slice counting as a list of rows, every start would read both
+      // slices and the whole agents list.
+      await act(async () => {
+        server.sessions = [{ ...server.sessions[0], isActive: true }]
+        server.notable = server.sessions
+        server.agents = [{ ...server.agents[0], hasActiveSessions: true } as never]
+        simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-a', sessionId: 's1' })
+        await vi.advanceTimersByTimeAsync(500)
+      })
+      expect(queryClient.getQueryData<{ isActive?: boolean }[]>(RECENT)?.[0].isActive).toBe(true)
+      expect(queryClient.getQueryData<{ hasActiveSessions?: boolean }[]>(['agents'])?.[0].hasActiveSessions).toBe(true)
+      expect(queries.count(RECENT)).toBe(0)
+      expect(queries.count(NOTABLE)).toBe(1)
+      expect(queries.count(['agents'])).toBe(0)
+      expect(queries.count(['agents', 'agent-a'])).toBe(0)
+
+      // It finishes: the header's slice, read again since, holds every live
+      // session, so the agent's rollup comes down with the row, at once.
+      await act(async () => {
+        simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+      })
+      expect(queryClient.getQueryData<{ isActive?: boolean }[]>(RECENT)?.[0].isActive).toBe(false)
+      expect(queryClient.getQueryData<{ hasActiveSessions?: boolean }[]>(['agents'])?.[0].hasActiveSessions).toBe(false)
+      queries.unmount()
+    })
+
     it('keeps a status patch when a read from before the event lands after it', async () => {
       const server = {
         agents: [{ slug: 'agent-a', displaySlug: 'agent-a', hasActiveSessions: false }],
