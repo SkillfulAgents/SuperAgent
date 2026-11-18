@@ -3,7 +3,7 @@
  * stores that hold it today. Three snapshots, one per lifetime; a caller
  * asks for the ones it needs.
  */
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { agentRegistry, type Sender, type Source } from '@shared/lib/agent-actor'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 import { integrationMessageDisplaySchema } from '@shared/lib/agent-integrations/message-display-schema'
@@ -141,6 +141,20 @@ export async function getMessageContext(agentSlug: string, sessionId: string): P
   const sender = automationSender(meta)
   const sentAt = Date.parse(meta?.scheduledExecutionAt ?? meta?.createdAt ?? '')
   return sender && !Number.isNaN(sentAt) ? { sender, source: { kind: 'automation' }, sentAt } : undefined
+}
+
+/** The newest person who wrote in the app in this session, when one did. */
+export async function getNewestAppSenderId(agentSlug: string, sessionId: string): Promise<string | undefined> {
+  const row = await db.select({ userId: messageAuthor.userId }).from(messageAuthor)
+    .where(and(
+      eq(messageAuthor.agentSlug, agentSlug),
+      eq(messageAuthor.sessionId, sessionId),
+      isNotNull(messageAuthor.userId),
+    ))
+    .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
+    .limit(1)
+    .get()
+  return row?.userId ?? undefined
 }
 
 type ChatMapping = NonNullable<Awaited<ReturnType<typeof readChatMapping>>>

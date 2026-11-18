@@ -22,7 +22,7 @@ import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { userExists } from '@shared/lib/services/user-profile-service'
-import { getAgentContext, getMessageContext, getSessionContext } from '@shared/lib/services/context-service'
+import { getAgentContext, getMessageContext, getNewestAppSenderId, getSessionContext } from '@shared/lib/services/context-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -106,14 +106,23 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
 
 /**
  * The person whose message the caller session acts on, when one is known: its
- * sender, or the person another agent sent it for.
+ * sender, or the person another agent sent it for. An integration message
+ * names no app user: the newest person who wrote in the app stands in.
  * Attribution is optional: a failed read must never block the invoke.
  */
 async function getTriggeringUserId(agentSlug: string, sessionId: string): Promise<string | undefined> {
   try {
     const sender = (await getMessageContext(agentSlug, sessionId))?.sender
-    if (sender?.kind === 'agent') return sender.onBehalfOf
-    return sender?.kind === 'user' ? sender.userId : undefined
+    switch (sender?.kind) {
+      case 'user':
+        return sender.userId
+      case 'agent':
+        return sender.onBehalfOf
+      case 'external':
+        return await getNewestAppSenderId(agentSlug, sessionId)
+      default:
+        return undefined
+    }
   } catch (error) {
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
       agentSlug,

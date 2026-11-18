@@ -31,7 +31,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
   agentCatalog: { get: async (slug: string) => (slug === AGENT ? { slug } : null) },
 }))
 
-import { getAgentContext, getMessageContext, getSessionContext } from './context-service'
+import { getAgentContext, getMessageContext, getNewestAppSenderId, getSessionContext } from './context-service'
 
 const AGENT = 'support-agent'
 const DANA = 'user-dana'
@@ -144,6 +144,16 @@ describe('getMessageContext', () => {
     })
     // A saved sender answers by itself: the session's metadata is not read.
     expect(sessions.metadata).not.toHaveBeenCalled()
+  })
+
+  it('names the newest person who wrote in the app, past a newer integration message', async () => {
+    expect(await getNewestAppSenderId(AGENT, 'shared-session')).toBeUndefined()
+
+    await slackThread('shared-session')
+    await author('ben-message', { userId: BEN }, 1_000)
+    await author('dana-message', { userId: DANA }, 2_000)
+    await author('slack-message', { integrationId: 'slack-1', display: '{}' }, 3_000)
+    expect(await getNewestAppSenderId(AGENT, 'shared-session')).toBe(DANA)
   })
 
   it('names the automation for a webhook run with no saved message', async () => {

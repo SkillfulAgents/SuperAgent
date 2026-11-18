@@ -1092,6 +1092,30 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([expect.objectContaining({ userId: OWNER_USER_ID })])
   })
 
+  it('attributes a turn on an integration message to the newest person who wrote in the app', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'slack-caller-session'
+    await grantCallerOwnerTargetAccess()
+    // Other wrote in the app earlier. The turn runs on a message from Slack. The owner created the session.
+    await testDb.insert(schema.messageAuthor).values({
+      id: 'other-app-message', sessionId: callerSessionId, agentSlug: CALLER_SLUG, userId: OTHER_USER_ID, createdAt: new Date(),
+    })
+    const callerTurn = (slug?: string, sessionId?: string) => slug === CALLER_SLUG && sessionId === callerSessionId
+    mockIsSessionActive.mockImplementation(callerTurn)
+    mockTurnMessage.mockImplementation((slug, sessionId) =>
+      callerTurn(slug, sessionId)
+        ? { uuid: 'slack-message', sentAt: Date.now(), from: { sender: { kind: 'external', integrationId: 'slack-1', name: 'Priya' }, source: { kind: 'integration', integrationId: 'slack-1' } } }
+        : null)
+    mockGetSessionMetadata.mockResolvedValue({ name: 'Slack thread', createdAt: new Date().toISOString(), createdByUserId: OWNER_USER_ID })
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', _callerSessionId: callerSessionId })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: OTHER_USER_ID })])
+  })
+
   it('still invokes when the creator of the caller session cannot be read', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
