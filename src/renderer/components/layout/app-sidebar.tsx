@@ -9,7 +9,7 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { ContextMenuMoreButton } from '@renderer/components/ui/context-menu'
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { targetIsRemote } from '@renderer/lib/api-target'
@@ -580,6 +580,11 @@ const AgentMenuItemInner = React.forwardRef<
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const toggleShowAll = () => {
+    if (showAll) requestAnimationFrame(() => rowRef.current?.scrollIntoView({ block: 'nearest' }))
+    setShowAll(!showAll)
+  }
   const [showSkeleton, setShowSkeleton] = useState(false)
   const memberCount = agentMemberCount(agent.slug)
   const isShared = isAuthMode && memberCount > 1
@@ -672,7 +677,7 @@ const AgentMenuItemInner = React.forwardRef<
             isActive={isSelected}
             className={cn('group/agent-row relative h-11 gap-1.5 overflow-visible pl-[50px]', SIDEBAR_FILE_DROP_CUE)}
           >
-            <div {...dragHandlers}>
+            <div {...dragHandlers} ref={rowRef}>
               {/* Stretch the native link across the row; the roster and
                   chevron sit above it as separate interactive controls. */}
               <AppLink
@@ -827,7 +832,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS, showAll && '[&_a]:scroll-mb-8')}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -849,18 +854,23 @@ const AgentMenuItemInner = React.forwardRef<
                       />
                     ))}
                     {hasMore && (
-                      <SidebarMenuSubItem>
+                      // `!sticky` beats the tree connectors' `[&>li]:relative`; the pinned pill covers their gutter.
+                      <SidebarMenuSubItem
+                        className={cn(showAll && '!sticky bottom-0 z-10 -ml-2 rounded-item bg-black/[0.06] pl-2 backdrop-blur-xl before:!hidden after:!hidden dark:bg-white/10')}
+                      >
                         <SidebarMenuSubButton
                           asChild
-                          className="text-muted-foreground"
+                          className={cn('text-muted-foreground', showAll && 'hover:bg-sidebar-foreground/10 active:bg-sidebar-foreground/10')}
                         >
                           <button
-                            onClick={() => setShowAll((prev) => !prev)}
-                            className="w-full"
+                            onClick={toggleShowAll}
+                            aria-expanded={showAll}
+                            className="w-full focus-visible:ring-inset"
                           >
                             <span>
                               {showAll ? 'Show less' : `Show all (${sessions?.length})`}
                             </span>
+                            <ChevronDown className={cn('ml-auto !size-3.5 transition-transform', showAll && 'rotate-180')} aria-hidden="true" />
                           </button>
                         </SidebarMenuSubButton>
                       </SidebarMenuSubItem>
