@@ -131,14 +131,9 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
-    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
-    if ('model' in body) updates.model = parsed.data.model ?? null
-    if ('effort' in body) updates.effort = parsed.data.effort ?? null
-    if ('speed' in body) updates.speed = parsed.data.speed ?? null
-
-    await assertConnectionSelectionAccess(updates.llmProviderId, trigger?.llmProviderId)
-    const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
+    // The parsed patch has a key only where the body had one, which is what the update reads.
+    await assertConnectionSelectionAccess(parsed.data.llmProviderId, trigger?.llmProviderId)
+    const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, parsed.data)
     if (!updated) {
       return c.json({ error: 'Trigger not found or cancelled' }, 404)
     }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { Bot, Search } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
@@ -7,8 +7,8 @@ import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avat
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSearch } from '@renderer/context/search-context'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
+import { allSessionsQueryOptions } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
-import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
 import { compactAgo } from '@renderer/lib/last-run'
@@ -29,14 +29,10 @@ export function SearchDialog() {
   const isMobile = useIsMobile()
   const { data: agents } = useAgents()
 
+  const queryClient = useQueryClient()
   const sessionQueries = useQueries({
     queries: (agents ?? []).map((a) => ({
-      queryKey: ['sessions', a.slug],
-      queryFn: async () => {
-        const res = await apiFetch(`/api/agents/${a.slug}/sessions`)
-        if (!res.ok) throw new Error('Failed to fetch sessions')
-        return res.json() as Promise<ApiSession[]>
-      },
+      ...allSessionsQueryOptions(queryClient, a.slug),
       enabled: open,
       staleTime: 30_000,
     })),

@@ -11,7 +11,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import type { AgentActor } from '@shared/lib/agent-actor'
-import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { ContainerNotFoundError } from '@shared/lib/container/types'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
@@ -52,9 +52,6 @@ export async function forkSession(
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
   const actor = agentRegistry.get(slug)
-  if ((await actor.sessions.live(sourceId)).isActive) {
-    throw new SessionForkFailedError(409, 'Session is currently running')
-  }
 
   const [known, metadataMap] = await Promise.all([
     actor.sessions.isKnown(sourceId),
@@ -77,9 +74,6 @@ export async function forkSession(
   try {
     forked = await actor.sessions.fork(sourceId)
   } catch (error) {
-    if (error instanceof ContainerConflictError) {
-      throw new SessionForkFailedError(409, error.message)
-    }
     if (error instanceof ContainerNotFoundError) {
       throw new SessionForkFailedError(404, error.message)
     }

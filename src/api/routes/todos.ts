@@ -14,9 +14,11 @@
 import { Hono, type Context } from 'hono'
 import type { z } from 'zod'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { normalizeWorkspacePath } from '@shared/lib/agent-actor/workspace-path'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import type { TodoRow } from '@shared/lib/db/schema'
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import {
@@ -158,6 +160,23 @@ async function canAssign(c: Context, agentSlug: string): Promise<boolean> {
   return (await agentExists(agentSlug)) && (await getReadableAgentIds(c, [agentSlug])).has(agentSlug)
 }
 
+/**
+ * The refusal for a connection this person may not pick for a draft: one that
+ * is gone, or someone else's own. Checked as every other model picker's is,
+ * so a draft does not take a pick its start would be refused for. `currentId`
+ * is the connection the draft already has, which it may keep.
+ */
+async function connectionRefusal(llmProviderId: string | null | undefined, currentId?: string | null): Promise<Response | null> {
+  try {
+    await assertConnectionSelectionAccess(llmProviderId, currentId)
+    return null
+  } catch (error) {
+    const refused = findAgentRuntimeError(error)
+    if (!refused) throw error
+    return refused.toHttpResponse()
+  }
+}
+
 // GET /api/todos — the person's board, in board order.
 todosRouter.get('/', async (c) => {
   const rows = await listTodos(getCurrentUserId(c))
@@ -174,6 +193,8 @@ todosRouter.post('/', async (c) => {
   if (input.agentSlug && !(await canAssign(c, input.agentSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
+  const refusal = await connectionRefusal(input.llmProviderId)
+  if (refusal) return refusal
   const row = await createTodo(getCurrentUserId(c), input)
   return c.json(await viewOf(c, row), 201)
 })
@@ -204,6 +225,8 @@ todosRouter.patch('/:id', async (c) => {
   const id = c.req.param('id')
   const before = await getTodo(userId, id)
   if (!before) return c.json({ error: 'Todo not found' }, 404)
+  const refusal = await connectionRefusal(patch.llmProviderId, before.llmProviderId)
+  if (refusal) return refusal
   // Attachments live in the agent's workspace, so the agent is fixed while there are any.
   const agent = patch.newAgent ? null : patch.agentSlug !== undefined ? patch.agentSlug : before.agentSlug
   const stored = parseTodoAttachments(before.attachments)

@@ -263,6 +263,22 @@ test.describe('File Preview', () => {
     await expect(trayHeader).not.toBeVisible({ timeout: 5000 })
   })
 
+  test('an open file reloads when it changes on disk', async ({ page }) => {
+    await agentPage.createAgent(`FileReload ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+
+    // Written with no message sent and nothing clicked, like a job the agent left running.
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nNew line, longer.\n')
+    await expect(markdown(page).getByText('New line, longer.')).toBeVisible({ timeout: 10000 })
+    await expect(markdown(page).getByText('Old line.')).toHaveCount(0)
+  })
+
   test('re-delivering same file refreshes content', async ({ page }) => {
     await agentPage.createAgent(`FileRedeliver ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
@@ -287,6 +303,34 @@ test.describe('File Preview', () => {
     await secondPill.click()
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 2' })).toBeVisible({ timeout: 10000 })
+  })
+
+  test('highlights what changed in an open file since the last turn, behind a Show changes toggle', async ({ page }) => {
+    await agentPage.createAgent(`FileEdits ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nOld line.\n')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'report.md').first().click()
+    await expect(markdown(page).getByText('Old line.')).toBeVisible({ timeout: 10000 })
+    const showEdits = page.getByTestId('file-preview-show-edits')
+    await expect(showEdits).toHaveCount(0)
+
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nNew line.\n')
+    const changed = markdown(page).locator('[data-edit="changed"]')
+    await expect(changed).toHaveText('New line.', { timeout: 10000 })
+    await expect(showEdits).toHaveAttribute('aria-pressed', 'true')
+
+    // A new turn starts a new highlight at the next change: the earlier one is no longer tinted.
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report\n\nKept line.\n\nNew line.\n\nAdded line.\n')
+    await expect(changed).toHaveText('Added line.', { timeout: 10000 })
+
+    await showEdits.click()
+    await expect(changed).toHaveCount(0)
+    await expect(markdown(page).getByText('Added line.')).toBeVisible()
   })
 
   test('renders CSV as a table and supports the raw toggle', async ({ page }) => {

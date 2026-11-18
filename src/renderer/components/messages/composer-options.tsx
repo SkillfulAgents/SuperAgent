@@ -7,6 +7,7 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import { isFamilyAlias } from '@shared/lib/llm-provider/model-catalog-schema'
 import type { LlmProviderId } from '@shared/lib/config/settings'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import { bestAllowedModel } from '@shared/lib/llm-provider/model-availability'
 import { useModelLock } from '@renderer/hooks/use-model-lock'
 import { useModelAvailabilities } from '@renderer/hooks/use-provider-model-availability'
@@ -58,7 +59,7 @@ export interface ComposerOptionsState {
    * a still-loading preferences query — and would override the actual model of
    * a session that carries none in its metadata (e.g. trigger-created).
    */
-  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }
+  toRuntimeOptions(): RuntimeOptions
 }
 
 /** Submit lifecycle used by composer hosts; presentation-only consumers only need the state above. */
@@ -69,7 +70,7 @@ export interface ComposerOptionsController extends ComposerOptionsState {
    * must not be overwritten by a session-detail refetch. Afterwards, newer
    * initial values are authoritative (another window may have spoken).
    */
-  markSubmitted(options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }): void
+  markSubmitted(options: RuntimeOptions): void
 }
 
 /**
@@ -89,21 +90,19 @@ export function findCatalogModel(
 }
 
 export interface UseComposerOptionsArgs {
-  initialLlmProviderId?: string | null
-  agentDefaultLlmProviderId?: string | null
   sessionId?: string
-  /** Effort last used on this session, seeds the selector if provided. */
-  initialEffort?: EffortLevel
-  /** Speed last used on this session, seeds the selector if provided. */
-  initialSpeed?: SpeedLevel
-  /** Authoritative model last used on this session. */
-  initialModel?: string
-  /** The agent's own default model, if set. Slots between a session's initial model and the app-wide default. */
-  agentDefaultModel?: string
-  /** The agent's own default effort, if set. Slots between a session's initial effort and the app-wide default. */
-  agentDefaultEffort?: EffortLevel
-  /** The agent's own default speed, if set. Slots between a session's initial speed and the built-in 'normal'. */
-  agentDefaultSpeed?: SpeedLevel
+  /**
+   * The authoritative runtime options to start from, e.g. the ones last used
+   * on this session; each knob it has seeds the picker. A `null` connection
+   * is a pick that names none, which is not the same as leaving it out.
+   */
+  initial?: RuntimeOptions
+  /**
+   * The agent's own defaults (see `agentDefaultRuntimeOptions`). Each knob
+   * slots between `initial` and the app-wide default; speed falls back to the
+   * built-in 'normal'.
+   */
+  agentDefault?: RuntimeOptions
   /**
    * Identity of the agent the defaults belong to. When it changes (quick-dispatch
    * switching agents) a locked, untouched selection unlocks and re-adopts the new
@@ -128,20 +127,19 @@ export interface UseComposerOptionsArgs {
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsController {
+  const { sessionId, agentKey, agentDefaultsReady = true, followDefaults = false } = args
   const {
-    initialEffort,
-    initialSpeed,
-    initialModel,
-    initialLlmProviderId,
-    agentDefaultLlmProviderId,
-    sessionId,
-    agentDefaultModel,
-    agentDefaultEffort,
-    agentDefaultSpeed,
-    agentKey,
-    agentDefaultsReady = true,
-    followDefaults = false,
-  } = args
+    effort: initialEffort,
+    speed: initialSpeed,
+    model: initialModel,
+    llmProviderId: initialLlmProviderId,
+  } = args.initial ?? {}
+  const {
+    llmProviderId: agentDefaultLlmProviderId,
+    model: agentDefaultModel,
+    effort: agentDefaultEffort,
+    speed: agentDefaultSpeed,
+  } = args.agentDefault ?? {}
 
   // Picker-safe endpoint — readable by non-admin users too, unlike the
   // admin-gated full settings (which would leave them an empty catalog).
@@ -297,7 +295,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [connections])
 
   const markSubmitted = useCallback(
-    (options: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; llmProviderId?: string }) => {
+    (options: RuntimeOptions) => {
       if (options.llmProviderId === effectiveLlmProviderId) connectionDirty.current = false
       // Do not clear a newer selection if a request somehow completed after
       // the picker changed again. MessageInput disables the picker in flight,
@@ -418,7 +416,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [lockedModel, substituteModel, lockedReason, lockedAction, lockedConnection?.id, openAvailabilityAction])
 
   const toRuntimeOptions = useCallback(
-    () => ({
+    (): RuntimeOptions => ({
       ...(effortSeededRef.current ? { effort } : {}),
       ...(speedSeededRef.current ? { speed } : {}),
       // An untouched new chat sends nothing: the server walks the same list.

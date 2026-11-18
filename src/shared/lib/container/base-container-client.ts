@@ -26,7 +26,7 @@ import type {
   StopResult,
   StreamMessage,
 } from './types'
-import { ContainerConflictError, ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
+import { ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
   ObserveUnexpectedDeathInput,
   RuntimeDeathProbe,
@@ -1795,10 +1795,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         '[ContainerClient] forkSession: container returned 404 — the agent container predates the fork endpoint; restart the agent to pick up the current image'
       )
       return null
-    }
-    if (response.status === 409) {
-      const body = (await response.json().catch(() => ({}))) as { error?: string }
-      throw new ContainerConflictError(body.error ?? 'Session is currently running')
     }
     if (!response.ok) {
       const text = await response.text().catch(() => '')

@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import { llmConnections, user } from '../db/schema'
 import { connectionConfigSchema } from './connection-schema'
+import { globalFeed } from '../notifications/global-feed'
 
 const state = vi.hoisted(() => ({ db: null as TestDatabase['db'] | null, exchange: vi.fn() }))
 vi.mock('../db', () => ({ get db() { return state.db } }))
@@ -114,5 +115,38 @@ describe('app-owned subscription credentials', () => {
     state.exchange.mockImplementation(async old => ({ ...fresh, accessToken: old.refreshToken }))
     const [one, two] = await Promise.all([resolveConnectionCredential('one'), resolveConnectionCredential('two')])
     expect(one.accessToken).toBe('refresh-old'); expect(two.accessToken).toBe('other-refresh')
+  })
+})
+
+describe('a sign-in the app could not refresh', () => {
+  const announced = (publish: { mock: { calls: Parameters<typeof globalFeed.publish>[] } }) =>
+    publish.mock.calls.map(([event]) => event).filter((event) => event.type === 'llm_connections_changed')
+
+  it('is announced once it needs a reconnect: to everyone when shared, to its owner when personal', async () => {
+    const publish = vi.spyOn(globalFeed, 'publish')
+    state.exchange.mockRejectedValue(new CredentialRefreshError(401))
+    await seed()
+    await expect(resolveConnectionCredential('connection')).rejects.toMatchObject({ status: 401 })
+    expect(announced(publish)).toEqual([{ type: 'llm_connections_changed' }])
+
+    await handle.db.insert(user).values({ id: 'owner', name: 'Owner', email: 'owner@example.test' }).run()
+    await seed(expired, 'personal')
+    await handle.db.update(llmConnections).set({ userId: 'owner' }).where(eq(llmConnections.id, 'personal')).run()
+    await expect(resolveConnectionCredential('personal')).rejects.toMatchObject({ status: 401 })
+    expect(announced(publish)).toEqual([{ type: 'llm_connections_changed' }, { type: 'llm_connections_changed', recipientUserId: 'owner' }])
+
+    // Asked again, it refuses from the saved failure: nothing new to tell.
+    await expect(resolveConnectionCredential('connection')).rejects.toMatchObject({ status: 401 })
+    expect(announced(publish)).toHaveLength(2)
+    publish.mockRestore()
+  })
+
+  it('is not announced while the failure will be retried: no list shows it', async () => {
+    const publish = vi.spyOn(globalFeed, 'publish')
+    state.exchange.mockRejectedValue(new CredentialRefreshError(503))
+    await seed()
+    await expect(resolveConnectionCredential('connection')).rejects.toMatchObject({ status: 503 })
+    expect(announced(publish)).toEqual([])
+    publish.mockRestore()
   })
 })

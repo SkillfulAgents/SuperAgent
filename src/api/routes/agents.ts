@@ -570,6 +570,7 @@ const sessionsListQuerySchema = z.object({
   sortBy: z.literal('last_activity_at').optional(),
   notable: strictBooleanQuerySchema.optional(),
   limit: positiveIntegerQuerySchema.optional(),
+  withTotal: strictBooleanQuerySchema.optional(),
 })
 
 const agentsListQuerySchema = z.object({
@@ -2066,6 +2067,10 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 // those targeted IDs with server-visible sessions before sort_by and limit,
 // avoiding a read of every session. Supported ordering is deterministic
 // newest-first activity via sort_by=last_activity_at.
+// ?with_total=true (visible-list path only) answers { sessions, total }: the
+// limited rows plus how many visible sessions there are, for a caller that
+// shows the first few and a count (the sidebar). Only the returned rows are
+// enriched, so the participants lookup is bounded by the limit.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
@@ -2073,10 +2078,12 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const sortByRaw = c.req.query('sort_by')
     const notableRaw = c.req.query('notable')
     const limitRaw = c.req.query('limit')
+    const withTotalRaw = c.req.query('with_total')
     const parsedQuery = sessionsListQuerySchema.safeParse({
       ...(sortByRaw === undefined ? {} : { sortBy: sortByRaw }),
       ...(notableRaw === undefined ? {} : { notable: notableRaw }),
       ...(limitRaw === undefined ? {} : { limit: limitRaw }),
+      ...(withTotalRaw === undefined ? {} : { withTotal: withTotalRaw }),
     })
     if (!parsedQuery.success) {
       return c.json({ error: 'Invalid sessions query' }, 400)
@@ -2088,6 +2095,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       ? undefined
       : Math.min(parsedQuery.data.limit, SESSIONS_LIST_MAX_LIMIT)
     const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
+    const withTotal = parsedQuery.data.withTotal === true && !isNotable
 
     if (isNotable) {
       // Both halves of the unread projection are table lookups — overlap them,
@@ -2126,17 +2134,20 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     // Independent lookups (session index, notifications table, unread
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
-    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
+    const [listedSessions, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionedSessionIds] = await Promise.all([
       actor.sessions.list({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
-        ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+        // The total is the length of the visible list, so that list is asked
+        // for whole and cut here. The index read is the same either way.
+        ...(resultLimit === undefined || withTotal ? {} : { limit: resultLimit }),
       }),
       getSessionIdsWithUnreadNotifications(slug, undefined, getCurrentUserId(c)),
       getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       listPendingWakesByAgent(slug),
       isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
     ])
+    const sessionList = withTotal && resultLimit !== undefined ? listedSessions.slice(0, resultLimit) : listedSessions
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const [live, participants] = await Promise.all([
       actor.live(),
@@ -2161,7 +2172,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       }
     })
 
-    return c.json(sessionsWithStatus)
+    return c.json(withTotal ? { sessions: sessionsWithStatus, total: listedSessions.length } : sessionsWithStatus)
   } catch (error) {
     console.error('Failed to fetch sessions:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)
@@ -2846,6 +2857,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+    // Per message, not a runtime option: false appends without starting a turn.
+    let shouldQuery: boolean | undefined = typeof body.shouldQuery === 'boolean' ? body.shouldQuery : undefined
 
     // The delivery below is keyed by session id alone: an unowned id would
     // cancel another agent's pending input request, re-bind its session to
@@ -2861,7 +2874,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // only notifies them: it joins the transcript, and no turn runs.
     const mentions = await readSessionMentions(c, agentSlug, content.trim())
     if ('error' in mentions) return c.json({ error: mentions.error }, 400)
-    if (mentions.silent) runtimeOptions.shouldQuery = false
+    if (mentions.silent) shouldQuery = false
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2875,7 +2888,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // cannot bind outright is one it may only continue, and the delivery
     // refuses it unless the session still holds it. An append starts no turn
     // and keeps the session's runtime, so its connection is not looked at.
-    const requireStoredProvider = runtimeOptions.shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
+    const requireStoredProvider = shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
 
     const metadataUpdates: Partial<SessionMetadata> = {}
     if (isAuthMode()) {
@@ -2904,7 +2917,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         sessionId,
         content: await attributedForAgent(c, agentSlug, text),
         uuid: messageUuid,
-        options: runtimeOptions,
+        options: { ...runtimeOptions, ...(shouldQuery !== undefined ? { shouldQuery } : {}) },
         metadataUpdates,
         promote: true,
         requireStoredProvider,
@@ -2922,7 +2935,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       throw error
     }
     const queued = delivery.status !== 'sent' || delivery.queued
-    if (delivery.status === 'sent' && runtimeOptions.shouldQuery !== false) {
+    if (delivery.status === 'sent' && shouldQuery !== false) {
       await nameSessionFromFirstHumanMessage(actor, sessionId, text, agent.name)
     }
     if (mentions.teammates.length > 0) {
@@ -7244,6 +7257,9 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
+    // What an open preview compares to learn the file changed, from a HEAD.
+    // Weak, so no client sends it back as an If-Range this route does not read.
+    c.header('ETag', `W/"${stat.mtimeMs}-${stat.size}"`)
 
     if (heicPreview) {
       if (c.req.method === 'HEAD') return c.body(null)

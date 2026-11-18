@@ -656,7 +656,7 @@ export interface DeliverRequest {
    * and starts no turn: nothing is cancelled or marked, and the running
    * turn's runtime is kept.
    */
-  options?: RuntimeOptions & { isAutomated?: boolean }
+  options?: RuntimeOptions & { shouldQuery?: boolean; isAutomated?: boolean }
   /** Stored with the session when the message is sent, besides the runtime selection. */
   metadataUpdates?: Partial<SessionMetadata>
   /** A person sent it: a hidden automation becomes a regular session first. */

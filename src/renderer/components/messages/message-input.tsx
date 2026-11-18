@@ -45,7 +45,7 @@ import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useRenderTracker } from '@renderer/lib/perf'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import { agentDefaultRuntimeOptions, type RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
 import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
@@ -61,13 +61,8 @@ interface MessageInputProps {
   onMessageUuidAssigned?: (localId: string, uuid: string, queued: boolean) => void
   /** Called when the POST fails, so the caller can drop the optimistic copy. */
   onMessageFailed?: (localId: string) => void
-  /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
-  initialEffort?: EffortLevel
-  /** Speed last used on this session; seeds the composer selector. Defaults to 'normal' when absent. */
-  initialSpeed?: SpeedLevel
-  /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
-  initialLlmProviderId?: string | null
-  initialModel?: string
+  /** The runtime options last used on this session; they seed the composer's picker. Absent knobs fall back to the agent's, then the app's, defaults. */
+  initialRuntimeOptions?: RuntimeOptions
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
   /**
@@ -99,7 +94,7 @@ function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): 
   return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
 }
 
-export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests, onNotifiesOnlyChange }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialRuntimeOptions, registerSnapshot, suspended = false, inputRequests, onNotifiesOnlyChange }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const isMobile = useIsMobile()
   const { data: voiceAgent } = useAgent(agentSlug)
@@ -113,16 +108,10 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
-    initialEffort,
-    initialSpeed,
-    initialModel,
-    initialLlmProviderId,
+    initial: initialRuntimeOptions,
     sessionId: sessionId ?? undefined,
     followDefaults: !sessionId,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
+    agentDefault: agentDefaultRuntimeOptions(agentPrefs),
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })

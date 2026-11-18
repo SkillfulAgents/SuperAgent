@@ -1,16 +1,18 @@
 import { invalidateNotificationCaches } from '@renderer/lib/notification-read-cache'
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
-import { useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useCallback, useSyncExternalStore } from 'react'
+import { useQuery, useMutation, useQueryClient, hashKey, skipToken, type QueryClient, type QueryKey } from '@tanstack/react-query'
+import { z } from 'zod'
+import { RECENT_SESSIONS_LIMIT, recentSessionsKey, seedCreatedSessionInRecent, sessionTotalKey, writeFullListToRecent } from '@renderer/lib/agent-cache'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
 import { useSendMessage } from '@renderer/hooks/use-messages'
 import { useResolvedAgentId, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
-import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
+import { applySessionActivityStatus, patchSessionInCaches, removeSessionFromCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
 import { TODOS_QUERY_KEY } from './todos-query-key'
 
@@ -35,15 +37,31 @@ function resolveAgentSlugFromCache(queryClient: QueryClient, agentSlug: string):
   return resolveRouteAgentId(agentSlug, agents) ?? agentSlug
 }
 
+/**
+ * Every session of an agent. Shared by every reader of ['sessions', slug], so
+ * each read also brings the sidebar's recent slice up to date
+ * (`writeFullListToRecent`). `slug` is the canonical agent id.
+ */
+export function allSessionsQueryOptions(queryClient: QueryClient, slug: string | null) {
+  return {
+    queryKey: ['sessions', slug],
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ApiSession[]> => {
+      const res = await apiFetch(`/api/agents/${slug}/sessions`, { signal })
+      if (!res.ok) throw new Error('Failed to fetch sessions')
+      const sessions = await res.json() as ApiSession[]
+      // A read an invalidation replaced must not write its older rows into the slice.
+      if (signal.aborted) throw signal.reason
+      if (slug) writeFullListToRecent(queryClient, slug, sessions)
+      return sessions
+    },
+  }
+}
+
 export function useSessions(agentSlug: string | null, options?: { staleTime?: number }) {
   const resolvedSlug = useResolvedAgentSlug(agentSlug)
+  const queryClient = useQueryClient()
   return useQuery<ApiSession[]>({
-    queryKey: ['sessions', resolvedSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${resolvedSlug}/sessions`)
-      if (!res.ok) throw new Error('Failed to fetch sessions')
-      return res.json()
-    },
+    ...allSessionsQueryOptions(queryClient, resolvedSlug),
     enabled: !!resolvedSlug,
     // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
     ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
@@ -71,6 +89,88 @@ export function useNotableSessions(agentSlug: string | null, options?: { limit?:
     // Unset stays unset: an explicit `staleTime: undefined` replaces the client's default with 0.
     ...(options?.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   })
+}
+
+/**
+ * The sidebar's read of an agent's sessions: the newest few rows and how many
+ * there are, in one bounded request. An unlimited read answers every session
+ * and, in auth mode, looks up the participants of every one; a row shows five.
+ *
+ * Shared by the row's query and its hover prefetch, so both land on one key.
+ * `slug` is the canonical agent id. The count goes to its own cache entry
+ * (`useSessionTotal`): the list entry stays a plain array, the shape every
+ * cache updater of session lists patches.
+ */
+export function recentSessionsQueryOptions(queryClient: QueryClient, slug: string | null) {
+  return {
+    queryKey: recentSessionsKey(slug),
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ApiSession[]> => {
+      const res = await apiFetch(`/api/agents/${slug}/sessions?limit=${RECENT_SESSIONS_LIMIT}&with_total=true`, { signal })
+      if (!res.ok) throw new Error('Failed to fetch sessions')
+      const body = recentSessionsResponseSchema.parse(await res.json())
+      // The count is written here, beside the read rather than through it, so
+      // a read the query has dropped (an invalidation restarts it) must not
+      // write: its reply can land after the newer read's and undo its count.
+      if (signal.aborted) throw signal.reason
+      // A server from before `with_total` answers the limited rows alone.
+      if (Array.isArray(body)) {
+        queryClient.removeQueries({ queryKey: sessionTotalKey(slug), exact: true })
+        return body as ApiSession[]
+      }
+      queryClient.setQueryData(sessionTotalKey(slug), body.total)
+      return body.sessions as ApiSession[]
+    },
+  }
+}
+
+const recentSessionsResponseSchema = z.union([
+  z.array(z.unknown()),
+  z.object({ sessions: z.array(z.unknown()), total: z.number() }),
+])
+
+/**
+ * The recent slice, read for itself only while no view keeps the agent's full
+ * list live (the agent's home, its sessions page, "Show all", search). While
+ * one does, that list's reads write the slice (`writeFullListToRecent`), so
+ * an event costs one request, not one per list, and leaving that view shows
+ * the newest rows at once. A slice with no rows yet reads once regardless.
+ */
+export function useRecentSessions(agentSlug: string | null) {
+  const resolvedSlug = useResolvedAgentSlug(agentSlug)
+  const queryClient = useQueryClient()
+  const fullListLive = useQueryIsLive(resolvedSlug ? ['sessions', resolvedSlug] : null)
+  return useQuery<ApiSession[]>({
+    ...recentSessionsQueryOptions(queryClient, resolvedSlug),
+    enabled: (query) => !!resolvedSlug && (!fullListLive || query.state.data === undefined),
+  })
+}
+
+/**
+ * Whether a mounted reader keeps the query at `queryKey` fetching (an enabled
+ * observer), so its invalidations refetch it. Re-renders only when that flips.
+ */
+function useQueryIsLive(queryKey: QueryKey | null): boolean {
+  const queryCache = useQueryClient().getQueryCache()
+  const queryHash = queryKey ? hashKey(queryKey) : null
+  const subscribe = useCallback((onChange: () => void) => (
+    queryHash === null
+      ? () => {}
+      : queryCache.subscribe((event) => {
+          if (event.query.queryHash === queryHash) onChange()
+        })
+  ), [queryCache, queryHash])
+  const isLive = () => (queryHash === null ? false : queryCache.get(queryHash)?.isActive() ?? false)
+  return useSyncExternalStore(subscribe, isLive, isLive)
+}
+
+/**
+ * How many sessions the agent lists, as its last recent-slice read reported
+ * it; undefined until one has, or when the server does not report it. Never
+ * fetches: `recentSessionsQueryOptions` writes it.
+ */
+export function useSessionTotal(agentSlug: string | null): number | undefined {
+  const resolvedSlug = useResolvedAgentSlug(agentSlug)
+  return useQuery<number>({ queryKey: sessionTotalKey(resolvedSlug), queryFn: skipToken }).data
 }
 
 export function useSession(id: string | null, agentSlug: string | null = null) {
@@ -105,10 +205,6 @@ export function useCreateSession(options: {
       message: string
       // Names the session instead of generating a name from the message.
       name?: string
-      effort?: EffortLevel
-      speed?: SpeedLevel
-      llmProviderId?: string | null
-      model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
       // The launcher's computer-use toggle: the session may use any app without asking.
@@ -118,7 +214,7 @@ export function useCreateSession(options: {
       origin?: 'user' | 'onboarding' | 'todo'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
-    }) => {
+    } & RuntimeOptions) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -162,6 +258,7 @@ export function useCreateSession(options: {
           ? [created, ...sessions]
           : sessions
       ))
+      seedCreatedSessionInRecent(queryClient, resolvedSlug, created)
       // The seeds are create-TIME snapshots and setQueryData marks them fresh —
       // on a fast turn (E2E mock; a quick real reply) the session can change
       // (schedule a wake, go idle) BEFORE this onSuccess runs, and the
@@ -186,7 +283,9 @@ export function useDeleteSession() {
       // 204 No Content - no body to parse
     },
     onSuccess: (_, variables) => {
-      invalidateNotificationCaches(queryClient, resolveAgentSlugFromCache(queryClient, variables.agentSlug))
+      const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
+      removeSessionFromCaches(queryClient, resolvedSlug, variables.id)
+      invalidateNotificationCaches(queryClient, resolvedSlug, { deletedSessionId: variables.id })
       // A Todo item started in it lets go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
