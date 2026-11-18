@@ -1056,10 +1056,6 @@ async function scanMessagesPageWindow(
   opts: {
     limit: number
     cursor?: string
-    /** Line-start offset of the cursor's row (a `uuid:offset` cursor). The
-     * walk then starts at that row instead of EOF, anchors on it once, and
-     * stops when the window settles. A row there that is not the cursor's
-     * answers `stale`. */
     cursorOffset?: number
     byteBudget: number
     signal?: AbortSignal
