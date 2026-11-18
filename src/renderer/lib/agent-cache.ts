@@ -47,6 +47,10 @@ export function updateAgentRuntimeCache(
     // start after a silent host-side stop corrects itself on the next list fetch.
     ...(status === 'stopped' ? { stale: undefined } : {}),
   }))
+  // The global settings carry `hasRunningAgents`, which locks Settings →
+  // Runtime. Mark them stale without a request, so the next screen that opens
+  // them reads again instead of trusting the cache for its staleTime.
+  void queryClient.invalidateQueries({ queryKey: ['settings'], exact: true, refetchType: 'none' })
 }
 
 /** All slugs an agent's per-agent queries may be keyed by (canonical + decorative). */
