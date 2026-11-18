@@ -1,13 +1,18 @@
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
+import { SessionPage } from '../pages/session.page'
 import {
   createAgent,
   createSession,
+  findSessionWithUserMessage,
+  gotoAgentHome,
   listSessions,
   listSessionMessages,
   messageContentIncludes,
   openAgentSession,
   uniqueName,
+  uniqueSuffix,
+  waitForCurrentSessionId,
   waitForSessionIdle,
   type TestSession,
 } from '../helpers/agents'
@@ -31,6 +36,23 @@ test.describe('Fork Session', () => {
     return { agent, session, message }
   }
 
+  async function startTurn(page: Page, request: APIRequestContext, testInfo: TestInfo, trigger: string) {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Fork Agent'))
+    await gotoAgentHome(page, agent)
+    const message = `${trigger} ${uniqueSuffix(testInfo)}`
+    await new SessionPage(page).sendMessage(message)
+    const session = await findSessionWithUserMessage(request, agent, message)
+    return { agent, session, message }
+  }
+
+  async function forkFromSidebar(page: Page, sessionId: string) {
+    await page.locator(`[data-testid="session-item-${sessionId}"]`).click({ button: 'right' })
+    await page.locator('[data-testid="fork-session-trigger"]').hover()
+    await page.locator('[data-testid="fork-session-item"]').click()
+    await expect(page).not.toHaveURL(new RegExp(`/sessions/${sessionId}$`), { timeout: 15000 })
+    return waitForCurrentSessionId(page)
+  }
+
   test('forks from the sidebar menu and lands in the copy', async ({ page, request }, testInfo) => {
     const { agent, session: created, message } = await fixture(page, request, testInfo)
     // The create response always says "New Session"; naming lands asynchronously.
@@ -38,14 +60,8 @@ test.describe('Fork Session', () => {
     const session = (await listSessions(request, agent)).find((s) => s.id === created.id)!
     const sourceBefore = await listSessionMessages(request, agent, session)
 
-    const row = page.locator(`[data-testid="session-item-${session.id}"]`)
-    await expect(row).toBeVisible({ timeout: 15000 })
-    await row.click({ button: 'right' })
-    await page.locator('[data-testid="fork-session-trigger"]').hover()
-    await page.locator('[data-testid="fork-session-item"]').click()
-
     // Landed in the fork: URL changed, name carries the suffix, banner present.
-    await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
+    await forkFromSidebar(page, session.id)
     await expect(page.locator('[data-testid="session-breadcrumb"]')).toContainText('(fork)')
     await expect(page.locator('[data-testid="fork-boundary"]')).toContainText(`Branched from ${session.name}`)
     // The header icon reads the session metadata, so it shows wherever the thread is scrolled.
@@ -85,12 +101,7 @@ test.describe('Fork Session', () => {
     await input.pressSequentially(draft)
     await expect(input).toHaveText(draft)
 
-    const row = page.locator(`[data-testid="session-item-${session.id}"]`)
-    await row.click({ button: 'right' })
-    await page.locator('[data-testid="fork-session-trigger"]').hover()
-    await page.locator('[data-testid="fork-session-item"]').click()
-
-    await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
+    await forkFromSidebar(page, session.id)
     await expect(page.locator('[data-testid="message-input"]')).toHaveText(draft)
 
     await page.locator('[data-testid="fork-boundary-link"]').click()
@@ -151,5 +162,37 @@ test.describe('Fork Session', () => {
     release()
     await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
     await expect(page.locator('[data-testid="session-context-menu"]')).toHaveCount(0)
+  })
+
+  test('forks mid-turn: the copy stops at the fork and the source finishes', async ({ page, request }, testInfo) => {
+    const { agent, session } = await startTurn(page, request, testInfo, 'please work very slowly on this task')
+    const sessionPage = new SessionPage(page)
+    await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 10000 })
+
+    const fork = await forkFromSidebar(page, session.id)
+    await expect(page.locator('[data-testid="fork-boundary"]')).toBeVisible({ timeout: 15000 })
+    expect((await listSessionMessages(request, agent, fork)).some((m) => messageContentIncludes(m, 'Finished the slow work.'))).toBe(false)
+
+    await page.locator('[data-testid="fork-boundary-link"]').click()
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'Finished the slow work.' }),
+    ).toBeVisible({ timeout: 15000 })
+  })
+
+  test('forks while the source awaits an answer: the question stays with the source', async ({ page, request }, testInfo) => {
+    const { agent, session } = await startTurn(page, request, testInfo, 'ask question')
+    const sessionPage = new SessionPage(page)
+    await sessionPage.waitForQuestionRequest()
+
+    const fork = await forkFromSidebar(page, session.id)
+    await expect(page.locator('[data-testid="fork-boundary"]')).toBeVisible({ timeout: 15000 })
+    // The unanswered tool call was saved before the fork, so the copy carries it.
+    expect(JSON.stringify(await listSessionMessages(request, agent, fork))).toContain('Which database should we use?')
+
+    await page.locator('[data-testid="fork-boundary-link"]').click()
+    await sessionPage.waitForQuestionRequest()
+    await sessionPage.answerQuestion('PostgreSQL')
+    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
+    await expect(sessionPage.getMessageInput()).toBeVisible({ timeout: 15000 })
   })
 })

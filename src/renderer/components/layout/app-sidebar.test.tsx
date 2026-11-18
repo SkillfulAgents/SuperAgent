@@ -275,12 +275,12 @@ vi.mock('@renderer/components/sessions/session-context-menu', async () => {
       activity,
     }: {
       children: React.ReactNode
-      activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+      activity: { isActive: boolean; isAwaitingInput: boolean }
     }) => (
       <ContextMenu>
         <ContextMenuTrigger asChild>
           {isValidElement(children)
-            ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
+            ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive) } as any)
             : children}
         </ContextMenuTrigger>
       </ContextMenu>

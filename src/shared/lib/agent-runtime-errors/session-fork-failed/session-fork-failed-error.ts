@@ -13,7 +13,7 @@ export class SessionForkFailedError extends AgentRuntimeError {
   protected readonly bodySchema = sessionForkFailedBodySchema
 
   constructor(
-    readonly status: 404 | 409 | 500,
+    readonly status: 404 | 500,
     message: string,
   ) {
     super(message)

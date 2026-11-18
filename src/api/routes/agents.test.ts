@@ -891,7 +891,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
-import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { ContainerNotFoundError } from '@shared/lib/container/types'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { CredentialRefreshError } from '../../../agent-container/src/credential-refresh-error'
 import { ProviderReconnectRequiredError } from '@shared/lib/agent-runtime-errors/provider-reconnect-required/provider-reconnect-required-error'
@@ -11131,20 +11131,6 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     expect(res.status).toBe(404)
     expect(mockForkSession).not.toHaveBeenCalled()
     expect(mockEnsureRunning).not.toHaveBeenCalled()
-  })
-
-  it('409s while the source is active', async () => {
-    mockLiveSessions.isActive.mockReturnValue(true)
-    const res = await fork()
-    expect(res.status).toBe(409)
-    expect(mockForkSession).not.toHaveBeenCalled()
-  })
-
-  it('maps a container conflict to 409', async () => {
-    mockForkSession.mockRejectedValue(new ContainerConflictError('busy'))
-    const res = await fork()
-    expect(res.status).toBe(409)
-    expect(registerSession).not.toHaveBeenCalled()
   })
 
   it('maps a gone session to 404', async () => {

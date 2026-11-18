@@ -243,7 +243,6 @@ function SessionSubItem({
         activity={{
           isActive: !!session.isActive,
           isAwaitingInput: !!session.isAwaitingInput,
-          isStreaming,
         }}
       >
         {/* The row (menu target) wraps the link and the 3-dot button, which
