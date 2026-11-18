@@ -219,7 +219,7 @@ export class LiveSession {
   coalescedUserMessages: CoalescedUserMessage[] | undefined
   /** The message the turn acts on (see `SessionLiveState.turnMessage`). */
   turnMessage: TurnMessage | null
-  /** Messages sent into a running turn, by uuid, until the runtime starts or drops them. */
+  /** Messages sent into a running turn, by uuid, until the runtime starts or drops them, or is gone. */
   private readonly queuedMessages: Map<string, TurnMessage>
   /**
    * The runtime publishes its session state (idle/running), so it decides
@@ -480,6 +480,7 @@ export class LiveSession {
       this.subagents.clear()
       this.stream.newTurn()
       this.response.newTurn()
+      this.turnMessage = null
     }
 
     // The CLI appends the user's message as the turn starts, but the SDK
@@ -655,6 +656,8 @@ export class LiveSession {
       this.subagents.clear()
       this.background.forgetAll()
       this.ctx.workflows.stopAll()
+      // The messages queued in the process went with it.
+      this.queuedMessages.clear()
     }
     // A host script or computer-use command of the stopped turn whose grant
     // check is still in flight registers and runs nothing when it lands; a
@@ -698,6 +701,8 @@ export class LiveSession {
     this.quietTurn = false
     this.abandonHostRuns()
     this.stream.stop()
+    // The messages queued in the runtime went with it.
+    this.queuedMessages.clear()
     this.isAwaitingInput = false
     this.subagents.clear()
     // Its background tasks went with it.
@@ -1419,6 +1424,8 @@ export class LiveSession {
   private announceTurn(): void {
     this.quietTurn = false
     this.isActive = true
+    // No send started it: it acts on no message until the runtime starts a queued one.
+    this.turnMessage = null
     this.response.newTurn()
     this.response.beginStreamedText()
     this.settleTurnBoundaryRequests('started')

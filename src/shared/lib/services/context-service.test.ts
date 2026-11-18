@@ -24,7 +24,6 @@ let live: Pick<SessionLiveState, 'isActive' | 'turnMessage'> = { isActive: false
 const sessions = {
   metadata: vi.fn(async (sessionId: string) => metadata.get(sessionId) ?? null),
   isKnown: vi.fn(async (sessionId: string) => metadata.has(sessionId)),
-  get: vi.fn(async (sessionId: string) => (metadata.has(sessionId) ? { id: sessionId, lastActivityAt: new Date(5_000) } : null)),
   live: vi.fn(async () => live),
 }
 vi.mock('@shared/lib/agent-actor', () => ({
@@ -58,22 +57,15 @@ const slackThread = async (sessionId: string) => {
   await testDb.insert(schema.chatIntegrationSessions).values({
     id: 'mapping-1', integrationId: 'slack-1', externalChatId: 'C123|1731.22', sessionId, createdAt: new Date(), updatedAt: new Date(),
   })
-  await testDb.insert(schema.chatIntegrationAccess).values({
-    id: 'access-1', integrationId: 'slack-1', externalChatId: 'C123|1731.22', status: 'allowed',
-    requestedAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
-  })
 }
 
 describe('getAgentContext', () => {
-  it('lists the members oldest first, and the first owner', async () => {
+  it('names the first owner', async () => {
     await testDb.insert(schema.agentAcl).values([
-      { id: 'acl-ben', userId: BEN, agentSlug: AGENT, role: 'user', createdAt: new Date(1_000) },
-      { id: 'acl-dana', userId: DANA, agentSlug: AGENT, role: 'owner', createdAt: new Date(2_000) },
+      { id: 'acl-ben', userId: BEN, agentSlug: AGENT, role: 'owner', createdAt: new Date(2_000) },
+      { id: 'acl-dana', userId: DANA, agentSlug: AGENT, role: 'owner', createdAt: new Date(1_000) },
     ])
-    expect(await getAgentContext(AGENT)).toEqual({
-      ownerId: DANA,
-      members: [{ userId: BEN, role: 'user' }, { userId: DANA, role: 'owner' }],
-    })
+    expect(await getAgentContext(AGENT)).toEqual({ ownerId: DANA })
   })
 
   it('throws for an agent that does not exist', async () => {
@@ -82,45 +74,34 @@ describe('getAgentContext', () => {
 })
 
 describe('getSessionContext', () => {
-  it('reads a Slack thread session from its chat mapping, integration and approval', async () => {
-    // A level from a newer build: stored, but not one this build knows.
-    const effort = 'turbo' as SessionMetadata['effort']
-    metadata.set('slack-session', { isChatIntegrationSession: true, chatIntegrationId: 'slack-1', effort, speed: 'fast', starred: true })
+  it('reads a Slack thread session\'s start from its chat mapping and integration', async () => {
+    metadata.set('slack-session', { isChatIntegrationSession: true, chatIntegrationId: 'slack-1' })
     await slackThread('slack-session')
 
-    expect(await getSessionContext(AGENT, 'slack-session', ['origin', 'conversation', 'hidden', 'runtime', 'permissions', 'lifecycle'])).toEqual({
+    expect(await getSessionContext(AGENT, 'slack-session', ['origin'])).toEqual({
       origin: { kind: 'integration', integrationId: 'slack-1', provider: 'slack', family: 'chat' },
-      conversation: { integrationId: 'slack-1', provider: 'slack', family: 'chat', externalId: 'C123|1731.22', chatType: 'thread' },
-      hidden: true,
-      // An effort level this build does not know is dropped.
-      runtime: { speed: 'fast' },
-      permissions: { chatApproval: 'allowed' },
-      lifecycle: { starred: true, lastActivityAt: 5_000 },
     })
   })
 
-  it('names who made the cron as the creator of its session, and its pending wake', async () => {
-    await testDb.insert(schema.scheduledTasks).values([
-      { id: 'daily-report', agentSlug: AGENT, scheduleType: 'cron', scheduleExpression: '0 9 * * *', prompt: 'Send the report', nextExecutionAt: new Date(), createdAt: new Date(), createdByUserId: DANA },
-      { id: 'wake-1', agentSlug: AGENT, scheduleType: 'at', scheduleExpression: 'once', prompt: 'Check again', nextExecutionAt: new Date(9_000), createdAt: new Date(), resumeSessionId: 'cron-session' },
-    ])
-    metadata.set('cron-session', { isScheduledExecution: true, scheduledTaskId: 'daily-report', createdByUserId: BEN, automationStatus: 'running' })
+  it('names who made the cron as the creator of its session', async () => {
+    await testDb.insert(schema.scheduledTasks).values({
+      id: 'daily-report', agentSlug: AGENT, scheduleType: 'cron', scheduleExpression: '0 9 * * *', prompt: 'Send the report', nextExecutionAt: new Date(), createdAt: new Date(), createdByUserId: DANA,
+    })
+    metadata.set('cron-session', { isScheduledExecution: true, scheduledTaskId: 'daily-report', createdByUserId: BEN })
 
-    expect(await getSessionContext(AGENT, 'cron-session', ['origin', 'createdBy', 'lifecycle'])).toEqual({
+    expect(await getSessionContext(AGENT, 'cron-session', ['origin', 'createdBy'])).toEqual({
       origin: { kind: 'scheduled', taskId: 'daily-report' },
       createdBy: { kind: 'user', userId: DANA },
-      lifecycle: { automationStatus: 'running', starred: false, lastActivityAt: 5_000, wake: { at: 9_000, taskId: 'wake-1' } },
     })
   })
 
-  it('reads only what the asked fields need', async () => {
+  it('returns only the asked fields', async () => {
     metadata.set('app-session', { createdByUserId: DANA })
     expect(await getSessionContext(AGENT, 'app-session', ['createdBy'])).toEqual({ createdBy: { kind: 'user', userId: DANA } })
-    expect(sessions.get).not.toHaveBeenCalled()
   })
 
   it('throws for a session that does not exist', async () => {
-    await expect(getSessionContext(AGENT, 'missing-session', ['hidden'])).rejects.toThrow('Session not found')
+    await expect(getSessionContext(AGENT, 'missing-session', ['origin'])).rejects.toThrow('Session not found')
   })
 })
 
@@ -130,10 +111,10 @@ describe('getMessageContext', () => {
 
   it('reads the running turn\'s message before any saved one', async () => {
     await author('newer-silent-tag', { userId: BEN }, 2_000)
-    const turnMessage: TurnMessage = { uuid: 'dana-message', sentAt: 1_000, from: { sender: { kind: 'user', userId: DANA }, source: { kind: 'app' }, deviceId: null } }
+    const turnMessage: TurnMessage = { uuid: 'dana-message', sentAt: 1_000, from: { sender: { kind: 'user', userId: DANA }, source: { kind: 'app' } } }
     live = { isActive: true, turnMessage }
     expect(await getMessageContext(AGENT, 'shared-session')).toEqual({
-      sender: { kind: 'user', userId: DANA }, source: { kind: 'app' }, deviceId: null, sentAt: 1_000,
+      sender: { kind: 'user', userId: DANA }, source: { kind: 'app' }, sentAt: 1_000,
     })
   })
 
@@ -145,7 +126,6 @@ describe('getMessageContext', () => {
 
   it('reads the newest saved sender while no turn runs', async () => {
     await slackThread('shared-session')
-    metadata.set('shared-session', { createdByDeviceId: 'phone-1' })
     await author('dana-message', { userId: DANA }, 1_000)
     await author('slack-message', {
       integrationId: 'slack-1',
@@ -162,6 +142,8 @@ describe('getMessageContext', () => {
       source: { kind: 'integration', integrationId: 'slack-1', externalId: 'C123|1731.22' },
       sentAt: 2_000,
     })
+    // A saved sender answers by itself: the session's metadata is not read.
+    expect(sessions.metadata).not.toHaveBeenCalled()
   })
 
   it('names the automation for a webhook run with no saved message', async () => {

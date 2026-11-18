@@ -105,12 +105,14 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
 }
 
 /**
- * The person whose message the caller session acts on, when one is known.
+ * The person whose message the caller session acts on, when one is known: its
+ * sender, or the person another agent sent it for.
  * Attribution is optional: a failed read must never block the invoke.
  */
 async function getTriggeringUserId(agentSlug: string, sessionId: string): Promise<string | undefined> {
   try {
     const sender = (await getMessageContext(agentSlug, sessionId))?.sender
+    if (sender?.kind === 'agent') return sender.onBehalfOf
     return sender?.kind === 'user' ? sender.userId : undefined
   } catch (error) {
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
@@ -873,16 +875,17 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
   // Attribute to the person behind the caller's turn; with none known (an
   // automation's turn, an old session), to its creator, then to the caller's owner.
-  const createdBy = _callerSessionId && callerMeta
-    ? (await getSessionContext(callerSlug, _callerSessionId, ['createdBy'], { metadata: callerMeta })).createdBy
-    : undefined
-  let attributedUserId: string | undefined = triggeringUserId ?? (createdBy?.kind === 'user' ? createdBy.userId : undefined)
-  if (!attributedUserId && isAuthMode()) {
+  let attributedUserId: string | undefined = triggeringUserId
+  if (!attributedUserId) {
     try {
-      attributedUserId = (await getAgentContext(callerSlug)).ownerId
+      const createdBy = _callerSessionId && callerMeta
+        ? (await getSessionContext(callerSlug, _callerSessionId, ['createdBy'], { metadata: callerMeta })).createdBy
+        : undefined
+      attributedUserId = createdBy?.kind === 'user' ? createdBy.userId : undefined
+      if (!attributedUserId && isAuthMode()) attributedUserId = (await getAgentContext(callerSlug)).ownerId
     } catch (error) {
-      // ACL checks already ran above; this second lookup is attribution-only.
-      console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
+      // ACL checks already ran above; these reads are attribution-only.
+      console.warn('[x-agent] failed to resolve the caller session creator or owner for attribution; continuing unattributed', {
         callerSlug,
         error: error instanceof Error ? error.message : String(error),
       })

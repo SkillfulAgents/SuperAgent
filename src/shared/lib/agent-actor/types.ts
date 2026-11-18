@@ -548,8 +548,8 @@ export interface SessionLiveState {
   runtime: SessionModelRuntime | null
   /**
    * The message the session's turn acts on: the one that started it, or the
-   * queued one the runtime picked up last. Null when this host saw no send
-   * since the session went live (a restart, or a turn the runtime started itself).
+   * queued one the runtime picked up last. Null when no send started the turn
+   * on this host (a restart, or a turn the runtime started itself).
    */
   turnMessage: TurnMessage | null
 }
@@ -577,8 +577,6 @@ export type Source =
 export interface MessageFrom {
   sender: Sender
   source: Source
-  /** The sending device; null: sent from the web. */
-  deviceId?: string | null
 }
 
 /** A message as the live session keeps it. No `from`: the send did not say (a system notice). */

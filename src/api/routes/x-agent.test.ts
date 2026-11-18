@@ -1071,6 +1071,42 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([expect.objectContaining({ userId: OWNER_USER_ID })])
   })
 
+  it('attributes to the person another agent sent the message of the caller turn for', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'invoked-into-session'
+    await grantCallerOwnerTargetAccess()
+    // Another agent messaged this session for the owner. Other created the session.
+    const callerTurn = (slug?: string, sessionId?: string) => slug === CALLER_SLUG && sessionId === callerSessionId
+    mockIsSessionActive.mockImplementation(callerTurn)
+    mockTurnMessage.mockImplementation((slug, sessionId) =>
+      callerTurn(slug, sessionId)
+        ? { uuid: 'agent-message', sentAt: Date.now(), from: { sender: { kind: 'agent', slug: 'research-agent', onBehalfOf: OWNER_USER_ID }, source: { kind: 'agent', slug: 'research-agent' } } }
+        : null)
+    mockGetSessionMetadata.mockResolvedValue({ name: 'Shared session', createdAt: new Date().toISOString(), createdByUserId: OTHER_USER_ID })
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', _callerSessionId: callerSessionId })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: OWNER_USER_ID })])
+  })
+
+  it('still invokes when the creator of the caller session cannot be read', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+    mockGetSessionMetadata.mockResolvedValue({
+      name: 'Daily report', createdAt: new Date().toISOString(), isScheduledExecution: true, scheduledTaskId: 'daily-report',
+    })
+    // The read of who made the cron fails.
+    testSqlite.exec('DROP TABLE scheduled_tasks')
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', _callerSessionId: 'cron-caller-session' })
+
+    expect(res.status).toBe(200)
+  })
+
   it('falls back to the session creator when no message author is recorded', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')

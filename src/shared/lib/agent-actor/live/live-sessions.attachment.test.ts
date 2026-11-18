@@ -509,6 +509,41 @@ describe('LiveSessions', () => {
         expect(sessions().turnMessage(SESSION_ID)).toEqual(dana)
       })
 
+      it('is none for a turn the runtime starts itself', () => {
+        sessions().markSending(SESSION_ID, dana)
+        mockClient.emit({ type: 'result', subtype: 'success', is_error: false, num_turns: 1, usage: { input_tokens: 1, output_tokens: 1 } })
+        mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        expect(sessions().isActive(SESSION_ID)).toBe(false)
+
+        // A background task's wake: no send started this turn.
+        mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+        expect(sessions().isActive(SESSION_ID)).toBe(true)
+        expect(sessions().turnMessage(SESSION_ID)).toBeNull()
+      })
+
+      it('is not a queued message that went with its stopped process', () => {
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben)
+        sessions().markInterrupted(SESSION_ID)
+
+        const carol = { uuid: 'message-from-carol', sentAt: 3_000, from: fromApp('user-carol') }
+        sessions().markSending(SESSION_ID, carol)
+        lifecycle(ben.uuid, 'started')
+        expect(sessions().turnMessage(SESSION_ID)).toEqual(carol)
+      })
+
+      it('is not a queued message that went with its lost runtime', async () => {
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben)
+        sessions().markAllInactive()
+
+        await sessions().subscribe(SESSION_ID, mockClient, SESSION_ID)
+        const carol = { uuid: 'message-from-carol', sentAt: 3_000, from: fromApp('user-carol') }
+        sessions().markSending(SESSION_ID, carol)
+        lifecycle(ben.uuid, 'started')
+        expect(sessions().turnMessage(SESSION_ID)).toEqual(carol)
+      })
+
       it('is the first message of a started session once its stream attaches', async () => {
         // As `sessions.start` does: the create started the turn, then the stream attaches.
         sessions().markActive('started-session', dana)
