@@ -227,12 +227,12 @@ describe('email lifecycle and delivery', () => {
     await expect(sendToolEmail(record, input, 'Changed', tool)).rejects.toThrow('different content')
     expect(execute).toHaveBeenCalledTimes(2)
   })
-  it('attaches validated deliver_file output once even without final text', async () => {
+  it('attaches a delivered file once even without final text', async () => {
     const { agentRegistry } = await import('../agent-actor')
     vi.mocked(agentRegistry.get).mockReturnValue({ files: { getDoc: async () => Buffer.from('File contents') } } as never)
     const upload = vi.spyOn(connector, 'uploadAttachment')
     const context = { integration: record, externalId: 'thread-1', sessionId: 'session-1', replyTarget: { messageId: connector.incoming.id } }
-    for (let i = 0; i < 2; i++) await connector.deliver(context, { type: 'runtime', event: { type: 'tool_result_ready', toolName: 'mcp__user-input__deliver_file', filePath: '/workspace/report.txt', isError: false } })
+    for (let i = 0; i < 2; i++) expect((await connector.deliverFile(context, { filePath: '/workspace/report.txt' })).delivered).toBe(true)
     expect(connector.submitted).toHaveLength(0)
     await connector.deliver(context, { type: 'turn-completed', event: {} })
     expect(upload).toHaveBeenCalled()

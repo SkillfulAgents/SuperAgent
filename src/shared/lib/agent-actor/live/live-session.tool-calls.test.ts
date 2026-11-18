@@ -1,7 +1,7 @@
 /**
  * What a finished tool call sets in motion on the host's side (`ToolCalls`,
  * through the session): user-input requests and the session's waiting state,
- * capability reviews, host tools, host scripts, computer use, and deliver_file.
+ * capability reviews, host tools, host scripts, and computer use.
  *
  * The sessions are real (`attachLiveSessionsHarness`), fed frame by frame
  * through a stream client. What they ask of the host (host tools, scripts,
@@ -108,85 +108,6 @@ afterEach(() => {
   live.runtime.containerFetch.mockReset()
   for (const name of ['hostTool', 'hostScript', 'computerUse'] as const) live.host.answer(name, undefined)
   vi.clearAllMocks()
-})
-
-// ============================================================================
-// deliver_file tool-result correlation (ELECTRON-39)
-// ============================================================================
-
-describe('deliver_file tool_result_ready', () => {
-  function streamDeliverFileToolUse(filePath: string, description?: string) {
-    mockClient.emit({
-      type: 'stream_event',
-      event: {
-        type: 'content_block_start',
-        content_block: { type: 'tool_use', id: 'deliver-1', name: 'mcp__user-input__deliver_file' },
-      },
-    })
-    const input = JSON.stringify(description ? { filePath, description } : { filePath })
-    mockClient.emit({
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: input } },
-    })
-    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_stop' } })
-  }
-
-  it('broadcasts tool_result_ready with the validated path on a successful result', () => {
-    streamDeliverFileToolUse('/workspace/out.txt', 'a report')
-    sseEvents.length = 0
-
-    mockClient.emit({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'delivered' }] },
-    })
-
-    const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
-    expect(ready).toHaveLength(1)
-    expect(ready[0].toolName).toBe('mcp__user-input__deliver_file')
-    expect(ready[0].filePath).toBe('/workspace/out.txt')
-    expect(ready[0].description).toBe('a report')
-    expect(ready[0].isError).toBe(false)
-  })
-
-  it('marks tool_result_ready as an error when the in-container tool failed', () => {
-    streamDeliverFileToolUse('/workspace/missing.txt')
-    sseEvents.length = 0
-
-    mockClient.emit({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'not found', is_error: true }] },
-    })
-
-    const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
-    expect(ready).toHaveLength(1)
-    expect(ready[0].isError).toBe(true)
-  })
-
-  it('does not broadcast tool_result_ready for an untracked tool_result', () => {
-    mockClient.emit({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'other-tool', content: 'result' }] },
-    })
-
-    const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
-    expect(ready).toHaveLength(0)
-  })
-
-  it('does not re-broadcast tool_result_ready for a duplicate tool_result', () => {
-    streamDeliverFileToolUse('/workspace/out.txt')
-
-    const sendResult = () => mockClient.emit({
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'delivered' }] },
-    })
-
-    sseEvents.length = 0
-    sendResult()
-    sendResult()
-
-    const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
-    expect(ready).toHaveLength(1)
-  })
 })
 
 // ============================================================================
