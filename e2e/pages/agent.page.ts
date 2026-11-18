@@ -35,7 +35,8 @@ export class AgentPage {
     // (the breadcrumb shows "Untitled") before filling — otherwise fills can
     // race the A→B remount and end up on the outgoing agent's textbox.
     await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
-    await expect(this.page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    // The input can land seconds after the breadcrumb on a slow runner: same budget.
+    await expect(this.page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 10000 })
 
     await this.page.locator('[data-testid="home-message-input"]').fill(prompt)
     await this.page.locator('[data-testid="home-send-button"]').click()

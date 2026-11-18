@@ -35,7 +35,8 @@ async function uploadPdfs(page: Page, files = [
 }
 
 async function expectPage(page: Page, number: number) {
-  await expect(page.getByTestId('pdf-renderer').getByText(number === 1 ? title : secondTitle, { exact: true })).toBeVisible()
+  // Loading the PDF.js worker and painting the text layer takes more than 5 s on a slow CI Mac.
+  await expect(page.getByTestId('pdf-renderer').getByText(number === 1 ? title : secondTitle, { exact: true })).toBeVisible({ timeout: 15000 })
   await expect(page.getByTestId('pdf-pagination')).toContainText(`${number} / 2`)
   await expect.poll(async () => page.getByTestId('pdf-renderer').locator('canvas').evaluate((canvas: HTMLCanvasElement) => canvas.width)).toBeGreaterThan(100)
 }

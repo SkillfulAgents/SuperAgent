@@ -142,6 +142,9 @@ test.describe('read-aloud at the live edge', () => {
     // view, and that programmatic jump (rightly) releases following before
     // the press under test.
     const reply = page.getByTestId('message-assistant').last()
+    // The menu belongs to the row it opened on: one opened on the streaming row closes when the
+    // persisted row replaces it (seen on a slow CI Mac, where the right-click took a second).
+    await expect(reply).not.toHaveAttribute('data-message-id', 'streaming', { timeout: 10000 })
     // Stopping the turn can precede the streaming-to-persisted row handoff.
     // Wait for actual reply geometry without scrolling or focusing the row,
     // which would change the live-edge state this regression exercises.
