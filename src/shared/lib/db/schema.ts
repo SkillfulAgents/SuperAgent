@@ -1105,8 +1105,9 @@ export const todos = sqliteTable('todos', {
   // brief. Never set together with agentSlug: the start assigns the new agent.
   newAgent: integer('new_agent', { mode: 'boolean' }).notNull().default(false),
   // What to start it on, where the person picked over the agent's defaults.
+  // Deleting the connection drops the pick of it, as on the other tables that keep one.
   model: text('model'),
-  llmProviderId: text('llm_provider_id'),
+  llmProviderId: text('llm_provider_id').references(() => llmConnections.id, { onDelete: 'set null' }),
   effort: text('effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max'] }),
   speed: text('speed', { enum: ['slow', 'normal', 'fast'] }),
   sessionId: text('session_id'),
