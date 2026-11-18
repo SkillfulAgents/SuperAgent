@@ -47,6 +47,10 @@ export function updateAgentRuntimeCache(
     // start after a silent host-side stop corrects itself on the next list fetch.
     ...(status === 'stopped' ? { stale: undefined } : {}),
   }))
+  // The global settings carry `hasRunningAgents`, which locks Settings →
+  // Runtime. Mark them stale without a request, so the next screen that opens
+  // them reads again instead of trusting the cache for its staleTime.
+  void queryClient.invalidateQueries({ queryKey: ['settings'], exact: true, refetchType: 'none' })
 }
 
 /** All slugs an agent's per-agent queries may be keyed by (canonical + decorative). */
@@ -179,6 +183,26 @@ export function invalidateAutomationSessionLists(queryClient: QueryClient, agent
 export function invalidateAgentSessionLists(queryClient: QueryClient, agentSlug: string): void {
   const aliases = agentSlugAliases(queryClient, agentSlug)
   queryClient.invalidateQueries({ predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) })
+}
+
+/**
+ * A deleted session leaves every cached list of its agent at once, and its
+ * detail is dropped rather than read again (the read would 404). A detail a
+ * mounted view still observes is kept, marked stale, until that view leaves.
+ * Call before invalidating the lists: a write clears a query's stale mark.
+ */
+export function removeSessionFromCaches(queryClient: QueryClient, agentSlug: string, sessionId: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.setQueriesData<unknown>(
+    { predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) },
+    (data: unknown) => (
+      Array.isArray(data) && data.some((entry) => (entry as ApiSession | null)?.id === sessionId)
+        ? data.filter((entry) => (entry as ApiSession | null)?.id !== sessionId)
+        : data
+    ),
+  )
+  queryClient.removeQueries({ queryKey: ['session', sessionId], type: 'inactive' })
+  void queryClient.invalidateQueries({ queryKey: ['session', sessionId], refetchType: 'none' })
 }
 
 /**

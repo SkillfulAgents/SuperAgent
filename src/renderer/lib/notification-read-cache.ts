@@ -6,6 +6,7 @@ import { NOTIFICATION_TYPES, type NotificationCounts } from '@shared/lib/notific
 import { notificationReadResponseSchema, type NotificationReadState, type NotificationReadTarget } from '@shared/lib/notifications/read-state-schema'
 import { NOTIFICATION_CLIENT_HEADER } from '@shared/lib/notifications/notification-change-schema'
 import { apiFetch } from './api'
+import { agentDetailQueryKeys } from './agent-cache'
 
 type Page = { items: ApiNotification[]; total: number }
 type Counts = NotificationCounts
@@ -29,10 +30,31 @@ export function noteNotificationChange(client: QueryClient, slug?: string): void
   else revision.allAgents++
 }
 
-/** A write without a full projection must refresh every notification surface. */
-export function invalidateNotificationCaches(client: QueryClient, slug?: string): void {
+/**
+ * A write without a full projection must refresh every notification surface.
+ * A change that names an agent this cache lists reaches that agent's data
+ * alone: its session lists and session details under every key it is cached
+ * by (canonical id and display slug), its detail under any route key, the
+ * agents list itself and the inbox. Another agent's queries stay fresh.
+ * Without a slug, or for an agent the cached list does not hold (its keys
+ * cannot be told apart then), every agent's data is refreshed.
+ * `deletedSessionId`: that session's detail is not read again; it would 404.
+ */
+export function invalidateNotificationCaches(client: QueryClient, slug?: string, options?: { deletedSessionId?: string }): void {
   noteNotificationChange(client, slug)
-  for (const family of families) client.invalidateQueries({ queryKey: [family] })
+  const agent = slug === undefined ? undefined
+    : client.getQueryData<ApiAgent[]>(['agents'])?.find(a => a.slug === slug || a.displaySlug === slug)
+  const aliases = agent && new Set<unknown>(agentDetailQueryKeys(client, agent.slug).map(key => key[1]))
+  client.invalidateQueries({ predicate: ({ queryKey: key, state }) => {
+    if (!families.has(String(key[0]))) return false
+    if (key[0] === 'session' && options?.deletedSessionId !== undefined && key[1] === options.deletedSessionId) return false
+    if (!agent || !aliases || key[0] === 'notifications') return true
+    if (key[0] === 'agents') {
+      // A route can still hold the agent under a display slug from before a rename.
+      return key.length === 1 || aliases.has(key[1]) || (state.data as Partial<ApiAgent> | undefined)?.slug === agent.slug
+    }
+    return aliases.has(key[0] === 'sessions' ? key[1] : key[2])
+  } })
 }
 /** Read-all with no type filter: every row, so counts and flags can go straight to zero. */
 const readsEverything = (target: NotificationReadTarget) => target.kind === 'all' && !target.types

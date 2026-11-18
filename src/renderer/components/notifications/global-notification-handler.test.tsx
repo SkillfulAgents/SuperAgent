@@ -773,10 +773,55 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
 
   it.each(['notifications_changed', 'agent_access_revoked', 'agent_members_changed'])('%s refreshes list, unified counts and every unread projection', type => {
     const keys = [['notifications', 15, 0, 'all'], ['notifications', 'unread-count'], ['agents'], ['sessions', 'a'], ['session', 's1', 'a']]
-    keys.forEach(key => queryClient.setQueryData(key, {}))
+    keys.forEach(key => queryClient.setQueryData(key, key.length === 1 ? [{ slug: 'a', displaySlug: 'agent-a' }] : {}))
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
     simulateSSEMessage(getLatestEventSource(), { type, agentSlug: 'a' })
     keys.forEach(key => expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true))
+  })
+
+  // The event names an agent by its id; the tab may hold it under its display slug too.
+  const seedTwoAgents = () => {
+    const a = { slug: 'a', displaySlug: 'agent-a' }
+    const b = { slug: 'b', displaySlug: 'agent-b' }
+    queryClient.setQueryData(['agents'], [a, b])
+    const own = [['agents', 'a'], ['agents', 'agent-a'], ['sessions', 'a'], ['sessions', 'agent-a', 'completed-one-time'], ['session', 's1', 'a'], ['session', 's2', 'agent-a']]
+    const others = [['agents', 'b'], ['agents', 'agent-b'], ['sessions', 'b'], ['sessions', 'b', 'notable', 25], ['session', 's9', 'b']]
+    const shared = [['agents'], ['notifications', 15, 0, 'all'], ['notifications', 'unread-count']]
+    for (const key of [...own, ...others]) queryClient.setQueryData(key, key[0] === 'agents' ? (String(key[1]).endsWith('b') ? b : a) : [])
+    for (const key of shared.slice(1)) queryClient.setQueryData(key, { count: 0 })
+    return { own, others, shared }
+  }
+  const isStale = (key: QueryKey) => queryClient.getQueryState(key)?.isInvalidated
+
+  it.each(['notifications_changed', 'session_mention_withdrawn', 'agent_members_changed'])('%s for one agent leaves another agent’s sessions and detail fresh', type => {
+    const { own, others, shared } = seedTwoAgents()
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type, agentSlug: 'a', sessionId: 's1', recipientUserId: 'user-b' })
+    expect([...own, ...shared].filter(key => !isStale(key))).toEqual([])
+    expect(others.filter(isStale)).toEqual([])
+  })
+
+  it('agent_access_revoked refreshes the list and inbox and leaves another agent’s sessions and detail fresh', async () => {
+    const { others, shared } = seedTwoAgents()
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    await act(async () => simulateSSEMessage(getLatestEventSource(), { type: 'agent_access_revoked', agentSlug: 'a' }))
+    expect(shared.filter(key => !isStale(key))).toEqual([])
+    expect(others.filter(isStale)).toEqual([])
+    expect(queryClient.getQueryData(['sessions', 'a'])).toBeUndefined()
+  })
+
+  it.each(['notifications_changed', 'agent_members_changed'])('%s for an agent this tab does not list refreshes every agent', type => {
+    const { own, others, shared } = seedTwoAgents()
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type, agentSlug: 'just-shared' })
+    expect([...own, ...others, ...shared].filter(key => !isStale(key))).toEqual([])
+  })
+
+  it('notifications_changed that names no agent refreshes every agent', () => {
+    const { own, others, shared } = seedTwoAgents()
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'notifications_changed' })
+    expect([...own, ...others, ...shared].filter(key => !isStale(key))).toEqual([])
   })
 
   it('ignores the initiating cache’s echo but refreshes another window', () => {
@@ -804,7 +849,8 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   })
 
   it('session_mention_withdrawn refreshes the inbox, the session list and the agent rows', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const keys = [['notifications', 15, 0, 'all'], ['agents'], ['agents', 'agent-x'], ['sessions', 'agent-x'], ['session', 'sess-1', 'agent-x']]
+    keys.forEach(key => queryClient.setQueryData(key, key.length === 1 ? [{ slug: 'agent-x' }] : {}))
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -816,10 +862,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       type: 'session_mention_withdrawn', agentSlug: 'agent-x', sessionId: 'sess-1', recipientUserId: 'user-b',
     })
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notifications'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['session'] })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    keys.forEach(key => expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true))
   })
 
   it('webhook_relay_changed replaces the cached relay status', () => {

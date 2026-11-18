@@ -1,5 +1,5 @@
 import { useRouterState } from '@tanstack/react-router'
-import { decodeLocation, type AppLocation, type RouteSnapshot } from './route-state'
+import { decodeLocation, routeSnapshot, type AppLocation } from './route-state'
 
 /**
  * The current navigation state (`{ selectedAgentSlug, view }`) DERIVED from the
@@ -19,16 +19,6 @@ export function useRouteLocation(): AppLocation {
     // pending/loading transitions. AppLocation is JSON-compatible, satisfying
     // the structural-sharing constraint.
     structuralSharing: true,
-    select: (state): AppLocation => {
-      const params: Record<string, string | undefined> = {}
-      const search: Record<string, unknown> = {}
-      for (const m of state.matches) {
-        Object.assign(params, m.params)
-        Object.assign(search, m.search)
-      }
-      const deepest = state.matches[state.matches.length - 1]
-      const snapshot: RouteSnapshot = { to: deepest?.fullPath ?? '/', params, search }
-      return decodeLocation(snapshot)
-    },
+    select: (state): AppLocation => decodeLocation(routeSnapshot(state.matches)),
   })
 }

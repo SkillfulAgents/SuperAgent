@@ -4,15 +4,6 @@ import type { SessionMetadata } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import type { AppSettings } from '@shared/lib/config/settings'
 
-/** The container refused an operation because the session is mid-turn (HTTP 409). */
-export class ContainerConflictError extends Error {
-  readonly code = 'session_busy'
-  constructor(message: string) {
-    super(message)
-    this.name = 'ContainerConflictError'
-  }
-}
-
 /** The container has the route but the session is gone (HTTP 404 + JSON). */
 export class ContainerNotFoundError extends Error {
   constructor(message: string) {
@@ -333,8 +324,8 @@ export interface ContainerClient {
   deleteSession(sessionId: string): Promise<boolean>
   // Copy a session's transcript into a new session (Fork Session).
   // null = the container predates the fork endpoint (plain 404). Throws
-  // ContainerNotFoundError when the session is gone (JSON 404),
-  // ContainerConflictError when the source is mid-turn.
+  // ContainerNotFoundError when the session is gone (JSON 404). A running
+  // source forks too: the copy holds the transcript as saved so far.
   forkSession(sessionId: string): Promise<{ id: string } | null>
   // Ask the container to resume this session's CLI ahead of its next message
   // (it may have been evicted while idle). Best-effort and never throws:

@@ -5,7 +5,7 @@ import { waitFor } from '@testing-library/react'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
 import type { NotificationReadState } from '@shared/lib/notifications/read-state-schema'
 import { NOTIFICATION_TYPES, type NotificationCounts, type NotificationTypeCounts } from '@shared/lib/notifications/notification-filters'
-import { readNotifications, noteNotificationChange, notificationClientId } from './notification-read-cache'
+import { readNotifications, noteNotificationChange, notificationClientId, invalidateNotificationCaches } from './notification-read-cache'
 import { apiFetch } from './api'
 
 vi.mock('./api', () => ({ apiFetch: vi.fn() }))
@@ -863,5 +863,97 @@ describe('optimistic notification reads', () => {
     pending.reject(new Error('offline'))
     await rejected
     expect(client.getQueryCache().getAll()).toHaveLength(0)
+  })
+})
+
+describe('invalidateNotificationCaches', () => {
+  const agentA = { slug: 'a', displaySlug: 'agent-a' }
+  const agentB = { slug: 'b', displaySlug: 'agent-b' }
+  // Agent A under both of its keys, a route key from before a rename, and agent B.
+  const own: unknown[][] = [
+    ['agents', 'a'], ['agents', 'agent-a'], ['agents', 'old-name-a'],
+    ['sessions', 'a'], ['sessions', 'a', 'notable', 25], ['sessions', 'agent-a', 'completed-one-time'],
+    ['session', 's1', 'a'], ['session', 's2', 'agent-a'],
+  ]
+  const shared: unknown[][] = [['agents'], ['notifications', 15, 0, 'all'], ['notifications', 'unread-count']]
+  const others: unknown[][] = [
+    ['agents', 'b'], ['agents', 'agent-b'], ['sessions', 'b'], ['sessions', 'b', 'notable', 25], ['session', 's9', 'b'],
+  ]
+  const unrelated: unknown[][] = [['settings'], ['artifacts', 'a']]
+
+  function twoAgents() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    for (const key of [...own, ...shared, ...others, ...unrelated]) {
+      client.setQueryData(key, key[0] === 'agents'
+        ? key.length === 1 ? [agentA, agentB] : String(key[1]).endsWith('b') ? agentB : agentA
+        : key[0] === 'notifications' ? { count: 0 } : [])
+    }
+    return client
+  }
+  const stale = (client: QueryClient, keys: unknown[][]) =>
+    keys.filter(key => client.getQueryState(key)?.isInvalidated).map(key => JSON.stringify(key))
+  const all = (keys: unknown[][]) => keys.map(key => JSON.stringify(key))
+
+  it.each(['a', 'agent-a'])('a change naming %s reaches that agent under both of its keys and no other agent', slug => {
+    const client = twoAgents()
+    invalidateNotificationCaches(client, slug)
+    expect(stale(client, own)).toEqual(all(own))
+    expect(stale(client, shared)).toEqual(all(shared))
+    expect(stale(client, others)).toEqual([])
+    expect(stale(client, unrelated)).toEqual([])
+  })
+
+  it('a change that names no agent refreshes every agent', () => {
+    const client = twoAgents()
+    invalidateNotificationCaches(client)
+    expect(stale(client, [...own, ...shared, ...others])).toEqual(all([...own, ...shared, ...others]))
+    expect(stale(client, unrelated)).toEqual([])
+  })
+
+  it.each([
+    ['an agent the cached list does not hold', (client: QueryClient) => { client.setQueryData(['agents'], [agentB]) }],
+    ['a list that has not loaded', (client: QueryClient) => { client.removeQueries({ queryKey: ['agents'], exact: true }) }],
+  ])('%s refreshes every agent, since its keys cannot be told apart', (_name, arrange) => {
+    const client = twoAgents()
+    arrange(client)
+    invalidateNotificationCaches(client, 'a')
+    const cached = [...own, ...shared, ...others].filter(key => client.getQueryState(key))
+    expect(cached.length).toBeGreaterThan(own.length + others.length)
+    expect(stale(client, cached)).toEqual(all(cached))
+  })
+
+  it('leaves a deleted session’s detail unread, and still refreshes the agent’s other sessions', () => {
+    const client = twoAgents()
+    invalidateNotificationCaches(client, 'a', { deletedSessionId: 's1' })
+    expect(client.getQueryState(['session', 's1', 'a'])?.isInvalidated).toBe(false)
+    expect(client.getQueryState(['session', 's2', 'agent-a'])?.isInvalidated).toBe(true)
+    expect(client.getQueryState(['sessions', 'a'])?.isInvalidated).toBe(true)
+  })
+
+  // What a tab on agent B's session screen reads when one notification event
+  // names agent A: the sidebar list, B's detail, B's sessions, the open
+  // session, the inbox page and the unread count are all mounted.
+  it.each([
+    ['naming agent A', 'a', ['agents', 'notifications', 'notifications']],
+    ['naming no agent (what every event cost before)', undefined, ['agents', 'agents', 'notifications', 'notifications', 'session', 'sessions', 'sessions']],
+  ])('requests from a tab viewing agent B for one event %s', async (_name, slug, expected) => {
+    const client = twoAgents()
+    const requests: string[] = []
+    const mounted: unknown[][] = [
+      ['agents'], ['agents', 'agent-b'], ['sessions', 'b'], ['sessions', 'b', 'notable', 25], ['session', 's9', 'b'],
+      ['notifications', 15, 0, 'all'], ['notifications', 'unread-count'],
+    ]
+    const observers = mounted.map(queryKey => new QueryObserver(client, {
+      queryKey,
+      staleTime: Infinity,
+      queryFn: () => { requests.push(String(queryKey[0])); return client.getQueryData(queryKey) ?? null },
+    }))
+    const unsubscribe = observers.map(observer => observer.subscribe(() => {}))
+    expect(requests).toEqual([])
+
+    invalidateNotificationCaches(client, slug)
+    await waitFor(() => expect(client.isFetching()).toBe(0))
+    expect(requests.sort()).toEqual(expected)
+    unsubscribe.forEach(stop => stop())
   })
 })

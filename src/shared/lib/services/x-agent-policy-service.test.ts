@@ -134,6 +134,36 @@ describe('x-agent-policy-service', () => {
       expect((await evaluate('caller', 'invoke', 'alice'))).toBe('allow')
       expect((await evaluate('caller', 'invoke', 'bob'))).toBe('review')
     })
+
+    it.each(['allow', 'review', 'block'] as const)('a specific %s wins over a global row written after it', async (specific) => {
+      const global = specific === 'block' ? 'allow' : 'block'
+      await setPolicy('caller', 'invoke', 'target', specific)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      await setPolicy('caller', 'invoke', null, global)
+      expect(await evaluate('caller', 'invoke', 'target')).toBe(specific)
+      expect(await evaluate('caller', 'invoke', 'elsewhere')).toBe(global)
+    })
+
+    it('is not answered by another target, another operation or another caller', async () => {
+      await setPolicy('caller', 'invoke', 'other-target', 'block')
+      await setPolicy('caller', 'read', 'target', 'block')
+      await setPolicy('caller', 'read', null, 'block')
+      await setPolicy('other-caller', 'invoke', 'target', 'block')
+      await setPolicy('other-caller', 'invoke', null, 'block')
+      expect(await evaluate('caller', 'invoke', 'target')).toBe('review')
+    })
+
+    it('reads the specific and the global row in one statement', async () => {
+      await setPolicy('caller', 'read', null, 'allow')
+      await setPolicy('caller', 'invoke', 'target', 'block')
+      const select = vi.spyOn(testDb, 'select')
+      // Falls through to the global row; found on the specific row; nothing saved.
+      expect(await evaluate('caller', 'read', 'target')).toBe('allow')
+      expect(await evaluate('caller', 'invoke', 'target')).toBe('block')
+      expect(await evaluate('caller', 'invoke', 'elsewhere')).toBe('review')
+      expect(select).toHaveBeenCalledTimes(3)
+      select.mockRestore()
+    })
   })
 
   describe('deletePoliciesForAgent', () => {

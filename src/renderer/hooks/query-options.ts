@@ -1,5 +1,5 @@
 import { queryOptions } from '@tanstack/react-query'
-import { apiJson } from '@renderer/lib/api'
+import { apiFetch, apiJson } from '@renderer/lib/api'
 import type { ApiAgent } from '@shared/lib/types/api'
 
 /**
@@ -19,6 +19,35 @@ import type { ApiAgent } from '@shared/lib/types/api'
  * `useAgent` uses this same queryFn, so a 403/404 maps to `notFound()` even
  * when the loader joins the hook's already-running request.
  */
+
+/** The agents list's fallback poll (`useAgents`), and how long a fetched list counts as fresh. */
+export const AGENTS_LIST_POLL_MS = 60_000
+
+/**
+ * The agents list, `['agents']`, for every observer of it.
+ *
+ * The notifications stream keeps the list current (session, agent, health,
+ * schedule and webhook events invalidate or patch it) and so do the mutations
+ * that change an agent, so a new observer does not need a read of its own:
+ * with the 5 s default each one refetched the whole list, which is every
+ * navigation, sidebar row and mention chip. The window is finite on purpose: a
+ * missed event or mutation is corrected by the first mount after it. It equals
+ * the poll's interval, so no screen shows an older list than one that stayed
+ * mounted already could. An invalidation refetches at once, whatever the age.
+ */
+export const agentsListQuery = {
+  queryKey: ['agents'] as const,
+  queryFn: async (): Promise<ApiAgent[]> => {
+    const res = await apiFetch('/api/agents')
+    if (!res.ok) throw new Error('Failed to fetch agents')
+    return res.json()
+  },
+  staleTime: AGENTS_LIST_POLL_MS,
+  // Coming back online is when an event is most likely to have been missed:
+  // read again then, as before, without waiting out the window.
+  refetchOnReconnect: 'always' as const,
+}
+
 export const agentQuery = (slug: string) =>
   queryOptions({
     queryKey: ['agents', slug],

@@ -26,6 +26,8 @@ function isForbidden(error: unknown): boolean {
   return error instanceof HttpError && error.status === 403
 }
 
+const SETTINGS_POLL_MS = 60_000
+
 /**
  * The global settings. `GET /api/settings` is admin-only in auth mode, so the
  * query is off for everyone else there (and until the session says who is
@@ -44,7 +46,16 @@ export function useSettings(options?: { enabled?: boolean }) {
       return res.json()
     },
     // Poll less frequently - container status is cached server-side
-    refetchInterval: (query) => (isForbidden(query.state.error) ? false : 60000),
+    refetchInterval: (query) => (isForbidden(query.state.error) ? false : SETTINGS_POLL_MS),
+    // Settings writes invalidate this and readiness arrives on the
+    // notifications stream, so a new observer reuses what is cached instead of
+    // refetching on every navigation and Settings tab (the 5 s default). The
+    // window is the poll's interval and no longer: nothing announces another
+    // admin's write or a change in the host-derived fields (runner
+    // availability, host browser status), so a mount after it reads again.
+    staleTime: SETTINGS_POLL_MS,
+    // Back online is read again as before, without waiting out the window.
+    refetchOnReconnect: 'always',
     retry: (failureCount, error) => !isForbidden(error) && failureCount < 3,
     enabled: mayRead && (options?.enabled ?? true),
   })

@@ -332,7 +332,8 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
             }
             queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-            invalidateNotificationCaches(queryClient)
+            // An agent this tab does not list yet (it was just shared) refreshes everything.
+            invalidateNotificationCaches(queryClient, change.agentSlug)
             break
           }
 
