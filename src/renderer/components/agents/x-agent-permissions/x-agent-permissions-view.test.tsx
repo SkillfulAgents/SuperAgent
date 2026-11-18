@@ -223,30 +223,6 @@ describe('XAgentPermissionsView', () => {
     })
   })
 
-  it('the own-sessions card saves an invoke policy targeting the agent itself', async () => {
-    renderView()
-    const card = await screen.findByTestId('x-agent-policy-self-invoke')
-    fireEvent.click(within(card).getByTestId('policy-dropdown-trigger'))
-    fireEvent.click(await screen.findByTestId('policy-menu-allow'))
-
-    await waitFor(() => {
-      expect(lastPatchBody()).toEqual({
-        operation: 'invoke',
-        targetSlug: 'caller',
-        decision: 'allow',
-      })
-    })
-  })
-
-  it('the own-sessions card falls back to the Global send setting', async () => {
-    policies = [policy('invoke', null, 'allow')]
-    renderView()
-
-    const self = within(await screen.findByTestId('x-agent-policy-self-invoke')).getByTestId('policy-dropdown-trigger')
-    expect(self).toHaveAttribute('data-inherited', 'true')
-    expect(self).toHaveTextContent('Always allow (from Global)')
-  })
-
   it('shows what an unset dropdown resolves to and where it comes from', async () => {
     policies = [policy('invoke', 'target', 'allow'), policy('read', null, 'allow')]
     renderView()

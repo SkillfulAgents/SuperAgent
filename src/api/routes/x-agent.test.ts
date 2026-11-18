@@ -663,10 +663,13 @@ describe('/invoke', () => {
     mockCreateSession.mockResolvedValue({ id: 'new-sess-id' })
   })
 
-  it.each([{}, { slug: CALLER_SLUG }])('targets the caller itself (%o)', async (target) => {
-    reviewDecisions.push('allow')
+  it.each([{}, { slug: CALLER_SLUG }])('targets the caller itself without a policy or review (%o)', async (target) => {
+    // A cross-agent block does not reach the agent's own sessions.
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', null, 'block')
     const res = await authedFetch('/x-agent/invoke', { ...target, prompt: 'hi' })
     expect(res.status).toBe(200)
+    expect(mockRequestXAgentReview).not.toHaveBeenCalled()
     expect(mockEnsureRunning).toHaveBeenCalledWith(CALLER_SLUG)
     expect(mockRegisterSession).toHaveBeenCalledWith(
       expect.objectContaining({ slug: CALLER_SLUG }),
@@ -677,7 +680,6 @@ describe('/invoke', () => {
   })
 
   it('rejects a session sending a message to itself', async () => {
-    reviewDecisions.push('allow')
     const res = await authedFetch('/x-agent/invoke', {
       prompt: 'hi',
       sessionId: 'caller-session',
@@ -1863,6 +1865,13 @@ describe('/get-sessions', () => {
     expect(body.sessions).toHaveLength(2)
     expect(body.sessions[0]).toEqual(expect.objectContaining({ id: 'sess-1', isRunning: true }))
     expect(body.sessions[1]).toEqual(expect.objectContaining({ id: 'sess-2', isRunning: false }))
+  })
+
+  it('lists the caller\'s own sessions without a review', async () => {
+    mockListSessions.mockResolvedValue([])
+    const res = await authedFetch('/x-agent/get-sessions', { slug: CALLER_SLUG })
+    expect(res.status).toBe(200)
+    expect(mockRequestXAgentReview).not.toHaveBeenCalled()
   })
 
   it('does NOT auto-allow read just because invoke=allow (the two are independent)', async () => {

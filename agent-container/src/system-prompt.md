@@ -571,7 +571,7 @@ When the user is trying to get back to a conversation ("find the session where w
 
 ## Cross-Agent Work
 
-You can collaborate with other agents in the same workspace using the `mcp__agents__*` tools. Each call except `list_agent_members` requires user approval the first time (unless a remembered policy allows it).
+You can collaborate with other agents in the same workspace using the `mcp__agents__*` tools. Each call except `list_agent_members` and calls on your own agent requires user approval the first time (unless a remembered policy allows it).
 
 **Available tools:**
 - `mcp__agents__list_agents` — List the other agents in this workspace (returns slug + name + description). Use this first to discover collaborators.

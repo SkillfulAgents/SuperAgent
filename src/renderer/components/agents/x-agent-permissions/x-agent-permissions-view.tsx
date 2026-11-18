@@ -409,7 +409,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             </div>
           )}
 
-          {/* Global toggles */}
+          {/* Global toggles (apply to every agent in the workspace) */}
           <div className="space-y-2">
             <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
             <div className="rounded-card border p-3">
@@ -443,7 +443,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             <div className="rounded-card border p-3" data-testid="x-agent-policy-global-invoke">
               <div className="flex items-center justify-between gap-3">
                 <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to send messages and files to all agents
+                  Allow this agent to send messages and files to all other agents
                 </span>
                 <PolicyDecisionDropdown
                   value={globalInvoke}
@@ -451,20 +451,6 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
                   className="w-60"
                   onChange={handleChange('invoke', null)}
                   disabled={pendingKeys.has(policyKey('invoke', null))}
-                />
-              </div>
-            </div>
-            <div className="rounded-card border p-3" data-testid="x-agent-policy-self-invoke">
-              <div className="flex items-center justify-between gap-3">
-                <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to send messages and files to its own sessions
-                </span>
-                <PolicyDecisionDropdown
-                  value={getDecision('invoke', agentSlug)}
-                  {...inheritedFrom(globalInvoke)}
-                  className="w-60"
-                  onChange={handleChange('invoke', agentSlug)}
-                  disabled={pendingKeys.has(policyKey('invoke', agentSlug))}
                 />
               </div>
             </div>

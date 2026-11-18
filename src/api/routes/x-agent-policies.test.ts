@@ -306,15 +306,11 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
     expect((await getPolicy(CALLER, 'invoke', 'not-an-agent'))).toBeNull()
   })
 
-  it('accepts self-targeted policies but rejects a targeted list policy', async () => {
-    const selfInvoke = await patchPolicy({ operation: 'invoke', targetSlug: CALLER, decision: 'allow' })
-    const selfRead = await patchPolicy({ operation: 'read', targetSlug: CALLER, decision: 'allow' })
+  it('rejects self-targeted and targeted list policies', async () => {
+    const self = await patchPolicy({ operation: 'invoke', targetSlug: CALLER, decision: 'allow' })
     const targetedList = await patchPolicy({ operation: 'list', targetSlug: TARGET_A, decision: 'allow' })
 
-    expect(selfInvoke.status).toBe(200)
-    expect(selfRead.status).toBe(200)
-    expect((await getPolicy(CALLER, 'invoke', CALLER))?.decision).toBe('allow')
-    expect((await getPolicy(CALLER, 'read', CALLER))?.decision).toBe('allow')
+    expect(self.status).toBe(400)
     expect(targetedList.status).toBe(400)
   })
 
@@ -373,20 +369,15 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
     expect(res.status).toBe(400)
   })
 
-  it('accepts a policy targeting the caller itself', async () => {
+  it('rejects a policy targeting the caller itself with 400', async () => {
     const res = await app.request(`/api/agents/${CALLER}/x-agent-policies`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        policies: [
-          { operation: 'invoke', targetSlug: CALLER, decision: 'allow' },
-          { operation: 'read', targetSlug: CALLER, decision: 'allow' },
-        ],
+        policies: [{ operation: 'invoke', targetSlug: CALLER, decision: 'allow' }],
       }),
     })
-    expect(res.status).toBe(200)
-    expect((await getPolicy(CALLER, 'invoke', CALLER))?.decision).toBe('allow')
-    expect((await getPolicy(CALLER, 'read', CALLER))?.decision).toBe('allow')
+    expect(res.status).toBe(400)
   })
 
   it('accepts an empty list (clears all caller policies)', async () => {
@@ -484,14 +475,13 @@ describe('atomic single invoke policy endpoints', () => {
     expect((await getPolicy(CALLER, 'invoke', 'not-an-agent'))).toBeNull()
   })
 
-  it('PUT accepts targeting the caller itself', async () => {
+  it('PUT rejects targeting the caller itself', async () => {
     const res = await app.request(invokeUrl(CALLER, CALLER), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision: 'allow' }),
     })
-    expect(res.status).toBe(200)
-    expect((await getPolicy(CALLER, 'invoke', CALLER))?.decision).toBe('allow')
+    expect(res.status).toBe(400)
   })
 
   it('DELETE removes an allow grant', async () => {

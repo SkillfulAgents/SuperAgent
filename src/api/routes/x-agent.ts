@@ -211,6 +211,9 @@ async function checkAgentPolicy(
   fileTransfer?: XAgentFileTransfer,
   callerSessionId?: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
+  // An agent acting on its own sessions crosses no agent boundary: no policy
+  // applies and nobody is asked.
+  if (targetSlug === callerSlug) return { allowed: true }
   if (operation !== 'create') {
     const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
     if (decision === 'allow') return { allowed: true }

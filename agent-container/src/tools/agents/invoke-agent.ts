@@ -6,7 +6,7 @@ import { invokeResultSchema } from './host-response-schemas'
 export function makeInvokeAgentTool(getCallerSessionId: () => string) {
   return tool(
     'invoke_agent',
-    `Send a message to an agent in this workspace, including your own. Omit slug to target your own agent, for example to start a worker session or continue one of your own sessions.
+    `Send a message to an agent in this workspace, including your own. Omit slug to target your own agent, for example to start a worker session or continue one of your own sessions; that needs no approval.
 
 If session_id is omitted, a new session is started on the target agent. If session_id is provided, the message is appended to that existing session. If that session is in the middle of a turn, the message joins the turn, the way a user's follow-up does.
 
