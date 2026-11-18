@@ -2614,3 +2614,308 @@ describe('a request settled by a sweep from another card is decided again', () =
     expect(mockListSessions).toHaveBeenCalled()
   })
 })
+
+// ============================================================================
+// Cross-agent authorization: one decision table for the four target routes
+// ============================================================================
+
+describe('cross-agent authorization decision table', () => {
+  const MINTED_ID = 'm1234567ab' // 10-char minted id
+  const DISPLAY_SLUG = `minted-target-${MINTED_ID}`
+  const NAMES: Record<string, string> = { [TARGET_SLUG]: 'Target', [MINTED_ID]: 'Minted Target', [CALLER_SLUG]: 'Caller' }
+  const SESSION_ID = 'delivered-session'
+
+  type Decision = 'allow' | 'review' | 'block'
+  type Role = 'owner' | 'user' | 'viewer'
+  type Outcome = 'ok' | 'not-found' | 'no-access' | 'blocked' | 'denied'
+  type RouteName = 'get-sessions' | 'get-transcript' | 'download-file' | 'invoke'
+
+  const READ_NO_ACCESS = 'Forbidden: caller has no access to target agent'
+  const ROUTES: Record<RouteName, {
+    operation: 'read' | 'invoke'
+    otherOperation: 'read' | 'invoke'
+    body: (slug: string) => Record<string, unknown>
+    noAccess: string
+  }> = {
+    'get-sessions': { operation: 'read', otherOperation: 'invoke', body: (slug) => ({ slug }), noAccess: READ_NO_ACCESS },
+    'get-transcript': { operation: 'read', otherOperation: 'invoke', body: (slug) => ({ slug, sessionId: SESSION_ID }), noAccess: READ_NO_ACCESS },
+    'download-file': {
+      operation: 'read',
+      otherOperation: 'invoke',
+      body: (slug) => ({ slug, sessionId: SESSION_ID, deliveryId: 'delivery-1' }),
+      noAccess: READ_NO_ACCESS,
+    },
+    invoke: {
+      operation: 'invoke',
+      otherOperation: 'read',
+      body: (slug) => ({ slug, prompt: 'hi' }),
+      noAccess: 'Forbidden: caller has no user access to target agent',
+    },
+  }
+  const ROUTE_NAMES = Object.keys(ROUTES) as RouteName[]
+
+  interface Row {
+    name: string
+    auth: boolean
+    /** How the request names the target. Default: its id. */
+    target?: 'id' | 'display' | 'missing' | 'missing-display'
+    /** Users holding `owner` on the caller. Default: the seeded owner. */
+    callerOwners?: string[]
+    /** ACL rows on the target. */
+    targetAcl?: Array<[userId: string, role: Role]>
+    /** Saved decisions for the route's own operation. */
+    exact?: Decision
+    global?: Decision
+    /** A saved decision for the other operation on the same target: never applies. */
+    otherOperation?: Decision
+    /** What the person answers if a card is raised. */
+    review?: 'allow' | 'deny'
+    /** The outcome, for every route or split by the role each needs. */
+    expect: Outcome | { read: Outcome; invoke: Outcome }
+    /** Whether a card is raised (when the route gets as far as the policy). */
+    asks: boolean
+  }
+
+  const ROWS: Row[] = [
+    // Local mode: no ACL, the policy alone decides.
+    { name: 'local, no policy, approved', auth: false, review: 'allow', expect: 'ok', asks: true },
+    { name: 'local, no policy, denied', auth: false, review: 'deny', expect: 'denied', asks: true },
+    { name: 'local, target allowed', auth: false, exact: 'allow', expect: 'ok', asks: false },
+    { name: 'local, target blocked', auth: false, exact: 'block', expect: 'blocked', asks: false },
+    { name: 'local, target on review, approved', auth: false, exact: 'review', review: 'allow', expect: 'ok', asks: true },
+    { name: 'local, all agents allowed', auth: false, global: 'allow', expect: 'ok', asks: false },
+    { name: 'local, all agents blocked', auth: false, global: 'block', expect: 'blocked', asks: false },
+    { name: 'local, all agents on review, denied', auth: false, global: 'review', review: 'deny', expect: 'denied', asks: true },
+    { name: 'local, target allowed over all blocked', auth: false, exact: 'allow', global: 'block', expect: 'ok', asks: false },
+    { name: 'local, target blocked over all allowed', auth: false, exact: 'block', global: 'allow', expect: 'blocked', asks: false },
+    { name: 'local, target on review over all allowed, denied', auth: false, exact: 'review', global: 'allow', review: 'deny', expect: 'denied', asks: true },
+    { name: 'local, target on review over all blocked, approved', auth: false, exact: 'review', global: 'block', review: 'allow', expect: 'ok', asks: true },
+    { name: 'local, only the other operation allowed, denied', auth: false, otherOperation: 'allow', review: 'deny', expect: 'denied', asks: true },
+    { name: 'local, only the other operation blocked, approved', auth: false, otherOperation: 'block', review: 'allow', expect: 'ok', asks: true },
+    { name: 'local, no owner on the caller and no ACL on the target', auth: false, callerOwners: [], exact: 'allow', expect: 'ok', asks: false },
+    { name: 'local, missing target', auth: false, target: 'missing', exact: 'allow', global: 'allow', expect: 'not-found', asks: false },
+    { name: 'local, display slug of a missing id', auth: false, target: 'missing-display', global: 'allow', expect: 'not-found', asks: false },
+    { name: 'local, display slug, allowed on the id', auth: false, target: 'display', exact: 'allow', expect: 'ok', asks: false },
+    { name: 'local, display slug, blocked on the id', auth: false, target: 'display', exact: 'block', expect: 'blocked', asks: false },
+    { name: 'local, display slug, no policy, approved', auth: false, target: 'display', review: 'allow', expect: 'ok', asks: true },
+
+    // Auth mode: the caller's owners need a role on the target first.
+    { name: 'auth, same owner on both', auth: true, targetAcl: [[OWNER_USER_ID, 'owner']], exact: 'allow', expect: 'ok', asks: false },
+    { name: 'auth, owner is a user of the target', auth: true, targetAcl: [[OWNER_USER_ID, 'user']], exact: 'allow', expect: 'ok', asks: false },
+    { name: 'auth, owner is a viewer of the target', auth: true, targetAcl: [[OWNER_USER_ID, 'viewer']], exact: 'allow', expect: { read: 'ok', invoke: 'no-access' }, asks: false },
+    { name: 'auth, owner is a viewer, no policy, approved', auth: true, targetAcl: [[OWNER_USER_ID, 'viewer']], review: 'allow', expect: { read: 'ok', invoke: 'no-access' }, asks: true },
+    { name: 'auth, owner has no role on the target', auth: true, exact: 'allow', global: 'allow', expect: 'no-access', asks: false },
+    { name: 'auth, no role on the target and blocked: the ACL answers first', auth: true, exact: 'block', expect: 'no-access', asks: false },
+    { name: 'auth, no role on the target and no policy: no card', auth: true, review: 'allow', expect: 'no-access', asks: true },
+    { name: 'auth, only someone else has a role on the target', auth: true, targetAcl: [[OTHER_USER_ID, 'owner']], exact: 'allow', expect: 'no-access', asks: false },
+    { name: 'auth, caller has no owner', auth: true, callerOwners: [], targetAcl: [[OWNER_USER_ID, 'owner']], exact: 'allow', expect: 'no-access', asks: false },
+    { name: 'auth, second owner of the caller has the role', auth: true, callerOwners: [OWNER_USER_ID, OTHER_USER_ID], targetAcl: [[OTHER_USER_ID, 'user']], exact: 'allow', expect: 'ok', asks: false },
+    { name: 'auth, one owner views and the other uses', auth: true, callerOwners: [OWNER_USER_ID, OTHER_USER_ID], targetAcl: [[OWNER_USER_ID, 'viewer'], [OTHER_USER_ID, 'user']], exact: 'allow', expect: 'ok', asks: false },
+    { name: 'auth, with access, blocked', auth: true, targetAcl: [[OWNER_USER_ID, 'owner']], exact: 'block', expect: 'blocked', asks: false },
+    { name: 'auth, with access, all agents blocked', auth: true, targetAcl: [[OWNER_USER_ID, 'user']], global: 'block', expect: 'blocked', asks: false },
+    { name: 'auth, with access, no policy, approved', auth: true, targetAcl: [[OWNER_USER_ID, 'user']], review: 'allow', expect: 'ok', asks: true },
+    { name: 'auth, with access, no policy, denied', auth: true, targetAcl: [[OWNER_USER_ID, 'user']], review: 'deny', expect: 'denied', asks: true },
+    { name: 'auth, with access, target on review over all allowed, denied', auth: true, targetAcl: [[OWNER_USER_ID, 'user']], exact: 'review', global: 'allow', review: 'deny', expect: 'denied', asks: true },
+    { name: 'auth, missing target', auth: true, target: 'missing', global: 'allow', expect: 'not-found', asks: false },
+    { name: 'auth, display slug, with access, allowed', auth: true, target: 'display', targetAcl: [[OWNER_USER_ID, 'user']], exact: 'allow', expect: 'ok', asks: false },
+    { name: 'auth, display slug, no role on the target', auth: true, target: 'display', exact: 'allow', expect: 'no-access', asks: false },
+    { name: 'auth, display slug, with access, blocked', auth: true, target: 'display', targetAcl: [[OWNER_USER_ID, 'user']], exact: 'block', expect: 'blocked', asks: false },
+  ]
+
+  const EXPECTED: Record<Exclude<Outcome, 'ok' | 'no-access'>, { status: number; error: string }> = {
+    'not-found': { status: 404, error: 'Target agent not found' },
+    blocked: { status: 403, error: 'Blocked by policy' },
+    denied: { status: 403, error: 'Denied by user.' },
+  }
+
+  async function grant(userId: string, agentSlug: string, role: Role) {
+    await testDb.insert(schema.agentAcl).values({ id: randomUUID(), userId, agentSlug, role, createdAt: new Date() })
+  }
+
+  /** Every target-side effect a refused request must not have had. */
+  function expectTargetUntouched() {
+    expect(mockListSessions).not.toHaveBeenCalled()
+    expect(mockTargetOpen).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(mockCreateSession).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  }
+
+  beforeEach(async () => {
+    await fs.promises.mkdir(path.join(testDir, 'agents', MINTED_ID, 'workspace'), { recursive: true })
+    await seedAgentRows([MINTED_ID])
+    // The names the catalog holds and the names the agent service answers agree.
+    for (const [slug, name] of Object.entries(NAMES)) {
+      await testDb.update(schema.agents).set({ name }).where(eq(schema.agents.slug, slug))
+    }
+    mockGetAgent.mockImplementation(async (slug: unknown) =>
+      typeof slug === 'string' && NAMES[slug]
+        ? { slug, frontmatter: { name: NAMES[slug], createdAt: '2024-01-01' }, instructions: '' }
+        : null)
+    mockListSessions.mockResolvedValue([])
+    mockGetTranscript.mockResolvedValue(deliveredFileTranscript('/workspace/output/result.bin', 4))
+    mockTargetOpen.mockImplementation(async () => openBytes(Uint8Array.from([0, 255, 1, 128])))
+    const mintedFiles = (agentRegistry.get(MINTED_ID) as LocalAgentActor).store.files as StoreFileOps
+    vi.spyOn(mintedFiles, 'open').mockImplementation(mockTargetOpen)
+    mockCreateSession.mockResolvedValue({ id: 'new-sess-id', slashCommands: [] })
+  })
+
+  describe.each(ROUTE_NAMES)('/%s', (routeName) => {
+    const route = ROUTES[routeName]
+
+    it.each(ROWS)('$name', async (row) => {
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      authModeEnabled = row.auth
+      const targetId = row.target === 'display' ? MINTED_ID : TARGET_SLUG
+      const requested = {
+        id: TARGET_SLUG,
+        display: DISPLAY_SLUG,
+        missing: 'ghost',
+        'missing-display': 'ghost-zzzzzzzzzz',
+      }[row.target ?? 'id']
+
+      if (row.callerOwners) {
+        await testDb.delete(schema.agentAcl).where(eq(schema.agentAcl.agentSlug, CALLER_SLUG))
+        for (const userId of row.callerOwners) await grant(userId, CALLER_SLUG, 'owner')
+      }
+      for (const [userId, role] of row.targetAcl ?? []) await grant(userId, targetId, role)
+      if (row.exact) await setPolicy(CALLER_SLUG, route.operation, targetId, row.exact)
+      if (row.global) await setPolicy(CALLER_SLUG, route.operation, null, row.global)
+      if (row.otherOperation) await setPolicy(CALLER_SLUG, route.otherOperation, targetId, row.otherOperation)
+      if (row.review) reviewDecisions.push(row.review)
+
+      const res = await authedFetch(`/x-agent/${routeName}`, route.body(requested))
+
+      const outcome = typeof row.expect === 'string' ? row.expect : row.expect[route.operation]
+      if (outcome === 'ok') {
+        expect(res.status).toBe(200)
+        await res.arrayBuffer()
+      } else {
+        const expected = outcome === 'no-access' ? { status: 403, error: route.noAccess } : EXPECTED[outcome]
+        expect({ status: res.status, body: await res.json() }).toEqual({ status: expected.status, body: { error: expected.error } })
+        expectTargetUntouched()
+      }
+
+      // A card is raised only once the ACL has let the request through, and
+      // names the resolved target, never what the request called it.
+      const reachesPolicy = outcome === 'ok' || outcome === 'blocked' || outcome === 'denied'
+      if (row.asks && reachesPolicy) {
+        expect(xAgentReviewRequests).toHaveLength(1)
+        expect(xAgentReviewRequests[0]).toMatchObject({
+          targetAgentSlug: targetId,
+          targetAgentName: NAMES[targetId],
+          operation: route.operation,
+        })
+      } else {
+        expect(xAgentReviewRequests).toHaveLength(0)
+      }
+    })
+  })
+
+  describe('the order refusals are reported in', () => {
+    const invokedSession = 'caller-session-invoked'
+    function callerSessionWasInvoked() {
+      mockGetSessionMetadata.mockImplementation(async (store: unknown, sessionId: unknown) =>
+        (store as { slug: string }).slug === CALLER_SLUG && sessionId === invokedSession
+          ? { name: 'invoked', createdAt: new Date().toISOString(), invokedByAgentSlug: 'some-other-agent' }
+          : null)
+    }
+    async function answer(routeName: RouteName, body: Record<string, unknown>) {
+      const res = await authedFetch(`/x-agent/${routeName}`, body)
+      return { status: res.status, body: await res.json() }
+    }
+
+    it('invoke: a missing target comes before the one-hop rule', async () => {
+      authModeEnabled = true
+      callerSessionWasInvoked()
+      expect(await answer('invoke', { slug: 'ghost', prompt: 'hi', _callerSessionId: invokedSession }))
+        .toEqual({ status: 404, body: { error: 'Target agent not found' } })
+    })
+
+    it('invoke: invoking itself comes before the one-hop rule, the ACL and the policy', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await testDb.delete(schema.agentAcl).where(eq(schema.agentAcl.agentSlug, CALLER_SLUG))
+      await setPolicy(CALLER_SLUG, 'invoke', CALLER_SLUG, 'block')
+      callerSessionWasInvoked()
+      expect(await answer('invoke', { slug: CALLER_SLUG, prompt: 'hi', _callerSessionId: invokedSession }))
+        .toEqual({ status: 400, body: { error: 'Agent cannot invoke itself' } })
+    })
+
+    it('invoke: the one-hop rule comes before the ACL and the policy', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'block')
+      callerSessionWasInvoked()
+      expect(await answer('invoke', { slug: TARGET_SLUG, prompt: 'hi', _callerSessionId: invokedSession })).toEqual({
+        status: 403,
+        body: {
+          error: 'This session was invoked by agent "some-other-agent" and cannot invoke other agents. Cross-agent invocation is one hop deep.',
+        },
+      })
+      expect(xAgentReviewRequests).toHaveLength(0)
+    })
+
+    it('invoke: the one-hop rule still refuses a caller the ACL and the policy would let through', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await grant(OWNER_USER_ID, TARGET_SLUG, 'owner')
+      await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
+      callerSessionWasInvoked()
+      expect((await answer('invoke', { slug: TARGET_SLUG, prompt: 'hi', _callerSessionId: invokedSession })).status).toBe(403)
+      expectTargetUntouched()
+    })
+
+    it('invoke: an unknown session is reported only after the ACL and the policy', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      mockSessionIsKnown.mockResolvedValue(false)
+      const body = { slug: TARGET_SLUG, prompt: 'hi', sessionId: 'unknown-session' }
+
+      expect(await answer('invoke', body)).toEqual({ status: 403, body: { error: ROUTES.invoke.noAccess } })
+      await grant(OWNER_USER_ID, TARGET_SLUG, 'user')
+      await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'block')
+      expect(await answer('invoke', body)).toEqual({ status: 403, body: { error: 'Blocked by policy' } })
+      await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
+      expect(await answer('invoke', body)).toEqual({ status: 404, body: { error: 'Session not found' } })
+    })
+
+    it('get-transcript: the ACL, then the policy, then the session', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      mockSessionIsKnown.mockResolvedValue(false)
+      const body = { slug: TARGET_SLUG, sessionId: 'unknown-session' }
+
+      expect(await answer('get-transcript', body)).toEqual({ status: 403, body: { error: READ_NO_ACCESS } })
+      await grant(OWNER_USER_ID, TARGET_SLUG, 'viewer')
+      await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'block')
+      expect(await answer('get-transcript', body)).toEqual({ status: 403, body: { error: 'Blocked by policy' } })
+      await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'allow')
+      expect(await answer('get-transcript', body)).toEqual({ status: 404, body: { error: 'Session not found' } })
+    })
+
+    it('download-file: the ACL, then the session, then the delivery, then the policy', async () => {
+      authModeEnabled = true
+      const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+      await setPolicy(CALLER_SLUG, 'read', TARGET_SLUG, 'block')
+      mockSessionIsKnown.mockResolvedValue(false)
+      const body = { slug: TARGET_SLUG, sessionId: SESSION_ID, deliveryId: 'unknown-delivery' }
+
+      expect(await answer('download-file', body)).toEqual({ status: 403, body: { error: READ_NO_ACCESS } })
+      await grant(OWNER_USER_ID, TARGET_SLUG, 'viewer')
+      expect(await answer('download-file', body)).toEqual({ status: 404, body: { error: 'Session not found' } })
+      mockSessionIsKnown.mockResolvedValue(true)
+      expect(await answer('download-file', body)).toEqual({ status: 404, body: { error: 'Delivered file not found' } })
+      expect(await answer('download-file', { ...body, deliveryId: 'delivery-1' }))
+        .toEqual({ status: 403, body: { error: 'Blocked by policy' } })
+      expect(xAgentReviewRequests).toHaveLength(0)
+    })
+
+    it('download-file: no card is raised for a delivery that does not exist', async () => {
+      reviewDecisions.push('allow')
+      expect(await answer('download-file', { slug: TARGET_SLUG, sessionId: SESSION_ID, deliveryId: 'unknown-delivery' }))
+        .toEqual({ status: 404, body: { error: 'Delivered file not found' } })
+      expect(xAgentReviewRequests).toHaveLength(0)
+    })
+  })
+})
