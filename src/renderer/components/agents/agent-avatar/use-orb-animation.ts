@@ -127,7 +127,6 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
       // Its own compositor layer while it moves: its frames then repaint these few pixels, not
       // the sidebar or card it sits in. Not for an orb held still, which would keep a layer for
       // nothing, and not its inner layers one by one, which measured worse (docs/animations.md).
-      root.style.willChange = 'transform'
       const unsubscribe = subscribeToAmbientFrames(tick, {
         kind: 'status',
         measure: followPointer ? measure : undefined,
@@ -148,7 +147,6 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
       stop = () => {
         unsubscribe()
         wake.current = undefined
-        root.style.willChange = ''
         target.removeEventListener('pointermove', onMove)
         leaveFrom.removeEventListener('pointerleave', onLeave)
         window.removeEventListener('scroll', invalidateBounds, true)
