@@ -5,7 +5,7 @@ import { agentAcl, xAgentPolicies } from '@shared/lib/db/schema'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentRole, SessionMetadataMap } from '@shared/lib/types/agent'
 import { hasMinRole } from '@shared/lib/types/agent'
-import type { InboundXAgentBlockedAgent, InboundXAgentCaller, InboundXAgentDetails, InboundXAgentSession } from '@shared/lib/types/inbound-x-agent-schema'
+import { memberAgentsOf, type AgentMemberAgentsByAgent, type InboundXAgentBlockedAgent, type InboundXAgentCaller, type InboundXAgentDetails, type InboundXAgentSession } from '@shared/lib/types/inbound-x-agent-schema'
 import { listAgentsWithStatus } from './agent-service'
 import {
   evaluate as evaluateXAgentPolicy,
@@ -173,4 +173,46 @@ async function selectBlockRows(slugs: string[]): Promise<BlockRow[]> {
     ))
   return rows.flatMap(({ caller, target, operation }) =>
     target && (operation === 'read' || operation === 'invoke') ? [{ caller, target, operation }] : [])
+}
+
+/**
+ * The member agents of each of `targetSlugs`, by the share popover's own read run once per agent. A member
+ * can be any agent, as a person in an agent's members can be anyone: everyone in an agent sees the same members.
+ */
+export async function buildAgentMemberAgents(
+  targetSlugs: string[],
+  input: Pick<BuildInboundXAgentDetailsInput, 'agents' | 'authMode' | 'aclRows' | 'evaluatePolicy'> & { blockRows: BlockRow[] },
+): Promise<AgentMemberAgentsByAgent> {
+  const byAgent: AgentMemberAgentsByAgent = {}
+  await Promise.all(targetSlugs.map(async (targetSlug) => {
+    const details = await buildInboundXAgentDetails({
+      ...input,
+      targetSlug,
+      metadata: {},
+      blockRows: input.blockRows.filter((row) => row.caller === targetSlug || row.target === targetSlug),
+    })
+    const members = memberAgentsOf(details).map(({ slug, name, avatar, role, readDecision }) => ({ slug, name, avatar: avatar ?? null, role, readDecision }))
+    if (members.length > 0) byAgent[targetSlug] = members
+  }))
+  return byAgent
+}
+
+/** Member agents for every agent the viewer can see: one request feeds every member stack. */
+export async function getAgentMemberAgents(visibleSlugs: string[], authMode: boolean): Promise<AgentMemberAgentsByAgent> {
+  if (visibleSlugs.length === 0) return {}
+  const [blockRows, allowRows] = await Promise.all([
+    selectBlockRows(visibleSlugs),
+    db.selectDistinct({ caller: xAgentPolicies.callerAgentSlug }).from(xAgentPolicies)
+      .where(and(eq(xAgentPolicies.decision, 'allow'), inArray(xAgentPolicies.operation, ['read', 'invoke']))),
+  ])
+  // An agent with no saved allow anywhere asks first for everything, so it can't hold a role: only the rest are checked.
+  const withAllow = allowRows.map((row) => row.caller)
+  if (withAllow.length === 0) return {}
+  const [agents, aclRows] = await Promise.all([
+    listAgentsWithStatus({ slugs: withAllow }),
+    authMode
+      ? db.select({ agentSlug: agentAcl.agentSlug, userId: agentAcl.userId, role: agentAcl.role }).from(agentAcl).where(inArray(agentAcl.agentSlug, [...visibleSlugs, ...withAllow]))
+      : [],
+  ])
+  return buildAgentMemberAgents(visibleSlugs, { agents, authMode, aclRows, blockRows })
 }

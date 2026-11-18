@@ -11,6 +11,7 @@ import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-ava
 import { TODOS_QUERY_KEY } from './todos-query-key'
 import { useInstallingTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
 import { agentQuery, agentsListQuery, AGENTS_LIST_POLL_MS } from './query-options'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from './use-agent-member-agents'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -202,6 +203,8 @@ export function useDeleteAgent() {
       queryClient.removeQueries({ queryKey: ['agents', slug] })
       invalidateNotificationCaches(queryClient)
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+      // Its links go with it, and with them its place in other agents' member stacks.
+      queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
       // Deleting the Team Brain agent takes its drive off every other agent and off global.

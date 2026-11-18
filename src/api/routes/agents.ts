@@ -246,7 +246,8 @@ import { deleteSessionAndRecords } from '@shared/lib/services/session-deletion'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { withSessionStatus } from '@shared/lib/session-status'
-import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
+import { getAgentMemberAgents, getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
+import { getHomeAgentScope } from './home-agent-scope'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import { cleanUserReason } from '@shared/lib/proxy/user-reason'
@@ -1248,6 +1249,19 @@ agents.get('/my-roles', async (c) => {
   } catch (error) {
     console.error('Failed to fetch agent roles:', error)
     return c.json({ error: 'Failed to fetch agent roles' }, 500)
+  }
+})
+
+// GET /api/agents/member-agents - For every agent the viewer can see, the
+// agents that have a role on it (User: sends without asking, Viewer: reads
+// sessions and files). One request feeds every member stack.
+agents.get('/member-agents', async (c) => {
+  try {
+    const { agentSlugs } = await getHomeAgentScope(c)
+    return c.json(await getAgentMemberAgents(agentSlugs, isAuthMode()))
+  } catch (error) {
+    console.error('Failed to fetch member agents:', error)
+    return c.json({ error: 'Failed to fetch member agents' }, 500)
   }
 })
 

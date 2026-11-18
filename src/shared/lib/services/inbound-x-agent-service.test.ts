@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAccessNote, agentAccessRole, inboundXAgentDetailsSchema, memberAgentsOf } from '@shared/lib/types/inbound-x-agent-schema'
-import { buildInboundXAgentDetails } from './inbound-x-agent-service'
+import { buildAgentMemberAgents, buildInboundXAgentDetails } from './inbound-x-agent-service'
 
 function agent(slug: string, name: string): ApiAgent {
   return {
@@ -193,5 +193,23 @@ describe('agentAccessNote', () => {
       agentAccessNote({ role: 'blocked', blocks: [{ callerSlug: 'a', operation: 'invoke' }, { callerSlug: 'a', operation: 'read' }] }),
       agentAccessNote({ role: 'blocked', blocks: (['a', 'b'] as const).flatMap((callerSlug) => [{ callerSlug, operation: 'invoke' as const }, { callerSlug, operation: 'read' as const }]) }),
     ]).toEqual(['Reading asks first', null, null, 'Partly blocked', 'Can’t read or message each other'])
+  })
+})
+
+describe('buildAgentMemberAgents', () => {
+  it('counts a member agent that only another of the agent\'s people uses, as it would a person', async () => {
+    // Work is shared by Alice and Bob. Scout is Alice's alone and a User of Work. Bob's stacks list Work only.
+    const byAgent = await buildAgentMemberAgents(['work'], {
+      agents: [agent('work', 'Work'), agent('scout', 'Scout')],
+      authMode: true,
+      aclRows: [
+        { agentSlug: 'work', userId: 'alice', role: 'owner' },
+        { agentSlug: 'work', userId: 'bob', role: 'user' },
+        { agentSlug: 'scout', userId: 'alice', role: 'owner' },
+      ],
+      blockRows: [],
+      evaluatePolicy: () => 'allow',
+    })
+    expect(byAgent.work?.map(({ slug, role }) => [slug, role])).toEqual([['scout', 'user']])
   })
 })

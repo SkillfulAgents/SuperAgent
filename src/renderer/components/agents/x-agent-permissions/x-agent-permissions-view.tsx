@@ -17,6 +17,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { agentsListQuery } from '@renderer/hooks/query-options'
+import { AGENT_MEMBER_AGENTS_QUERY_KEY } from '@renderer/hooks/use-agent-member-agents'
 
 type Operation = 'list' | 'read' | 'invoke'
 type Decision = 'allow' | 'review' | 'block'
@@ -214,6 +215,7 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
       setPendingKeys((prev) => new Set(prev).add(key))
     },
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: AGENT_MEMBER_AGENTS_QUERY_KEY })
       return queryClient.invalidateQueries({ queryKey: ['x-agent-policies', agentSlug] })
     },
     onError: (err: Error, change) => {

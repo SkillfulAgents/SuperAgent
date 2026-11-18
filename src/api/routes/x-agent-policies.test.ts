@@ -138,6 +138,8 @@ import {
   getPolicy,
   listPoliciesForCaller,
 } from '@shared/lib/services/x-agent-policy-service'
+import { getAgentMemberAgents } from '@shared/lib/services/inbound-x-agent-service'
+import { listAgentsWithStatus } from '@shared/lib/services/agent-service'
 
 // ----------------------------------------------------------------------------
 // Test app
@@ -807,5 +809,19 @@ describe('allowing an agent request needs someone who uses both agents', () => {
     expect((await always('allow')).status).toBe(200)
     expect((await always('deny')).status).toBe(200)
     expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('block')
+  })
+})
+
+describe('getAgentMemberAgents', () => {
+  it('counts an agent whose setting for every agent allows it, even when no stack of its own is in view', async () => {
+    vi.mocked(listAgentsWithStatus).mockImplementation(async ({ slugs = [] } = {}) =>
+      slugs.map((slug) => ({ slug, displaySlug: slug, name: slug, createdAt: new Date(0), status: 'stopped' as const, containerPort: null })))
+    await setPolicy(CALLER, 'invoke', null, 'allow')
+    await setPolicy(CALLER, 'read', null, 'allow')
+
+    const byAgent = await getAgentMemberAgents([TARGET_A, TARGET_B], false)
+
+    expect(Object.fromEntries(Object.entries(byAgent).map(([slug, members]) => [slug, members.map((m) => [m.slug, m.role])])))
+      .toEqual({ [TARGET_A]: [[CALLER, 'user']], [TARGET_B]: [[CALLER, 'user']] })
   })
 })
