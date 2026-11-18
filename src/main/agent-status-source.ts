@@ -22,9 +22,8 @@ import { fetchAgentsWithStatus, type AgentInfo } from './agent-status'
  *
  * The stream does not announce everything. Nothing says the saved agent order
  * changed, and a delete, a rename or a create through the plain agent routes
- * publishes no event of its own (a delete is usually heard anyway, through the
- * container stopping). A window's own queries cover those; without one the
- * interval does.
+ * publishes no event of its own. A window's own queries cover those; without
+ * one the interval does.
  */
 
 /** How often main asks the API when no window is pushing. */
