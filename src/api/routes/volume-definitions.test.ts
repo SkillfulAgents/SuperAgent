@@ -82,6 +82,17 @@ describe('volume definition API', () => {
     expect((await request(`/${id}`, 'PATCH', { name: 'Team notes' }, 'admin')).status).toBe(200)
     expect((await request(`/${id}`, 'DELETE', undefined, 'admin')).status).toBe(200)
   })
+  it('lets a co-owner manage an attached public drive while reserving visibility changes for admins', async () => {
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    await attachMount('agent', id, { userId: 'admin', admin: true })
+    expect((await request(`/${id}/access`, 'POST', { userId: 'alice' }, 'admin')).status).toBe(201)
+    expect((await request(`/${id}`, 'PATCH', { name: 'Forecasts', visibility: 'public' }, 'alice')).status).toBe(200)
+    expect((await request(`/${id}`, 'PATCH', { visibility: 'private' }, 'alice')).status).toBe(403)
+    expect(await (await request('', 'GET', undefined, 'bob')).json()).toMatchObject([{ id, visibility: 'public', attachmentCount: 1 }])
+    expect((await request(`/${id}`, 'PATCH', { visibility: 'private' }, 'admin')).status).toBe(200)
+    expect(await (await request('', 'GET', undefined, 'bob')).json()).toEqual([])
+    expect(await (await request('', 'GET', undefined, 'alice')).json()).toMatchObject([{ id, visibility: 'private', canManage: true, attachmentCount: 1 }])
+  })
   it('rejects deletion while attached and validates malformed requests', async () => {
     const { id } = await (await request('', 'POST', input())).json()
     await attachMount('agent', id, { userId: 'alice', admin: false })

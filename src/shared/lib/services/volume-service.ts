@@ -44,15 +44,15 @@ export function storedDefinition(row: Pick<VolumeRow, 'id' | 'name' | 'type' | '
   return { id: row.id, name: row.name, type: type.data, config }
 }
 
-function checkVisibility(visibility: 'public' | 'private', viewer: VolumeViewer) {
-  if (visibility === 'public' && !viewer.admin) throw new VolumeError('Only admins can publish drives', 403)
+function requirePrivateDriveOwner(visibility: VolumeRow['visibility'] | undefined, viewer: VolumeViewer) {
   if (visibility === 'private' && !viewer.userId) throw new VolumeError('Private drives require a signed-in user', 400)
 }
 
 export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer): Promise<VolumeRow> {
   const input = createVolumeSchema.parse(raw)
   const visibility = input.visibility ?? (viewer.userId ? 'private' : 'public')
-  checkVisibility(visibility, viewer)
+  requirePrivateDriveOwner(visibility, viewer)
+  if (visibility === 'public' && !viewer.admin) throw new VolumeError('Only admins can publish drives', 403)
   let prepared: Awaited<ReturnType<typeof prepareVolume>>
   try {
     prepared = await prepareVolume(input.type, input.config, viewer)
@@ -118,9 +118,10 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
 export async function updateVolumeDefinition(id: string, raw: unknown, viewer: VolumeViewer): Promise<void> {
   const input = updateVolumeSchema.parse(raw)
   const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
-  if (input.visibility) checkVisibility(input.visibility, viewer)
+  requirePrivateDriveOwner(input.visibility, viewer)
   if (input.global && input.visibility === 'private') throw new VolumeError('Only public drives can be global', 400)
   const allowed = and(ownership,
+    input.visibility && !viewer.admin ? eq(volumeDefinitions.visibility, input.visibility) : undefined,
     input.global !== undefined && !viewer.admin ? sql`0` : undefined,
     input.global && input.visibility !== 'public' ? eq(volumeDefinitions.visibility, 'public') : undefined,
     input.visibility === 'private' ? isNull(volumeDefinitions.globalAccess) : undefined)
@@ -138,6 +139,7 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
   if (changesOf(result) > 0) return
   const existing = await db.select({ visibility: volumeDefinitions.visibility, globalAccess: volumeDefinitions.globalAccess }).from(volumeDefinitions).where(ownership).get()
   if (existing) {
+    if (input.visibility && !viewer.admin && input.visibility !== existing.visibility) throw new VolumeError('Only admins can change drive visibility', 403)
     if (input.global && existing.visibility !== 'public') throw new VolumeError('Only public drives can be global', 400)
     if (input.global !== undefined && !viewer.admin) throw new VolumeError('Only admins can change global access', 403)
     if (input.visibility === 'private' && existing.globalAccess) throw new VolumeError('Turn off global before changing access', 409)
