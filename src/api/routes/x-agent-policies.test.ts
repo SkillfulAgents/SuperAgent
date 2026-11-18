@@ -117,6 +117,11 @@ vi.mock('@shared/lib/services/x-agent-policy-service', async (importOriginal) =>
   return { ...actual, evaluate: vi.fn(actual.evaluate) }
 })
 
+const mockNotifyAgentMembersChanged = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/services/agent-members-service', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/services/agent-members-service')>(),
+  notifyAgentMembersChanged: mockNotifyAgentMembersChanged,
+}))
 vi.mock('@shared/lib/proxy/token-store', () => ({
   revokeProxyToken: vi.fn(),
   validateProxyToken: vi.fn(),
@@ -265,6 +270,27 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
     expect(res.status).toBe(200)
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('review')
     expect((await getPolicy(CALLER, 'read', TARGET_B))?.decision).toBe('block')
+  })
+
+  it("tells the people of the agent whose members changed, and only on a change", async () => {
+    mockNotifyAgentMembersChanged.mockClear()
+    await patchPolicy({ operation: 'read', targetSlug: TARGET_A, decision: 'allow' })
+    await patchPolicy({ operation: 'read', targetSlug: TARGET_A, decision: 'allow' })
+    await patchPolicy({ operation: 'read', targetSlug: null, decision: 'allow' })
+    await app.request(`/api/agents/${CALLER}/x-agent-policies/invoke/${TARGET_B}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    await app.request(`/api/agents/${CALLER}/x-agent-policies/invoke/${TARGET_B}`, { method: 'DELETE' })
+    await app.request(`/api/agents/${CALLER}/x-agent-policies/invoke/${TARGET_B}`, { method: 'DELETE' })
+
+    // The setting for every agent changes the caller's place in every agent's members.
+    expect(mockNotifyAgentMembersChanged.mock.calls).toEqual([[TARGET_A], [CALLER], [TARGET_B], [TARGET_B]])
+  })
+
+  it('tells both agents when a block between them is set or lifted', async () => {
+    mockNotifyAgentMembersChanged.mockClear()
+    await patchPolicy({ operation: 'invoke', targetSlug: TARGET_A, decision: 'block' })
+    await patchPolicy({ operation: 'invoke', targetSlug: TARGET_A, decision: 'review' })
+
+    expect(mockNotifyAgentMembersChanged.mock.calls).toEqual([[TARGET_A], [CALLER], [TARGET_A], [CALLER]])
   })
 
   it('clears only the selected row when decision is default', async () => {

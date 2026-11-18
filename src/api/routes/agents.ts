@@ -8292,6 +8292,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       if (policyDecision === 'allow' && saved.previousDecision === 'block') {
         return blockedResponse()
       }
+      if (saved.previousDecision !== policyDecision) await notifyLinkChanged(slug, body.xAgent.targetSlug, { block: policyDecision === 'block' || saved.previousDecision === 'block' })
     } else if (reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
       // accountId is actually the mcpId for MCP reviews.
@@ -8474,6 +8475,16 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   })
 })
 
+/**
+ * An agent's access to another is one of the target's members, so the target's people hear of a change to it.
+ * A setting for every agent (no target) changes the caller's place in every agent's members: its own people hear.
+ */
+async function notifyLinkChanged(callerSlug: string, targetSlug: string | null | undefined, { block = false } = {}): Promise<void> {
+  await notifyAgentMembersChanged(targetSlug ?? callerSlug)
+  // A block keeps the pair out of each other's members, so a block set or lifted changes the caller's too.
+  if (block && targetSlug) await notifyAgentMembersChanged(callerSlug)
+}
+
 // PATCH /api/agents/:id/x-agent-policies - Atomically update or clear one
 // policy. The editor sends independent controls through this route so rapid
 // edits never race through the whole-list replacement endpoint below.
@@ -8513,9 +8524,11 @@ agents.patch('/:id/x-agent-policies', AgentUser(), async (c) => {
 
   if (decision === 'default') {
     const removed = await deletePolicy(slug, operation, targetSlug)
+    if (removed > 0) await notifyLinkChanged(slug, targetSlug, { block: true })
     return c.json({ ok: true, removed })
   }
   const result = await setPolicy(slug, operation, targetSlug, decision)
+  if (result.previousDecision !== decision) await notifyLinkChanged(slug, targetSlug, { block: decision === 'block' || result.previousDecision === 'block' })
   return c.json({ ok: true, ...result })
 })
 
@@ -8548,6 +8561,9 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
     }
   }
   await replacePoliciesForCaller(slug, parsed.data.policies)
+  for (const target of targets) await notifyLinkChanged(slug, target)
+  // Its settings for every agent and its blocks change the caller's own members too.
+  await notifyAgentMembersChanged(slug)
   return c.json({ ok: true })
 })
 
@@ -8585,6 +8601,7 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c) =>
     return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
   }
   const result = await setPolicy(slug, operation.data, targetSlug, parsed.data.decision)
+  if (result.previousDecision !== parsed.data.decision) await notifyLinkChanged(slug, targetSlug, { block: parsed.data.decision === 'block' || result.previousDecision === 'block' })
   return c.json({ ok: true, ...result })
 })
 
@@ -8603,6 +8620,7 @@ agents.delete('/:id/x-agent-policies/:operation/:target', AgentUser(), async (c)
     return c.json({ error: LINK_NEEDS_BOTH }, 403)
   }
   const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
+  if (removed > 0) await notifyLinkChanged(slug, targetSlug)
   return c.json({ ok: true, removed })
 })
 
