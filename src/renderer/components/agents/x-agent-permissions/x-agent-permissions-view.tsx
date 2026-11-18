@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { Loader2, Search, AlertCircle, ChevronDown } from 'lucide-react'
+import { Loader2, Search, AlertCircle, ChevronDown, MoreVertical } from 'lucide-react'
 import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
@@ -15,7 +15,8 @@ import { startViewTransition } from '@renderer/lib/view-transition'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useRenderTracker } from '@renderer/lib/perf'
-import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { LinkListFixture, linkFixtureOn } from './link-list-fixture'
 
 type Operation = 'list' | 'read' | 'invoke'
 type Decision = 'allow' | 'review' | 'block'
@@ -76,6 +77,10 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   const queryClient = useQueryClient()
   const { isAuthMode, rolesReady, canUseAgent } = useUser()
   const canManage = !isAuthMode || (rolesReady && canUseAgent(agentSlug))
+  // The title names this agent. Until it loads, "this agent" stands in, so the title never reads half-finished.
+  const agentName = useAgent(agentSlug).data?.name ?? 'this agent'
+  // EXPERIMENT: where the list fixture puts its "Connect an agent" button, in the title row.
+  const [fixtureTitleActions, setFixtureTitleActions] = useState<HTMLElement | null>(null)
   const [filter, setFilter] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -375,10 +380,82 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
   const connectedAgents = otherAgents.filter((a) => isConnected(a.slug))
   const notConnectedAgents = otherAgents.filter((a) => !isConnected(a.slug))
 
+  // Global permissions (apply to every agent in the workspace) live in the title's ⋮ menu, beside "Connect an agent",
+  // shaped like Home's options button. Their rows are the list rows used on the page.
+  const globalMenu = canManage && !(isAuthMode && !rolesReady) && (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Global permissions"
+          title="Global permissions"
+          data-testid="x-agent-global-menu-trigger"
+          className="flex h-8 w-8 items-center justify-center rounded-control border border-input bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[30rem] max-w-[calc(100vw-2rem)] p-0" onOpenAutoFocus={(e) => e.preventDefault()} data-testid="x-agent-global-menu">
+        <div className="px-4 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Global permissions</div>
+        <div className="divide-y">
+          <IntegrationRow
+            icon={null}
+            name={<span className="whitespace-normal">See a list of all other agents</span>}
+            data-testid="x-agent-policy-global-list"
+            // On or off: on always allows it; off clears the rule, back to asking first.
+            right={(
+              <Switch
+                checked={getDecision('list', null) === 'allow'}
+                onCheckedChange={(on) => handleChange('list', null)(on ? 'allow' : 'default')}
+                disabled={pendingKeys.has(policyKey('list', null))}
+                aria-label="See a list of all other agents"
+                data-testid="x-agent-global-list-switch"
+              />
+            )}
+          />
+          <IntegrationRow
+            icon={null}
+            name={<span className="whitespace-normal">Read sessions and files of all other agents</span>}
+            data-testid="x-agent-policy-global-read"
+            right={(
+              <PolicyDecisionDropdown
+                value={globalRead}
+                {...globalDefault}
+                look="row"
+                onChange={handleChange('read', null)}
+                disabled={pendingKeys.has(policyKey('read', null))}
+              />
+            )}
+          />
+          <IntegrationRow
+            icon={null}
+            name={<span className="whitespace-normal">Send messages and files to all other agents</span>}
+            data-testid="x-agent-policy-global-invoke"
+            right={(
+              <PolicyDecisionDropdown
+                value={globalInvoke}
+                {...globalDefault}
+                look="row"
+                onChange={handleChange('invoke', null)}
+                disabled={pendingKeys.has(policyKey('invoke', null))}
+              />
+            )}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+
   return (
     <SettingsPageContainer>
       <PageTitle
-        title="Connect this agent to others"
+        title={`Agents connected to ${agentName}`}
+        actions={(
+          <div className="flex items-center gap-2">
+            {/* EXPERIMENT: the fixture's "All other agents" row stands in for the global menu while it is on. */}
+            {linkFixtureOn() ? <span ref={setFixtureTitleActions} /> : globalMenu}
+          </div>
+        )}
         back={{
           onClick: () => {
             void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
@@ -409,55 +486,10 @@ export function XAgentPermissionsView({ agentSlug }: XAgentPermissionsViewProps)
             </div>
           )}
 
-          {/* Global toggles (apply to every agent in the workspace) */}
-          <div className="space-y-2">
-            <h4 className="text-xs font-medium uppercase text-muted-foreground">Global permissions</h4>
-            <div className="rounded-card border p-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to see a list of all other agents
-                </span>
-                <PolicyDecisionDropdown
-                  value={getDecision('list', null)}
-                  {...globalDefault}
-                  className="w-60"
-                  onChange={handleChange('list', null)}
-                  disabled={pendingKeys.has(policyKey('list', null))}
-                />
-              </div>
-            </div>
-            <div className="rounded-card border p-3" data-testid="x-agent-policy-global-read">
-              <div className="flex items-center justify-between gap-3">
-                <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to read sessions and files of all other agents
-                </span>
-                <PolicyDecisionDropdown
-                  value={globalRead}
-                  {...globalDefault}
-                  className="w-60"
-                  onChange={handleChange('read', null)}
-                  disabled={pendingKeys.has(policyKey('read', null))}
-                />
-              </div>
-            </div>
-            <div className="rounded-card border p-3" data-testid="x-agent-policy-global-invoke">
-              <div className="flex items-center justify-between gap-3">
-                <span className="min-w-0 flex-1 text-xs font-medium">
-                  Allow this agent to send messages and files to all other agents
-                </span>
-                <PolicyDecisionDropdown
-                  value={globalInvoke}
-                  {...globalDefault}
-                  className="w-60"
-                  onChange={handleChange('invoke', null)}
-                  disabled={pendingKeys.has(policyKey('invoke', null))}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Per-agent connections */}
-          {agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
+          {/* Per-agent connections. EXPERIMENT: the list fixture replaces them when its flag is set. */}
+          {linkFixtureOn() ? (
+            <LinkListFixture selfName={agentName} titleActions={fixtureTitleActions} />
+          ) : agentsQuery.data && agentsQuery.data.filter((a) => a.slug !== agentSlug).length === 0 ? (
             <p className="text-sm text-muted-foreground">No other agents in this workspace yet.</p>
           ) : (
             <>

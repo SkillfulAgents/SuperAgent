@@ -104,8 +104,9 @@ describe('XAgentPermissionsView', () => {
     renderView()
     expect(mocks.track).toHaveBeenCalledWith('agent_permissions_viewed', { agentSlug: 'caller' })
 
-    // Globals stay on top.
-    expect(await screen.findByText('Allow this agent to see a list of all other agents')).toBeInTheDocument()
+    // Globals sit in the title's ⋮ menu.
+    fireEvent.click(await screen.findByTestId('x-agent-global-menu-trigger'))
+    expect(await screen.findByText('See a list of all other agents')).toBeInTheDocument()
     expect(screen.getByTestId('x-agent-policy-global-read')).toBeInTheDocument()
     expect(screen.getByTestId('x-agent-policy-global-invoke')).toBeInTheDocument()
 
@@ -227,6 +228,7 @@ describe('XAgentPermissionsView', () => {
     policies = [policy('invoke', 'target', 'allow'), policy('read', null, 'allow')]
     renderView()
 
+    fireEvent.click(await screen.findByTestId('x-agent-global-menu-trigger'))
     const globalRead = within(await screen.findByTestId('x-agent-policy-global-read')).getByTestId('policy-dropdown-trigger')
     expect(globalRead).toHaveAttribute('data-inherited', 'false')
     const globalInvoke = within(screen.getByTestId('x-agent-policy-global-invoke')).getByTestId('policy-dropdown-trigger')
@@ -255,6 +257,7 @@ describe('XAgentPermissionsView', () => {
     policies = [policy('read', null, 'allow')]
     renderView()
 
+    fireEvent.click(await screen.findByTestId('x-agent-global-menu-trigger'))
     fireEvent.click(within(await screen.findByTestId('x-agent-policy-global-read')).getByTestId('policy-dropdown-trigger'))
     fireEvent.click(await screen.findByText('Reset to default'))
     await waitFor(() => {
