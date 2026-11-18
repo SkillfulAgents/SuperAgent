@@ -10652,6 +10652,26 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     }
   })
 
+  it("resolves the runtime once when the request picks nothing: the prewarm is the session's own", async () => {
+    storePreferences({ defaultModel: 'haiku', defaultEffort: 'high' })
+    const runtime = await import('@shared/lib/llm-provider/connection-runtime')
+    const inherit = vi.spyOn(runtime, 'resolveConnectionRuntimeInherit')
+    try {
+      // Named sessions, so no background naming resolves anything after the response.
+      expect((await postJson(app, SESSIONS_URL, { message: 'hello', name: 'Named' })).status).toBe(201)
+      expect(inherit).toHaveBeenCalledTimes(1)
+      expect(mockCreateSession.mock.calls[0][0]).toMatchObject({ model: 'haiku', effort: 'high', prewarmDefaults: { model: 'haiku', effort: 'high' } })
+
+      // A pick of its own makes the session differ from the default one: both are resolved.
+      inherit.mockClear()
+      expect((await postJson(app, SESSIONS_URL, { message: 'hello', name: 'Named', effort: 'low' })).status).toBe(201)
+      expect(inherit).toHaveBeenCalledTimes(2)
+      expect(mockCreateSession.mock.calls[1][0]).toMatchObject({ model: 'haiku', effort: 'low', prewarmDefaults: { model: 'haiku', effort: 'high' } })
+    } finally {
+      inherit.mockRestore()
+    }
+  })
+
   it('uses the global default model and effort when the agent has no preferences', async () => {
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
 
