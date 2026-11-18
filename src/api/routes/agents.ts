@@ -5064,6 +5064,19 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       grantType,
       ...(grantAnyApp && { grantAnyApp: true }),
     })
+    // Declines already report as request_declined; this is the approval side.
+    // 'claimed' and 'abandoned' decided nothing, so they report nothing.
+    if (outcome.status === 'resolved' || outcome.status === 'failed') {
+      trackServerEvent('computer_use_approved', {
+        method,
+        permission_level: permissionLevel || 'use_application',
+        grant_type: grantType ?? 'once',
+        any_app: !!grantAnyApp,
+        command_failed: outcome.status === 'failed',
+      })
+    } else if (outcome.status === 'missing_permissions' || outcome.status === 'undeliverable') {
+      trackServerEvent('computer_use_approve_failed', { method, reason: outcome.status })
+    }
     return hostRunResponse(c, outcome, 'computer use')
   } catch (error) {
     console.error('Failed to execute computer use:', error)
@@ -5089,6 +5102,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     // next command starts a new one, under whatever permission it then has.
     await endComputerUseSessions({ sessionId })
 
+    trackServerEvent('computer_use_revoked', { had_app: !!appName })
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
     console.error('Failed to revoke computer use:', error)
