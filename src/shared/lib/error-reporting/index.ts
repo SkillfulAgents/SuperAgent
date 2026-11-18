@@ -1,8 +1,11 @@
 import type { ErrorReportingProvider, ErrorContext, ErrorReportingUser, Breadcrumb } from './types'
+import { background } from '../background'
 
 export type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, ErrorReportingUser, Breadcrumb, SeverityLevel } from './types'
 
 let provider: ErrorReportingProvider | null = null
+/** Whether {@link attachErrorReportingIdentity} has already given the provider the tenant id and settings context. */
+let identityAttached = false
 
 /**
  * Sets the process's error reporter. Each entry point creates the one its runtime can run
@@ -41,17 +44,31 @@ export function setErrorReportingUser(user: ErrorReportingUser | null): void {
  * fingerprint. Error reporting starts before the database opens so a failed
  * boot can still be reported; the entry point calls this once app records are
  * installed. Never throws.
+ *
+ * What the process knows itself is attached before this returns. The disk
+ * space and the container runner's version need the file system and another
+ * program, so they follow in the background and startup does not wait for
+ * them. Once it has succeeded, a later call does nothing: `initializeServices`
+ * calls it again for a reporter whose first attempt failed.
  */
 export async function attachErrorReportingIdentity(): Promise<void> {
-  if (!provider) return
+  const reporter = provider
+  if (!reporter || identityAttached) return
   try {
-    const [{ getTenantId }, { getSettings }, { collectSettingsEnvironmentData }] = await Promise.all([
+    const [{ getTenantId }, { getSettings }, { collectSettingsEnvironmentData, probeSettingsEnvironmentData }] = await Promise.all([
       import('../analytics/tenant-id'),
       import('../config/settings'),
       import('./environment'),
     ])
-    provider.setTenantId(await getTenantId())
-    provider.setContext('environment_settings', collectSettingsEnvironmentData(await getSettings()))
+    reporter.setTenantId(await getTenantId())
+    const settings = await getSettings()
+    const known = collectSettingsEnvironmentData(settings)
+    reporter.setContext('environment_settings', known)
+    identityAttached = true
+    background(async () => {
+      const probed = await probeSettingsEnvironmentData(settings)
+      reporter.setContext('environment_settings', { ...known, ...probed })
+    }, { name: 'error-reporting.settings-environment-probe' })
   } catch (err) {
     console.warn('[ErrorReporting] Could not attach the tenant identity:', err)
   }
