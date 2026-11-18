@@ -968,6 +968,7 @@ describe('/invoke', () => {
         id: createArgs.initialMessageUuid,
         agentSlug: TARGET_SLUG,
         userId: OTHER_USER_ID,
+        authorAgentSlug: CALLER_SLUG,
       }),
     ])
     expect(mockRegisterSession).toHaveBeenCalledWith(
@@ -1106,6 +1107,7 @@ describe('/invoke', () => {
         id: sentMessageUuid,
         agentSlug: TARGET_SLUG,
         userId: OTHER_USER_ID,
+        authorAgentSlug: CALLER_SLUG,
       }),
     ])
   })

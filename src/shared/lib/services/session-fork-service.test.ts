@@ -222,6 +222,19 @@ describe('forkSession', () => {
     ])
   })
 
+  it('keeps the sending agent on a re-keyed author', async () => {
+    streamJsonlFile.mockImplementation(async function* () {
+      yield { type: 'user', uuid: 'new-user', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-user' } }
+    })
+    dbSelectFrom.mockResolvedValueOnce([{ id: 'old-user', userId: 'user-1', integrationId: null, display: null, authorAgentSlug: 'research-agent' }])
+
+    const fork = await forkSession('test-agent', 'src-1', { copyAttribution: true })
+
+    expect(insertMessageAuthorsBestEffort).toHaveBeenCalledExactlyOnceWith([
+      { id: 'new-user', sessionId: fork.id, agentSlug: 'test-agent', userId: 'user-1', integrationId: null, display: null, authorAgentSlug: 'research-agent' },
+    ])
+  })
+
   it('does not scan the fork without auth attribution or integration authors', async () => {
     await forkSession('test-agent', 'src-1')
     expect(streamJsonlFile).not.toHaveBeenCalled()

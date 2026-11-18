@@ -151,14 +151,14 @@ async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: s
   if (pairs.length === 0) return
 
   const rows = await db
-    .select({ id: messageAuthor.id, userId: messageAuthor.userId, integrationId: messageAuthor.integrationId, display: messageAuthor.display })
+    .select({ id: messageAuthor.id, userId: messageAuthor.userId, integrationId: messageAuthor.integrationId, display: messageAuthor.display, authorAgentSlug: messageAuthor.authorAgentSlug })
     .from(messageAuthor)
     .where(and(eq(messageAuthor.sessionId, sourceId), inArray(messageAuthor.id, pairs.map((p) => p.oldUuid))))
   const byOld = new Map(rows.map((r) => [r.id, r]))
   await insertMessageAuthorsBestEffort(
     pairs.flatMap(({ newUuid, oldUuid }) => {
       const row = byOld.get(oldUuid)
-      return row ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId: row.userId, integrationId: row.integrationId, display: row.display }] : []
+      return row ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId: row.userId, integrationId: row.integrationId, display: row.display, authorAgentSlug: row.authorAgentSlug }] : []
     }),
   )
 }

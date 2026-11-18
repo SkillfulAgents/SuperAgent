@@ -19,6 +19,7 @@ import { getUserSummaries, toUserSender, userExists, type UserSenderSource } fro
 import { searchInviteCandidates } from '@shared/lib/team-directory/invite-candidates'
 import { DirectoryInviteError, inviteDirectoryPerson, notifyInvitedUser } from '@shared/lib/team-directory/invited-users'
 import { getSessionParticipants } from '@shared/lib/services/session-participants-service'
+import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
@@ -2427,7 +2428,6 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
   }
 }
 
-/** Rows authored by a person; an integration's rows carry its card instead (see annotateIntegrationMessages). */
 // The faces on a session row are decoration: a lookup failure leaves the list without them.
 async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: string[]) {
   try {
@@ -2438,8 +2438,36 @@ async function sessionParticipantsBestEffort(agentSlug: string, sessionIds: stri
   }
 }
 
-function userAuthors(rows: { messageId: string; userId: string | null }[]): { messageId: string; userId: string }[] {
-  return rows.flatMap(row => row.userId ? [{ messageId: row.messageId, userId: row.userId }] : [])
+// Agent names and orbs are decoration: a failed read draws the slug, never fails the transcript.
+async function authorAgentsBestEffort(slugs: string[]) {
+  try {
+    return await agentCatalog.getMany(slugs)
+  } catch (error) {
+    captureException(error, { tags: { component: 'agents', operation: 'message-author-agents' }, level: 'warning' })
+    return []
+  }
+}
+
+/** A row naming an agent draws that agent; its person is only the one billed. */
+async function attachAuthors(
+  transformed: TransformedItem[],
+  rows: { messageId: string; userId: string | null; authorAgentSlug: string | null }[],
+): Promise<void> {
+  const agentSlugs = [...new Set(rows.flatMap(row => row.authorAgentSlug ? [row.authorAgentSlug] : []))]
+  const agents = new Map((await authorAgentsBestEffort(agentSlugs)).map(agent => [agent.slug, agent]))
+  const profiles = await getUserSummaries(rows.flatMap(row => !row.authorAgentSlug && row.userId ? [row.userId] : []))
+  const byMessage = new Map(rows.map(row => [row.messageId, row]))
+  for (const msg of transformed) {
+    if (msg.type !== 'user') continue
+    const row = byMessage.get(msg.id)
+    if (row?.authorAgentSlug) {
+      const agent = agents.get(row.authorAgentSlug)
+      msg.agentSender = { slug: row.authorAgentSlug, name: agent?.name ?? row.authorAgentSlug, avatar: agent?.avatar ?? null }
+    } else if (row?.userId) {
+      const profile = profiles.get(row.userId)
+      if (profile) msg.sender = profile
+    }
+  }
 }
 
 // Integration cards are decoration: a lookup failure leaves the messages as text.
@@ -2474,23 +2502,14 @@ async function annotateAndRecoverMessages(
   // Scope the lookup to the ids actually in this response — a delta window is
   // a handful of items, and loading the whole session's author history per
   // refetch would erase the bounded-memory benefit on auth deployments.
-  const authors = userAuthors(await db
+  await attachAuthors(transformed, await db
     .select({
       messageId: messageAuthor.id,
       userId: messageAuthor.userId,
+      authorAgentSlug: messageAuthor.authorAgentSlug,
     })
     .from(messageAuthor)
     .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds), isNotNull(messageAuthor.userId))))
-
-  const profiles = await getUserSummaries(authors.map(author => author.userId))
-  const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
-  for (const msg of transformed) {
-    if (msg.type !== 'user') continue
-    const author = authorMap.get(msg.id)
-    if (author) {
-      msg.sender = author
-    }
-  }
 }
 
 // Buffers, not strings: Readable.toWeb hands chunks straight to the web
@@ -2628,24 +2647,14 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         .map((m) => m.id)
 
       if (userMessageIds.length > 0) {
-        const authors = userAuthors(await db
+        await attachAuthors(transformed, await db
           .select({
             messageId: messageAuthor.id,
             userId: messageAuthor.userId,
+            authorAgentSlug: messageAuthor.authorAgentSlug,
           })
           .from(messageAuthor)
           .where(and(eq(messageAuthor.sessionId, sessionId), isNotNull(messageAuthor.userId))))
-
-        const profiles = await getUserSummaries(authors.map(author => author.userId))
-        const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
-
-        for (const msg of transformed) {
-          if (msg.type !== 'user') continue
-          const author = authorMap.get(msg.id)
-          if (author) {
-            msg.sender = author
-          }
-        }
       }
     }
 

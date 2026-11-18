@@ -792,5 +792,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1794868843117,
     "hash": "d4ce1cca596492dca6fbeaf7f86ba65f0471fa7e9950d4e6906753b058969861"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `message_author` ADD `author_agent_slug` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1794962128928,
+    "hash": "c512a8a3b70802c6730ab015bf7d8de3d24d96a53a66eb79e22fd306a7a0ccd0"
   }
 ]

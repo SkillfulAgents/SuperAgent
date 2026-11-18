@@ -737,7 +737,8 @@ export const userSettings = sqliteTable('user_settings', {
 // Who sent a user message: a person in the app (auth mode), or an agent
 // integration, whose row also carries the card the app draws for it (JSON,
 // integrationMessageDisplaySchema). Host-written only. An integration row has
-// no foreign key: its name snapshot outlives a rename or deletion.
+// no foreign key: its name snapshot outlives a rename or deletion. A message
+// another agent sent names that agent beside the person billed for the call.
 export const messageAuthor = sqliteTable('message_author', {
   id: text('id').primaryKey(), // Same UUID passed to the SDK and written into JSONL
   sessionId: text('session_id').notNull(),
@@ -745,6 +746,7 @@ export const messageAuthor = sqliteTable('message_author', {
   userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
   integrationId: text('integration_id'),
   display: text('display'),
+  authorAgentSlug: text('author_agent_slug'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' })
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .notNull(),

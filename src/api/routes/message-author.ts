@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 
-type AuthorRow = Pick<typeof messageAuthor.$inferInsert, 'id' | 'sessionId' | 'agentSlug' | 'userId' | 'integrationId' | 'display'>
+type AuthorRow = Pick<typeof messageAuthor.$inferInsert, 'id' | 'sessionId' | 'agentSlug' | 'userId' | 'integrationId' | 'display' | 'authorAgentSlug'>
 
 /**
  * Record who authored a user message: a person (auth mode) or an integration

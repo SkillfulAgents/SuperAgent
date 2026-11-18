@@ -881,6 +881,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             sessionId: existingSessionId,
             agentSlug: targetSlug,
             userId: attributedUserId,
+            authorAgentSlug: callerSlug,
           })
           if (recorded) messageUuid = candidateUuid
         }
@@ -1051,6 +1052,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           sessionId: newSessionId,
           agentSlug: targetSlug,
           userId: createdByUserId,
+          authorAgentSlug: callerSlug,
         })
       }
       // The x-agent provenance exists now: the target's trigger and history

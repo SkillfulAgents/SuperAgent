@@ -478,6 +478,7 @@ vi.mock('@shared/lib/auth/config', () => ({
 
 // Agent service
 const mockAgentExists = vi.fn().mockResolvedValue(true)
+const mockCatalogGetMany = vi.fn().mockResolvedValue([])
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgentsWithStatus: vi.fn(),
   listAgentsToList: vi.fn(),
@@ -498,6 +499,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({
   agentCatalog: {
     resolve: async (slug: string) => ((await mockAgentExists(slug)) ? slug : null),
+    getMany: (...args: unknown[]) => mockCatalogGetMany(...args),
   },
   identityFromInstructions: () => ({}),
 }))
@@ -5337,6 +5339,30 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       expect(body[1].sender).toBeUndefined()
     },
   )
+
+  const avatar = { color: 'tonal-blue', shape: 'triangle' }
+  it.each([
+    ['the agent', () => mockCatalogGetMany.mockResolvedValueOnce([{ slug: 'research-agent', name: 'Research Agent', avatar }]), { slug: 'research-agent', name: 'Research Agent', avatar }],
+    ['its slug when the agent is gone', () => mockCatalogGetMany.mockResolvedValueOnce([]), { slug: 'research-agent', name: 'research-agent', avatar: null }],
+    ['its slug when the agent read fails', () => mockCatalogGetMany.mockRejectedValueOnce(new Error('catalog down')), { slug: 'research-agent', name: 'research-agent', avatar: null }],
+  ])('draws a message another agent sent as %s, never the person billed for it', async (_case, arrange, agentSender) => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockTransformMessages.mockReturnValue([
+      { id: 'msg-1', type: 'user', content: { text: 'draft the summary' }, toolCalls: [], createdAt: new Date() },
+    ])
+    mockDbSelectFrom.mockReturnValue({
+      where: () => Promise.resolve([{ messageId: 'msg-1', userId: 'user-1', authorAgentSlug: 'research-agent' }]),
+    })
+    arrange()
+    vi.mocked(getUserSummaries).mockResolvedValue(new Map([['user-1', { id: 'user-1', name: 'Alice', email: 'alice@example.com', image: null }]]))
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect(body[0].agentSender).toEqual(agentSender)
+    expect(body[0].sender).toBeUndefined()
+  })
 
   it('handles sessions with no author records gracefully', async () => {
     mockIsAuthMode.mockReturnValue(true)

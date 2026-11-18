@@ -777,6 +777,18 @@ describe('MessageItem', () => {
       expect(avatar.querySelector('img')).toHaveAttribute('src', 'https://example.com/alice.png')
     })
 
+    it('draws the orb and name of an agent that sent the message', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        createdAt: new Date(),
+        agentSender: { slug: 'research-agent', name: 'Research Agent', avatar: { color: 'tonal-blue', shape: 'triangle' } },
+      })
+      render(<MessageItem message={msg} />)
+      expect(document.querySelector('[data-avatar-orb]')).toBeInTheDocument()
+      expect(screen.queryByRole('img', { name: 'Research Agent' })).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-meta')).toHaveTextContent(/^Research Agentjust now$/)
+    })
+
     it('falls back to initials for a sender lifted from a mirror prefix', () => {
       const msg = createUserMessage({ content: { text: '\\[Dana Scully]: hello' } })
       render(<MessageItem message={msg} />)
