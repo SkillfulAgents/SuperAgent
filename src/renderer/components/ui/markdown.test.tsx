@@ -137,14 +137,29 @@ describe('Markdown', () => {
     expect(screen.getByRole('status').textContent).toBe('')
   })
 
-  it('opens a folder link in the folder browser', () => {
+  it.each([
+    ['a workspace folder', '/workspace/output/', '/workspace/output'],
+    ['the workspace root', '/workspace/', '/workspace'],
+    ['a drive root', '/mounts/Drive/', '/mounts/Drive'],
+  ])('opens a folder link to %s in the folder browser', (_, href, rootPath) => {
+    render(
+      <FilePreviewProvider>
+        <Markdown agentSlug="sales-helper">{`[Outputs](${href})`}</Markdown>
+        <OpenTabs />
+      </FilePreviewProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Outputs' }))
+    expect(screen.getByRole('status').textContent).toBe(`folder:sales-helper:${rootPath}`)
+  })
+
+  it.each(['Enter', ' '])('opens a folder link from the keyboard with %j', (key) => {
     render(
       <FilePreviewProvider>
         <Markdown agentSlug="sales-helper">{'[Outputs](/workspace/output/)'}</Markdown>
         <OpenTabs />
       </FilePreviewProvider>,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Outputs' }))
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Outputs' }), { key })
     expect(screen.getByRole('status').textContent).toBe('folder:sales-helper:/workspace/output')
   })
 

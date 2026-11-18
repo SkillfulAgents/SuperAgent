@@ -91,6 +91,9 @@ describe('workspace file URLs', () => {
       ['a path relative to a drive file', 'a.png', '/mounts/Drive/docs', '/mounts/Drive/docs/a.png'],
       ['a folder, keeping its slash', 'shots/', '/workspace/blog', '/workspace/blog/shots/'],
       ['an absolute folder', '/workspace/out/', undefined, '/workspace/out/'],
+      ['the workspace root, written as a folder', '/workspace/', undefined, '/workspace/'],
+      ['a drive root, written as a folder', '/mounts/Drive/', undefined, '/mounts/Drive/'],
+      ['the workspace root, from a file in it', './', '/workspace', '/workspace/'],
       ['a localhost file: URL, which names this machine', 'file://localhost/workspace/a.md', undefined, '/workspace/a.md'],
     ])('resolves %s', (_, reference, folder, expected) => {
       expect(resolveAgentFilePath(reference, folder)).toBe(expected)
@@ -110,9 +113,11 @@ describe('workspace file URLs', () => {
       ['a web URL', 'https://example.com/a.md', undefined],
       ['an app page', '/agents/a/sessions/s', undefined],
       ['a heading only', '#results', '/workspace/blog'],
-      ['the workspace root', '/workspace/', undefined],
+      ['the workspace root, written as a file', '/workspace', undefined],
       ['an empty reference', '', '/workspace/blog'],
-      ['a drive root', '/mounts/Drive', undefined],
+      ['a drive root, written as a file', '/mounts/Drive', undefined],
+      ['the folder holding the drives', '/mounts/', undefined],
+      ['the container root', '/', undefined],
       ['a display path from another source', 'a.md', '/Team Brain/policies'],
     ])('refuses %s', (_, reference, folder) => {
       expect(resolveAgentFilePath(reference, folder)).toBeNull()

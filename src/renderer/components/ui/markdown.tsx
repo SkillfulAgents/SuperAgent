@@ -6,6 +6,7 @@ import { Link, type LinkProps } from '@tanstack/react-router'
 import { isAgentPageHref, settingsTabFromHref } from '@renderer/lib/in-app-link'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { AgentFileOpenerContext } from '@renderer/context/agent-file-opener-context'
+import { openableProps } from '@renderer/lib/openable'
 import { isFolderPath } from '@shared/lib/utils/workspace-path'
 
 // The one place react-markdown is wired: plugins, link-href policy, default anchor.
@@ -15,16 +16,9 @@ function AgentFileLink({ children, href, filePath, agentSlug }: { children?: Rea
   const opener = useContext(AgentFileOpenerContext)
   if (isFolderPath(filePath)) {
     if (!opener) return <>{children}</>
-    const open = () => opener.openFolder(filePath, agentSlug)
     // Inline text, not a button: a button never wraps, so text after it at the end of a line drops to its own line.
     return (
-      <span
-        role="button"
-        tabIndex={0}
-        className="cursor-pointer text-blue-500 hover:underline"
-        onClick={open}
-        onKeyDown={(event) => { if (event.key === 'Enter') open() }}
-      >
+      <span {...openableProps(() => opener.openFolder(filePath, agentSlug))} className="cursor-pointer text-blue-500 hover:underline">
         {children}
       </span>
     )
