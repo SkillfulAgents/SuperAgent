@@ -10,7 +10,7 @@ import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dial
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { useCreateAgent, useDeleteAgent } from '@renderer/hooks/use-agents'
-import { useCreateAgentForPrompt, type ChosenAgentIdentity } from '@renderer/hooks/use-create-agent-for-prompt'
+import { useCreateAgentForPrompt } from '@renderer/hooks/use-create-agent-for-prompt'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -35,7 +35,7 @@ import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
-import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiAgent, ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
 import type { CreateAgentSurface } from '@renderer/router/search-schemas'
 
 /**
@@ -91,12 +91,10 @@ export interface CreateAgentFormProps {
    * by the onboarding wizard, which nothing opens.
    */
   surface?: CreateAgentSurface
-  /**
-   * The name and orb chosen on the create screen's first step. A prompt
-   * creates the agent with them; templates and imports keep their own.
-   * Omitted, the name is derived from the prompt.
-   */
-  identity?: ChosenAgentIdentity | null
+  namedFlow?: boolean
+  existingAgent?: Pick<ApiAgent, 'slug' | 'displaySlug'>
+  initialPrompt?: string
+  onPromptChange?: (prompt: string) => void
   /**
    * Makes the form a step rather than the end: once a prompt is typed,
    * Cmd+Enter (or the host's own Continue, through `continueRef`) calls this
@@ -119,7 +117,7 @@ export interface CreateAgentFormProps {
   exiting?: boolean
 }
 
-export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, identity, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surface, namedFlow, existingAgent, initialPrompt, onPromptChange, onContinue, continueRef, submitRef, showTemplates = true, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -267,7 +265,8 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
   )
 
   const composer = useMessageComposer({
-    agentSlug: '',
+    agentSlug: existingAgent?.slug ?? '',
+    initialMessage: initialPrompt,
     onVoiceTranscript: forfeitHandoffTemplate,
     // No agent workspace exists yet, so this host does not offer attachments.
     // These throw if a caller still reaches them.
@@ -288,8 +287,9 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
         // retrying creates a duplicate agent and session.
         const { newAgent, session } = await (async () => {
           try {
-            const warmSlug = await awaitWarmStartRef.current()
-            const newAgent = await createAgentForPrompt(content, warmSlug, identity)
+            if (namedFlow && !existingAgent) throw new Error('Your agent is still being saved.')
+            const warmSlug = namedFlow ? null : await awaitWarmStartRef.current()
+            const newAgent = existingAgent ?? await createAgentForPrompt(content, warmSlug)
             if (warmSlug) warmConsumedRef.current = true
             const session = await createSession.mutateAsync({
               agentSlug: newAgent.slug,
@@ -317,7 +317,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
           content,
           session.initialMessageUuid,
         )
-        track('agent_created', { source: 'new', ...(surface ? { surface } : {}), num_skills_added_at_creation: 0 })
+        if (!existingAgent) track('agent_created', { source: 'new', ...(surface ? { surface } : {}), num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
         try {
           await onAgentCreated?.({ slug: newAgent.slug })
@@ -330,13 +330,15 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, surfac
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgentForPrompt, identity, createSession, navigate, track, surface, onAgentCreated, composerOptions]),
+    }, [createAgentForPrompt, namedFlow, existingAgent, createSession, navigate, track, surface, onAgentCreated, composerOptions]),
   })
+
+  useEffect(() => { onPromptChange?.(composer.message) }, [composer.message, onPromptChange])
 
   const { awaitWarmStart, noteProgrammaticChange } = useWarmStartOnType({
     agentSlug: null,
     message: composer.message,
-    enabled: warmStartEnabled,
+    enabled: !namedFlow && warmStartEnabled,
     ensureAgent: ensureWarmAgent,
   })
   useEffect(() => {

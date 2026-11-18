@@ -70,7 +70,6 @@ test.describe('Accessibility Audit', () => {
 
   test('new agent page has no critical a11y violations', async ({ page }) => {
     await page.locator('[data-testid="new-agent-button"]').click()
-    await page.locator('[data-testid="new-agent-from-scratch"]').click()
     await expect(page.locator('[data-testid="new-agent-page"]')).toBeVisible()
     await expect(page.locator('[data-testid="agent-identity-name"]')).toBeVisible()
 

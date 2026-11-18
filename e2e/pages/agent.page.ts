@@ -14,28 +14,15 @@ type CreateAgentOptions = {
 export class AgentPage {
   constructor(private page: Page) {}
 
-  /**
-   * Open the sidebar's New Agent menu and pick one of its ways in.
-   */
-  async openNewAgentMenu(option: 'from-scratch' | 'browse-templates' | 'import') {
-    await this.page.locator('[data-testid="new-agent-button"]').click()
-    await this.page.locator(`[data-testid="new-agent-${option}"]`).click()
-  }
-
-  /**
-   * New Agent → From Scratch, and wait for the create page's first step, the
-   * name and avatar. Nothing is created until the add-ons step's Create.
-   */
   async clickCreateAgent() {
-    await this.openNewAgentMenu('from-scratch')
+    await this.page.getByTestId('new-agent-button').click()
     await expect(this.page.locator('[data-testid="new-agent-page"]')).toBeVisible({ timeout: 10000 })
     await expect(this.page.locator('[data-testid="agent-identity-name"]')).toBeVisible()
   }
 
   /**
    * On the create page's name step: name the teammate (keeping the drawn
-   * avatar) and continue to the describe step, with its prompt, templates and
-   * Import tile.
+   * avatar) and continue to its job composer.
    */
   async nameNewAgent(name: string) {
     await this.page.locator('[data-testid="agent-identity-name"]').fill(name)
@@ -80,8 +67,7 @@ export class AgentPage {
   /**
    * Land on the home of a fresh agent with no sessions — the empty state with
    * the creation aids (voice card, import) and the home composer. Made through
-   * the API: the UI's create page always starts a session or installs a
-   * template, so it never leaves an agent this empty.
+   * the API for callers that exercise the home page independently of creation.
    */
   async openEmptyAgent(name = 'Untitled'): Promise<TestAgent> {
     const agent = await createAgentViaApi(this.page.request, name)

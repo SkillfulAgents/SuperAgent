@@ -173,7 +173,7 @@ export const AgentHomeComposer = forwardRef<AgentHomeComposerHandle, AgentHomeCo
       {composer.chipDialog}
       <form
         onSubmit={composer.handleSubmit}
-        className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-dialog ring-2 ring-primary ring-inset')}
+        className={cn(composer.isDragOver && 'rounded-dialog ring-2 ring-primary ring-inset')}
         {...composer.dragHandlers}
       >
         <ChatComposerBox

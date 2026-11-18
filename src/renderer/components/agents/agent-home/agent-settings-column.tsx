@@ -39,7 +39,6 @@ export function AgentSettingsColumn({ agent, scheduledTasks, onRunSkill, hideCon
   const sections = (
     <>
       <HomeTriggers
-
         agentSlug={agent.slug}
         scheduledTasks={scheduledTasks}
         onSelectTask={(taskId: string) => {

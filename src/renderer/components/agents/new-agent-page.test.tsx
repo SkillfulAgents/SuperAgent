@@ -10,7 +10,7 @@ const { mockPush, mockUpdateSettings, mockBack, search, captured } = vi.hoisted(
   // Whether there was a step to go back to.
   mockBack: vi.fn(() => false),
   search: {} as { from?: string; section?: string; surface?: string },
-  captured: {} as { onAgentCreated?: CreateAgentFormProps['onAgentCreated']; surface?: string },
+  captured: {} as { onIdentityCreated?: CreateAgentFormProps['onAgentCreated']; surface?: string },
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -25,7 +25,7 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 // page's way out and what it does once an agent exists.
 vi.mock('@renderer/components/wizard/create-agent-step', () => ({
   CreateAgentScreen: (props: { footer: (f: unknown) => React.ReactNode; nameTitle: string; onClose?: () => void } & typeof captured) => {
-    captured.onAgentCreated = props.onAgentCreated
+    captured.onIdentityCreated = props.onIdentityCreated
     captured.surface = props.surface
     return (
       <div>
@@ -88,7 +88,7 @@ describe('NewAgentPage', () => {
   it('files the new agent into the section it was opened from', async () => {
     search.section = 'f1'
     render(<NewAgentPage />)
-    await captured.onAgentCreated?.({ slug: 'new-agent-abc' })
+    await captured.onIdentityCreated?.({ slug: 'new-agent-abc' })
     const updater = mockUpdateSettings.mock.calls[0][0] as (current: { agentFolderAssignments?: Record<string, string> }) => unknown
     expect(updater({ agentFolderAssignments: { other: 'f2' } })).toEqual({
       agentFolderAssignments: { other: 'f2', 'new-agent-abc': 'f1' },
@@ -97,7 +97,7 @@ describe('NewAgentPage', () => {
 
   it('leaves the agent unfiled without a section', async () => {
     render(<NewAgentPage />)
-    await captured.onAgentCreated?.({ slug: 'new-agent-abc' })
+    await captured.onIdentityCreated?.({ slug: 'new-agent-abc' })
     expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
@@ -105,7 +105,7 @@ describe('NewAgentPage', () => {
     search.section = 'f1'
     mockUpdateSettings.mockRejectedValueOnce(new Error('offline'))
     render(<NewAgentPage />)
-    await expect(captured.onAgentCreated?.({ slug: 'new-agent-abc' })).resolves.toBeUndefined()
+    await expect(captured.onIdentityCreated?.({ slug: 'new-agent-abc' })).resolves.toBeUndefined()
     expect(toast.error).toHaveBeenCalledWith('Agent created, but could not add it to the section', expect.anything())
   })
 })

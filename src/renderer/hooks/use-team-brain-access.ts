@@ -95,6 +95,7 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
       .catch(failed)
   }
   return {
+    ready: !!attached && !!definition,
     everyAgent: definition?.globalAccess != null,
     // Going global is the drive's managers' to change, and only a drive everyone can add can go.
     canGoGlobal: (!isAuthMode || isAdmin) && definition?.visibility === 'public' && !!definition.canManage,

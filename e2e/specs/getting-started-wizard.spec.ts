@@ -247,13 +247,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
-    // The agent step opens on its name step; past it, the template roster
-    // renders inline under the composer. Clicking a card installs it in place
-    // (no marketplace detour) under the template's own name — the name typed
-    // first applies only to an agent made from a prompt — and finishing the
-    // install completes the wizard.
-    await page.getByTestId('agent-identity-name').fill('Not The Template Name')
-    await page.getByTestId('agent-identity-continue').click()
+    await page.getByRole('button', { name: 'Browse Templates' }).click()
     const installed = page.waitForResponse(response =>
       response.request().method() === 'POST' && response.url().endsWith('/api/agents/install-from-skillset'),
     )

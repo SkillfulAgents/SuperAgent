@@ -1,11 +1,12 @@
+import { ArrowDownToLine, Shapes } from 'lucide-react'
+import { OptionCard } from '@renderer/components/ui/option-card'
 import { useEffect, useRef, useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { AvatarView, orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { AvatarChoices } from '@renderer/components/agents/agent-avatar/avatar-choices'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
 import { AGENT_NAME_MAX_LENGTH } from '@shared/lib/services/agent-identity-schema'
-import { AGENT_AVATAR_SHAPES, DEFAULT_AGENT_AVATAR_COLORS, type AgentAvatar } from '@shared/lib/types/agent-avatar'
-import type { ChosenAgentIdentity } from '@renderer/hooks/use-create-agent-for-prompt'
+import type { ChosenAgentIdentity } from '@renderer/components/agents/creation-draft'
 import { CREATE_STEP_BOTTOM_SPACER } from '@renderer/components/agents/create-agent-layout'
 
 /** The big orb above the name: the teammate being made, before it exists. */
@@ -18,26 +19,20 @@ const PREVIEW_SEED = 'new-agent'
  */
 export const AGENT_IDENTITY_FORM_ID = 'agent-identity-form'
 
-/** A first orb to start from, drawn like the server draws one for an agent created without a pick. */
-export function randomAgentAvatar(random: () => number = Math.random): AgentAvatar {
-  const pick = <T,>(options: readonly T[]) => options[Math.floor(random() * options.length)]
-  return { color: pick(DEFAULT_AGENT_AVATAR_COLORS), shape: pick(AGENT_AVATAR_SHAPES) }
-}
-
 interface AgentIdentityStepProps {
   title: string
   value: ChosenAgentIdentity
   onChange: (value: ChosenAgentIdentity) => void
   /** Continue (or Enter): only acted on once the name has something in it. */
+  onChooseSource?: (importing: boolean) => void
   onContinue: () => void
 }
 
 /**
  * The create screen's first step: the new teammate's name and orb. The name
- * is required; the orb starts as a random pick. Both apply to an agent made
- * from a prompt on the next step — templates and imports bring their own.
+ * is required; the orb starts as a random pick. Confirming the identity creates the agent.
  */
-export function AgentIdentityStep({ title, value, onChange, onContinue }: AgentIdentityStepProps) {
+export function AgentIdentityStep({ title, value, onChange, onContinue, onChooseSource }: AgentIdentityStepProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   // Same staggered reveal as the describe step's items (.create-agent-item).
   const [revealed, setRevealed] = useState(false)
@@ -101,6 +96,12 @@ export function AgentIdentityStep({ title, value, onChange, onContinue }: AgentI
           />
         </div>
 
+        {onChooseSource && (
+          <div className="flex flex-wrap gap-3">
+            <OptionCard title="Browse Templates" icon={<Shapes className="h-4 w-4" />} onClick={() => onChooseSource(false)} />
+            <OptionCard title="Import an Agent" icon={<ArrowDownToLine className="h-4 w-4" />} onClick={() => onChooseSource(true)} />
+          </div>
+        )}
       </form>
       <div className="min-h-0 shrink" style={CREATE_STEP_BOTTOM_SPACER} aria-hidden />
     </div>

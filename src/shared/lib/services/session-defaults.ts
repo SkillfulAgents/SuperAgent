@@ -29,7 +29,9 @@ export interface SessionDefaults {
   /** The agent's preferences, its default model resolved against the connections. */
   agentPrefs: AgentPreferences
   agentLimits: AgentLimitsSettings
-  /** The user's custom env vars for agents; undefined when there are none. */
+  /** Per-agent overrides for processes which otherwise inherit the container's environment. */
+  agentEnvVars: Record<string, string> | undefined
+  /** The workspace environment and per-agent overrides for interactive sessions. */
   customEnvVars: Record<string, string> | undefined
   maxBrowserTabs: number | undefined
   /**
@@ -43,10 +45,15 @@ export interface SessionDefaults {
 export async function resolveSessionDefaults(settings: AppSettings, agentSlug: string): Promise<SessionDefaults> {
   const agentPrefs = await readAgentPreferences(agentSlug, settings)
   const models = effectiveModelsFrom(settings)
-  const customEnvVars = settings.customEnvVars ?? {}
+  // The CLI environment follows the session through warm-process matching and resume.
+  const agentEnvVars = agentPrefs.autoMemoryEnabled === undefined ? undefined : {
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: agentPrefs.autoMemoryEnabled ? '0' : '1',
+  }
+  const customEnvVars = { ...settings.customEnvVars, ...agentEnvVars }
   return {
     models,
     agentPrefs,
+    agentEnvVars,
     agentLimits: settings.agentLimits ?? {},
     customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
     maxBrowserTabs: settings.app?.maxBrowserTabs,

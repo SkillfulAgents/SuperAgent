@@ -321,10 +321,7 @@ export const settingsTabRoute = createRoute({
 })
 
 // ── NEW AGENT: SIBLINGS of app-shell → the focused create pages ──────────────
-// Full-window, no sidebar to wander off into; the New Agent menu opens them.
-// From Scratch: the onboarding wizard's create step (name, job, add-ons).
-// Browse Templates: the template roster. Creating navigates on to the agent
-// (or its first session); Back and the X return to `?from=`.
+// Both creation pages sit outside the sidebar and share the originating location and section.
 export const newAgentRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'new-agent',

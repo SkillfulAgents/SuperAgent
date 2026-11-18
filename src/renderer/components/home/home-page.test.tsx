@@ -115,9 +115,7 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
 }))
 
 
-vi.mock('@renderer/components/agents/new-agent-menu', () => ({
-  NewAgentMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
+vi.mock('@renderer/hooks/use-open-create-agent', () => ({ useOpenCreateAgent: () => vi.fn() }))
 
 vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarTrigger: () => <button>sidebar</button>,

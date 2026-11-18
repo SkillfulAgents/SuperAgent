@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const { mockPush, mockComplete, mockFile, search, installProps } = vi.hoisted(() => ({
+const { mockNavigate, mockPush, mockComplete, mockFile, search, installProps } = vi.hoisted(() => ({
   mockPush: vi.fn(),
+  mockNavigate: vi.fn(),
   mockComplete: vi.fn(async () => {}),
   mockFile: vi.fn(async () => {}),
   search: {} as { from?: string; section?: string; surface?: string },
@@ -12,7 +13,7 @@ const { mockPush, mockComplete, mockFile, search, installProps } = vi.hoisted(()
 }))
 
 vi.mock('@tanstack/react-router', () => ({
-  useRouter: () => ({ history: { push: mockPush } }),
+  useRouter: () => ({ history: { push: mockPush }, navigate: mockNavigate }),
   useSearch: () => search,
 }))
 vi.mock('@renderer/hooks/use-complete-template-install', () => ({ useCompleteTemplateInstall: () => mockComplete }))
@@ -60,6 +61,6 @@ describe('NewAgentTemplatesPage', () => {
     await userEvent.click(screen.getByTestId('new-agent-back'))
     await userEvent.click(screen.getByTestId('create-agent-close'))
     expect(mockPush).toHaveBeenNthCalledWith(1, '/agents/alpha')
-    expect(mockPush).toHaveBeenNthCalledWith(2, '/agents/alpha')
+    expect(mockNavigate).toHaveBeenCalledWith(expect.objectContaining({ to: '/new-agent' }))
   })
 })

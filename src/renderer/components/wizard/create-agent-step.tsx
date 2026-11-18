@@ -1,13 +1,14 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { TemplateChoices } from '@renderer/components/agents/template-choices'
+import { useState, type ReactNode } from 'react'
 import { ArrowRight, Loader2, Pencil, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { CreateAgentForm, type CreateAgentFormProps } from '@renderer/components/agents/create-agent-form'
-import { AGENT_IDENTITY_FORM_ID, AgentIdentityStep, randomAgentAvatar } from '@renderer/components/agents/agent-identity-step'
+import { AGENT_IDENTITY_FORM_ID, AgentIdentityStep } from '@renderer/components/agents/agent-identity-step'
 import { AvatarView, orbRestingPhi } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
-import { AgentAddonsStep, DEFAULT_AGENT_ADDONS, type AgentAddons } from '@renderer/components/agents/agent-addons-step'
-import { useNavTransient } from '@renderer/context/nav-transient-context'
-import type { ChosenAgentIdentity } from '@renderer/hooks/use-create-agent-for-prompt'
+import { AgentAddonsStep } from '@renderer/components/agents/agent-addons-step'
+import { useCreateAgentFlow, type CreateAgentFlow, type CreationOptions } from '@renderer/hooks/use-create-agent-flow'
+import type { ChosenAgentIdentity } from '@renderer/components/agents/creation-draft'
 import { getPlatform, isElectron } from '@renderer/lib/env'
 
 /**
@@ -33,97 +34,10 @@ const ADDONS_SUBTITLE = 'You can always modify later.'
 /** The orb beside the job and add-ons steps' questions. */
 const IDENTITY_AVATAR_SIZE = 56
 
-/** Name and orb → the job (or a template) → add-ons, then create. */
-export type CreateAgentStage = 'name' | 'describe' | 'addons'
-
-export interface CreateAgentFlow {
-  stage: CreateAgentStage
-  identity: ChosenAgentIdentity
-  setIdentity: (identity: ChosenAgentIdentity) => void
-  /** Whether the name step has been passed, so the identity applies. */
-  named: boolean
-  addons: AgentAddons
-  setAddons: (addons: AgentAddons) => void
-  /** Name step → job step. */
-  continueToDescribe: () => void
-  /** Job step → add-ons step, once a prompt is typed. */
-  continueToAddons: () => void
-  /** Straight to the name step from a later one (the orb in their headers). */
-  backToName: () => void
-  /**
-   * One step back, keeping what was entered on every step. False on the first
-   * step (or a job step the name step was skipped for): the caller leaves.
-   */
-  back: () => boolean
-  /** Create the agent from the job step's prompt (the add-ons step's button). */
-  create: () => Promise<void>
-  creating: boolean
-  /** Where the job step's form puts its create action. */
-  submitRef: React.MutableRefObject<(() => Promise<void>) | null>
-  /** Where the job step's form puts its continue action (checks for a prompt, finishes dictation). */
-  continueRef: React.MutableRefObject<(() => Promise<void>) | null>
-}
-
-/**
- * The create screen's steps: name the teammate and pick its orb, describe
- * its job (or pick a template, which installs right there), then choose
- * add-ons and create. Owned by whoever renders the step so a footer outside
- * it can step back and create too.
- */
-export function useCreateAgentFlow(): CreateAgentFlow {
-  const { signupHandoff } = useNavTransient()
-  // A marketing handoff for a template lands on the job step, where its
-  // install offer opens: a name typed first would not apply to a template.
-  const [stage, setStage] = useState<CreateAgentStage>(() =>
-    signupHandoff?.template_slug && !signupHandoff.prompt ? 'describe' : 'name',
-  )
-  const [identity, setIdentity] = useState<ChosenAgentIdentity>(() => ({ name: '', avatar: randomAgentAvatar() }))
-  const [named, setNamed] = useState(false)
-  const [addons, setAddons] = useState<AgentAddons>(DEFAULT_AGENT_ADDONS)
-  const [creating, setCreating] = useState(false)
-  const submitRef = useRef<(() => Promise<void>) | null>(null)
-  const continueRef = useRef<(() => Promise<void>) | null>(null)
-
-  const continueToDescribe = useCallback(() => {
-    setNamed(true)
-    setStage('describe')
-  }, [])
-  const continueToAddons = useCallback(() => setStage('addons'), [])
-  const backToName = useCallback(() => setStage('name'), [])
-  const back = useCallback(() => {
-    if (stage === 'addons') {
-      setStage('describe')
-      return true
-    }
-    if (stage === 'describe' && named) {
-      setStage('name')
-      return true
-    }
-    return false
-  }, [stage, named])
-  const create = useCallback(async () => {
-    if (!submitRef.current) return
-    setCreating(true)
-    try {
-      // On success the form navigates to the new agent and this unmounts.
-      await submitRef.current()
-    } finally {
-      setCreating(false)
-    }
-  }, [])
-  return { stage, identity, setIdentity, named, addons, setAddons, continueToDescribe, continueToAddons, backToName, back, create, creating, submitRef, continueRef }
-}
-
-type CreateAgentStepProps = Pick<CreateAgentFormProps, 'onAgentCreated' | 'onNavigateAway' | 'surface' | 'showTemplates'> & {
-  /** The name step's question. */
+type CreateAgentStepProps = CreationOptions & Pick<CreateAgentFormProps, 'onNavigateAway'> & {
   nameTitle?: string
-  /** The steps' state, when a footer outside needs it; otherwise the step keeps its own. */
-  flow?: CreateAgentFlow
-}
-
-export function CreateAgentStep({ flow, ...props }: CreateAgentStepProps) {
-  const ownFlow = useCreateAgentFlow()
-  return <CreateAgentSteps flow={flow ?? ownFlow} {...props} />
+  flow: CreateAgentFlow
+  onChooseSource?: (openImport: boolean) => void
 }
 
 /**
@@ -161,19 +75,18 @@ function IdentityHeader({ identity, onEdit, question, subtitle }: { identity: Ch
   )
 }
 
-function CreateAgentSteps({
+export function CreateAgentStep({
   flow,
   nameTitle = 'Name your first AI teammate',
-  onAgentCreated,
+  onChooseSource,
   onNavigateAway,
   surface,
-  showTemplates,
-}: Omit<CreateAgentStepProps, 'flow'> & { flow: CreateAgentFlow }) {
+}: CreateAgentStepProps) {
   const { stage, identity, named } = flow
   // The form mounts on the first visit to the job step and then stays, hidden
   // on the other steps: a typed prompt survives the trip back, and the
   // add-ons step's Create runs the form's own create.
-  const [describeVisited, setDescribeVisited] = useState(stage === 'describe')
+  const [describeVisited, setDescribeVisited] = useState(stage === 'describe' || stage === 'addons')
   if (stage === 'describe' && !describeVisited) setDescribeVisited(true)
 
   return (
@@ -183,9 +96,11 @@ function CreateAgentSteps({
           title={nameTitle}
           value={identity}
           onChange={flow.setIdentity}
-          onContinue={flow.continueToDescribe}
+          onContinue={() => void flow.confirmIdentity()}
+          onChooseSource={flow.agent ? undefined : onChooseSource ?? flow.showChoices}
         />
       )}
+      {stage === 'templates' && <TemplateChoices initiallyImporting={flow.importing} surface={surface} onInstalled={flow.complete} onNavigateAway={onNavigateAway} />}
       {describeVisited && (
         <div className="h-full" hidden={stage !== 'describe'}>
           {/* The title rides inside the form's centered hero block (see the
@@ -199,30 +114,25 @@ function CreateAgentSteps({
                   <h2 className="text-2xl font-normal max-w-sm">Describe your first AI teammate</h2>
                 </div>
               )}
-            identity={named ? { name: identity.name.trim(), avatar: identity.avatar } : null}
-            onContinue={flow.continueToAddons}
+            namedFlow={named}
+            existingAgent={flow.agent}
+            initialPrompt={flow.prompt}
+            onPromptChange={flow.setPrompt}
+            onContinue={named ? flow.continueToAddons : undefined}
             continueRef={flow.continueRef}
             submitRef={flow.submitRef}
-            onAgentCreated={onAgentCreated}
+            onAgentCreated={flow.complete}
             onNavigateAway={onNavigateAway}
             surface={surface}
-            showTemplates={showTemplates}
+            showTemplates={!named}
           />
         </div>
       )}
-      {stage === 'addons' && (
+      {stage === 'addons' && flow.agent && (
         <AgentAddonsStep
-          header={named
-            ? <IdentityHeader identity={identity} onEdit={flow.backToName} question="Want to give me any add-ons?" subtitle={ADDONS_SUBTITLE} />
-            : (
-              <div className="shrink-0 pb-8">
-                <h2 className="text-2xl font-normal">
-                  Any add-ons?{' '}<span className="text-muted-foreground/60">{ADDONS_SUBTITLE}</span>
-                </h2>
-              </div>
-            )}
-          value={flow.addons}
-          onChange={flow.setAddons}
+          header={<IdentityHeader identity={identity} onEdit={flow.backToName} question="Want to give me any add-ons?" subtitle={ADDONS_SUBTITLE} />}
+          agentSlug={flow.agent.slug}
+          onBusyChange={flow.setAddonBusy}
         />
       )}
     </>
@@ -249,24 +159,27 @@ export function CreateAgentContinueButton({ flow }: { flow: CreateAgentFlow }) {
       </Button>
     )
   }
-  if (flow.stage === 'describe') {
+  if (flow.stage === 'describe' && flow.named) {
     return (
-      <Button onClick={() => void flow.continueRef.current?.()} data-testid="create-agent-continue">
-        Continue
-        <ArrowRight className="h-4 w-4 ml-1" />
-      </Button>
+      <>
+        <Button variant="ghost" disabled={flow.saving} onClick={() => void flow.finish('home')} data-testid="create-agent-skip">Skip</Button>
+        <Button disabled={flow.saving} onClick={() => void flow.continueRef.current?.()} data-testid="create-agent-continue">
+          Continue
+          <ArrowRight className="h-4 w-4 ml-1" />
+        </Button>
+      </>
     )
   }
   if (flow.stage === 'addons') {
     return (
-      <Button onClick={() => void flow.create()} disabled={flow.creating} data-testid="create-agent-finish">
-        {flow.creating ? (
+      <Button onClick={() => void flow.finish('session')} disabled={flow.saving || flow.addonBusy} data-testid="create-agent-finish">
+        {flow.saving ? (
           <>
             <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            Creating...
+            Starting…
           </>
         ) : (
-          'Create Agent'
+          'Start session'
         )}
       </Button>
     )
@@ -337,7 +250,11 @@ export function CreateAgentChrome({ children, footer, onClose, 'data-testid': te
  * with a different way out.
  */
 export function CreateAgentScreen({ footer, onClose, 'data-testid': testId, ...step }: CreateAgentScreenProps) {
-  const flow = useCreateAgentFlow()
+  const flow = useCreateAgentFlow(step)
+  return <CreateAgentScreenLayout {...step} flow={flow} footer={footer} onClose={onClose} data-testid={testId} />
+}
+
+export function CreateAgentScreenLayout({ flow, footer, onClose, 'data-testid': testId, ...step }: CreateAgentScreenProps & { flow: CreateAgentFlow }) {
   return (
     <CreateAgentChrome
       data-testid={testId}

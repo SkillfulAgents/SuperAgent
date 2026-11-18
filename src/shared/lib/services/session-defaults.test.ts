@@ -80,3 +80,14 @@ it('leaves out an empty custom env, and each start sees the settings it was give
   const after = await resolveSessionDefaults(state.settings, 'agent')
   expect(await after.resolve({})).toMatchObject({ model: 'model-b', llmProviderId: second })
 })
+
+it('carries an explicit memory preference into the session and its warm profile', async () => {
+  state.settings.customEnvVars = { TEAM: 'blue' }
+  state.preferences = { autoMemoryEnabled: false }
+  const off = await resolveSessionDefaults(state.settings, 'agent')
+  expect(off.customEnvVars).toEqual({ TEAM: 'blue', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' })
+  state.preferences = { autoMemoryEnabled: true }
+  const on = await resolveSessionDefaults(state.settings, 'agent')
+  expect(on.customEnvVars?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('0')
+  expect(state.settings.customEnvVars).toEqual({ TEAM: 'blue' })
+})

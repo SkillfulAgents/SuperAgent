@@ -14,7 +14,8 @@ import { ConfigureModelStep } from './configure-model-step'
 import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
-import { AGENT_STEP_MAX_WIDTH, CreateAgentContinueButton, CreateAgentScreen, CreateAgentStep, useCreateAgentFlow } from './create-agent-step'
+import { AGENT_STEP_MAX_WIDTH, CreateAgentContinueButton, CreateAgentScreenLayout, CreateAgentStep } from './create-agent-step'
+import { useCreateAgentFlow } from '@renderer/hooks/use-create-agent-flow'
 import { PrivacyStep } from './privacy-step'
 import { WelcomeOrbCrowd } from './welcome-orb-crowd'
 
@@ -82,7 +83,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
   const updateGlobalSettings = useUpdateSettings()
   // The agent step's name → describe steps, here so the nav row below can
   // carry the name step's Continue and step Back within the agent step.
-  const agentFlow = useCreateAgentFlow()
+
 
   const steps = useMemo(() => stepsForPath(welcomePath), [welcomePath])
 
@@ -137,6 +138,8 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
     onClose()
   }
 
+  const agentFlow = useCreateAgentFlow({ onAgentCreated: handleFinish })
+
   const handleComposioNext = async () => {
     if (composioSaveRef.current) {
       try {
@@ -172,11 +175,14 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
 
   if (agentOnly) {
     return (
-      <CreateAgentScreen
+      <CreateAgentScreenLayout
+        flow={agentFlow}
         data-testid="wizard-container"
         onAgentCreated={handleFinish}
         onNavigateAway={handleFinish}
-        footer={() => (
+        footer={(flow) => flow.stage === 'templates' || (flow.named && flow.stage !== 'name') ? (
+          <Button variant="outline" onClick={flow.back}>Back</Button>
+        ) : (
           <Button
             variant="outline"
             className="ml-auto"
@@ -251,7 +257,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
           )}
 
           <div className="flex gap-2">
-            {canSkipStep && (
+            {canSkipStep && !(activeStep?.id === 'agent' && agentFlow.named) && (
               <Button
                 variant="outline"
                 onClick={() => {

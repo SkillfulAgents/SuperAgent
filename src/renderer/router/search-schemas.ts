@@ -127,6 +127,7 @@ export const settingsSearchSchema = z
 export const CREATE_AGENT_SURFACES = ['nav', 'section_plus', 'home', 'app_menu'] as const
 export type CreateAgentSurface = (typeof CREATE_AGENT_SURFACES)[number]
 export const newAgentSearchSchema = z.object({
+  importing: z.literal(true).optional().catch(undefined),
   from: internalPath.optional().catch(undefined),
   section: z.string().min(1).max(128).optional().catch(undefined),
   surface: z.enum(CREATE_AGENT_SURFACES).optional().catch(undefined),

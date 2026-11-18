@@ -347,6 +347,7 @@ export interface SystemPromptVars {
   CLAUDE_CONFIG_DIR: string;
   todayWeekday: string;
   todayDate: string;
+  autoMemoryEnabled: boolean;
   timeZone: string;
   utcOffset: string;
   webSearchToolName: string;
@@ -403,6 +404,7 @@ export function buildSystemPromptVars(
   subagentModels?: SubagentModelDefinition[],
   globalInstructions?: string,
   availableIntegrationFamilies?: string[],
+  autoMemoryEnabled = true,
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
@@ -423,6 +425,7 @@ export function buildSystemPromptVars(
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
+    autoMemoryEnabled,
     todayWeekday: today.weekday,
     todayDate: today.date,
     timeZone: today.timeZone,
@@ -478,6 +481,7 @@ export function generateSystemPrompt(
   subagentModels?: SubagentModelDefinition[],
   globalInstructions?: string,
   availableIntegrationFamilies?: string[],
+  autoMemoryEnabled = true,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -489,6 +493,7 @@ export function generateSystemPrompt(
     subagentModels,
     globalInstructions,
     availableIntegrationFamilies,
+    autoMemoryEnabled,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -797,6 +802,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.subagentModels,
       this.globalInstructions,
       this.availableIntegrationFamilies,
+      this.autoMemoryEnabled,
     );
   }
 
@@ -998,6 +1004,11 @@ export class ClaudeCodeProcess extends EventEmitter {
    * the ~1-3s a cold spawn costs. The handle is single-use — the SDK closes
    * over the prompt stream we hand it here — so it is cleared on claim.
    */
+  private get autoMemoryEnabled(): boolean {
+    const disabled = this.customEnvVars?.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+    return disabled !== '1' && disabled?.toLowerCase() !== 'true';
+  }
+
   private createQuery(): Query {
     const warm = this.warmHandle;
     if (warm) {
@@ -2051,6 +2062,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.subagentModels,
           this.globalInstructions,
           this.availableIntegrationFamilies,
+          this.autoMemoryEnabled,
         );
       }
       this.reconcilePendingCapabilityReviews();

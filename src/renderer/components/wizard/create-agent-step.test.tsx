@@ -5,7 +5,11 @@ import userEvent from '@testing-library/user-event'
 import type { CreateAgentFormProps } from '@renderer/components/agents/create-agent-form'
 import type { SignupHandoff } from '@renderer/context/nav-transient-context'
 
-const { handoff, formProps, formSubmit } = vi.hoisted(() => ({
+const { handoff, formProps, formSubmit, create, rename, start, navigate } = vi.hoisted(() => ({
+  create: vi.fn(async () => ({ slug: 'scout', displaySlug: 'scout-id' })),
+  rename: vi.fn(async () => ({ slug: 'scout', displaySlug: 'scouty-id' })),
+  start: vi.fn(),
+  navigate: vi.fn(),
   handoff: { current: null as SignupHandoff | null },
   formProps: { current: null as CreateAgentFormProps | null },
   formSubmit: vi.fn(async () => {}),
@@ -13,6 +17,21 @@ const { handoff, formProps, formSubmit } = vi.hoisted(() => ({
 
 
 
+
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useCreateAgent: () => ({ mutateAsync: create }),
+  useUpdateAgent: () => ({ mutateAsync: rename }),
+  useUpdateAgentAvatar: () => ({ mutateAsync: vi.fn() }),
+  useStartAgent: () => ({ mutate: start }),
+}))
+vi.mock('@renderer/hooks/use-settings', () => ({ useWarmStartOnTypeEnabled: () => true }))
+vi.mock('@renderer/context/analytics-context', () => ({ useAnalyticsTracking: () => ({ track: vi.fn() }) }))
+vi.mock('@tanstack/react-router', async (original) => ({
+  ...await original<typeof import('@tanstack/react-router')>(), useNavigate: () => navigate,
+}))
+vi.mock('@renderer/components/agents/agent-addons-step', () => ({
+  AgentAddonsStep: ({ header }: { header: React.ReactNode }) => <div>{header}</div>,
+}))
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({ signupHandoff: handoff.current }),
@@ -28,7 +47,8 @@ vi.mock('@renderer/components/agents/create-agent-form', () => ({
   },
 }))
 
-import { CreateAgentContinueButton, CreateAgentStep, useCreateAgentFlow } from './create-agent-step'
+import { CreateAgentContinueButton, CreateAgentStep } from './create-agent-step'
+import { useCreateAgentFlow } from '@renderer/hooks/use-create-agent-flow'
 
 /** The step plus the bottom row's Continue, as the create screen and wizard lay them out. */
 function Harness() {
@@ -44,7 +64,7 @@ function Harness() {
 beforeEach(() => {
   handoff.current = null
   formProps.current = null
-  formSubmit.mockClear()
+  vi.clearAllMocks()
 })
 
 async function toAddons() {
@@ -79,7 +99,7 @@ describe('CreateAgentStep', () => {
 
     expect(screen.getByRole('heading', { name: 'What job do you want to give me?' })).toBeInTheDocument()
     expect(screen.getByTestId('agent-identity-name-label')).toHaveTextContent('Scout')
-    expect(formProps.current?.identity).toEqual({ name: 'Scout', avatar: expect.objectContaining({ shape: 'hexagon' }) })
+    expect(create).toHaveBeenCalledWith({ name: 'Scout', avatar: expect.objectContaining({ shape: 'hexagon' }) })
   })
 
   it('continues on Enter in the name field', async () => {
@@ -98,14 +118,15 @@ describe('CreateAgentStep', () => {
     expect(screen.getByTestId('create-agent-form')).not.toBeVisible()
 
     await userEvent.type(screen.getByTestId('agent-identity-name'), 'y{Enter}')
-    expect(formProps.current?.identity?.name).toBe('Scouty')
+    expect(rename).toHaveBeenCalledWith({ slug: 'scout', name: 'Scouty' })
+    expect(create).toHaveBeenCalledTimes(1)
   })
 
   it('opens on the describe step, unnamed, for a template handoff', () => {
     handoff.current = { template_slug: 'sales-assistant' }
     render(<Harness />)
     expect(screen.getByTestId('create-agent-form')).toBeVisible()
-    expect(formProps.current?.identity).toBeNull()
+    expect(formProps.current?.existingAgent).toBeUndefined()
     expect(screen.getByRole('heading', { name: 'Describe your first AI teammate' })).toBeInTheDocument()
   })
 
@@ -125,16 +146,13 @@ describe('CreateAgentStep', () => {
     expect(formSubmit).toHaveBeenCalledTimes(1)
   })
 
-  it('starts with self-improvement and memories on and the rest off', async () => {
-    await toAddons()
-    expect(screen.getByRole('switch', { name: /Self-Improvement/ })).toBeChecked()
-    expect(screen.getByRole('switch', { name: /Memories/ })).toBeChecked()
-    expect(screen.getByRole('switch', { name: /Proactivity/ })).not.toBeChecked()
-    expect(screen.getByRole('switch', { name: /Team Brain/ })).not.toBeChecked()
-    expect(screen.getByRole('switch', { name: /Inbox/ })).not.toBeChecked()
-    expect(screen.getByRole('switch', { name: /Slack/ })).not.toBeChecked()
-    expect(screen.queryByTestId('addon-default-model')).toBeNull()
-    // Knowledge & Context is just these two: no drive rows.
-    expect(screen.queryByTestId(/^addon-drive-/)).toBeNull()
+  it('starts the named agent in the background and skips straight to its empty home', async () => {
+    render(<Harness />)
+    await userEvent.type(screen.getByTestId('agent-identity-name'), 'Scout{Enter}')
+    expect(start).toHaveBeenCalledWith({ slug: 'scout', source: 'warm-start' })
+    await userEvent.click(screen.getByTestId('create-agent-skip'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug', params: { slug: 'scout-id' }, replace: true })
+    expect(formSubmit).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledTimes(1)
   })
 })

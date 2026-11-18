@@ -48,8 +48,9 @@ test.describe('Agent Import Onboarding', () => {
       { name: agentName, withOnboardingSkill: true },
     )
 
-    // New Agent → Import opens the package dialog in place.
-    await agentPage.openNewAgentMenu('import')
+    // Import from the identity page opens the package dialog on the templates page.
+    await agentPage.clickCreateAgent()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 
@@ -77,7 +78,8 @@ test.describe('Agent Import Onboarding', () => {
       { name: agentName, withOnboardingSkill: true },
     )
 
-    await agentPage.openNewAgentMenu('import')
+    await agentPage.clickCreateAgent()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 
@@ -104,7 +106,8 @@ test.describe('Agent Import Onboarding', () => {
       { name: agentName, withOnboardingSkill: false },
     )
 
-    await agentPage.openNewAgentMenu('import')
+    await agentPage.clickCreateAgent()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 
@@ -129,7 +132,8 @@ test.describe('Agent Import Onboarding', () => {
       { name: agentName, withOnboardingSkill: false },
     )
 
-    await agentPage.openNewAgentMenu('import')
+    await agentPage.clickCreateAgent()
+    await page.getByRole('button', { name: 'Import an Agent' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 

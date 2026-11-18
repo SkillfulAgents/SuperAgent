@@ -35,6 +35,7 @@ interface UseMessageComposerOptions {
   keepMessageUntilComplete?: boolean
   /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
   draftKey?: string
+  initialMessage?: string
   /** One-shot attachment seed, used when moving a draft into a new session. */
   initialAttachments?: Attachment[]
   /** Fires on composer-mic transcript updates (before message state changes). */
@@ -53,7 +54,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends, references = [] } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
-  const [message, setMessage] = useState(draft ?? '')
+  const [message, setMessage] = useState(draft ?? options.initialMessage ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
   const chips = useComposerChips(agentSlug)
   const chipContext = chips.context

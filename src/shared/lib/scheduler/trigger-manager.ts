@@ -318,11 +318,12 @@ class TriggerManager implements Service {
 
     // One read of the settings for this firing.
     // Model/effort/speed preference order: trigger override > agent default > global default.
-    const { models, resolve } = await resolveSessionDefaults(await getSettings(), trigger.agentSlug)
+    const { models, resolve, agentEnvVars } = await resolveSessionDefaults(await getSettings(), trigger.agentSlug)
     const resolved = await resolve({ model: trigger.model, llmProviderId: trigger.llmProviderId, effort: trigger.effort, speed: trigger.speed })
     const { id: sessionId } = await actor.sessions.start({
       create: {
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        customEnvVars: agentEnvVars,
         initialMessage: prompt,
         model: resolved.model,
         llmProviderId: resolved.llmProviderId,

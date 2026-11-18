@@ -38,15 +38,6 @@ describe('useOpenCreateAgent', () => {
     })
   })
 
-  it('opens the template page for Browse Templates', () => {
-    const { result } = renderHook(() => useOpenCreateAgent())
-    result.current({ surface: 'home', start: 'templates' })
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/new-agent/templates',
-      search: { from: '/', section: undefined, surface: 'home' },
-    })
-  })
-
   it('keeps the original Back target when opened again from the page itself', () => {
     Object.assign(location, {
       pathname: '/new-agent',

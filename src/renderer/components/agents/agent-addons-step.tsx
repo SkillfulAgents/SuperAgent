@@ -1,194 +1,135 @@
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { Brain, Lightbulb, Mail, NotebookPen, TrendingUp } from 'lucide-react'
+import { Brain, Mail, NotebookPen, TrendingUp } from 'lucide-react'
+import { toast } from 'sonner'
 import { Switch } from '@renderer/components/ui/switch'
+import { Button } from '@renderer/components/ui/button'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { useAgents } from '@renderer/hooks/use-agents'
+import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { useAgentSkills, useDiscoverableSkills, useDeleteSkill, useInstallSkill } from '@renderer/hooks/use-agent-skills'
+import { useAgentIntegrations, useAvailableAgentIntegrationProviders } from '@renderer/hooks/use-agent-integrations'
+import { useTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
+import { AgentIntegrationSetupDialog } from '@renderer/components/agent-integrations/agent-integration-setup-dialog'
+import { integrationSetupProviders } from '@renderer/components/agent-integrations/setup-providers'
+import type { IntegrationSetupProvider } from '@renderer/components/agent-integrations/setup-types'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 
-/**
- * What the create screen's last step collects. PROTOTYPE: nothing applies
- * these yet — the step is here to feel out the flow. Wiring each one up is
- * its own piece of work (self-improvement and proactivity don't exist yet,
- * and memory is always on today; Team Brain, inbox and Slack each have a
- * set-up path that needs the agent).
- */
-export interface AgentAddons {
-  /** Self-improvement (the "dream" skill): reviews its work and gets better at the job. */
-  selfImprovement: boolean
-  /** Proactivity: suggests new ideas and checks in unprompted. */
-  proactivity: boolean
-  /** Memories: keeps what it learns about you and your work. */
-  memories: boolean
-  /** Read and write access to the workspace's Team Brain. */
-  teamBrain: boolean
-  /** An email inbox of its own (the platform-email integration). */
-  inbox: boolean
-  /** A Slack connection, set up by the agent in its first session. */
-  slack: boolean
-}
-
-/** Soft top and bottom edges on the step's scroll viewport, as the template roster has. */
-const SCROLL_FADE_MASK =
-  'linear-gradient(to bottom, transparent 0, black 32px, black calc(100% - 32px), transparent 100%)'
-
-/**
- * The likely yeses start on: self-improvement and memories are what nearly
- * everyone wants. The rest are a choice.
- */
-export const DEFAULT_AGENT_ADDONS: AgentAddons = {
-  selfImprovement: true,
-  proactivity: false,
-  memories: true,
-  teamBrain: false,
-  inbox: false,
-  slack: false,
-}
-
-interface AgentAddonsStepProps {
-  /** The identity header the describe step shows, with this step's question. */
+export function AgentAddonsStep({ header, agentSlug, onBusyChange }: {
   header: ReactNode
-  value: AgentAddons
-  onChange: (value: AgentAddons) => void
-}
+  agentSlug: string
+  onBusyChange: (busy: boolean) => void
+}) {
+  const skills = useAgentSkills(agentSlug)
+  const discoverable = useDiscoverableSkills(agentSlug)
+  const install = useInstallSkill()
+  const remove = useDeleteSkill()
+  const preferences = useAgentPreferences(agentSlug)
+  const updatePreferences = useUpdateAgentPreferences(agentSlug)
+  const { data: agents } = useAgents()
+  const brain = agents?.find(agent => agent.teamBrain)
+  const access = useTeamBrainAccess(brain?.slug ?? '', brain?.teamBrain?.volumeId)
+  const { data: providers } = useAvailableAgentIntegrationProviders()
+  const { data: integrations } = useAgentIntegrations(agentSlug)
+  const [setup, setSetup] = useState<IntegrationSetupProvider | null>(null)
+  const [changingSkill, setChangingSkill] = useState(false)
 
-/**
- * The create screen's last step: the extras a new teammate can start with,
- * grouped the way Agent Home groups them. Create Agent sits in the bottom row.
- */
-export function AgentAddonsStep({ header, value, onChange }: AgentAddonsStepProps) {
-  // Same staggered reveal as the other steps (.create-agent-item).
-  const [revealed, setRevealed] = useState(false)
+  const dream = discoverable.data?.find(s => s.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && s.path === 'skills/dream/SKILL.md')
+  const installed = skills.data?.find(s => s.status.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && s.name.toLowerCase() === 'dream')
+  const busy = changingSkill || updatePreferences.isPending || access.isChanging(agentSlug)
   useEffect(() => {
-    const raf = requestAnimationFrame(() => setRevealed(true))
-    return () => cancelAnimationFrame(raf)
-  }, [])
-  const item = (delayMs: number) => ({
-    className: 'create-agent-item',
-    'data-hidden': revealed ? 'false' : 'true',
-    style: { transitionDelay: `${delayMs}ms` },
-  })
+    onBusyChange(busy)
+    return () => onBusyChange(false)
+  }, [busy, onBusyChange])
+
+  async function toggleDream(on: boolean) {
+    setChangingSkill(true)
+    try {
+      if (on && dream) {
+        await install.mutateAsync({ agentSlug, skillsetId: dream.skillsetId, skillPath: dream.path, skillName: dream.name, skillVersion: dream.version })
+      } else if (!on && installed) {
+        await remove.mutateAsync({ agentSlug, skillDir: installed.path })
+      }
+      await Promise.all([skills.refetch(), discoverable.refetch()])
+    } catch (error) {
+      toast.error('Could not change Self-Improvement', { description: error instanceof Error ? error.message : undefined })
+    } finally {
+      setChangingSkill(false)
+    }
+  }
 
   return (
-    // The step scrolls in its own viewport (edges fading like the template
-    // roster's). The title row starts at a fixed point near the middle of the
-    // window rather than the block being centred, so the question is where
-    // the eye lands and the list runs down from it, scrolling when it is long.
-    <div className="relative h-full min-h-0" data-testid="agent-addons-step">
-      <div
-        className="absolute inset-0 -mx-2 overflow-y-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        style={{ maskImage: SCROLL_FADE_MASK, WebkitMaskImage: SCROLL_FADE_MASK }}
-        data-testid="agent-addons-scroll"
-      >
-        <div className="flex min-h-full flex-col">
-          <div className="h-[30vh] shrink-0" aria-hidden />
-          <div className="shrink-0">
-            <div {...item(0)}>{header}</div>
-            <div className="space-y-6">
-              <AddonSection title="Skills" {...item(60)}>
-                <AddonRow
-                  icon={<TrendingUp className="h-4 w-4" />}
-                  title="Self-Improvement"
-                  description="Reviews its past work between sessions and gets better at the job."
-                  checked={value.selfImprovement}
-                  onCheckedChange={(selfImprovement) => onChange({ ...value, selfImprovement })}
-                  testId="addon-self-improvement"
-                />
-                <AddonRow
-                  icon={<Lightbulb className="h-4 w-4" />}
-                  title="Proactivity"
-                  description="Comes to you with new ideas and checks in without being asked."
-                  checked={value.proactivity}
-                  onCheckedChange={(proactivity) => onChange({ ...value, proactivity })}
-                  testId="addon-proactivity"
-                />
-              </AddonSection>
-
-              <AddonSection title="Knowledge & Context" {...item(100)}>
-                <AddonRow
-                  icon={<NotebookPen className="h-4 w-4" />}
-                  title="Memories"
-                  description="Remembers what it learns about you and your work."
-                  checked={value.memories}
-                  onCheckedChange={(memories) => onChange({ ...value, memories })}
-                  testId="addon-memories"
-                />
-                <AddonRow
-                  icon={<Brain className="h-4 w-4" />}
-                  title="Team Brain"
-                  description="Reads and adds to your team's shared knowledge."
-                  checked={value.teamBrain}
-                  onCheckedChange={(teamBrain) => onChange({ ...value, teamBrain })}
-                  testId="addon-team-brain"
-                />
-              </AddonSection>
-
-              <AddonSection title="Channels" {...item(140)}>
-                <AddonRow
-                  icon={<Mail className="h-4 w-4" />}
-                  title="Inbox"
-                  description="An email address of its own, so you can forward it mail."
-                  checked={value.inbox}
-                  onCheckedChange={(inbox) => onChange({ ...value, inbox })}
-                  testId="addon-inbox"
-                />
-                <AddonRow
-                  icon={<ServiceIcon slug="slack" fallback="mcp" className="h-4 w-4" />}
-                  title="Slack"
-                  description="Talk to it in Slack. It walks you through connecting in its first chat."
-                  checked={value.slack}
-                  onCheckedChange={(slack) => onChange({ ...value, slack })}
-                  testId="addon-slack"
-                />
-              </AddonSection>
-            </div>
+    <div className="h-full overflow-y-auto" data-testid="agent-addons-step">
+      <div className="mx-auto flex min-h-full w-full max-w-xl flex-col justify-center py-8">
+        {header}
+        <TooltipProvider delayDuration={200}>
+          <div className="space-y-5">
+            <Section title="Skills">
+              <Row icon={<TrendingUp />} title="Self-Improvement" description="Installs Dream to review past work and improve between sessions."
+                checked={!!installed} disabled={changingSkill} onChange={on => void toggleDream(on)}
+                reason={!installed && !dream ? 'Requires Dream in the Gamut Public Skillset.' : undefined} />
+            </Section>
+            <Section title="Knowledge & Context">
+              <Row icon={<NotebookPen />} title="Memories" description="Remembers what it learns across Claude sessions."
+                checked={preferences.data?.autoMemoryEnabled !== false} disabled={!preferences.data || updatePreferences.isPending}
+                onChange={autoMemoryEnabled => updatePreferences.mutate({ autoMemoryEnabled })} />
+              <Row icon={<Brain />} title="Team Brain" description="Reads the shared drive and can message Team Brain."
+                checked={access.everyAgent || access.isOn(agentSlug)} disabled={access.isChanging(agentSlug) || !access.ready}
+                reason={!brain ? 'Set up Team Brain in this workspace first.' : access.everyAgent ? 'This workspace shares Team Brain with every agent.' : undefined}
+                onChange={on => access.toggle(agentSlug, on)} />
+            </Section>
+            <Section title="Channels">
+              {(['platform-email', 'slack'] as const).map(slug => {
+                const title = slug === 'slack' ? 'Slack' : 'Inbox'
+                const configured = integrations?.some(integration => integration.provider === slug)
+                const available = providers?.some(provider => provider.provider === slug)
+                return <div key={slug} className="flex items-center gap-3 px-4 py-3">
+                  <Icon>{slug === 'slack' ? <ServiceIcon slug="slack" fallback="mcp" /> : <Mail />}</Icon>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">{title}</p>
+                    <p className="text-xs text-muted-foreground">{slug === 'slack' ? 'Talk to this agent in Slack.' : 'Give this agent its own email address.'}</p>
+                  </div>
+                  <Button size="sm" variant="outline" disabled={configured || !available || !integrations}
+                    aria-label={`${configured ? 'Configured' : 'Set up'} ${title}`}
+                    title={!available ? `${title} is unavailable in this workspace.` : undefined}
+                    onClick={() => setSetup(integrationSetupProviders.find(provider => provider.slug === slug) ?? null)}>
+                    {configured ? 'Configured' : 'Set up'}
+                  </Button>
+                </div>
+              })}
+            </Section>
           </div>
-          <div className="h-12 shrink-0" aria-hidden />
-        </div>
+        </TooltipProvider>
       </div>
+      <AgentIntegrationSetupDialog agentSlug={agentSlug} provider={setup} onIntegrationCreated={() => setSetup(null)} onOpenChange={open => { if (!open) setSetup(null) }} />
     </div>
   )
 }
 
-function AddonSection({ title, children, ...reveal }: { title: string; children: ReactNode; className: string; style: React.CSSProperties; 'data-hidden': string }) {
-  return (
-    <section {...reveal}>
-      <h3 className="mb-2 text-[13px] font-medium text-muted-foreground">{title}</h3>
-      <div className="divide-y rounded-card border bg-card/50">{children}</div>
-    </section>
-  )
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return <section>
+    <h3 className="mb-2 text-[13px] font-medium text-muted-foreground">{title}</h3>
+    <div className="divide-y rounded-card border bg-card/50">{children}</div>
+  </section>
 }
 
-function AddonIcon({ children }: { children: ReactNode }) {
-  return (
-    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-control bg-muted text-muted-foreground" aria-hidden>
-      {children}
-    </span>
-  )
+function Icon({ children }: { children: ReactNode }) {
+  return <span className="grid h-8 w-8 shrink-0 place-items-center rounded-control bg-muted text-muted-foreground [&_svg]:size-4" aria-hidden>{children}</span>
 }
 
-function AddonRow({
-  icon,
-  title,
-  description,
-  checked,
-  onCheckedChange,
-  testId,
-}: {
-  icon: ReactNode
-  title: string
-  description: string
-  checked: boolean
-  onCheckedChange: (checked: boolean) => void
-  testId: string
+function Row({ title, description, icon, checked, onChange, disabled, reason }: {
+  title: string; description: string; icon: ReactNode; checked: boolean
+  onChange: (on: boolean) => void; disabled?: boolean; reason?: string
 }) {
   const id = useId()
-  return (
-    // The whole row toggles: the label points at the switch.
-    <label htmlFor={id} className="flex cursor-pointer items-center gap-3 px-4 py-3" data-testid={testId}>
-      <AddonIcon>{icon}</AddonIcon>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{title}</span>
-        <span className="block text-xs text-muted-foreground">{description}</span>
-      </span>
-      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
-    </label>
-  )
+  const row = <label htmlFor={id}
+    className={`flex items-center gap-3 px-4 py-3 ${reason || disabled ? 'opacity-50' : 'cursor-pointer'}`}>
+    <Icon>{icon}</Icon>
+    <span className="min-w-0 flex-1">
+      <span className="block text-sm font-medium">{title}</span>
+      <span className="block text-xs text-muted-foreground">{description}</span>
+    </span>
+    <Switch id={id} aria-label={title} checked={checked} onCheckedChange={reason ? undefined : onChange} aria-disabled={!!reason || disabled} disabled={!reason && disabled} />
+  </label>
+  return reason ? <Tooltip><TooltipTrigger asChild>{row}</TooltipTrigger><TooltipContent>{reason}</TooltipContent></Tooltip> : row
 }

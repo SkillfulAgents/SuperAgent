@@ -3,6 +3,7 @@ import { EFFORT_LEVELS, SPEED_LEVELS } from '@shared/lib/container/types'
 
 // Keep in sync with agent-container/src/file-hooks/agent-preferences-hook.ts
 export const agentPreferencesSchema = z.object({
+  autoMemoryEnabled: z.boolean().optional(),
   /** Days of inactivity after which sessions are deleted. 0 = Never. */
   autoDeleteInactiveDays: z.number().int().nonnegative().optional(),
   /** Days after which this agent's API / MCP audit rows are deleted. 0 = Never. */
@@ -23,6 +24,7 @@ export type AgentPreferences = z.infer<typeof agentPreferencesSchema>
  * back to the app-wide default. Unknown keys are stripped.
  */
 export const agentPreferencesUpdateSchema = z.object({
+  autoMemoryEnabled: z.boolean().nullish(),
   autoDeleteInactiveDays: z.number().int().nonnegative().nullish(),
   apiLogAutoDeleteDays: z.number().int().nonnegative().nullish(),
   defaultLlmProviderId: z.string().min(1).nullish(),

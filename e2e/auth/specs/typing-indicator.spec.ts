@@ -49,7 +49,6 @@ test('auth mode: a user does not see their own typing indicator', async ({ page 
   // sessionId exists). The create page (name, job, add-ons) creates the
   // agent and its first session and navigates to it.
   await page.locator('[data-testid="new-agent-button"]').click()
-  await page.locator('[data-testid="new-agent-from-scratch"]').click()
   await expect(page.locator('[data-testid="new-agent-page"]')).toBeVisible({ timeout: 10000 })
   await page.locator('[data-testid="agent-identity-name"]').fill('Typing Test Agent')
   await page.locator('[data-testid="agent-identity-continue"]').click()

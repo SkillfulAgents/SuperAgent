@@ -5,13 +5,6 @@ import { Button } from '@renderer/components/ui/button'
 import { CreateAgentScreen } from '@renderer/components/wizard/create-agent-step'
 import { useFileAgentIntoSection } from '@renderer/hooks/use-file-agent-into-section'
 
-/**
- * The from-scratch create page (`/new-agent`), the New Agent menu's From
- * Scratch: the onboarding wizard's create step without its template roster
- * (templates have their own page, `/new-agent/templates`). Name and orb, then
- * the job, then add-ons. Creating navigates on to the new agent; Back steps
- * back, then returns to `?from=`; the X leaves at once.
- */
 export function NewAgentPage() {
   const router = useRouter()
   const { from, section, surface } = useSearch({ from: '/new-agent' })
@@ -23,8 +16,6 @@ export function NewAgentPage() {
     router.history.push(from ?? '/')
   }, [router, from])
 
-  // The form has already navigated to the agent by now; a section's + files
-  // it into that section.
   const handleAgentCreated = useCallback(
     ({ slug }: { slug: string }) => fileIntoSection(slug, section),
     [fileIntoSection, section],
@@ -35,8 +26,10 @@ export function NewAgentPage() {
       data-testid="new-agent-page"
       nameTitle="Name your new AI teammate"
       surface={surface}
-      showTemplates={false}
-      onAgentCreated={handleAgentCreated}
+      onChooseSource={(openImport) => void router.navigate({
+        to: '/new-agent/templates', search: { from, section, surface, importing: openImport || undefined },
+      })}
+      onIdentityCreated={handleAgentCreated}
       onClose={close}
       footer={(flow) => (
         // A step back while there is one; from the first step it leaves.

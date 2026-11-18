@@ -62,7 +62,7 @@ import { useExperiment } from '@renderer/hooks/use-experiment'
 import { useTodos } from '@renderer/hooks/use-todos'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { NewAgentMenu } from '@renderer/components/agents/new-agent-menu'
+import { useOpenCreateAgent } from '@renderer/hooks/use-open-create-agent'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
@@ -1181,14 +1181,12 @@ function HistoryNavigationButtons() {
 }
 
 export function AppSidebar() {
+  const openCreateAgent = useOpenCreateAgent()
   useRenderTracker('AppSidebar')
   const { openSettings } = useDialogs()
   const updateStatus = useUpdateStatus()
   const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
 
-  // The "New Agent" app-menu command is handled centrally by
-  // MenuCommandHandler (straight to the from-scratch page); the sidebar's own
-  // "New Agent" row and each section's + open the New Agent menu.
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { openSearch } = useSearch()
   const isMobile = useIsMobile()
@@ -1905,12 +1903,10 @@ export function AppSidebar() {
                   </SidebarMenuItem>
                 )}
                 <SidebarMenuItem>
-                  <NewAgentMenu surface="nav">
-                    <SidebarMenuButton data-testid="new-agent-button">
-                      <AnimatedNavIcon name="plus" className="h-4 w-4" />
-                      <span>New Agent</span>
-                    </SidebarMenuButton>
-                  </NewAgentMenu>
+                  <SidebarMenuButton onClick={() => openCreateAgent({ surface: 'nav' })} data-testid="new-agent-button">
+                    <AnimatedNavIcon name="plus" className="h-4 w-4" />
+                    <span>New Agent</span>
+                  </SidebarMenuButton>
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
@@ -1976,15 +1972,10 @@ export function AppSidebar() {
                             onRename={(name) => handleRenameFolder(section.folder.id, name)}
                             onRenameEnd={() => setPendingRenameFolderId(null)}
                             onDelete={() => handleDeleteFolder(section.folder.id)}
-                            createAgentMenu={(trigger) => (
-                              <NewAgentMenu
-                                surface="section_plus"
-                                folderId={section.folder.id}
-                                onChoose={() => expandFolderForNewAgent(section.folder.id)}
-                              >
-                                {trigger}
-                              </NewAgentMenu>
-                            )}
+                            onCreateAgent={() => {
+                              expandFolderForNewAgent(section.folder.id)
+                              openCreateAgent({ surface: 'section_plus', folderId: section.folder.id })
+                            }}
                           >
                             <SectionAgentList agents={section.agents} />
                           </AgentFolderBlock>

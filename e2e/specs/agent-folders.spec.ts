@@ -327,13 +327,16 @@ test.describe('agent folders in the left nav', () => {
       response.url().endsWith('/api/agents') && response.request().method() === 'POST' && response.status() === 201,
     )
     await page.getByTestId(`new-agent-in-folder-${id}`).click()
+    await page.getByTestId('agent-identity-name').fill('Section teammate')
+    await page.getByTestId('agent-identity-continue').click()
     const agent = await (await created).json() as { slug: string }
     try {
       await expect.poll(() => assignmentStarted).toBe(true)
-      expect(new URL(page.url()).pathname).toBe('/')
+      expect(new URL(page.url()).pathname).toBe('/new-agent')
     } finally {
       release()
     }
+    await page.getByTestId('create-agent-skip').click()
     await expect(page).toHaveURL(/\/agents\//)
     await expect(body.getByTestId(`agent-item-${agent.slug}`)).toBeVisible()
     await expect(body.locator('[data-avatar-orb="ghost"]')).toHaveCount(0)

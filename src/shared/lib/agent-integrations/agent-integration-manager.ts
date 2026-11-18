@@ -1450,11 +1450,12 @@ export class AgentIntegrationManager implements Service {
     const systemPrompt = [input.systemPrompt, previous].filter(Boolean).join('\n\n') || undefined
     // One read of the settings for this session's start.
     // Model/effort/speed preference order: integration override > agent default > global default.
-    const { models, resolve } = await resolveSessionDefaults(await getSettings(), integration.agentSlug)
+    const { models, resolve, agentEnvVars } = await resolveSessionDefaults(await getSettings(), integration.agentSlug)
     const resolved = await resolve({ model: integration.model, llmProviderId: integration.llmProviderId, effort: integration.effort, speed: integration.speed })
 
     check()
     const containerSession = await attempt.handoff(undefined, () => actor.sessions.create({
+      customEnvVars: agentEnvVars,
       initialMessage: input.text,
       initialMessageUuid: attempt.id,
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
