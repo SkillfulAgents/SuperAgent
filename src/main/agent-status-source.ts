@@ -20,8 +20,11 @@ import { fetchAgentsWithStatus, type AgentInfo } from './agent-status'
  *   says something moved (`requestRefresh`). That stream is this computer's
  *   only, so the cloud workspace with no window has the interval alone.
  *
- * Nothing on either stream says an agent was deleted or that the saved agent
- * order changed. A window notices both itself; without one the interval does.
+ * The stream does not announce everything. Nothing says the saved agent order
+ * changed, and a delete, a rename or a create through the plain agent routes
+ * publishes no event of its own (a delete is usually heard anyway, through the
+ * container stopping). A window's own queries cover those; without one the
+ * interval does.
  */
 
 /** How often main asks the API when no window is pushing. */
@@ -37,8 +40,9 @@ const DEBOUNCED_POLL_JOB = 'agent-status.debounced-poll'
  * The events on `/api/notifications/stream` after which an agent's row in the
  * list can read differently: a session started or stopped working or waiting,
  * a review opened or settled (it raises "needs input" with no session), a
- * container changed state, an agent appeared or was renamed. `connected` is the
- * stream (re)attaching, after which anything may have been missed.
+ * container changed state, an agent was created by another agent or had its
+ * name or avatar set for it. `connected` is the stream (re)attaching, after
+ * which anything may have been missed.
  */
 const AGENT_STATUS_EVENTS: ReadonlySet<string> = new Set([
   'connected',
