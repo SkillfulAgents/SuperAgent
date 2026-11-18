@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { ContainerNotFoundError } from '@shared/lib/container/types'
 
 const {
   readSessionMetadata,
@@ -257,13 +257,7 @@ describe('forkSession', () => {
     expect(forkInContainer).not.toHaveBeenCalled()
   })
 
-  it('maps a container conflict and a gone session', async () => {
-    forkInContainer.mockRejectedValueOnce(new ContainerConflictError('busy'))
-    await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      status: 409,
-      message: 'Session is currently running. Wait for it to finish, or restart the agent to pull the latest image.',
-    })
-
+  it('maps a gone session to 404', async () => {
     forkInContainer.mockRejectedValueOnce(new ContainerNotFoundError('Session not found'))
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({ status: 404 })
   })

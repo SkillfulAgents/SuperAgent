@@ -77,13 +77,13 @@ describe('useForkSession', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     mockApiFetch.mockResolvedValue({
       ok: false,
-      text: async () => JSON.stringify({ error: 'Session is currently running' }),
+      text: async () => JSON.stringify({ error: 'Session not found' }),
     })
     const { result } = renderHook(() => useForkSession(), { wrapper })
     await expect(
       result.current.mutateAsync({ sessionId: 'src-1', agentSlug: 'agent-a' }),
-    ).rejects.toThrow('Session is currently running')
-    expect(mockTrack).toHaveBeenCalledWith('session_fork_failed', { reason: 'Session is currently running' })
+    ).rejects.toThrow('Session not found')
+    expect(mockTrack).toHaveBeenCalledWith('session_fork_failed', { reason: 'Session not found' })
     expect(mockTrack).not.toHaveBeenCalledWith('session_forked')
     expect(mockNavigate).not.toHaveBeenCalled()
     expect(err).toHaveBeenCalledWith('Failed to fork session:', expect.any(Error))
@@ -134,12 +134,12 @@ describe('useForkAndCompact', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     mockApiFetch.mockResolvedValue({
       ok: false,
-      text: async () => JSON.stringify({ error: 'Session is currently running' }),
+      text: async () => JSON.stringify({ error: 'Session not found' }),
     })
     const { result } = renderHook(() => useForkAndCompact(), { wrapper })
     await expect(
       result.current.mutateAsync({ sessionId: 'src-1', agentSlug: 'agent-a' }),
-    ).rejects.toThrow('Session is currently running')
+    ).rejects.toThrow('Session not found')
     expect(mockApiFetch).toHaveBeenCalledTimes(1)
     expect(mockNavigate).not.toHaveBeenCalled()
   })
