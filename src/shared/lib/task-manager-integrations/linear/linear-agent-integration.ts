@@ -1,6 +1,6 @@
 import { TaskManagerAgentIntegration } from '../task-manager-agent-integration'
-import type { AgentIntegrationRecord, IntegrationSessionContext } from '../../agent-integrations/types'
-import { getLinearConfig, updateLinearConfig } from './store'
+import type { AgentIntegrationRecord, IntegrationAccessCheck, IntegrationSessionContext } from '../../agent-integrations/types'
+import { getLinearConfig, linearConfigOf, updateLinearConfig } from './store'
 import { LinearAccessError, LinearClient } from './client'
 import { LinearTasks } from './tasks'
 import { LinearSubscriptions } from './subscriptions'
@@ -241,10 +241,13 @@ export class LinearAgentIntegration extends TaskManagerAgentIntegration {
       ? { ...latest, webhookSecretStatus: 'verified' } : latest).catch(error => this.report(error, 'save-secret-status')), { name: 'linear-integration.save-secret-status' })
   }
 
-  async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
+  async isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean> {
     if (!await super.isAllowed(context)) return false
     try {
-      const config = await getLinearConfig(this.installation.id)
+      // A row the caller read for this check is the row a read here would return.
+      const config = check?.current && context.integration.id === this.installation.id
+        ? linearConfigOf(context.integration)
+        : await getLinearConfig(this.installation.id)
       return !config.authorizationPending && !config.authorizationError && !!config.tokens && !!config.identity
     } catch { return false }
   }

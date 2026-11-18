@@ -397,16 +397,15 @@ describe('AgentIntegration host contract', () => {
     await vi.waitFor(() => expect(state.streams.has('session-1')).toBe(true))
     let checks = 0
     let release!: () => void
+    // One check per event, for its observation and its delivery alike; it stalls.
     vi.spyOn(adapter, 'isAllowed').mockImplementation(() => {
       checks += 1
-      // The queued observation's check resolves; the handler's own check stalls.
-      if (checks === 1) return Promise.resolve(true)
       return new Promise<boolean>((resolve) => { release = () => resolve(true) })
     })
     const outputsBefore = adapter.outputs.length
     state.streams.get('session-1')!({ type: 'session_idle' })
-    await vi.waitFor(() => expect(checks).toBe(2))
-    manager.stop() // the chat is cleared while the handler waits
+    await vi.waitFor(() => expect(checks).toBe(1))
+    manager.stop() // the chat is cleared while the event waits
     expect(adapter.released).toHaveLength(1)
     release()
     await new Promise((resolve) => setTimeout(resolve, 10))
