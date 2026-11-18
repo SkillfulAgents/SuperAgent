@@ -92,6 +92,8 @@ interface ManagedSession {
   recoveryReported?: boolean
   /** The job of a recovery retry that is scheduled. */
   recoveryWake?: string
+  /** The last output check `sessionId` passed, for the text deltas right behind it (see streamAccess). */
+  outputAccess?: { sessionId: string; integration: AgentIntegrationRecord; checkedAt: number }
 }
 
 /** A context's routing fields, with `update` applied: what a connector delivers by. */
@@ -228,6 +230,9 @@ export class AgentIntegrationManager implements Service {
   private resumeQueued = false
   // Follow-up delays after the resume force pass, while anything is still down.
   private static readonly RESUME_RETRY_DELAYS_MS = [15_000, 30_000, 60_000]
+  // How long an output check a session passed stands for the text deltas behind it.
+  // A chat shows streamed text at most once in this long (STREAM_UPDATE_MS).
+  private static readonly DELTA_ACCESS_REUSE_MS = 1_000
   // Upper bound on waiting for an old connector to tear down before rebuilding.
   private static readonly DISCONNECT_TIMEOUT_MS = 5_000
   // Per-(integration,chat) serialized tail promise. Entries self-evict once their
@@ -259,6 +264,29 @@ export class AgentIntegrationManager implements Service {
     if (!connector) return
     const integration = await getIntegration(integrationId)
     if (!integration || !(await connector.isAllowed({ integration, externalId }, { current: true }))) return
+    return integration
+  }
+
+  /**
+   * `outputAccess` for one event of the session a chat follows. Text deltas
+   * arrive tens a second, so one that follows a check its session passed less
+   * than DELTA_ACCESS_REUSE_MS ago is delivered on that check, with what it
+   * read; every other event reads, and so does the first delta after the
+   * bound. Access that ends in the database alone (a write from another
+   * process, or the moment before this one's teardown) therefore stops a
+   * streaming reply within the bound, and everything else at the next event.
+   * The check lives on the live session and no longer than it: a chat that is
+   * torn down or re-pointed starts from a read.
+   */
+  private async streamAccess(session: ManagedSession, sessionId: string, event: unknown): Promise<AgentIntegrationRecord | undefined> {
+    const held = session.outputAccess
+    const now = Date.now()
+    if ((event as { type?: string } | null)?.type === 'stream_delta' && held?.sessionId === sessionId
+      && now >= held.checkedAt && now - held.checkedAt < AgentIntegrationManager.DELTA_ACCESS_REUSE_MS) return held.integration
+    session.outputAccess = undefined
+    const integration = await this.outputAccess(session.integration.id, session.chatId)
+    // Dated from before the read, so the bound holds however long the read took.
+    if (integration) session.outputAccess = { sessionId, integration, checkedAt: now }
     return integration
   }
 
@@ -990,7 +1018,8 @@ export class AgentIntegrationManager implements Service {
   // The access check behind both is a database read, so it runs on the queue:
   // events keep the order they arrived in, and a failed check lands in the
   // error boundary below instead of escaping as an unhandled rejection. It is
-  // made once per event, and what it read is what the event is delivered with.
+  // made at most once per event (see streamAccess for text deltas), and what
+  // it read is what the event is delivered with.
   private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown, sessionId: string, observe?: ManagedSession): void {
     const queueKey = `sse:${integrationId}:${chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
@@ -999,7 +1028,7 @@ export class AgentIntegrationManager implements Service {
         // No live session, or output queued before a rotation: there is nothing
         // to observe or deliver, so nothing to read either.
         const live = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
-        const integration = live && live.sessionId === sessionId ? await this.outputAccess(integrationId, chatId) : undefined
+        const integration = live && live.sessionId === sessionId ? await this.streamAccess(live, sessionId, event) : undefined
         if (observe && integration && this.isCurrentSession(integrationId, chatId, observe, sessionId)) {
           await this.observe(observe)
         }

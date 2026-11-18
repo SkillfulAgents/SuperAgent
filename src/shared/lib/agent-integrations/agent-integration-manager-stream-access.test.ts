@@ -1,8 +1,10 @@
 /**
  * What one session event costs on its way to an integration, and when output
- * stops: the manager reads the installation once per event and its family
- * decides from that row, against a real database. Access that ends while a
- * reply streams ends the stream at the next event.
+ * stops, against a real database: the manager reads the installation once per
+ * event and its family decides from that row; text deltas ride on a check
+ * their session passed less than a second ago. Access that ends while a reply
+ * streams stops its text within that second and everything else at the next
+ * event.
  */
 vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testing/memory-delivery-store')).memoryDeliveryStore() }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -137,11 +139,11 @@ function follow(connector: AgentIntegration, integration: AgentIntegrationRecord
   manager.connections.set(integration.id, { connector, integration })
   manager.chatSessions.set(`${integration.id}:${CHAT}`, session)
   /** One session event through the chat's queue; resolves to the statements it ran. */
-  const emit = async (event: Record<string, unknown>): Promise<number> => {
+  const emit = async (event: Record<string, unknown>, sessionId = SESSION): Promise<number> => {
     // drizzle's session is where every builder and raw statement is prepared, on
     // both drivers; it has no public hook, so the test reaches for it by name.
     const prepared = vi.spyOn((testDb as unknown as { session: { prepareQuery(...args: unknown[]): unknown } }).session, 'prepareQuery')
-    manager.enqueueSSEEvent(integration.id, CHAT, event, SESSION, session)
+    manager.enqueueSSEEvent(integration.id, CHAT, event, sessionId, session)
     await manager.messageQueues.get(`sse:${integration.id}:${CHAT}`)
     const statements = prepared.mock.calls.length
     prepared.mockRestore()
@@ -291,6 +293,122 @@ describe('access that ends while a reply streams', () => {
     await manager.releaseExternalSession(integration.id, CHAT)
 
     expect(await emit(delta)).toBe(0)
+    expect(delivered).toHaveLength(1)
+  })
+})
+
+describe('text deltas behind a check their session passed', () => {
+  const START = 1_700_000_000_000
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(START)
+  })
+
+  it('read nothing for a second, then read once again', async () => {
+    const integration = await chatInstallation('slack', true)
+    const { delivered, emit } = follow(new MockChatAgentIntegration(), integration)
+
+    expect(await emit(delta)).toBe(1)
+    expect(await emit(delta)).toBe(0)
+    vi.setSystemTime(START + 999)
+    expect(await emit(delta)).toBe(0)
+    vi.setSystemTime(START + 1_000)
+    expect(await emit(delta)).toBe(1)
+    expect(await emit(delta)).toBe(0)
+    expect(delivered).toHaveLength(5)
+  })
+
+  it.each([
+    ['Slack-like', () => chatInstallation('slack', true), () => new MockChatAgentIntegration(), 1],
+    ['Telegram with approval', async () => { const made = await chatInstallation('telegram', true); await chatAccess(made.id, 'allowed'); return made }, () => new MockChatAgentIntegration(), 2],
+    ['Linear', linearInstallation, (made: AgentIntegrationRecord) => new LinearAgentIntegration(made), 1],
+    ['email', emailInstallation, (made: AgentIntegrationRecord) => new FakeEmail(made), 2],
+  ] as const)('a %s reply of 300 deltas over three seconds checks access three times', async (_family, install, connect, perCheck) => {
+    const integration = await install()
+    const { delivered, emit } = follow(connect(integration), integration)
+
+    let statements = 0
+    for (let sent = 0; sent < 300; sent++) {
+      vi.setSystemTime(START + sent * 10)
+      statements += await emit(delta)
+    }
+
+    expect(statements).toBe(3 * perCheck)
+    expect(delivered).toHaveLength(300)
+  })
+
+  it('does not stand for any other event', async () => {
+    const integration = await chatInstallation('slack', true)
+    const { emit } = follow(new MockChatAgentIntegration(), integration)
+    await emit(delta)
+
+    for (const type of ['stream_start', 'tool_use_ready', 'user_request_created', 'turn_output_complete', 'session_idle', 'session_error']) {
+      expect(await emit({ type }), type).toBe(1)
+    }
+  })
+
+  it('does not stand for another session the chat follows next', async () => {
+    const integration = await chatInstallation('slack', true)
+    const { emit, session } = follow(new MockChatAgentIntegration(), integration)
+    await emit(delta)
+
+    session.sessionId = 'session-2'
+
+    expect(await emit(delta, 'session-2')).toBe(1)
+  })
+
+  it('does not outlive the live session', async () => {
+    const integration = await chatInstallation('slack', true)
+    const connector = new MockChatAgentIntegration()
+    await follow(connector, integration).emit(delta)
+
+    // A teardown and a new subscription leave a new live session for the same chat.
+    expect(await follow(connector, integration).emit(delta)).toBe(1)
+  })
+
+  const endings = [
+    ['a deleted Slack-like installation', () => chatInstallation('slack', true), () => new MockChatAgentIntegration(),
+      (made: AgentIntegrationRecord) => deleteAgentIntegration(made.id)],
+    ['a revoked Telegram chat', async () => { const made = await chatInstallation('telegram', true); await chatAccess(made.id, 'allowed'); return made }, () => new MockChatAgentIntegration(),
+      (made: AgentIntegrationRecord) => revokeChatAccess(`access-${made.id}`, 'owner')],
+    ['a paused Linear installation', linearInstallation, (made: AgentIntegrationRecord) => new LinearAgentIntegration(made),
+      (made: AgentIntegrationRecord) => updateAgentIntegrationStatus(made.id, 'paused')],
+    ['a paused email installation', emailInstallation, (made: AgentIntegrationRecord) => new FakeEmail(made),
+      (made: AgentIntegrationRecord) => updateAgentIntegrationStatus(made.id, 'paused')],
+  ] as const
+
+  // The write is all that happens here: no teardown follows it, as when another process made it.
+  it.each(endings)('%s stops streamed text within a second', async (_what, install, connect, end) => {
+    const integration = await install()
+    const { delivered, emit } = follow(connect(integration), integration)
+    await emit(delta)
+    expect(delivered).toHaveLength(1)
+
+    vi.setSystemTime(START + 100)
+    await end(integration)
+    // Inside the bound, the text still rides on the check made before the write.
+    vi.setSystemTime(START + 999)
+    expect(await emit(delta)).toBe(0)
+    expect(delivered).toHaveLength(2)
+
+    vi.setSystemTime(START + 1_000)
+    await emit(delta)
+    // A refused check stands for nothing: the next delta is checked again.
+    expect(await emit(delta)).toBeGreaterThan(0)
+    expect(delivered).toHaveLength(2)
+  })
+
+  it.each(endings)('%s stops any other event at once', async (_what, install, connect, end) => {
+    const integration = await install()
+    const { delivered, emit } = follow(connect(integration), integration)
+    await emit(delta)
+
+    await end(integration)
+    await emit({ type: 'stream_start' })
+    await emit(idle)
+    // The refused check also ended what the deltas rode on.
+    await emit(delta)
+
     expect(delivered).toHaveLength(1)
   })
 })

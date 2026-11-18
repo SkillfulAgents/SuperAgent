@@ -106,6 +106,7 @@ src/shared/lib/container/host-token-store.test.ts
 src/main/host-browser/context-map-store.test.ts
 src/shared/lib/browser-vault/vault-key-probe.test.ts
 src/shared/lib/agent-integrations/integration-row-version.test.ts
+src/shared/lib/agent-integrations/agent-integration-manager-stream-access.test.ts
 src/shared/lib/services/notification-service-changes.test.ts
 src/api/routes/meeting-participant.test.ts
 src/shared/lib/meeting-integrations/meeting-agent-integration.test.ts
