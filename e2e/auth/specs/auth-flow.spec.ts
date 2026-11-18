@@ -552,13 +552,17 @@ test.describe('Auth Flow', () => {
     const appPage = new AppPage(user2Page)
 
     // Entering state: user2 signed in on the agent page (previous test).
+    // The fake clock lets the test fire the app's next background poll on
+    // demand; the slowest of those polls runs only once a minute.
+    await user2Page.clock.install()
     await user2Page.goto(`/agents/${agentSlug}`)
     await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
 
-    // Expire the session out from under the open app. The app's background
-    // polling fires the next apiFetch within seconds — don't drive the UI
-    // here: any element clicked can detach mid-action when the gate swaps in.
+    // Expire the session out from under the open app, then jump past one
+    // poll interval so the next apiFetch 401s. Don't drive the UI here: any
+    // element clicked can detach mid-action when the gate swaps in.
     await user2Page.context().clearCookies()
+    await user2Page.clock.fastForward(60_000)
 
     // Auth gate renders IN PLACE: the address bar stays on the agent URL and
     // the URL is stashed for restore.
