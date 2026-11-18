@@ -46,8 +46,15 @@ declare module 'cloudflare:workers' {
     deserializeAttachment(): unknown
   }
 
+  export interface SyncKvStorage {
+    get<T = unknown>(key: string): T | undefined
+    put<T>(key: string, value: T): void
+    delete(key: string): boolean
+  }
+
   export interface DurableObjectStorage {
     readonly sql: SqlStorage
+    readonly kv: SyncKvStorage
     /** Runs `closure` as one transaction: it commits all its writes, or none if it throws. */
     transactionSync<T>(closure: () => T): T
     getAlarm(): Promise<number | null>
@@ -55,18 +62,54 @@ declare module 'cloudflare:workers' {
     deleteAlarm(): Promise<void>
   }
 
+  export interface DurableObjectId {
+    readonly name?: string
+    toString(): string
+  }
+
+  export interface ContainerStartOptions {
+    /** One of the two: an image the Worker config names, or a container snapshot's handle. */
+    image?: string
+    containerSnapshot?: { id: string; name: string; size: number }
+    instance?: string
+    enableInternet: boolean
+    entrypoint?: string[]
+    env?: Record<string, string>
+  }
+
+  /** `ctx.container` of a Durable Object whose container app uses the durable_object scheduling policy. */
+  export interface Container {
+    readonly running: boolean
+    /** The digest-pinned images the Worker config names, by name. */
+    readonly images: Record<string, string>
+    start(options: ContainerStartOptions): void
+    /** Resolves when the container exits, rejects when it fails or exits nonzero. */
+    monitor(): Promise<void>
+    destroy(reason?: unknown): Promise<void>
+    signal(signal: number): void
+    setInactivityTimeout(durationMs: number): Promise<void>
+    getTcpPort(port: number): Fetcher
+    interceptOutboundHttp(host: string, fetcher: Fetcher): Promise<void>
+    /** Runs a command in the running container. */
+    exec(argv: string[], options?: { stderr?: 'combined' | 'ignore' }): Promise<{ output(): Promise<{ stdout: ArrayBuffer }> }>
+  }
+
   export interface DurableObjectState {
-    readonly id: { readonly name?: string; toString(): string }
+    readonly id: DurableObjectId
     readonly storage: DurableObjectStorage
+    readonly container?: Container
+    /** The Worker's exported entrypoints, as fetchers that carry `props`. */
+    readonly exports: Record<string, (options: { props: unknown }) => Fetcher>
+    blockConcurrencyWhile<T>(closure: () => Promise<T>): Promise<T>
     acceptWebSocket(socket: WorkerWebSocket): void
+    abort(reason?: string): void
     getWebSockets(): WorkerWebSocket[]
     /** Keeps the object alive until the work settles. */
     waitUntil(promise: Promise<unknown>): void
-    abort(reason?: string): void
   }
 
-  /** A Durable Object's methods as its stub calls them: each one answers asynchronously. */
-  export type DurableObjectStub<T> = {
+  /** A Durable Object's methods as its stub calls them: each one answers asynchronously. A stub got by name carries that name. */
+  export type DurableObjectStub<T> = { readonly name?: string } & {
     [K in keyof T as T[K] extends (...args: never[]) => unknown ? K : never]: T[K] extends (...args: infer A) => infer R
       ? (...args: A) => Promise<Awaited<R>>
       : never
@@ -75,6 +118,14 @@ declare module 'cloudflare:workers' {
   export interface DurableObjectNamespace<T> {
     /** `locationHint`: where a new object is made (object-location.ts); an object that exists ignores it. */
     getByName(name: string, options?: { locationHint?: string }): DurableObjectStub<T>
+    idFromString(id: string): DurableObjectId
+    get(id: DurableObjectId): DurableObjectStub<T>
+  }
+
+  export abstract class WorkerEntrypoint<Env = unknown, Props = unknown> {
+    protected readonly ctx: ExecutionContext & { readonly props: Props }
+    protected readonly env: Env
+    constructor(ctx: ExecutionContext, env: Env)
   }
 
   export interface R2ObjectBody {
@@ -113,4 +164,9 @@ declare module 'cloudflare:workers' {
 
 declare const WebSocketPair: {
   new (): { 0: import('cloudflare:workers').WorkerWebSocket; 1: import('cloudflare:workers').WorkerWebSocket }
+}
+
+/** A pass-through stream that tells R2 its length, so R2 can store a stream it has not seen whole. */
+declare class FixedLengthStream extends TransformStream<Uint8Array, Uint8Array> {
+  constructor(length: number)
 }

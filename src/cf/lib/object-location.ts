@@ -18,6 +18,9 @@ function hinted<T>(objects: DurableObjectNamespace<T>, location: string): Durabl
   if (!near) {
     near = {
       getByName: (name) => objects.getByName(name, { locationHint: location }),
+      // By id: an object that exists, which no hint moves.
+      idFromString: (id) => objects.idFromString(id),
+      get: (id) => objects.get(id),
     }
     hintedNamespaces.set(objects, near)
   }
@@ -34,6 +37,7 @@ export function nearStorage(env: Env): Env {
   if (!location) return env
   return {
     ...env,
+    AGENT: hinted(env.AGENT, location),
     APP_STATE: hinted(env.APP_STATE, location),
     TASK_MANAGER: hinted(env.TASK_MANAGER, location),
   }

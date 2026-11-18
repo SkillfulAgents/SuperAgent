@@ -2,7 +2,7 @@
  * The settings a new org starts from. Which providers, sign-in rules and sharing an org gets is its
  * deployment's decision, so they come from the deployment as JSON (the SEED_SETTINGS variable), as
  * a server deployment seeds a settings file. Set here is only what this runtime cannot work
- * without: the Worker's own origin as trusted for sign-in.
+ * without: its container runner, and the Worker's own origin as trusted for sign-in.
  */
 import type { AppSettings } from '@shared/lib/config/settings'
 
@@ -15,6 +15,7 @@ import type { AppSettings } from '@shared/lib/config/settings'
  * value, 0 (off) included, keeps it.
  */
 export const SESSION_COOKIE_CACHE_SECONDS = 60
+const CONTAINER_RUNNER = 'cloudflare-container'
 
 /** Changes `settings` in place; true when anything changed. */
 export function seedSettings(settings: AppSettings, seedJson: string | undefined, origin: string | undefined): boolean {
@@ -23,6 +24,10 @@ export function seedSettings(settings: AppSettings, seedJson: string | undefined
   // deploy has applied it (TaskManagerDurableObject.prepareOrg).
   if (seedJson?.trim() && !settings.app?.setupCompleted) {
     merge(settings as unknown as Record<string, unknown>, parseSeed(seedJson))
+    changed = true
+  }
+  if (settings.container?.containerRunner !== CONTAINER_RUNNER) {
+    settings.container = { ...settings.container, containerRunner: CONTAINER_RUNNER }
     changed = true
   }
   const trusted = settings.auth?.trustedOrigins ?? []
