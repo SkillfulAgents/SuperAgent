@@ -878,6 +878,22 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryData(['webhook-relay'])).toEqual(status)
   })
 
+  it('llm_connections_changed refreshes every list of connections and the model catalog, not the rest of settings', () => {
+    const lists = [
+      ['model-catalog'],
+      ['settings', 'llm-connections', undefined, undefined, undefined],
+      ['settings', 'models', 'agent-a', null],
+    ]
+    for (const key of lists) queryClient.setQueryData(key, { connections: [] })
+    queryClient.setQueryData(['settings'], { app: { theme: 'dark' } })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'llm_connections_changed' })
+
+    for (const key of lists) expect(queryClient.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(true)
+    expect(queryClient.getQueryState(['settings'])?.isInvalidated).toBe(false)
+  })
+
   it('platform_notification pops an OS notification whose click opens the detail route', async () => {
     const { showOSNotification } = await import('@renderer/lib/os-notifications')
     vi.mocked(showOSNotification).mockClear()

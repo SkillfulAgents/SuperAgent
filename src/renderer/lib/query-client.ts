@@ -28,6 +28,7 @@
 import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstack/react-query'
 import type { InvalidateOptions, InvalidateQueryFilters, MutationMeta, QueryKey, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { invalidateModelCatalog } from './model-catalog-query'
 import { captureRendererException } from './error-reporting'
 import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
 import { AgentRuntimeRequestError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
@@ -124,6 +125,7 @@ export function createAppQueryClient(): QueryClient {
         // The server just recorded the expired sign-in; show it in the provider lists.
         if (error instanceof AgentRuntimeRequestError && error.code === PROVIDER_RECONNECT_REQUIRED) {
           void client.invalidateQueries({ queryKey: ['settings'] })
+          void invalidateModelCatalog(client)
         }
       },
     }),
