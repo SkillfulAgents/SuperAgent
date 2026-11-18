@@ -676,6 +676,20 @@ describe('/invoke', () => {
     )
   })
 
+  it('rejects a session sending a message to itself', async () => {
+    reviewDecisions.push('allow')
+    const res = await authedFetch('/x-agent/invoke', {
+      prompt: 'hi',
+      sessionId: 'caller-session',
+      sync: true,
+      _callerSessionId: 'caller-session',
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/cannot send a message to itself/)
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
   it.each(['some-other-agent', CALLER_SLUG])('rejects when calling session was itself invoked by %s (one-hop rule)', async (invokedByAgentSlug) => {
     reviewDecisions.push('allow')
     const callerSessionId = 'caller-session-invoked'

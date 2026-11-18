@@ -767,6 +767,13 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     )
   }
 
+  // A running session takes an invoke into its turn, so a session messaging
+  // itself would read its own prompt as a follow-up, and a sync wait would wait
+  // on the turn that is waiting for it.
+  if (targetSlug === callerSlug && existingSessionId && existingSessionId === _callerSessionId) {
+    return c.json({ error: 'A session cannot send a message to itself. Omit session_id to start a worker session.' }, 400)
+  }
+
   // Capture the triggering message's author before a review prompt can pause
   // this request and newer messages can arrive in a shared caller session.
   // This remains a best-effort "latest author" heuristic until the container
