@@ -404,6 +404,30 @@ describe('useMessages forward delta', () => {
     expect(inflight[4].url).toContain('cursor=c2')
   })
 
+  it('walks past an older page that adds only items already on screen', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    // A replayed transcript serves copies of what is already shown first.
+    inflight[1].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: 'c2' })
+    // The same call goes on to the next page instead of returning nothing.
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=c2')
+    inflight[2].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
+
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1', 'u3', 'a3'])
+    expect(result.current.hasOlder).toBe(false)
+  })
+
   it('drops an item deleted remotely from within the covered range on a periodic full fetch', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
