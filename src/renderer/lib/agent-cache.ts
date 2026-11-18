@@ -186,6 +186,26 @@ export function invalidateAgentSessionLists(queryClient: QueryClient, agentSlug:
 }
 
 /**
+ * A deleted session leaves every cached list of its agent at once, and its
+ * detail is dropped rather than read again (the read would 404). A detail a
+ * mounted view still observes is kept, marked stale, until that view leaves.
+ * Call before invalidating the lists: a write clears a query's stale mark.
+ */
+export function removeSessionFromCaches(queryClient: QueryClient, agentSlug: string, sessionId: string): void {
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.setQueriesData<unknown>(
+    { predicate: (query) => isAgentSessionListKey(query.queryKey, aliases) },
+    (data: unknown) => (
+      Array.isArray(data) && data.some((entry) => (entry as ApiSession | null)?.id === sessionId)
+        ? data.filter((entry) => (entry as ApiSession | null)?.id !== sessionId)
+        : data
+    ),
+  )
+  queryClient.removeQueries({ queryKey: ['session', sessionId], type: 'inactive' })
+  void queryClient.invalidateQueries({ queryKey: ['session', sessionId], refetchType: 'none' })
+}
+
+/**
  * Patch one session's entry in every cached projection: each list under
  * ['sessions', <alias>] (the full list, the notable slice, automation slices)
  * plus the ['session', id, <alias>] detail entries. One traversal shared by
