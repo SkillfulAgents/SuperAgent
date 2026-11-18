@@ -1,0 +1,62 @@
+// SuperAgent for one org as one Cloudflare Worker. docs/cloudflare.md is the guide; in short, from
+// the repository root:
+//   npx wrangler secret put SUPERAGENT_VAULT_KEY --config src/cf/wrangler.jsonc   (openssl rand -base64 32)
+//   npx wrangler secret put BETTER_AUTH_SECRET --config src/cf/wrangler.jsonc     (openssl rand -base64 32)
+//   npm run deploy:cf
+// The deploy creates the database and the bucket named below (they carry no id here), and the
+// first request migrates the database. A deployment that must migrate before it serves sets
+// DEPLOY_TOKEN and calls POST /_deploy/prepare after each upload (docs/cloudflare.md).
+{
+  "name": "superagent",
+  // build-worker.mjs emits the server code with lazy imports into dist/cf-worker; wrangler bundles that.
+  "main": "../../dist/cf-worker/src/cf/index.ts",
+  "build": { "command": "node src/cf/build/build-worker.mjs" },
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "minify": true,
+  // What Workers lacks, bundled in place of the package (build/shims/).
+  "alias": {
+    "ws": "./build/shims/ws.ts",
+    "express": "./build/shims/node-only.ts",
+    "raw-body": "./build/shims/node-only.ts",
+    "undici": "./build/shims/node-only.ts",
+    "@skillful-agents/agent-computer": "./build/shims/node-only.ts"
+  },
+  // SEED_SETTINGS (optional): the settings a new org starts from, as JSON, e.g. "{\"app\":{\"setupCompleted\":true}}".
+  // APP_ORIGIN (optional): the origin browsers reach this Worker at, e.g. "https://agents.example.com".
+  // Unset, the origin of the request that first reaches a deploy is the one trusted for sign-in.
+  // STORAGE_LOCATION (optional): where the database is, as Cloudflare's location hint, e.g. "wnam". New Durable Objects
+  // are made near it. Unset, each is made near its first caller.
+  "vars": {
+    "AUTH_MODE": "true"
+  },
+  // Set with `wrangler secret put` (above): a deploy fails while one is missing. Optional secrets:
+  // DEPLOY_TOKEN (the deploy step), and AUTH_PROVIDERS_JSON and PLATFORM_TOKEN for a deployment
+  // that Platform manages.
+  "secrets": { "required": ["SUPERAGENT_VAULT_KEY", "BETTER_AUTH_SECRET"] },
+  "assets": {
+    "directory": "../../dist/renderer",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // The HTML entry and service worker carry the server's facts (index.ts): everything but the hashed bundles and icons,
+    // which Cloudflare serves itself with the cache headers build-worker.mjs writes (dist/renderer/_headers).
+    "run_worker_first": ["/*", "!/assets/*", "!/model-icons/*", "!/provider-icons/*", "!/service-icons/*"]
+  },
+  // No id and no bucket name: the first `wrangler deploy` creates them (wrangler 4.45 or later) and writes them back here.
+  "d1_databases": [{ "binding": "DB" }],
+  "r2_buckets": [{ "binding": "HOST_FILES" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "APP_STATE", "class_name": "AppStateDurableObject" },
+      { "name": "TASK_MANAGER", "class_name": "TaskManagerDurableObject" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AppStateDurableObject", "TaskManagerDurableObject"] }],
+  // Runs the Worker near what it calls most, the database, not near each visitor: one API request makes
+  // several database round trips. Cloudflare decides from the Worker's own traffic, and leaves the
+  // Worker where requests arrive when moving it does not help.
+  "placement": { "mode": "smart" },
+  // An object on older code restarts when a caller on a newer deploy reaches it (object-version.ts).
+  "version_metadata": { "binding": "VERSION" },
+  "observability": { "enabled": true }
+}
