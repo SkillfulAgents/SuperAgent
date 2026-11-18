@@ -37,6 +37,10 @@ import {
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import { backgroundSettled } from '@shared/lib/background'
 import { perTestDatabase } from '@shared/lib/db/testing/per-test-database'
+import { parsePageCursor } from './session-page-cursor'
+
+const cursorId = (cursor: string | null): string | null =>
+  cursor === null ? null : parsePageCursor(cursor).id
 
 const database = perTestDatabase()
 vi.mock('@shared/lib/db', () => ({ get db() { return database.db } }))
@@ -925,7 +929,7 @@ describe('session-service', () => {
 
       const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 5 })
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
-      expect(page.nextCursor).toBe('a-7')
+      expect(cursorId(page.nextCursor)).toBe('a-7')
     })
 
     it('returns the page before a cursor', async () => {
@@ -936,7 +940,70 @@ describe('session-service', () => {
         cursor: 'a-7',
       })
       expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
-      expect(page.nextCursor).toBe('u-5')
+      expect(cursorId(page.nextCursor)).toBe('u-5')
+    })
+
+    it('seeks with an offset cursor and serves the same page as a bare-id cursor', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+      const store = createLocalSessionStore('test-agent')
+
+      const trailing = await getSessionMessagesPage(store, 'page-session', { limit: 5 })
+      expect(parsePageCursor(trailing.nextCursor!)).toEqual({ id: 'a-7', offset: expect.any(Number) })
+
+      const seeked = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: trailing.nextCursor! })
+      const scanned = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: 'a-7' })
+      expect(seeked.messages).toEqual(scanned.messages)
+      expect(seeked.nextCursor).toBe(scanned.nextCursor)
+      expect(parsePageCursor(seeked.nextCursor!).id).toBe('u-5')
+    })
+
+    it('falls back to the id scan when the transcript was rewritten under the offset', async () => {
+      const thread = makeThread(10)
+      await createSessionFile('test-agent', 'page-session', thread)
+      const store = createLocalSessionStore('test-agent')
+      const trailing = await getSessionMessagesPage(store, 'page-session', { limit: 5 })
+      // Deleting the first exchange shifts every row's offset.
+      await createSessionFile('test-agent', 'page-session', thread.slice(2))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const page = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: trailing.nextCursor! })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('is stale'))
+      // The next cursor carries the offset in the rewritten layout.
+      const next = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: page.nextCursor! })
+      expect(next.messages.map((m) => m.id)).toEqual(['a-2', 'u-3', 'a-3', 'u-4', 'a-4'])
+    })
+
+    it('falls back to the id scan when the offset points inside a row', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+      const store = createLocalSessionStore('test-agent')
+      const trailing = await getSessionMessagesPage(store, 'page-session', { limit: 5 })
+      const { id, offset } = parsePageCursor(trailing.nextCursor!)
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const page = await getSessionMessagesPage(store, 'page-session', { limit: 5, cursor: `${id}:${offset! + 3}` })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
+    })
+
+    it('pages to the first row of a transcript longer than the bare-id scan reaches', async () => {
+      // 60,000 lines: past MAX_TAIL_LINES (50,000) from the end.
+      await createSessionFile('test-agent', 'page-session', makeThread(30_000))
+      const store = createLocalSessionStore('test-agent')
+
+      const first = await getSessionMessagesPage(store, 'page-session', { limit: 5_000 })
+      let count = first.messages.length
+      let oldest = first.messages[0]!.id
+      let cursor = first.nextCursor
+      for (let i = 0; i < 20 && cursor; i++) {
+        const page = await getSessionMessagesPage(store, 'page-session', { limit: 5_000, cursor })
+        count += page.messages.length
+        if (page.messages[0]) oldest = page.messages[0].id
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(oldest).toBe('u-0')
+      expect(count).toBe(60_000)
     })
 
     it('returns no cursor on the oldest page', async () => {
@@ -961,7 +1028,7 @@ describe('session-service', () => {
       const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 4 })
       expect(page.messages.map((m) => m.id)).toEqual(['u-18', 'a-18', 'u-19', 'a-19'])
       expect(page.messages.some((m) => m.id === 'huge-prefix')).toBe(false)
-      expect(page.nextCursor).toBe('u-18')
+      expect(cursorId(page.nextCursor)).toBe('u-18')
     })
 
     it('does not use a mid-merge assistant uuid as the page cursor', async () => {
@@ -1018,7 +1085,7 @@ describe('session-service', () => {
       const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 5 })
       expect(first.messages.map((m) => m.id)).not.toContain('X-1')
       expect(first.messages[0]?.id).toBe('X-0')
-      expect(first.nextCursor).toBe('X-0')
+      expect(cursorId(first.nextCursor)).toBe('X-0')
       expect(first.messages.find((m) => m.id === 'X-0')).toMatchObject({
         type: 'assistant',
         content: { text: 'leading' },
@@ -1089,7 +1156,7 @@ describe('session-service', () => {
         signal: controller.signal,
       })
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
-      expect(page.nextCursor).toBe('a-7')
+      expect(cursorId(page.nextCursor)).toBe('a-7')
     })
 
     it('byte budget truncates a page short and cursor paging walks the remainder', async () => {
@@ -1103,7 +1170,7 @@ describe('session-service', () => {
       })
       expect(first.messages.length).toBeGreaterThan(0)
       expect(first.messages.length).toBeLessThan(20)
-      expect(first.nextCursor).toBe(first.messages[0]!.id)
+      expect(cursorId(first.nextCursor)).toBe(first.messages[0]!.id)
 
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
@@ -1143,7 +1210,7 @@ describe('session-service', () => {
       // The budget floor guarantees at least one servable item beyond the
       // sacrificial head — the giant trailing item must not become an empty page.
       expect(page.messages.map((m) => m.id)).toEqual(['a-giant'])
-      expect(page.nextCursor).toBe('a-giant')
+      expect(cursorId(page.nextCursor)).toBe('a-giant')
 
       const older = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
         limit: 5,
@@ -1215,7 +1282,7 @@ describe('session-service', () => {
       expect(queued).toMatchObject({ type: 'user', queued: true, content: { text: 'steer' } })
     })
 
-    it('terminates and returns each item once when history is replayed verbatim', async () => {
+    it('terminates and returns each item once when history is replayed verbatim (bare-id cursors)', async () => {
       // Session resume can re-append prior history to the transcript with the
       // SAME uuids. The transform canonicalizes duplicates to their oldest
       // occurrence; cursor resolution must do the same, or paging anchors on
@@ -1225,8 +1292,32 @@ describe('session-service', () => {
 
       const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 3 })
       const collected = [...first.messages.map((m) => m.id)]
+      let cursor = cursorId(first.nextCursor)
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
+          limit: 3,
+          cursor,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = cursorId(page.nextCursor)
+      }
+
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2'])
+    })
+
+    it('terminates and serves every item when history is replayed verbatim (offset cursors)', async () => {
+      // A seek anchors on the copy the client saw and never re-anchors on its
+      // deeper original, so the copies are served, then the originals. The
+      // walk still ends, and deduplicated by id it is the whole transcript.
+      const six = makeThread(3)
+      await createSessionFile('test-agent', 'page-session', [...six, ...six])
+
+      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 3 })
+      const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
       for (let i = 0; i < 10 && cursor; i++) {
+        expect(parsePageCursor(cursor).offset).toBeDefined()
         const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
           limit: 3,
           cursor,
@@ -1236,7 +1327,7 @@ describe('session-service', () => {
       }
 
       expect(cursor).toBeNull()
-      expect(collected).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2'])
+      expect([...new Set(collected.reverse())].reverse()).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2'])
     })
 
     it('returns every trailing system item across pages despite display reordering', async () => {

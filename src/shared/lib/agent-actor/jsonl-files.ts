@@ -295,18 +295,23 @@ export async function readTailLines(
  * Reads start at READ_CHUNK_MIN and double up to READ_CHUNK_MAX, so a walk
  * that stops early costs what it did with fixed small reads, and a long one
  * takes far fewer.
+ *
+ * `end` starts the walk at that byte offset instead of the file's end; it must
+ * be a line boundary, as {@link lineStartAtOrAfter} returns.
  */
 export async function* iterateLinesBackward(
   files: StoreFileOps,
   path: string,
   signal?: AbortSignal,
+  options?: { end?: number },
 ): AsyncGenerator<{ line: Buffer; offset: number }> {
   signal?.throwIfAborted()
   const file = await openOrNull(files, path)
   if (!file) return
 
   try {
-    let pos = await file.size()
+    const size = await file.size()
+    let pos = options?.end !== undefined ? Math.min(options.end, size) : size
     let chunk = READ_CHUNK_MIN
     // Fragments (in file order) of the line whose start lies in a chunk not
     // yet read — the bytes below the lowest newline processed so far. Kept as
@@ -364,6 +369,45 @@ export async function* iterateLinesBackward(
       carryBytes = 0
       yield { line: firstLine, offset: 0 }
     }
+  } finally {
+    await file.close()
+  }
+}
+
+/**
+ * The smallest line-start offset at or after `offset`, read forward: `offset`
+ * itself when it starts a line, else the byte after the next newline.
+ * undefined when no line starts there before the end (or the file is absent).
+ * Reads only up to that newline, in chunks that grow like the backward walk's.
+ */
+export async function lineStartAtOrAfter(
+  files: StoreFileOps,
+  path: string,
+  offset: number,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
+  signal?.throwIfAborted()
+  if (offset <= 0) return 0
+  const file = await openOrNull(files, path)
+  if (!file) return undefined
+  try {
+    const size = await file.size()
+    // Start one byte early: a newline just before `offset` makes it a line start.
+    let pos = offset - 1
+    let chunk = READ_CHUNK_MIN
+    while (pos < size) {
+      signal?.throwIfAborted()
+      const buf = asBuffer(await file.readAt(pos, Math.min(chunk, size - pos), signal))
+      if (buf.length === 0) return undefined
+      const idx = buf.indexOf(NEWLINE_BYTE)
+      if (idx !== -1) {
+        const start = pos + idx + 1
+        return start < size ? start : undefined
+      }
+      pos += buf.length
+      chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
+    }
+    return undefined
   } finally {
     await file.close()
   }

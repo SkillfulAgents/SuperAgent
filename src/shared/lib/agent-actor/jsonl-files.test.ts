@@ -9,7 +9,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { LocalFileOps } from './local-file-ops'
 import { prng } from './testing/prng'
-import { iterateLinesBackward, readChunkFor, readTailLines, READ_CHUNK_MAX, READ_CHUNK_MIN, streamLines } from './jsonl-files'
+import { iterateLinesBackward, lineStartAtOrAfter, readChunkFor, readTailLines, READ_CHUNK_MAX, READ_CHUNK_MIN, streamLines } from './jsonl-files'
 
 let testDir: string
 let files: LocalFileOps
@@ -345,6 +345,64 @@ describe('iterateLinesBackward', () => {
     // yielded — the abort stops the walk before the second chunk read.
     expect(iterated.length).toBeGreaterThan(0)
     expect(iterated.length).toBeLessThanOrEqual(65)
+  })
+})
+
+describe('iterateLinesBackward from an end offset', () => {
+  it('starts the walk at the given line boundary', async () => {
+    const filePath = path.join(testDir, 'end.jsonl')
+    await fs.promises.writeFile(filePath, 'aa\nbbb\ncc\ndd\n')
+
+    const seen: Array<[string, number]> = []
+    // 7 is the start of "cc": the walk yields "bbb" first.
+    for await (const { line, offset } of iterateLinesBackward(files, rel(filePath), undefined, { end: 7 })) {
+      seen.push([line.toString('utf-8'), offset])
+    }
+    expect(seen).toEqual([['bbb', 3], ['aa', 0]])
+  })
+
+  it('walks from the end of the file when the end lies past it', async () => {
+    const filePath = path.join(testDir, 'end-past.jsonl')
+    await fs.promises.writeFile(filePath, 'aa\nbb\n')
+
+    const lines: string[] = []
+    for await (const { line } of iterateLinesBackward(files, rel(filePath), undefined, { end: 1000 })) {
+      lines.push(line.toString('utf-8'))
+    }
+    expect(lines).toEqual(['bb', 'aa'])
+  })
+})
+
+describe('lineStartAtOrAfter', () => {
+  const content = 'aa\nbbb\ncc\n'
+
+  it('returns the offset itself when it starts a line', async () => {
+    const filePath = path.join(testDir, 'starts.jsonl')
+    await fs.promises.writeFile(filePath, content)
+    expect(await lineStartAtOrAfter(files, rel(filePath), 0)).toBe(0)
+    expect(await lineStartAtOrAfter(files, rel(filePath), 3)).toBe(3)
+  })
+
+  it('returns the next line start for an offset inside a line', async () => {
+    const filePath = path.join(testDir, 'inside.jsonl')
+    await fs.promises.writeFile(filePath, content)
+    expect(await lineStartAtOrAfter(files, rel(filePath), 1)).toBe(3)
+    expect(await lineStartAtOrAfter(files, rel(filePath), 4)).toBe(7)
+  })
+
+  it('returns undefined when no line starts before the end', async () => {
+    const filePath = path.join(testDir, 'none.jsonl')
+    await fs.promises.writeFile(filePath, content)
+    expect(await lineStartAtOrAfter(files, rel(filePath), 8)).toBeUndefined()
+    expect(await lineStartAtOrAfter(files, rel(filePath), 500)).toBeUndefined()
+    expect(await lineStartAtOrAfter(files, 'missing.jsonl', 5)).toBeUndefined()
+  })
+
+  it('finds a newline past the first read chunk', async () => {
+    const filePath = path.join(testDir, 'long-row.jsonl')
+    const row = 'x'.repeat(READ_CHUNK_MIN * 3)
+    await fs.promises.writeFile(filePath, `${row}\nnext\n`)
+    expect(await lineStartAtOrAfter(files, rel(filePath), 1)).toBe(row.length + 1)
   })
 })
 

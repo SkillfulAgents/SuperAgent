@@ -26,6 +26,10 @@ import { getSessionMessagesPage, getSessionMessagesWithCompact } from './session
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 import { prng } from '@shared/lib/agent-actor/testing/prng'
 import { transformMessages, type TransformedItem } from '@shared/lib/utils/message-transform'
+import { parsePageCursor } from './session-page-cursor'
+
+const cursorId = (cursor: string | null): string | null =>
+  cursor === null ? null : parsePageCursor(cursor).id
 
 const KiB = 1024
 const MiB = 1024 * KiB
@@ -163,7 +167,7 @@ function expectConsistentWalk(steps: WalkStep[]): void {
   for (const [i, step] of steps.entries()) {
     expect(step.messages.length, `page ${i} is empty`).toBeGreaterThan(0)
     // The cursor names the page's own first item…
-    if (step.nextCursor !== null) expect(step.nextCursor).toBe(step.messages[0]!.id)
+    if (step.nextCursor !== null) expect(cursorId(step.nextCursor)).toBe(step.messages[0]!.id)
   }
   // …and the next page ends exactly before it: chronological concatenation
   // reproduces the full transform, with nothing skipped or repeated, and
@@ -223,7 +227,7 @@ describe('budgeted page walks over a multi-MB transcript', () => {
       // whole transcript ends the chain.
       expect(page.messages.length).toBeGreaterThanOrEqual(previous)
       previous = page.messages.length
-      expect(page.nextCursor).toBe(page.messages.length < full.length ? page.messages[0]!.id : null)
+      expect(cursorId(page.nextCursor)).toBe(page.messages.length < full.length ? page.messages[0]!.id : null)
     }
   }, WALK_TIMEOUT_MS)
 })
@@ -250,7 +254,7 @@ describe('resume-replayed rows in a budgeted walk', () => {
     const near = await getSessionMessagesPage(store, REPLAY_SESSION, { limit: 200, cursor: 'a-21-1', byteBudget: 64 * KiB })
     expect(near.messages.length).toBeGreaterThan(0)
     expect(near.messages.at(-1)!.id).toBe(lastId)
-    expect(near.nextCursor).toBe(near.messages[0]!.id)
+    expect(cursorId(near.nextCursor)).toBe(near.messages[0]!.id)
     for (const item of near.messages) expect(item).toEqual(replayFull.find((m) => m.id === item.id))
 
     // A window that reaches the original merges the copy away; the page is
