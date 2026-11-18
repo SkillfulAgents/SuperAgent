@@ -1,5 +1,5 @@
-import { toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
-import { encodeWorkspaceFilePath, getAgentFileApiPath } from '@shared/lib/utils/workspace-file-url'
+import { isFolderPath, parseMountPath, toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
+import { encodeWorkspaceFilePath, getAgentFileApiPath, localFilePath } from '@shared/lib/utils/workspace-file-url'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 /**
@@ -24,6 +24,22 @@ export function isSafeWorkspaceFilePath(filePath: string): boolean {
 }
 
 export { encodeWorkspaceFilePath, getAgentFileApiPath }
+
+/** Whether a container path is one of the agent's own files or folders: in its workspace or one of its drives. */
+export function isAgentFilePath(filePath: string): boolean {
+  return isSafeWorkspaceFilePath(filePath) || Boolean(parseMountPath(filePath)?.path)
+}
+
+/** The workspace itself or a drive's top folder, written as a folder: `/workspace/`, `/mounts/<drive>/`. */
+function isAgentRootFolder(filePath: string): boolean {
+  return filePath === '/workspace/' || (isFolderPath(filePath) && parseMountPath(filePath)?.path === '')
+}
+
+/** The agent file or folder a path in agent markdown names, or null. A relative path resolves only from a `folder`. */
+export function resolveAgentFilePath(reference: string, folder?: string): string | null {
+  const filePath = localFilePath(reference, folder)
+  return filePath !== null && (isAgentFilePath(filePath) || isAgentRootFolder(filePath)) ? filePath : null
+}
 
 interface AgentFileUrlOptions {
   /** Ask the route to serve the bytes for display rather than as a download. */

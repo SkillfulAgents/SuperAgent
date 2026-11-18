@@ -23,6 +23,11 @@ export function parseMountPath(containerPath: string): { name: string; path: str
   return [match[1], path].every(part => volumeBrowseSchema.safeParse({ path: part }).success) ? { name: match[1], path } : null
 }
 
+/** A path a tool may hand over relative to the workspace, made absolute: `out/a.txt` → `/workspace/out/a.txt`. */
+export function toWorkspaceAbsolutePath(filePath: string): string {
+  return filePath.startsWith('/') ? filePath : `/workspace/${filePath}`
+}
+
 /** A folder is written with a trailing slash; a file never is. */
 export function isFolderPath(filePath: string): boolean {
   return filePath.endsWith('/')

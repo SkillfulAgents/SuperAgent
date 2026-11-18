@@ -1,12 +1,13 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { z } from 'zod'
-import { getPathName } from '@shared/lib/utils/workspace-path'
+import { getPathName, toWorkspaceAbsolutePath } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useFilePreviewTabs, nextFileVersion, type PreviewFileTab, type PreviewFolderTab } from '@renderer/hooks/use-file-preview-tabs'
 import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
 import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
 import { useSessionTurn } from '@renderer/lib/session-turns'
 import { reconcileEdits, type FileEdits } from '@renderer/components/file-preview/file-edits'
+import { AgentFileOpenerContext, type AgentFileOpener } from './agent-file-opener-context'
 
 /**
  * Where a file's bytes come from when it is not in the agent's workspace: a
@@ -123,6 +124,11 @@ function normalizeFolderPath(folderPath: string): string {
   return folderPath === '/' ? folderPath : folderPath.replace(/\/+$/, '')
 }
 
+/** The one spelling the drawer keys a path by: absolute, and without a folder's trailing slash. */
+function previewPath(path: string): string {
+  return normalizeFolderPath(toWorkspaceAbsolutePath(path))
+}
+
 function isPathAtOrBelow(basePath: string, candidatePath: string): boolean {
   return candidatePath === basePath || candidatePath.startsWith(`${basePath}/`)
 }
@@ -199,8 +205,9 @@ export function FilePreviewProvider({
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => {
     const version = nextFileVersion()
+    const path = previewPath(filePath)
     openTab({
-      kind: 'file', filePath, agentSlug, displayName: getDisplayName(filePath),
+      kind: 'file', filePath: path, agentSlug, displayName: getDisplayName(path),
       description, version, pdfPage: 1, source,
     }, existing => ({ ...existing, version, source }))
     setIsOpen(true)
@@ -225,7 +232,7 @@ export function FilePreviewProvider({
   }, [sessionId, openFile])
 
   const openFolder = useCallback((folderPath: string, agentSlug: string) => {
-    const rootPath = normalizeFolderPath(folderPath)
+    const rootPath = previewPath(folderPath)
     openTab({
       kind: 'folder', rootPath, agentSlug, displayName: getDisplayName(rootPath),
       expandedPaths: [rootPath], query: '',
@@ -233,7 +240,9 @@ export function FilePreviewProvider({
     setIsOpen(true)
   }, [openTab])
 
-  const toggleFolder = useCallback((rootPath: string, agentSlug: string, folderPath: string) => {
+  const toggleFolder = useCallback((root: string, agentSlug: string, folder: string) => {
+    const rootPath = previewPath(root)
+    const folderPath = previewPath(folder)
     setOpenTabs(prev => prev.map(tab => {
       if (!isFolderTabFor(tab, agentSlug, rootPath) || folderPath === rootPath) return tab
       const expanded = new Set(tab.expandedPaths)
@@ -245,17 +254,19 @@ export function FilePreviewProvider({
 
   const setFolderQuery = useCallback((rootPath: string, agentSlug: string, query: string) => {
     setOpenTabs(prev => prev.map(tab => (
-      isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, query } : tab
+      isFolderTabFor(tab, agentSlug, previewPath(rootPath)) ? { ...tab, query } : tab
     )))
   }, [setOpenTabs])
 
   const selectFolderEntry = useCallback((rootPath: string, agentSlug: string, entryPath: string) => {
     setOpenTabs(prev => prev.map(tab => (
-      isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, selectedPath: entryPath } : tab
+      isFolderTabFor(tab, agentSlug, previewPath(rootPath)) ? { ...tab, selectedPath: previewPath(entryPath) } : tab
     )))
   }, [setOpenTabs])
 
-  const renameFilePath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
+  const renameFilePath = useCallback((oldName: string, newName: string, agentSlug: string) => {
+    const oldPath = previewPath(oldName)
+    const newPath = previewPath(newName)
     const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
       if (tab.kind === 'file' && tab.agentSlug === agentSlug && tab.filePath === oldPath) {
@@ -300,7 +311,8 @@ export function FilePreviewProvider({
     })
   }, [closePreviewTab])
 
-  const removeFilePath = useCallback((filePath: string, agentSlug: string) => {
+  const removeFilePath = useCallback((name: string, agentSlug: string) => {
+    const filePath = previewPath(name)
     closeTab(`file:${getWorkspaceFileKey(agentSlug, filePath)}`)
     setOpenTabs(prev => prev.map(tab => (
       tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.selectedPath === filePath
@@ -309,7 +321,9 @@ export function FilePreviewProvider({
     )))
   }, [closeTab, setOpenTabs])
 
-  const renameDirectoryPath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
+  const renameDirectoryPath = useCallback((oldName: string, newName: string, agentSlug: string) => {
+    const oldPath = previewPath(oldName)
+    const newPath = previewPath(newName)
     const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
       if (tab.agentSlug !== agentSlug) return tab
@@ -360,7 +374,8 @@ export function FilePreviewProvider({
     })
   }, [setOpenTabs])
 
-  const removeDirectoryPath = useCallback((directoryPath: string, agentSlug: string) => {
+  const removeDirectoryPath = useCallback((directory: string, agentSlug: string) => {
+    const directoryPath = previewPath(directory)
     setOpenTabs(prev => {
       const next = prev
         .filter(tab => tab.agentSlug !== agentSlug || !isPathAtOrBelow(
@@ -412,10 +427,11 @@ export function FilePreviewProvider({
   }, [setActiveTabIndex])
 
   const setPdfPage = useCallback((filePath: string, agentSlug: string, page: number) => {
-    setPreviewPdfPage(`file:${getWorkspaceFileKey(agentSlug, filePath)}`, page)
+    setPreviewPdfPage(`file:${getWorkspaceFileKey(agentSlug, previewPath(filePath))}`, page)
   }, [setPreviewPdfPage])
 
-  const reloadIfChanged = useCallback((filePath: string, agentSlug: string, revision: string) => {
+  const reloadIfChanged = useCallback((name: string, agentSlug: string, revision: string) => {
+    const filePath = previewPath(name)
     const version = nextFileVersion()
     setOpenTabs(prev => {
       const tab = prev.find(t => t.kind === 'file' && t.agentSlug === agentSlug && t.filePath === filePath)
@@ -426,15 +442,17 @@ export function FilePreviewProvider({
     })
   }, [setOpenTabs])
 
-  const editsFor = useCallback((filePath: string, agentSlug: string) => {
+  const editsFor = useCallback((name: string, agentSlug: string) => {
+    const filePath = previewPath(name)
     const tab = openTabs.find(t => t.kind === 'file' && t.agentSlug === agentSlug && t.filePath === filePath)
     return tab?.kind === 'file' ? tab.edits : undefined
   }, [openTabs])
 
   // Only the session's own agent keeps copies to diff: a highlight follows this
   // session's turns, and another agent's changes do not.
-  const recordShownText = useCallback((filePath: string, agentSlug: string, text: string) => {
+  const recordShownText = useCallback((name: string, agentSlug: string, text: string) => {
     if (!sessionAgentSlug || agentSlug !== sessionAgentSlug) return
+    const filePath = previewPath(name)
     setOpenTabs(prev => {
       let changed = false
       const next = prev.map(tab => {
@@ -448,7 +466,8 @@ export function FilePreviewProvider({
     })
   }, [sessionAgentSlug, setOpenTabs])
 
-  const setShowEdits = useCallback((filePath: string, agentSlug: string, show: boolean) => {
+  const setShowEdits = useCallback((name: string, agentSlug: string, show: boolean) => {
+    const filePath = previewPath(name)
     setOpenTabs(prev => prev.map(tab => (
       tab.kind === 'file' && tab.edits && tab.agentSlug === agentSlug && tab.filePath === filePath
         ? { ...tab, edits: { ...tab.edits, show } }
@@ -461,22 +480,23 @@ export function FilePreviewProvider({
   }, [])
 
   const commentsFor = useCallback((filePath: string, agentSlug: string) => (
-    comments.get(getWorkspaceFileKey(agentSlug, filePath)) ?? EMPTY_COMMENTS
+    comments.get(getWorkspaceFileKey(agentSlug, previewPath(filePath))) ?? EMPTY_COMMENTS
   ), [comments])
 
   const addComment = useCallback((comment: Omit<FileComment, 'id'>) => {
     if (!commentsEnabled) return
     const id = `comment-${++commentIdCounter}`
-    const key = getWorkspaceFileKey(comment.agentSlug, comment.filePath)
+    const filePath = previewPath(comment.filePath)
+    const key = getWorkspaceFileKey(comment.agentSlug, filePath)
     setComments(prev => {
       const next = new Map(prev)
-      next.set(key, [...(next.get(key) ?? []), { ...comment, id }])
+      next.set(key, [...(next.get(key) ?? []), { ...comment, filePath, id }])
       return next
     })
   }, [commentsEnabled])
 
   const removeComment = useCallback((filePath: string, agentSlug: string, commentId: string) => {
-    const key = getWorkspaceFileKey(agentSlug, filePath)
+    const key = getWorkspaceFileKey(agentSlug, previewPath(filePath))
     setComments(prev => {
       const existing = prev.get(key)
       if (!existing) return prev
@@ -489,7 +509,7 @@ export function FilePreviewProvider({
   }, [])
 
   const clearComments = useCallback((filePath: string, agentSlug: string) => {
-    const key = getWorkspaceFileKey(agentSlug, filePath)
+    const key = getWorkspaceFileKey(agentSlug, previewPath(filePath))
     setComments(prev => {
       if (!prev.has(key)) return prev
       const next = new Map(prev)
@@ -527,9 +547,13 @@ export function FilePreviewProvider({
     clearComments,
   }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, reloadIfChanged, setShowEdits, editsFor, recordShownText, close, commentsFor, addComment, removeComment, clearComments])
 
+  const opener = useMemo<AgentFileOpener>(() => ({ openFile, openFolder }), [openFile, openFolder])
+
   return (
     <FilePreviewContext.Provider value={value}>
-      {children}
+      <AgentFileOpenerContext.Provider value={opener}>
+        {children}
+      </AgentFileOpenerContext.Provider>
     </FilePreviewContext.Provider>
   )
 }

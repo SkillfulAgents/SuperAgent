@@ -7,6 +7,8 @@ import { rehypeCommentLines } from '@renderer/lib/rehype-comment-lines'
 import { useCommentBox } from '../comments/use-comment-box'
 import { useFileContent } from './use-file-content'
 import { splitFrontmatter } from '@renderer/lib/markdown-frontmatter'
+import { isAgentFilePath } from '@renderer/lib/workspace-file-url'
+import { toWorkspaceAbsolutePath } from '@shared/lib/utils/workspace-path'
 import { diffEditedLines, rehypeEditHighlight } from './markdown-edit-highlight'
 import { reconcileEdits, sameText, visibleBefore } from '../file-edits'
 
@@ -43,6 +45,9 @@ export function MarkdownRenderer({ url, filePath, agentSlug }: MarkdownRendererP
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const surface = useMemo(() => ({ text: { blocks: containerRef } }), [content])
   const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
+  // Only a file in the agent's workspace or drives links to the agent's files. A page from another source has no agent behind its slug.
+  const absolutePath = toWorkspaceAbsolutePath(filePath)
+  const agentFolder = isAgentFilePath(absolutePath) ? absolutePath.slice(0, absolutePath.lastIndexOf('/')) : undefined
 
   const { editsFor, recordShownText } = useFilePreview()
   // A placeholder is the old version kept on screen during a reload, not new text.
@@ -92,7 +97,7 @@ export function MarkdownRenderer({ url, filePath, agentSlug }: MarkdownRendererP
               </pre>
             </details>
           )}
-          <AgentMarkdown text={body} mode="settled" agentSlug={agentSlug} rehypePlugins={rehypePlugins} />
+          <AgentMarkdown text={body} mode="settled" agentSlug={agentFolder === undefined ? undefined : agentSlug} folder={agentFolder} rehypePlugins={rehypePlugins} />
           {data?.truncated && (
             <div className="mt-3 pt-3 border-t text-xs text-muted-foreground text-center not-prose">
               File is larger than 5&nbsp;MB and was truncated. Download the file for the full content.

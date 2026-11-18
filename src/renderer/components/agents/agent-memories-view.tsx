@@ -8,6 +8,7 @@ import { Textarea } from '@renderer/components/ui/textarea'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { useUser } from '@renderer/context/user-context'
+import { hasUrlScheme } from '@renderer/lib/markdown-url-transform'
 import { useAgentMemories, useAgentMemory, useSaveAgentMemory, MemoryRequestError } from '@renderer/hooks/use-agent-memories'
 import type { AgentMemoryEntry } from '@shared/lib/types/memory'
 
@@ -164,7 +165,7 @@ function MemoryDetail({ agentSlug, path, entries, onBack, onSelect }: {
                     const target = entries.find(entry => entry.path === href || entry.path === `${path.split('/').slice(0, -1).join('/')}/${href}`)
                     if (target) return <button type="button" className="text-primary underline" onClick={() => onSelect(target.path)}>{children}</button>
                     // A link with a scheme takes the shared anchor; a relative link to no memory stays text.
-                    return href && /^[a-z][a-z0-9+.-]*:/i.test(href) ? null : <span>{children}</span>
+                    return href && hasUrlScheme(href) ? null : <span>{children}</span>
                   }}
                 />
               </div>
