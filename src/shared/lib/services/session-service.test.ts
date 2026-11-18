@@ -1304,28 +1304,37 @@ describe('session-service', () => {
       expect(collected).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2'])
     })
 
-    it('terminates and serves every item when history is replayed verbatim (offset cursors)', async () => {
+    it('terminates and serves every item at each page size when history is replayed (offset cursors)', async () => {
       // A seek anchors on the copy the client saw and never re-anchors on its
-      // deeper original, so the copies are served, then the originals. The
-      // walk still ends, and deduplicated by id it is the whole transcript.
-      const six = makeThread(3)
-      await createSessionFile('test-agent', 'page-session', [...six, ...six])
+      // deeper original, so the copies are served first and a later page can
+      // repeat items. What a client shows after it drops the repeats is the
+      // whole transcript, in order, whatever the page size.
+      const thread = makeThread(8)
+      const fixtures: Array<[string, object[]]> = [
+        ['whole history replayed', [...makeThread(3), ...makeThread(3)]],
+        ['two turns replayed mid-transcript', [...thread.slice(0, 12), ...thread.slice(8, 12), ...thread.slice(12)]],
+      ]
+      const store = createLocalSessionStore('test-agent')
 
-      const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 3 })
-      const collected = [...first.messages.map((m) => m.id)]
-      let cursor = first.nextCursor
-      for (let i = 0; i < 10 && cursor; i++) {
-        expect(parsePageCursor(cursor).offset).toBeDefined()
-        const page = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', {
-          limit: 3,
-          cursor,
-        })
-        collected.unshift(...page.messages.map((m) => m.id))
-        cursor = page.nextCursor
+      for (const [name, rows] of fixtures) {
+        await createSessionFile('test-agent', 'page-session', rows)
+        const expected = [...new Set(rows.map((row) => (row as { uuid: string }).uuid))]
+        for (let limit = 1; limit <= 8; limit++) {
+          const at = `${name}, limit ${limit}`
+          const first = await getSessionMessagesPage(store, 'page-session', { limit })
+          let shown = first.messages.map((m) => m.id)
+          let cursor = first.nextCursor
+          for (let i = 0; i < 60 && cursor; i++) {
+            expect(parsePageCursor(cursor).offset, at).toBeDefined()
+            const page = await getSessionMessagesPage(store, 'page-session', { limit, cursor })
+            expect(page.messages.length, `${at}: empty page`).toBeGreaterThan(0)
+            shown = [...page.messages.map((m) => m.id).filter((id) => !shown.includes(id)), ...shown]
+            cursor = page.nextCursor
+          }
+          expect(cursor, at).toBeNull()
+          expect(shown, at).toEqual(expected)
+        }
       }
-
-      expect(cursor).toBeNull()
-      expect([...new Set(collected.reverse())].reverse()).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2'])
     })
 
     it('returns every trailing system item across pages despite display reordering', async () => {
@@ -1361,38 +1370,54 @@ describe('session-service', () => {
       expect(collected).toEqual(['u-0', 'mr', 'cb', 'info1', 'info2'])
     })
 
-    it('sends a bare-id cursor when the page head lies above the row it was paged from', async () => {
+    describe('a page head above the row it was paged from', () => {
       // Display reordering can head a page with a row from above the cursor
       // row: `cb` displays before `info1` though it comes later in the file.
-      // An offset there would point back up the file, so that cursor goes out
-      // as a bare id, and every offset a cursor carries points further down.
+      // A cursor on `cb` would seek back up the file, so the page from
+      // `info1` takes the rest of that system run, down to the row below it.
       const ts = (s: number) => new Date(Date.UTC(2026, 0, 6, 0, 0, s)).toISOString()
-      await createSessionFile('test-agent', 'page-session', [
-        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+      const run = [
+        { type: 'user', uuid: 'q-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
         { type: 'system', uuid: 'info1', subtype: 'informational', content: 'note one', isMeta: false, timestamp: ts(1) },
         { type: 'system', uuid: 'mr', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(2), memory_paths: ['M.md'] },
         { type: 'system', uuid: 'cb', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(3), compactMetadata: { trigger: 'manual', preTokens: 1 } },
         { type: 'system', uuid: 'info2', subtype: 'informational', content: 'note two', isMeta: false, timestamp: ts(4) },
-      ])
-      const store = createLocalSessionStore('test-agent')
+      ]
 
-      const steps: Array<{ asked: string; head: string; next: string | null }> = []
-      let cursor = (await getSessionMessagesPage(store, 'page-session', { limit: 1 })).nextCursor
-      for (let i = 0; i < 10 && cursor; i++) {
-        const page = await getSessionMessagesPage(store, 'page-session', { limit: 1, cursor })
-        steps.push({ asked: cursor, head: page.messages[0]!.id, next: page.nextCursor })
-        cursor = page.nextCursor
-      }
+      it('widens the page, and every cursor carries an offset further down the file', async () => {
+        await createSessionFile('test-agent', 'page-session', run)
+        const store = createLocalSessionStore('test-agent')
 
-      expect(cursor).toBeNull()
-      const fromInfo1 = steps.find((step) => cursorId(step.asked) === 'info1')!
-      expect(parsePageCursor(fromInfo1.asked).offset).toBeDefined()
-      expect(fromInfo1).toMatchObject({ head: 'cb', next: 'cb' })
-      for (const { asked, next } of steps) {
-        const askedOffset = parsePageCursor(asked).offset
-        const nextOffset = next === null ? undefined : parsePageCursor(next).offset
-        if (askedOffset !== undefined && nextOffset !== undefined) expect(nextOffset).toBeLessThan(askedOffset)
-      }
+        const steps: Array<{ asked: string; ids: string[]; next: string | null }> = []
+        let cursor = (await getSessionMessagesPage(store, 'page-session', { limit: 1 })).nextCursor
+        for (let i = 0; i < 10 && cursor; i++) {
+          const page = await getSessionMessagesPage(store, 'page-session', { limit: 1, cursor })
+          steps.push({ asked: cursor, ids: page.messages.map((m) => m.id), next: page.nextCursor })
+          cursor = page.nextCursor
+        }
+
+        expect(cursor).toBeNull()
+        expect(steps.find((step) => cursorId(step.asked) === 'info1')!.ids).toEqual(['q-0', 'mr', 'cb'])
+        for (const { asked, next } of steps) {
+          const askedOffset = parsePageCursor(asked).offset
+          expect(askedOffset).toBeDefined()
+          if (next !== null) expect(parsePageCursor(next).offset).toBeLessThan(askedOffset!)
+        }
+      })
+
+      it('pages through the run deeper than the bare-id scan reaches', async () => {
+        // 60,000 lines after the run: past MAX_TAIL_LINES (50,000) from the
+        // end, where a bare-id cursor is not found and paging would end.
+        await createSessionFile('test-agent', 'page-session', [...run, ...makeThread(30_000)])
+        const store = createLocalSessionStore('test-agent')
+        const info1Offset = Buffer.byteLength(JSON.stringify(run[0])) + 1
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        const page = await getSessionMessagesPage(store, 'page-session', { limit: 1, cursor: `info1:${info1Offset}` })
+        expect(page.messages.map((m) => m.id)).toEqual(['q-0', 'mr', 'cb'])
+        expect(page.nextCursor).toBeNull()
+        expect(warn).not.toHaveBeenCalled()
+      })
     })
 
     it('attaches an oversized tool result that starts inside the grace region', async () => {

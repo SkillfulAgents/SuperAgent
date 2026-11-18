@@ -116,17 +116,18 @@ async function writeTranscript(sessionId: string, rows: object[]): Promise<numbe
   return fs.statSync(jsonlPath).size
 }
 
-/** Line-start offset of a row's newest copy: the one a resume replay appended. */
-async function newestRowOffset(sessionId: string, uuid: string): Promise<number> {
+/** Line-start offsets of a row and its copies, oldest first: the original,
+ * then each copy a resume replay appended. */
+async function rowCopyOffsets(sessionId: string, uuid: string): Promise<number[]> {
   const sessionsDir = path.join(testDir, 'agents', AGENT, 'workspace', '.claude', 'projects', '-workspace')
   const text = await fs.promises.readFile(path.join(sessionsDir, `${sessionId}.jsonl`), 'utf-8')
   let offset = 0
-  let newest = -1
+  const offsets: number[] = []
   for (const line of text.split('\n')) {
-    if (line && (JSON.parse(line) as { uuid?: string }).uuid === uuid) newest = offset
+    if (line && (JSON.parse(line) as { uuid?: string }).uuid === uuid) offsets.push(offset)
     offset += Buffer.byteLength(line) + 1
   }
-  return newest
+  return offsets
 }
 
 /** The oracle: the whole transcript through the same transform, the way the
@@ -291,7 +292,7 @@ describe('resume-replayed rows in a budgeted walk', () => {
       const budget = byteBudget !== undefined ? { byteBudget } : {}
       const scanned = await getSessionMessagesPage(store, REPLAY_SESSION, { limit: 200, cursor: uuid, ...budget })
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      const cursor = `${uuid}:${await newestRowOffset(REPLAY_SESSION, uuid)}`
+      const cursor = `${uuid}:${(await rowCopyOffsets(REPLAY_SESSION, uuid)).at(-1)}`
       const seeked = await getSessionMessagesPage(store, REPLAY_SESSION, { limit: 200, cursor, ...budget })
       expect(warn).not.toHaveBeenCalled()
       warn.mockRestore()
@@ -299,6 +300,45 @@ describe('resume-replayed rows in a budgeted walk', () => {
       expect(cursorId(seeked.nextCursor)).toBe(cursorId(scanned.nextCursor))
     }
   })
+
+  it('splits a seek at the copy it anchored on when the row was replayed twice', async () => {
+    // Two resumes replay turn 2's tool-call row: after turn 5, then after
+    // turn 6. A cursor on the first copy pages what lies older than that
+    // copy. Turn 6 lies between the copies: newer, and already served.
+    const rows = buildTranscript(8)
+    const row = (uuid: string) => rows.find((r) => (r as { uuid: string }).uuid === uuid)!
+    rows.splice(rows.indexOf(row('f-5')) + 1, 0, row('a-2-1'))
+    rows.splice(rows.indexOf(row('f-6')) + 1, 0, row('a-2-1'))
+    await writeTranscript('twice-replayed', rows)
+    const whole = await fullTransform('twice-replayed')
+    const [, firstCopy] = await rowCopyOffsets('twice-replayed', 'a-2-1')
+
+    const page = await getSessionMessagesPage(createLocalSessionStore(AGENT), 'twice-replayed', {
+      limit: 200,
+      cursor: `a-2-1:${firstCopy}`,
+    })
+    expect(page.messages).toEqual(whole.slice(0, whole.findIndex((m) => m.id === 'f-5') + 1))
+  })
+
+  it('walks the replayed transcript to its start at a range of page sizes', async () => {
+    // Offset cursors, as the server hands them out. A page can repeat items
+    // (a copy first, its original later), so the check is on what a client
+    // shows after it drops the repeats: every real item, in order.
+    const fullIds = replayFull.map((m) => m.id)
+    for (const byteBudget of [64 * KiB, 1 * MiB]) {
+      for (const limit of [2, 3, 5, 8, 13, 50]) {
+        const at = `limit ${limit}, budget ${byteBudget}`
+        const steps = await walk({ limit, byteBudget }, { limit, byteBudget }, REPLAY_SESSION)
+        expect(steps.at(-1)!.nextCursor, at).toBeNull()
+        let shown: string[] = []
+        for (const [i, step] of steps.entries()) {
+          expect(step.messages.length, `${at}: page ${i} is empty`).toBeGreaterThan(0)
+          shown = [...step.messages.map((m) => m.id).filter((id) => !shown.includes(id)), ...shown]
+        }
+        expect(shown.filter((id) => fullIds.includes(id)), at).toEqual(fullIds)
+      }
+    }
+  }, WALK_TIMEOUT_MS)
 
   it('a walk through a phantom cursor serves every item of the full transform once', async () => {
     // Pages of one item make the trailing phantom a page head and so a cursor.

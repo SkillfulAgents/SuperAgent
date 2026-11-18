@@ -752,9 +752,9 @@ const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
 
 /** The page's oldest item id, with its row's offset so the next request
  * seeks. The offset goes out only when it lies strictly below the row this
- * request anchored on: display reordering can put a grace-region row first,
- * and an offset at or above the anchor would let paging climb. Such a cursor
- * goes out as a bare id, which pages exactly as before offsets existed. */
+ * request anchored on, so a chain of seeks only moves down the file and ends.
+ * `pageStartBelowAnchor` gives a cursor page such a head; when a scan cap
+ * leaves none in the window, the cursor goes out as a bare id. */
 function pageCursor(
   messages: TransformedItem[],
   hasOlder: boolean,
@@ -790,27 +790,39 @@ function isPhantomCursor(
   return entries.some((e) => e.type === 'assistant' && e.message.id === row.message.id && itemIds.has(e.uuid))
 }
 
-/** Number of leading items whose head row lies at or before the newest copy
- * of `cursor` in `entries` — the items older than that copy, when the copy
- * itself merged into one of them. */
+/** Number of leading items whose head row lies at or before the anchored row:
+ * the items older than that row, when the row heads no item of its own (the
+ * window deduped it to an older copy, or merged it into its response). */
 function countItemsThrough(
-  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
   transformed: TransformedItem[],
-  cursor: string
+  rowOffsets: Map<string, number>,
+  anchorOffset: number
 ): number {
-  const headPos = new Map<string, number>()
-  let cursorPos = -1
-  for (const [i, e] of entries.entries()) {
-    if (!headPos.has(e.uuid)) headPos.set(e.uuid, i)
-    if (e.uuid === cursor) cursorPos = i
-  }
-  if (cursorPos === -1) return -1
   let count = 0
   for (const [i, item] of transformed.entries()) {
-    const pos = headPos.get(item.id)
-    if (pos !== undefined && pos <= cursorPos) count = i + 1
+    const offset = rowOffsets.get(item.id)
+    if (offset !== undefined && offset <= anchorOffset) count = i + 1
   }
   return count
+}
+
+/** Start index of the page `[start, end)`: `limit` items, widened down to the
+ * first item whose row lies below the anchored row. Display reordering can
+ * head a page with a system row from above the cursor row (a boundary shows
+ * before an informational that precedes it in the file); a cursor on that row
+ * would seek back up the file. The extra items are the rest of the cursor's
+ * own system run. */
+function pageStartBelowAnchor(
+  transformed: TransformedItem[],
+  rowOffsets: Map<string, number>,
+  anchorOffset: number,
+  end: number,
+  limit: number,
+  floor: number
+): number {
+  let start = Math.max(floor, end - limit)
+  while (start > floor && (rowOffsets.get(transformed[start]!.id) ?? -1) >= anchorOffset) start--
+  return start
 }
 
 /** Tail-window read + parse + transform shared by the page and delta readers.
@@ -1086,8 +1098,14 @@ async function scanMessagesPageWindow(
     try {
       const size = await file.size()
       const rowEnd = (await lineStartAtOrAfter(file, size, rowStart + 1, signal)) ?? size
+      const walk = iterateLinesBackwardFrom(file, rowEnd, signal)
+      const first = await walk.next()
+      if (first.done) return
+      yield first.value
+      // Resumed, so the scan took that line as the cursor row. A stale cursor
+      // returns on it instead and never pays for this read.
       seekGraceEnd = await lineStartAtOrAfter(file, size, rowEnd + CURSOR_WINDOW_GRACE_BYTES, signal)
-      yield* iterateLinesBackwardFrom(file, rowEnd, signal)
+      yield* walk
     } finally {
       await file.close()
     }
@@ -1172,7 +1190,7 @@ async function scanMessagesPageWindow(
         boundaryCountedSinceAnchor = false
         startOffset = offset
         anchorOffset = offset
-        endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1) ?? seekGraceEnd
+        endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
         continue
       }
       // A quoted-id byte match inside content or parentUuid parses to a
@@ -1296,8 +1314,10 @@ async function scanMessagesPageWindow(
     // Cursor never found: vanished id, or deeper than the line cap.
     return { found: false, reachedStart: !hitLineCap }
   }
-  // A seek never walks above the cursor row, so with the grace reaching EOF
-  // the read covers at most the grace past that row.
+  // A seek walks no line above the cursor row, so its grace end is the one
+  // `seekLines` read, once the row was validated.
+  if (seeking) endOffset = seekGraceEnd
+  // With the grace reaching EOF the read covers at most the grace past that row.
   const readEnd = endOffset ?? (seeking && scanEnd !== undefined ? scanEnd + CURSOR_WINDOW_GRACE_BYTES : scanEnd)
   return {
     found: true,
@@ -1453,9 +1473,17 @@ export async function getSessionMessagesPage(
 
   if (cursor) {
     let idx = transformed.findIndex((item) => item.id === cursor)
-    if (idx === -1 && cursorOffset !== undefined && isPhantomCursor(entries, transformed, cursor)) {
-      // A seek already anchored on the copy the client saw: split at it.
-      idx = countItemsThrough(entries, transformed, cursor)
+    if (
+      cursorOffset !== undefined &&
+      (idx === -1
+        ? isPhantomCursor(entries, transformed, cursor)
+        : rowOffsets.get(cursor) !== scan.anchorOffset)
+    ) {
+      // A seek anchored on the copy the client saw, and the window also holds
+      // an older copy: the transform put the item there, or merged the row
+      // into its response. Split at the anchored copy, not at the id, so the
+      // rows between the two copies are served.
+      idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
     }
     if (idx === -1 && isPhantomCursor(entries, transformed, cursor)) {
       // The client saw the cursor's row as an item of its own: the copy
@@ -1491,7 +1519,9 @@ export async function getSessionMessagesPage(
       // The copy renders as the phantom when its original lies outside this
       // window; when the original is inside, the copy merges into it and the
       // page is everything up to the copy's position instead.
-      if (idx === -1) idx = countItemsThrough(entries, transformed, cursor)
+      if (idx === -1 && rowOffsets.has(cursor)) {
+        idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
+      }
     }
     if (idx === -1) {
       // The index scan located the cursor's line but the transform of the
@@ -1504,7 +1534,7 @@ export async function getSessionMessagesPage(
       )
       return { messages: [], nextCursor: null }
     }
-    const start = Math.max(dropHead ? 1 : 0, idx - limit)
+    const start = pageStartBelowAnchor(transformed, rowOffsets, scan.anchorOffset!, idx, limit, dropHead ? 1 : 0)
     const messages = transformed.slice(start, idx)
     const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
     // Sequential walks end here when a cap truncates the page to empty.

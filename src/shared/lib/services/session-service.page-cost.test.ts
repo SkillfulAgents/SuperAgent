@@ -318,4 +318,22 @@ describe('messages page read cost — cursor pages', () => {
     // One open serves the seek's forward reads and its walk.
     expect(seeked.account.opens).toBe(scanned.account.opens)
   })
+
+  it('drops a stale offset cursor after two reads, then scans by id', async () => {
+    await writeTranscript('stale-cursor', thread(1500, 2600))
+    const transcriptBytes = await fs.promises.readFile(
+      path.join(testDir, 'agents', AGENT, 'workspace', '.claude', 'projects', '-workspace', 'stale-cursor.jsonl')
+    )
+    const offset = transcriptBytes.indexOf('{"type":"user","uuid":"u-5"')
+
+    const scanned = await costOf('stale-cursor', { limit: 10, cursor: 'u-5' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // An offset inside the row: what a rewritten transcript leaves behind.
+    const stale = await costOf('stale-cursor', { limit: 10, cursor: `u-5:${offset + 3}` })
+
+    expect(stale.page.messages).toEqual(scanned.page.messages)
+    // The row's end and the row itself. The grace end is not read for a row
+    // that turns out not to be the cursor's.
+    expect(stale.account.reads).toBe(scanned.account.reads + 2)
+  })
 })
