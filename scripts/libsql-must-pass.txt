@@ -21,6 +21,7 @@ src/shared/lib/notifications/push/apns-device-service.test.ts
 src/shared/lib/notifications/push/push-subscription-service.test.ts
 src/shared/lib/agent-actor/agent-catalog.test.ts
 src/api/middleware/auth.agent-role.integration.test.ts
+src/api/middleware/is-agent.integration.test.ts
 src/shared/lib/services/user-settings-service.test.ts
 src/shared/lib/services/chat-integration-access-service.test.ts
 src/shared/lib/services/agent-integration-service.test.ts
@@ -65,6 +66,7 @@ src/shared/lib/services/mount-service.atomic.test.ts
 src/shared/lib/services/volume-service.test.ts
 src/shared/lib/db/data-migrations/0006-import-volume-definitions.test.ts
 src/api/routes/volumes.test.ts
+src/api/routes/volumes.access.integration.test.ts
 src/api/routes/volume-definitions.test.ts
 src/shared/lib/volumes/volumes.e2e.test.ts
 src/api/routes/dropbox-volumes.test.ts

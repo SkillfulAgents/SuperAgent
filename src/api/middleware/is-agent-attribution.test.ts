@@ -2,12 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 const mockValidateProxyToken = vi.fn()
+const mockValidateProxyTokenWithOwner = vi.fn()
 const mockIsAuthMode = vi.fn()
 const mockGetPlatformAccessToken = vi.fn()
 const mockDbAll = vi.fn()
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...a: unknown[]) => mockValidateProxyToken(...a),
+  validateProxyTokenWithOwner: (...a: unknown[]) => mockValidateProxyTokenWithOwner(...a),
 }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => mockIsAuthMode() }))
 vi.mock('@shared/lib/auth/index', () => ({ getAuth: () => ({ api: {} }) }))
@@ -79,6 +81,7 @@ const realFetchMock = vi.fn()
 beforeEach(() => {
   vi.clearAllMocks()
   mockValidateProxyToken.mockResolvedValue('my-agent')
+  mockValidateProxyTokenWithOwner.mockResolvedValue({ agentSlug: 'my-agent', ownerUserId: 'user_alice' })
   realFetchMock.mockReset()
   realFetchMock.mockResolvedValue(new Response(null, { status: 200 }))
 })
@@ -91,9 +94,7 @@ describe('IsAgent attribution scope', () => {
   it('runs the handler under the agent owner attribution scope (org token gets ::memberId)', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockGetPlatformAccessToken.mockReturnValue(orgJwt('org_1'))
-    mockDbAll
-      .mockReturnValueOnce([{ userId: 'user_alice' }])
-      .mockReturnValueOnce([{ accountId: 'sub_member_1' }])
+    mockDbAll.mockReturnValueOnce([{ accountId: 'sub_member_1' }])
 
     expect(await bearerSeenByHandler()).toBe(`${orgJwt('org_1')}::sub_member_1`)
   })
@@ -109,7 +110,7 @@ describe('IsAgent attribution scope', () => {
   it('opens no scope when the agent has no owner row', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockGetPlatformAccessToken.mockReturnValue(orgJwt('org_1'))
-    mockDbAll.mockReturnValueOnce([])
+    mockValidateProxyTokenWithOwner.mockResolvedValue({ agentSlug: 'my-agent', ownerUserId: null })
 
     expect(await bearerSeenByHandler()).toBeUndefined()
   })
@@ -118,9 +119,7 @@ describe('IsAgent attribution scope', () => {
     mockIsAuthMode.mockReturnValue(true)
     const token = orgJwt('org_1')
     mockGetPlatformAccessToken.mockReturnValue(token)
-    mockDbAll
-      .mockReturnValueOnce([{ userId: 'user_alice' }])
-      .mockReturnValueOnce([{ accountId: 'sub_member_1' }])
+    mockDbAll.mockReturnValueOnce([{ accountId: 'sub_member_1' }])
 
     globalThis.fetch = realFetchMock as unknown as typeof fetch
     installPlatformFetchInterceptor()
