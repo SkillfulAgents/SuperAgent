@@ -2279,7 +2279,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     await assertConnectionSelectionAccess(runtimeOptions.llmProviderId, launch.agentPrefs.defaultLlmProviderId)
     const resolved = await launch.resolve(runtimeOptions)
-    const prewarm = await launch.resolve({})
+    // The prewarm is what the agent's next default session runs on. A request
+    // that picks nothing starts that default session, so its resolution is the
+    // prewarm's: it is not resolved a second time.
+    const prewarm = Object.keys(runtimeOptions).length === 0 ? resolved : await launch.resolve({})
 
     // Runtime choices are SESSION state once the first turn starts, including
     // inherited defaults. Persist the effective values, not merely explicit
