@@ -399,13 +399,12 @@ jobs:
   # each retry would give a probabilistic failure another chance to pass.)
   # The three repeats run on three Macs at once, one pass of the suite each;
   # run back to back on one Mac they took ~6 min.
-  # GitHub-hosted, not Blacksmith: since #1986 gave animating avatar orbs their
-  # own compositor layer, Blacksmith's macOS VMs got a runner shutdown signal
-  # mid-suite in nearly every run, while GitHub's macos-15 and macos-26 ran the
-  # same commit to the end (#2071). The larger runner: the standard macos-15
-  # (3 cores) took 2-2.5x as long and timed out waits on cold pages.
+  # WebKit traces record no screenshots (webkitTrace in the Playwright configs),
+  # and no --trace flag here, which would override that and turn them back on:
+  # every trace screenshot holds a WindowServer surface until the screen redraws,
+  # and on these VMs that filled up mid-suite and took the runner down.
   e2e-webkit-macos:
-    runs-on: macos-15-xlarge
+    runs-on: blacksmith-6vcpu-macos-latest
     strategy:
       # A failed repeat must not cancel the others: how many of the three
       # failed is what tells a regression from a one-off.
@@ -457,7 +456,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p test-results
-          E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit.log
+          E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 2>&1 | tee test-results/webkit.log
 
       - name: Run WebKit navigation contracts
         if: ${{ matrix.repeat == 1 && !cancelled() && steps.webkit_setup.outcome == 'success' }}
@@ -470,7 +469,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p test-results
-          E2E_MOCK=true npx playwright test --project=web-webkit-navigation --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit-navigation.log
+          E2E_MOCK=true npx playwright test --project=web-webkit-navigation --retries=0 2>&1 | tee test-results/webkit-navigation.log
 
       # Exercise the same real app controls on Apple's WebKit, including the
       # touch project. These deterministic interaction tests need one pass;
