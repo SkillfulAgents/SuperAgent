@@ -17,6 +17,21 @@ import path from 'node:path'
  * point (`entry.ts`) is a stub that calls this and then loads the real bundle.
  */
 
+/** The cache's own directory under the platform's cache root. Nothing else may live in it. */
+const CACHE_DIR_NAME = 'gamut-compile-cache'
+
+/**
+ * What the stub may ask Electron's `app`. The type is the rule: `userData`
+ * and `sessionData` are resolved from the app's name the first time they are
+ * read and never again, and `index.ts` sets that name later. Reading either
+ * here would move the Chromium profile (and the dev data directory) to
+ * `…/Gamut`. `home` does not depend on the name.
+ */
+export interface CompileCacheApp {
+  isPackaged: boolean
+  getPath(name: 'home'): string
+}
+
 /** What this module uses of `node:module`; a parameter so a test can stand in for it. */
 export interface CompileCacheApi {
   enableCompileCache?: (cacheDir?: string) => { status: number; directory?: string; message?: string }
@@ -27,21 +42,62 @@ export interface CompileCacheApi {
 /**
  * Where the cache lives, or null to leave it off.
  *
- * A packaged app keeps it in userData, which it can always write (the App
- * Sandbox build's container included). A dev build keeps it in its checkout's
- * `node_modules/.cache`: this runs before the main bundle gives the dev app
- * its own name, so userData would still be the installed app's directory.
+ * A packaged app keeps it in the user's cache directory, which the system
+ * does not back up and may empty: `~/Library/Caches` on macOS (inside the
+ * container in the App Sandbox build, where home is the container and no
+ * entitlement is needed), `%LOCALAPPDATA%` on Windows, `$XDG_CACHE_HOME` or
+ * `~/.cache` elsewhere. Not the app's data directory, which is exported and,
+ * in the sandbox build, mounted into the agents' VM.
+ *
+ * A dev build keeps it in its checkout's `node_modules/.cache`, so checkouts
+ * do not share one.
  */
 export function compileCacheBaseDir(input: {
   isPackaged: boolean
-  userData: string
+  platform: NodeJS.Platform
+  home: string
+  env: Record<string, string | undefined>
   /** The directory of the main entry (`dist/main`). */
   entryDir: string
 }): string | null {
-  if (input.isPackaged) return path.join(input.userData, 'compile-cache')
-  const nodeModules = path.resolve(input.entryDir, '../../node_modules')
-  if (!fs.existsSync(nodeModules)) return null
-  return path.join(nodeModules, '.cache', 'electron-main-compile-cache')
+  if (!input.isPackaged) {
+    const nodeModules = path.resolve(input.entryDir, '../../node_modules')
+    if (!fs.existsSync(nodeModules)) return null
+    return path.join(nodeModules, '.cache', 'electron-main-compile-cache')
+  }
+  if (!input.home) return null
+  return path.join(userCacheRoot(input.platform, input.home, input.env), CACHE_DIR_NAME)
+}
+
+function userCacheRoot(platform: NodeJS.Platform, home: string, env: Record<string, string | undefined>): string {
+  if (platform === 'darwin') return path.join(home, 'Library', 'Caches')
+  if (platform === 'win32') return env.LOCALAPPDATA || path.join(home, 'AppData', 'Local')
+  // The XDG spec: a relative value is invalid and ignored.
+  const xdg = env.XDG_CACHE_HOME
+  return xdg && path.isAbsolute(xdg) ? xdg : path.join(home, '.cache')
+}
+
+/**
+ * What the entry stub runs: pick the directory and turn the cache on. Returns
+ * the directory in use, or null when the cache stayed off.
+ */
+export function startMainCompileCache(
+  app: CompileCacheApp,
+  entryDir: string,
+  api: CompileCacheApi = nodeModule,
+): string | null {
+  try {
+    const baseDir = compileCacheBaseDir({
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      home: app.getPath('home'),
+      env: process.env,
+      entryDir,
+    })
+    return baseDir ? enableMainCompileCache(baseDir, api) : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -69,7 +125,8 @@ export function enableMainCompileCache(baseDir: string, api: CompileCacheApi = n
 /**
  * Node keeps the entries in a subdirectory named for its own version and
  * V8's, so an Electron upgrade starts a new one and never reads the old one
- * again. Remove those, off the startup path and without waiting.
+ * again. Remove those, off the startup path and without waiting. Only ever
+ * inside the cache's own directory.
  */
 function removeOtherRuntimesCaches(baseDir: string, active: string): void {
   if (path.dirname(active) !== baseDir) return

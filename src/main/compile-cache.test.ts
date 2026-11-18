@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import nodeModule from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { compileCacheBaseDir, enableMainCompileCache, type CompileCacheApi } from './compile-cache'
+import { compileCacheBaseDir, enableMainCompileCache, startMainCompileCache, type CompileCacheApi } from './compile-cache'
 
 let root: string
 
@@ -38,22 +38,93 @@ function fakeApi(status: number, runtime = 'v24.0.0-arm64-abc-501') {
 }
 
 describe('compileCacheBaseDir', () => {
-  it('is in userData for a packaged app', () => {
-    expect(compileCacheBaseDir({ isPackaged: true, userData: '/data/Gamut', entryDir: '/app.asar/dist/main' })).toBe(
-      path.join('/data/Gamut', 'compile-cache'),
-    )
+  const packaged = (platform: NodeJS.Platform, env: Record<string, string | undefined> = {}) =>
+    compileCacheBaseDir({ isPackaged: true, platform, home: '/home/u', env, entryDir: '/app.asar/dist/main' })
+
+  it("is in the user's cache directory on each platform for a packaged app", () => {
+    expect(packaged('darwin')).toBe(path.join('/home/u', 'Library', 'Caches', 'gamut-compile-cache'))
+    expect(packaged('win32', { LOCALAPPDATA: '/local' })).toBe(path.join('/local', 'gamut-compile-cache'))
+    expect(packaged('win32')).toBe(path.join('/home/u', 'AppData', 'Local', 'gamut-compile-cache'))
+    expect(packaged('linux', { XDG_CACHE_HOME: '/xdg' })).toBe(path.join('/xdg', 'gamut-compile-cache'))
+    expect(packaged('linux', { XDG_CACHE_HOME: 'relative' })).toBe(path.join('/home/u', '.cache', 'gamut-compile-cache'))
+    expect(packaged('linux')).toBe(path.join('/home/u', '.cache', 'gamut-compile-cache'))
   })
 
-  it("is in the checkout's node_modules for a dev build, not in userData", () => {
+  it('follows home into the App Sandbox container, and stays out of the data directory there', () => {
+    const container = '/Users/u/Library/Containers/so.gamut.app/Data'
+    const dir = compileCacheBaseDir({ isPackaged: true, platform: 'darwin', home: container, env: {}, entryDir: '/x' })!
+    expect(dir).toBe(path.join(container, 'Library', 'Caches', 'gamut-compile-cache'))
+    expect(path.relative(path.join(container, '.superagent'), dir).startsWith('..')).toBe(true)
+  })
+
+  it('is off for a packaged app with no home', () => {
+    expect(compileCacheBaseDir({ isPackaged: true, platform: 'darwin', home: '', env: {}, entryDir: '/x' })).toBeNull()
+  })
+
+  it("is in the checkout's node_modules for a dev build", () => {
     const entryDir = path.join(root, 'dist', 'main')
     fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true })
-    expect(compileCacheBaseDir({ isPackaged: false, userData: '/data/Gamut', entryDir })).toBe(
+    expect(compileCacheBaseDir({ isPackaged: false, platform: 'darwin', home: '/home/u', env: {}, entryDir })).toBe(
       path.join(root, 'node_modules', '.cache', 'electron-main-compile-cache'),
     )
   })
 
   it('is off for a dev build with no node_modules beside it', () => {
-    expect(compileCacheBaseDir({ isPackaged: false, userData: '/data/Gamut', entryDir: path.join(root, 'dist', 'main') })).toBeNull()
+    expect(
+      compileCacheBaseDir({ isPackaged: false, platform: 'darwin', home: '/home/u', env: {}, entryDir: path.join(root, 'dist', 'main') }),
+    ).toBeNull()
+  })
+})
+
+// Electron resolves userData and sessionData from the app's name on first
+// read and keeps the answer; index.ts sets the name after the stub has run.
+// A read here moves the Chromium profile and the dev data directory.
+describe('the entry stub', () => {
+  /** An `app` that records every path it is asked for. */
+  function fakeApp(isPackaged: boolean) {
+    const asked: string[] = []
+    return {
+      asked,
+      app: {
+        isPackaged,
+        getPath: (name: string) => {
+          asked.push(name)
+          return root
+        },
+      },
+    }
+  }
+
+  it.each([true, false])('asks Electron for no path but home (packaged: %s)', (isPackaged) => {
+    const { app, asked } = fakeApp(isPackaged)
+    startMainCompileCache(app, path.join(root, 'dist', 'main'), fakeApi(ENABLED))
+    expect(asked.filter((name) => name !== 'home')).toEqual([])
+  })
+
+  it('turns the cache on in the cache directory of a packaged app', () => {
+    const { app } = fakeApp(true)
+    const api = fakeApi(ENABLED)
+    startMainCompileCache(app, '/app.asar/dist/main', api)
+    expect(api.enableCompileCache).toHaveBeenCalledWith(
+      compileCacheBaseDir({ isPackaged: true, platform: process.platform, home: root, env: process.env, entryDir: '/x' }),
+    )
+  })
+
+  it('does not throw when Electron does', () => {
+    const app = {
+      isPackaged: true,
+      getPath: () => {
+        throw new Error('no home')
+      },
+    }
+    expect(startMainCompileCache(app, '/x', fakeApi(ENABLED))).toBeNull()
+  })
+
+  it('touches Electron only through startMainCompileCache', () => {
+    const source = fs.readFileSync(path.join(__dirname, 'entry.ts'), 'utf8')
+    const code = source.replace(/^\s*\/\/.*$/gm, '')
+    expect(code).not.toMatch(/getPath|setPath|app\.name|app\.setName/)
+    expect(code.match(/\bapp\b/g)).toHaveLength(2) // the import and the one argument
   })
 })
 
