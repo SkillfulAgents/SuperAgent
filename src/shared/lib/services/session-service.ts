@@ -790,6 +790,11 @@ function isPhantomCursor(
   return entries.some((e) => e.type === 'assistant' && e.message.id === row.message.id && itemIds.has(e.uuid))
 }
 
+/** An item made from a system row: the transform shows these in runs. */
+function isSystemItem(item: TransformedItem): boolean {
+  return item.type === 'compact_boundary' || item.type === 'memory_recall' || item.type === 'informational'
+}
+
 /** Number of leading items whose head row lies at or before the anchored row:
  * the items older than that row, when the row heads no item of its own (the
  * window deduped it to an older copy, or merged it into its response). */
@@ -1229,22 +1234,14 @@ async function scanMessagesPageWindow(
         ? (normalized as JsonlMessageEntry)
         : undefined
     const pendingInfoBefore = state.pendingInformationalContent
-    // Checked BEFORE the classifier registers this row's uuid: a
-    // byte-identical replayed row shares its original's uuid, and the
-    // transform keys system-item anchors BY uuid — a duplicate row is the
-    // same anchor, not a new one. Treating it as new would reset the
-    // boundary-collapse span and lift system-cursor suppression, letting the
-    // page target be satisfied by items that never display.
-    const isDuplicateRow =
-      msgEntry !== undefined && !!msgEntry.uuid && state.seenUuids.has(msgEntry.uuid)
     const counted = normalized !== undefined && countsAsDisplayStart(normalized, state)
-    // An anchor row is one the transform attaches system items to — a real
+    // An anchor row is one that ends a system run in the transform — a real
     // message entry, not a filtered/skipped one (meta rows, compact
-    // summaries, an informational's synthetic user copy) and not a replayed
-    // duplicate of an anchor already seen.
+    // summaries, an informational's synthetic user copy). A replayed copy of
+    // a row ends a run like the row itself: the transform keeps the runs on
+    // either side of it apart.
     const isAnchorRow =
       msgEntry !== undefined &&
-      !isDuplicateRow &&
       !('isMeta' in msgEntry && msgEntry.isMeta) &&
       !msgEntry.isCompactSummary &&
       !(
@@ -1483,7 +1480,16 @@ export async function getSessionMessagesPage(
       // an older copy: the transform put the item there, or merged the row
       // into its response. Split at the anchored copy, not at the id, so the
       // rows between the two copies are served.
+      const systemCopy = idx !== -1 && isSystemItem(transformed[idx]!)
       idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
+      // A replayed system row stands inside a run, and a run shows its
+      // recalls first whatever their order in the file: one that follows the
+      // copy in the file showed before it, on the page before the one the
+      // client has. The split takes the rest of the run, at the price of
+      // repeating a row the client may hold.
+      if (systemCopy) {
+        while (idx < transformed.length && isSystemItem(transformed[idx]!)) idx++
+      }
     }
     if (idx === -1 && isPhantomCursor(entries, transformed, cursor)) {
       // The client saw the cursor's row as an item of its own: the copy
@@ -1523,11 +1529,18 @@ export async function getSessionMessagesPage(
         idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
       }
     }
+    if (idx === -1 && rowOffsets.has(cursor)) {
+      // The row is in the window and heads no item here, though it did in the
+      // window that made it a cursor: a system row whose next message row
+      // merged into a response this window holds whole. The page is what
+      // lies at or below the row.
+      idx = countItemsThrough(transformed, rowOffsets, scan.anchorOffset!)
+    }
     if (idx === -1) {
-      // The index scan located the cursor's line but the transform of the
-      // materialized window disagrees — a concurrent rewrite between the two
-      // passes. Terminate like a vanished cursor rather than serving a
-      // mislabeled page.
+      // The index scan located the cursor's line but the materialized window
+      // does not hold it — a concurrent rewrite between the two passes.
+      // Terminate like a vanished cursor rather than serving a mislabeled
+      // page.
       console.warn(
         `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
         `read for session ${sessionId}; ending pagination`

@@ -26,6 +26,7 @@ import {
   useWorkflowAgentMessages,
   MESSAGES_FULL_REFETCH_INTERVAL_MS,
 } from './use-messages'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 
 interface InflightRequest {
   url: string
@@ -485,6 +486,72 @@ describe('useMessages forward delta', () => {
     })
     await waitFor(() => expect(inflight).toHaveLength(27))
     expect(inflight[26].url).toContain('cursor=c25')
+  })
+
+  it('ends the walk when the server hands back a cursor it already paged from', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    vi.mocked(captureRendererException).mockClear()
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    // Two pages that hand each other's cursor back: without the check the
+    // walk would fetch them 25 times a call, on every call.
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toContain('cursor=older-cursor')
+    inflight[1].resolve({ messages: [user('u3'), assistant('a3')], nextCursor: 'c1' })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=c1')
+    inflight[2].resolve({ messages: [user('u2'), assistant('a2')], nextCursor: 'older-cursor' })
+
+    // The page that closed the circle still shows.
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u2', 'a2', 'u3', 'a3'])
+    expect(result.current.hasOlder).toBe(false)
+    expect(captureRendererException).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      expect(await result.current.fetchOlder()).toBe(false)
+    })
+    expect(inflight).toHaveLength(3)
+  })
+
+  it('pages from a cursor again after the request for it failed', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u3'), assistant('a3')])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(captureRendererException).mockClear()
+
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].fail()
+    await act(async () => {
+      expect(await olderDone).toBe(false)
+    })
+    vi.mocked(captureRendererException).mockClear()
+
+    // The same cursor, asked for a second time, is not a circle.
+    act(() => {
+      olderDone = result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=older-cursor')
+    inflight[2].resolve({ messages: [user('u2'), assistant('a2')], nextCursor: 'c1' })
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(result.current.hasOlder).toBe(true)
+    expect(captureRendererException).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 
   it('drops an item deleted remotely from within the covered range on a periodic full fetch', async () => {

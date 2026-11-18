@@ -1337,6 +1337,80 @@ describe('session-service', () => {
       }
     })
 
+    describe('system rows next to replayed rows (offset cursors)', () => {
+      // A system row shows before the message that follows it. When that
+      // message is a replayed copy, a window that holds the copy without its
+      // original and a window that holds both must still agree on where the
+      // row shows, or a walk loses its place: it ended early, skipped a
+      // message, or was handed a bare-id cursor that pages back up the file.
+      let second = 0
+      const at = () => new Date(Date.UTC(2026, 0, 9, 0, 0, second++)).toISOString()
+      const question = (t: number) => ({ type: 'user', uuid: `u-${t}`, timestamp: at(), sessionId: 's', parentUuid: null, message: { role: 'user', content: `q${t}` } })
+      const text = (t: number) => ({ type: 'assistant', uuid: `c-${t}-text`, timestamp: at(), sessionId: 's', parentUuid: null, message: { id: `call-${t}`, role: 'assistant', content: [{ type: 'text', text: `working ${t}` }] } })
+      const call = (t: number) => ({ type: 'assistant', uuid: `c-${t}-tool`, timestamp: at(), sessionId: 's', parentUuid: null, message: { id: `call-${t}`, role: 'assistant', content: [{ type: 'tool_use', id: `tool-${t}`, name: 'Read', input: {} }] } })
+      const result = (t: number) => ({ type: 'user', uuid: `r-${t}`, timestamp: at(), sessionId: 's', parentUuid: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tool-${t}`, content: 'ok' }] } })
+      const answer = (t: number) => ({ type: 'assistant', uuid: `f-${t}`, timestamp: at(), sessionId: 's', parentUuid: null, message: { id: `fin-${t}`, role: 'assistant', content: [{ type: 'text', text: `done ${t}` }] } })
+      const note = (uuid: string) => ({ type: 'system', uuid, subtype: 'informational', content: `note ${uuid}`, isMeta: false, timestamp: at() })
+      const recall = (uuid: string) => ({ type: 'system', uuid, subtype: 'memory_recall', content: '', isMeta: false, timestamp: at(), memory_paths: ['M.md'] })
+      /** A turn's rows by name, so a fixture can replay some of them verbatim. */
+      const turn = (t: number) => ({ question: question(t), text: text(t), call: call(t), result: result(t), answer: answer(t) })
+      const rowsOf = (t: ReturnType<typeof turn>) => [t.question, t.text, t.call, t.result, t.answer]
+
+      const fixtures: Array<[string, () => object[]]> = [
+        ['a run before a replayed tool-call row', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), ...rowsOf(t1), note('n-1'), note('n-2'), t1.call, t1.result, t1.answer, t1.result, t1.answer]
+        }],
+        ['a run between a row and its replay', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), ...rowsOf(t1), t1.answer, note('n-1'), recall('m-1'), recall('m-2'), note('n-2'), t1.question, t1.text, t1.call, t1.result]
+        }],
+        ['a run before replayed rows of an earlier turn', () => {
+          const [t0, t1, t2] = [turn(0), turn(1), turn(2)]
+          return [...rowsOf(t0), ...rowsOf(t1), t2.question, t2.answer, note('n-1'), recall('m-1'), recall('m-2'), t1.answer, t2.question, t2.answer]
+        }],
+        // The note's next row is the response's second row. A window that
+        // starts inside the replay shows the note before that row; one that
+        // holds the whole response does not show it.
+        ['a run after rows replayed inside a response', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          return [...rowsOf(t0), t1.question, t1.text, t0.result, t0.answer, note('n-1'), t1.call, t1.result, t1.answer]
+        }],
+        // The replayed recall shows above the replayed note's page, with the
+        // new recall that follows both in the file.
+        ['a replayed run inside a new one', () => {
+          const [t0, t1] = [turn(0), turn(1)]
+          const [n0, m0] = [note('n-0'), recall('m-0')]
+          return [...rowsOf(t0), n0, m0, ...rowsOf(t1), recall('m-1'), n0, m0, note('n-1'), recall('m-2'), t1.question, t1.answer]
+        }],
+      ]
+
+      it.each(fixtures)('walks to the first row: %s', async (_name, build) => {
+        await createSessionFile('test-agent', 'page-session', build())
+        const store = createLocalSessionStore('test-agent')
+        const expected = (await getSessionMessagesPage(store, 'page-session', { limit: 1000 })).messages.map((m) => m.id)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+        for (let limit = 1; limit <= 6; limit++) {
+          const first = await getSessionMessagesPage(store, 'page-session', { limit })
+          const shown = new Set(first.messages.map((m) => m.id))
+          let cursor = first.nextCursor
+          for (let i = 0; i < 60 && cursor; i++) {
+            // A bare id is a cursor on a row above the one this page was
+            // paged from: the next request would climb back up the file.
+            expect(parsePageCursor(cursor).offset, `limit ${limit}: ${cursor}`).toBeDefined()
+            const page = await getSessionMessagesPage(store, 'page-session', { limit, cursor })
+            for (const m of page.messages) shown.add(m.id)
+            cursor = page.nextCursor
+          }
+          expect(cursor, `limit ${limit}`).toBeNull()
+          expect(expected.filter((id) => !shown.has(id)), `limit ${limit}`).toEqual([])
+        }
+        expect(warn).not.toHaveBeenCalled()
+        warn.mockRestore()
+      })
+    })
+
     it('returns every trailing system item across pages despite display reordering', async () => {
       // The transform orders adjacent system items by type (recalls, then
       // boundaries, then informationals) regardless of file order. A window
@@ -1682,13 +1756,11 @@ describe('session-service', () => {
       expect(older.nextCursor).toBeNull()
     })
 
-    it('replayed duplicate anchors do not reopen a collapsed boundary span', async () => {
-      // Byte-identical replayed rows share their original's uuid, and the
-      // transform keys boundary collapse BY uuid — so boundaries separated
-      // only by duplicates of one anchor all collapse to the newest. If each
-      // duplicate reset the span, the collapsed boundaries would satisfy the
-      // page target and the cursor page below the survivor would come out
-      // empty, hiding the real older messages.
+    it('a replayed row ends a boundary span like the row itself', async () => {
+      // Boundaries collapse to the newest within one system run, and a run
+      // ends at a message row, replayed or not: the transform keeps the runs
+      // on either side of a replayed row apart. So each of these boundaries
+      // shows, and a walk serves each.
       const ts = (s: number) => new Date(Date.UTC(2026, 0, 15, 0, 0, s)).toISOString()
       const boundary = (uuid: string, s: number) => ({
         type: 'system', uuid, subtype: 'compact_boundary', content: '', isMeta: false,
@@ -1705,7 +1777,7 @@ describe('session-service', () => {
       ])
 
       const full = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 100 })
-      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'X'])
+      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c1', 'X', 'c2', 'c3', 'c4'])
 
       const first = await getSessionMessagesPage(createLocalSessionStore('test-agent'), 'page-session', { limit: 2 })
       const collected = [...first.messages.map((m) => m.id)]
@@ -1719,7 +1791,9 @@ describe('session-service', () => {
         cursor = page.nextCursor
       }
       expect(cursor).toBeNull()
-      expect(collected).toEqual(['U', 'A', 'c4', 'X'])
+      // A window that holds a copy of X without its original shows X again;
+      // a client drops the repeat.
+      expect([...new Set(collected)].sort()).toEqual(['A', 'U', 'X', 'c1', 'c2', 'c3', 'c4'])
     })
 
     it('attaches a tool result recorded past the cursor line', async () => {
