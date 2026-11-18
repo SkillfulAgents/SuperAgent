@@ -152,10 +152,10 @@ describe('chat transcript — long session', () => {
     expectOlderPage(body, first)
     reportPayload('older, default budget', responseBytes, body.messages.length)
     expectWithinBudget('transcript: older page (default budget)', measurement, {
-      totalOps: 34,
-      ops: { 'handle.read': 29 },
-      bytesRead: 26_295_748,
-      wallMs: 1100,
+      totalOps: 20,
+      ops: { 'handle.read': 15 },
+      bytesRead: 10_065_984,
+      wallMs: 500,
     })
   })
 
@@ -168,10 +168,10 @@ describe('chat transcript — long session', () => {
     expect(responseBytes).toBeLessThan(2 * MiB)
     reportPayload('older, max_bytes 1MiB', responseBytes, body.messages.length)
     expectWithinBudget('transcript: older page (max_bytes 1MiB)', measurement, {
-      totalOps: 32,
-      ops: { 'handle.read': 27 },
-      bytesRead: 23_147_079,
-      wallMs: 900,
+      totalOps: 14,
+      ops: { 'handle.read': 9 },
+      bytesRead: 3_706_051,
+      wallMs: 350,
     })
   })
 
