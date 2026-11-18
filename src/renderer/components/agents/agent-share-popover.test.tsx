@@ -8,10 +8,29 @@ const state = vi.hoisted(() => ({
   members: [] as Array<Record<string, unknown>>,
   candidates: [] as Array<Record<string, unknown>>,
   posts: [] as Array<{ url: string; body: unknown }>,
+  authMode: true,
+  agents: [] as Array<Record<string, unknown>>,
+  agentRoles: [] as Array<{ slug: unknown; role: string | null }>,
+  blocked: [] as Array<{ slug: string; displaySlug: string; name: string; avatar: null; canAccess: boolean; blocks: Array<{ callerSlug: string; operation: 'read' | 'invoke' }> }>,
   fullExport: { mutate: vi.fn(), isPending: false },
 }))
 
-vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ user: { id: 'ada' }, isAuthMode: true }) }))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({
+    user: state.authMode ? { id: 'ada' } : null,
+    isAuthMode: state.authMode,
+    canUseAgent: (slug: string) => slug !== 'not-mine',
+  }),
+}))
+vi.mock('@renderer/hooks/use-inbound-x-agent', () => {
+  const record = async ({ agent, change }: { agent: { slug: unknown }; change: string }) => {
+    state.agentRoles.push({ slug: agent.slug, role: change })
+  }
+  return {
+    useInboundXAgentDetails: () => ({ data: { sessions: [], callers: state.agents, blocked: state.blocked }, isLoading: false }),
+    useSetAgentAccess: () => ({ mutate: record, mutateAsync: record }),
+  }
+})
 vi.mock('@renderer/hooks/use-agent-members', () => ({
   useAgentMembers: () => ({ data: state.members, isLoading: false, isError: false, refetch: vi.fn() }),
 }))
@@ -31,7 +50,7 @@ vi.mock('@renderer/lib/api', () => ({
   }),
 }))
 
-import { AgentSharePopover } from './agent-share-popover'
+import { AgentSharePopover, agentAccessChange } from './agent-share-popover'
 
 function renderPopover() {
   return render(
@@ -43,6 +62,16 @@ function renderPopover() {
 
 beforeEach(() => {
   state.posts = []
+  state.authMode = true
+  state.agentRoles = []
+  state.blocked = []
+  state.agents = [
+    { slug: 'triage', displaySlug: 'inbox-triage', name: 'Inbox Triage', decision: 'allow', readDecision: 'review', avatar: null, canAccess: true },
+    { slug: 'notes', displaySlug: 'release-notes', name: 'Release Notes', decision: 'review', readDecision: 'allow', avatar: null, canAccess: true },
+    { slug: 'danube', displaySlug: 'danube', name: 'Danube Ops', decision: 'review', readDecision: 'review', avatar: null, canAccess: true },
+    { slug: 'not-mine', displaySlug: 'dan-private', name: 'Dan Private', decision: 'review', readDecision: 'review', avatar: null, canAccess: true },
+    { slug: 'dam', displaySlug: 'dam-walled', name: 'Dam Walled', decision: 'allow', readDecision: 'block', avatar: null, canAccess: true },
+  ]
   state.fullExport = { mutate: vi.fn(), isPending: false }
   state.members = [
     { id: 'ada', name: 'Ada Admin', email: 'ada@acme.test', image: null, role: 'owner' },
@@ -83,6 +112,75 @@ describe('sharing an agent with people not on Gamut yet', () => {
       { url: '/api/agents/support/access', body: { directoryRef: { directoryId: 'dir-1', remoteId: 'U7' }, role: 'user' } },
       { url: '/api/agents/support/access', body: { userId: 'dan-id', role: 'user' } },
     ]))
+  })
+})
+
+describe('sharing an agent with other agents', () => {
+  it('lists agents with access after the people, in the roles people have', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+
+    expect(await screen.findByTestId('access-agent-triage')).toHaveTextContent('Inbox TriageReading asks firstUser')
+    expect(screen.getByTestId('access-agent-notes')).toHaveTextContent('Release NotesAgentViewer')
+    // An agent that still asks first is not a member.
+    expect(screen.queryByTestId('access-agent-danube')).toBeNull()
+    const rows = screen.getAllByTestId(/^access-(entry|agent)-(?!role-)/).map((row) => row.getAttribute('data-testid'))
+    expect(rows).toEqual(['access-entry-ada', 'access-entry-lee', 'access-agent-triage', 'access-agent-notes'])
+  })
+
+  it('finds agents beside people and invites both in one batch', async () => {
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+    await userEvent.type(screen.getByTestId('invite-search-input'), 'dan')
+
+    // Linking two agents takes someone who uses both, so the other one is not offered. Nor is one whose own
+    // setting blocks reading every agent: it can't become a member.
+    expect(screen.queryByTestId('invite-agent-result-not-mine')).toBeNull()
+    expect(screen.queryByTestId('invite-agent-result-dam')).toBeNull()
+    await userEvent.click(await screen.findByTestId('invite-agent-result-danube'))
+    expect(screen.getByTestId('invite-chip-agent:danube')).toHaveTextContent('Danube Ops')
+    await userEvent.type(screen.getByTestId('invite-search-input'), 'dan')
+    await userEvent.click(await screen.findByTestId('invite-user-result-dan-id'))
+    await userEvent.click(screen.getByTestId('invite-add-button'))
+
+    await waitFor(() => expect(state.agentRoles).toEqual([{ slug: 'danube', role: 'user' }]))
+    expect(state.posts).toEqual([{ url: '/api/agents/support/access', body: { userId: 'dan-id', role: 'user' } }])
+  })
+
+  it('still invites agents on a local install, and points at Cloud for people', async () => {
+    state.authMode = false
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+
+    expect(await screen.findByTestId('access-entry-you')).toHaveTextContent('You')
+    expect(screen.getByTestId('access-agent-triage')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-invite-cloud-row')).toHaveTextContent('Switch to Gamut Cloud')
+    expect(screen.getByTestId('invite-search-input')).toHaveAttribute('placeholder', 'Invite agents...')
+  })
+
+  it('shows the role of an agent the viewer does not use, with nothing to change', async () => {
+    state.agents = [...state.agents, { slug: 'not-mine', displaySlug: 'dan-private', name: 'Dan Private', decision: 'allow', readDecision: 'allow', avatar: null, canAccess: true }]
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+
+    expect(await screen.findByTestId('access-agent-role-locked-not-mine')).toHaveTextContent('User')
+    expect(screen.queryByTestId('access-agent-role-not-mine')).toBeNull()
+  })
+
+  it('reads a role menu pick as the change it makes', () => {
+    expect(['user', 'viewer', 'block', '__remove__', 'owner'].map(agentAccessChange)).toEqual(['user', 'viewer', 'block', 'remove', null])
+  })
+
+  it('keeps blocked agents out of the lists, folded under one line', async () => {
+    state.blocked = [{ slug: 'triage', displaySlug: 'inbox-triage', name: 'Inbox Triage', avatar: null, canAccess: true, blocks: [{ callerSlug: 'triage', operation: 'invoke' }] }]
+    renderPopover()
+    await userEvent.click(screen.getByTestId('agent-share-button'))
+
+    expect(await screen.findByTestId('access-blocked-toggle')).toHaveTextContent('1 blocked agent')
+    expect(screen.queryByTestId('access-agent-triage')).toBeNull()
+    expect(screen.queryByTestId('access-blocked-triage')).toBeNull()
+    await userEvent.click(screen.getByTestId('access-blocked-toggle'))
+    expect(screen.getByTestId('access-blocked-triage')).toHaveTextContent('Partly blockedBlocked')
   })
 })
 

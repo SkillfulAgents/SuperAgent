@@ -1,12 +1,56 @@
 import { z } from 'zod'
+import { agentAvatarSchema } from './agent-avatar'
 
 export const inboundXAgentCallerSchema = z.object({
   slug: z.string(),
   displaySlug: z.string(),
   name: z.string(),
+  /** May this agent send messages here: without asking, or with a person's approval each time. */
   decision: z.enum(['allow', 'review']),
+  /** May it read this agent's sessions and files. Older deployments omit it. */
+  readDecision: z.enum(['allow', 'review', 'block']).optional(),
+  /** Older deployments omit it. */
+  avatar: agentAvatarSchema.nullable().optional(),
   canAccess: z.boolean(),
 })
+
+/** An agent with a block saved between it and this one, in either direction. */
+export const inboundXAgentBlockedAgentSchema = inboundXAgentCallerSchema.extend({
+  /** What it may do here now, so lifting the block can take away what remains. */
+  decision: z.enum(['allow', 'review', 'block']),
+  /** The stored blocks, so lifting it clears exactly these. */
+  blocks: z.array(z.object({ callerSlug: z.string(), operation: z.enum(['read', 'invoke']) })),
+})
+
+/**
+ * An agent's access to another agent, in the words people's access uses:
+ * a User messages it and reads its sessions, a Viewer only reads. `null`: it
+ * asks a person first, or a block stands between them.
+ */
+export type AgentAccessRole = 'user' | 'viewer'
+export function agentAccessRole(caller: Pick<InboundXAgentCaller, 'decision' | 'readDecision'>): AgentAccessRole | null {
+  if (caller.readDecision === 'block') return null
+  if (caller.decision === 'allow') return 'user'
+  return caller.readDecision === 'allow' ? 'viewer' : null
+}
+
+/**
+ * The line under an agent's name where its role alone would mislead: a User whose reading still asks first,
+ * or a block that covers less than reading and messaging in both directions (four saved blocks).
+ */
+export function agentAccessNote(agent: { role: AgentAccessRole | 'blocked'; readDecision?: InboundXAgentCaller['readDecision']; blocks?: InboundXAgentBlockedAgent['blocks'] }): string | null {
+  if (agent.role === 'blocked') return (agent.blocks?.length ?? 0) < 4 ? 'Partly blocked' : 'Can’t read or message each other'
+  return agent.role === 'user' && agent.readDecision === 'review' ? 'Reading asks first' : null
+}
+
+/** The agents with a role here. A block in either direction keeps an agent out, as it does the share popover's lists. */
+export function memberAgentsOf({ callers, blocked = [] }: Pick<InboundXAgentDetails, 'callers' | 'blocked'>): (InboundXAgentCaller & { role: AgentAccessRole })[] {
+  const blockedSlugs = new Set(blocked.map((agent) => agent.slug))
+  return callers.flatMap((agent) => {
+    const role = agentAccessRole(agent)
+    return role && !blockedSlugs.has(agent.slug) ? [{ ...agent, role }] : []
+  })
+}
 
 const inboundSessionBaseSchema = z.object({
   id: z.string(),
@@ -31,8 +75,11 @@ export const inboundXAgentSessionSchema = z.union([
 export const inboundXAgentDetailsSchema = z.object({
   sessions: z.array(inboundXAgentSessionSchema),
   callers: z.array(inboundXAgentCallerSchema),
+  /** Older deployments omit it. */
+  blocked: z.array(inboundXAgentBlockedAgentSchema).optional(),
 })
 
 export type InboundXAgentCaller = z.infer<typeof inboundXAgentCallerSchema>
+export type InboundXAgentBlockedAgent = z.infer<typeof inboundXAgentBlockedAgentSchema>
 export type InboundXAgentSession = z.infer<typeof inboundXAgentSessionSchema>
 export type InboundXAgentDetails = z.infer<typeof inboundXAgentDetailsSchema>
