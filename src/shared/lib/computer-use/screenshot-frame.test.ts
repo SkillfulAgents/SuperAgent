@@ -70,6 +70,12 @@ describe('fitImageSize', () => {
     expect(width * height).toBeLessThanOrEqual(MAX_IMAGE_PIXELS)
     expect(width / height).toBeCloseTo(3252 / 2672, 2)
   })
+
+  it('shrinks a Retina display capture to no more pixels than XGA', () => {
+    const { width, height } = fitImageSize(3024, 1964)
+    expect(width * height).toBeLessThanOrEqual(1024 * 768)
+    expect(width * height).toBeGreaterThan(1024 * 768 * 0.99)
+  })
 })
 
 describe('locateWindowFrame', () => {

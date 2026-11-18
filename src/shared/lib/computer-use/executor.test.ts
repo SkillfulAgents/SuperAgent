@@ -391,7 +391,7 @@ describe('screenshots', () => {
 
     const shot = JSON.parse((await executeComputerUseCommand('screenshot', { app: 'Safari' }, caller())).output)
 
-    expect(shot.note).toBe('This image is 1024×828 pixels; where it is on screen is not known (the window list could not be read).')
+    expect(shot.note).toBe('This image is 986×797 pixels; where it is on screen is not known (the window list could not be read).')
   })
 
   it('places a display capture on its display', async () => {
