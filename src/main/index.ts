@@ -29,7 +29,8 @@ import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, cl
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
 import { captureRegion } from './capture-region'
 import {
-  prewarmQuickDispatchWindow,
+  scheduleQuickDispatchPrewarm,
+  quickDispatchMainWindowPainted,
   toggleQuickDispatchWindow,
   hideQuickDispatchWindow,
   closeQuickDispatchWindow,
@@ -574,6 +575,7 @@ ipcMain.handle('begin-target-switch', async () => {
 // off the window that is still blank.
 ipcMain.on('renderer-painted', (event) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) return
+  quickDispatchMainWindowPainted()
   void finishTargetSwitchOverlay()
 })
 
@@ -1775,9 +1777,11 @@ async function startApp() {
     console.error('Failed to restore keep-awake state:', error)
   })
 
-  // Quick-dispatch launcher: pre-create the hidden panel and bind its global
-  // shortcut so the first invocation appears instantly.
-  await prewarmQuickDispatchWindow()
+  // Quick-dispatch launcher: bind its global shortcut, and pre-create the hidden
+  // panel once the main window has painted (see `renderer-painted`), so the
+  // panel's renderer does not load alongside the window's. A press before then
+  // builds it on demand.
+  await scheduleQuickDispatchPrewarm()
   const dispatchResult = registerGlobalDispatchShortcut((await getSettings()).app?.globalDispatchShortcut, toggleQuickDispatchWindow)
   if (!dispatchResult.success) {
     console.warn(`Quick-dispatch shortcut not registered: ${dispatchResult.error}`)
@@ -1787,8 +1791,8 @@ async function startApp() {
   for (const filePath of openedFilesFrom(process.argv)) {
     handleOpenedFile(filePath)
   }
-  // The launcher window now exists, so any files opened before startup finished
-  // (dock drop on macOS, argv above) can be delivered to it.
+  // The launcher window can now be built, so any files opened before startup
+  // finished (dock drop on macOS, argv above) can be delivered to it.
   flushPendingOpenedFiles()
 }
 
