@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FilePreviewProvider, useFilePreview, type PreviewSource } from '@renderer/context/file-preview-context'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
-import { CHANGE_CHECK_INTERVAL_MS } from './use-reload-when-changed'
+import { CHANGE_CHECK_INTERVAL_MS, useCheckDeliveredFiles } from './use-reload-when-changed'
 
 vi.mock('@renderer/router/use-route-location', () => ({
   useRouteLocation: () => ({ view: { kind: 'session', id: 'test-session' } }),
@@ -26,8 +26,13 @@ vi.mock('./renderers/file-renderer', async () => {
   }
 })
 
-function PreviewHarness({ filePath, source }: { filePath: string; source?: PreviewSource }) {
+function PreviewHarness({ filePath, source, deliveries = [] }: {
+  filePath: string
+  source?: PreviewSource
+  deliveries?: { id: string; filePath: string }[]
+}) {
   const { isOpen, openFile, close } = useFilePreview()
+  useCheckDeliveredFiles(deliveries, 'test-agent')
   return <>
     <button onClick={() => openFile(filePath, 'test-agent', undefined, source)}>Open file</button>
     {isOpen && <FilePreviewTrayContent sessionId="test-session" onClose={close} />}
@@ -115,6 +120,44 @@ describe('file preview refresh', () => {
     file = null
     await act(() => vi.advanceTimersByTimeAsync(CHANGE_CHECK_INTERVAL_MS))
     await waitFor(() => expect(content()).toBeEmptyDOMElement())
+    client.clear()
+  })
+
+  it('rechecks an open file the moment it is delivered again, without waiting for the next check', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let file = { contents: 'Original contents', etag: 'W/"1-17"' }
+    const heads = vi.fn()
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      if (init?.method !== 'HEAD') return new Response(file.contents)
+      heads()
+      return new Response(null, { headers: { etag: file.etag } })
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = (deliveries: { id: string; filePath: string }[]) => (
+      <QueryClientProvider client={client}>
+        <FilePreviewProvider sessionId="test-session">
+          <PreviewHarness filePath="/workspace/README.md" deliveries={deliveries} />
+        </FilePreviewProvider>
+      </QueryClientProvider>
+    )
+    const first = [{ id: 'tc-1', filePath: '/workspace/README.md' }]
+    const { rerender } = render(tree(first))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open file' }))
+    await waitFor(() => expect(screen.getByTestId('file-content')).toHaveTextContent('Original contents'))
+    await act(() => vi.advanceTimersByTimeAsync(CHANGE_CHECK_INTERVAL_MS))
+    const before = heads.mock.calls.length
+
+    // The same deliveries drawn again ask nothing; a new one asks at once, well inside the interval.
+    rerender(tree([...first]))
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(heads).toHaveBeenCalledTimes(before)
+
+    file = { contents: 'Updated contents', etag: 'W/"2-16"' }
+    rerender(tree([...first, { id: 'tc-2', filePath: '/workspace/README.md' }, { id: 'tc-3', filePath: '/workspace/other.md' }]))
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(heads).toHaveBeenCalledTimes(before + 1)
+    await waitFor(() => expect(screen.getByTestId('file-content')).toHaveTextContent('Updated contents'))
     client.clear()
   })
 })

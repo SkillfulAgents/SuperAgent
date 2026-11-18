@@ -28,7 +28,8 @@ import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
 import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
-import { collectTurnDeliveredFiles, type DeliveredFile } from './delivered-files'
+import { collectDeliveries, collectTurnDeliveredFiles, type DeliveredFile } from './delivered-files'
+import { useCheckDeliveredFiles } from '@renderer/components/file-preview/use-reload-when-changed'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
@@ -585,6 +586,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     () => collectTurnDeliveredFiles(messages ?? [], !isActive || hasTurnStartingPendingMessage),
     [messages, isActive, hasTurnStartingPendingMessage]
   )
+  // A file delivered again while it is open in the drawer is rechecked at once.
+  const deliveries = useMemo(() => collectDeliveries(messages ?? []), [messages])
+  useCheckDeliveredFiles(deliveries, agentSlug)
 
   // If there's unpersisted streaming content, defer the last turn's elapsed time
   // to render after the streaming section (otherwise it appears above the streaming message).
