@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can successfully open a browser, navigate to a URL, retrieve the page title, and return the correct response mentioning \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with sidebar showing two agents: QA-20261118-184123-bxpi and QA-20261118-184123-smb9",
+    "Clicked on the \"QA-20261118-184123-bxpi\" agent in the sidebar — Successfully opened the agent chat page with the message input interface ready",
+    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent and a new session \"Check Example.com Page Title\" was created with the agent status showing \"working\"",
+    "Waited for the response — Agent completed processing in 4 seconds using 3 tool calls and 160,687 tokens",
+    "Verified the response mentions \"Example Domain\" — The agent response stated: \"The page title at https://example.com is \"Example Domain\". I've closed the browser.\" which confirms the browser use feature is working correctly"
+  ],
+  "bugs": [],
+  "durationMs": 71272,
+  "sessionId": "3b55c685-4437-44de-8b88-e8deb85e828f",
+  "cost": {
+    "inputTokens": 366,
+    "outputTokens": 10687,
+    "cacheCreationTokens": 72871,
+    "cacheReadTokens": 1023023,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.247192
+  }
+}
