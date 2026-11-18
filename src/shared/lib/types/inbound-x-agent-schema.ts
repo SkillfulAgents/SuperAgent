@@ -65,3 +65,15 @@ export type InboundXAgentCaller = z.infer<typeof inboundXAgentCallerSchema>
 export type InboundXAgentBlockedAgent = z.infer<typeof inboundXAgentBlockedAgentSchema>
 export type InboundXAgentSession = z.infer<typeof inboundXAgentSessionSchema>
 export type InboundXAgentDetails = z.infer<typeof inboundXAgentDetailsSchema>
+
+/** An agent that has a role on another agent: what a member stack and roster show for it. */
+export const agentMemberAgentSchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+  avatar: agentAvatarSchema.nullable(),
+  role: z.enum(['user', 'viewer']),
+})
+/** Every agent the viewer can see that has member agents, by slug. An agent with none is left out. */
+export const agentMemberAgentsByAgentSchema = z.record(z.string(), z.array(agentMemberAgentSchema))
+export type AgentMemberAgent = z.infer<typeof agentMemberAgentSchema>
+export type AgentMemberAgentsByAgent = z.infer<typeof agentMemberAgentsByAgentSchema>
