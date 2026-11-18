@@ -170,13 +170,14 @@ describe('useNewSessionComposer', () => {
   })
 
   it('preserves carryover model settings and each surface’s default-adoption policy', () => {
-    const initialOptions = { initialModel: 'carryover-model', initialLlmProviderId: 'carryover-provider', initialEffort: 'low' as const, initialSpeed: 'normal' as const }
+    const initialOptions = { model: 'carryover-model', llmProviderId: 'carryover-provider', effort: 'low' as const, speed: 'normal' as const }
     const { rerender } = renderHook(({ agentSlug, waitForAgentDefaults, followDefaults }) => useNewSessionComposer({
       agentSlug, draftKey: 'quick-dispatch', initialOptions, waitForAgentDefaults, followDefaults, onSessionCreated: vi.fn(),
     }), { wrapper: DraftsProvider, initialProps: { agentSlug: 'writer', waitForAgentDefaults: true, followDefaults: false } })
     expect(mocks.modelOptions).toHaveBeenLastCalledWith(expect.objectContaining({
-      ...initialOptions, agentKey: 'writer', agentDefaultModel: 'agent-model', agentDefaultLlmProviderId: 'agent-provider',
-      agentDefaultEffort: 'high', agentDefaultSpeed: 'fast', agentDefaultsReady: false, followDefaults: false,
+      initial: initialOptions, agentKey: 'writer',
+      agentDefault: { model: 'agent-model', llmProviderId: 'agent-provider', effort: 'high', speed: 'fast' },
+      agentDefaultsReady: false, followDefaults: false,
     }))
     mocks.preferences.isFetched = true
     rerender({ agentSlug: 'planner', waitForAgentDefaults: true, followDefaults: false })

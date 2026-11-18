@@ -4,6 +4,7 @@
  * React Query hooks for managing scheduled tasks.
  */
 
+import { pickRuntimeOptions, type RuntimeOptionsPatch } from '@shared/lib/container/runtime-options'
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
@@ -272,12 +273,8 @@ export function useUpdateScheduledTaskRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ taskId, llmProviderId, model, effort, speed }: { taskId: string; agentSlug: string; llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
-      const body: Record<string, string | null> = {}
-      if (llmProviderId !== undefined) body.llmProviderId = llmProviderId
-      if (model !== undefined) body.model = model
-      if (effort !== undefined) body.effort = effort
-      if (speed !== undefined) body.speed = speed
+    mutationFn: async ({ taskId, ...patch }: { taskId: string; agentSlug: string } & RuntimeOptionsPatch) => {
+      const body = pickRuntimeOptions(patch)
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/runtime-options`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

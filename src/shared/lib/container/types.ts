@@ -13,6 +13,8 @@ export class ContainerNotFoundError extends Error {
 }
 
 export interface SendMessageOptions extends RuntimeOptions {
+  /** false appends the message to the transcript without starting a turn. */
+  shouldQuery?: boolean
   /** Internal: a queued message keeps the active turn configuration. */
   preserveRuntime?: boolean
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
@@ -130,14 +132,13 @@ export interface StreamMessage {
   sessionId: string
 }
 
-export interface CreateSessionOptions {
+/** The session's runtime options ride along; absent knobs use the agent's, then the app's, defaults. */
+export interface CreateSessionOptions extends RuntimeOptions {
   metadata?: Record<string, any>
   systemPrompt?: string
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: string // Optional UUID for message author attribution
-  llmProviderId?: string | null
-  model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
   dashboardBuilderModel?: string // Model for the dashboard-builder subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
@@ -146,8 +147,6 @@ export interface CreateSessionOptions {
   maxBudgetUsd?: number // Max cost in USD per session
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
-  effort?: EffortLevel // Initial thinking effort level
-  speed?: SpeedLevel // Initial processing speed tier
   /**
    * Toolsets loaded into the prompt from the first turn rather than behind
    * ToolSearch, for a session started to do one thing (the launcher's

@@ -10,7 +10,7 @@ import { useSendMessage } from '@renderer/hooks/use-messages'
 import { useResolvedAgentId, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches, removeSessionFromCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
 import { TODOS_QUERY_KEY } from './todos-query-key'
 
@@ -105,10 +105,6 @@ export function useCreateSession(options: {
       message: string
       // Names the session instead of generating a name from the message.
       name?: string
-      effort?: EffortLevel
-      speed?: SpeedLevel
-      llmProviderId?: string | null
-      model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
       // The launcher's computer-use toggle: the session may use any app without asking.
@@ -118,7 +114,7 @@ export function useCreateSession(options: {
       origin?: 'user' | 'onboarding' | 'todo'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
-    }) => {
+    } & RuntimeOptions) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

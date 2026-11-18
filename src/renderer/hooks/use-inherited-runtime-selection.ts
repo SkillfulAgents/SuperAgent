@@ -7,25 +7,18 @@ import {
   clampEffortForDisplay,
   clampSpeedForDisplay,
   resolveRuntimeInherit,
+  type RuntimeInherit,
+  type StoredRuntimeOptions,
 } from '@shared/lib/container/runtime-options'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 /** A surface's stored override row; null, undefined, and '' all mean "unset". */
-export type RuntimeSurface = {
-  llmProviderId?: string | null
-  model?: string | null
-  effort?: string | null
-  speed?: string | null
-}
+export type RuntimeSurface = Partial<StoredRuntimeOptions>
 
-export type InheritedRuntimeSelection = {
-  /** What the host will send: surface override → agent default → app default. */
-  model: string
-  llmProviderId?: string | null
-  effort?: EffortLevel
-  speed?: SpeedLevel
+/** What the host will send (surface override → agent default → app default), plus how to show it. */
+export type InheritedRuntimeSelection = RuntimeInherit & {
   /** `effort`/`speed` snapped to what the catalog model allows — display only, never written back. */
   displayEffort?: EffortLevel
   displaySpeed?: SpeedLevel

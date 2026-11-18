@@ -2891,6 +2891,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+    // Per message, not a runtime option: false appends without starting a turn.
+    let shouldQuery: boolean | undefined = typeof body.shouldQuery === 'boolean' ? body.shouldQuery : undefined
 
     // The delivery below is keyed by session id alone: an unowned id would
     // cancel another agent's pending input request, re-bind its session to
@@ -2906,7 +2908,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // only notifies them: it joins the transcript, and no turn runs.
     const mentions = await readSessionMentions(c, agentSlug, content.trim())
     if ('error' in mentions) return c.json({ error: mentions.error }, 400)
-    if (mentions.silent) runtimeOptions.shouldQuery = false
+    if (mentions.silent) shouldQuery = false
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2920,7 +2922,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // cannot bind outright is one it may only continue, and the delivery
     // refuses it unless the session still holds it. An append starts no turn
     // and keeps the session's runtime, so its connection is not looked at.
-    const requireStoredProvider = runtimeOptions.shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
+    const requireStoredProvider = shouldQuery !== false && await connectionNeedsAttachment(runtimeOptions.llmProviderId)
 
     const metadataUpdates: Partial<SessionMetadata> = {}
     if (isAuthMode()) {
@@ -2949,7 +2951,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         sessionId,
         content: await attributedForAgent(c, agentSlug, text),
         uuid: messageUuid,
-        options: runtimeOptions,
+        options: { ...runtimeOptions, ...(shouldQuery !== undefined ? { shouldQuery } : {}) },
         metadataUpdates,
         promote: true,
         requireStoredProvider,
@@ -2967,7 +2969,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       throw error
     }
     const queued = delivery.status !== 'sent' || delivery.queued
-    if (delivery.status === 'sent' && runtimeOptions.shouldQuery !== false) {
+    if (delivery.status === 'sent' && shouldQuery !== false) {
       await nameSessionFromFirstHumanMessage(actor, sessionId, text, agent.name)
     }
     if (mentions.teammates.length > 0) {

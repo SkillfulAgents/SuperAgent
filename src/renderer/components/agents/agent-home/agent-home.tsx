@@ -171,11 +171,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     agentSlug: agent.slug,
     draftKey: `session:${agentHomeId(agent.slug)}`,
     initialAttachments: carryover?.attachments,
-    initialOptions: {
-      initialModel: carryover?.model,
-      initialEffort: carryover?.effort,
-      initialSpeed: carryover?.speed,
-    },
+    initialOptions: { model: carryover?.model, effort: carryover?.effort, speed: carryover?.speed },
     // The default-model card sits next to this composer; untouched selections track its edits.
     followDefaults: true,
     submitDisabled: !isRuntimeReady,
