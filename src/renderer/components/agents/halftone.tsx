@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@shared/lib/utils/cn'
-import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
+import { isWindowActive, subscribeToWindowActive } from '@renderer/lib/window-active'
 import {
   createHalftoneGpuField,
   halftoneGpuAvailable,
@@ -22,8 +22,9 @@ import {
  *                 by the caller via the wrapper's ink color).
  * State changes the *character* of motion (speed/dim), set by the caller.
  *
- * It animates only while it is on screen in a shown document, and holds its
- * frame in a window left open behind another app. A halftone that does not follow the pointer (a view's
+ * It animates only while it can be seen and the window is the one in use: off
+ * screen, in a hidden document, or in a window left open behind another app it
+ * holds its last frame. A halftone that does not follow the pointer (a view's
  * backdrop) is computed and drawn on the GPU where it can be; one that does
  * (a card) on Canvas2D. docs/halftone-rendering.md has the measurements.
  */
@@ -57,8 +58,6 @@ interface HalftoneProps {
 }
 
 const LAZY_ROOT_MARGIN = '320px 0px'
-/** The longest step the field takes between two paints, in 60ths of a second. */
-const MAX_FRAME_SCALE = 4
 
 /**
  * Keep the decorative canvas out of the DOM until its card is near the
@@ -153,9 +152,10 @@ export function Halftone({
       renderer = new HalftoneFrameRenderer({ ...field, color: fill })
     }
 
-    // Set while it animates: stops its frames on the app's shared ambient loop.
-    let stopFrames: (() => void) | undefined
+    let raf = 0
     let ready = false
+    // Whether the canvas shows a frame at its current size (resizing clears it).
+    let painted = false
     let lastDrawTime = 0
     let t = 0
     let W = 0, H = 0
@@ -186,6 +186,7 @@ export function Halftone({
       W = nextWidth
       H = nextHeight
       pixelRatio = nextPixelRatio
+      painted = false
       canvas!.width = Math.round(W * pixelRatio)
       canvas!.height = Math.round(H * pixelRatio)
       ctx?.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
@@ -196,6 +197,7 @@ export function Halftone({
     }
 
     function draw(frameScale = 1) {
+      painted = true
       if (gpu) {
         gpu.draw(t)
         return
@@ -220,6 +222,7 @@ export function Halftone({
     // classify it, which can starve those callbacks on large home boards.
     // Browsers without IntersectionObserver retain the eager fallback.
     let intersecting = typeof IntersectionObserver === 'undefined'
+    let windowActive = isWindowActive()
     let pointerListening = false
 
     const setPointerListening = (next: boolean) => {
@@ -233,32 +236,38 @@ export function Halftone({
       }
     }
 
-    // Decoration on the app's shared ambient loop (ambient-frames.ts): 30 paints a second
-    // in the window in use, on the same display frames as every other ambient animation,
-    // and held still in a window that is not. A step is never longer than a few frames'
-    // worth, so the field picks up where it stopped and does not lurch.
+    const frameInterval = 1000 / 30
+    const frameTolerance = 4
     function frame(now: number) {
-      if (stopped || !ready || !intersecting) return
-      const frameScale = lastDrawTime === 0 ? 2 : Math.min((now - lastDrawTime) / (1000 / 60), MAX_FRAME_SCALE)
-      // Layout can change before ResizeObserver runs later in this frame.
-      // It will resize and repaint synchronously; skip the old-size bitmap
-      // that would immediately be discarded, but advance time as usual.
-      if (wrap!.clientWidth === W && wrap!.clientHeight === H) draw(frameScale)
-      // Time moves by the wall clock, so the field keeps its 60fps phase velocity
-      // while drawing half as often.
-      t += speed * frameScale
-      lastDrawTime = now
+      raf = 0
+      if (stopped || !ready || !intersecting || !windowActive || document.hidden) return
+      const elapsed = lastDrawTime === 0 ? frameInterval : now - lastDrawTime
+      if (elapsed >= frameInterval - frameTolerance) {
+        const frameScale = elapsed / (1000 / 60)
+        // Layout can change before ResizeObserver runs later in this frame.
+        // It will resize and repaint synchronously; skip the old-size bitmap
+        // that would immediately be discarded, but advance time as usual.
+        if (wrap!.clientWidth === W && wrap!.clientHeight === H) draw(frameScale)
+        // Preserve the original 60fps phase velocity while drawing half as
+        // often, substantially reducing per-card field math and Canvas2D paths.
+        t += speed * frameScale
+        lastDrawTime = now
+      }
+      raf = requestAnimationFrame(frame)
     }
 
     const syncAnimation = () => {
-      const active = ready && !reduce && intersecting && !document.hidden && !stopped
+      const visible = ready && intersecting && !document.hidden && !stopped
+      const active = visible && !reduce && windowActive
+      // Held still in an inactive window, it still shows a frame.
+      if (visible && !reduce && !windowActive && !painted) draw(0)
       setPointerListening(active && followPointer)
-      if (active && !stopFrames) {
+      if (active && raf === 0) {
         lastDrawTime = 0
-        stopFrames = subscribeToAmbientFrames(frame, { kind: 'decoration', fps: 30 })
-      } else if (!active && stopFrames) {
-        stopFrames()
-        stopFrames = undefined
+        raf = requestAnimationFrame(frame)
+      } else if (!active && raf !== 0) {
+        cancelAnimationFrame(raf)
+        raf = 0
       }
     }
 
@@ -300,12 +309,21 @@ export function Halftone({
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
 
+    // A still frame under reduced motion has nothing to pause.
+    const unsubscribeWindowActive = reduce
+      ? undefined
+      : subscribeToWindowActive((next) => {
+          windowActive = next
+          syncAnimation()
+        })
+
     return () => {
       stopped = true
-      stopFrames?.()
+      cancelAnimationFrame(raf)
       ro.disconnect()
       io?.disconnect()
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      unsubscribeWindowActive?.()
       setPointerListening(false)
       gpu?.dispose()
     }

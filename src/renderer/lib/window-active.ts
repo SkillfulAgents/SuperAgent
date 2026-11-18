@@ -8,8 +8,7 @@
  *
  * `focus` and `blur` on the window say most of it, but not all: once focus is
  * inside an embedded frame (a dashboard, a widget), leaving the app fires
- * nothing on this window. A slow poll while anyone is subscribed covers that,
- * and stops while the document is hidden, when nothing animates whatever it says.
+ * nothing on this window. A slow poll while anyone is subscribed covers that.
  */
 
 type Listener = (active: boolean) => void
@@ -30,12 +29,6 @@ function sync() {
   listeners.forEach((listener) => listener(next))
 }
 
-function onVisibility() {
-  window.clearInterval(poll)
-  poll = document.hidden ? undefined : window.setInterval(sync, POLL_MS)
-  sync()
-}
-
 export function isWindowActive(): boolean {
   return listeners.size ? active : read()
 }
@@ -46,8 +39,7 @@ export function subscribeToWindowActive(listener: Listener): () => void {
     active = read()
     window.addEventListener('focus', sync)
     window.addEventListener('blur', sync)
-    document.addEventListener('visibilitychange', onVisibility)
-    poll = document.hidden ? undefined : window.setInterval(sync, POLL_MS)
+    poll = window.setInterval(sync, POLL_MS)
   }
   listeners.add(listener)
   return () => {
@@ -55,7 +47,6 @@ export function subscribeToWindowActive(listener: Listener): () => void {
     if (listeners.size === 0) {
       window.removeEventListener('focus', sync)
       window.removeEventListener('blur', sync)
-      document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(poll)
       poll = undefined
     }

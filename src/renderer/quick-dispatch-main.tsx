@@ -4,7 +4,6 @@ import './globals.css'
 import { QuickDispatchApp } from './components/quick-dispatch/quick-dispatch-app'
 import { initApiBaseUrl, isElectron, getPlatform } from './lib/env'
 import { initRendererErrorReporting } from './lib/error-reporting'
-import { installAmbientAnimationPause } from './lib/ambient-styles'
 
 // Standalone entry for the quick-dispatch launcher window — a separate
 // BrowserWindow / renderer process, so it boots its own (slim) provider tree
@@ -12,9 +11,6 @@ import { installAmbientAnimationPause } from './lib/ambient-styles'
 // order: error reporting → vibrancy class → API base URL → render.
 
 initRendererErrorReporting()
-
-// Looping animation holds still while the window is not the one in use (docs/animations.md).
-installAmbientAnimationPause()
 
 if (isElectron() && (getPlatform() === 'darwin' || getPlatform() === 'win32')) {
   document.documentElement.classList.add('electron-vibrancy')

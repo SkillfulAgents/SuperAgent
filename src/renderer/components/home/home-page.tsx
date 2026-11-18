@@ -45,7 +45,6 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { compactAgo, formatLastRun } from '@renderer/lib/last-run'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { toast } from 'sonner'
-import { useAmbientAnimationAllowed } from '@renderer/lib/ambient-frames'
 
 // Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
 // should pay for on a cards-only page load.
@@ -402,9 +401,7 @@ function AgentHealthCarousel({
   const [hovered, setHovered] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
   const reduceMotion = usePrefersReducedMotion()
-  // Turns by itself only where it can be watched: a shown document, in the window in use.
-  const watched = useAmbientAnimationAllowed()
-  const paused = hovered || focusWithin || reduceMotion || !watched
+  const paused = hovered || focusWithin || reduceMotion
 
   useEffect(() => {
     if (paused || count < 2) return

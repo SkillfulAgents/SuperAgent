@@ -17,7 +17,6 @@ import {
   setPreferredMicrophoneDeviceId,
   type MicrophoneDeviceOption,
 } from '@renderer/lib/voice/shared/microphone-device'
-import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 const SYSTEM_DEFAULT = 'system-default'
 
@@ -27,8 +26,7 @@ interface TestSession {
   stream: MediaStream
   context?: AudioContext
   source?: MediaStreamAudioSourceNode
-  /** Stops the level meter's frames. */
-  stopFrames?: () => void
+  frame?: number
 }
 
 function microphoneError(error: unknown): string {
@@ -70,7 +68,7 @@ export function MicrophoneSettings() {
   const releaseTest = useCallback(() => {
     const session = sessionRef.current
     if (!session) return
-    session.stopFrames?.()
+    if (session.frame !== undefined) cancelAnimationFrame(session.frame)
     session.source?.disconnect()
     if (session.context) void session.context.close()
     session.stream.getTracks().forEach((track) => track.stop())
@@ -142,10 +140,12 @@ export function MicrophoneSettings() {
           energy += normalized * normalized
         }
         setLevel(Math.min(1, Math.sqrt(energy / samples.length) * 4))
+        const session = sessionRef.current
+        if (session) session.frame = requestAnimationFrame(updateLevel)
       }
 
-      // Live while the test runs, focus or not. A meter re-renders on every reading: 30 a second (ambient-frames.ts).
-      sessionRef.current.stopFrames = subscribeToAmbientFrames(updateLevel, { kind: 'live', fps: 30 })
+      const frame = requestAnimationFrame(updateLevel)
+      sessionRef.current.frame = frame
       const activeDeviceId = stream.getAudioTracks()[0]?.getSettings().deviceId
       setUsingFallback(!!selectedDeviceId && !!activeDeviceId && activeDeviceId !== selectedDeviceId)
       setStatus('testing')

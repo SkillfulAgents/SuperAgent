@@ -1,5 +1,4 @@
 import { useRef, useEffect } from 'react'
-import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 interface MiniWaveformProps {
   analyserRef: React.RefObject<AnalyserNode | null>
@@ -25,6 +24,7 @@ export function MiniWaveform({
   color = 'white',
 }: MiniWaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const animFrameRef = useRef<number>(0)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -42,6 +42,7 @@ export function MiniWaveform({
     const RISE = 0.4
 
     function draw() {
+      animFrameRef.current = requestAnimationFrame(draw)
       if (!canvas || !ctx) return
 
       ctx.clearRect(0, 0, width, height)
@@ -88,9 +89,7 @@ export function MiniWaveform({
     }
 
     draw()
-    // Shown only while recording, which goes on without the window's focus. The smoothing is
-    // per call, tuned for 60 a second (ambient-frames.ts).
-    return subscribeToAmbientFrames(draw, { kind: 'live' })
+    return () => cancelAnimationFrame(animFrameRef.current)
   }, [analyserRef, bars, width, height, color])
 
   return (

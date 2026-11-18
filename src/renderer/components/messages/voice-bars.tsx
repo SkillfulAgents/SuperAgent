@@ -4,7 +4,6 @@ import { syntheticEnvelope } from '@renderer/lib/voice/orb/dot-orb'
 import { BAND_COUNT, VoiceSpectrumMeter } from '@renderer/lib/voice/orb/voice-spectrum'
 import { useIsDark } from '@renderer/hooks/use-theme'
 import { cn } from '@shared/lib/utils'
-import { subscribeToAmbientFrames } from '@renderer/lib/ambient-frames'
 
 interface VoiceBarsProps {
   /** The agent's bars, in its orb's core colour. */
@@ -101,9 +100,11 @@ export function VoiceBars({ agentColor, getAgentAnalyser, getPersonAnalyser, age
       ctx.fill()
     }
 
-    let unsubscribe: (() => void) | undefined
+    let frame = 0
+    let running = false
     let last = 0
     const tick = (now: number) => {
+      if (!running) return
       const dt = Math.min(0.1, last ? (now - last) / 1000 : 1 / 60)
       last = now
       const time = now / 1000
@@ -143,21 +144,29 @@ export function VoiceBars({ agentColor, getAgentAnalyser, getPersonAnalyser, age
         paintedAgentColor = current.agentColor
         paintedPersonColor = current.personColor
       }
+      frame = requestAnimationFrame(tick)
     }
-    // Live, like the voice orb: on screen, in a shown document, focus or not (ambient-frames.ts).
     const start = () => {
-      if (unsubscribe) return
+      if (running) return
+      running = true
       last = 0
-      unsubscribe = subscribeToAmbientFrames(tick, { kind: 'live' })
+      frame = requestAnimationFrame(tick)
     }
     const stop = () => {
-      unsubscribe?.()
-      unsubscribe = undefined
+      running = false
+      cancelAnimationFrame(frame)
     }
-    const unobserve = observeOrbVisibility(canvas, visible => (visible ? start() : stop()))
+    let visible = false
+    const onVisibility = () => (visible && !document.hidden ? start() : stop())
+    document.addEventListener('visibilitychange', onVisibility)
+    const unobserve = observeOrbVisibility(canvas, next => {
+      visible = next
+      onVisibility()
+    })
     return () => {
       unobserve()
       stop()
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [scale])
 
