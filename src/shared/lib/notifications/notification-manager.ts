@@ -21,7 +21,7 @@ import {
   getAgentAccessUserIds,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
-import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { getUserSettings, getUserSettingsForUsers } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
@@ -96,9 +96,11 @@ class NotificationManager {
     if (!isAuthMode()) return true
 
     try {
-      const userIds = await getAgentAccessUserIds(agentSlug)
-      for (const userId of userIds) {
-        if (isNotificationTypeEnabled((await getUserSettings(userId)).notifications, type)) return true
+      // Two statements however long the access list is: everyone's settings
+      // come back together, not one read per member until one says yes.
+      const settingsByUser = await getUserSettingsForUsers(await getAgentAccessUserIds(agentSlug))
+      for (const settings of settingsByUser.values()) {
+        if (isNotificationTypeEnabled(settings.notifications, type)) return true
       }
       return false
     } catch (error) {

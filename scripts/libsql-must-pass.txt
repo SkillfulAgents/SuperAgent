@@ -19,6 +19,7 @@ src/api/routes/llm-connections.test.ts
 src/api/routes/llm-runtime.test.ts
 src/shared/lib/notifications/push/apns-device-service.test.ts
 src/shared/lib/notifications/push/push-subscription-service.test.ts
+src/shared/lib/notifications/channels/push-recipients.integration.test.ts
 src/shared/lib/agent-actor/agent-catalog.test.ts
 src/api/middleware/auth.agent-role.integration.test.ts
 src/shared/lib/services/user-settings-service.test.ts
