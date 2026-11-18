@@ -90,3 +90,22 @@ it('refuses to create a folder outside the workspace', async () => {
   expect([400, 403]).toContain(response.status)
   expect(fs.existsSync(path.join(root, '../outside'))).toBe(false)
 })
+it('appends to the end of a file, makes it and its folders when missing, and refuses a folder', async () => {
+  await fs.promises.writeFile(path.join(root, 'session.jsonl'), '{"turn":1}\n')
+  const added = await app.request('/files/session.jsonl/append', { method: 'POST', body: '{"turn":2}\n' })
+  expect(added.status).toBe(200)
+  expect(await fs.promises.readFile(path.join(root, 'session.jsonl'), 'utf8')).toBe('{"turn":1}\n{"turn":2}\n')
+
+  const made = await app.request('/files/voice/2026/notes.txt/append', { method: 'POST', body: 'hello' })
+  expect(made.status).toBe(200)
+  expect(await fs.promises.readFile(path.join(root, 'voice/2026/notes.txt'), 'utf8')).toBe('hello')
+
+  const folder = await app.request('/files/voice/append', { method: 'POST', body: 'x' })
+  expect(folder.status).toBe(409)
+})
+it('keeps every line of appends made at the same time', async () => {
+  const lines = Array.from({ length: 20 }, (_, i) => `{"line":${i}}\n`)
+  await Promise.all(lines.map((line) => app.request('/files/session.jsonl/append', { method: 'POST', body: line })))
+  const saved = (await fs.promises.readFile(path.join(root, 'session.jsonl'), 'utf8')).split('\n').filter(Boolean)
+  expect(saved.sort()).toEqual(lines.map((line) => line.trim()).sort())
+})

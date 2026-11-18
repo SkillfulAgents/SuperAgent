@@ -85,6 +85,19 @@ export function registerLegacyFileRoutes(app: Hono, workspaceRoot = '/workspace'
         await fs.promises.mkdir(folder.localPath, { recursive: true })
         return c.json({ success: true, path: folder.relativePath })
       }
+      if (filePath.endsWith('/append')) {
+        const target = normalizeWorkspaceFilePath(filePath.slice(0, -'/append'.length), workspaceRoot)
+        const bytes = Buffer.from(await c.req.arrayBuffer())
+        await fs.promises.mkdir(path.dirname(target.localPath), { recursive: true })
+        // One write at the end of the file, so the bytes land whole next to what the agent's own
+        // process appends to the same file (a session's transcript). A caller that read the file and
+        // wrote it back lost the lines written in between.
+        await fs.promises.appendFile(target.localPath, bytes).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'EISDIR') throw new WorkspaceFileError('Not a file', 409)
+          throw error
+        })
+        return c.json({ success: true, path: target.relativePath })
+      }
       if (!filePath.endsWith('/upload')) return next()
       const file = await writeWorkspaceFile(filePath.slice(0, -'/upload'.length), c.req.raw.body, { workspaceRoot })
       return c.json({ success: true, path: file.relativePath })
