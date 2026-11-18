@@ -15,6 +15,9 @@ const command = process.platform === 'win32'
   ? `${inline} && node e2e/setup-e2e-data.js && npm run dev:web`
   : `${inline} node e2e/setup-e2e-data.js && ${inline} npm run dev:web`
 
+// WebKit traces without screenshots: they fill a macOS VM's WindowServer (see playwright.config.ts).
+const webkitTrace = { mode: 'retain-on-failure', screenshots: false } as const
+
 export default defineConfig({
   testDir: './e2e',
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results/radix',
@@ -26,9 +29,9 @@ export default defineConfig({
   use: { baseURL, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
   projects: [
     { name: 'radix-chromium', testMatch: '**/radix-interactions.spec.ts', use: { ...devices['Desktop Chrome'] } },
-    { name: 'radix-webkit', testMatch: '**/radix-interactions.spec.ts', use: { ...devices['Desktop Safari'] } },
+    { name: 'radix-webkit', testMatch: '**/radix-interactions.spec.ts', use: { ...devices['Desktop Safari'], trace: webkitTrace } },
     { name: 'radix-chromium-touch', testMatch: '**/radix-touch.spec.ts', use: { ...devices['Pixel 7'] } },
-    { name: 'radix-webkit-touch', testMatch: '**/radix-touch.spec.ts', use: { ...devices['iPhone 13'] } },
+    { name: 'radix-webkit-touch', testMatch: '**/radix-touch.spec.ts', use: { ...devices['iPhone 13'], trace: webkitTrace } },
   ],
   webServer: {
     command,
