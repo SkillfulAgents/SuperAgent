@@ -88,10 +88,14 @@ export function useNotableSessions(agentSlug: string | null, options?: { limit?:
 export function recentSessionsQueryOptions(queryClient: QueryClient, slug: string | null) {
   return {
     queryKey: recentSessionsKey(slug),
-    queryFn: async (): Promise<ApiSession[]> => {
-      const res = await apiFetch(`/api/agents/${slug}/sessions?limit=${RECENT_SESSIONS_LIMIT}&with_total=true`)
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ApiSession[]> => {
+      const res = await apiFetch(`/api/agents/${slug}/sessions?limit=${RECENT_SESSIONS_LIMIT}&with_total=true`, { signal })
       if (!res.ok) throw new Error('Failed to fetch sessions')
       const body = recentSessionsResponseSchema.parse(await res.json())
+      // The count is written here, beside the read rather than through it, so
+      // a read the query has dropped (an invalidation restarts it) must not
+      // write: its reply can land after the newer read's and undo its count.
+      if (signal.aborted) throw signal.reason
       // A server from before `with_total` answers the limited rows alone.
       if (Array.isArray(body)) {
         queryClient.removeQueries({ queryKey: sessionTotalKey(slug), exact: true })

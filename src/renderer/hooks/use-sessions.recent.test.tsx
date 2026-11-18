@@ -50,7 +50,10 @@ describe('useRecentSessions', () => {
     await waitFor(() => expect(result.current.recent.isSuccess).toBe(true))
 
     expect(mockApiFetch).toHaveBeenCalledTimes(1)
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/sessions?limit=6&with_total=true')
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/agents/agent-1/sessions?limit=6&with_total=true',
+      { signal: expect.any(AbortSignal) },
+    )
     expect(result.current.recent.data?.map((session) => session.id)).toEqual(['s1', 's2', 's3', 's4', 's5', 's6'])
     await waitFor(() => expect(result.current.total).toBe(5000))
     expect(client.getQueryData(['sessions', 'agent-1', 'recent', 6])).toHaveLength(6)
@@ -70,6 +73,29 @@ describe('useRecentSessions', () => {
     await waitFor(() => expect(result.current.recent.data).toHaveLength(1))
     await waitFor(() => expect(result.current.total).toBe(1))
     expect(mockApiFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the newer read\'s total when a read it replaced answers last', async () => {
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ sessions: rows(6), total: 10 }) })
+    const { result } = mountRow(client)
+    await waitFor(() => expect(result.current.total).toBe(10))
+
+    // Read A starts (10 sessions); a create invalidates and read B (11) replaces it.
+    const replies: Array<(reply: unknown) => void> = []
+    mockApiFetch.mockImplementation(() => new Promise((resolve) => replies.push(resolve)))
+    void client.invalidateQueries({ queryKey: ['sessions', 'agent-1'] })
+    await waitFor(() => expect(replies).toHaveLength(1))
+    void client.invalidateQueries({ queryKey: ['sessions', 'agent-1'] })
+    await waitFor(() => expect(replies).toHaveLength(2))
+    const [replyA, replyB] = replies
+
+    replyB({ ok: true, json: async () => ({ sessions: rows(6), total: 11 }) })
+    await waitFor(() => expect(result.current.total).toBe(11))
+    replyA({ ok: true, json: async () => ({ sessions: rows(6), total: 10 }) })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(result.current.total).toBe(11)
+    expect(client.getQueryData(['session-total', 'agent-1'])).toBe(11)
   })
 
   it('reports no total for a server that answers the limited rows alone', async () => {
