@@ -120,7 +120,7 @@ describe('sharing an agent with other agents', () => {
     renderPopover()
     await userEvent.click(screen.getByTestId('agent-share-button'))
 
-    expect(await screen.findByTestId('access-agent-triage')).toHaveTextContent('Inbox TriageAgentUser')
+    expect(await screen.findByTestId('access-agent-triage')).toHaveTextContent('Inbox TriageReading asks firstUser')
     expect(screen.getByTestId('access-agent-notes')).toHaveTextContent('Release NotesAgentViewer')
     // An agent that still asks first is not a member.
     expect(screen.queryByTestId('access-agent-danube')).toBeNull()
@@ -180,7 +180,7 @@ describe('sharing an agent with other agents', () => {
     expect(screen.queryByTestId('access-agent-triage')).toBeNull()
     expect(screen.queryByTestId('access-blocked-triage')).toBeNull()
     await userEvent.click(screen.getByTestId('access-blocked-toggle'))
-    expect(screen.getByTestId('access-blocked-triage')).toHaveTextContent('Can’t read or message each otherBlocked')
+    expect(screen.getByTestId('access-blocked-triage')).toHaveTextContent('Partly blockedBlocked')
   })
 })
 

@@ -432,6 +432,10 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
     if (!role) return null
     const testId = role === 'blocked' ? 'access-blocked' : 'access-agent'
     const label = role === 'blocked' ? 'Blocked' : ROLE_LABELS[role]
+    // Permissions saved elsewhere can grant or block less than a role does. The line under the name says so.
+    const subtitle = 'blocks' in agent
+      ? (agent.blocks.length < 4 ? 'Partly blocked' : 'Can’t read or message each other')
+      : (role === 'user' && agent.readDecision === 'review' ? 'Reading asks first' : 'Agent')
     return (
       <div
         key={`${testId}:${agent.slug}`}
@@ -441,7 +445,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
         <AgentFace agent={agent} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px]">{agent.name}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{role === 'blocked' ? 'Can’t read or message each other' : 'Agent'}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{subtitle}</div>
         </div>
         {canChangeAgent(agent) ? (
           <Select value={role === 'blocked' ? '' : role} onValueChange={(next) => changeAgentAccess(agent, next)} disabled={setAgentAccess.isPending}>
