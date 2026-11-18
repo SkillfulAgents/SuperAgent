@@ -7302,6 +7302,9 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
+    // What an open preview compares to learn the file changed, from a HEAD.
+    // Weak, so no client sends it back as an If-Range this route does not read.
+    c.header('ETag', `W/"${stat.mtimeMs}-${stat.size}"`)
 
     if (heicPreview) {
       if (c.req.method === 'HEAD') return c.body(null)

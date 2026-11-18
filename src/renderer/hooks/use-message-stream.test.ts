@@ -4136,4 +4136,21 @@ describe('typing leases', () => {
       vi.useRealTimers()
     }
   })
+
+  it('counts a turn when one starts or the stream takes a snapshot, not when a message is queued mid-turn', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { useSessionTurn } = await import('@renderer/lib/session-turns')
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    const { result } = renderHook(() => useSessionTurn('session-1'))
+    const es = MockEventSource.instances[0]
+    const start = result.current
+
+    act(() => es.simulateMessage({ type: 'session_active', queuedMidTurn: true }))
+    expect(result.current).toBe(start)
+    act(() => es.simulateMessage({ type: 'session_active' }))
+    expect(result.current).toBe(start + 1)
+    act(() => es.simulateMessage({ type: 'connected', isActive: true }))
+    expect(result.current).toBe(start + 2)
+  })
+
 })
