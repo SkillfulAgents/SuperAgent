@@ -38,18 +38,28 @@ async function availableMountName(slug: string, base: string, volumeId?: string)
     order by n limit 1)`
 }
 
+/** Attachment rows with their definitions. Every caller's condition names the agent. */
+const attachments = () => db.select({ volume: volumeDefinitions, mount: agentVolumes })
+  .from(agentVolumes).innerJoin(volumeDefinitions, eq(agentVolumes.volumeId, volumeDefinitions.id))
+
+function attachedMount({ volume, mount }: { volume: typeof volumeDefinitions.$inferSelect; mount: typeof agentVolumes.$inferSelect }): MountedVolume | null {
+  const stored = storedDefinition(volume)
+  return stored && { ...stored, id: mount.id, name: mount.name, volumeId: volume.id, volumeName: volume.name, readOnly: mount.readOnly }
+}
+
+/** What a global drive's mount id starts with for this agent: `global-<slug>-<volumeId>`. */
+const globalMountPrefix = (slug: string) => `global-${slug}-`
+
 /** The agent's own drives, then every global drive it does not already have. Its own access wins. */
 export async function getMounts(slug: string): Promise<MountedVolume[]> {
-  const rows = await db.select({ volume: volumeDefinitions, mount: agentVolumes })
-    .from(agentVolumes).innerJoin(volumeDefinitions, eq(agentVolumes.volumeId, volumeDefinitions.id))
-    .where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
-  const own: MountedVolume[] = rows.flatMap(({ volume, mount }) => {
-    const stored = storedDefinition(volume)
-    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id, volumeName: volume.name, readOnly: mount.readOnly }] : []
-  })
-  const globals = await db.select().from(volumeDefinitions)
-    .where(and(isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId)))
-    .orderBy(asc(volumeDefinitions.createdAt), asc(volumeDefinitions.id)).all()
+  // Neither select reads the other's result, so they go out together.
+  const [rows, globals] = await Promise.all([
+    attachments().where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all(),
+    db.select().from(volumeDefinitions)
+      .where(and(isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId)))
+      .orderBy(asc(volumeDefinitions.createdAt), asc(volumeDefinitions.id)).all(),
+  ])
+  const own: MountedVolume[] = rows.flatMap(row => attachedMount(row) ?? [])
   const names = new Set(own.map(mount => mount.name))
   const global: MountedVolume[] = globals.flatMap(volume => {
     const stored = own.some(mount => mount.volumeId === volume.id) ? null : storedDefinition(volume)
@@ -57,7 +67,7 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
     const name = uniqueName(volume.name, names)
     names.add(name)
     // One id per agent, as with attachment rows: providers keep upload state per mount id.
-    return [{ ...stored, id: `global-${slug}-${volume.id}`, name, volumeId: volume.id, volumeName: volume.name, readOnly: volume.globalAccess !== 'write', global: true }]
+    return [{ ...stored, id: `${globalMountPrefix(slug)}${volume.id}`, name, volumeId: volume.id, volumeName: volume.name, readOnly: volume.globalAccess !== 'write', global: true }]
   })
   return [...own, ...global]
 }
@@ -132,9 +142,18 @@ export async function removeMount(slug: string, mountId: string): Promise<boolea
   return changesOf(result) > 0
 }
 
+/** The mount `getMounts(slug)` lists under this id, without listing the rest. An attachment is read by its
+ * key, (agent, id), so another agent's attachment id finds nothing. A global drive's name depends on the
+ * agent's other mounts, so an id shaped like this agent's global ones still goes through the full listing. */
+async function mountById(slug: string, mountId: string): Promise<MountedVolume | null> {
+  if (mountId.startsWith(globalMountPrefix(slug))) return (await getMounts(slug)).find(m => m.id === mountId) ?? null
+  const row = await attachments().where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).get()
+  return row ? attachedMount(row) : null
+}
+
 /** The agent's own attachment or a global drive is the grant; knowing a shared definition's id grants no access. */
 export async function resolveVolume(slug: string, mountId: string) {
-  const row = (await getMounts(slug)).find(m => m.id === mountId)
+  const row = await mountById(slug, mountId)
   if (!row) return null
   const ops = instantiateVolume(row, slug)
   return ops && { ops, readOnly: row.readOnly }
