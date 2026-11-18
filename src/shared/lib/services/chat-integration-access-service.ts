@@ -30,9 +30,18 @@ async function getIntegration(integrationId: string) {
   return rows[0] || null
 }
 
-// fail-closed for unknown integration; true for non-telegram / public bot
-export async function isChatAllowed(integrationId: string, externalChatId: string): Promise<boolean> {
-  const integ = await getIntegration(integrationId)
+type ReadIntegration = { id: string; provider: string }
+
+/** Whether a row a caller already read says, by itself, if approval gates the chat. */
+function statesApproval(row: ReadIntegration, integrationId: string): row is ReadIntegration & { requireApproval: boolean | null } {
+  return row.id === integrationId && (row.provider !== 'telegram' || 'requireApproval' in row)
+}
+
+// fail-closed for unknown integration; true for non-telegram / public bot.
+// `current` is the integration's row when the caller read it for this check:
+// it is not read again (a row that cannot answer is, so nothing fails open).
+export async function isChatAllowed(integrationId: string, externalChatId: string, current?: ReadIntegration): Promise<boolean> {
+  const integ = current && statesApproval(current, integrationId) ? current : await getIntegration(integrationId)
   if (!integ) return false
   if (integ.provider !== 'telegram' || integ.requireApproval !== true) return true
   return (await getChatAccess(integrationId, externalChatId))?.status === 'allowed'

@@ -6,7 +6,10 @@ import { chatIntegrations } from '../../db/schema'
 import { linearConfigSchema, type LinearConfig } from './config'
 
 export async function getLinearConfig(id: string): Promise<LinearConfig> {
-  const row = await db.select().from(chatIntegrations).where(eq(chatIntegrations.id, id)).get()
+  return linearConfigOf(await db.select().from(chatIntegrations).where(eq(chatIntegrations.id, id)).get())
+}
+/** The configuration a stored Linear row holds. */
+export function linearConfigOf(row: { provider: string; config: string } | undefined): LinearConfig {
   if (!row || row.provider !== 'linear') throw new Error('Linear integration not found')
   return parseTaskJson(linearConfigSchema, row.config)
 }

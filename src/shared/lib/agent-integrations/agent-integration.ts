@@ -1,5 +1,6 @@
 import { captureException } from '../error-reporting'
 import type {
+  IntegrationAccessCheck,
   AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationEvent,
   IntegrationInputContext, IntegrationInputEvent, IntegrationInputResult, IntegrationOutput,
   IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy,
@@ -35,7 +36,7 @@ export abstract class AgentIntegration {
   activeTransport(): IntegrationTransport | null { return null }
   abstract resolveRoute(event: IntegrationInputEvent): IntegrationRoute
   abstract authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean>
-  abstract isAllowed(context: IntegrationSessionContext): Promise<boolean>
+  abstract isAllowed(context: IntegrationSessionContext, check?: IntegrationAccessCheck): Promise<boolean>
   abstract sessionPolicy(integration: AgentIntegrationRecord, route: Partial<IntegrationRoute>): IntegrationSessionPolicy
   abstract prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<PreparedIntegrationInput>
   abstract deliver(context: IntegrationSessionContext, output: IntegrationOutput): Promise<void>
