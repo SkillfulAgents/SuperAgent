@@ -42,6 +42,11 @@ vi.mock('@shared/lib/agent-actor', () => ({
         enrich: async () => false,
         complete: async () => {},
         snapshot: async () => [],
+        claim: async () => ({ token: 'claim-1' }),
+        releaseClaim: async () => {},
+      },
+      sessions: {
+        waitForIdle: async () => 'idle' as const,
       },
       messages: {
         deliver: async (request: { sessionId: string; content: string }) => {
@@ -72,6 +77,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
             }
             return new Response(JSON.stringify({ success: true, filled: body.values.filter(Boolean).length, failed: 0, submitted: true, problems: [] }), { status: 200 })
           }
+          if (url === '/browser/login/choose') return new Response(JSON.stringify({ success: true, clicked: true, problems: [] }), { status: 200 })
           if (url.startsWith('/inputs/')) return new Response('{}', { status: 200 })
           if (url === '/browser/status' && container.browser) return new Response(JSON.stringify(container.browser), { status: 200 })
           if (url === '/browser/session/restore') return new Response(JSON.stringify(container.restore.body), { status: container.restore.status })
@@ -83,7 +89,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
   },
 }))
 
-const { decideLoginRequest } = await import('./login-host')
+const { answeredWayLabel, decideLoginRequest, pickLoginWay } = await import('./login-host')
 const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, saveAuthenticator, setSignInMethodRequest, listAccountAgentSlugs } = await import('./vault-service')
 const { totpCode } = await import('./totp')
 const { backgroundSettled } = await import('@shared/lib/background')
@@ -102,6 +108,7 @@ const GITHUB: LoginContext = {
   fields: [field('username', 'Username or email'), field('password', 'Password', 'password')],
   held: [],
   providers: [],
+  ways: [],
 }
 
 let handle: TestDatabase
@@ -152,6 +159,18 @@ async function grantedAccount(username: string, values: Record<string, string> =
 }
 
 const fills = () => container.calls.filter((call) => call.path === '/browser/login/fill')
+const chosen = () => container.calls.filter((call) => call.path === '/browser/login/choose').map((call) => call.body)
+
+/** A page that asks how to verify it's you, as the browser located its ways. */
+const WAYS_STEP: LoginContext = {
+  ...GITHUB,
+  url: 'https://github.com/sessions/two-factor',
+  fields: [],
+  ways: [
+    { label: 'Use your authenticator app', method: 'authenticator_app', clickable: true },
+    { label: 'Get a code by text', method: 'text_message', clickable: true },
+  ],
+}
 const answers = () => container.calls
   .filter((call) => call.path.startsWith('/inputs/'))
   .map((call) => ({ path: call.path, value: JSON.parse((call.body as { value: string }).value) }))
@@ -855,6 +874,55 @@ describe('decideLoginRequest with an authenticator app', () => {
     expect(account.id).toBeTruthy()
   })
 
+  it('picks the app on a page that asks how to verify it\'s you, without the user', async () => {
+    await withAuthenticator()
+    container.context = WAYS_STEP
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(chosen()).toEqual([{ sessionId: 's-1', toolUseId: 't-1', expectedOrigin: 'https://github.com', index: 0, by: 'vault', username: 'octocat' }])
+    expect(fills()).toEqual([])
+  })
+
+  it('leaves the ways to the user when the page offers no app, or the vault holds none', async () => {
+    const account = await withAuthenticator()
+    const noApp = { ...WAYS_STEP, ways: [WAYS_STEP.ways[1], { label: 'Tap Yes on your phone', method: 'phone_prompt' as const, clickable: true }] }
+    container.context = noApp
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'ask', vault: { mode: 'ask', username: 'octocat', accountId: account.id }, login: noApp })
+
+    const other = await grantedAccount('hubot', { password: 'pw' })
+    container.context = WAYS_STEP
+    expect(await decide({ username: 'hubot' })).toEqual({ action: 'ask', vault: { mode: 'ask', username: 'hubot', accountId: other.id }, login: WAYS_STEP })
+    expect(chosen()).toEqual([])
+  })
+
+  it('picks the vault\'s app by its name where the page lists apps by name, and leaves apps it cannot tell apart to the user', async () => {
+    await withAuthenticator()
+    const devices: LoginContext = {
+      ...WAYS_STEP,
+      ways: [
+        { label: 'Phone', method: 'authenticator_app', clickable: true },
+        { label: 'Gamut', method: 'authenticator_app', clickable: true },
+      ],
+    }
+    container.context = devices
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(chosen()).toMatchObject([{ index: 1, by: 'vault' }])
+
+    container.calls = []
+    container.context = { ...devices, ways: [devices.ways[0], { ...devices.ways[1], label: 'Tablet' }] }
+    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask' })
+    expect(chosen()).toEqual([])
+  })
+
+  it('leaves the ways to the user once the app filled its codes too often', async () => {
+    const account = await withAuthenticator()
+    for (let index = 0; index < 3; index++) {
+      await recordAccountUse({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-0', password: false, by: 'vault', code: true })
+    }
+    container.context = WAYS_STEP
+    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask' })
+    expect(chosen()).toEqual([])
+  })
+
   it('tells the agent the vault fills the app\'s code when the call did not say where the code comes from', async () => {
     await withAuthenticator()
     container.context = { ...CODE_STEP, fields: [field('otp', 'Authentication code')] }
@@ -945,5 +1013,30 @@ describe('decideLoginRequest with an authenticator app', () => {
     expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
     await backgroundSettled()
     expect(container.delivered.map((message) => message.sessionId)).toEqual(['s-1', 's-2'])
+  })
+})
+
+describe('pickLoginWay', () => {
+  it('clicks the way a chat answer names, as the user\'s pick', async () => {
+    container.context = WAYS_STEP
+    const label = answeredWayLabel({ 'github.com asks how to verify it\'s you. Which way?': 'Get a code by text' })
+    expect(label).toBe('Get a code by text')
+    expect(await pickLoginWay({ agentSlug: 'agent-a', sessionId: 's-1', toolUseId: 't-1', pick: { label: label! } }))
+      .toEqual({ ok: true, result: { success: true, clicked: true, problems: [] } })
+    expect(chosen()).toEqual([{ sessionId: 's-1', toolUseId: 't-1', expectedOrigin: 'https://github.com', index: 1, by: 'user' }])
+  })
+
+  it('answers the page\'s only way with "Done", and clicks nothing for a way the page does not offer', async () => {
+    container.context = { ...WAYS_STEP, ways: [{ label: 'Check your phone', method: 'phone_prompt', clickable: false }] }
+    expect(await pickLoginWay({ agentSlug: 'agent-a', sessionId: 's-1', toolUseId: 't-1', pick: { label: answeredWayLabel({ answers: { q: 'Done' } })! } }))
+      .toMatchObject({ ok: true })
+    expect(chosen()).toMatchObject([{ index: 0, by: 'user' }])
+
+    container.context = WAYS_STEP
+    expect(await pickLoginWay({ agentSlug: 'agent-a', sessionId: 's-1', toolUseId: 't-1', pick: { label: 'Use a backup code' } }))
+      .toEqual({ ok: false, status: 400, error: 'The page offers no such way' })
+    expect(await pickLoginWay({ agentSlug: 'agent-a', sessionId: 's-1', toolUseId: 't-1', pick: { index: 0, origin: 'https://evil.example' } }))
+      .toEqual({ ok: false, status: 409, error: 'This sign-in request is for a different site' })
+    expect(chosen()).toHaveLength(1)
   })
 })

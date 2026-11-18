@@ -28,6 +28,7 @@ const CONTEXT: LoginContext = {
   fields: [field('username', 'Email'), field('password', 'Password')],
   held: [],
   providers: [],
+  ways: [],
 }
 const INFO: LoginVaultInfo = {
   site: 'github.com',
@@ -36,6 +37,7 @@ const INFO: LoginVaultInfo = {
   accounts: [],
   providerAccounts: [],
   providers: [{ id: 'google', name: 'Google', site: 'google.com' }, { id: 'github', name: 'GitHub', site: 'github.com' }],
+  addMethod: null,
 }
 
 const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: () => Promise.resolve(body) })

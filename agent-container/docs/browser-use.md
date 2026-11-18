@@ -165,20 +165,23 @@ reports that nothing was clicked or pressed (the page submitted the form,
 navigated or sent the code by itself), snapshot before submitting anything
 yourself.
 
-When a sign-in asks to verify it's you, the way is the user's to choose
-whenever the page offers more than one: a list of ways (a code by text or
-email, a prompt on the phone, a passkey or security key), or one way (a
-passkey or phone prompt) with "Try another way". Never hand the browser over
-on such a page before the user picked: open that list, ask with
-`AskUserQuestion` (one option per way, in the page's words) and click the one
-picked. For an account whose authenticator app the vault holds (the
-`request_login` results say so), choose the authenticator app yourself. A
-code then goes in with `request_login` (kind `otp`, with `from` saying where
-the page says it comes from: the vault fills an `authenticator_app` code when
-it holds the app; a `text_message` or `email` code is the user's). After a
-prompt to the user's phone, wait for the page to move on by itself:
-`browser_wait` with 15000 reports where the page is after each wait; repeat it
-for up to about two minutes.
+When a sign-in asks to verify it's you, the way is not yours to pick: call
+`request_login` on that page with its ways in `ways` (no fields), each with
+its ref, the page's words and its `method` (`authenticator_app`,
+`text_message`, `email`, `phone_prompt`, `passkey`, `other`), and the
+username you are signing in with. On a page with one way and "Try another
+way", open that list first. The vault picks a way it holds for the account
+(its authenticator app), or the user picks one in the app (or in chat); the
+way is clicked for you, and the result says what comes next. Never click a
+way yourself. A code then goes in with `request_login` (kind `otp`, with
+`from` saying where the page says it comes from: the vault fills an
+`authenticator_app` code when it holds the app; a `text_message` or `email`
+code is the user's). After a prompt to the user's phone, wait for the page to
+move on by itself: `browser_wait` with 15000 reports where the page is after
+each wait; repeat it for up to about two minutes. When the page's only way is
+a prompt on the user's device with nothing to click, call `request_login` with
+that one way and no ref: the user is shown it, and the call returns once the
+page moves on (or after three minutes).
 
 When the user asked you for a sign-in method on an account (their message,
 also one sent from the sign-in form or Settings → Logins), add an

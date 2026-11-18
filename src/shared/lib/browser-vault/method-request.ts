@@ -10,9 +10,15 @@ import { markSignInMethodAsked, type VaultAccount } from './vault-service'
  * own message in the session: they ticked "Also add an authenticator app" in
  * the sign-in card, or turned it on in Settings → Logins. Said in a tool
  * result, it would read as the tool's or the page's words, which agents rightly
- * do not take as the user's (live runs: they declined it every time). Once per
- * session and account, when the agent signs in with it.
+ * do not take as the user's (live runs: they declined it every time). So is a
+ * message sent while the agent's turn runs: it joins the turn, and the agent
+ * reads it inside the next tool result it gets (live runs: ignored as an
+ * injected request). It goes once that turn has ended, as a turn of its own.
+ * Once per session and account.
  */
+
+/** How long a request waits for the agent's turn to end; past that, the next sign-in with the account asks again. */
+const TURN_WAIT_MS = 30 * 60 * 1000
 
 /** The request in the owner's words, saying where they made it. */
 export function signInMethodMessage(account: Pick<VaultAccount, 'site' | 'username'>, from: 'card' | 'logins'): string {
@@ -31,11 +37,14 @@ export async function askForSignInMethod(input: {
   from: 'card' | 'logins'
 }): Promise<boolean> {
   const { agentSlug, sessionId, account } = input
+  const actor = agentRegistry.get(agentSlug)
+  // The request stays on the account meanwhile: a turn that outlasts the wait leaves it for the next sign-in.
+  if ((await actor.sessions.waitForIdle(sessionId, { timeoutMs: TURN_WAIT_MS })) === 'timeout') return false
   if (!(await markSignInMethodAsked(account.id, sessionId))) return false
   const uuid = randomUUID()
   // The owner's message: attributed to them where messages are.
   if (isAuthMode() && account.ownerId) await db.insert(messageAuthor).values({ id: uuid, sessionId, agentSlug, userId: account.ownerId })
-  await agentRegistry.get(agentSlug).messages.deliver({
+  await actor.messages.deliver({
     sessionId,
     content: signInMethodMessage(account, input.from),
     uuid,

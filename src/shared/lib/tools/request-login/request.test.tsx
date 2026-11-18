@@ -50,6 +50,7 @@ const CONTEXT: LoginContext = {
   ],
   held: [],
   providers: [],
+  ways: [],
 }
 
 const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: () => Promise.resolve(body) })
@@ -269,22 +270,71 @@ describe('LoginRequestItem', () => {
     expect(mockToast.warning).not.toHaveBeenCalled()
   })
 
-  it('asks the agent to add an authenticator app to the account it saves when the user ticks the box', async () => {
-    const user = userEvent.setup()
+  it('offers no authenticator app on the first step, only "Save for later"', async () => {
     render(<LoginRequestItem {...props()} />)
-    const username = await ready()
-    // Only while "Save for later" is on: the app goes to the saved account.
-    await user.click(screen.getByTestId('login-save'))
+    await ready()
+    expect(screen.getByTestId('login-save-section')).toBeInTheDocument()
     expect(screen.queryByTestId('login-add-method')).toBeNull()
-    await user.click(screen.getByTestId('login-save'))
-    await user.click(screen.getByTestId('login-add-method'))
+  })
 
-    await user.type(username, 'octocat')
-    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
-    await user.type(screen.getByLabelText('Authentication code'), '482913')
-    await user.click(screen.getByTestId('login-submit'))
-    await waitFor(() => expect(posted('/fill-login')).toHaveLength(1))
-    expect(posted('/fill-login')[0]).toMatchObject({ save: true, addSignInMethod: true })
+  it('asks the agent for an authenticator app at once when the user ticks the box on a code step', async () => {
+    const user = userEvent.setup()
+    contextIs({ fields: [{ kind: 'otp', label: 'Authentication code', inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6, from: 'text_message' }] })
+    routes[`${BASE}/login-request/vault?toolUseId=tu-1`] = () => json(200, {
+      site: 'github.com', otherMembers: 0, identity: 'octocat', accounts: [], providerAccounts: [], providers: [],
+      addMethod: { accountId: 'acc-1', username: 'octocat', requested: false },
+    })
+    routes[`${BASE}/login-request/method`] = () => json(200, { requested: true })
+    render(<LoginRequestItem {...props({ fields: [{ kind: 'otp', label: 'Authentication code' }] })} />)
+    await ready()
+
+    await user.click(await screen.findByTestId('login-add-method'))
+    await waitFor(() => expect(posted('/login-request/method')).toEqual([{ toolUseId: 'tu-1' }]))
+    // Asked: it stays ticked, and is not taken back from here.
+    await waitFor(() => expect(screen.getByTestId('login-add-method')).toBeDisabled())
+    expect(screen.getByTestId('login-add-method')).toBeChecked()
+    expect(screen.getByTestId('login-add-method-section')).toHaveTextContent('Asked')
+    expect(posted('/fill-login')).toEqual([])
+  })
+
+  it('lets the user pick a way on a page that asks how to verify it\'s you, with the box beside', async () => {
+    const user = userEvent.setup()
+    const ways = [
+      { label: 'Get a code at •••12', method: 'text_message', clickable: true },
+      { label: 'Tap Yes on your phone', method: 'phone_prompt', clickable: true },
+    ] as const
+    contextIs({ fields: [], ways: [...ways] })
+    routes[`${BASE}/login-request/vault?toolUseId=tu-1`] = () => json(200, {
+      site: 'github.com', otherMembers: 0, identity: 'octocat', accounts: [], providerAccounts: [], providers: [],
+      addMethod: { accountId: 'acc-1', username: 'octocat', requested: false },
+    })
+    routes[`${BASE}/login-way`] = () => json(200, { success: true, clicked: true, problems: [] })
+    const onComplete = vi.fn()
+    render(<LoginRequestItem {...props({ fields: [], ways: [...ways], onComplete })} />)
+
+    expect(await screen.findByTestId('login-way-0')).toHaveTextContent('Get a code at •••12')
+    expect(await screen.findByTestId('login-add-method')).not.toBeChecked()
+    expect(screen.queryByTestId('login-form')).toBeNull()
+    await user.click(screen.getByTestId('login-way-1'))
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalled())
+    expect(posted('/login-way')).toEqual([{ toolUseId: 'tu-1', origin: 'https://github.com', index: 1 }])
+    expect(screen.getByTestId('login-request-completed')).toHaveAttribute('data-status', 'way')
+  })
+
+  it('shows the page\'s only prompt, done by the user on their device', async () => {
+    const user = userEvent.setup()
+    const ways = [{ label: 'Check your phone: tap Yes', method: 'phone_prompt', clickable: false }] as const
+    contextIs({ fields: [], ways: [...ways] })
+    routes[`${BASE}/login-way`] = () => json(200, { success: true, clicked: false, problems: [] })
+    render(<LoginRequestItem {...props({ fields: [], ways: [...ways] })} />)
+
+    expect(await screen.findByTestId('login-way-prompt')).toHaveTextContent('Check your phone: tap Yes')
+    expect(screen.queryByTestId('login-ways')).toBeNull()
+    // No account of the user's here: nothing to add an app to.
+    expect(screen.queryByTestId('login-add-method')).toBeNull()
+    await user.click(screen.getByTestId('login-way-done'))
+    await waitFor(() => expect(posted('/login-way')).toEqual([{ toolUseId: 'tu-1', origin: 'https://github.com', index: 0 }]))
   })
 
   it('says what was kept when the browser had closed before the user answered', async () => {

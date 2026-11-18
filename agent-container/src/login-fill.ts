@@ -10,6 +10,7 @@
  * where the CLI says the ref's element is.
  */
 import { callOnElement, callOnElementWith, locateFocusedElement, mainFrameOf, type CdpConnection, type CdpEvent, type LocatedElement } from './login-cdp'
+import type { WayMethod } from './login-schema'
 import {
   CLICK_IN_PAGE_FUNCTION,
   FILL_PAGE_STATE_FUNCTION,
@@ -49,6 +50,14 @@ export interface HeldLoginField {
   label: string
 }
 
+/** A way a page that asks how to verify it's you offers: clicked once picked. */
+export interface PreparedLoginWay {
+  /** Null for the page's only way when there is nothing to click: a prompt on the user's device. */
+  ref: string | null
+  label: string
+  method: WayMethod
+}
+
 export interface PreparedLogin {
   toolUseId: string
   sessionId: string
@@ -63,6 +72,8 @@ export interface PreparedLogin {
   held: HeldLoginField[]
   /** The page's buttons for signing in with another service, as the agent listed them (provider ids). */
   providers: string[]
+  /** A page that asks how to verify it's you: its ways, and no fields. */
+  ways: PreparedLoginWay[]
   submitRef: string | null
   preparedAt: number
 }

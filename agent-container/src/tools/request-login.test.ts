@@ -94,7 +94,7 @@ describe('request_login tool', () => {
     await vi.waitFor(() => expect(inputManager.hasPending('login-ok')).toBe(true))
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toMatch(/\/browser\/login\/prepare$/)
-    expect(JSON.parse(String(init.body))).toEqual({ sessionId: 'session-7', toolUseId: 'login-ok', fields: args.fields, submitRef: '@e7', providers: ['google', 'apple'] })
+    expect(JSON.parse(String(init.body))).toEqual({ sessionId: 'session-7', toolUseId: 'login-ok', fields: args.fields, submitRef: '@e7', providers: ['google', 'apple'], ways: [] })
     const parked = inputManager.getAllPending().find((p) => p.toolUseId === 'login-ok')
     expect(parked).toMatchObject({ inputType: 'login', metadata: { origin: 'https://github.com', message: args.message } })
 
@@ -283,6 +283,49 @@ describe('formatLoginResolution for a saved session', () => {
     expect(cleared.content[0].text).toContain('To sign in, call request_login again with username "octocat"')
     expect(session(false, { changed: true, cleared: false }).content[0].text).toContain('Part of the browser\'s cookies and storage on github.com may have been replaced')
     expect(session(false, { changed: false, cleared: false }).content[0].text).toContain('cookies and storage on github.com were left as they were')
+  })
+})
+
+describe('formatLoginResolution for a way to verify it\'s you', () => {
+  const picked = (method: 'authenticator_app' | 'text_message' | 'phone_prompt' | 'passkey', label: string) => ({ label, method })
+
+  it('says the vault picked its app and that it fills the code, naming the account', () => {
+    const { content, isError } = formatLoginResolution({
+      type: 'way', origin: 'https://github.com', picked: picked('authenticator_app', 'Use your authenticator app'), by: 'vault', username: 'octocat', clicked: { ref: '@e4' },
+    })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toBe([
+      'The vault holds the authenticator app of octocat, so the host picked "Use your authenticator app", and @e4 was clicked.',
+      'When the page asks for the code, call request_login with username "octocat" and map its field with from: "authenticator_app": the vault fills it.',
+    ].join('\n'))
+  })
+
+  it('says what comes after the user\'s pick: their code, waiting for the phone, or handing over a passkey', () => {
+    const text = (way: ReturnType<typeof picked>) =>
+      formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: way, by: 'user', username: 'octocat', clicked: { ref: '@e5' } }).content[0].text
+    expect(text(picked('text_message', 'Get a code at •••12'))).toContain('map its field with from: "text_message": the user enters it.')
+    expect(text(picked('authenticator_app', 'Use your app'))).toContain('from: "authenticator_app": the user enters it.')
+    expect(text(picked('phone_prompt', 'Tap Yes on your phone'))).toContain('wait for the page to move on by itself')
+    expect(text(picked('passkey', 'Use your passkey'))).toContain('call request_browser_input')
+  })
+
+  it('tells the agent to click the way itself when the click failed, and what comes after', () => {
+    const { content, isError } = formatLoginResolution({
+      type: 'way', origin: 'https://github.com', picked: picked('text_message', 'Get a code at •••12'), by: 'user', clickError: 'clicking @e4 failed: covered',
+    })
+    expect(isError).toBe(true)
+    expect(content[0].text).toBe('The user picked "Get a code at •••12", but it was not clicked: Clicking @e4 failed: covered. Click the way you mapped as "Get a code at •••12" yourself. Then: When the page asks for the code, call request_login and map its field with from: "text_message": the user enters it.')
+  })
+
+  it('reports the page\'s only prompt: moved on, not within the wait, or answered from the card', () => {
+    const prompt = picked('phone_prompt', 'Check your phone')
+    expect(formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: prompt, by: 'page', moved: true }).content[0].text)
+      .toBe('The page moved on from "Check your phone": the user answered the prompt on their device.')
+    const late = formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: prompt, by: 'page', moved: false })
+    expect(late.isError).toBe(true)
+    expect(late.content[0].text).toContain('call request_browser_input')
+    expect(formatLoginResolution({ type: 'way', origin: 'https://github.com', picked: prompt, by: 'user' }).content[0].text)
+      .toBe('The user picked "Check your phone": the user says they answered it on their device. Take a snapshot to see the page.')
   })
 })
 
@@ -506,13 +549,13 @@ describe('the vault\'s authenticator apps', () => {
       outcomes: [{ ref: '@e3', kind: 'password', label: 'Password', status: 'filled' }],
       account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [], authenticator: {} },
     }).content[0].text
-    expect(text).toContain('The vault also holds the authenticator app of this account: if the site asks how to verify, choose the authenticator app, and map its code field with from: "authenticator_app" (the vault fills it).')
+    expect(text).toContain('The vault also holds the authenticator app of this account: if the site asks how to verify, call request_login with its ways (the host picks the app), and map the code field with from: "authenticator_app" (the vault fills it).')
     const named = formatLoginResolution({
       ...FILLED,
       outcomes: [{ ref: '@e3', kind: 'password', label: 'Password', status: 'filled' }],
       account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [], authenticator: { name: 'Gamut' } },
     }).content[0].text
-    expect(named).toContain('The vault also holds the authenticator app of this account (named "Gamut" where the site lists apps): if the site asks how to verify, choose the authenticator app by that name')
+    expect(named).toContain('The vault also holds the authenticator app of this account (named "Gamut" where the site lists apps): if the site asks how to verify, call request_login with its ways')
   })
 
   it('tells the agent where to say a code comes from when the vault holds the app', () => {

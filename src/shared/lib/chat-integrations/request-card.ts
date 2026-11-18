@@ -16,6 +16,7 @@ import type {
   UserInputRequestKind,
 } from '@shared/lib/tools/requests/request-schema'
 import { formatProviderName } from '@shared/lib/agent-integrations/presentation'
+import { siteLabel, summarizeLoginWays } from '@shared/lib/tools/request-login/login-request'
 
 /**
  * Kind → the card `type` a connector switches on.
@@ -59,12 +60,40 @@ export function requestCardFromRegistry(request: PendingUserInputRequest): UserR
   const type = KIND_TO_CARD_TYPE[request.kind]
   if (!type) return null
   if (request.autoApproved) return null
+  const ways = request.kind === 'login' ? loginWaysCard(request) : null
+  if (ways) return ways
   return {
     // Payload first: `type` and `toolUseId` are ours to set, and a malformed
     // tool input must not be able to redirect the card it renders as.
     ...(request.payload as Record<string, unknown>),
     type,
     toolUseId: request.id,
+    ...(request.scope.agentSlug ? { agentSlug: request.scope.agentSlug } : {}),
+  } as UserRequestEvent
+}
+
+/**
+ * A page that asks how to verify it's you holds no secret, unlike the rest of
+ * a sign-in: chat asks which way as a question, and the press goes to the
+ * host, which clicks it on the page (agent-integration-manager). The page's
+ * only way with nothing to click (a prompt on the user's phone) gets "Done".
+ * Null for any other sign-in request: those need the app.
+ */
+export function loginWaysCard(request: PendingUserInputRequest): UserRequestEvent | null {
+  const payload = request.payload as { origin?: unknown; ways?: unknown }
+  const ways = summarizeLoginWays(payload.ways)
+  if (ways.length === 0) return null
+  const site = typeof payload.origin === 'string' ? siteLabel(payload.origin) : 'The site'
+  const prompt = ways.length === 1 && !ways[0].clickable
+  return {
+    type: 'question_request',
+    toolUseId: request.id,
+    questions: [{
+      question: prompt
+        ? `${site} asks you to verify it's you: ${ways[0].label}. Press Done once you have.`
+        : `${site} asks how to verify it's you. Which way? It is clicked on the page for you.`,
+      options: prompt ? [{ label: 'Done' }] : ways.map((way) => ({ label: way.label })),
+    }],
     ...(request.scope.agentSlug ? { agentSlug: request.scope.agentSlug } : {}),
   } as UserRequestEvent
 }

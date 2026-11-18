@@ -133,18 +133,29 @@ browser refused leaves everything held. A fill sent without any answer counts
 as having gone in, as does a fill whose process went away: its parts are
 dropped after five minutes, never offered again.
 
-A second step that offers several ways (a code by text, a prompt on the
-phone, a passkey) is the user's to choose, also when the page opens on one
-of them with "Try another way": the agent opens the list and asks which with
-`AskUserQuestion` before it clicks one (the web-browser subagent reports the ways to the main agent,
-which asks). A code then goes through request_login like any step, and is
-never saved. After a prompt to the phone the agent waits for the page to
-move on, and hands the browser over (`request_browser_input`) only if it has
-not within about two minutes. This lives in the container, not the host: the
-agent's prompts and tool descriptions, and a hint (`sign-in-verify-way`, see
-`agent-container/src/hints/builtin/`) shown when a request_login call
-returns, which is when that step comes up. Nothing enforces it: a missed
-choice costs the user a hand-over, not the sign-in.
+A step that asks how to verify it's you (a code by text, a prompt on the
+phone, an authenticator app, a passkey) is a request_login call of its own:
+the agent maps the page's ways in `ways` instead of fields (each with its
+ref, the page's words and a `method`), opening "Try another way" first, and
+names the account. The host decides it like any call (`decideWays`): a way
+the vault holds for the account (its authenticator app, within the code
+limits below; where the page lists apps by name, the one named as the
+vault's) is picked by itself; else the card asks which. Either way the
+container clicks it (`/browser/login/choose`, holding the request's claim), and
+the result tells the agent what comes next (the code's `from`, or waiting for
+the phone). In chat the ways are a question, since they hold no secret: the
+press goes to the host, which clicks it (`pickLoginWay`). A page whose only
+way is a prompt on the user's device, with nothing to click, is one way
+without a ref: the card shows it, and the container answers the call once the
+page's URL changes (the user approved it) or after three minutes; the card's
+Done answers it too. A code then goes through request_login like any step,
+and is never saved. After a phone prompt the user picked, the agent waits for
+the page to move on, and hands the browser over (`request_browser_input`)
+only if it has not within about two minutes. The agent's prompts, the tool's
+description and a hint (`sign-in-verify-way`, see
+`agent-container/src/hints/builtin/`) shown when a request_login call returns
+tell it to map the ways; an agent that clicks one itself costs the user the
+choice, not the sign-in.
 
 ### The card
 
@@ -447,18 +458,31 @@ two-step verification the account already has: never turning it on where it is
 off (the user would need the vault to sign in themselves), never replacing or
 removing a method (their phone's app). Three ways to ask:
 
-- The sign-in card: "Also add an authenticator app", under "Save for later"
-  and only with it (the app goes to the saved account).
+- The sign-in card, at a step of two-step verification: "Also add an
+  authenticator app" on the card that asks how to verify it's you or for a
+  code, for an account of the user's the vault holds no app for (nor an
+  agent found none to add for). That is when the account shows it has two-step
+  verification, and when the user is doing what an app would spare them.
+  Ticking it makes the request at once (`POST …/login-request/method`), apart
+  from how the card is answered, so it cannot be taken back there. A "verify
+  it's you" page is not proof of two-step verification (sites also check a
+  sign-in they find risky), so the agent still looks at the security settings
+  first.
 - Settings → Logins: the account's "Have an agent add one" switch, for an
   account that never shows a card (the vault signs in with it unattended).
 - The conversation: the user asks the agent, which passes their words.
 
 The first two leave a standing request on the account (`signInMethods.requested`).
 The agent is asked as the user's own message in the session
-(`method-request.ts`), once per session: when the card's box was ticked, and
+(`method-request.ts`), once per session: when the card's box is ticked, and
 when the vault next signs in with the account. Said in a tool result, the
 request reads as the tool's or the page's words, and agents rightly do not take
-those as the user's: in live runs they declined it every time.
+those as the user's: in live runs they declined it every time. A message sent
+while the agent's turn runs fares the same: it joins the turn, and the agent
+reads it inside the next tool result (live runs: ignored as an injected
+request). So it waits for the turn to end (`sessions.waitForIdle`, up to half
+an hour) and goes as a turn of its own; a turn longer than that leaves it to
+the next sign-in.
 
 **Adding one** (`add_sign_in_method`, a host tool: `method-host.ts`). The agent
 opens the site's setup, and calls the tool with the account's username and the
@@ -486,8 +510,8 @@ passwords. A code field without `from` on an account whose app the vault holds
 answers the agent that the vault fills that app's code (`type: authenticator`)
 instead of asking the user for a code they may not have. Results and the
 account list tell the agent the vault holds the app (and its name on the site),
-so it picks the authenticator app where a page offers ways to verify, without
-asking the user. When the agent says the site rejected a code
+and on a page that asks how to verify it's you the host picks the
+authenticator app way by itself, without asking the user. When the agent says the site rejected a code
 (`ask_user` with the code field mapped as the app's), the app is marked
 (`rejectedAt`) and the user is asked for codes until an app is added again.
 

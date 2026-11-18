@@ -15,7 +15,7 @@ import { callTargets } from '@shared/lib/computer-use/commands'
 import { commandLineOf, computerUseMethodFromToolName, isComputerUseToolName } from '@shared/lib/computer-use/command-line'
 import { askUserQuestionDef } from '../ask-user-question/definition'
 import { PARKED_CALL_KINDS, type PendingUserInputRequest } from './request-schema'
-import { loginVaultPayloadSchema, summarizeLoginFields, type LoginFieldSummary, type LoginVaultPayload } from '../request-login/login-request'
+import { loginVaultPayloadSchema, summarizeLoginFields, summarizeLoginWays, type LoginFieldSummary, type LoginVaultPayload, type LoginWay } from '../request-login/login-request'
 
 interface UsePendingRequestsArgs {
   sessionId: string | null
@@ -30,7 +30,7 @@ type PendingRequestBuckets = {
   fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
   remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string }[]
   browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[]
-  loginRequests: { toolUseId: string; message: string; fields: LoginFieldSummary[]; vault?: LoginVaultPayload }[]
+  loginRequests: { toolUseId: string; message: string; fields: LoginFieldSummary[]; ways: LoginWay[]; vault?: LoginVaultPayload }[]
   scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[]
   computerUseRequests: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[]
 }
@@ -175,6 +175,7 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         toolUseId: toolCall.id,
         message: input.message,
         fields: summarizeLoginFields(input.fields),
+        ways: summarizeLoginWays(input.ways),
       })
     }
   } else if (kind === 'script_run') {
@@ -489,6 +490,7 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
             toolUseId: request.id,
             message: payload.message,
             fields: summarizeLoginFields(payload.fields),
+            ways: summarizeLoginWays(payload.ways),
             ...(vault.success ? { vault: vault.data } : {}),
           })
         }

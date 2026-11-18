@@ -97,12 +97,14 @@ import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
 import {
+  chooseLoginWayBodySchema,
   completeLoginBodySchema,
   fillLoginBodySchema,
   fillLoginCredentialBodySchema,
   loginContextSchema,
   loginVaultPayloadSchema,
   loginViaBodySchema,
+  requestLoginMethodBodySchema,
   type LoginContext,
 } from '@shared/lib/tools/request-login/login-request'
 import {
@@ -114,6 +116,7 @@ import {
   noteUsername,
   fieldsWentIn,
   partsFrom,
+  pickLoginWay,
   readLoginContext,
   restoresHere,
   saveHeldParts,
@@ -4282,6 +4285,7 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
       fillsHere: vaultFillsInto(account.origin, pageOrigin),
     }
   }
+  const stepAccount = await twoStepAccount(viewer, agentSlug, toolUseId, read.context, site)
   return c.json({
     site,
     otherMembers,
@@ -4295,7 +4299,49 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
     })),
     // Never the site's own: not GitHub on github.com's sign-in page.
     providers: SIGN_IN_PROVIDERS.filter((provider) => provider.site !== registrableDomain(site)),
+    addMethod: stepAccount
+      ? { accountId: stepAccount.id, username: stepAccount.username, requested: Boolean(stepAccount.signInMethods.requested) }
+      : null,
   })
+})
+
+// POST /api/agents/:id/sessions/:sessionId/login-request/method - "Also add an
+// authenticator app" on a step of two-step verification: the request stays on
+// the account until an agent answers it, and this session's agent is asked
+// now, as the user's own message (method-request).
+agents.post('/:id/sessions/:sessionId/login-request/method', AgentUser(), zValidator('json', requestLoginMethodBodySchema), async (c) => {
+  const body = c.req.valid('json')
+  const gated = await gateOpenRequestAccess(c, body.toolUseId, 'login')
+  if (gated) return gated
+  if (getMeetingParticipant(c)) return c.json({ error: 'Forbidden' }, 403)
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  const read = await readLoginContext(agentSlug, body.toolUseId)
+  if (!read.ok) return c.json({ error: read.error }, read.status)
+  const site = siteOfOrigin(read.context.origin)
+  const viewer = getViewerUserId(c)
+  const account = site ? await twoStepAccount(viewer, agentSlug, body.toolUseId, read.context, site) : null
+  if (!account) return c.json({ error: 'There is no saved account of yours to add an authenticator app to here' }, 409)
+  await setSignInMethodRequest(viewer, account.id, true, 'card')
+  background(askForSignInMethod({ agentSlug, sessionId, account, from: 'card' }), { name: 'login-request.ask-for-sign-in-method' })
+  return c.json({ requested: true })
+})
+
+// POST /api/agents/:id/sessions/:sessionId/login-way - The way the user picked
+// on a page that asks how to verify it's you: the host clicks it (for the
+// page's only way with nothing to click, the user says they answered it).
+agents.post('/:id/sessions/:sessionId/login-way', AgentUser(), zValidator('json', chooseLoginWayBodySchema), async (c) => {
+  const body = c.req.valid('json')
+  const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+  if (gated) return gated
+  const picked = await pickLoginWay({
+    agentSlug: getAgentId(c),
+    sessionId: c.req.param('sessionId'),
+    toolUseId: body.toolUseId,
+    pick: { index: body.index, origin: body.origin },
+  })
+  if (!picked.ok) return c.json({ error: picked.error }, picked.status)
+  return c.json('browserClosed' in picked ? { browserClosed: true } : picked.result)
 })
 
 /** Let the agent sign in with the account, logged when it is new. */
@@ -4318,13 +4364,21 @@ async function saveAndGrant(
 }
 
 /**
- * "Also add an authenticator app": the request stays on the account until an
- * agent answers it, and this session's agent is asked now, as the user's own
- * message (method-request).
+ * The account a step of two-step verification is for (the ways to verify, or
+ * a code), when it is the viewer's own and the vault holds no app for it: the
+ * card offers to have the agent add one. Not one an agent found none to add for.
  */
-async function requestSignInMethod(viewer: VaultOwner, agentSlug: string, sessionId: string, account: VaultAccount): Promise<void> {
-  await setSignInMethodRequest(viewer, account.id, true, 'card')
-  background(askForSignInMethod({ agentSlug, sessionId, account, from: 'card' }), { name: 'fill-login.ask-for-sign-in-method' })
+async function twoStepAccount(viewer: VaultOwner, agentSlug: string, toolUseId: string, context: LoginContext, site: string): Promise<VaultAccount | null> {
+  const twoStep = context.ways.length > 0 || (context.fields.length > 0 && context.fields.every((field) => field.kind === 'otp'))
+  if (!twoStep) return null
+  const request = await agentRegistry.get(agentSlug).inputs.get(toolUseId)
+  const vault = loginVaultPayloadSchema.safeParse(request?.kind === 'login' ? request.payload.vault : undefined)
+  if (!vault.success || (!vault.data.accountId && !vault.data.username)) return null
+  const { accountId, username } = vault.data
+  const account = (await listOwnedAccountsOnSite(viewer, site))
+    .find((candidate) => (accountId ? candidate.id === accountId : usernameKey(candidate.username) === usernameKey(username ?? '')))
+  if (!account || account.via || account.signInMethods.authenticator || account.signInMethods.unavailable) return null
+  return account
 }
 
 // POST /api/agents/:id/sessions/:sessionId/fill-login - Write the user's values into the page
@@ -4451,8 +4505,6 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const heldParts = partsFrom(context.held, heldValues)
     const heldLabels = context.held.filter((field, index) => heldValues[index] && heldParts[partKeyOf(field) ?? '']).map((field) => field.label)
     const saving = Boolean(body.save && identity)
-    // "Also add an authenticator app": asked of the agents that sign in with the account it saves.
-    const requesting = saving && body.addSignInMethod === true
 
     // What was held goes into one page only: this fill takes it before sending it.
     let heldClaim: HeldClaim | null = null
@@ -4553,7 +4605,6 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       try {
         // What the user typed here, by part: the username is the account itself.
         savedAccount = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: partsFrom(context.fields, body.values) })
-        if (requesting) await requestSignInMethod(viewer, agentSlug, sessionId, savedAccount)
       } catch (error) {
         // The page has the values either way; the user is told it was not saved.
         console.error('[fill-login] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
@@ -4767,7 +4818,6 @@ agents.post(
     // "Save for later" copies the whole login into the vault, also on a step
     // that shows only the username: the next step then needs no one.
     const saving = Boolean(body.save && site && identity && credential.password)
-    const requesting = saving && body.addSignInMethod === true
     const shown = noteUsername(identity)
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
     // Not a vault account's sign-in: what any site holds next is saved to none (session-host).
@@ -4809,7 +4859,6 @@ agents.post(
     if (saving && site && identity) {
       try {
         savedAccount = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { password: credential.password } })
-        if (requesting) await requestSignInMethod(viewer, agentSlug, sessionId, savedAccount)
       } catch (error) {
         // The page has the login either way; the user is told it was not saved.
         console.error('[fill-login-credential] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')

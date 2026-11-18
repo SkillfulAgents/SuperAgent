@@ -20,6 +20,23 @@ export const loginFieldRequestSchema = z.object({
 export const MAX_LOGIN_FIELDS = 6
 
 /**
+ * What a way to verify it's you is, as the agent classifies what the page
+ * offers ("Get a code at •••12", "Tap Yes on your phone"): the vault picks
+ * one it holds by itself, and the user picks among the rest.
+ */
+export const WAY_METHODS = ['authenticator_app', 'text_message', 'email', 'phone_prompt', 'passkey', 'other'] as const
+export type WayMethod = (typeof WAY_METHODS)[number]
+
+export const MAX_LOGIN_WAYS = 6
+
+export const loginWayRequestSchema = z.object({
+  /** Absent only for the one way of a page with nothing to click: a prompt on the user's device. */
+  ref: elementRefSchema.optional(),
+  label: z.string().trim().min(1).max(120),
+  method: z.enum(WAY_METHODS),
+})
+
+/**
  * The services a page can offer to sign in with ("Sign in with Google"), as
  * request_login names them. The host knows each one's site, and the user's
  * form offers the ones the page shows.
@@ -38,6 +55,8 @@ export const loginPrepareRequestSchema = z.object({
   fields: z.array(loginFieldRequestSchema).max(MAX_LOGIN_FIELDS),
   submitRef: elementRefSchema.nullable(),
   providers: z.array(z.enum(SIGN_IN_PROVIDER_IDS)).max(SIGN_IN_PROVIDER_IDS.length).default([]),
+  /** A page that asks how to verify it's you: its ways, in place of fields. */
+  ways: z.array(loginWayRequestSchema).max(MAX_LOGIN_WAYS).default([]),
 }).strict()
 
 /**
@@ -118,6 +137,40 @@ export const loginFillReportSchema = z.object({
   account: loginFillAccountSchema.optional(),
 })
 export type LoginFillReport = z.infer<typeof loginFillReportSchema>
+
+/** host → server: click the way picked on a page that asks how to verify it's you. */
+export const loginChooseRequestSchema = z.object({
+  sessionId: z.string().min(1).max(1024),
+  toolUseId: z.string().min(1).max(256),
+  expectedOrigin: z.string().min(1).max(2048),
+  index: z.number().int().min(0).max(MAX_LOGIN_WAYS - 1),
+  /** The user picked it, or the vault did (it holds that way for the account). */
+  by: z.enum(['user', 'vault']),
+  /** The account being signed in, as the result names it. */
+  username: z.string().min(1).max(320).optional(),
+}).strict()
+
+/**
+ * A way to verify it's you, picked: by the user, by the vault (it holds that
+ * way for the account), or for the page's only way, the page moving on once
+ * the user answered the prompt on their device.
+ */
+export const loginWayReportSchema = z.object({
+  type: z.literal('way'),
+  origin: z.string(),
+  picked: z.object({ label: z.string(), method: z.enum(WAY_METHODS) }),
+  by: z.enum(['user', 'vault', 'page']),
+  username: z.string().optional(),
+  /** The way's ref was clicked; absent for a way with nothing to click. */
+  clicked: z.object({ ref: z.string() }).optional(),
+  /** Why the click did not happen, as an observation. */
+  clickError: z.string().optional(),
+  /** The page's only way: whether the page moved on by itself (false: not within the wait). */
+  moved: z.boolean().optional(),
+  /** The click's settle observation, or the page's URL digest once it moved on. */
+  observation: z.record(z.string(), z.unknown()).optional(),
+})
+export type LoginWayReport = z.infer<typeof loginWayReportSchema>
 
 /** The user signed in on the page themselves instead. */
 export const loginManualReportSchema = z.object({ type: z.literal('manual') })
@@ -213,6 +266,7 @@ export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginBrowserClosedReportSchema,
   loginSessionReportSchema,
   loginAuthenticatorReportSchema,
+  loginWayReportSchema,
 ])
 export type LoginResolution = z.infer<typeof loginResolutionSchema>
 

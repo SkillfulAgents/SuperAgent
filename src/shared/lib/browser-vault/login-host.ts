@@ -5,11 +5,14 @@ import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import {
   loginContextSchema,
   loginFillResultSchema,
+  loginVaultPayloadSchema,
+  loginWayResultSchema,
   type CodeSource,
   type LoginContext,
   type LoginFieldKind,
   type LoginFillResult,
   type LoginVaultPayload,
+  type LoginWayResult,
 } from '@shared/lib/tools/request-login/login-request'
 import { background } from '@shared/lib/background'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -179,6 +182,104 @@ export async function fillLoginInContainer(
 export function fieldsWentIn(result: LoginFillResult, count: number): boolean[] {
   const { outcomes } = result
   return Array.from({ length: count }, (_, index) => !outcomes || (outcomes[index] !== 'failed' && outcomes[index] !== 'skipped'))
+}
+
+/**
+ * Click the way picked on a page that asks how to verify it's you (for its
+ * only way with nothing to click, the user says they answered it): the
+ * container answers the agent's parked call with what it saw, and the request
+ * is settled here. `by`: the user's pick, or the vault's (it holds that way).
+ */
+export async function chooseLoginWayInContainer(input: {
+  agentSlug: string
+  sessionId: string
+  toolUseId: string
+  context: Pick<LoginContext, 'origin'>
+  index: number
+  by: 'user' | 'vault'
+  username?: string | null
+}): Promise<{ ok: true; result: LoginWayResult } | { ok: false; status: 409 | 502; error: string; browserClosed?: true }> {
+  const { agentSlug, sessionId, toolUseId, context, index, by } = input
+  const actor = agentRegistry.get(agentSlug)
+  const username = noteUsername(input.username)
+  const response = await actor.container.fetch('/browser/login/choose', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, toolUseId, expectedOrigin: context.origin, index, by, ...(username ? { username } : {}) }),
+  })
+  const data: unknown = await response.json().catch(() => null)
+  if (!response.ok) {
+    const failure = containerErrorSchema.safeParse(data)
+    return {
+      ok: false,
+      status: response.status === 409 ? 409 : 502,
+      error: failure.success ? failure.data.error : 'The way could not be picked',
+      ...(response.status === 409 && failure.success && failure.data.reason === 'browser_closed' ? { browserClosed: true as const } : {}),
+    }
+  }
+  const result = loginWayResultSchema.safeParse(data)
+  if (!result.success) return { ok: false, status: 502, error: 'The browser returned an unreadable result' }
+  await actor.inputs.complete(sessionId, toolUseId, 'answered')
+  return { ok: true, result: result.data }
+}
+
+export type PickLoginWayResult =
+  | { ok: true; result: LoginWayResult }
+  /** The browser that showed the page closed since: the agent was told to open it again. */
+  | { ok: true; browserClosed: true }
+  | { ok: false; status: 400 | 409 | 502; error: string }
+
+/**
+ * The user picked a way on a page that asks how to verify it's you: in the
+ * card (by index, the site it showed checked against the browser's) or in
+ * chat (by the way's label; "Done" for the page's only way with nothing to
+ * click). Clicked holding the request's claim, so one pick wins.
+ */
+export async function pickLoginWay(input: {
+  agentSlug: string
+  sessionId: string
+  toolUseId: string
+  pick: { index: number; origin: string } | { label: string }
+}): Promise<PickLoginWayResult> {
+  const { agentSlug, sessionId, toolUseId, pick } = input
+  const read = await readLoginContext(agentSlug, toolUseId)
+  if (!read.ok) return { ok: false, status: read.status === 404 ? 409 : read.status, error: read.error }
+  const { context } = read
+  // The site the user was shown must be the one the browser located.
+  if ('origin' in pick && pick.origin !== context.origin) return { ok: false, status: 409, error: 'This sign-in request is for a different site' }
+  const prompt = context.ways.length === 1 && !context.ways[0].clickable
+  const index = 'index' in pick ? pick.index : prompt ? 0 : context.ways.findIndex((way) => way.label === pick.label)
+  if (!context.ways[index]) return { ok: false, status: 400, error: 'The page offers no such way' }
+  const actor = agentRegistry.get(agentSlug)
+  const claim = await actor.inputs.claim(toolUseId)
+  if (!claim) return { ok: false, status: 409, error: 'This sign-in request is already being handled' }
+  try {
+    const request = await actor.inputs.get(toolUseId)
+    const vault = loginVaultPayloadSchema.safeParse(request?.kind === 'login' ? request.payload.vault : undefined)
+    const picked = await chooseLoginWayInContainer({ agentSlug, sessionId, toolUseId, context, index, by: 'user', username: vault.success ? vault.data.username : null })
+    if (picked.ok) return { ok: true, result: picked.result }
+    // The browser closed first: the agent opens the page again, and is asked anew.
+    const site = siteOfOrigin(context.origin)
+    if (picked.browserClosed && site && await answerLoginRequest(agentSlug, toolUseId, { type: 'browser_closed', site })) {
+      await actor.inputs.complete(sessionId, toolUseId, 'answered')
+      return { ok: true, browserClosed: true }
+    }
+    await actor.inputs.releaseClaim(toolUseId, claim.token)
+    return { ok: false, status: picked.status, error: picked.error }
+  } catch (error) {
+    await actor.inputs.releaseClaim(toolUseId, claim.token)
+    throw error
+  }
+}
+
+/** The way a chat answer names: `{ [question]: label }`, or email's `{ answers: { … } }`. */
+export function answeredWayLabel(answer: unknown): string | null {
+  if (typeof answer === 'string') return answer
+  if (!answer || typeof answer !== 'object') return null
+  const record = answer as Record<string, unknown>
+  const answers = record.answers && typeof record.answers === 'object' ? record.answers as Record<string, unknown> : record
+  const label = Object.values(answers).find((value): value is string => typeof value === 'string')
+  return label ?? null
 }
 
 /** Answer the agent's parked call with a result that fills nothing (its accounts, or a provider account to use). */
@@ -418,6 +519,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   const site = siteOfOrigin(context.origin)
   // This app's own page: the card says nothing can go there.
   if (!site || (await isOwnOrigin(context.origin, []))) return ask({ mode: 'new' }, context)
+  if (context.ways.length > 0) return decideWays(call, context, site, username)
   if (askUser) {
     const turnedDown = username ? await findGrantedAccount(agentSlug, site, username) : null
     // A step that asks for the password turned the password down; one that
@@ -438,6 +540,40 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
     if (decision) return decision
   }
   return ask({ mode: 'new' }, context)
+}
+
+/**
+ * The way that is the vault's authenticator app, or -1: the page's one app,
+ * or among several apps listed by name (Keycloak lists each), the one with
+ * the name the vault's app has on the site. Several without that name: the
+ * user's to pick, since a code goes only to the app it was asked of.
+ */
+function vaultAppWay(ways: LoginContext['ways'], name: string | null): number {
+  const apps = ways.flatMap((way, index) => (way.method === 'authenticator_app' && way.clickable ? [{ way, index }] : []))
+  const named = name ? apps.filter(({ way }) => way.label.toLowerCase().includes(name.toLowerCase())) : []
+  if (named.length === 1) return named[0].index
+  return apps.length === 1 ? apps[0].index : -1
+}
+
+/**
+ * A page that asks how to verify it's you. A way the vault holds for the
+ * account is picked by itself and clicked (its authenticator app, while the
+ * site takes the app's codes and the vault has not filled too many lately);
+ * else the user picks one in the card, which offers to add an app (for the
+ * viewer's own account). The account is the one the agent names, or the one
+ * this session's last step on the site went in as.
+ */
+async function decideWays(call: LoginRequestCall, context: LoginContext, site: string, username: string | undefined): Promise<LoginDecision> {
+  const { agentSlug, sessionId, toolUseId } = call
+  const identity = username ?? await recentSignInIdentity(agentSlug, sessionId, site)
+  const account = identity ? await findGrantedAccount(agentSlug, site, identity) : null
+  const appWay = account ? vaultAppWay(context.ways, account.signInMethods.authenticator?.name ?? null) : -1
+  if (account && appWay >= 0 && authenticatorReady(account) && !(await codesFilledTooOften(account))) {
+    const picked = await chooseLoginWayInContainer({ agentSlug, sessionId, toolUseId, context, index: appWay, by: 'vault', username: account.username })
+    if (picked.ok) return { action: 'settled' }
+  }
+  const whose = account ? { username: account.username, accountId: account.id } : identity ? { username: identity } : {}
+  return ask({ mode: identity ? 'ask' : 'new', ...whose }, context)
 }
 
 /** How often a decision starts over after what was held for its step was taken under it. */

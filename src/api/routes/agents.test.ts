@@ -12314,6 +12314,7 @@ describe('sign-in request routes (request_login)', () => {
     ],
     held: [],
     providers: [],
+    ways: [],
   }
 
   function parkLogin(id: string, payload: Record<string, unknown> = { message: 'Sign in to GitHub.', fields: [] }) {
@@ -12758,6 +12759,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     fields: [field('username', 'Email')],
     held: [{ kind: 'password', label: 'Password' }],
     providers: [],
+    ways: [],
   }
   const account = (overrides: Record<string, unknown> = {}) => ({
     id: 'acc-1',
@@ -12805,30 +12807,85 @@ describe('sign-in requests with the vault (request_login)', () => {
     mockContainerFetch.mockReset()
   })
 
-  it('asks agents to add an authenticator app to the account it saves when the user ticks the box, and asks this one now', async () => {
-    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
-    vault.saveAccount.mockResolvedValueOnce({ account: account(), created: true })
-    mockContainerFetch.mockResolvedValueOnce(filled())
+  const CODE_STEP = { ...CONTEXT, fields: [{ ...field('otp', 'Code'), from: 'text_message' }], held: [], ways: [] }
+  const WAYS_STEP = {
+    ...CONTEXT,
+    fields: [],
+    held: [],
+    ways: [
+      { label: 'Get a code at •••12', method: 'text_message', clickable: true },
+      { label: 'Tap Yes on your phone', method: 'phone_prompt', clickable: true },
+    ],
+  }
+  const vaultInfo = async () => (await app.request(`${BASE}/login-request/vault?toolUseId=tool-login`)).json() as Promise<{ addMethod: unknown }>
 
-    const res = await postJson(app, `${BASE}/fill-login`, {
-      toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'pw'], save: true, addSignInMethod: true,
-    })
+  it('offers the box on a step of two-step verification for the viewer\'s own account the vault holds no app for', async () => {
+    parkLogin({ login: CODE_STEP, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [] } })
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account()])
+    expect((await vaultInfo()).addMethod).toEqual({ accountId: 'acc-1', username: 'octocat', requested: false })
+
+    // The ways to verify are one too; an account with an app, or one an agent found none for, is not offered.
+    parkLogin({ login: WAYS_STEP, vault: { mode: 'ask', username: 'octocat', accountId: 'acc-1' } })
+    expect((await vaultInfo()).addMethod).toEqual({ accountId: 'acc-1', username: 'octocat', requested: false })
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account({ signInMethods: { authenticator: { addedAt: 1, issuer: null, accountName: null, name: null } } })])
+    expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account({ signInMethods: { unavailable: { at: 1, reason: 'No authenticator apps.' } } })])
+    expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([])
+  })
+
+  it('offers no box on a step that asks for the password, nor for another member\'s account', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }, vault: { mode: 'ask', username: 'octocat' } })
+    vault.listOwnedAccountsOnSite.mockResolvedValue([account()])
+    expect((await vaultInfo()).addMethod).toBeNull()
+    // Not the viewer's: none of their own accounts is the step's.
+    parkLogin({ login: CODE_STEP, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-other', covered: [] } })
+    expect((await vaultInfo()).addMethod).toBeNull()
+    vault.listOwnedAccountsOnSite.mockResolvedValue([])
+  })
+
+  it('asks the agent for an authenticator app now when the user ticks the box on a code step', async () => {
+    parkLogin({ login: CODE_STEP, vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [] } })
+    vault.listOwnedAccountsOnSite.mockResolvedValueOnce([account()])
+
+    const res = await postJson(app, `${BASE}/login-request/method`, { toolUseId: 'tool-login' })
     expect(res.status).toBe(200)
     expect(vault.setSignInMethodRequest).toHaveBeenCalledWith(null, 'acc-1', true, 'card')
     expect(methodRequest.askForSignInMethod).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-1' }), from: 'card' })
-    expect((containerCalls()[0].body as { account: Record<string, unknown> }).account).not.toHaveProperty('requested')
+    // The request is the user's own, apart from the card: it stays open.
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-login')).not.toBeNull()
   })
 
-  it('asks for no sign-in method without "Save for later", the account then being nobody\'s', async () => {
-    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
-    mockContainerFetch.mockResolvedValueOnce(filled())
+  it('asks for no app on a step that is not two-step verification', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }, vault: { mode: 'ask', username: 'octocat' } })
+    vault.listOwnedAccountsOnSite.mockResolvedValueOnce([account()])
 
-    const res = await postJson(app, `${BASE}/fill-login`, {
-      toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'pw'], addSignInMethod: true,
-    })
-    expect(res.status).toBe(200)
+    const res = await postJson(app, `${BASE}/login-request/method`, { toolUseId: 'tool-login' })
+    expect(res.status).toBe(409)
     expect(vault.setSignInMethodRequest).not.toHaveBeenCalled()
     expect(methodRequest.askForSignInMethod).not.toHaveBeenCalled()
+  })
+
+  it('clicks the way the user picked, through the container, as the user\'s pick for the account', async () => {
+    parkLogin({ login: WAYS_STEP, vault: { mode: 'ask', username: 'octocat', accountId: 'acc-1' } })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true, clicked: true, problems: [] }), { status: 200 }))
+
+    const res = await postJson(app, `${BASE}/login-way`, { toolUseId: 'tool-login', origin: 'https://github.com', index: 1 })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, clicked: true, problems: [] })
+    expect(containerCalls()).toEqual([{
+      path: '/browser/login/choose',
+      body: { sessionId: 'sess-1', toolUseId: 'tool-login', expectedOrigin: 'https://github.com', index: 1, by: 'user', username: 'octocat' },
+    }])
+  })
+
+  it('clicks nothing for a site other than the one the card showed, or a way the page does not offer', async () => {
+    parkLogin({ login: WAYS_STEP, vault: { mode: 'ask', username: 'octocat' } })
+
+    expect((await postJson(app, `${BASE}/login-way`, { toolUseId: 'tool-login', origin: 'https://evil.example', index: 0 })).status).toBe(409)
+    expect((await postJson(app, `${BASE}/login-way`, { toolUseId: 'tool-login', origin: 'https://github.com', index: 4 })).status).toBe(400)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-login')).not.toBeNull()
   })
 
   it('saves the account the form went in with, grants it, and holds the next step\'s password', async () => {
