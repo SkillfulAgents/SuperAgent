@@ -1,10 +1,13 @@
-import { QueryClient } from '@tanstack/react-query'
-import { describe, expect, it } from 'vitest'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { ApiAgent, ApiSession } from '@shared/lib/types/api'
 import {
   applySessionActivityStatus,
   invalidateAgentArtifacts,
   markDashboardScreenshotReady,
+  seedCreatedSessionInRecent,
+  sessionListMembership,
+  sessionTotalKey,
   updateAgentRuntimeCache,
   updateAgentAvatarCache,
 } from './agent-cache'
@@ -184,6 +187,142 @@ describe('targeted agent cache updates', () => {
         client.getQueryData<ApiSession[]>(['sessions', 'agent-a', 'notable', 25])?.[0].isAwaitingInput,
       ).toBe(true)
       expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0].hasSessionsAwaitingInput).toBe(true)
+    })
+
+    describe('on a page that holds slices instead of the full list', () => {
+      const awaitingAgent = { ...agent, hasSessionsAwaitingInput: true, hasUnreadNotifications: true, hasUnreadMention: true }
+      const RECENT = ['sessions', 'agent-a', 'recent', 6]
+      const NOTABLE = ['sessions', 'agent-a', 'notable', 25]
+      const cutRecent = () => [session('sess-1', { isAwaitingInput: true }), ...[2, 3, 4, 5, 6].map((n) => session(`sess-${n}`))]
+
+      function sliceClient(slices: { recent?: ApiSession[]; notable?: ApiSession[] }) {
+        const client = seededClient()
+        client.setQueryData(['agents'], [awaitingAgent, { ...agent, slug: 'agent-b', displaySlug: 'agent-b' }])
+        if (slices.recent) client.setQueryData(RECENT, slices.recent)
+        if (slices.notable) watch(client, NOTABLE, slices.notable)
+        return client
+      }
+      // A mounted slice: watched, and fresh, so mounting does not read it again.
+      function watch(client: QueryClient, queryKey: unknown[], data: ApiSession[]) {
+        client.setQueryData(queryKey, data)
+        const observer = new QueryObserver(client, { queryKey, queryFn: () => new Promise<ApiSession[]>(() => {}), staleTime: Infinity })
+        unwatch.push(observer.subscribe(() => {}))
+      }
+      const unwatch: (() => void)[] = []
+      afterEach(() => {
+        unwatch.splice(0).forEach((stop) => stop())
+      })
+      const rollup = (client: QueryClient) => client.getQueryData<ApiAgent[]>(['agents'])?.[0]
+
+      it("the sidebar's recent slice alone is enough to patch its rows and raise the rollup", () => {
+        const client = sliceClient({ recent: [session('sess-1', { isActive: false })] })
+        client.setQueryData(['agents'], [agent, { ...agent, slug: 'agent-b', displaySlug: 'agent-b' }])
+
+        expect(applySessionActivityStatus(client, 'agent-a', 'sess-1', { isActive: true })).toBe(true)
+
+        expect(client.getQueryData<ApiSession[]>(RECENT)?.[0].isActive).toBe(true)
+        expect(rollup(client)?.hasActiveSessions).toBe(true)
+      })
+
+      it('a recent slice shorter than its limit is the whole list, and clears the rollup', () => {
+        const client = sliceClient({ recent: [session('sess-1', { isAwaitingInput: true }), session('sess-2')] })
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+        expect(rollup(client)?.hasSessionsAwaitingInput).toBe(false)
+      })
+
+      it('a recent slice cut at its limit cannot clear the rollup: an older session may still wait', () => {
+        const client = sliceClient({ recent: cutRecent() })
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+        expect(client.getQueryData<ApiSession[]>(RECENT)?.[0].isAwaitingInput).toBe(false)
+        expect(rollup(client)?.hasSessionsAwaitingInput).toBe(true)
+      })
+
+      it('the notable slice under its limit holds every live session, and clears the rollup beside a cut recent slice', () => {
+        const client = sliceClient({ recent: cutRecent(), notable: [session('sess-1', { isAwaitingInput: true })] })
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+        expect(rollup(client)?.hasSessionsAwaitingInput).toBe(false)
+      })
+
+      it('the notable slice keeps the rollup raised while another session in it still waits', () => {
+        const client = sliceClient({
+          recent: cutRecent(),
+          notable: [session('sess-1', { isAwaitingInput: true }), session('old-1', { isAwaitingInput: true })],
+        })
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+        expect(rollup(client)?.hasSessionsAwaitingInput).toBe(true)
+      })
+
+      it('a notable slice being read again vouches for nothing: a session may have gone live since it was read', () => {
+        const client = sliceClient({ notable: [session('sess-1', { isAwaitingInput: true })] })
+        client.setQueryData(['session', 'sess-1', 'agent-a'], session('sess-1', { isAwaitingInput: true }))
+        // The read this starts never lands here.
+        void client.invalidateQueries({ queryKey: NOTABLE, exact: true })
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+        expect(client.getQueryData<ApiSession[]>(NOTABLE)?.[0].isAwaitingInput).toBe(false)
+        expect(rollup(client)?.hasSessionsAwaitingInput).toBe(true)
+      })
+
+      it('a notable slice nothing watches vouches for nothing: no invalidation reads it again', () => {
+        const client = sliceClient({})
+        client.setQueryData(NOTABLE, [session('sess-1', { isAwaitingInput: true })])
+        client.setQueryData(['session', 'sess-1', 'agent-a'], session('sess-1', { isAwaitingInput: true }))
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+        expect(rollup(client)?.hasSessionsAwaitingInput).toBe(true)
+      })
+
+      it('a notable slice cut at its limit vouches for nothing', () => {
+        const client = sliceClient({})
+        watch(client, ['sessions', 'agent-a', 'notable', 2], [session('sess-1', { isAwaitingInput: true }), session('sess-2')])
+        client.setQueryData(['session', 'sess-1', 'agent-a'], session('sess-1', { isAwaitingInput: true }))
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+        expect(rollup(client)?.hasSessionsAwaitingInput).toBe(true)
+      })
+
+      it('the notable slice clears the unread rollup but not the mention one, which it does not follow', () => {
+        const unread = { hasUnreadNotifications: true, hasUnreadMention: true }
+        const client = sliceClient({ notable: [session('sess-1', unread)] })
+        client.setQueryData(['session', 'sess-1', 'agent-a'], session('sess-1', unread))
+
+        applySessionActivityStatus(client, 'agent-a', 'sess-1', { hasUnreadNotifications: false, hasUnreadMention: false })
+
+        expect(rollup(client)?.hasUnreadNotifications).toBe(false)
+        expect(rollup(client)?.hasUnreadMention).toBe(true)
+      })
+
+      it('a created session goes to the head of the recent slice, within its limit, and counts once', () => {
+        const client = sliceClient({ recent: [1, 2, 3, 4, 5, 6].map((n) => session(`sess-${n}`)) })
+        client.setQueryData(sessionTotalKey('agent-a'), 12)
+
+        seedCreatedSessionInRecent(client, 'agent-a', session('new'))
+        seedCreatedSessionInRecent(client, 'agent-a', session('new'))
+
+        expect(client.getQueryData<ApiSession[]>(RECENT)?.map((entry) => entry.id))
+          .toEqual(['new', 'sess-1', 'sess-2', 'sess-3', 'sess-4', 'sess-5'])
+        expect(client.getQueryData(sessionTotalKey('agent-a'))).toBe(13)
+      })
+
+      it('reports the recent slice as a list of rows, and the notable slice as not one', () => {
+        const client = sliceClient({ recent: [session('sess-1')], notable: [session('sess-1')] })
+
+        expect(sessionListMembership(client, 'agent-a', 'sess-1')).toEqual([
+          { queryKey: RECENT, full: false, rows: true, holds: true },
+          { queryKey: NOTABLE, full: false, rows: false, holds: true },
+        ])
+      })
     })
 
     it('leaves the rollup to the refetch when no session list is cached', () => {

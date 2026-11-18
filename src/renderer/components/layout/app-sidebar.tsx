@@ -53,7 +53,8 @@ import {
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
 import { useAgents, useListedAgents, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { useSessions, useRecentSessions, useSessionTotal, recentSessionsQueryOptions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { RECENT_SESSIONS_LIMIT } from '@renderer/lib/agent-cache'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -585,12 +586,21 @@ const AgentMenuItemInner = React.forwardRef<
   const memberCount = agentMemberCount(agent.slug)
   const isShared = isAuthMode && memberCount > 1
 
-  // Lazy-load detail data only when expanded
-  const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
+  // Lazy-load detail data only when expanded. The row shows five sessions, so
+  // it reads the bounded recent slice and its count; every session is read
+  // only once "Show all" asks for them (or to count them, where the server
+  // does not report the total).
+  const { data: recentSessions, isLoading: sessionsLoading } = useRecentSessions(isOpen ? agent.slug : null)
+  const reportedTotal = useSessionTotal(isOpen ? agent.slug : null)
+  const recentIsCut = (recentSessions?.length ?? 0) >= RECENT_SESSIONS_LIMIT
+  const needsAllSessions = isOpen && (showAll || (recentIsCut && reportedTotal === undefined))
+  const { data: allSessions } = useSessions(needsAllSessions ? agent.slug : null)
+  const sessions = allSessions ?? recentSessions
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
 
-  const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
-  const hasMore = (sessions?.length ?? 0) > 5
+  const visibleSessions = showAll && allSessions ? allSessions : sessions?.slice(0, 5)
+  const sessionTotal = allSessions?.length ?? (recentIsCut ? reportedTotal : undefined) ?? recentSessions?.length ?? 0
+  const hasMore = sessionTotal > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
   const avatarState = agentAvatarState(agent, sessions)
   const badgeKind = agentBadgeKind(agent, sessions, isOpen)
@@ -617,15 +627,8 @@ const AgentMenuItemInner = React.forwardRef<
   // Prefetch sessions on hover so expand is instant
   const handleMouseEnter = useCallback(() => {
     if (!isOpen) {
-      queryClient.prefetchQuery({
-        queryKey: ['sessions', agent.slug],
-        queryFn: async () => {
-          const res = await apiFetch(`/api/agents/${agent.slug}/sessions`)
-          if (!res.ok) throw new Error('Failed to fetch sessions')
-          return res.json()
-        },
-        staleTime: 30_000,
-      })
+      // The same bounded read, under the same key, the open row makes.
+      queryClient.prefetchQuery({ ...recentSessionsQueryOptions(queryClient, agent.slug), staleTime: 30_000 })
     }
   }, [isOpen, agent.slug, queryClient])
 
@@ -866,7 +869,7 @@ const AgentMenuItemInner = React.forwardRef<
                             className="w-full focus-visible:ring-inset"
                           >
                             <span>
-                              {showAll ? 'Show less' : `Show all (${sessions?.length})`}
+                              {showAll ? 'Show less' : `Show all (${sessionTotal})`}
                             </span>
                             <ChevronDown className={cn('ml-auto !size-3.5 transition-transform', showAll && 'rotate-180')} aria-hidden="true" />
                           </button>

@@ -526,7 +526,8 @@ export function GlobalNotificationHandler() {
             const lists = (raise || data.type === 'session_input_provided') && eventAgentSlug && eventSessionId
               ? sessionListMembership(queryClient, eventAgentSlug, eventSessionId)
               : []
-            const listed = lists.some((list) => list.full && list.holds)
+            // The full list, or the sidebar's recent slice where that is what the tab holds.
+            const listed = lists.some((list) => list.rows && list.holds)
             const sessionsKey = eventAgentSlug ? ['sessions', eventAgentSlug] : ['sessions']
             if (listed) {
               // Only the server can add the session to a list that lacks it,
