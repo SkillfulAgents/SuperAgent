@@ -678,7 +678,7 @@ describe('createAgentRegistry', () => {
       const registry = createAgentRegistry(fake.deps)
       const actor = registry.get('a') as LocalAgentActor
       expect(await actor.sessions.live('s1')).toEqual({
-        activity: 'idle', isActive: false, isAwaitingInput: false, streamAttached: false, openRequests: [], runtime: null,
+        activity: 'idle', isActive: false, isAwaitingInput: false, streamAttached: false, openRequests: [], runtime: null, turnMessage: null,
       })
 
       actor.state.sessions.markActive('s1')

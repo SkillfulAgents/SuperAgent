@@ -546,6 +546,47 @@ export interface SessionLiveState {
   openRequests: PendingUserInputRequest[]
   /** What `recordRuntime` last recorded for it. */
   runtime: SessionModelRuntime | null
+  /**
+   * The message the session's turn acts on: the one that started it, or the
+   * queued one the runtime picked up last. Null when this host saw no send
+   * since the session went live (a restart, or a turn the runtime started itself).
+   */
+  turnMessage: TurnMessage | null
+}
+
+/** Who sent a message. */
+export type Sender =
+  /** A person in the app. */
+  | { kind: 'user'; userId: string }
+  /** A person through an integration; `name` as its card shows it (absent: the card is unreadable). */
+  | { kind: 'external'; integrationId: string; name?: string }
+  /** Another agent, through `invoke_agent`. `onBehalfOf`: the person whose message made it call. */
+  | { kind: 'agent'; slug: string; onBehalfOf?: string }
+  /** A run with no person. */
+  | { kind: 'automation'; trigger: 'scheduled' | 'webhook' | 'widget-repair'; id: string }
+
+/** Where a message came in. Can differ from the session's own conversation. */
+export type Source =
+  | { kind: 'app' }
+  /** `externalId`: the chat, thread or work item; absent when its mapping is gone. */
+  | { kind: 'integration'; integrationId: string; externalId?: string }
+  | { kind: 'agent'; slug: string }
+  | { kind: 'automation' }
+
+/** What a send says about its message. */
+export interface MessageFrom {
+  sender: Sender
+  source: Source
+  /** The sending device; null: sent from the web. */
+  deviceId?: string | null
+}
+
+/** A message as the live session keeps it. No `from`: the send did not say (a system notice). */
+export interface TurnMessage {
+  uuid?: string
+  /** Epoch ms. */
+  sentAt: number
+  from?: MessageFrom
 }
 
 /** A tool call the transcript shows with no result (`sessions.reconcileTranscript`). */
@@ -649,6 +690,8 @@ export interface DeliverRequest {
   content: string
   /** The message's id, which the transcript entry takes. */
   uuid?: string
+  /** Who sent it, and from where. */
+  from?: MessageFrom
   /**
    * The turn's runtime options. A message that joins a running turn drops
    * model, provider, effort and speed: the container would restart the turn
@@ -700,6 +743,8 @@ export interface StartSessionRequest {
   name: string
   /** Registered with the session, and read for the stream's lifecycle. */
   metadata?: Partial<SessionMetadata>
+  /** Who sent the first message (`create.initialMessage`), and from where. */
+  from?: MessageFrom
   /** Epoch ms. A create that lands later was not wanted any more: it is revoked (`created-late`). */
   notAfter?: number
   /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */

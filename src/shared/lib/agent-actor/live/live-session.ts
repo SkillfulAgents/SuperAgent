@@ -60,6 +60,7 @@ import { ToolCalls, type Capability } from './tool-calls'
 import { TurnResponse, assistantTextOf } from './turn-response'
 import { WorkflowTailers } from './workflow-tailers'
 import type { OrderedSends } from '../ordered-sends'
+import type { TurnMessage } from '../types'
 
 /** What a session's container runtime offers its sessions. */
 export interface SessionRuntime {
@@ -216,6 +217,10 @@ export class LiveSession {
   isRecovering: boolean
   /** Messages sent while recovering, delivered with their uuids once it is done. */
   coalescedUserMessages: CoalescedUserMessage[] | undefined
+  /** The message the turn acts on (see `SessionLiveState.turnMessage`). */
+  turnMessage: TurnMessage | null
+  /** Messages sent into a running turn, by uuid, until the runtime starts or drops them. */
+  private readonly queuedMessages: Map<string, TurnMessage>
   /**
    * The runtime publishes its session state (idle/running), so it decides
    * when the session settles: a result alone doesn't, since queued messages
@@ -302,6 +307,8 @@ export class LiveSession {
     this.isAwaitingInput = prior?.isAwaitingInput ?? false
     this.isRecovering = prior?.isRecovering ?? false
     this.coalescedUserMessages = prior?.coalescedUserMessages
+    this.turnMessage = prior?.turnMessage ?? null
+    this.queuedMessages = prior?.queuedMessages ?? new Map()
     this.stateEventsAuthority = prior?.stateEventsAuthority ?? false
     this.lastResultSubtype = prior?.lastResultSubtype ?? null
     this.lastResultCleanSuccess = prior?.lastResultCleanSuccess ?? false
@@ -569,6 +576,22 @@ export class LiveSession {
       this.lastResultSubtype = before.lastResultSubtype
       this.lastResultCleanSuccess = before.lastResultCleanSuccess
     }
+  }
+
+  /**
+   * A message was sent. One that starts the turn is what the turn acts on
+   * from now; one that joins a running turn waits until the runtime starts it
+   * (its `command_lifecycle` frame).
+   */
+  messageSent(message: TurnMessage, queued: boolean): void {
+    if (!queued) this.turnMessage = message
+    else if (message.uuid) this.queuedMessages.set(message.uuid, message)
+  }
+
+  /** The message did not go: forgotten, unless a later message replaced it already. */
+  messageWithdrawn(message: TurnMessage): void {
+    if (message.uuid && this.queuedMessages.get(message.uuid) === message) this.queuedMessages.delete(message.uuid)
+    if (this.turnMessage === message) this.turnMessage = null
   }
 
   /** Admit terminal replay during recovery; `revertProvisional` undoes the returned mark. */
@@ -1104,6 +1127,11 @@ export class LiveSession {
         // renderer joins terminal states back to its optimistic ghosts.
         const lifecycle = parseCommandLifecycle(content)
         if (!lifecycle) return
+        const queuedMessage = this.queuedMessages.get(lifecycle.commandUuid)
+        if (queuedMessage && lifecycle.state !== 'queued') {
+          this.queuedMessages.delete(lifecycle.commandUuid)
+          if (lifecycle.state === 'started') this.turnMessage = queuedMessage
+        }
         this.ctx.emit({ type: 'command_lifecycle', commandUuid: lifecycle.commandUuid, state: lifecycle.state })
         // A discarded message never ran, so whoever it tagged is not told.
         if (lifecycle.state === 'discarded') {

@@ -2349,6 +2349,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       },
       name: name || 'New Session',
       metadata: initialMetadata,
+      ...(isAuthMode() ? { from: { sender: { kind: 'user' as const, userId: getCurrentUserId(c) }, source: { kind: 'app' as const }, deviceId: getRequestDeviceId(c) } } : {}),
       ...(computerUse ? { grantComputerUse: true } : {}),
     })
     const sessionId = containerSession.id
@@ -2921,6 +2922,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         sessionId,
         content: await attributedForAgent(c, agentSlug, text),
         uuid: messageUuid,
+        ...(isAuthMode() ? { from: { sender: { kind: 'user' as const, userId: getCurrentUserId(c) }, source: { kind: 'app' as const }, deviceId: getRequestDeviceId(c) } } : {}),
         options: { ...runtimeOptions, ...(shouldQuery !== undefined ? { shouldQuery } : {}) },
         metadataUpdates,
         promote: true,

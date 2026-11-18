@@ -100,6 +100,7 @@ export async function deliverSessionWake(
     await actor.messages.deliver({
       sessionId,
       content: buildWakeMessage(task, trigger),
+      from: { sender: { kind: 'automation', trigger: 'scheduled', id: task.id }, source: { kind: 'automation' } },
       uuid: randomUUID(),
       options: { shouldQuery: true },
       cancelAwaiting: true,

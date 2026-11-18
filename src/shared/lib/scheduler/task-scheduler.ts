@@ -323,6 +323,7 @@ class TaskScheduler implements Service {
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: task.name || 'Scheduled Task',
+      from: { sender: { kind: 'automation', trigger: 'scheduled', id: task.id }, source: { kind: 'automation' } },
       metadata: {
         isScheduledExecution: true,
         scheduledTaskId: task.id,

@@ -50,6 +50,7 @@ import type { Capability } from './tool-calls'
 import { WorkflowTailers } from './workflow-tailers'
 import { waitForIdle, type WaitForIdleOptions } from './wait-for-idle'
 import { OrderedSends } from '../ordered-sends'
+import type { TurnMessage } from '../types'
 
 /** The agent's container runtime, as its sessions need it. */
 export interface SessionsRuntime extends SessionRuntime {
@@ -213,6 +214,11 @@ export class LiveSessions {
   /** The agent's sessions waiting on the user. */
   awaitingIds(): string[] {
     return [...this.states].filter(([, state]) => state.isAwaitingInput).map(([sessionId]) => sessionId)
+  }
+
+  /** See `SessionLiveState.turnMessage`. */
+  turnMessage(sessionId: string): TurnMessage | null {
+    return this.states.get(sessionId)?.turnMessage ?? null
   }
 
   /** What `recordRuntime` last recorded for the session. */
@@ -552,9 +558,11 @@ export class LiveSessions {
   // Turn lifecycle
   // ===========================================================================
 
-  /** A message was accepted for the session (see `LiveSession.markActive`). */
-  markActive(sessionId: string): void {
-    this.stateOrCreate(sessionId).markActive()
+  /** A message was accepted for the session (see `LiveSession.markActive`); `message` started its turn. */
+  markActive(sessionId: string, message?: TurnMessage): void {
+    const state = this.stateOrCreate(sessionId)
+    state.markActive()
+    if (message) state.messageSent(message, false)
   }
 
   /** A host-initiated send failed before reaching the container. */
@@ -739,12 +747,20 @@ export class LiveSessions {
    * recovery, a new runtime turn or output that arrived meanwhile owns the
    * state from then on.
    */
-  markSending(sessionId: string): SendingMark {
+  markSending(sessionId: string, message: TurnMessage = { sentAt: Date.now() }): SendingMark {
     const state = this.stateOrCreate(sessionId)
     const before = state.sendSnapshot()
     state.markActive()
     const marked = state.sendSnapshot()
-    return { queued: before.wasActive, rollback: () => this.states.get(sessionId)?.sendFailed(before, marked) }
+    state.messageSent(message, before.wasActive)
+    return {
+      queued: before.wasActive,
+      rollback: () => {
+        const current = this.states.get(sessionId)
+        current?.messageWithdrawn(message)
+        current?.sendFailed(before, marked)
+      },
+    }
   }
 
   /** Resolve once the session is no longer active, or past the timeout; see `waitForIdle`. */

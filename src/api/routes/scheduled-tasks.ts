@@ -317,6 +317,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: task.name || 'Scheduled Task (Run Now)',
+      from: { sender: { kind: 'automation', trigger: 'scheduled', id: task.id }, source: { kind: 'automation' } },
       metadata: {
         isScheduledExecution: true,
         scheduledTaskId: task.id,

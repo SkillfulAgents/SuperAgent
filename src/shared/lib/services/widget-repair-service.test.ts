@@ -108,7 +108,7 @@ describe('openWidgetRepairSession', () => {
       effort: 'medium',
     })
     expect(mocks.subscribe).toHaveBeenCalled()
-    expect(mocks.markActive).toHaveBeenCalledWith(AGENT, 'session-new')
+    expect(mocks.markActive).toHaveBeenCalledWith(AGENT, 'session-new', expect.objectContaining({ from: expect.objectContaining({ sender: expect.objectContaining({ kind: 'automation', trigger: 'widget-repair' }) }) }))
     expect(mocks.publishGlobal).toHaveBeenCalledWith({
       type: 'session_updated',
       agentSlug: AGENT,

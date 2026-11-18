@@ -40,6 +40,7 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   settledRequests: () => new Map(),
   reconcileTranscript: () => ({ settled: {} }),
   awaitingIds: () => [],
+  turnMessage: () => null,
   runtime: () => undefined,
   recordRuntime: () => {},
   isRecovering: () => false,

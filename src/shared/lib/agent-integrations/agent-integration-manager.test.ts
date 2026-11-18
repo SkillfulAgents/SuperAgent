@@ -283,7 +283,10 @@ describe('AgentIntegration host contract', () => {
       expect(adapter.prepareInput.mock.calls.at(-1)?.[1]?.deliveryId).toBe(uuid)
       expect(state.recordMessage).toHaveBeenLastCalledWith({ id: uuid, sessionId: 'session-1', agentSlug: 'installation-a', display: stored })
       // The card is the delivery's to show, once its checks pass and with its queued flag: the manager shows none of its own.
-      expect(state.deliveries.at(-1)).toEqual({ sessionId: 'session-1', content: text, uuid, echo: { content: text, integration: stored } })
+      expect(state.deliveries.at(-1)).toEqual({
+        sessionId: 'session-1', content: text, uuid, echo: { content: text, integration: stored },
+        from: expect.objectContaining({ source: expect.objectContaining({ kind: 'integration', integrationId: expect.any(String) }) }),
+      })
       expect(state.broadcast).toHaveBeenCalledExactlyOnceWith('session-1', { type: 'user_message', uuid, content: text, queued: true, integration: stored })
     })
 

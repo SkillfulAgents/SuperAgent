@@ -355,6 +355,7 @@ function createSessionOps(
       streamAttached: live.isSubscribed(sessionId),
       openRequests: state.inputRequests.getOpenRequestsForSession(sessionId),
       runtime: live.runtime(sessionId) ?? null,
+      turnMessage: live.turnMessage(sessionId),
     }),
     markActive: async (sessionId) => live.markActive(sessionId),
     markIdle: async (sessionId) => {

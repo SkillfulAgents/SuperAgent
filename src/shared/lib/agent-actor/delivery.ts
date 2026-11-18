@@ -159,7 +159,7 @@ export function createSessionDelivery(
       if (request.cancelAwaiting) await live.cancelAwaitingInput(sessionId)
       // Decided with the mark, nothing awaited between: a turn that started
       // while this send waited its turn, or that the attach revealed, counts.
-      const mark = live.markSending(sessionId)
+      const mark = live.markSending(sessionId, { uuid, sentAt: Date.now(), from: request.from })
       // A message joining a running turn must not carry the runtime: the
       // container treats a change as an interrupt and restart of the turn.
       if (mark.queued) {
@@ -270,7 +270,7 @@ export function createSessionDelivery(
     }
     // Create started the turn. Marked first, so a result replayed during the
     // attach lands on an active session instead of reading as settled.
-    live.markActive(sessionId)
+    live.markActive(sessionId, { uuid: request.create.initialMessageUuid, sentAt: Date.now(), from: request.from })
     // The stream listens at once: what the running turn emits before it does
     // (a question, a host action) is not replayed, only a settled turn's last
     // frames are. Its frames wait for the registration, so an automation that

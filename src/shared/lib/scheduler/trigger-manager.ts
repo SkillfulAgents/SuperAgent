@@ -333,6 +333,7 @@ class TriggerManager implements Service {
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: trigger.name || `Webhook: ${trigger.triggerType}`,
+      from: { sender: { kind: 'automation', trigger: 'webhook', id: trigger.id }, source: { kind: 'automation' } },
       metadata: {
         isWebhookExecution: true,
         webhookTriggerId: trigger.id,

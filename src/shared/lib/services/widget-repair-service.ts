@@ -193,6 +193,7 @@ async function startRepairSession(
         ...(resolved.speed ? { speed: resolved.speed } : {}),
       },
       name: 'Invoked to fix widget',
+      from: { sender: { kind: 'automation', trigger: 'widget-repair', id: widgetSlug }, source: { kind: 'automation' } },
       metadata: {
         isWidgetRepair: true,
         widgetRepairSlug: widgetSlug,

@@ -16,12 +16,13 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, desc, eq, isNotNull } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import { db } from '@shared/lib/db'
-import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
+import { agentAcl } from '@shared/lib/db/schema'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { userExists } from '@shared/lib/services/user-profile-service'
+import { getAgentContext, getMessageContext, getSessionContext } from '@shared/lib/services/context-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -34,7 +35,7 @@ import {
 import { displaySlug } from '@shared/lib/utils/file-storage'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-errors'
-import type { FileOps } from '@shared/lib/agent-actor/types'
+import type { FileOps, MessageFrom } from '@shared/lib/agent-actor/types'
 import { EFFORT_LEVELS, SPEED_LEVELS, type ContainerSession, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
 import { clampEffortForDisplay, clampSpeedForDisplay } from '@shared/lib/container/runtime-options'
 import { bindAgentModelChoice } from '@shared/lib/llm-provider/connection-runtime'
@@ -104,29 +105,14 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
 }
 
 /**
- * Resolve the user who sent the message currently driving an agent session.
- * In shared sessions this can differ from the session creator, so invocation
- * attribution must prefer the latest per-message author record.
+ * The person whose message the caller session acts on, when one is known.
+ * Attribution is optional: a failed read must never block the invoke.
  */
-async function getLatestMessageAuthorUserId(
-  agentSlug: string,
-  sessionId: string,
-): Promise<string | undefined> {
+async function getTriggeringUserId(agentSlug: string, sessionId: string): Promise<string | undefined> {
   try {
-    const rows = await db
-      .select({ userId: messageAuthor.userId })
-      .from(messageAuthor)
-      .where(and(
-        eq(messageAuthor.agentSlug, agentSlug),
-        eq(messageAuthor.sessionId, sessionId),
-        // An integration-delivered message has no user author.
-        isNotNull(messageAuthor.userId),
-      ))
-      .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
-      .limit(1)
-    return rows[0]?.userId ?? undefined
+    const sender = (await getMessageContext(agentSlug, sessionId))?.sender
+    return sender?.kind === 'user' ? sender.userId : undefined
   } catch (error) {
-    // Attribution is optional. A DB/read failure must never block the invoke.
     console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
       agentSlug,
       sessionId,
@@ -134,6 +120,11 @@ async function getLatestMessageAuthorUserId(
     })
     return undefined
   }
+}
+
+/** An invoked message is the calling agent's, on behalf of the person behind the call when one is known. */
+function invokedBy(callerSlug: string, userId: string | undefined): MessageFrom {
+  return { sender: { kind: 'agent', slug: callerSlug, ...(userId ? { onBehalfOf: userId } : {}) }, source: { kind: 'agent', slug: callerSlug } }
 }
 
 async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {
@@ -841,7 +832,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     ? agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
     : Promise.resolve(null))
   const triggeringUserRead = startRead(isAuthMode() && _callerSessionId
-    ? getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    ? getTriggeringUserId(callerSlug, _callerSessionId)
     : Promise.resolve(undefined))
   const access = startRead(callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))
   // No policy applies to the caller's own agent (checkAgentPolicy).
@@ -872,22 +863,23 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: 'A session cannot send a message to itself. Omit session_id to start a worker session.' }, 400)
   }
 
-  // Capture the triggering message's author before a review prompt can pause
-  // this request and newer messages can arrive in a shared caller session.
-  // This remains a best-effort "latest author" heuristic until the container
-  // can pass the exact driving message UUID.
+  // Read before a review prompt can pause this request: by then the caller
+  // session's turn may have moved on to a newer message.
   const triggeringUserId = await triggeringUserRead
 
   if (!(await access)) {
     return c.json({ error: 'Forbidden: caller has no user access to target agent' }, 403)
   }
 
-  // Attribute to the triggering message author. Session creator and caller
-  // owner remain compatibility fallbacks for old sessions without author rows.
-  let attributedUserId: string | undefined = triggeringUserId ?? callerMeta?.createdByUserId
+  // Attribute to the person behind the caller's turn; with none known (an
+  // automation's turn, an old session), to its creator, then to the caller's owner.
+  const createdBy = _callerSessionId && callerMeta
+    ? (await getSessionContext(callerSlug, _callerSessionId, ['createdBy'], { metadata: callerMeta })).createdBy
+    : undefined
+  let attributedUserId: string | undefined = triggeringUserId ?? (createdBy?.kind === 'user' ? createdBy.userId : undefined)
   if (!attributedUserId && isAuthMode()) {
     try {
-      attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
+      attributedUserId = (await getAgentContext(callerSlug)).ownerId
     } catch (error) {
       // ACL checks already ran above; this second lookup is attribution-only.
       console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
@@ -1025,6 +1017,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             sessionId: existingSessionId,
             content: deliveredPrompt,
             uuid: messageUuid,
+            from: invokedBy(callerSlug, messageUuid ? attributedUserId : undefined),
             options: { isAutomated: true },
           })
         } catch (sendError) {
@@ -1143,6 +1136,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         },
           name: `Invoked by ${callerName}`,
           metadata: { invokedByAgentSlug: callerSlug, ...(createdByUserId ? { createdByUserId } : {}) },
+          from: invokedBy(callerSlug, createdByUserId),
           notAfter: deliveryCutoff,
           attachTimeoutMs: SUBSCRIBE_TIMEOUT_MS,
         })

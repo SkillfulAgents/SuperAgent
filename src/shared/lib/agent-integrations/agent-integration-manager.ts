@@ -1372,6 +1372,10 @@ export class AgentIntegrationManager implements Service {
         sessionId: targetSession,
         content: input.text,
         uuid: attempt.id,
+        from: {
+          sender: { kind: 'external', integrationId: integration.id, name: display?.request?.author?.name ?? this.registry.displayName(integration) },
+          source: { kind: 'integration', integrationId: integration.id, externalId: chatId },
+        },
         ...(display ? { echo: { content: input.text, integration: display } } : {}),
       }), check)
     }

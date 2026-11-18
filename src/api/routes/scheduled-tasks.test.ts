@@ -290,7 +290,7 @@ describe('scheduled-tasks route', () => {
       // Frames wait for the registration, so a run that settles at once finds its status.
       { holdFramesUntil: expect.any(Promise) },
     )
-    expect(mockLiveSessions.markActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
+    expect(mockLiveSessions.markActive).toHaveBeenCalledWith('agent-one', 'container-session-1', expect.objectContaining({ from: expect.objectContaining({ sender: expect.objectContaining({ kind: 'automation', trigger: 'scheduled' }) }) }))
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
   })

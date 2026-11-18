@@ -471,6 +471,52 @@ describe('LiveSessions', () => {
         vi.mocked(getSessionMetadata).mockResolvedValue(null)
       }
     })
+
+    describe('the message the turn acts on', () => {
+      const fromApp = (userId: string) => ({ sender: { kind: 'user', userId }, source: { kind: 'app' } }) as const
+      const dana = { uuid: 'message-from-dana', sentAt: 1_000, from: fromApp('user-dana') }
+      const ben = { uuid: 'message-from-ben', sentAt: 2_000, from: fromApp('user-ben') }
+      const lifecycle = (uuid: string, state: string) =>
+        mockClient.emit({ type: 'command_lifecycle', command_uuid: uuid, state })
+
+      it('is the message that started the turn until the runtime starts a queued one', () => {
+        expect(sessions().turnMessage(SESSION_ID)).toBeNull()
+        sessions().markSending(SESSION_ID, dana)
+        expect(sessions().turnMessage(SESSION_ID)).toEqual(dana)
+
+        expect(sessions().markSending(SESSION_ID, ben).queued).toBe(true)
+        lifecycle(ben.uuid, 'queued')
+        expect(sessions().turnMessage(SESSION_ID)).toEqual(dana)
+        lifecycle(ben.uuid, 'started')
+        expect(sessions().turnMessage(SESSION_ID)).toEqual(ben)
+      })
+
+      it('is not a queued message the runtime discarded', () => {
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben)
+        lifecycle(ben.uuid, 'discarded')
+        lifecycle(ben.uuid, 'started')
+        expect(sessions().turnMessage(SESSION_ID)).toEqual(dana)
+      })
+
+      it('is not a message that did not go', () => {
+        sessions().markSending(SESSION_ID, dana).rollback()
+        expect(sessions().turnMessage(SESSION_ID)).toBeNull()
+
+        sessions().markSending(SESSION_ID, dana)
+        sessions().markSending(SESSION_ID, ben).rollback()
+        lifecycle(ben.uuid, 'started')
+        expect(sessions().turnMessage(SESSION_ID)).toEqual(dana)
+      })
+
+      it('is the first message of a started session once its stream attaches', async () => {
+        // As `sessions.start` does: the create started the turn, then the stream attaches.
+        sessions().markActive('started-session', dana)
+        await sessions().subscribe('started-session', createStreamClient(), 'started-session')
+        expect(sessions().turnMessage('started-session')).toEqual(dana)
+        sessions().unsubscribe('started-session')
+      })
+    })
   })
 
   // ============================================================================

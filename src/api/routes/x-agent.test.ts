@@ -17,7 +17,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
-import type { FileOps, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
+import type { FileOps, OpenFile, StoreFileOps, TurnMessage } from '@shared/lib/agent-actor/types'
 import type { LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
@@ -174,6 +174,7 @@ function expectBoundedSyncWait(sessionId: string): void {
   expect(opts.timeoutMs).toBeLessThanOrEqual(120_000)
 }
 const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
+const mockTurnMessage = vi.fn((_agentSlug?: string, _sessionId?: string): TurnMessage | null => null)
 const mockActiveIds = vi.fn((_agentSlug: string): string[] => [])
 const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]): Promise<'idle' | 'timeout'> => 'idle')
@@ -197,6 +198,7 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
       return { queued, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
     isActive: (agentSlug, sessionId) => mockIsSessionActive(agentSlug, sessionId),
+    turnMessage: (agentSlug, sessionId) => mockTurnMessage(agentSlug, sessionId),
     activeIds: (agentSlug) => mockActiveIds(agentSlug),
     isAwaitingInput: (agentSlug, sessionId) => mockIsSessionAwaitingInput(agentSlug, sessionId),
     waitForIdle: (...args) => mockWaitForIdle(...args),
@@ -411,6 +413,7 @@ beforeEach(async () => {
   xAgentReviewRequests.length = 0
   vi.clearAllMocks()
   mockIsSessionActive.mockReturnValue(false)
+  mockTurnMessage.mockReturnValue(null)
   mockIsSessionAwaitingInput.mockReturnValue(false)
   mockWaitForIdle.mockResolvedValue('idle')
   mockSessionIsKnown.mockResolvedValue(true)
@@ -784,7 +787,7 @@ describe('/invoke', () => {
     // The id no longer needs claiming: markSessionActive creates the state
     // under a key that already carries the target agent, so it cannot collide
     // with another agent's session of the same id.
-    expect(mockMarkSessionActive).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
+    expect(mockMarkSessionActive).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id', expect.anything())
     expect(mockRegisterSession).toHaveBeenCalledWith(
       expect.objectContaining({ slug: TARGET_SLUG }),
       'new-sess-id',
@@ -1015,6 +1018,57 @@ describe('/invoke', () => {
       expect.any(String),
       expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
     )
+    // The message is the calling agent's, on behalf of that person.
+    expect(mockMarkSessionActive).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id', expect.objectContaining({
+      from: { sender: { kind: 'agent', slug: CALLER_SLUG, onBehalfOf: OTHER_USER_ID }, source: { kind: 'agent', slug: CALLER_SLUG } },
+    }))
+  })
+
+  it('attributes to the sender of the message the caller turn runs on, not a newer saved one', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'shared-caller-session'
+    await grantCallerOwnerTargetAccess()
+    // Other tagged the owner silently while the owner's turn ran: the newest
+    // saved sender is Other, but the turn acts on the owner's message.
+    await testDb.insert(schema.messageAuthor).values([
+      { id: 'owner-message', sessionId: callerSessionId, agentSlug: CALLER_SLUG, userId: OWNER_USER_ID, createdAt: new Date('2026-01-01T00:00:00.000Z') },
+      { id: 'other-silent-tag', sessionId: callerSessionId, agentSlug: CALLER_SLUG, userId: OTHER_USER_ID, createdAt: new Date('2026-01-01T00:00:01.000Z') },
+    ])
+    const callerTurn = (slug?: string, sessionId?: string) => slug === CALLER_SLUG && sessionId === callerSessionId
+    mockIsSessionActive.mockImplementation(callerTurn)
+    mockTurnMessage.mockImplementation((slug, sessionId) =>
+      callerTurn(slug, sessionId)
+        ? { uuid: 'owner-message', sentAt: Date.now(), from: { sender: { kind: 'user', userId: OWNER_USER_ID }, source: { kind: 'app' } } }
+        : null)
+    mockGetSessionMetadata.mockResolvedValue({ name: 'Shared session', createdAt: new Date().toISOString(), createdByUserId: OTHER_USER_ID })
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', _callerSessionId: callerSessionId })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: OWNER_USER_ID })])
+  })
+
+  it('falls back to the session creator when no person sent the message the caller turn runs on', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    const callerSessionId = 'woken-caller-session'
+    await grantCallerOwnerTargetAccess()
+    await testDb.insert(schema.messageAuthor).values({
+      id: 'other-message', sessionId: callerSessionId, agentSlug: CALLER_SLUG, userId: OTHER_USER_ID, createdAt: new Date(),
+    })
+    // A scheduled wake started this turn: its message has no sender.
+    const callerTurn = (slug?: string, sessionId?: string) => slug === CALLER_SLUG && sessionId === callerSessionId
+    mockIsSessionActive.mockImplementation(callerTurn)
+    mockTurnMessage.mockImplementation((slug, sessionId) => (callerTurn(slug, sessionId) ? { uuid: 'wake-message', sentAt: Date.now() } : null))
+    mockGetSessionMetadata.mockResolvedValue({ name: 'Woken session', createdAt: new Date().toISOString(), createdByUserId: OWNER_USER_ID })
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello', _callerSessionId: callerSessionId })
+
+    expect(res.status).toBe(200)
+    const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
+    expect(targetAuthors).toEqual([expect.objectContaining({ userId: OWNER_USER_ID })])
   })
 
   it('falls back to the session creator when no message author is recorded', async () => {
