@@ -1,4 +1,4 @@
-import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
 import type { AgentReviews, ReviewDecision, ReviewOutcome, ReviewRequest, ReviewRequestOptions, XAgentOperation } from './agent-reviews'
 import type { ReviewDetails } from './review-display'
@@ -92,7 +92,7 @@ export class ReviewManager {
   /** `AgentReviews.requestXAgent` on the calling agent's reviews: the outcome as data. */
   requestXAgent(
     callerAgentSlug: string,
-    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer; callerSessionId?: string },
+    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer; runtime?: XAgentRuntime; callerSessionId?: string },
     options: ReviewRequestOptions,
   ): Promise<ReviewOutcome> {
     return this.agents.get(callerAgentSlug).requestXAgent(request, options)

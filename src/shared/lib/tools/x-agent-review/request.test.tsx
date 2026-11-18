@@ -170,6 +170,20 @@ describe('XAgentReviewRequestItem buttons', () => {
   })
 })
 
+describe('XAgentReviewRequestItem model', () => {
+  it('names the model and effort in the button row', () => {
+    render(<XAgentReviewRequestItem reviewId="review-8" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke', runtime: { model: 'sonnet', llmProviderId: 'platform', effort: 'xhigh', label: 'Sonnet 5.5' } }} onComplete={vi.fn()} />)
+    const line = screen.getByTestId('xagent-review-model')
+    expect(line).toHaveTextContent('Model: Sonnet 5.5 · Extra High')
+    expect(line.closest('[data-request-item-actions]')).not.toBeNull()
+  })
+
+  it('names no model on a card without one', () => {
+    render(<XAgentReviewRequestItem reviewId="review-9" agentSlug="caller" xAgent={{ targetAgentSlug: 'target', targetAgentName: 'Target Agent', operation: 'invoke' }} onComplete={vi.fn()} />)
+    expect(screen.queryByTestId('xagent-review-model')).toBeNull()
+  })
+})
+
 describe('XAgentReviewRequestItem in a team workspace', () => {
   afterEach(() => { mockUser = { isAuthMode: false, rolesReady: true, canUseAgent: () => true } })
   // The parent renders the card read-only for a Viewer of the calling agent.

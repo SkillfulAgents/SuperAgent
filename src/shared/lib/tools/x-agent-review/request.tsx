@@ -8,6 +8,8 @@ import { RequestItemShell } from '../requests/request-item-shell'
 import { RequestItemActions } from '../requests/request-item-actions'
 import { ApprovalActions, type ExpandedGrant } from '../requests/approval-actions'
 import { DeclineButton } from '../requests/decline-button'
+import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
+import { SPEED_LABELS } from '@renderer/components/messages/speed-section'
 
 interface XAgentReviewRequestItemProps {
   reviewId: string
@@ -275,12 +277,21 @@ export function XAgentReviewRequestItem({
       )}
     </>
   ) : null
+  const modelText = xAgent.runtime
+    ? `Model: ${xAgent.runtime.label}${xAgent.runtime.effort ? ` · ${EFFORT_LABELS[xAgent.runtime.effort]}` : ''}${xAgent.runtime.speed && xAgent.runtime.speed !== 'normal' ? ` · ${SPEED_LABELS[xAgent.runtime.speed]}` : ''}`
+    : null
+  // Truncates down to a width that still names the model; below it the button group wraps under it as one row.
+  const modelLine = modelText ? (
+    <p className="min-w-28 flex-1 self-center truncate text-xs text-muted-foreground" title={modelText} data-testid="xagent-review-model">
+      {modelText}
+    </p>
+  ) : null
   const downloadDetails = xAgent.fileTransfer?.kind === 'download' ? (
     <div className="mt-3 rounded-item border border-border bg-background px-3 py-2 text-xs text-foreground/85">
       {xAgent.fileTransfer.filename}
     </div>
   ) : null
-  const readOnlyConfig = readOnly ? { extraContent: <>{invokeDetails}{downloadDetails}</> } : false as const
+  const readOnlyConfig = readOnly ? { extraContent: <>{invokeDetails}{downloadDetails}{modelLine && <div className="mt-3">{modelLine}</div>}</> } : false as const
 
   return (
     <RequestItemShell
@@ -302,25 +313,28 @@ export function XAgentReviewRequestItem({
       {downloadDetails}
 
       <RequestItemActions>
-        {canAllow ? (
-          <ApprovalActions
-            testIdPrefix="xagent-review"
-            disabled={status === 'submitting'}
-            onDeny={(reason) => handleDecision('deny', reason)}
-            onAllow={() => handleDecision('allow')}
-            allowLabel={expanded ? 'Allow Once' : 'Allow'}
-            expanded={expanded}
-          />
-        ) : (
-          <DeclineButton
-            onDecline={(reason) => handleDecision('deny', reason)}
-            disabled={status === 'submitting'}
-            label="Deny"
-            showIcon={false}
-            className="border-border text-foreground hover:bg-muted"
-            data-testid="xagent-review-deny-btn"
-          />
-        )}
+        {modelLine}
+        <div className="ml-auto flex flex-wrap justify-end gap-2">
+          {canAllow ? (
+            <ApprovalActions
+              testIdPrefix="xagent-review"
+              disabled={status === 'submitting'}
+              onDeny={(reason) => handleDecision('deny', reason)}
+              onAllow={() => handleDecision('allow')}
+              allowLabel={expanded ? 'Allow Once' : 'Allow'}
+              expanded={expanded}
+            />
+          ) : (
+            <DeclineButton
+              onDecline={(reason) => handleDecision('deny', reason)}
+              disabled={status === 'submitting'}
+              label="Deny"
+              showIcon={false}
+              className="border-border text-foreground hover:bg-muted"
+              data-testid="xagent-review-deny-btn"
+            />
+          )}
+        </div>
       </RequestItemActions>
     </RequestItemShell>
   )

@@ -2,7 +2,7 @@
  * One agent's pending proxy and x-agent reviews: the store the actor owns.
  * The router in front of every agent's store is `review-manager`.
  */
-import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from './x-agent-review'
+import { requiresOneTimeXAgentReview, type XAgentFileTransfer, type XAgentRuntime } from './x-agent-review'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
@@ -418,10 +418,11 @@ export class AgentReviews {
    * scopeDescriptions/displayText that the dedicated UI renderer keys off.
    */
   requestXAgent(
-    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer; callerSessionId?: string },
+    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer; runtime?: XAgentRuntime; callerSessionId?: string },
     options: ReviewRequestOptions,
   ): Promise<ReviewOutcome> {
-    const { targetAgentSlug, targetAgentName, operation, preview, fileTransfer, callerSessionId } = request
+    const { targetAgentSlug, targetAgentName, operation, preview, fileTransfer, runtime, callerSessionId } = request
+    const onModel = runtime ? ` on ${runtime.label}` : ''
     const scope =
       operation === 'list'
         ? 'list'
@@ -433,7 +434,7 @@ export class AgentReviews {
       description = `Allow agent to download "${fileTransfer.filename}" from "${targetAgentName}"?`
     } else if (fileTransfer?.kind === 'send') {
       const count = fileTransfer.paths.length
-      description = `Allow agent to send a message and ${count} ${count === 1 ? 'file' : 'files'} to "${targetAgentName}"?`
+      description = `Allow agent to send a message and ${count} ${count === 1 ? 'file' : 'files'} to "${targetAgentName}"${onModel}?`
     } else {
       description = operation === 'create'
         ? `Allow agent to create a new agent named "${targetAgentName}"?`
@@ -441,7 +442,7 @@ export class AgentReviews {
           ? 'Allow agent to list other agents in this workspace?'
           : operation === 'read'
             ? `Allow agent to read sessions of "${targetAgentName}"?`
-            : `Allow agent to send a message to "${targetAgentName}"?`
+            : `Allow agent to send a message to "${targetAgentName}"${onModel}?`
     }
 
     return this.request(
@@ -459,6 +460,7 @@ export class AgentReviews {
           operation,
           preview,
           ...(fileTransfer ? { fileTransfer } : {}),
+          ...(runtime ? { runtime } : {}),
         },
         callerSessionId,
       },

@@ -24,7 +24,7 @@
  * (`live()`, `sessions.live()`): reads consumed together are taken together,
  * and a read → decide → write is one op, so no state changes between them.
  */
-import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { XAgentFileTransfer, XAgentRuntime } from '@shared/lib/proxy/x-agent-review'
 import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import type {
   ContainerInfo,
@@ -830,6 +830,7 @@ export interface ReviewOps {
       operation: 'list' | 'read' | 'invoke' | 'create'
       preview?: string
       fileTransfer?: XAgentFileTransfer
+      runtime?: XAgentRuntime
       /** The session the call came from, when the request named one. */
       callerSessionId?: string
     },
