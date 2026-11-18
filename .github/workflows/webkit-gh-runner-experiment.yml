@@ -1,0 +1,70 @@
+name: WebKit on GitHub macOS (experiment)
+
+# Experiment, not for main: does the WebKit regression suite get its runner shut
+# down on GitHub-hosted macOS the way it does on Blacksmith's since #1986? Same
+# steps as the "Run WebKit regression suite" step of e2e-webkit-macos in test.yml.
+on:
+  pull_request:
+
+jobs:
+  webkit-gh:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26]
+        repeat: [1, 2, 3]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    name: webkit on ${{ matrix.runner }} (repeat ${{ matrix.repeat }}/3)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright WebKit
+        run: npx playwright install webkit
+
+      - name: Enable keyboard navigation for Playwright WebKit
+        run: |
+          defaults write org.webkit.Playwright AppleKeyboardUIMode -int 2
+          defaults read org.webkit.Playwright AppleKeyboardUIMode
+
+      - name: Runner details
+        run: |
+          sw_vers
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          system_profiler SPDisplaysDataType | grep -E 'Chipset|Metal|Display Type|Resolution' || true
+
+      - name: Run WebKit regression suite
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/webkit
+          PLAYWRIGHT_OUTPUT_DIR: test-results/webkit
+          PLAYWRIGHT_HTML_REPORT: playwright-report/webkit
+          PLAYWRIGHT_WORKERS: '1'
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit.log
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-gh-${{ matrix.runner }}-${{ matrix.repeat }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
