@@ -53,6 +53,12 @@ export const modelDefinitionSchema = z.object({
   familyAliases: z.array(z.string().min(1)).optional(),
   /** Concrete model selected when switching to this model vendor in the picker. */
   isDefault: z.boolean().optional(),
+  /**
+   * Position among its vendor's picker rows, 1 = strongest. Rows that both
+   * declare one rank by it instead of by price. For vendors whose price
+   * misleads on strength (Google's intro discount prices Carbon below Neon).
+   */
+  strengthRank: z.number().int().positive().optional(),
   // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.
   supportsWebSearch: z.boolean().optional(),
   // Omit/undefined ⇒ follow supportsWebSearch. false when search works but fetch does not (Platform Responses).

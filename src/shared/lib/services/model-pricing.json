@@ -549,6 +549,13 @@
     "cacheCreation1h": 3,
     "cacheRead": 0.075
   },
+  "gemini-4-neon": {
+    "input": 3,
+    "output": 15,
+    "cacheCreation": 3,
+    "cacheCreation1h": 6,
+    "cacheRead": 0.15
+  },
   "muse-ember-1.0": {
     "input": 0.1,
     "output": 0.5,
