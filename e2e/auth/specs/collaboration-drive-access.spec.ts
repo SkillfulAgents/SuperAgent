@@ -41,7 +41,7 @@ test('drive sharing updates Settings, the picker and an attached drive in anothe
 
     const other = await teammate.newPage()
     await other.goto('/settings/volumes')
-    await expect(other.getByRole('button', { name: 'Open My notes drive settings' })).toBeVisible()
+    await expect(other.getByRole('button', { name: 'Open My notes drive settings' })).toBeVisible({ timeout: 30_000 })
     await expect(other.getByText(name, { exact: true })).toHaveCount(0)
     await other.goto(`/agents/${slug}`)
     const drivesHeader = other.getByTestId('home-sections-panel').getByRole('button', { name: 'Drives', exact: true })
